@@ -1,0 +1,119 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---- Menu Bar ---- */
+.menu-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 12px;
+  background: #ffffff;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 13px;
+  user-select: none;
+}
+
+.menu-bar span {
+  font-weight: 600;
+  color: #1a1a2e;
+  margin-right: 12px;
+}
+
+.menu-bar button {
+  background: none;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #555;
+  font-size: 13px;
+}
+
+.menu-bar button:hover {
+  background: #f0f0f0;
+}
+
+/* ---- Workspace ---- */
+.workspace {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ---- Side Panel ---- */
+.side-panel {
+  width: 220px;
+  background: #ffffff;
+  border-right: 1px solid #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+}
+
+.side-panel h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #888;
+  margin: 0 0 8px 0;
+  letter-spacing: 0.5px;
+}
+
+.side-panel .empty-hint {
+  font-size: 12px;
+  color: #aaa;
+  font-style: italic;
+}
+
+/* ---- Main Area ---- */
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #fafafa;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.welcome {
+  text-align: center;
+  color: #888;
+}
+
+.welcome h1 {
+  font-size: 28px;
+  font-weight: 300;
+  color: #1a1a2e;
+  margin-bottom: 8px;
+}
+
+.welcome p {
+  font-size: 14px;
+  margin: 4px 0;
+}
+
+.welcome .version {
+  font-size: 12px;
+  color: #aaa;
+  margin-top: 16px;
+}
+
+/* ---- Status Bar ---- */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 24px;
+  padding: 0 12px;
+  background: #1a1a2e;
+  color: #ccc;
+  font-size: 11px;
+}
