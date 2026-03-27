@@ -1,10 +1,173 @@
+/* ========= Global ========= */
+* {
+  box-sizing: border-box;
+}
+
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
 }
 
-/* ---- Menu Bar ---- */
+/* ========= Welcome Page ========= */
+.welcome-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);
+}
+
+.welcome-card {
+  text-align: center;
+  padding: 48px 56px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  min-width: 380px;
+}
+
+.welcome-card h1 {
+  font-size: 32px;
+  font-weight: 300;
+  color: #1a1a2e;
+  margin: 0 0 8px;
+}
+
+.welcome-card .subtitle {
+  font-size: 14px;
+  color: #888;
+  margin: 0 0 4px;
+}
+
+.welcome-card .version-tag {
+  font-size: 11px;
+  color: #aaa;
+  margin-bottom: 28px;
+}
+
+.welcome-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.create-form input {
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.create-form input:focus {
+  border-color: #4a6cf7;
+}
+
+.create-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+/* ========= Buttons ========= */
+.btn-primary {
+  padding: 10px 20px;
+  background: #4a6cf7;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-primary:hover {
+  background: #3b5de7;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  padding: 10px 20px;
+  background: #fff;
+  color: #555;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-secondary:hover {
+  background: #f5f5f5;
+}
+
+.btn-text {
+  background: none;
+  border: none;
+  color: #4a6cf7;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+.btn-text:hover {
+  text-decoration: underline;
+}
+
+.btn-sm {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #555;
+}
+
+.btn-sm:hover {
+  background: #f0f0f0;
+}
+
+.btn-icon {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: #999;
+  padding: 2px 4px;
+  line-height: 1;
+}
+
+.btn-icon:hover {
+  color: #e74c3c;
+}
+
+.btn-icon-sm {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: #ccc;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.btn-icon-sm:hover {
+  color: #e74c3c;
+}
+
+/* ========= Menu Bar ========= */
 .menu-bar {
   display: flex;
   align-items: center;
@@ -20,7 +183,17 @@
 .menu-bar span {
   font-weight: 600;
   color: #1a1a2e;
-  margin-right: 12px;
+}
+
+.menu-bar .project-name {
+  font-weight: 400;
+  color: #666;
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.menu-bar .menu-spacer {
+  flex: 1;
 }
 
 .menu-bar button {
@@ -37,43 +210,111 @@
   background: #f0f0f0;
 }
 
-/* ---- Workspace ---- */
+/* ========= Workspace ========= */
 .workspace {
   display: flex;
   flex: 1;
   overflow: hidden;
 }
 
-/* ---- Side Panel ---- */
+/* ========= Side Panel ========= */
 .side-panel {
-  width: 220px;
+  width: 240px;
   background: #ffffff;
   border-right: 1px solid #e0e0e0;
   display: flex;
   flex-direction: column;
-  padding: 12px;
+  overflow: hidden;
 }
 
-.side-panel h3 {
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 6px;
+}
+
+.panel-header h3 {
   font-size: 12px;
   text-transform: uppercase;
   color: #888;
-  margin: 0 0 8px 0;
+  margin: 0;
   letter-spacing: 0.5px;
 }
 
-.side-panel .empty-hint {
+.panel-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.dataset-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.dataset-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+  transition: background 0.1s;
+}
+
+.dataset-item:hover {
+  background: #f0f4ff;
+}
+
+.dataset-item.active {
+  background: #e8edff;
+  color: #4a6cf7;
+}
+
+.ds-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.ds-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-info {
+  font-size: 10px;
+  color: #aaa;
+  flex-shrink: 0;
+}
+
+.ds-delete {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.dataset-item:hover .ds-delete {
+  opacity: 1;
+}
+
+.empty-hint {
   font-size: 12px;
   color: #aaa;
   font-style: italic;
+  padding: 12px 8px;
 }
 
-/* ---- Main Area ---- */
+/* ========= Main Area ========= */
 .main-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   background: #fafafa;
+  overflow: hidden;
 }
 
 .main-content {
@@ -83,30 +324,220 @@
   justify-content: center;
 }
 
-.welcome {
+.workspace-empty {
   text-align: center;
-  color: #888;
-}
-
-.welcome h1 {
-  font-size: 28px;
-  font-weight: 300;
-  color: #1a1a2e;
-  margin-bottom: 8px;
-}
-
-.welcome p {
-  font-size: 14px;
-  margin: 4px 0;
-}
-
-.welcome .version {
-  font-size: 12px;
   color: #aaa;
-  margin-top: 16px;
+  font-size: 14px;
 }
 
-/* ---- Status Bar ---- */
+/* ========= Data Table ========= */
+.data-table-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.table-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+}
+
+.table-scroll {
+  flex: 1;
+  overflow: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th {
+  position: sticky;
+  top: 0;
+  background: #f8f9fa;
+  border-bottom: 2px solid #dee2e6;
+  padding: 6px 10px;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.data-table th .col-name {
+  display: block;
+}
+
+.data-table th .col-type {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  color: #999;
+}
+
+.data-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid #f0f0f0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-table tbody tr:hover {
+  background: #f5f8ff;
+}
+
+.row-num-col {
+  width: 40px;
+  color: #bbb;
+  text-align: center;
+  font-size: 11px;
+}
+
+.action-col {
+  width: 44px;
+  text-align: center;
+}
+
+.editable-cell {
+  cursor: default;
+  position: relative;
+}
+
+.editable-cell:hover {
+  background: #eef2ff;
+}
+
+.cell-input {
+  width: 100%;
+  border: 1px solid #4a6cf7;
+  border-radius: 2px;
+  padding: 2px 4px;
+  font-size: 13px;
+  outline: none;
+  background: #fff;
+}
+
+.null-value {
+  color: #ccc;
+  font-style: italic;
+  font-size: 11px;
+}
+
+.empty-table {
+  text-align: center;
+  color: #aaa;
+  font-style: italic;
+  padding: 24px !important;
+}
+
+.table-footer {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #888;
+  border-top: 1px solid #eee;
+  background: #fff;
+}
+
+.table-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #aaa;
+}
+
+/* ========= Dialog ========= */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.dialog {
+  background: #fff;
+  border-radius: 10px;
+  padding: 24px 28px;
+  min-width: 400px;
+  max-width: 520px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+.dialog h3 {
+  margin: 0 0 16px;
+  font-size: 16px;
+  color: #1a1a2e;
+}
+
+.dialog-field {
+  margin-bottom: 14px;
+}
+
+.dialog-field label {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 6px;
+}
+
+.dialog-field input,
+.dialog-field select {
+  padding: 7px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+}
+
+.dialog-field input:focus {
+  border-color: #4a6cf7;
+}
+
+.dialog-field input {
+  width: 100%;
+}
+
+.column-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.column-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.column-row input {
+  flex: 1;
+}
+
+.column-row select {
+  width: 120px;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+/* ========= Status Bar ========= */
 .status-bar {
   display: flex;
   align-items: center;

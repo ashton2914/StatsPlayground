@@ -20,9 +20,18 @@ pub fn run() {
             commands::data_commands::list_datasets,
             commands::data_commands::delete_dataset,
             commands::data_commands::query_table,
+            commands::data_commands::create_table,
+            commands::data_commands::add_row,
+            commands::data_commands::update_cell,
+            commands::data_commands::delete_row,
+            commands::data_commands::rename_dataset,
             commands::stats_commands::get_column_stats,
             commands::stats_commands::get_descriptive_stats,
             commands::io_commands::export_csv,
+            commands::project_commands::create_project,
+            commands::project_commands::open_project,
+            commands::project_commands::save_project,
+            commands::project_commands::get_current_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

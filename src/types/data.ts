@@ -21,7 +21,7 @@ export interface ColumnMeta {
 
 /** 表查询参数 */
 export interface TableQueryParams {
-  tableName: string;
+  datasetId: string;
   page: number;
   pageSize: number;
   sortBy?: string;

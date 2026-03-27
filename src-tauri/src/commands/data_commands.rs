@@ -41,3 +41,52 @@ pub fn query_table(
         sort_order.as_deref(),
     )
 }
+
+#[tauri::command]
+pub fn create_table(
+    state: State<'_, AppState>,
+    name: String,
+    column_names: Vec<String>,
+    column_types: Vec<String>,
+) -> Result<DatasetMeta, AppError> {
+    let service = DataService::new(&state);
+    service.create_table(&name, &column_names, &column_types)
+}
+
+#[tauri::command]
+pub fn add_row(state: State<'_, AppState>, dataset_id: String) -> Result<i64, AppError> {
+    let service = DataService::new(&state);
+    service.add_row(&dataset_id)
+}
+
+#[tauri::command]
+pub fn update_cell(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    row_id: i64,
+    column_name: String,
+    value: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.update_cell(&dataset_id, row_id, &column_name, &value)
+}
+
+#[tauri::command]
+pub fn delete_row(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    row_id: i64,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.delete_row(&dataset_id, row_id)
+}
+
+#[tauri::command]
+pub fn rename_dataset(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    new_name: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.rename_dataset(&dataset_id, &new_name)
+}

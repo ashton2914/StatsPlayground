@@ -9,6 +9,11 @@ pub struct DuckDbEngine {
 }
 
 impl DuckDbEngine {
+    /// Get a reference to the underlying connection
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Create a new in-memory DuckDB engine and initialize metadata tables
     pub fn new_in_memory() -> Result<Self, AppError> {
         let conn = Connection::open_in_memory()?;
@@ -163,11 +168,32 @@ impl DuckDbEngine {
             |row| row.get(0),
         )?;
 
+        // Get column info from metadata (avoids DuckDB panic on unexecuted statements)
+        let mut col_stmt = self.conn.prepare(
+            "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index"
+        )?;
+        let col_info: Vec<(String, String)> = col_stmt
+            .query_map(params![dataset_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // _row_id + user columns
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["INTEGER".to_string()];
+        for (name, typ) in &col_info {
+            columns.push(name.clone());
+            column_types.push(typ.clone());
+        }
+
+        // Build SELECT with explicit column list
+        let select_cols = columns.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ");
+
         // Build query with optional sorting
         let order_clause = match sort_by {
             Some(col) => {
                 let dir = sort_order.unwrap_or("asc");
-                // Validate sort direction
                 let dir = if dir.eq_ignore_ascii_case("desc") { "DESC" } else { "ASC" };
                 format!("ORDER BY \"{}\" {}", col, dir)
             }
@@ -175,25 +201,15 @@ impl DuckDbEngine {
         };
 
         let query = format!(
-            "SELECT * FROM \"{}\" {} LIMIT {} OFFSET {}",
-            table_name, order_clause, page_size, offset
+            "SELECT {} FROM \"{}\" {} LIMIT {} OFFSET {}",
+            select_cols, table_name, order_clause, page_size, offset
         );
 
+        // Execute and fetch rows
         let mut stmt = self.conn.prepare(&query)?;
-        let column_count = stmt.column_count();
-
-        // Get column names and types
-        let columns: Vec<String> = (0..column_count)
-            .map(|i| stmt.column_name(i).map_or("?".to_string(), |v| v.to_string()))
-            .collect();
-
-        let column_types: Vec<String> = (0..column_count)
-            .map(|i| stmt.column_type(i).to_string())
-            .collect();
-
-        // Fetch rows as JSON values
         let mut rows_data: Vec<Vec<serde_json::Value>> = Vec::new();
         let mut rows = stmt.query([])?;
+        let column_count = columns.len();
 
         while let Some(row) = rows.next()? {
             let mut row_values: Vec<serde_json::Value> = Vec::new();
@@ -301,5 +317,135 @@ impl DuckDbEngine {
             dataset_id: dataset_id.to_string(),
             columns,
         })
+    }
+
+    /// Create an empty dataset with specified columns
+    pub fn create_empty_table(
+        &self,
+        id: &str,
+        name: &str,
+        column_names: &[String],
+        column_types: &[String],
+    ) -> Result<DatasetMeta, AppError> {
+        if column_names.is_empty() {
+            return Err(AppError::InvalidParam("At least one column is required".into()));
+        }
+        if column_names.len() != column_types.len() {
+            return Err(AppError::InvalidParam("Column names and types length mismatch".into()));
+        }
+
+        let table_name = format!("dataset_{}", id.replace('-', "_"));
+
+        // Build column definitions
+        let col_defs: Vec<String> = column_names
+            .iter()
+            .zip(column_types.iter())
+            .map(|(name, typ)| format!("\"{}\" {}", name, typ))
+            .collect();
+
+        // Add a hidden row_id column for row identification
+        let create_sql = format!(
+            "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0, {})",
+            table_name,
+            col_defs.join(", ")
+        );
+        self.conn.execute(&create_sql, [])?;
+
+        // Register column metadata
+        for (i, (col_name, col_type)) in column_names.iter().zip(column_types.iter()).enumerate() {
+            self.conn.execute(
+                "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+                params![id, i as i32, col_name, col_type],
+            )?;
+        }
+
+        // Insert dataset metadata
+        let col_count = column_names.len() as i32;
+        self.conn.execute(
+            "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, NULL, 'manual', 0, $3)",
+            params![id, name, col_count],
+        )?;
+
+        self.get_dataset_meta(id)
+    }
+
+    /// Add an empty row to a dataset, returns the new row_id
+    pub fn add_row(&self, dataset_id: &str) -> Result<i64, AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        // Get next row_id
+        let max_id: Option<i64> = self.conn.query_row(
+            &format!("SELECT MAX(\"_row_id\") FROM \"{}\"", table_name),
+            [],
+            |row| row.get(0),
+        ).unwrap_or(None);
+        let new_id = max_id.unwrap_or(0) + 1;
+
+        // Insert row with only _row_id set (other columns NULL)
+        self.conn.execute(
+            &format!("INSERT INTO \"{}\" (\"_row_id\") VALUES ($1)", table_name),
+            params![new_id],
+        )?;
+
+        // Update row count in metadata
+        let row_count: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![row_count, dataset_id],
+        )?;
+
+        Ok(new_id)
+    }
+
+    /// Update a cell value
+    pub fn update_cell(
+        &self,
+        dataset_id: &str,
+        row_id: i64,
+        column_name: &str,
+        value: &str,
+    ) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        let update_sql = format!(
+            "UPDATE \"{}\" SET \"{}\" = $1 WHERE \"_row_id\" = $2",
+            table_name, column_name
+        );
+        self.conn.execute(&update_sql, params![value, row_id])?;
+        Ok(())
+    }
+
+    /// Delete a row by row_id
+    pub fn delete_row(&self, dataset_id: &str, row_id: i64) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        self.conn.execute(
+            &format!("DELETE FROM \"{}\" WHERE \"_row_id\" = $1", table_name),
+            params![row_id],
+        )?;
+
+        // Update row count
+        let row_count: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![row_count, dataset_id],
+        )?;
+        Ok(())
+    }
+
+    /// Rename a dataset
+    pub fn rename_dataset(&self, dataset_id: &str, new_name: &str) -> Result<(), AppError> {
+        self.conn.execute(
+            "UPDATE _meta_datasets SET name = $1 WHERE id = $2",
+            params![new_name, dataset_id],
+        )?;
+        Ok(())
     }
 }
