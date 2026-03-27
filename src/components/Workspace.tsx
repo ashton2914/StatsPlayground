@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { dataService } from "@/services/dataService";
@@ -6,9 +6,33 @@ import { DataTableView } from "./DataTableView";
 import { NewTableDialog } from "./NewTableDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
+function MenuDropdown({ label, children }: { label: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div className="menu-dropdown" ref={ref}>
+      <button className="menu-dropdown-trigger" onClick={() => setOpen(!open)}>{label}</button>
+      {open && (
+        <div className="menu-dropdown-panel" onClick={() => setOpen(false)}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Workspace() {
   const { project, saveProject, closeProject } = useProjectStore();
-  const { datasets, activeDatasetId, setActiveDataset, refreshDatasets } = useDataStore();
+  const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const [showNewTable, setShowNewTable] = useState(false);
   const { openProject } = useProjectStore();
 
@@ -64,12 +88,20 @@ export function Workspace() {
     <div className="app">
       {/* Menu Bar */}
       <div className="menu-bar">
-        <span>StatsPlayground</span>
-        <span className="project-name">{project?.name}</span>
+        <span className="menu-bar-title">StatsPlayground</span>
+        <div className="menu-bar-menus">
+          <MenuDropdown label="文件">
+            <div className="menu-item" onClick={handleSave}>保存</div>
+            <div className="menu-sep" />
+            <div className="menu-item" onClick={handleOpenAnother}>打开其他项目</div>
+            <div className="menu-item" onClick={closeProject}>关闭项目</div>
+          </MenuDropdown>
+          <MenuDropdown label="表格">
+            <div className="menu-item" onClick={() => setShowNewTable(true)}>新建数据表</div>
+            <div className="menu-item" onClick={handleImportCsv}>导入 CSV</div>
+          </MenuDropdown>
+        </div>
         <div className="menu-spacer" />
-        <button onClick={handleSave}>保存</button>
-        <button onClick={handleOpenAnother}>打开其他</button>
-        <button onClick={closeProject}>关闭项目</button>
       </div>
 
       {/* Workspace */}
@@ -130,6 +162,9 @@ export function Workspace() {
       <div className="status-bar">
         <span>{project?.name}</span>
         <span>{datasets.length} 个数据表</span>
+        <span className="status-spacer" />
+        {statusInfo?.cellLabel && <span>{statusInfo.cellLabel}</span>}
+        {statusInfo?.dimensions && <span>{statusInfo.dimensions}</span>}
       </div>
 
       {/* Dialog */}

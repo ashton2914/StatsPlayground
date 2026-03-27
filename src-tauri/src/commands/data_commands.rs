@@ -90,3 +90,46 @@ pub fn rename_dataset(
     let service = DataService::new(&state);
     service.rename_dataset(&dataset_id, &new_name)
 }
+
+#[tauri::command]
+pub fn add_column(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    col_name: String,
+    col_type: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.add_column(&dataset_id, &col_name, &col_type)
+}
+
+#[tauri::command]
+pub fn delete_column(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    col_name: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.delete_column(&dataset_id, &col_name)
+}
+
+#[tauri::command]
+pub fn rename_column(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    old_name: String,
+    new_name: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.rename_column(&dataset_id, &old_name, &new_name)
+}
+
+#[tauri::command]
+pub fn change_column_type(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    col_name: String,
+    new_type: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.change_column_type(&dataset_id, &col_name, &new_type)
+}

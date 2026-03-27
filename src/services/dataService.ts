@@ -35,4 +35,20 @@ export const dataService = {
   /** 重命名数据集 */
   renameDataset: (datasetId: string, newName: string) =>
     invoke<void>("rename_dataset", { datasetId, newName }),
+
+  /** 添加列 */
+  addColumn: (datasetId: string, colName: string, colType: string) =>
+    invoke<void>("add_column", { datasetId, colName, colType }),
+
+  /** 删除列 */
+  deleteColumn: (datasetId: string, colName: string) =>
+    invoke<void>("delete_column", { datasetId, colName }),
+
+  /** 重命名列 */
+  renameColumn: (datasetId: string, oldName: string, newName: string) =>
+    invoke<void>("rename_column", { datasetId, oldName, newName }),
+
+  /** 修改列类型 */
+  changeColumnType: (datasetId: string, colName: string, newType: string) =>
+    invoke<void>("change_column_type", { datasetId, colName, newType }),
 };

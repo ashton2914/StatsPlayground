@@ -448,4 +448,123 @@ impl DuckDbEngine {
         )?;
         Ok(())
     }
+
+    /// Add a column to a dataset
+    pub fn add_column(&self, dataset_id: &str, col_name: &str, col_type: &str) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        // ALTER TABLE to add column
+        self.conn.execute(
+            &format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" {}", table_name, col_name, col_type),
+            [],
+        )?;
+
+        // Get current max col_index
+        let max_idx: Option<i32> = self.conn.query_row(
+            "SELECT MAX(col_index) FROM _meta_columns WHERE dataset_id = $1",
+            params![dataset_id],
+            |row| row.get(0),
+        ).unwrap_or(None);
+        let new_idx = max_idx.unwrap_or(-1) + 1;
+
+        // Insert column metadata
+        self.conn.execute(
+            "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+            params![dataset_id, new_idx, col_name, col_type],
+        )?;
+
+        // Update col_count
+        self.conn.execute(
+            "UPDATE _meta_datasets SET col_count = col_count + 1 WHERE id = $1",
+            params![dataset_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete a column from a dataset
+    pub fn delete_column(&self, dataset_id: &str, col_name: &str) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        // ALTER TABLE to drop column
+        self.conn.execute(
+            &format!("ALTER TABLE \"{}\" DROP COLUMN \"{}\"", table_name, col_name),
+            [],
+        )?;
+
+        // Get the index of the deleted column
+        let del_idx: i32 = self.conn.query_row(
+            "SELECT col_index FROM _meta_columns WHERE dataset_id = $1 AND col_name = $2",
+            params![dataset_id, col_name],
+            |row| row.get(0),
+        )?;
+
+        // Delete column metadata
+        self.conn.execute(
+            "DELETE FROM _meta_columns WHERE dataset_id = $1 AND col_name = $2",
+            params![dataset_id, col_name],
+        )?;
+
+        // Re-index remaining columns
+        self.conn.execute(
+            "UPDATE _meta_columns SET col_index = col_index - 1 WHERE dataset_id = $1 AND col_index > $2",
+            params![dataset_id, del_idx],
+        )?;
+
+        // Update col_count
+        self.conn.execute(
+            "UPDATE _meta_datasets SET col_count = col_count - 1 WHERE id = $1",
+            params![dataset_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Rename a column
+    pub fn rename_column(&self, dataset_id: &str, old_name: &str, new_name: &str) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        self.conn.execute(
+            &format!("ALTER TABLE \"{}\" RENAME COLUMN \"{}\" TO \"{}\"", table_name, old_name, new_name),
+            [],
+        )?;
+
+        self.conn.execute(
+            "UPDATE _meta_columns SET col_name = $1 WHERE dataset_id = $2 AND col_name = $3",
+            params![new_name, dataset_id, old_name],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn change_column_type(&self, dataset_id: &str, col_name: &str, new_type: &str) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        // Pre-validate: check if all non-null values can be cast to the new type
+        let check_sql = format!(
+            "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL AND TRY_CAST(\"{}\" AS {}) IS NULL",
+            table_name, col_name, col_name, new_type
+        );
+        let fail_count: i64 = self.conn.query_row(&check_sql, [], |row| row.get(0))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        if fail_count > 0 {
+            return Err(AppError::InvalidParam(
+                format!("无法将列 \"{}\" 转换为 {}：有 {} 个值无法转换", col_name, new_type, fail_count)
+            ));
+        }
+
+        self.conn.execute(
+            &format!("ALTER TABLE \"{}\" ALTER COLUMN \"{}\" SET DATA TYPE {} USING \"{}\"::{}",
+                table_name, col_name, new_type, col_name, new_type),
+            [],
+        )?;
+
+        self.conn.execute(
+            "UPDATE _meta_columns SET col_type = $1 WHERE dataset_id = $2 AND col_name = $3",
+            params![new_type, dataset_id, col_name],
+        )?;
+
+        Ok(())
+    }
 }

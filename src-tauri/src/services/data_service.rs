@@ -80,4 +80,24 @@ impl<'a> DataService<'a> {
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         db.rename_dataset(dataset_id, new_name)
     }
+
+    pub fn add_column(&self, dataset_id: &str, col_name: &str, col_type: &str) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.add_column(dataset_id, col_name, col_type)
+    }
+
+    pub fn delete_column(&self, dataset_id: &str, col_name: &str) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.delete_column(dataset_id, col_name)
+    }
+
+    pub fn rename_column(&self, dataset_id: &str, old_name: &str, new_name: &str) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.rename_column(dataset_id, old_name, new_name)
+    }
+
+    pub fn change_column_type(&self, dataset_id: &str, col_name: &str, new_type: &str) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.change_column_type(dataset_id, col_name, new_type)
+    }
 }
