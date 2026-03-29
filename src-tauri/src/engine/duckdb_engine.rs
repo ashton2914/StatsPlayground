@@ -412,11 +412,20 @@ impl DuckDbEngine {
     ) -> Result<(), AppError> {
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
 
-        let update_sql = format!(
-            "UPDATE \"{}\" SET \"{}\" = $1 WHERE \"_row_id\" = $2",
-            table_name, column_name
-        );
-        self.conn.execute(&update_sql, params![value, row_id])?;
+        if value.is_empty() {
+            // Set to NULL when clearing
+            let update_sql = format!(
+                "UPDATE \"{}\" SET \"{}\" = NULL WHERE \"_row_id\" = $1",
+                table_name, column_name
+            );
+            self.conn.execute(&update_sql, params![row_id])?;
+        } else {
+            let update_sql = format!(
+                "UPDATE \"{}\" SET \"{}\" = $1 WHERE \"_row_id\" = $2",
+                table_name, column_name
+            );
+            self.conn.execute(&update_sql, params![value, row_id])?;
+        }
         Ok(())
     }
 
