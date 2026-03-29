@@ -462,6 +462,10 @@
   border-bottom: 2px solid #b0b0b0;
 }
 
+.sp-corner-active {
+  background: #dce4f8 !important;
+}
+
 /* Column headers */
 .sp-col-hdr {
   position: sticky;

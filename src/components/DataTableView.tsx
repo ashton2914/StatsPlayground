@@ -77,6 +77,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const isDraggingColRef = useRef(false);
   const tabAnchorColRef = useRef<number | null>(null);
   const [cellMenu, setCellMenu] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [cornerMenu, setCornerMenu] = useState<{ x: number; y: number } | null>(null);
+  const [cornerSelected, setCornerSelected] = useState(false);
   const autoScrollRef = useRef<number | null>(null);
   const { refreshDatasets, setStatusInfo } = useDataStore();
 
@@ -141,7 +143,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // Close menus on outside click
   useEffect(() => {
-    const handler = () => { setColMenu(null); setRowMenu(null); setCellMenu(null); };
+    const handler = () => { setColMenu(null); setRowMenu(null); setCellMenu(null); setCornerMenu(null); };
     document.addEventListener("click", handler);
     return () => document.removeEventListener("click", handler);
   }, []);
@@ -397,6 +399,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setSelectedCols(new Set());
     setColMenu(null);
     setRowMenu(null);
+    setCornerSelected(false);
     // Focus the container so keyboard events fire
     containerRef.current?.focus();
   };
@@ -685,6 +688,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     e.preventDefault();
     e.stopPropagation();
     setActiveCell({ row, col });
+    setCornerSelected(false);
     setCellMenu({ row, col, x: e.clientX, y: e.clientY });
     setColMenu(null);
     setRowMenu(null);
@@ -692,6 +696,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleContextMenuPaste = async (withHeader: boolean) => {
     setCellMenu(null);
+    setCornerMenu(null);
     try {
       const text = await navigator.clipboard.readText();
       if (!text.trim()) return;
@@ -699,6 +704,26 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     } catch {
       setErrorMsg("无法读取剪贴板");
     }
+  };
+
+  const handleCornerClick = () => {
+    // Don't set activeCell — paste defaults to (0,0) when null
+    setActiveCell(null);
+    setSelection(null);
+    setSelectedRows(new Set());
+    setSelectedCols(new Set());
+    setCornerSelected(true);
+  };
+
+  const handleCornerContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setActiveCell(null);
+    setCornerSelected(true);
+    setCornerMenu({ x: e.clientX, y: e.clientY });
+    setColMenu(null);
+    setRowMenu(null);
+    setCellMenu(null);
   };
 
   // ---- Keyboard navigation ----
@@ -867,6 +892,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (e.button !== 0) return; // Left button only
     if (editCell) return; // Don't start drag while editing
     containerRef.current?.focus();
+    setCornerSelected(false);
 
     if (e.shiftKey && activeCell) {
       // Shift+click: extend selection
@@ -926,6 +952,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleRowSelect = (rowIdx: number, e: React.MouseEvent) => {
+    setCornerSelected(false);
     const newSet = new Set(selectedRows);
     if (e.ctrlKey || e.metaKey) {
       if (newSet.has(rowIdx)) newSet.delete(rowIdx);
@@ -944,6 +971,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleRowHeaderMouseDown = (rowIdx: number, e: React.MouseEvent) => {
+    setCornerSelected(false);
     if (e.button !== 0) return;
     e.preventDefault();
     if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
@@ -989,6 +1017,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleColSelect = (colIdx: number, e: React.MouseEvent) => {
+    setCornerSelected(false);
     // Single click on column header to select column
     const newSet = new Set(selectedCols);
     if (e.ctrlKey || e.metaKey) {
@@ -1012,6 +1041,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleColHeaderMouseDown = (colIdx: number, e: React.MouseEvent) => {
+    setCornerSelected(false);
     if (e.button !== 0) return;
     e.preventDefault();
     if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
@@ -1212,7 +1242,12 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
           <thead>
             <tr>
               {/* Select-all corner */}
-              <th className="sp-corner" />
+              <th
+                className={`sp-corner${cornerSelected ? " sp-corner-active" : ""}`}
+                onClick={handleCornerClick}
+                onContextMenu={handleCornerContextMenu}
+                style={{ cursor: "pointer" }}
+              />
               {/* Column headers */}
               {cols.map((col, ci) => (
                 <th
@@ -1388,6 +1423,36 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
           style={{ left: cellMenu.x, top: cellMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
+          <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(false)}>
+            粘贴
+          </div>
+          <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(true)}>
+            带表头数据粘贴
+          </div>
+        </div>
+      )}
+
+      {/* Corner context menu */}
+      {cornerMenu && (
+        <div
+          className="sp-ctx-menu"
+          style={{ left: cornerMenu.x, top: cornerMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="sp-ctx-item" onClick={() => { handleInsertRowAbove(); setCornerMenu(null); }}>
+            插入行
+          </div>
+          <div className="sp-ctx-item" onClick={() => { setShowInsertMultiRows(true); setCornerMenu(null); }}>
+            插入多行...
+          </div>
+          <div className="sp-ctx-sep" />
+          <div className="sp-ctx-item" onClick={() => { handleAddColumnQuick(); setCornerMenu(null); }}>
+            插入列
+          </div>
+          <div className="sp-ctx-item" onClick={() => { setShowInsertMultiCols(true); setCornerMenu(null); }}>
+            插入多列...
+          </div>
+          <div className="sp-ctx-sep" />
           <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(false)}>
             粘贴
           </div>
