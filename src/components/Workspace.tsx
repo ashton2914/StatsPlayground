@@ -3,6 +3,7 @@ import { useProjectStore } from "@/stores/useProjectStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { dataService } from "@/services/dataService";
 import { DataTableView } from "./DataTableView";
+import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 function MenuDropdown({ label, children }: { label: string; children: React.ReactNode }) {
@@ -35,12 +36,25 @@ export function Workspace() {
   const { openProject } = useProjectStore();
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [showPrefs, setShowPrefs] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
 
   useEffect(() => {
     refreshDatasets();
   }, []);
+
+  // Cmd/Ctrl+S: save project
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        saveProject();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [saveProject]);
 
   // Sync counter with existing datasets on load
   useEffect(() => {
@@ -113,7 +127,9 @@ export function Workspace() {
         <span className="menu-bar-title">StatsPlayground</span>
         <div className="menu-bar-menus">
           <MenuDropdown label="文件">
-            <div className="menu-item" onClick={handleSave}>保存</div>
+            <div className="menu-item" onClick={handleSave}>保存<span className="menu-shortcut">⌘S</span></div>
+            <div className="menu-sep" />
+            <div className="menu-item" onClick={() => setShowPrefs(true)}>首选项</div>
             <div className="menu-sep" />
             <div className="menu-item" onClick={handleOpenAnother}>打开其他项目</div>
             <div className="menu-item" onClick={closeProject}>关闭项目</div>
@@ -151,7 +167,13 @@ export function Workspace() {
                     setRenameValue(ds.name);
                   }}
                 >
-                  <span className="ds-icon">📊</span>
+                  <svg className="ds-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+                    <rect x="1.5" y="1.5" width="13" height="13" rx="1.5" />
+                    <line x1="1.5" y1="5.5" x2="14.5" y2="5.5" />
+                    <line x1="1.5" y1="9.5" x2="14.5" y2="9.5" />
+                    <line x1="6" y1="5.5" x2="6" y2="14.5" />
+                    <line x1="11" y1="5.5" x2="11" y2="14.5" />
+                  </svg>
                   {renamingId === ds.id ? (
                     <input
                       ref={renameInputRef}
@@ -211,6 +233,7 @@ export function Workspace() {
         {statusInfo?.dimensions && <span>{statusInfo.dimensions}</span>}
       </div>
 
+      {showPrefs && <PreferencesDialog onClose={() => setShowPrefs(false)} />}
 
     </div>
   );
