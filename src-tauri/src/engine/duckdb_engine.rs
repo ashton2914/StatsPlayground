@@ -568,4 +568,146 @@ impl DuckDbEngine {
 
         Ok(())
     }
+
+    /// Paste data at a specific position in the dataset.
+    /// Creates missing columns/rows as needed, updates cells.
+    /// If `header_names` is provided, renames target columns to those names.
+    /// For existing empty columns, changes type to detected type.
+    pub fn paste_at_position(
+        &self,
+        dataset_id: &str,
+        start_row: usize,
+        start_col: usize,
+        rows: &[Vec<String>],
+        header_names: Option<&[String]>,
+        new_col_types: &[String],
+    ) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        // 1. Get existing columns
+        let mut stmt = self.conn.prepare(
+            "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index"
+        )?;
+        let existing_cols: Vec<(String, String)> = stmt
+            .query_map(params![dataset_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let num_paste_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let mut all_col_names: Vec<String> = existing_cols.iter().map(|(n, _)| n.clone()).collect();
+
+        // 2. Determine target column names; create new columns if needed
+        let mut paste_col_names: Vec<String> = Vec::new();
+        for c in 0..num_paste_cols {
+            let target_idx = start_col + c;
+            if target_idx < existing_cols.len() {
+                paste_col_names.push(existing_cols[target_idx].0.clone());
+            } else {
+                let col_type = new_col_types.get(c).map(|s| s.as_str()).unwrap_or("VARCHAR");
+                let col_name = if let Some(names) = header_names {
+                    let name = names.get(c).map(|s| s.trim()).unwrap_or("");
+                    if name.is_empty() {
+                        Self::generate_col_name(&all_col_names)
+                    } else {
+                        name.to_string()
+                    }
+                } else {
+                    Self::generate_col_name(&all_col_names)
+                };
+                self.add_column(dataset_id, &col_name, col_type)?;
+                all_col_names.push(col_name.clone());
+                paste_col_names.push(col_name);
+            }
+        }
+
+        // 3. For existing target columns with no data, change type to detected type
+        for c in 0..num_paste_cols {
+            let target_idx = start_col + c;
+            if target_idx < existing_cols.len() {
+                let (ref col_name, ref existing_type) = existing_cols[target_idx];
+                let detected_type = new_col_types.get(c).map(|s| s.as_str()).unwrap_or("VARCHAR");
+                if existing_type != detected_type {
+                    // Check if column has any non-null data
+                    let has_data: i64 = self.conn.query_row(
+                        &format!("SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL", table_name, col_name),
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if has_data == 0 {
+                        // Safe to change type
+                        let _ = self.change_column_type(dataset_id, col_name, detected_type);
+                    }
+                }
+            }
+        }
+
+        // 4. Handle header renames for existing columns
+        if let Some(names) = header_names {
+            for (c, new_name) in names.iter().enumerate() {
+                let target_idx = start_col + c;
+                if target_idx < existing_cols.len() {
+                    let old_name = &paste_col_names[c];
+                    let trimmed = new_name.trim();
+                    if !trimmed.is_empty() && old_name != trimmed {
+                        self.rename_column(dataset_id, old_name, trimmed)?;
+                        paste_col_names[c] = trimmed.to_string();
+                    }
+                }
+            }
+        }
+
+        // 5. Get existing row_ids in order
+        let mut row_stmt = self.conn.prepare(
+            &format!("SELECT \"_row_id\" FROM \"{}\" ORDER BY \"_row_id\"", table_name)
+        )?;
+        let existing_row_ids: Vec<i64> = row_stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // 6. Paste each row
+        for (r, row_data) in rows.iter().enumerate() {
+            let target_row_idx = start_row + r;
+            let row_id: i64;
+
+            if target_row_idx < existing_row_ids.len() {
+                row_id = existing_row_ids[target_row_idx];
+            } else {
+                row_id = self.add_row(dataset_id)?;
+            }
+
+            for (c, value) in row_data.iter().enumerate() {
+                if c < paste_col_names.len() && !value.is_empty() {
+                    self.update_cell(dataset_id, row_id, &paste_col_names[c], value)?;
+                }
+            }
+        }
+
+        // 7. Update metadata counts
+        let row_count: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+        let col_count: i32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = $1",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1, col_count = $2 WHERE id = $3",
+            params![row_count, col_count, dataset_id],
+        )?;
+
+        Ok(())
+    }
+
+    fn generate_col_name(existing: &[String]) -> String {
+        let mut i = 1;
+        loop {
+            let name = format!("列{}", i);
+            if !existing.contains(&name) {
+                return name;
+            }
+            i += 1;
+        }
+    }
 }

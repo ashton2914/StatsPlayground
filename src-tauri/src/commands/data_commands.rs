@@ -133,3 +133,24 @@ pub fn change_column_type(
     let service = DataService::new(&state);
     service.change_column_type(&dataset_id, &col_name, &new_type)
 }
+
+#[tauri::command]
+pub fn paste_at_position(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    start_row: usize,
+    start_col: usize,
+    rows: Vec<Vec<String>>,
+    header_names: Option<Vec<String>>,
+    col_types: Vec<String>,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.paste_at_position(
+        &dataset_id,
+        start_row,
+        start_col,
+        &rows,
+        header_names.as_deref(),
+        &col_types,
+    )
+}

@@ -76,6 +76,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const isDraggingRowRef = useRef(false);
   const isDraggingColRef = useRef(false);
   const tabAnchorColRef = useRef<number | null>(null);
+  const [cellMenu, setCellMenu] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
   const autoScrollRef = useRef<number | null>(null);
   const { refreshDatasets, setStatusInfo } = useDataStore();
 
@@ -140,7 +141,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // Close menus on outside click
   useEffect(() => {
-    const handler = () => { setColMenu(null); setRowMenu(null); };
+    const handler = () => { setColMenu(null); setRowMenu(null); setCellMenu(null); };
     document.addEventListener("click", handler);
     return () => document.removeEventListener("click", handler);
   }, []);
@@ -566,8 +567,153 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     }
   };
 
+  // ---- Type auto-detection ----
+  const detectColumnType = (values: string[]): string => {
+    const nonEmpty = values.filter((v) => v.trim() !== "");
+    if (nonEmpty.length === 0) return "VARCHAR";
+
+    const allInt = nonEmpty.every((v) => /^-?\d+$/.test(v.trim()));
+    if (allInt) return "INTEGER";
+
+    const allNum = nonEmpty.every((v) => !isNaN(Number(v.trim())) && v.trim() !== "");
+    if (allNum) return "DOUBLE";
+
+    const allBool = nonEmpty.every((v) => ["true", "false", "1", "0", "yes", "no"].includes(v.trim().toLowerCase()));
+    if (allBool) return "BOOLEAN";
+
+    const allDate = nonEmpty.every((v) => /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(v.trim()) && !isNaN(Date.parse(v.trim())));
+    if (allDate) return "DATE";
+
+    return "VARCHAR";
+  };
+
+  // ---- Paste from clipboard (Excel TSV) ----
+  const doPaste = async (text: string, withHeader: boolean) => {
+    // Parse TSV (Excel copies as tab-separated)
+    const lines = text.replace(/\r\n$/, "").split(/\r?\n/);
+    const parsed = lines.map((line) => line.split("\t"));
+    if (parsed.length === 0) return;
+
+    let headerNames: string[] | null = null;
+    let dataRows: string[][];
+
+    if (withHeader && parsed.length > 1) {
+      headerNames = parsed[0];
+      dataRows = parsed.slice(1);
+    } else {
+      dataRows = parsed;
+    }
+
+    const startRow = activeCell?.row ?? 0;
+    const startCol = activeCell?.col ?? 0;
+    const numPasteCols = dataRows.reduce((max, r) => Math.max(max, r.length), 0);
+    const numPasteRows = dataRows.length;
+
+    // Detect types for each column from data rows
+    const detectedTypes: string[] = [];
+    for (let c = 0; c < numPasteCols; c++) {
+      const colValues = dataRows.map((r) => r[c] ?? "");
+      detectedTypes.push(detectColumnType(colValues));
+    }
+
+    // Type compatibility check for existing columns with data
+    for (let c = 0; c < numPasteCols; c++) {
+      const targetCol = startCol + c;
+      if (targetCol < cols.length) {
+        const existingType = colTypes[targetCol];
+        const detectedType = detectedTypes[c];
+        // Check if column has existing data
+        const hasExistingData = data.rows.some((row) => {
+          const dr = getDisplayRow(row as unknown[]);
+          return dr[targetCol] != null && String(dr[targetCol]) !== "";
+        });
+        if (hasExistingData && existingType !== "VARCHAR" && detectedType !== existingType) {
+          // Allow INTEGER into DOUBLE
+          if (existingType === "DOUBLE" && detectedType === "INTEGER") continue;
+          setErrorMsg(
+            `列 ${colLetter(targetCol)}（${cols[targetCol]}）的类型为 ${existingType}，与粘贴数据的类型 ${detectedType} 不兼容`
+          );
+          return;
+        }
+      }
+    }
+
+    // Check for data conflicts in paste range
+    let hasConflicts = false;
+    for (let r = 0; r < numPasteRows && !hasConflicts; r++) {
+      const targetRow = startRow + r;
+      if (targetRow < data.rows.length) {
+        const dr = getDisplayRow(data.rows[targetRow] as unknown[]);
+        for (let c = 0; c < numPasteCols; c++) {
+          const targetCol = startCol + c;
+          if (targetCol < dr.length) {
+            const val = dr[targetCol];
+            if (val != null && String(val) !== "") {
+              hasConflicts = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (hasConflicts) {
+      const confirmed = window.confirm("粘贴区域存在已有数据，是否覆盖？");
+      if (!confirmed) return;
+    }
+
+    try {
+      await dataService.pasteAtPosition(
+        datasetId, startRow, startCol, dataRows, headerNames, detectedTypes
+      );
+      await load();
+      await refreshDatasets();
+    } catch (err) {
+      setErrorMsg(String(err));
+    }
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    if (editCell) return;
+    const text = e.clipboardData.getData("text/plain");
+    if (!text.trim()) return;
+    e.preventDefault();
+    await doPaste(text, false);
+  };
+
+  const handleCellContextMenu = (e: React.MouseEvent, row: number, col: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setActiveCell({ row, col });
+    setCellMenu({ row, col, x: e.clientX, y: e.clientY });
+    setColMenu(null);
+    setRowMenu(null);
+  };
+
+  const handleContextMenuPaste = async (withHeader: boolean) => {
+    setCellMenu(null);
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) return;
+      await doPaste(text, withHeader);
+    } catch {
+      setErrorMsg("无法读取剪贴板");
+    }
+  };
+
   // ---- Keyboard navigation ----
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Cmd/Ctrl+Shift+V: paste with headers
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "v") {
+      e.preventDefault();
+      navigator.clipboard.readText().then((text) => {
+        if (text.trim()) doPaste(text, true);
+      }).catch(() => {
+        setErrorMsg("无法读取剪贴板");
+      });
+      return;
+    }
+
     if (editCell) return; // Don't navigate while editing
     if (!activeCell) return;
 
@@ -1005,7 +1151,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   return (
-    <div className="sp-spreadsheet" onKeyDown={handleKeyDown} tabIndex={0} ref={containerRef}>
+    <div className="sp-spreadsheet" onKeyDown={handleKeyDown} onPaste={handlePaste} tabIndex={0} ref={containerRef}>
 
       {/* Add column inline form */}
       {showAddCol && (
@@ -1123,6 +1269,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
                           onClick={(e) => handleCellClick(ri, ci, e)}
                           onMouseDown={(e) => handleCellMouseDown(ri, ci, e)}
                           onDoubleClick={() => handleCellDoubleClick(ri, ci, cell)}
+                          onContextMenu={(e) => handleCellContextMenu(e, ri, ci)}
                         >
                           <span className={cell == null ? "sp-null" : "sp-val"} style={isEditing ? { visibility: "hidden" } : undefined}>
                             {cell == null ? "" : String(cell)}
@@ -1231,6 +1378,22 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* Cell context menu */}
+      {cellMenu && (
+        <div
+          className="sp-ctx-menu"
+          style={{ left: cellMenu.x, top: cellMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(false)}>
+            粘贴
+          </div>
+          <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(true)}>
+            带表头数据粘贴
+          </div>
         </div>
       )}
 

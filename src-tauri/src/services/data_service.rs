@@ -100,4 +100,17 @@ impl<'a> DataService<'a> {
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         db.change_column_type(dataset_id, col_name, new_type)
     }
+
+    pub fn paste_at_position(
+        &self,
+        dataset_id: &str,
+        start_row: usize,
+        start_col: usize,
+        rows: &[Vec<String>],
+        header_names: Option<&[String]>,
+        col_types: &[String],
+    ) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.paste_at_position(dataset_id, start_row, start_col, rows, header_names, col_types)
+    }
 }

@@ -51,4 +51,8 @@ export const dataService = {
   /** 修改列类型 */
   changeColumnType: (datasetId: string, colName: string, newType: string) =>
     invoke<void>("change_column_type", { datasetId, colName, newType }),
+
+  /** 粘贴数据到指定位置 */
+  pasteAtPosition: (datasetId: string, startRow: number, startCol: number, rows: string[][], headerNames: string[] | null, colTypes: string[]) =>
+    invoke<void>("paste_at_position", { datasetId, startRow, startCol, rows, headerNames, colTypes }),
 };
