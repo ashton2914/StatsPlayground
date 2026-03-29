@@ -113,4 +113,15 @@ impl<'a> DataService<'a> {
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         db.paste_at_position(dataset_id, start_row, start_col, rows, header_names, col_types)
     }
+
+    pub fn restore_snapshot(
+        &self,
+        dataset_id: &str,
+        col_names: &[String],
+        col_types: &[String],
+        rows: &[Vec<serde_json::Value>],
+    ) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.restore_snapshot(dataset_id, col_names, col_types, rows)
+    }
 }

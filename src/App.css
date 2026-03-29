@@ -608,12 +608,13 @@
 .sp-cell .sp-val,
 .sp-cell .sp-null {
   display: block;
-  padding: 2px 6px;
+  padding: 0 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 22px;
-  height: 100%;
+  line-height: 26px;
+  height: 26px;
+  box-sizing: border-box;
 }
 
 .sp-null {
@@ -654,11 +655,11 @@
   height: 100%;
   border: none;
   outline: none;
-  padding: 2px 6px;
+  padding: 0 6px;
   font-size: 13px;
   font-family: inherit;
   background: #fff;
-  line-height: 22px;
+  line-height: 26px;
   box-sizing: border-box;
   min-width: 0;
 }

@@ -710,4 +710,102 @@ impl DuckDbEngine {
             i += 1;
         }
     }
+
+    /// Restore a table from a full snapshot (columns, types, rows).
+    /// Drops all existing data and recreates the table with the given schema and data.
+    pub fn restore_snapshot(
+        &self,
+        dataset_id: &str,
+        col_names: &[String],
+        col_types: &[String],
+        rows: &[Vec<serde_json::Value>],
+    ) -> Result<(), AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+
+        // Drop and recreate the table
+        self.conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])?;
+
+        let col_defs: Vec<String> = col_names
+            .iter()
+            .zip(col_types.iter())
+            .map(|(name, typ)| format!("\"{}\" {}", name, typ))
+            .collect();
+
+        let create_sql = if col_defs.is_empty() {
+            format!("CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0)", table_name)
+        } else {
+            format!(
+                "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0, {})",
+                table_name,
+                col_defs.join(", ")
+            )
+        };
+        self.conn.execute(&create_sql, [])?;
+
+        // Rebuild _meta_columns
+        self.conn.execute(
+            "DELETE FROM _meta_columns WHERE dataset_id = $1",
+            params![dataset_id],
+        )?;
+        for (i, (col_name, col_type)) in col_names.iter().zip(col_types.iter()).enumerate() {
+            self.conn.execute(
+                "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+                params![dataset_id, i as i32, col_name, col_type],
+            )?;
+        }
+
+        // Insert rows — each row includes _row_id as first element followed by column values
+        for row_data in rows {
+            if row_data.is_empty() {
+                continue;
+            }
+            // First element is _row_id
+            let row_id = match &row_data[0] {
+                serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
+                _ => 0,
+            };
+
+            // Build column list and values for non-null columns
+            let mut insert_cols = vec!["\"_row_id\"".to_string()];
+            let mut insert_vals = vec![row_id.to_string()];
+
+            for (i, col_name) in col_names.iter().enumerate() {
+                let val = row_data.get(i + 1).unwrap_or(&serde_json::Value::Null);
+                if val.is_null() {
+                    continue;
+                }
+                insert_cols.push(format!("\"{}\"", col_name));
+                match val {
+                    serde_json::Value::Bool(b) => insert_vals.push(b.to_string()),
+                    serde_json::Value::Number(n) => insert_vals.push(n.to_string()),
+                    serde_json::Value::String(s) => {
+                        insert_vals.push(format!("'{}'", s.replace('\'', "''")));
+                    }
+                    _ => insert_vals.push(format!("'{}'", val.to_string().replace('\'', "''"))),
+                }
+            }
+
+            let sql = format!(
+                "INSERT INTO \"{}\" ({}) VALUES ({})",
+                table_name,
+                insert_cols.join(", "),
+                insert_vals.join(", ")
+            );
+            self.conn.execute(&sql, [])?;
+        }
+
+        // Update metadata counts
+        let row_count: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+        let col_count = col_names.len() as i32;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1, col_count = $2 WHERE id = $3",
+            params![row_count, col_count, dataset_id],
+        )?;
+
+        Ok(())
+    }
 }

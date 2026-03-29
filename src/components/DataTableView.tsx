@@ -80,6 +80,9 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const [cornerMenu, setCornerMenu] = useState<{ x: number; y: number } | null>(null);
   const [cornerSelected, setCornerSelected] = useState(false);
   const autoScrollRef = useRef<number | null>(null);
+  const undoStackRef = useRef<TableQueryResult[]>([]);
+  const redoStackRef = useRef<TableQueryResult[]>([]);
+  const MAX_UNDO = 50;
   const { refreshDatasets, setStatusInfo } = useDataStore();
 
   const load = useCallback(async () => {
@@ -110,6 +113,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setShowInsertMultiCols(false);
     setRenameCol(null);
     setShowAddCol(false);
+    undoStackRef.current = [];
+    redoStackRef.current = [];
   }, [datasetId, load]);
 
   useEffect(() => {
@@ -217,8 +222,53 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     return `列${i}`;
   };
 
+  // ---- Undo / Redo ----
+  const saveSnapshot = () => {
+    if (!data) return;
+    undoStackRef.current.push(structuredClone(data));
+    if (undoStackRef.current.length > MAX_UNDO) {
+      undoStackRef.current.shift();
+    }
+    redoStackRef.current = [];
+  };
+
+  const restoreFromSnapshot = async (snapshot: TableQueryResult) => {
+    // Extract col info (skip _row_id)
+    const rowIdIdx = snapshot.columns.indexOf("_row_id");
+    const colNames = snapshot.columns.filter((_, i) => i !== rowIdIdx);
+    const colTypesSnap = snapshot.columnTypes.filter((_, i) => i !== rowIdIdx);
+    const rows = snapshot.rows;
+
+    try {
+      await dataService.restoreSnapshot(datasetId, colNames, colTypesSnap, rows);
+      await load();
+      await refreshDatasets();
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
+  const handleUndo = async () => {
+    if (undoStackRef.current.length === 0) return;
+    const snapshot = undoStackRef.current.pop()!;
+    if (data) {
+      redoStackRef.current.push(structuredClone(data));
+    }
+    await restoreFromSnapshot(snapshot);
+  };
+
+  const handleRedo = async () => {
+    if (redoStackRef.current.length === 0) return;
+    const snapshot = redoStackRef.current.pop()!;
+    if (data) {
+      undoStackRef.current.push(structuredClone(data));
+    }
+    await restoreFromSnapshot(snapshot);
+  };
+
   // ---- Row operations ----
   const handleAddRow = async () => {
+    saveSnapshot();
     await dataService.addRow(datasetId);
     await load();
     await refreshDatasets();
@@ -227,6 +277,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const handleInsertMultiRows = async () => {
     const count = parseInt(insertRowCount, 10);
     if (isNaN(count) || count < 1) return;
+    saveSnapshot();
     for (let i = 0; i < count; i++) {
       await dataService.addRow(datasetId);
     }
@@ -238,6 +289,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleDeleteRows = async () => {
     if (selectedRows.size === 0) return;
+    saveSnapshot();
     for (const rowIdx of selectedRows) {
       const row = data.rows[rowIdx] as unknown[];
       if (row) await dataService.deleteRow(datasetId, getRowId(row));
@@ -249,6 +301,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleDeleteSingleRow = async (rowIdx: number) => {
+    saveSnapshot();
     const row = data.rows[rowIdx] as unknown[];
     await dataService.deleteRow(datasetId, getRowId(row));
     setRowMenu(null);
@@ -257,6 +310,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleInsertRowAbove = async () => {
+    saveSnapshot();
     await dataService.addRow(datasetId);
     setRowMenu(null);
     await load();
@@ -265,6 +319,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // ---- Column operations ----
   const handleAddColumnQuick = async () => {
+    saveSnapshot();
     const name = generateColName(cols);
     await dataService.addColumn(datasetId, name, "VARCHAR");
     await load();
@@ -274,6 +329,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const handleAddColumn = async () => {
     const name = newColName.trim();
     if (!name) return;
+    saveSnapshot();
     await dataService.addColumn(datasetId, name, newColType);
     setShowAddCol(false);
     setNewColName("");
@@ -285,6 +341,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const handleInsertMultiCols = async () => {
     const count = parseInt(insertColCount, 10);
     if (isNaN(count) || count < 1) return;
+    saveSnapshot();
     const currentNames = [...cols];
     for (let i = 0; i < count; i++) {
       const name = generateColName(currentNames);
@@ -300,6 +357,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleDeleteColumn = async (colName: string) => {
     if (cols.length <= 1) return;
+    saveSnapshot();
     await dataService.deleteColumn(datasetId, colName);
     setColMenu(null);
     await load();
@@ -313,6 +371,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       setColMenu(null);
       return;
     }
+    saveSnapshot();
     for (const ci of selectedCols) {
       await dataService.deleteColumn(datasetId, cols[ci]);
     }
@@ -339,6 +398,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleApplyBatchColProps = async () => {
     if (!batchColProps) return;
+    saveSnapshot();
     try {
       for (const ci of batchColProps.checkedCols) {
         if (colTypes[ci] !== batchColType) {
@@ -358,6 +418,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     const nameChanged = renameValue.trim() !== renameCol.oldName;
     const typeChanged = renameType !== renameCol.oldType;
     try {
+      saveSnapshot();
       if (nameChanged) {
         await dataService.renameColumn(datasetId, renameCol.oldName, renameValue.trim());
       }
@@ -453,6 +514,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     const row = data.rows[editRow] as unknown[];
     const rowId = getRowId(row);
     const colName = cols[editCol];
+    saveSnapshot();
     try {
       await dataService.updateCell(datasetId, rowId, colName, editValue);
     } catch (e) {
@@ -496,6 +558,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // ---- Clear cells (Delete key) ----
   const clearCells = async (cells: { row: number; col: number }[]) => {
+    saveSnapshot();
     try {
       for (const { row, col } of cells) {
         const rawRow = data.rows[row] as unknown[];
@@ -590,6 +653,49 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     return "VARCHAR";
   };
 
+  // ---- Copy selected cells to clipboard as TSV ----
+  const handleCopy = () => {
+    if (!data) return;
+    let rows: string[][] = [];
+
+    if (selectedRows.size > 0) {
+      // Copy selected rows (all columns)
+      const sortedRows = Array.from(selectedRows).sort((a, b) => a - b);
+      for (const ri of sortedRows) {
+        const dr = getDisplayRow(data.rows[ri] as unknown[]);
+        rows.push(dr.map((v) => (v == null ? "" : String(v))));
+      }
+    } else if (selectedCols.size > 0) {
+      // Copy selected columns (all rows)
+      const sortedCols = Array.from(selectedCols).sort((a, b) => a - b);
+      for (let ri = 0; ri < data.rows.length; ri++) {
+        const dr = getDisplayRow(data.rows[ri] as unknown[]);
+        rows.push(sortedCols.map((ci) => (dr[ci] == null ? "" : String(dr[ci]))));
+      }
+    } else if (selection) {
+      // Copy selection range
+      const { r1, c1, r2, c2 } = normalizeRange(selection);
+      for (let r = r1; r <= r2; r++) {
+        const dr = getDisplayRow(data.rows[r] as unknown[]);
+        const row: string[] = [];
+        for (let c = c1; c <= c2; c++) {
+          row.push(dr[c] == null ? "" : String(dr[c]));
+        }
+        rows.push(row);
+      }
+    } else if (activeCell) {
+      // Copy single cell
+      const dr = getDisplayRow(data.rows[activeCell.row] as unknown[]);
+      rows.push([dr[activeCell.col] == null ? "" : String(dr[activeCell.col])]);
+    }
+
+    if (rows.length === 0) return;
+    const tsv = rows.map((r) => r.join("\t")).join("\n");
+    navigator.clipboard.writeText(tsv).catch(() => {
+      setErrorMsg("无法写入剪贴板");
+    });
+  };
+
   // ---- Paste from clipboard (Excel TSV) ----
   const doPaste = async (text: string, withHeader: boolean) => {
     // Parse TSV (Excel copies as tab-separated)
@@ -666,6 +772,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     }
 
     try {
+      saveSnapshot();
       await dataService.pasteAtPosition(
         datasetId, startRow, startCol, dataRows, headerNames, detectedTypes
       );
@@ -728,8 +835,85 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // ---- Keyboard navigation ----
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    const isMeta = e.ctrlKey || e.metaKey;
+
+    // Cmd/Ctrl+Z: undo
+    if (isMeta && !e.shiftKey && e.key.toLowerCase() === "z") {
+      if (!editCell) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+    }
+
+    // Cmd/Ctrl+Shift+Z: redo
+    if (isMeta && e.shiftKey && e.key.toLowerCase() === "z") {
+      if (!editCell) {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+    }
+
+    // Cmd/Ctrl+A: select all
+    if (isMeta && !e.shiftKey && e.key.toLowerCase() === "a") {
+      if (!editCell && data && data.rows.length > 0 && cols.length > 0) {
+        e.preventDefault();
+        setActiveCell({ row: 0, col: 0 });
+        setSelection({
+          startRow: 0,
+          startCol: 0,
+          endRow: data.rows.length - 1,
+          endCol: cols.length - 1,
+        });
+        setSelectedRows(new Set());
+        setSelectedCols(new Set());
+        setCornerSelected(false);
+        return;
+      }
+    }
+
+    // Cmd/Ctrl+C: copy selected cells
+    if (isMeta && !e.shiftKey && e.key.toLowerCase() === "c") {
+      if (!editCell) {
+        e.preventDefault();
+        handleCopy();
+        return;
+      }
+    }
+
+    // Cmd/Ctrl+X: cut (copy + clear)
+    if (isMeta && !e.shiftKey && e.key.toLowerCase() === "x") {
+      if (!editCell) {
+        e.preventDefault();
+        // Collect cells to clear
+        const cellsToCut: { row: number; col: number }[] = [];
+        if (selectedRows.size > 0) {
+          for (const ri of selectedRows) {
+            for (let ci = 0; ci < cols.length; ci++) cellsToCut.push({ row: ri, col: ci });
+          }
+        } else if (selectedCols.size > 0) {
+          for (const ci of selectedCols) {
+            for (let ri = 0; ri < data.rows.length; ri++) cellsToCut.push({ row: ri, col: ci });
+          }
+        } else if (selection) {
+          const { r1, c1, r2, c2 } = normalizeRange(selection);
+          for (let r = r1; r <= r2; r++) {
+            for (let c = c1; c <= c2; c++) cellsToCut.push({ row: r, col: c });
+          }
+        } else if (activeCell) {
+          cellsToCut.push(activeCell);
+        }
+        if (cellsToCut.length > 0) {
+          handleCopy();
+          clearCells(cellsToCut);
+        }
+        return;
+      }
+    }
+
     // Cmd/Ctrl+Shift+V: paste with headers
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "v") {
+    if (isMeta && e.shiftKey && e.key.toLowerCase() === "v") {
       e.preventDefault();
       navigator.clipboard.readText().then((text) => {
         if (text.trim()) doPaste(text, true);

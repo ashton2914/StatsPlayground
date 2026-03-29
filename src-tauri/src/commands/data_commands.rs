@@ -154,3 +154,15 @@ pub fn paste_at_position(
         &col_types,
     )
 }
+
+#[tauri::command]
+pub fn restore_snapshot(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    col_names: Vec<String>,
+    col_types: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.restore_snapshot(&dataset_id, &col_names, &col_types, &rows)
+}

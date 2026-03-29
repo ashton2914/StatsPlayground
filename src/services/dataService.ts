@@ -55,4 +55,8 @@ export const dataService = {
   /** 粘贴数据到指定位置 */
   pasteAtPosition: (datasetId: string, startRow: number, startCol: number, rows: string[][], headerNames: string[] | null, colTypes: string[]) =>
     invoke<void>("paste_at_position", { datasetId, startRow, startCol, rows, headerNames, colTypes }),
+
+  /** 恢复表快照（撤销/重做） */
+  restoreSnapshot: (datasetId: string, colNames: string[], colTypes: string[], rows: unknown[][]) =>
+    invoke<void>("restore_snapshot", { datasetId, colNames, colTypes, rows }),
 };

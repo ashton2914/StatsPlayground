@@ -30,6 +30,7 @@ pub fn run() {
             commands::data_commands::rename_column,
             commands::data_commands::change_column_type,
             commands::data_commands::paste_at_position,
+            commands::data_commands::restore_snapshot,
             commands::stats_commands::get_column_stats,
             commands::stats_commands::get_descriptive_stats,
             commands::io_commands::export_csv,
