@@ -1,13 +1,20 @@
+import { useEffect } from "react";
 import "./App.css";
 import { useProjectStore } from "@/stores/useProjectStore";
-import { WelcomePage } from "@/components/WelcomePage";
 import { Workspace } from "@/components/Workspace";
 
 function App() {
   const project = useProjectStore((s) => s.project);
+  const initProject = useProjectStore((s) => s.initProject);
+
+  useEffect(() => {
+    if (!project) {
+      initProject();
+    }
+  }, []);
 
   if (!project) {
-    return <WelcomePage />;
+    return null;
   }
 
   return <Workspace />;

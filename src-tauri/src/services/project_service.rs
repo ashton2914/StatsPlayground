@@ -40,6 +40,24 @@ impl<'a> ProjectService<'a> {
         Self { state }
     }
 
+    /// Initialize a new in-memory project (no file on disk)
+    pub fn init_project(&self) -> Result<ProjectInfo, AppError> {
+        self.state.reset_db()?;
+
+        let now = chrono_now();
+        let project = ProjectInfo {
+            name: "未命名项目".to_string(),
+            file_path: String::new(),
+            created_at: now,
+        };
+
+        let mut proj = self.state.project.write()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        *proj = Some(project.clone());
+
+        Ok(project)
+    }
+
     /// Create a new project at the specified path
     pub fn create_project(&self, name: &str, file_path: &str) -> Result<ProjectInfo, AppError> {
         // Reset DuckDB for fresh project
@@ -138,11 +156,29 @@ impl<'a> ProjectService<'a> {
     }
 
     /// Save current project state to disk
-    pub fn save_project(&self) -> Result<(), AppError> {
-        let proj = self.state.project.read()
+    pub fn save_project(&self, file_path: Option<&str>) -> Result<(), AppError> {
+        let mut proj = self.state.project.write()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let project = proj.as_ref()
+        let project = proj.as_mut()
             .ok_or_else(|| AppError::InvalidParam("No project is open".into()))?;
+
+        // If a file_path is provided (first-time save), update the project
+        if let Some(fp) = file_path {
+            project.file_path = fp.to_string();
+            // Derive name from filename
+            if let Some(stem) = std::path::Path::new(fp).file_stem().and_then(|s| s.to_str()) {
+                project.name = stem.to_string();
+            }
+        }
+
+        if project.file_path.is_empty() {
+            return Err(AppError::InvalidParam("Project has no file path".into()));
+        }
+
+        let save_path = project.file_path.clone();
+        let save_name = project.name.clone();
+        let save_created_at = project.created_at.clone();
+        drop(proj); // release write lock before reading db
 
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         let datasets = db.list_datasets()?;
@@ -208,15 +244,15 @@ impl<'a> ProjectService<'a> {
         }
 
         let spprj = SpprjFile {
-            name: project.name.clone(),
+            name: save_name,
             version: "0.1.0".to_string(),
-            created_at: project.created_at.clone(),
+            created_at: save_created_at,
             datasets: spprj_datasets,
         };
 
         let json = serde_json::to_string_pretty(&spprj)
             .map_err(|e| AppError::FileIO(e.to_string()))?;
-        fs::write(&project.file_path, json)?;
+        fs::write(&save_path, json)?;
 
         Ok(())
     }

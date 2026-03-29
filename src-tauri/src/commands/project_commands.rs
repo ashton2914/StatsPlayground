@@ -6,6 +6,12 @@ use crate::services::project_service::ProjectService;
 use crate::state::AppState;
 
 #[tauri::command]
+pub fn init_project(state: State<'_, AppState>) -> Result<ProjectInfo, AppError> {
+    let service = ProjectService::new(&state);
+    service.init_project()
+}
+
+#[tauri::command]
 pub fn create_project(
     state: State<'_, AppState>,
     name: String,
@@ -25,9 +31,11 @@ pub fn open_project(
 }
 
 #[tauri::command]
-pub fn save_project(state: State<'_, AppState>) -> Result<(), AppError> {
+pub fn save_project(state: State<'_, AppState>, file_path: Option<String>) -> Result<ProjectInfo, AppError> {
     let service = ProjectService::new(&state);
-    service.save_project()
+    service.save_project(file_path.as_deref())?;
+    // Return updated project info
+    service.get_current_project()?.ok_or_else(|| AppError::InvalidParam("No project".into()))
 }
 
 #[tauri::command]

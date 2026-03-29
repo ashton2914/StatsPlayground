@@ -34,6 +34,7 @@ pub fn run() {
             commands::stats_commands::get_column_stats,
             commands::stats_commands::get_descriptive_stats,
             commands::io_commands::export_csv,
+            commands::project_commands::init_project,
             commands::project_commands::create_project,
             commands::project_commands::open_project,
             commands::project_commands::save_project,

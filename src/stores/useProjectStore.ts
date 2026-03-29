@@ -9,13 +9,15 @@ interface ProjectStore {
   loading: boolean;
   /** 是否有未保存的修改 */
   dirty: boolean;
+  /** 初始化项目（内存中，未保存到磁盘） */
+  initProject: () => Promise<void>;
   /** 创建新项目 */
   createProject: (name: string, filePath: string) => Promise<void>;
   /** 打开已有项目 */
   openProject: (filePath: string) => Promise<void>;
-  /** 保存项目 */
-  saveProject: () => Promise<void>;
-  /** 关闭项目（返回欢迎页） */
+  /** 保存项目（可传入文件路径用于首次保存） */
+  saveProject: (filePath?: string) => Promise<void>;
+  /** 关闭项目 */
   closeProject: () => void;
   /** 标记有未保存的修改 */
   markDirty: () => void;
@@ -25,6 +27,12 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   project: null,
   loading: false,
   dirty: false,
+
+  initProject: async () => {
+    set({ loading: true });
+    const project = await projectService.initProject();
+    set({ project, loading: false, dirty: false });
+  },
 
   createProject: async (name, filePath) => {
     set({ loading: true });
@@ -38,9 +46,9 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     set({ project, loading: false, dirty: false });
   },
 
-  saveProject: async () => {
-    await projectService.saveProject();
-    set({ dirty: false });
+  saveProject: async (filePath?: string) => {
+    const project = await projectService.saveProject(filePath);
+    set({ project, dirty: false });
   },
 
   closeProject: () => {

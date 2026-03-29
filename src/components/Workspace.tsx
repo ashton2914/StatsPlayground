@@ -68,7 +68,7 @@ function MenuDropdown({ label, children, openMenu, setOpenMenu }: {
 }
 
 export function Workspace() {
-  const { project, saveProject, closeProject, dirty, markDirty } = useProjectStore();
+  const { project, saveProject, closeProject, initProject, dirty, markDirty } = useProjectStore();
   const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -179,9 +179,27 @@ export function Workspace() {
   };
 
   const handleSave = async () => {
-    await saveProject();
+    // If project has no file path yet, prompt for save location
+    if (!project?.filePath) {
+      const filePath = await save({
+        title: "保存项目文件",
+        defaultPath: "未命名项目.spprj",
+        filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
+      });
+      if (!filePath) return; // User cancelled
+      await saveProject(filePath);
+    } else {
+      await saveProject();
+    }
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 1500);
+  };
+
+  const handleCloseProject = async () => {
+    setActiveDataset(null);
+    await initProject();
+    await refreshDatasets();
+    tableCounter.current = 0;
   };
 
   const handleOpenAnother = async () => {
@@ -194,6 +212,7 @@ export function Workspace() {
       setActiveDataset(null);
       await openProject(selected as string);
       await refreshDatasets();
+      tableCounter.current = 0;
     }
   };
 
@@ -210,7 +229,7 @@ export function Workspace() {
               <div className="menu-item" onClick={() => setShowPrefs(true)}>首选项<span className="menu-shortcut">⌘,</span></div>
               <div className="menu-sep" />
               <div className="menu-item" onClick={handleOpenAnother}>打开项目<span className="menu-shortcut">⌘O</span></div>
-              <div className="menu-item" onClick={closeProject}>关闭项目</div>
+              <div className="menu-item" onClick={handleCloseProject}>关闭项目</div>
             </MenuDropdown>
             <MenuDropdown label="表格">
               <div className="menu-item" onClick={handleCreateTable}>新建数据表</div>
