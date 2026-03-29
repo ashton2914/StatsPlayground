@@ -4,6 +4,7 @@ import { dataService } from "@/services/dataService";
 
 interface StatusInfo {
   cellLabel: string;
+  selectionLabel: string;
   dimensions: string;
 }
 

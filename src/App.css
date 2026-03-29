@@ -323,6 +323,18 @@
   white-space: nowrap;
 }
 
+.ds-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 4px;
+  font-size: 12px;
+  border: 1px solid #4a9eff;
+  border-radius: 3px;
+  outline: none;
+  background: #2a2a2a;
+  color: #f0f0f0;
+}
+
 .ds-info {
   font-size: 10px;
   color: #aaa;
@@ -657,32 +669,58 @@
   color: #fff !important;
 }
 
-/* "+" cell at end of row (placeholder) */
+/* "+ " cell at end of row (placeholder) */
 .sp-add-col-cell {
   border-bottom: 1px solid #e2e2e2;
   width: 32px;
   min-width: 32px;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 3px,
+    #f0f0f0 3px,
+    #f0f0f0 4px
+  );
 }
 
 /* "Add row" bottom row */
 .sp-add-row-tr {
-  cursor: pointer;
 }
 
-.sp-add-row-btn {
+.sp-add-row-hdr {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 46px;
+  min-width: 46px;
+  background: #f0f0f0;
+  border-right: 1px solid #c0c0c0;
   text-align: center;
-  color: #aaa;
-  font-size: 12px;
-  padding: 6px 0 !important;
-  border: none !important;
-  background: #fafafa;
+  color: #999;
+  font-size: 16px;
   cursor: pointer;
   user-select: none;
+  padding: 0;
 }
 
-.sp-add-row-btn:hover {
-  background: #eef2ff;
+.sp-add-row-hdr:hover {
+  background: #dce4f8;
   color: #4a6cf7;
+}
+
+.sp-add-row-cell {
+  border-right: 1px solid #e2e2e2;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 3px,
+    #f0f0f0 3px,
+    #f0f0f0 4px
+  );
+}
+
+.sp-add-corner {
+  background: #f0f0f0;
 }
 
 /* Empty table */

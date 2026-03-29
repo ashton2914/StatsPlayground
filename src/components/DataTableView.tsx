@@ -72,6 +72,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const resizingRef = useRef<{ colIdx: number; startX: number; startW: number } | null>(null);
   const isDraggingRef = useRef(false);
+  const didDragRef = useRef(false);
   const isDraggingRowRef = useRef(false);
   const isDraggingColRef = useRef(false);
   const tabAnchorColRef = useRef<number | null>(null);
@@ -167,11 +168,30 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   // Sync status info to global status bar
   useEffect(() => {
     if (!data) { setStatusInfo(null); return; }
+
+    // Build selection label
+    let selLabel = "";
+    if (selection) {
+      const { r1, c1, r2, c2 } = normalizeRange(selection);
+      if (r1 === r2 && c1 === c2) {
+        selLabel = `${colLetter(c1)}${r1 + 1}`;
+      } else {
+        selLabel = `${colLetter(c1)}${r1 + 1}:${colLetter(c2)}${r2 + 1}`;
+      }
+    } else if (selectedRows.size > 0) {
+      const rows = Array.from(selectedRows).sort((a, b) => a - b);
+      selLabel = rows.map((r) => String(r + 1)).join(",");
+    } else if (selectedCols.size > 0) {
+      const sortedCols = Array.from(selectedCols).sort((a, b) => a - b);
+      selLabel = sortedCols.map((c) => colLetter(c)).join(",");
+    }
+
     setStatusInfo({
       cellLabel: activeCell ? `${colLetter(activeCell.col)}${activeCell.row + 1}` : "",
+      selectionLabel: selLabel,
       dimensions: `${data.totalRows} 行 × ${visibleColCount} 列`,
     });
-  }, [activeCell, data, visibleColCount, setStatusInfo]);
+  }, [activeCell, selection, selectedRows, selectedCols, data, visibleColCount, setStatusInfo]);
 
   if (!data) return <div className="sp-loading">加载中...</div>;
 
@@ -354,6 +374,11 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // ---- Cell operations ----
   const handleCellClick = (row: number, col: number, e?: React.MouseEvent) => {
+    // If a drag just finished, don't override selection
+    if (didDragRef.current) {
+      didDragRef.current = false;
+      return;
+    }
     if (e && (e.shiftKey) && activeCell) {
       // Shift+click extends/creates selection from activeCell to clicked cell
       setSelection({
@@ -367,6 +392,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       setSelection(null);
     }
     setEditCell(null);
+    setSelectedRows(new Set());
+    setSelectedCols(new Set());
     setColMenu(null);
     setRowMenu(null);
     // Focus the container so keyboard events fire
@@ -710,14 +737,18 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     // Start drag selection
     e.preventDefault();
     isDraggingRef.current = true;
+    didDragRef.current = false;
     setActiveCell({ row, col });
     setSelection({ startRow: row, startCol: col, endRow: row, endCol: col });
     setEditCell(null);
+    setSelectedRows(new Set());
+    setSelectedCols(new Set());
 
     document.body.style.userSelect = "none";
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!isDraggingRef.current) return;
+      didDragRef.current = true;
       startAutoScroll(ev);
       // Find which cell the mouse is over
       const target = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -1040,7 +1071,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
               {cols.map((col, ci) => (
                 <th
                   key={ci}
-                  className={`sp-col-hdr ${activeCell?.col === ci ? "sp-col-active" : ""} ${selectedCols.has(ci) ? "sp-col-selected" : ""}`}
+                  className={`sp-col-hdr ${activeCell?.col === ci || (selection && (() => { const { c1, c2 } = normalizeRange(selection); return ci >= c1 && ci <= c2; })()) ? "sp-col-active" : ""} ${selectedCols.has(ci) ? "sp-col-selected" : ""}`}
                   onClick={(e) => handleColSelect(ci, e)}
                   onMouseDown={(e) => handleColHeaderMouseDown(ci, e)}
                   onContextMenu={(e) => handleColContextMenu(e, ci)}
@@ -1065,13 +1096,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
             </tr>
           </thead>
           <tbody>
-            {data.rows.length === 0 ? (
-              <tr>
-                <td colSpan={cols.length + 2} className="sp-empty">
-                  空表 — 点击工具栏 "＋ 行" 插入数据行，或 "＋ 列" 添加新列
-                </td>
-              </tr>
-            ) : (
+            {data.rows.length > 0 && (
               data.rows.map((rawRow, ri) => {
                 const displayRow = getDisplayRow(rawRow as unknown[]);
                 const isSelected = selectedRows.has(ri);
@@ -1079,7 +1104,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
                   <tr key={ri} className={isSelected ? "sp-row-selected" : ""}>
                     {/* Row number */}
                     <td
-                      className={`sp-row-hdr ${activeCell?.row === ri ? "sp-row-active" : ""} ${selectedRows.has(ri) ? "sp-row-selected-hdr" : ""}`}
+                      className={`sp-row-hdr ${activeCell?.row === ri || (selection && (() => { const { r1, r2 } = normalizeRange(selection); return ri >= r1 && ri <= r2; })()) ? "sp-row-active" : ""} ${selectedRows.has(ri) ? "sp-row-selected-hdr" : ""}`}
                       onClick={(e) => handleRowSelect(ri, e)}
                       onMouseDown={(e) => handleRowHeaderMouseDown(ri, e)}
                       onContextMenu={(e) => handleRowContextMenu(e, ri)}
@@ -1137,12 +1162,16 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
             {/* "Add row" bottom row */}
             <tr className="sp-add-row-tr">
               <td
-                className="sp-add-row-btn"
-                colSpan={cols.length + 2}
+                className="sp-add-row-hdr"
                 onClick={handleAddRow}
+                title="添加行"
               >
-                + 点击添加新行
+                +
               </td>
+              {cols.map((_, ci) => (
+                <td key={ci} className="sp-add-row-cell" />
+              ))}
+              <td className="sp-add-corner" />
             </tr>
           </tbody>
         </table>
@@ -1155,20 +1184,6 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
           <button onClick={() => setErrorMsg(null)}>✕</button>
         </div>
       )}
-
-      {/* Footer */}
-      <div className="sp-footer">
-        <span>{data.totalRows} 行</span>
-        <span>{cols.length} 列</span>
-        {selection && (() => {
-          const { r1, c1, r2, c2 } = normalizeRange(selection);
-          const rows = r2 - r1 + 1;
-          const colsN = c2 - c1 + 1;
-          return <span>已选 {rows}×{colsN} 区域</span>;
-        })()}
-        {selectedRows.size > 0 && !selection && <span>已选 {selectedRows.size} 行</span>}
-        {selectedCols.size > 0 && !selection && <span>已选 {selectedCols.size} 列</span>}
-      </div>
 
       {/* Column context menu */}
       {colMenu && (

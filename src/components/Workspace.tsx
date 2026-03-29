@@ -3,7 +3,6 @@ import { useProjectStore } from "@/stores/useProjectStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { dataService } from "@/services/dataService";
 import { DataTableView } from "./DataTableView";
-import { NewTableDialog } from "./NewTableDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 function MenuDropdown({ label, children }: { label: string; children: React.ReactNode }) {
@@ -33,20 +32,43 @@ function MenuDropdown({ label, children }: { label: string; children: React.Reac
 export function Workspace() {
   const { project, saveProject, closeProject } = useProjectStore();
   const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
-  const [showNewTable, setShowNewTable] = useState(false);
   const { openProject } = useProjectStore();
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const tableCounter = useRef(0);
 
   useEffect(() => {
     refreshDatasets();
   }, []);
 
-  const handleCreateTable = async (name: string, columns: { name: string; type: string }[]) => {
-    await dataService.createTable(
-      name,
-      columns.map((c) => c.name),
-      columns.map((c) => c.type)
-    );
+  // Sync counter with existing datasets on load
+  useEffect(() => {
+    const maxNum = datasets.reduce((max, ds) => {
+      const match = ds.name.match(/^数据表(\d+)$/);
+      return match ? Math.max(max, parseInt(match[1], 10)) : max;
+    }, 0);
+    if (maxNum > tableCounter.current) tableCounter.current = maxNum;
+  }, [datasets]);
+
+  const handleCreateTable = async () => {
+    tableCounter.current += 1;
+    const name = `数据表${tableCounter.current}`;
+    const meta = await dataService.createTable(name, [], []);
     await refreshDatasets();
+    setActiveDataset(meta.id);
+    // Enter rename mode
+    setRenamingId(meta.id);
+    setRenameValue(name);
+  };
+
+  const handleRenameSubmit = async (id: string) => {
+    const trimmed = renameValue.trim();
+    if (trimmed && trimmed !== datasets.find((d) => d.id === id)?.name) {
+      await dataService.renameDataset(id, trimmed);
+      await refreshDatasets();
+    }
+    setRenamingId(null);
   };
 
   const handleDeleteDataset = async (id: string) => {
@@ -97,7 +119,7 @@ export function Workspace() {
             <div className="menu-item" onClick={closeProject}>关闭项目</div>
           </MenuDropdown>
           <MenuDropdown label="表格">
-            <div className="menu-item" onClick={() => setShowNewTable(true)}>新建数据表</div>
+            <div className="menu-item" onClick={handleCreateTable}>新建数据表</div>
             <div className="menu-item" onClick={handleImportCsv}>导入 CSV</div>
           </MenuDropdown>
         </div>
@@ -111,7 +133,7 @@ export function Workspace() {
           <div className="panel-header">
             <h3>数据表</h3>
             <div className="panel-actions">
-              <button className="btn-sm" onClick={() => setShowNewTable(true)} title="新建数据表">+</button>
+              <button className="btn-sm" onClick={handleCreateTable} title="新建数据表">+</button>
               <button className="btn-sm" onClick={handleImportCsv} title="导入 CSV">📄</button>
             </div>
           </div>
@@ -124,9 +146,29 @@ export function Workspace() {
                   key={ds.id}
                   className={`dataset-item ${activeDatasetId === ds.id ? "active" : ""}`}
                   onClick={() => setActiveDataset(ds.id)}
+                  onDoubleClick={() => {
+                    setRenamingId(ds.id);
+                    setRenameValue(ds.name);
+                  }}
                 >
                   <span className="ds-icon">📊</span>
-                  <span className="ds-name">{ds.name}</span>
+                  {renamingId === ds.id ? (
+                    <input
+                      ref={renameInputRef}
+                      className="ds-rename-input"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={() => handleRenameSubmit(ds.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleRenameSubmit(ds.id);
+                        if (e.key === "Escape") setRenamingId(null);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      autoFocus
+                    />
+                  ) : (
+                    <span className="ds-name">{ds.name}</span>
+                  )}
                   <span className="ds-info">{ds.rowCount}×{ds.colCount}</span>
                   <button
                     className="btn-icon-sm ds-delete"
@@ -163,16 +205,13 @@ export function Workspace() {
         <span>{project?.name}</span>
         <span>{datasets.length} 个数据表</span>
         <span className="status-spacer" />
-        {statusInfo?.cellLabel && <span>{statusInfo.cellLabel}</span>}
+        {(statusInfo?.selectionLabel || statusInfo?.cellLabel) && (
+          <span>{statusInfo.selectionLabel || statusInfo.cellLabel}</span>
+        )}
         {statusInfo?.dimensions && <span>{statusInfo.dimensions}</span>}
       </div>
 
-      {/* Dialog */}
-      <NewTableDialog
-        open={showNewTable}
-        onClose={() => setShowNewTable(false)}
-        onCreate={handleCreateTable}
-      />
+
     </div>
   );
 }

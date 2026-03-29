@@ -319,7 +319,7 @@ impl DuckDbEngine {
         })
     }
 
-    /// Create an empty dataset with specified columns
+    /// Create an empty dataset with specified columns (columns may be empty)
     pub fn create_empty_table(
         &self,
         id: &str,
@@ -327,9 +327,6 @@ impl DuckDbEngine {
         column_names: &[String],
         column_types: &[String],
     ) -> Result<DatasetMeta, AppError> {
-        if column_names.is_empty() {
-            return Err(AppError::InvalidParam("At least one column is required".into()));
-        }
         if column_names.len() != column_types.len() {
             return Err(AppError::InvalidParam("Column names and types length mismatch".into()));
         }
@@ -344,11 +341,15 @@ impl DuckDbEngine {
             .collect();
 
         // Add a hidden row_id column for row identification
-        let create_sql = format!(
-            "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0, {})",
-            table_name,
-            col_defs.join(", ")
-        );
+        let create_sql = if col_defs.is_empty() {
+            format!("CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0)", table_name)
+        } else {
+            format!(
+                "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0, {})",
+                table_name,
+                col_defs.join(", ")
+            )
+        };
         self.conn.execute(&create_sql, [])?;
 
         // Register column metadata
