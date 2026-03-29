@@ -6,23 +6,60 @@ import { DataTableView } from "./DataTableView";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
-function MenuDropdown({ label, children }: { label: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+function MenuBar({ children }: { children: React.ReactNode }) {
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const barRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (barRef.current && !barRef.current.contains(e.target as Node)) setOpenMenu(null);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
   return (
-    <div className="menu-dropdown" ref={ref}>
-      <button className="menu-dropdown-trigger" onClick={() => setOpen(!open)}>{label}</button>
-      {open && (
-        <div className="menu-dropdown-panel" onClick={() => setOpen(false)}>
+    <div className="menu-bar-menus" ref={barRef}>
+      {typeof children === "object" && Array.isArray(children)
+        ? children.map((child: any) =>
+            child && child.type === MenuDropdown
+              ? { ...child, props: { ...child.props, openMenu, setOpenMenu } }
+              : child
+          )
+        : children}
+    </div>
+  );
+}
+
+function MenuDropdown({ label, children, openMenu, setOpenMenu }: {
+  label: string;
+  children: React.ReactNode;
+  openMenu?: string | null;
+  setOpenMenu?: (menu: string | null) => void;
+}) {
+  const isOpen = openMenu === label;
+
+  const handleClick = () => {
+    setOpenMenu?.(isOpen ? null : label);
+  };
+
+  const handleMouseEnter = () => {
+    if (openMenu && openMenu !== label) {
+      setOpenMenu?.(label);
+    }
+  };
+
+  return (
+    <div className="menu-dropdown">
+      <button
+        className="menu-dropdown-trigger"
+        onClick={handleClick}
+        onMouseEnter={handleMouseEnter}
+      >
+        {label}
+      </button>
+      {isOpen && (
+        <div className="menu-dropdown-panel" onClick={() => setOpenMenu?.(null)}>
           {children}
         </div>
       )}
@@ -31,12 +68,14 @@ function MenuDropdown({ label, children }: { label: string; children: React.Reac
 }
 
 export function Workspace() {
-  const { project, saveProject, closeProject } = useProjectStore();
+  const { project, saveProject, closeProject, dirty, markDirty } = useProjectStore();
   const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showPrefs, setShowPrefs] = useState(false);
+  const [saveToast, setSaveToast] = useState(false);
+  const [dsMenu, setDsMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
 
@@ -44,17 +83,49 @@ export function Workspace() {
     refreshDatasets();
   }, []);
 
+  // Dismiss dataset context menu on click
+  useEffect(() => {
+    if (!dsMenu) return;
+    const handler = () => setDsMenu(null);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [dsMenu]);
+
   // Cmd/Ctrl+S: save project
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        saveProject();
+        handleSave();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [saveProject]);
+
+  // Cmd/Ctrl+,: open preferences
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        setShowPrefs(true);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
+  // Cmd/Ctrl+O: open project
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        handleOpenAnother();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
 
   // Sync counter with existing datasets on load
   useEffect(() => {
@@ -70,6 +141,7 @@ export function Workspace() {
     const name = `数据表${tableCounter.current}`;
     const meta = await dataService.createTable(name, [], []);
     await refreshDatasets();
+    markDirty();
     setActiveDataset(meta.id);
     // Enter rename mode
     setRenamingId(meta.id);
@@ -81,6 +153,7 @@ export function Workspace() {
     if (trimmed && trimmed !== datasets.find((d) => d.id === id)?.name) {
       await dataService.renameDataset(id, trimmed);
       await refreshDatasets();
+      markDirty();
     }
     setRenamingId(null);
   };
@@ -89,6 +162,7 @@ export function Workspace() {
     await dataService.deleteDataset(id);
     if (activeDatasetId === id) setActiveDataset(null);
     await refreshDatasets();
+    markDirty();
   };
 
   const handleImportCsv = async () => {
@@ -100,11 +174,14 @@ export function Workspace() {
     if (selected) {
       await dataService.importFile(selected as string);
       await refreshDatasets();
+      markDirty();
     }
   };
 
   const handleSave = async () => {
     await saveProject();
+    setSaveToast(true);
+    setTimeout(() => setSaveToast(false), 1500);
   };
 
   const handleOpenAnother = async () => {
@@ -126,20 +203,31 @@ export function Workspace() {
       <div className="menu-bar">
         <span className="menu-bar-title">StatsPlayground</span>
         <div className="menu-bar-menus">
-          <MenuDropdown label="文件">
-            <div className="menu-item" onClick={handleSave}>保存<span className="menu-shortcut">⌘S</span></div>
-            <div className="menu-sep" />
-            <div className="menu-item" onClick={() => setShowPrefs(true)}>首选项</div>
-            <div className="menu-sep" />
-            <div className="menu-item" onClick={handleOpenAnother}>打开其他项目</div>
-            <div className="menu-item" onClick={closeProject}>关闭项目</div>
-          </MenuDropdown>
-          <MenuDropdown label="表格">
-            <div className="menu-item" onClick={handleCreateTable}>新建数据表</div>
-            <div className="menu-item" onClick={handleImportCsv}>导入 CSV</div>
-          </MenuDropdown>
+          <MenuBar>
+            <MenuDropdown label="文件">
+              <div className="menu-item" onClick={handleSave}>保存<span className="menu-shortcut">⌘S</span></div>
+              <div className="menu-sep" />
+              <div className="menu-item" onClick={() => setShowPrefs(true)}>首选项<span className="menu-shortcut">⌘,</span></div>
+              <div className="menu-sep" />
+              <div className="menu-item" onClick={handleOpenAnother}>打开项目<span className="menu-shortcut">⌘O</span></div>
+              <div className="menu-item" onClick={closeProject}>关闭项目</div>
+            </MenuDropdown>
+            <MenuDropdown label="表格">
+              <div className="menu-item" onClick={handleCreateTable}>新建数据表</div>
+              <div className="menu-item" onClick={handleImportCsv}>导入 CSV</div>
+            </MenuDropdown>
+          </MenuBar>
         </div>
         <div className="menu-spacer" />
+        <button
+          className={`menu-bar-save${dirty ? " menu-bar-save-dirty" : ""}`}
+          onClick={handleSave}
+          title="保存 (⌘S)"
+        >
+          <svg width="20" height="20" viewBox="0 0 640 640" fill="currentColor">
+            <path d="M160 144C151.2 144 144 151.2 144 160L144 480C144 488.8 151.2 496 160 496L480 496C488.8 496 496 488.8 496 480L496 237.3C496 233.1 494.3 229 491.3 226L416 150.6L416 240C416 257.7 401.7 272 384 272L224 272C206.3 272 192 257.7 192 240L192 144L160 144zM240 144L240 224L368 224L368 144L240 144zM96 160C96 124.7 124.7 96 160 96L402.7 96C419.7 96 436 102.7 448 114.7L525.3 192C537.3 204 544 220.3 544 237.3L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160zM256 384C256 348.7 284.7 320 320 320C355.3 320 384 348.7 384 384C384 419.3 355.3 448 320 448C284.7 448 256 419.3 256 384z"/>
+          </svg>
+        </button>
       </div>
 
       {/* Workspace */}
@@ -147,15 +235,11 @@ export function Workspace() {
         {/* Left: File List Panel */}
         <div className="side-panel">
           <div className="panel-header">
-            <h3>数据表</h3>
-            <div className="panel-actions">
-              <button className="btn-sm" onClick={handleCreateTable} title="新建数据表">+</button>
-              <button className="btn-sm" onClick={handleImportCsv} title="导入 CSV">📄</button>
-            </div>
+            <h3>目录</h3>
           </div>
           <div className="dataset-list">
             {datasets.length === 0 ? (
-              <div className="empty-hint">暂无数据表</div>
+              <div className="empty-hint">暂无内容</div>
             ) : (
               datasets.map((ds) => (
                 <div
@@ -166,13 +250,13 @@ export function Workspace() {
                     setRenamingId(ds.id);
                     setRenameValue(ds.name);
                   }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setDsMenu({ x: e.clientX, y: e.clientY, id: ds.id });
+                  }}
                 >
-                  <svg className="ds-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
-                    <rect x="1.5" y="1.5" width="13" height="13" rx="1.5" />
-                    <line x1="1.5" y1="5.5" x2="14.5" y2="5.5" />
-                    <line x1="1.5" y1="9.5" x2="14.5" y2="9.5" />
-                    <line x1="6" y1="5.5" x2="6" y2="14.5" />
-                    <line x1="11" y1="5.5" x2="11" y2="14.5" />
+                  <svg className="ds-icon" width="14" height="14" viewBox="0 0 640 640" fill="currentColor">
+                    <path d="M480 96C515.3 96 544 124.7 544 160L544 480C544 515.3 515.3 544 480 544L160 544L153.5 543.7C121.2 540.4 96 513.1 96 480L96 160C96 124.7 124.7 96 160 96L480 96zM160 384L160 480L288 480L288 384L160 384zM352 384L352 480L480 480L480 384L352 384zM160 320L288 320L288 224L160 224L160 320zM352 320L480 320L480 224L352 224L352 320z"/>
                   </svg>
                   {renamingId === ds.id ? (
                     <input
@@ -192,16 +276,6 @@ export function Workspace() {
                     <span className="ds-name">{ds.name}</span>
                   )}
                   <span className="ds-info">{ds.rowCount}×{ds.colCount}</span>
-                  <button
-                    className="btn-icon-sm ds-delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteDataset(ds.id);
-                    }}
-                    title="删除"
-                  >
-                    ✕
-                  </button>
                 </div>
               ))
             )}
@@ -234,6 +308,33 @@ export function Workspace() {
       </div>
 
       {showPrefs && <PreferencesDialog onClose={() => setShowPrefs(false)} />}
+
+      {dsMenu && (
+        <div
+          className="sp-ctx-menu"
+          style={{ left: dsMenu.x, top: dsMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="sp-ctx-item" onClick={() => {
+            const ds = datasets.find((d) => d.id === dsMenu.id);
+            if (ds) {
+              setRenamingId(ds.id);
+              setRenameValue(ds.name);
+              setActiveDataset(ds.id);
+            }
+            setDsMenu(null);
+          }}>重命名</div>
+          <div className="sp-ctx-sep" />
+          <div className="sp-ctx-item sp-ctx-danger" onClick={() => {
+            handleDeleteDataset(dsMenu.id);
+            setDsMenu(null);
+          }}>删除</div>
+        </div>
+      )}
+
+      {saveToast && (
+        <div className="save-toast">✓ 已保存</div>
+      )}
 
     </div>
   );

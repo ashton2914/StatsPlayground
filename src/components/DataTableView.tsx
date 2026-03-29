@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { dataService } from "@/services/dataService";
 import type { TableQueryResult } from "@/types/data";
 import { useDataStore } from "@/stores/useDataStore";
+import { useProjectStore } from "@/stores/useProjectStore";
 
 interface DataTableViewProps {
   datasetId: string;
@@ -75,6 +76,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const didDragRef = useRef(false);
   const isDraggingRowRef = useRef(false);
   const isDraggingColRef = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
   const tabAnchorColRef = useRef<number | null>(null);
   const [cellMenu, setCellMenu] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
   const [cornerMenu, setCornerMenu] = useState<{ x: number; y: number } | null>(null);
@@ -84,6 +86,12 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const redoStackRef = useRef<TableQueryResult[]>([]);
   const MAX_UNDO = 50;
   const { refreshDatasets, setStatusInfo } = useDataStore();
+  const { markDirty } = useProjectStore();
+
+  const refreshAndMarkDirty = useCallback(async () => {
+    await refreshDatasets();
+    markDirty();
+  }, [refreshDatasets, markDirty]);
 
   const load = useCallback(async () => {
     try {
@@ -242,7 +250,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     try {
       await dataService.restoreSnapshot(datasetId, colNames, colTypesSnap, rows);
       await load();
-      await refreshDatasets();
+      await refreshAndMarkDirty();
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -271,7 +279,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     saveSnapshot();
     await dataService.addRow(datasetId);
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleInsertMultiRows = async () => {
@@ -284,7 +292,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setShowInsertMultiRows(false);
     setInsertRowCount("5");
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleDeleteRows = async () => {
@@ -297,7 +305,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setSelectedRows(new Set());
     setRowMenu(null);
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleDeleteSingleRow = async (rowIdx: number) => {
@@ -306,7 +314,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     await dataService.deleteRow(datasetId, getRowId(row));
     setRowMenu(null);
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleInsertRowAbove = async () => {
@@ -314,7 +322,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     await dataService.addRow(datasetId);
     setRowMenu(null);
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   // ---- Column operations ----
@@ -323,7 +331,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     const name = generateColName(cols);
     await dataService.addColumn(datasetId, name, "VARCHAR");
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleAddColumn = async () => {
@@ -335,7 +343,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setNewColName("");
     setNewColType("VARCHAR");
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleInsertMultiCols = async () => {
@@ -352,7 +360,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setInsertColCount("3");
     setInsertColType("VARCHAR");
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleDeleteColumn = async (colName: string) => {
@@ -361,7 +369,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     await dataService.deleteColumn(datasetId, colName);
     setColMenu(null);
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleDeleteSelectedCols = async () => {
@@ -378,7 +386,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setSelectedCols(new Set());
     setColMenu(null);
     await load();
-    await refreshDatasets();
+    await refreshAndMarkDirty();
   };
 
   const handleStartRenameCol = (colIdx: number) => {
@@ -406,7 +414,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
         }
       }
       await load();
-      await refreshDatasets();
+      await refreshAndMarkDirty();
       setBatchColProps(null);
     } catch (e) {
       setErrorMsg(String(e));
@@ -428,7 +436,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       }
       if (nameChanged || typeChanged) {
         await load();
-        await refreshDatasets();
+        await refreshAndMarkDirty();
       }
       setRenameCol(null);
     } catch (e) {
@@ -521,6 +529,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       setErrorMsg(String(e));
     }
     await load();
+    markDirty();
 
     const maxRow = data.rows.length - 1;
     const maxCol = cols.length - 1;
@@ -570,6 +579,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       setErrorMsg(String(e));
     }
     await load();
+    markDirty();
   };
 
   // ---- Helper: find boundary of continuous data (Excel Ctrl+Arrow behavior) ----
@@ -777,7 +787,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
         datasetId, startRow, startCol, dataRows, headerNames, detectedTypes
       );
       await load();
-      await refreshDatasets();
+      await refreshAndMarkDirty();
     } catch (err) {
       setErrorMsg(String(err));
     }
@@ -794,7 +804,16 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const handleCellContextMenu = (e: React.MouseEvent, row: number, col: number) => {
     e.preventDefault();
     e.stopPropagation();
-    setActiveCell({ row, col });
+    // If right-clicking within an existing selection, don't change activeCell or selection
+    const inSelection = selection &&
+      row >= Math.min(selection.startRow, selection.endRow) &&
+      row <= Math.max(selection.startRow, selection.endRow) &&
+      col >= Math.min(selection.startCol, selection.endCol) &&
+      col <= Math.max(selection.startCol, selection.endCol);
+    if (!inSelection) {
+      setActiveCell({ row, col });
+      setSelection(null);
+    }
     setCornerSelected(false);
     setCellMenu({ row, col, x: e.clientX, y: e.clientY });
     setColMenu(null);
@@ -1093,6 +1112,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     // Start drag selection
     e.preventDefault();
     isDraggingRef.current = true;
+    setIsDragging(true);
     didDragRef.current = false;
     setActiveCell({ row, col });
     setSelection({ startRow: row, startCol: col, endRow: row, endCol: col });
@@ -1120,6 +1140,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
     const onMouseUp = () => {
       isDraggingRef.current = false;
+      setIsDragging(false);
       stopAutoScroll();
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMouseMove);
@@ -1164,6 +1185,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       setSelection(null);
     }
     isDraggingRowRef.current = true;
+    setIsDragging(true);
     const anchorRow = rowIdx;
     document.body.style.userSelect = "none";
 
@@ -1189,6 +1211,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
     const onMouseUp = () => {
       isDraggingRowRef.current = false;
+      setIsDragging(false);
       stopAutoScroll();
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMouseMove);
@@ -1234,6 +1257,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       setSelection(null);
     }
     isDraggingColRef.current = true;
+    setIsDragging(true);
     const anchorCol = colIdx;
     document.body.style.userSelect = "none";
 
@@ -1260,6 +1284,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
     const onMouseUp = () => {
       isDraggingColRef.current = false;
+      setIsDragging(false);
       stopAutoScroll();
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMouseMove);
@@ -1365,7 +1390,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   return (
-    <div className="sp-spreadsheet" onKeyDown={handleKeyDown} onPaste={handlePaste} tabIndex={0} ref={containerRef}>
+    <div className={`sp-spreadsheet${isDragging ? " sp-dragging" : ""}`} onKeyDown={handleKeyDown} onPaste={handlePaste} tabIndex={0} ref={containerRef}>
 
       {/* Add column inline form */}
       {showAddCol && (
@@ -1439,6 +1464,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
                   className={`sp-col-hdr ${activeCell?.col === ci || (selection && (() => { const { c1, c2 } = normalizeRange(selection); return ci >= c1 && ci <= c2; })()) ? "sp-col-active" : ""} ${selectedCols.has(ci) ? "sp-col-selected" : ""}`}
                   onClick={(e) => handleColSelect(ci, e)}
                   onMouseDown={(e) => handleColHeaderMouseDown(ci, e)}
+                  onDoubleClick={() => handleStartRenameCol(ci)}
                   onContextMenu={(e) => handleColContextMenu(e, ci)}
                 >
                   <div className="sp-col-hdr-content">
@@ -1607,6 +1633,9 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
           style={{ left: cellMenu.x, top: cellMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
+          <div className="sp-ctx-item" onClick={() => { handleCopy(); setCellMenu(null); }}>
+            复制<span className="sp-ctx-shortcut">⌘C</span>
+          </div>
           <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(false)}>
             粘贴<span className="sp-ctx-shortcut">⌘V</span>
           </div>

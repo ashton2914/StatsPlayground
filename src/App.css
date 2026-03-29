@@ -185,7 +185,7 @@
 .menu-bar-title {
   font-weight: 600;
   color: var(--fg-primary);
-  margin-right: 4px;
+  margin-right: 8px;
 }
 
 .menu-bar-menus {
@@ -196,6 +196,49 @@
 
 .menu-bar .menu-spacer {
   flex: 1;
+}
+
+/* Save button in menu bar */
+.menu-bar-save {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: var(--fg-disabled);
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+}
+
+.menu-bar-save:hover {
+  background: var(--bg-header);
+}
+
+.menu-bar-save-dirty {
+  color: var(--fg-primary);
+}
+
+/* Save toast */
+.save-toast {
+  position: fixed;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  padding: 6px 20px;
+  background: var(--bg-card);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  box-shadow: var(--shadow-menu);
+  font-size: 13px;
+  animation: save-toast-in 0.2s ease-out;
+}
+
+@keyframes save-toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
 /* Dropdown */
@@ -493,6 +536,7 @@
   padding: 0;
   cursor: default;
   user-select: none;
+  -webkit-user-select: none;
   overflow: hidden;
 }
 
@@ -593,6 +637,7 @@
   color: var(--fg-hint);
   cursor: pointer;
   user-select: none;
+  -webkit-user-select: none;
   padding: 0;
 }
 
@@ -619,6 +664,9 @@
   position: relative;
   cursor: cell;
   overflow: hidden;
+  background: var(--bg-main);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .sp-cell .sp-val,
@@ -635,10 +683,6 @@
 
 .sp-null {
   color: var(--fg-null);
-}
-
-.sp-cell:hover {
-  background: var(--bg-cell-hover);
 }
 
 .sp-cell-active {
