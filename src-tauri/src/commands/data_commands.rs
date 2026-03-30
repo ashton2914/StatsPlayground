@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::error::AppError;
-use crate::models::table::{DatasetMeta, TableQueryResult};
+use crate::models::table::{ColumnDisplayProps, DatasetMeta, TableQueryResult};
 use crate::services::data_service::DataService;
 use crate::state::AppState;
 
@@ -165,4 +165,26 @@ pub fn restore_snapshot(
 ) -> Result<(), AppError> {
     let service = DataService::new(&state);
     service.restore_snapshot(&dataset_id, &col_names, &col_types, &rows)
+}
+
+#[tauri::command]
+pub fn get_column_display_props(
+    state: State<'_, AppState>,
+    dataset_id: String,
+) -> Result<Vec<ColumnDisplayProps>, AppError> {
+    let display = state.column_display.lock()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(display.get(&dataset_id).cloned().unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn set_column_display_props(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    props: Vec<ColumnDisplayProps>,
+) -> Result<(), AppError> {
+    let mut display = state.column_display.lock()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    display.insert(dataset_id, props);
+    Ok(())
 }

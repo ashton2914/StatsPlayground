@@ -45,3 +45,17 @@ export interface TableQueryResult {
   page: number;
   pageSize: number;
 }
+
+/** 列显示格式 */
+export interface ColumnFormatInfo {
+  kind: string;
+  decimals?: number;
+  currency?: string;
+}
+
+/** 列显示属性 */
+export interface ColumnDisplayProps {
+  colIndex: number;
+  width?: number;
+  format?: ColumnFormatInfo;
+}

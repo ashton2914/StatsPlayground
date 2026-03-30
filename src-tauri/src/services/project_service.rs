@@ -2,6 +2,7 @@ use std::fs;
 
 use crate::error::AppError;
 use crate::models::project::ProjectInfo;
+use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
 use crate::state::AppState;
 
 pub struct ProjectService<'a> {
@@ -33,6 +34,20 @@ struct SpprjDataset {
 struct SpprjColumn {
     name: String,
     col_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    format: Option<SpprjColumnFormat>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpprjColumnFormat {
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decimals: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    currency: Option<String>,
 }
 
 impl<'a> ProjectService<'a> {
@@ -140,6 +155,27 @@ impl<'a> ProjectService<'a> {
                 "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
                 duckdb::params![row_count, ds.id],
             )?;
+
+            // Restore column display properties
+            let mut display_props: Vec<ColumnDisplayProps> = Vec::new();
+            for (i, col) in ds.columns.iter().enumerate() {
+                if col.width.is_some() || col.format.is_some() {
+                    display_props.push(ColumnDisplayProps {
+                        col_index: i,
+                        width: col.width,
+                        format: col.format.as_ref().map(|f| ColumnFormatInfo {
+                            kind: f.kind.clone(),
+                            decimals: f.decimals,
+                            currency: f.currency.clone(),
+                        }),
+                    });
+                }
+            }
+            if !display_props.is_empty() {
+                let mut display = self.state.column_display.lock()
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                display.insert(ds.id.clone(), display_props);
+            }
         }
 
         let project = ProjectInfo {
@@ -181,6 +217,8 @@ impl<'a> ProjectService<'a> {
         drop(proj); // release write lock before reading db
 
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let display = self.state.column_display.lock()
+            .map_err(|e| AppError::Database(e.to_string()))?;
         let datasets = db.list_datasets()?;
 
         let mut spprj_datasets = Vec::new();
@@ -191,14 +229,27 @@ impl<'a> ProjectService<'a> {
             let mut col_stmt = db.conn().prepare(
                 "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index"
             )?;
-            let columns: Vec<SpprjColumn> = col_stmt
+            let base_columns: Vec<(String, String)> = col_stmt
                 .query_map(duckdb::params![ds.id], |row| {
-                    Ok(SpprjColumn {
-                        name: row.get(0)?,
-                        col_type: row.get(1)?,
-                    })
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
+
+            // Merge display props into columns
+            let ds_display = display.get(&ds.id);
+            let columns: Vec<SpprjColumn> = base_columns.iter().enumerate().map(|(i, (name, col_type))| {
+                let dp = ds_display.and_then(|v| v.iter().find(|p| p.col_index == i));
+                SpprjColumn {
+                    name: name.clone(),
+                    col_type: col_type.clone(),
+                    width: dp.and_then(|p| p.width),
+                    format: dp.and_then(|p| p.format.as_ref()).map(|f| SpprjColumnFormat {
+                        kind: f.kind.clone(),
+                        decimals: f.decimals,
+                        currency: f.currency.clone(),
+                    }),
+                }
+            }).collect();
 
             let col_names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
 

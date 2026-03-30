@@ -737,6 +737,11 @@
   color: #fff !important;
 }
 
+/* Selected column cells */
+.sp-col-selected-cell {
+  background: var(--bg-row-selected) !important;
+}
+
 /* "+ " cell at end of row (placeholder) */
 .sp-add-col-cell {
   border-bottom: 1px solid var(--border-cell);

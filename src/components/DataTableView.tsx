@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { dataService } from "@/services/dataService";
-import type { TableQueryResult } from "@/types/data";
+import type { TableQueryResult, ColumnDisplayProps } from "@/types/data";
 import { useDataStore } from "@/stores/useDataStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { modKey, shiftKey } from "@/utils/platform";
@@ -21,6 +21,57 @@ const COLUMN_TYPES = [
 const DEFAULT_COL_WIDTH = 120;
 const ROW_HEIGHT = 27; // 26px cell height + 1px border
 const OVERSCAN = 10; // extra rows above/below viewport
+
+type FormatKind = "asis" | "fixed" | "percent" | "scientific" | "currency";
+
+interface ColumnFormat {
+  kind: FormatKind;
+  decimals?: number;
+  currency?: string;
+}
+
+const FORMAT_OPTIONS: { value: FormatKind; label: string }[] = [
+  { value: "asis", label: "原样" },
+  { value: "fixed", label: "固定位数" },
+  { value: "percent", label: "百分比" },
+  { value: "scientific", label: "科学计数" },
+  { value: "currency", label: "货币" },
+];
+
+const CURRENCY_OPTIONS = [
+  { value: "CNY", label: "CNY ¥", symbol: "¥" },
+  { value: "USD", label: "USD $", symbol: "$" },
+  { value: "EUR", label: "EUR €", symbol: "€" },
+  { value: "GBP", label: "GBP £", symbol: "£" },
+  { value: "JPY", label: "JPY ¥", symbol: "¥" },
+  { value: "KRW", label: "KRW ₩", symbol: "₩" },
+  { value: "HKD", label: "HKD HK$", symbol: "HK$" },
+  { value: "TWD", label: "TWD NT$", symbol: "NT$" },
+];
+
+const DEFAULT_FORMAT: ColumnFormat = { kind: "asis" };
+
+function formatCellValue(value: unknown, fmt: ColumnFormat): string {
+  if (value == null) return "";
+  if (fmt.kind === "asis") return String(value);
+  const num = Number(value);
+  if (isNaN(num)) return String(value);
+  switch (fmt.kind) {
+    case "fixed":
+      return num.toFixed(fmt.decimals ?? 2);
+    case "percent":
+      return (num * 100).toFixed(fmt.decimals ?? 2) + "%";
+    case "scientific":
+      return num.toExponential();
+    case "currency": {
+      const cur = CURRENCY_OPTIONS.find(c => c.value === fmt.currency);
+      const symbol = cur?.symbol ?? "";
+      return symbol + num.toFixed(fmt.decimals ?? 2);
+    }
+    default:
+      return String(value);
+  }
+}
 
 interface CellRange {
   startRow: number;
@@ -48,10 +99,12 @@ function inRange(row: number, col: number, range: CellRange | null): boolean {
 interface TableRowProps {
   ri: number;
   displayRow: unknown[];
+  colFormats: ColumnFormat[];
   isRowSelected: boolean;
   isRowActive: boolean;
   isRowSelectedHdr: boolean;
   activeCol: number | null;
+  selectedCols: Set<number>;
   editRow: number | null;
   editCol: number | null;
   editValue: string;
@@ -63,8 +116,8 @@ interface TableRowProps {
 }
 
 const TableRow = React.memo(function TableRow({
-  ri, displayRow, isRowSelected, isRowActive, isRowSelectedHdr,
-  activeCol, editRow, editCol, editValue, editInputRef,
+  ri, displayRow, colFormats, isRowSelected, isRowActive, isRowSelectedHdr,
+  activeCol, selectedCols, editRow, editCol, editValue, editInputRef,
   selection, onEditValueChange, onCommitEdit, onCancelEdit,
 }: TableRowProps) {
   const isEditing = editRow === ri;
@@ -77,7 +130,8 @@ const TableRow = React.memo(function TableRow({
         {ri + 1}
       </td>
       {displayRow.map((cell, ci) => {
-        const isCellActive = activeCol === ci && isRowActive && !isRowSelected;
+        const isColSelected = selectedCols.has(ci);
+        const isCellActive = activeCol === ci && isRowActive && !isRowSelected && !isColSelected;
         const isCellEditing = isEditing && editCol === ci;
         const isCellSelected = inRange(ri, ci, selection);
         return (
@@ -85,10 +139,10 @@ const TableRow = React.memo(function TableRow({
             key={ci}
             data-row={ri}
             data-col={ci}
-            className={`sp-cell${isCellActive ? " sp-cell-active" : ""}${isCellEditing ? " sp-cell-editing" : ""}${isCellSelected ? " sp-cell-selected" : ""}`}
+            className={`sp-cell${isCellActive ? " sp-cell-active" : ""}${isCellEditing ? " sp-cell-editing" : ""}${isCellSelected ? " sp-cell-selected" : ""}${isColSelected ? " sp-col-selected-cell" : ""}`}
           >
             <span className={cell == null ? "sp-null" : "sp-val"} style={isCellEditing ? { visibility: "hidden" } : undefined}>
-              {cell == null ? "" : String(cell)}
+              {formatCellValue(cell, colFormats[ci] ?? DEFAULT_FORMAT)}
             </span>
             {isCellEditing && (
               <input
@@ -138,15 +192,20 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const [renameValue, setRenameValue] = useState("");
   const [renameType, setRenameType] = useState("");
   const [renameWidth, setRenameWidth] = useState("");
+  const [renameFormat, setRenameFormat] = useState<ColumnFormat>(DEFAULT_FORMAT);
   const [batchColProps, setBatchColProps] = useState<{ colIndices: number[]; checkedCols: Set<number> } | null>(null);
   const [batchColType, setBatchColType] = useState("VARCHAR");
   const [batchColWidth, setBatchColWidth] = useState("");
+  const [batchColFormat, setBatchColFormat] = useState<ColumnFormat>(DEFAULT_FORMAT);
   const [showInsertMultiRows, setShowInsertMultiRows] = useState(false);
   const [insertRowCount, setInsertRowCount] = useState("5");
   const [showInsertMultiCols, setShowInsertMultiCols] = useState(false);
   const [insertColCount, setInsertColCount] = useState("3");
   const [insertColType, setInsertColType] = useState("VARCHAR");
   const [colWidths, setColWidths] = useState<number[]>([]);
+  const [colFormats, setColFormats] = useState<ColumnFormat[]>([]);
+  const colFormatsRef = useRef<ColumnFormat[]>([]);
+  colFormatsRef.current = colFormats;
   const [selection, setSelection] = useState<CellRange | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -162,6 +221,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const isDraggingColRef = useRef(false);
   const didDragColRef = useRef(false);
   const didDragRowRef = useRef(false);
+  const rowAnchorRef = useRef<number | null>(null);
+  const colAnchorRef = useRef<number | null>(null);
   const suppressSelectionRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const tabAnchorColRef = useRef<number | null>(null);
@@ -169,8 +230,14 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const [cornerMenu, setCornerMenu] = useState<{ x: number; y: number } | null>(null);
   const [cornerSelected, setCornerSelected] = useState(false);
   const autoScrollRef = useRef<number | null>(null);
-  const undoStackRef = useRef<TableQueryResult[]>([]);
-  const redoStackRef = useRef<TableQueryResult[]>([]);
+
+  interface UndoSnapshot {
+    data: TableQueryResult;
+    colWidths: number[];
+    colFormats: ColumnFormat[];
+  }
+  const undoStackRef = useRef<UndoSnapshot[]>([]);
+  const redoStackRef = useRef<UndoSnapshot[]>([]);
   const MAX_UNDO = 50;
   const { refreshDatasets, setStatusInfo } = useDataStore();
   const { markDirty } = useProjectStore();
@@ -188,10 +255,49 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
         pageSize: 10000,
       });
       setData(result);
+      // Load saved display props
+      try {
+        const props = await dataService.getColumnDisplayProps(datasetId);
+        if (props.length > 0) {
+          const visCount = result.columns.filter(c => c !== "_row_id").length;
+          const widths = Array.from({ length: visCount }, (_, i) => {
+            const p = props.find(dp => dp.colIndex === i);
+            return p?.width ?? DEFAULT_COL_WIDTH;
+          });
+          setColWidths(widths);
+          const formats = Array.from({ length: visCount }, (_, i) => {
+            const p = props.find(dp => dp.colIndex === i);
+            return p?.format ? { kind: p.format.kind as FormatKind, decimals: p.format.decimals, currency: p.format.currency } : DEFAULT_FORMAT;
+          });
+          setColFormats(formats);
+        }
+      } catch { /* ignore display prop load errors */ }
     } catch (e) {
       console.error("Failed to load table:", e);
       setData({ columns: [], columnTypes: [], rows: [], totalRows: 0, page: 0, pageSize: 10000 });
     }
+  }, [datasetId]);
+
+  /** Save current display props to backend */
+  const syncDisplayProps = useCallback(async (widths: number[], formats: ColumnFormat[]) => {
+    const props: ColumnDisplayProps[] = [];
+    const len = Math.max(widths.length, formats.length);
+    for (let i = 0; i < len; i++) {
+      const w = widths[i];
+      const f = formats[i];
+      const hasWidth = w !== undefined && w !== DEFAULT_COL_WIDTH;
+      const hasFormat = f !== undefined && f.kind !== "asis";
+      if (hasWidth || hasFormat) {
+        props.push({
+          colIndex: i,
+          width: hasWidth ? w : undefined,
+          format: hasFormat ? { kind: f.kind, decimals: f.decimals, currency: f.currency } : undefined,
+        });
+      }
+    }
+    try {
+      await dataService.setColumnDisplayProps(datasetId, props);
+    } catch { /* ignore */ }
   }, [datasetId]);
 
   useEffect(() => {
@@ -274,12 +380,16 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     return () => document.removeEventListener("click", handler);
   }, [colMenu, rowMenu, cellMenu, cornerMenu]);
 
-  // Initialize colWidths when columns change
+  // Initialize colWidths and colFormats when columns change
   const visibleColCount = data ? data.columns.filter(c => c !== "_row_id").length : 0;
   useEffect(() => {
     setColWidths((prev) => {
       if (prev.length === visibleColCount) return prev;
       return Array.from({ length: visibleColCount }, (_, i) => prev[i] ?? DEFAULT_COL_WIDTH);
+    });
+    setColFormats((prev) => {
+      if (prev.length === visibleColCount) return prev;
+      return Array.from({ length: visibleColCount }, (_, i) => prev[i] ?? DEFAULT_FORMAT);
     });
   }, [visibleColCount]);
 
@@ -384,23 +494,32 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   // ---- Undo / Redo ----
   const saveSnapshot = () => {
     if (!data) return;
-    undoStackRef.current.push(structuredClone(data));
+    undoStackRef.current.push({
+      data: structuredClone(data),
+      colWidths: [...colWidths],
+      colFormats: colFormats.map(f => ({ ...f })),
+    });
     if (undoStackRef.current.length > MAX_UNDO) {
       undoStackRef.current.shift();
     }
     redoStackRef.current = [];
   };
 
-  const restoreFromSnapshot = async (snapshot: TableQueryResult) => {
+  const restoreFromSnapshot = async (snapshot: UndoSnapshot) => {
     // Extract col info (skip _row_id)
-    const rowIdIdx = snapshot.columns.indexOf("_row_id");
-    const colNames = snapshot.columns.filter((_, i) => i !== rowIdIdx);
-    const colTypesSnap = snapshot.columnTypes.filter((_, i) => i !== rowIdIdx);
-    const rows = snapshot.rows;
+    const rowIdIdx = snapshot.data.columns.indexOf("_row_id");
+    const colNames = snapshot.data.columns.filter((_, i) => i !== rowIdIdx);
+    const colTypesSnap = snapshot.data.columnTypes.filter((_, i) => i !== rowIdIdx);
+    const rows = snapshot.data.rows;
 
     try {
       await dataService.restoreSnapshot(datasetId, colNames, colTypesSnap, rows);
+      // Sync display props to backend first (so load() picks them up)
+      await syncDisplayProps(snapshot.colWidths, snapshot.colFormats);
       await load();
+      // Restore display props after load (override what load() set)
+      setColWidths(snapshot.colWidths);
+      setColFormats(snapshot.colFormats);
       await refreshAndMarkDirty();
     } catch (e) {
       setErrorMsg(String(e));
@@ -411,7 +530,11 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (undoStackRef.current.length === 0) return;
     const snapshot = undoStackRef.current.pop()!;
     if (data) {
-      redoStackRef.current.push(structuredClone(data));
+      redoStackRef.current.push({
+        data: structuredClone(data),
+        colWidths: [...colWidths],
+        colFormats: colFormats.map(f => ({ ...f })),
+      });
     }
     await restoreFromSnapshot(snapshot);
   };
@@ -420,7 +543,11 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (redoStackRef.current.length === 0) return;
     const snapshot = redoStackRef.current.pop()!;
     if (data) {
-      undoStackRef.current.push(structuredClone(data));
+      undoStackRef.current.push({
+        data: structuredClone(data),
+        colWidths: [...colWidths],
+        colFormats: colFormats.map(f => ({ ...f })),
+      });
     }
     await restoreFromSnapshot(snapshot);
   };
@@ -545,6 +672,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setRenameValue(cols[colIdx]);
     setRenameType(colTypes[colIdx]);
     setRenameWidth(String(Math.round(colWidths[colIdx] ?? DEFAULT_COL_WIDTH)));
+    setRenameFormat(colFormats[colIdx] ?? DEFAULT_FORMAT);
     setColMenu(null);
   };
 
@@ -554,6 +682,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setBatchColProps({ colIndices: indices, checkedCols: new Set(indices) });
     setBatchColType(colTypes[indices[0]] || "VARCHAR");
     setBatchColWidth(String(Math.round(colWidths[indices[0]] ?? DEFAULT_COL_WIDTH)));
+    setBatchColFormat(colFormats[indices[0]] ?? DEFAULT_FORMAT);
     setColMenu(null);
   };
 
@@ -561,13 +690,20 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (!batchColProps) return;
     // Apply column widths
     const newW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(batchColWidth) || DEFAULT_COL_WIDTH));
-    setColWidths((prev) => {
-      const next = [...prev];
-      for (const ci of batchColProps.checkedCols) {
-        next[ci] = newW;
-      }
-      return next;
-    });
+    const newWidths = [...colWidths];
+    for (const ci of batchColProps.checkedCols) {
+      newWidths[ci] = newW;
+    }
+    setColWidths(newWidths);
+    // Apply column formats
+    const newFormats = [...colFormats];
+    for (const ci of batchColProps.checkedCols) {
+      newFormats[ci] = { ...batchColFormat };
+    }
+    setColFormats(newFormats);
+    // Sync display props to backend
+    syncDisplayProps(newWidths, newFormats);
+    markDirty();
     saveSnapshot();
     try {
       for (const ci of batchColProps.checkedCols) {
@@ -589,14 +725,16 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     const typeChanged = renameType !== renameCol.oldType;
     // Apply column width
     const newW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(renameWidth) || DEFAULT_COL_WIDTH));
-    const oldW = colWidths[renameCol.colIdx] ?? DEFAULT_COL_WIDTH;
-    if (newW !== oldW) {
-      setColWidths((prev) => {
-        const next = [...prev];
-        next[renameCol.colIdx] = newW;
-        return next;
-      });
-    }
+    const newWidths = [...colWidths];
+    newWidths[renameCol.colIdx] = newW;
+    setColWidths(newWidths);
+    // Apply column format
+    const newFormats = [...colFormats];
+    newFormats[renameCol.colIdx] = { ...renameFormat };
+    setColFormats(newFormats);
+    // Sync display props to backend
+    syncDisplayProps(newWidths, newFormats);
+    markDirty();
     try {
       saveSnapshot();
       if (nameChanged) {
@@ -1344,17 +1482,21 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (e.ctrlKey || e.metaKey) {
       if (newSet.has(rowIdx)) newSet.delete(rowIdx);
       else newSet.add(rowIdx);
-    } else if (e.shiftKey && activeCell) {
-      const start = Math.min(activeCell.row, rowIdx);
-      const end = Math.max(activeCell.row, rowIdx);
+      rowAnchorRef.current = rowIdx;
+    } else if (e.shiftKey && rowAnchorRef.current != null) {
+      const start = Math.min(rowAnchorRef.current, rowIdx);
+      const end = Math.max(rowAnchorRef.current, rowIdx);
+      newSet.clear();
       for (let i = start; i <= end; i++) newSet.add(i);
     } else {
       newSet.clear();
       newSet.add(rowIdx);
+      rowAnchorRef.current = rowIdx;
     }
     setSelectedRows(newSet);
     setSelectedCols(new Set());
     setSelection(null);
+    setActiveCell(null);
   };
 
   const handleRowHeaderMouseDown = (rowIdx: number, e: React.MouseEvent) => {
@@ -1424,21 +1566,21 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (e.ctrlKey || e.metaKey) {
       if (newSet.has(colIdx)) newSet.delete(colIdx);
       else newSet.add(colIdx);
-    } else if (e.shiftKey && selectedCols.size > 0) {
-      const existing = Array.from(selectedCols);
-      const anchor = existing[0];
-      const start = Math.min(anchor, colIdx);
-      const end = Math.max(anchor, colIdx);
+      colAnchorRef.current = colIdx;
+    } else if (e.shiftKey && colAnchorRef.current != null) {
+      const start = Math.min(colAnchorRef.current, colIdx);
+      const end = Math.max(colAnchorRef.current, colIdx);
       newSet.clear();
       for (let i = start; i <= end; i++) newSet.add(i);
     } else {
       newSet.clear();
       newSet.add(colIdx);
+      colAnchorRef.current = colIdx;
     }
     setSelectedCols(newSet);
     setSelectedRows(new Set());
     setSelection(null);
-    setActiveCell({ row: activeCell?.row ?? 0, col: colIdx });
+    setActiveCell(null);
   };
 
   const handleColHeaderMouseDown = (colIdx: number, e: React.MouseEvent) => {
@@ -1551,17 +1693,20 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       // Suppress the click event that follows mouseup from changing selection
       suppressSelectionRef.current = true;
       requestAnimationFrame(() => { suppressSelectionRef.current = false; });
-      // Apply the final width to all other selected columns
-      if (batchCols.length > 0) {
-        setColWidths((prev) => {
-          const next = [...prev];
+      // Apply the final width to all other selected columns and sync
+      setColWidths((prev) => {
+        const next = [...prev];
+        if (batchCols.length > 0) {
           const finalW = next[colIdx];
           for (const ci of batchCols) {
             next[ci] = finalW;
           }
-          return next;
-        });
-      }
+        }
+        // Sync display props to backend
+        syncDisplayProps(next, colFormatsRef.current);
+        markDirty();
+        return next;
+      });
     };
 
     document.body.style.cursor = "col-resize";
@@ -1638,7 +1783,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
       {/* Column properties dialog */}
       {renameCol && (
-        <div className="sp-dialog-overlay" onClick={() => setRenameCol(null)}>
+        <div className="sp-dialog-overlay">
           <div className="sp-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="sp-dialog-title">列属性</div>
             <div className="sp-dialog-body">
@@ -1654,6 +1799,51 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
               <select className="sp-dialog-select" value={renameType} onChange={(e) => setRenameType(e.target.value)}>
                 {COLUMN_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
+              <label className="sp-dialog-label">显示格式</label>
+              <select className="sp-dialog-select" value={renameFormat.kind} onChange={(e) => {
+                const kind = e.target.value as FormatKind;
+                setRenameFormat(kind === "currency"
+                  ? { kind, decimals: 2, currency: "CNY" }
+                  : kind === "fixed" || kind === "percent"
+                    ? { kind, decimals: 2 }
+                    : { kind });
+              }}>
+                {FORMAT_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </select>
+              {(renameFormat.kind === "fixed" || renameFormat.kind === "percent") && (
+                <div style={{ marginTop: 6 }}>
+                  <label className="sp-dialog-label">小数位数</label>
+                  <input
+                    className="sp-dialog-input"
+                    type="number"
+                    min={0}
+                    max={20}
+                    value={renameFormat.decimals ?? 2}
+                    onChange={(e) => setRenameFormat((prev) => ({ ...prev, decimals: Math.max(0, Math.min(20, Number(e.target.value) || 0)) }))}
+                  />
+                </div>
+              )}
+              {renameFormat.kind === "currency" && (
+                <>
+                  <div style={{ marginTop: 6 }}>
+                    <label className="sp-dialog-label">货币类型</label>
+                    <select className="sp-dialog-select" value={renameFormat.currency ?? "CNY"} onChange={(e) => setRenameFormat((prev) => ({ ...prev, currency: e.target.value }))}>
+                      {CURRENCY_OPTIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ marginTop: 6 }}>
+                    <label className="sp-dialog-label">小数位数</label>
+                    <input
+                      className="sp-dialog-input"
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={renameFormat.decimals ?? 2}
+                      onChange={(e) => setRenameFormat((prev) => ({ ...prev, decimals: Math.max(0, Math.min(20, Number(e.target.value) || 0)) }))}
+                    />
+                  </div>
+                </>
+              )}
               <label className="sp-dialog-label">列宽度</label>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <input
@@ -1785,10 +1975,12 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
                     key={ri}
                     ri={ri}
                     displayRow={displayRow}
+                    colFormats={colFormats}
                     isRowSelected={selectedRows.has(ri)}
                     isRowActive={activeRowRange.has(ri)}
                     isRowSelectedHdr={selectedRows.has(ri)}
                     activeCol={activeCell?.row === ri ? activeCell.col : null}
+                    selectedCols={selectedCols}
                     editRow={editCell?.row ?? null}
                     editCol={editCell?.col ?? null}
                     editValue={editValue}
@@ -2013,7 +2205,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
       {/* Batch column properties dialog */}
       {batchColProps && (
-        <div className="sp-dialog-overlay" onClick={() => setBatchColProps(null)}>
+        <div className="sp-dialog-overlay">
           <div className="sp-dialog sp-dialog-wide" onClick={(e) => e.stopPropagation()}>
             <div className="sp-dialog-title">批量列属性（{batchColProps.colIndices.length} 列）</div>
             <div className="sp-dialog-body">
@@ -2021,6 +2213,51 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
               <select className="sp-dialog-select" value={batchColType} onChange={(e) => setBatchColType(e.target.value)}>
                 {COLUMN_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
+              <label className="sp-dialog-label">显示格式</label>
+              <select className="sp-dialog-select" value={batchColFormat.kind} onChange={(e) => {
+                const kind = e.target.value as FormatKind;
+                setBatchColFormat(kind === "currency"
+                  ? { kind, decimals: 2, currency: "CNY" }
+                  : kind === "fixed" || kind === "percent"
+                    ? { kind, decimals: 2 }
+                    : { kind });
+              }}>
+                {FORMAT_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </select>
+              {(batchColFormat.kind === "fixed" || batchColFormat.kind === "percent") && (
+                <div style={{ marginTop: 6 }}>
+                  <label className="sp-dialog-label">小数位数</label>
+                  <input
+                    className="sp-dialog-input"
+                    type="number"
+                    min={0}
+                    max={20}
+                    value={batchColFormat.decimals ?? 2}
+                    onChange={(e) => setBatchColFormat((prev) => ({ ...prev, decimals: Math.max(0, Math.min(20, Number(e.target.value) || 0)) }))}
+                  />
+                </div>
+              )}
+              {batchColFormat.kind === "currency" && (
+                <>
+                  <div style={{ marginTop: 6 }}>
+                    <label className="sp-dialog-label">货币类型</label>
+                    <select className="sp-dialog-select" value={batchColFormat.currency ?? "CNY"} onChange={(e) => setBatchColFormat((prev) => ({ ...prev, currency: e.target.value }))}>
+                      {CURRENCY_OPTIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ marginTop: 6 }}>
+                    <label className="sp-dialog-label">小数位数</label>
+                    <input
+                      className="sp-dialog-input"
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={batchColFormat.decimals ?? 2}
+                      onChange={(e) => setBatchColFormat((prev) => ({ ...prev, decimals: Math.max(0, Math.min(20, Number(e.target.value) || 0)) }))}
+                    />
+                  </div>
+                </>
+              )}
               <label className="sp-dialog-label">列宽度</label>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <input

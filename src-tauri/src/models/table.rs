@@ -36,3 +36,25 @@ pub struct TableQueryResult {
     pub page: usize,
     pub page_size: usize,
 }
+
+/// Per-column display format
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnFormatInfo {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+/// Per-column display properties (width + format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnDisplayProps {
+    pub col_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<ColumnFormatInfo>,
+}

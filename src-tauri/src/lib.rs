@@ -31,6 +31,8 @@ pub fn run() {
             commands::data_commands::change_column_type,
             commands::data_commands::paste_at_position,
             commands::data_commands::restore_snapshot,
+            commands::data_commands::get_column_display_props,
+            commands::data_commands::set_column_display_props,
             commands::stats_commands::get_column_stats,
             commands::stats_commands::get_descriptive_stats,
             commands::io_commands::export_csv,

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DatasetMeta, TableQueryParams, TableQueryResult } from "@/types/data";
+import type { ColumnDisplayProps, DatasetMeta, TableQueryParams, TableQueryResult } from "@/types/data";
 
 export const dataService = {
   /** 查询数据表（分页） */
@@ -59,4 +59,12 @@ export const dataService = {
   /** 恢复表快照（撤销/重做） */
   restoreSnapshot: (datasetId: string, colNames: string[], colTypes: string[], rows: unknown[][]) =>
     invoke<void>("restore_snapshot", { datasetId, colNames, colTypes, rows }),
+
+  /** 获取列显示属性 */
+  getColumnDisplayProps: (datasetId: string) =>
+    invoke<ColumnDisplayProps[]>("get_column_display_props", { datasetId }),
+
+  /** 设置列显示属性 */
+  setColumnDisplayProps: (datasetId: string, props: ColumnDisplayProps[]) =>
+    invoke<void>("set_column_display_props", { datasetId, props }),
 };
