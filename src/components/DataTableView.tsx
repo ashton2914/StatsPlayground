@@ -404,6 +404,16 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     return s;
   };
 
+  // Filter _row_id from display — memoized (must be before early return for hooks rules)
+  const rowIdIdx = data ? data.columns.indexOf("_row_id") : -1;
+  const cols = useMemo(() => data ? data.columns.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
+  const colTypes = useMemo(() => data ? data.columnTypes.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
+
+  const displayRows = useMemo(() =>
+    data ? data.rows.map((raw) => (raw as unknown[]).filter((_, i) => i !== rowIdIdx)) : [],
+    [data, rowIdIdx]
+  );
+
   // Sync status info to global status bar
   useEffect(() => {
     if (!data) { setStatusInfo(null); return; }
@@ -425,22 +435,55 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       selLabel = sortedCols.map((c) => colLetter(c)).join(",");
     }
 
+    // Compute selection statistics
+    let selectionStats: { count: number; sum?: number; avg?: number; min?: number; max?: number } | undefined;
+    const collectValues = (): unknown[] => {
+      const vals: unknown[] = [];
+      if (selection) {
+        const { r1, c1, r2, c2 } = normalizeRange(selection);
+        if (r1 !== r2 || c1 !== c2) {
+          for (let r = r1; r <= r2; r++)
+            for (let c = c1; c <= c2; c++)
+              vals.push(displayRows[r]?.[c]);
+        }
+      } else if (selectedRows.size > 0) {
+        const colCount = cols.length;
+        for (const ri of selectedRows)
+          for (let c = 0; c < colCount; c++)
+            vals.push(displayRows[ri]?.[c]);
+      } else if (selectedCols.size > 0) {
+        for (let r = 0; r < displayRows.length; r++)
+          for (const ci of selectedCols)
+            vals.push(displayRows[r]?.[ci]);
+      }
+      return vals;
+    };
+
+    const vals = collectValues();
+    if (vals.length > 0) {
+      const nonNull = vals.filter(v => v != null);
+      const nums = nonNull.map(v => Number(v)).filter(n => !isNaN(n));
+      if (nums.length > 0 && nums.length === nonNull.length) {
+        const sum = nums.reduce((a, b) => a + b, 0);
+        selectionStats = {
+          count: nonNull.length,
+          sum,
+          avg: sum / nums.length,
+          min: Math.min(...nums),
+          max: Math.max(...nums),
+        };
+      } else {
+        selectionStats = { count: nonNull.length };
+      }
+    }
+
     setStatusInfo({
       cellLabel: activeCell ? `${colLetter(activeCell.col)}${activeCell.row + 1}` : "",
       selectionLabel: selLabel,
       dimensions: `${data.totalRows} 行 × ${visibleColCount} 列`,
+      selectionStats,
     });
-  }, [activeCell, selection, selectedRows, selectedCols, data, visibleColCount, setStatusInfo]);
-
-  // Filter _row_id from display — memoized (must be before early return for hooks rules)
-  const rowIdIdx = data ? data.columns.indexOf("_row_id") : -1;
-  const cols = useMemo(() => data ? data.columns.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
-  const colTypes = useMemo(() => data ? data.columnTypes.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
-
-  const displayRows = useMemo(() =>
-    data ? data.rows.map((raw) => (raw as unknown[]).filter((_, i) => i !== rowIdIdx)) : [],
-    [data, rowIdIdx]
-  );
+  }, [activeCell, selection, selectedRows, selectedCols, data, displayRows, cols, visibleColCount, setStatusInfo]);
 
   // Precompute active row/col ranges for className computation
   const activeRowRange = useMemo(() => {

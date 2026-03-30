@@ -7,6 +7,12 @@ import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { modKey } from "@/utils/platform";
 
+function formatStat(n: number): string {
+  if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
+  const s = n.toPrecision(10);
+  return parseFloat(s).toString();
+}
+
 function MenuBar({ children }: { children: React.ReactNode }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -323,6 +329,19 @@ export function Workspace() {
         <span>{project?.name}</span>
         <span>{datasets.length} 个数据表</span>
         <span className="status-spacer" />
+        {statusInfo?.selectionStats && (
+          <span className="status-stats">
+            {statusInfo.selectionStats.avg != null && (
+              <>
+                <span>平均值: {formatStat(statusInfo.selectionStats.avg)}</span>
+                <span>最小值: {formatStat(statusInfo.selectionStats.min!)}</span>
+                <span>最大值: {formatStat(statusInfo.selectionStats.max!)}</span>
+                <span>求和: {formatStat(statusInfo.selectionStats.sum!)}</span>
+              </>
+            )}
+            <span>计数: {statusInfo.selectionStats.count}</span>
+          </span>
+        )}
         {(statusInfo?.selectionLabel || statusInfo?.cellLabel) && (
           <span>{statusInfo.selectionLabel || statusInfo.cellLabel}</span>
         )}

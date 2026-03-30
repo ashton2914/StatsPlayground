@@ -2,10 +2,19 @@ import { create } from "zustand";
 import type { DatasetMeta } from "@/types/data";
 import { dataService } from "@/services/dataService";
 
+interface SelectionStats {
+  count: number;
+  sum?: number;
+  avg?: number;
+  min?: number;
+  max?: number;
+}
+
 interface StatusInfo {
   cellLabel: string;
   selectionLabel: string;
   dimensions: string;
+  selectionStats?: SelectionStats;
 }
 
 interface DataStore {

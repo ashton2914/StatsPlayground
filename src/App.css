@@ -1169,6 +1169,11 @@
   flex: 1;
 }
 
+.status-stats {
+  display: flex;
+  gap: 12px;
+}
+
 /* ========= Preferences Dialog ========= */
 .pref-theme-group {
   display: flex;
