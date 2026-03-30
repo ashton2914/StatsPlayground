@@ -3,6 +3,7 @@ import { dataService } from "@/services/dataService";
 import type { TableQueryResult } from "@/types/data";
 import { useDataStore } from "@/stores/useDataStore";
 import { useProjectStore } from "@/stores/useProjectStore";
+import { modKey, shiftKey } from "@/utils/platform";
 
 interface DataTableViewProps {
   datasetId: string;
@@ -1786,13 +1787,13 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="sp-ctx-item" onClick={() => { handleCopy(); setCellMenu(null); }}>
-            复制<span className="sp-ctx-shortcut">⌘C</span>
+            复制<span className="sp-ctx-shortcut">{modKey}C</span>
           </div>
           <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(false)}>
-            粘贴<span className="sp-ctx-shortcut">⌘V</span>
+            粘贴<span className="sp-ctx-shortcut">{modKey}V</span>
           </div>
           <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(true)}>
-            带表头数据粘贴<span className="sp-ctx-shortcut">⌘⇧V</span>
+            带表头数据粘贴<span className="sp-ctx-shortcut">{modKey}{shiftKey}V</span>
           </div>
         </div>
       )}
@@ -1819,10 +1820,10 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
           </div>
           <div className="sp-ctx-sep" />
           <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(false)}>
-            粘贴<span className="sp-ctx-shortcut">⌘V</span>
+            粘贴<span className="sp-ctx-shortcut">{modKey}V</span>
           </div>
           <div className="sp-ctx-item" onClick={() => handleContextMenuPaste(true)}>
-            带表头数据粘贴<span className="sp-ctx-shortcut">⌘⇧V</span>
+            带表头数据粘贴<span className="sp-ctx-shortcut">{modKey}{shiftKey}V</span>
           </div>
         </div>
       )}

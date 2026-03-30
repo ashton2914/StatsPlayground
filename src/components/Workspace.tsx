@@ -5,6 +5,7 @@ import { dataService } from "@/services/dataService";
 import { DataTableView } from "./DataTableView";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { modKey } from "@/utils/platform";
 
 function MenuBar({ children }: { children: React.ReactNode }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -91,17 +92,18 @@ export function Workspace() {
     return () => document.removeEventListener("mousedown", handler);
   }, [dsMenu]);
 
-  // Cmd/Ctrl+S: save project
+  // Cmd/Ctrl+S: save project (use ref to avoid stale closure)
+  const handleSaveRef = useRef<(() => Promise<void>) | null>(null);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        handleSave();
+        handleSaveRef.current?.();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [saveProject]);
+  }, []);
 
   // Cmd/Ctrl+,: open preferences
   useEffect(() => {
@@ -194,6 +196,7 @@ export function Workspace() {
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 1500);
   };
+  handleSaveRef.current = handleSave;
 
   const handleCloseProject = async () => {
     setActiveDataset(null);
@@ -224,11 +227,11 @@ export function Workspace() {
         <div className="menu-bar-menus">
           <MenuBar>
             <MenuDropdown label="文件">
-              <div className="menu-item" onClick={handleSave}>保存<span className="menu-shortcut">⌘S</span></div>
+              <div className="menu-item" onClick={handleSave}>保存<span className="menu-shortcut">{modKey}S</span></div>
               <div className="menu-sep" />
-              <div className="menu-item" onClick={() => setShowPrefs(true)}>首选项<span className="menu-shortcut">⌘,</span></div>
+              <div className="menu-item" onClick={() => setShowPrefs(true)}>首选项<span className="menu-shortcut">{modKey},</span></div>
               <div className="menu-sep" />
-              <div className="menu-item" onClick={handleOpenAnother}>打开项目<span className="menu-shortcut">⌘O</span></div>
+              <div className="menu-item" onClick={handleOpenAnother}>打开项目<span className="menu-shortcut">{modKey}O</span></div>
               <div className="menu-item" onClick={handleCloseProject}>关闭项目</div>
             </MenuDropdown>
             <MenuDropdown label="表格">
@@ -241,7 +244,7 @@ export function Workspace() {
         <button
           className={`menu-bar-save${dirty ? " menu-bar-save-dirty" : ""}`}
           onClick={handleSave}
-          title="保存 (⌘S)"
+          title={`保存 (${modKey}S)`}
         >
           <svg width="20" height="20" viewBox="0 0 640 640" fill="currentColor">
             <path d="M160 144C151.2 144 144 151.2 144 160L144 480C144 488.8 151.2 496 160 496L480 496C488.8 496 496 488.8 496 480L496 237.3C496 233.1 494.3 229 491.3 226L416 150.6L416 240C416 257.7 401.7 272 384 272L224 272C206.3 272 192 257.7 192 240L192 144L160 144zM240 144L240 224L368 224L368 144L240 144zM96 160C96 124.7 124.7 96 160 96L402.7 96C419.7 96 436 102.7 448 114.7L525.3 192C537.3 204 544 220.3 544 237.3L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160zM256 384C256 348.7 284.7 320 320 320C355.3 320 384 348.7 384 384C384 419.3 355.3 448 320 448C284.7 448 256 419.3 256 384z"/>
