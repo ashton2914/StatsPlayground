@@ -688,6 +688,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleApplyBatchColProps = async () => {
     if (!batchColProps) return;
+    saveSnapshot();
     // Apply column widths
     const newW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(batchColWidth) || DEFAULT_COL_WIDTH));
     const newWidths = [...colWidths];
@@ -704,7 +705,6 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     // Sync display props to backend
     syncDisplayProps(newWidths, newFormats);
     markDirty();
-    saveSnapshot();
     try {
       for (const ci of batchColProps.checkedCols) {
         if (colTypes[ci] !== batchColType) {
@@ -721,6 +721,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleRenameColumn = async () => {
     if (!renameCol || !renameValue.trim()) return;
+    saveSnapshot();
     const nameChanged = renameValue.trim() !== renameCol.oldName;
     const typeChanged = renameType !== renameCol.oldType;
     // Apply column width
@@ -736,7 +737,6 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     syncDisplayProps(newWidths, newFormats);
     markDirty();
     try {
-      saveSnapshot();
       if (nameChanged) {
         await dataService.renameColumn(datasetId, renameCol.oldName, renameValue.trim());
       }
@@ -1664,6 +1664,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const handleResizeStart = (e: React.MouseEvent, colIdx: number) => {
     e.preventDefault();
     e.stopPropagation();
+    saveSnapshot();
     const startX = e.clientX;
     // Calculate offset: distance from mouse to the actual right border of the column
     const th = (e.target as HTMLElement).closest("th");
@@ -1750,13 +1751,14 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     e.stopPropagation();
     // If this column is in the selected set, auto-fit all selected columns
     const targetCols = selectedCols.has(colIdx) ? Array.from(selectedCols) : [colIdx];
-    setColWidths((prev) => {
-      const next = [...prev];
-      for (const ci of targetCols) {
-        next[ci] = autoFitColumn(ci);
-      }
-      return next;
-    });
+    saveSnapshot();
+    const newWidths = [...colWidths];
+    for (const ci of targetCols) {
+      newWidths[ci] = autoFitColumn(ci);
+    }
+    setColWidths(newWidths);
+    syncDisplayProps(newWidths, colFormatsRef.current);
+    markDirty();
   };
 
   return (
