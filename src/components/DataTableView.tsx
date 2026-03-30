@@ -137,8 +137,10 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const [renameCol, setRenameCol] = useState<{ colIdx: number; oldName: string; oldType: string } | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameType, setRenameType] = useState("");
+  const [renameWidth, setRenameWidth] = useState("");
   const [batchColProps, setBatchColProps] = useState<{ colIndices: number[]; checkedCols: Set<number> } | null>(null);
   const [batchColType, setBatchColType] = useState("VARCHAR");
+  const [batchColWidth, setBatchColWidth] = useState("");
   const [showInsertMultiRows, setShowInsertMultiRows] = useState(false);
   const [insertRowCount, setInsertRowCount] = useState("5");
   const [showInsertMultiCols, setShowInsertMultiCols] = useState(false);
@@ -158,6 +160,9 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const didDragRef = useRef(false);
   const isDraggingRowRef = useRef(false);
   const isDraggingColRef = useRef(false);
+  const didDragColRef = useRef(false);
+  const didDragRowRef = useRef(false);
+  const suppressSelectionRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const tabAnchorColRef = useRef<number | null>(null);
   const [cellMenu, setCellMenu] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
@@ -252,12 +257,22 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     }
   }, [errorMsg]);
 
+  // Check if selection changes should be suppressed (menu open or resize just finished)
+  const hasMenuOpen = () => !!(colMenu || rowMenu || cellMenu || cornerMenu);
+
   // Close menus on outside click
   useEffect(() => {
-    const handler = () => { setColMenu(null); setRowMenu(null); setCellMenu(null); setCornerMenu(null); };
+    const handler = () => {
+      // If a menu is open, suppress the next selection change from this same click
+      if (colMenu || rowMenu || cellMenu || cornerMenu) {
+        suppressSelectionRef.current = true;
+        requestAnimationFrame(() => { suppressSelectionRef.current = false; });
+      }
+      setColMenu(null); setRowMenu(null); setCellMenu(null); setCornerMenu(null);
+    };
     document.addEventListener("click", handler);
     return () => document.removeEventListener("click", handler);
-  }, []);
+  }, [colMenu, rowMenu, cellMenu, cornerMenu]);
 
   // Initialize colWidths when columns change
   const visibleColCount = data ? data.columns.filter(c => c !== "_row_id").length : 0;
@@ -529,6 +544,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setRenameCol({ colIdx, oldName: cols[colIdx], oldType: colTypes[colIdx] });
     setRenameValue(cols[colIdx]);
     setRenameType(colTypes[colIdx]);
+    setRenameWidth(String(Math.round(colWidths[colIdx] ?? DEFAULT_COL_WIDTH)));
     setColMenu(null);
   };
 
@@ -537,11 +553,21 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (indices.length === 0) return;
     setBatchColProps({ colIndices: indices, checkedCols: new Set(indices) });
     setBatchColType(colTypes[indices[0]] || "VARCHAR");
+    setBatchColWidth(String(Math.round(colWidths[indices[0]] ?? DEFAULT_COL_WIDTH)));
     setColMenu(null);
   };
 
   const handleApplyBatchColProps = async () => {
     if (!batchColProps) return;
+    // Apply column widths
+    const newW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(batchColWidth) || DEFAULT_COL_WIDTH));
+    setColWidths((prev) => {
+      const next = [...prev];
+      for (const ci of batchColProps.checkedCols) {
+        next[ci] = newW;
+      }
+      return next;
+    });
     saveSnapshot();
     try {
       for (const ci of batchColProps.checkedCols) {
@@ -561,6 +587,16 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (!renameCol || !renameValue.trim()) return;
     const nameChanged = renameValue.trim() !== renameCol.oldName;
     const typeChanged = renameType !== renameCol.oldType;
+    // Apply column width
+    const newW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(renameWidth) || DEFAULT_COL_WIDTH));
+    const oldW = colWidths[renameCol.colIdx] ?? DEFAULT_COL_WIDTH;
+    if (newW !== oldW) {
+      setColWidths((prev) => {
+        const next = [...prev];
+        next[renameCol.colIdx] = newW;
+        return next;
+      });
+    }
     try {
       saveSnapshot();
       if (nameChanged) {
@@ -587,6 +623,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       didDragRef.current = false;
       return;
     }
+    // If a menu was just dismissed or resize just finished, don't change selection
+    if (suppressSelectionRef.current || hasMenuOpen()) return;
     if (e && (e.shiftKey) && activeCell) {
       // Shift+click extends/creates selection from activeCell to clicked cell
       setSelection({
@@ -1230,6 +1268,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const handleCellMouseDown = (row: number, col: number, e: React.MouseEvent) => {
     if (e.button !== 0) return; // Left button only
     if (editCell) return; // Don't start drag while editing
+    // If a menu is open, this click is just dismissing it
+    if (hasMenuOpen() || suppressSelectionRef.current) return;
     containerRef.current?.focus();
     setCornerSelected(false);
 
@@ -1293,6 +1333,12 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleRowSelect = (rowIdx: number, e: React.MouseEvent) => {
+    // If a row drag just finished, don't override selection
+    if (didDragRowRef.current) {
+      didDragRowRef.current = false;
+      return;
+    }
+    if (suppressSelectionRef.current || hasMenuOpen()) return;
     setCornerSelected(false);
     const newSet = new Set(selectedRows);
     if (e.ctrlKey || e.metaKey) {
@@ -1312,21 +1358,27 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleRowHeaderMouseDown = (rowIdx: number, e: React.MouseEvent) => {
+    if (hasMenuOpen() || suppressSelectionRef.current) return;
     setCornerSelected(false);
     if (e.button !== 0) return;
     e.preventDefault();
-    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
-      setSelectedRows(new Set([rowIdx]));
-      setSelectedCols(new Set());
-      setSelection(null);
-    }
     isDraggingRowRef.current = true;
+    didDragRowRef.current = false;
     setIsDragging(true);
     const anchorRow = rowIdx;
     document.body.style.userSelect = "none";
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!isDraggingRowRef.current) return;
+      if (!didDragRowRef.current) {
+        didDragRowRef.current = true;
+        // Initialize selection on first move if no modifier
+        if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+          setSelectedRows(new Set([rowIdx]));
+          setSelectedCols(new Set());
+          setSelection(null);
+        }
+      }
       startAutoScroll(ev);
       const target = document.elementFromPoint(ev.clientX, ev.clientY);
       if (!target) return;
@@ -1360,6 +1412,12 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleColSelect = (colIdx: number, e: React.MouseEvent) => {
+    // If a column drag just finished, don't override selection
+    if (didDragColRef.current) {
+      didDragColRef.current = false;
+      return;
+    }
+    if (suppressSelectionRef.current || hasMenuOpen()) return;
     setCornerSelected(false);
     // Single click on column header to select column
     const newSet = new Set(selectedCols);
@@ -1384,21 +1442,27 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   };
 
   const handleColHeaderMouseDown = (colIdx: number, e: React.MouseEvent) => {
+    if (hasMenuOpen() || suppressSelectionRef.current) return;
     setCornerSelected(false);
     if (e.button !== 0) return;
     e.preventDefault();
-    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
-      setSelectedCols(new Set([colIdx]));
-      setSelectedRows(new Set());
-      setSelection(null);
-    }
     isDraggingColRef.current = true;
+    didDragColRef.current = false;
     setIsDragging(true);
     const anchorCol = colIdx;
     document.body.style.userSelect = "none";
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!isDraggingColRef.current) return;
+      if (!didDragColRef.current) {
+        didDragColRef.current = true;
+        // Initialize selection on first move if no modifier
+        if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+          setSelectedCols(new Set([colIdx]));
+          setSelectedRows(new Set());
+          setSelection(null);
+        }
+      }
       startAutoScroll(ev);
       const target = document.elementFromPoint(ev.clientX, ev.clientY);
       if (!target) return;
@@ -1454,25 +1518,26 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setColMenu(null);
   };
 
-  // ---- Column resize (drag) ----
+  // ---- Column resize (drag) — batch-aware (Excel-style) ----
   const handleResizeStart = (e: React.MouseEvent, colIdx: number) => {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
-    const startW = colWidths[colIdx] ?? DEFAULT_COL_WIDTH;
     // Calculate offset: distance from mouse to the actual right border of the column
     const th = (e.target as HTMLElement).closest("th");
     const borderX = th ? th.getBoundingClientRect().right : startX;
     const offsetX = startX - borderX;
+    const startW = colWidths[colIdx] ?? DEFAULT_COL_WIDTH;
+    const batchCols = selectedCols.has(colIdx) ? Array.from(selectedCols).filter(ci => ci !== colIdx) : [];
     resizingRef.current = { colIdx, startX, startW };
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!resizingRef.current) return;
       const delta = ev.clientX - offsetX - resizingRef.current.startX;
-      const newW = Math.max(DEFAULT_COL_WIDTH, resizingRef.current.startW + delta);
+      const newW = Math.max(DEFAULT_COL_WIDTH, startW + delta);
       setColWidths((prev) => {
         const next = [...prev];
-        next[resizingRef.current!.colIdx] = newW;
+        next[colIdx] = newW;
         return next;
       });
     };
@@ -1483,6 +1548,20 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       document.removeEventListener("mouseup", onMouseUp);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      // Suppress the click event that follows mouseup from changing selection
+      suppressSelectionRef.current = true;
+      requestAnimationFrame(() => { suppressSelectionRef.current = false; });
+      // Apply the final width to all other selected columns
+      if (batchCols.length > 0) {
+        setColWidths((prev) => {
+          const next = [...prev];
+          const finalW = next[colIdx];
+          for (const ci of batchCols) {
+            next[ci] = finalW;
+          }
+          return next;
+        });
+      }
     };
 
     document.body.style.cursor = "col-resize";
@@ -1491,36 +1570,46 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     document.addEventListener("mouseup", onMouseUp);
   };
 
-  // ---- Double-click resize to auto-fit ----
+  // ---- Auto-fit column width using canvas measureText ----
+  const autoFitColumn = (colIdx: number): number => {
+    const CELL_PADDING = 14;
+    const HDR_PADDING = 16;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d")!;
+    // Measure cell content (13px font from .sp-grid)
+    ctx.font = "13px system-ui, -apple-system, sans-serif";
+    let maxW = 0;
+    for (const row of displayRows) {
+      const val = row[colIdx];
+      const text = val == null ? "NULL" : String(val);
+      maxW = Math.max(maxW, ctx.measureText(text).width + CELL_PADDING);
+    }
+    // Measure header: col letter + col name + col type label
+    ctx.font = "bold 11px system-ui, -apple-system, sans-serif";
+    const letter = colLetter(colIdx);
+    ctx.font = "13px system-ui, -apple-system, sans-serif";
+    const name = cols[colIdx] || "";
+    const typeLabel = COLUMN_TYPES.find(t => t.value === colTypes[colIdx])?.label ?? colTypes[colIdx];
+    ctx.font = "11px system-ui, -apple-system, sans-serif";
+    // Header content is stacked vertically, widest element determines width
+    const hdrTexts = [letter, name, typeLabel];
+    for (const t of hdrTexts) {
+      maxW = Math.max(maxW, ctx.measureText(t).width + HDR_PADDING);
+    }
+    return Math.max(DEFAULT_COL_WIDTH, Math.ceil(maxW));
+  };
+
+  // ---- Double-click resize to auto-fit (supports batch) ----
   const handleResizeDoubleClick = (e: React.MouseEvent, colIdx: number) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!tableRef.current) return;
-    // Measure max content width in this column
-    const table = tableRef.current.querySelector("table");
-    if (!table) return;
-    const rows = table.querySelectorAll("tbody tr");
-    let maxW = 0;
-    rows.forEach((tr) => {
-      // colIdx + 1 because first td is row header
-      const td = tr.children[colIdx + 1] as HTMLElement | undefined;
-      if (td) {
-        const span = td.querySelector(".sp-val, .sp-null") as HTMLElement | null;
-        if (span) maxW = Math.max(maxW, span.scrollWidth + 14); // 14 = padding
-      }
-    });
-    // Also measure header text
-    const headerCells = table.querySelectorAll("thead th.sp-col-hdr");
-    const hdr = headerCells[colIdx] as HTMLElement | undefined;
-    if (hdr) {
-      const content = hdr.querySelector(".sp-col-hdr-content") as HTMLElement | null;
-      if (content) maxW = Math.max(maxW, content.scrollWidth + 16);
-    }
-    // Enforce minimum = DEFAULT_COL_WIDTH
-    const fitW = Math.max(DEFAULT_COL_WIDTH, maxW);
+    // If this column is in the selected set, auto-fit all selected columns
+    const targetCols = selectedCols.has(colIdx) ? Array.from(selectedCols) : [colIdx];
     setColWidths((prev) => {
       const next = [...prev];
-      next[colIdx] = fitW;
+      for (const ci of targetCols) {
+        next[ci] = autoFitColumn(ci);
+      }
       return next;
     });
   };
@@ -1565,6 +1654,19 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
               <select className="sp-dialog-select" value={renameType} onChange={(e) => setRenameType(e.target.value)}>
                 {COLUMN_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
+              <label className="sp-dialog-label">列宽度</label>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  className="sp-dialog-input"
+                  type="number"
+                  min={DEFAULT_COL_WIDTH}
+                  style={{ flex: 1 }}
+                  value={renameWidth}
+                  onChange={(e) => setRenameWidth(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleRenameColumn(); if (e.key === "Escape") setRenameCol(null); }}
+                />
+                <button className="sp-dialog-btn" onClick={() => setRenameWidth(String(autoFitColumn(renameCol.colIdx)))}>自动</button>
+              </div>
             </div>
             <div className="sp-dialog-actions">
               <button className="sp-dialog-btn" onClick={() => setRenameCol(null)}>取消</button>
@@ -1576,7 +1678,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
       {/* Spreadsheet table */}
       <div className="sp-grid-wrapper" ref={tableRef} onScroll={(e) => setScrollTop((e.target as HTMLElement).scrollTop)}>
-        <table className="sp-grid">
+        <table className="sp-grid" style={{ width: 46 + cols.reduce((s, _, ci) => s + (colWidths[ci] ?? DEFAULT_COL_WIDTH), 0) + 40 }}>
           <colgroup>
             <col style={{ width: 46 }} />
             {cols.map((_, ci) => (
@@ -1613,6 +1715,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
                   <div
                     className="sp-resize-handle"
                     onMouseDown={(e) => handleResizeStart(e, ci)}
+                    onClick={(e) => e.stopPropagation()}
                     onDoubleClick={(e) => handleResizeDoubleClick(e, ci)}
                   />
                 </th>
@@ -1918,6 +2021,24 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
               <select className="sp-dialog-select" value={batchColType} onChange={(e) => setBatchColType(e.target.value)}>
                 {COLUMN_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
+              <label className="sp-dialog-label">列宽度</label>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  className="sp-dialog-input"
+                  type="number"
+                  min={DEFAULT_COL_WIDTH}
+                  style={{ flex: 1 }}
+                  value={batchColWidth}
+                  onChange={(e) => setBatchColWidth(e.target.value)}
+                />
+                <button className="sp-dialog-btn" onClick={() => {
+                  if (!batchColProps) return;
+                  const maxW = Math.max(...batchColProps.checkedCols.size > 0
+                    ? Array.from(batchColProps.checkedCols).map(ci => autoFitColumn(ci))
+                    : [DEFAULT_COL_WIDTH]);
+                  setBatchColWidth(String(maxW));
+                }}>自动</button>
+              </div>
               <label className="sp-dialog-label">应用到以下列：</label>
               <div className="sp-batch-col-list">
                 {batchColProps.colIndices.map((ci) => (
