@@ -102,6 +102,7 @@ export function Workspace() {
     rowsTotal: number;
   } | null>(null);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
+  const [tableKey, setTableKey] = useState(0);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
 
@@ -118,6 +119,8 @@ export function Workspace() {
     if (activeDatasetId && !updatedDatasets.find((d) => d.id === activeDatasetId)) {
       setActiveDataset(null);
     }
+    // Force DataTableView to remount and reload data
+    setTableKey((k) => k + 1);
   }, [refreshDatasets, activeDatasetId, setActiveDataset]);
 
   useEffect(() => {
@@ -522,7 +525,7 @@ export function Workspace() {
         {/* Right: Main Content */}
         <div className="main-area">
           {activeDatasetId ? (
-            <DataTableView datasetId={activeDatasetId} />
+            <DataTableView key={tableKey} datasetId={activeDatasetId} />
           ) : (
             <div className="main-content">
               <div className="workspace-empty">
