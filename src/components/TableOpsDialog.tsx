@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { dataService } from "@/services/dataService";
 import type { DatasetMeta } from "@/types/data";
 
@@ -27,20 +27,50 @@ function ColCheckList({
   onChange: (s: Set<string>) => void;
   label: string;
 }) {
+  const lastClickedRef = useRef<number | null>(null);
+
+  const handleItemClick = useCallback((e: React.MouseEvent, index: number) => {
+    // Prevent default label→checkbox toggle; we handle it ourselves
+    e.preventDefault();
+    const name = cols[index][0];
+    const next = new Set(selected);
+
+    if (e.shiftKey && lastClickedRef.current !== null) {
+      // Shift+click: range select/deselect from last clicked to current
+      const from = Math.min(lastClickedRef.current, index);
+      const to = Math.max(lastClickedRef.current, index);
+      const adding = !selected.has(name);
+      for (let i = from; i <= to; i++) {
+        if (adding) next.add(cols[i][0]); else next.delete(cols[i][0]);
+      }
+    } else if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd+click: toggle single item without affecting others
+      if (next.has(name)) next.delete(name); else next.add(name);
+    } else {
+      // Plain click: toggle single item
+      if (next.has(name)) next.delete(name); else next.add(name);
+    }
+
+    lastClickedRef.current = index;
+    onChange(next);
+  }, [cols, selected, onChange]);
+
   return (
     <div className="sp-dialog-field">
       <label className="sp-dialog-label">{label}</label>
       <div className="sp-col-checklist">
-        {cols.map(([name, type_]) => (
-          <label key={name} className="sp-col-check-item" title={type_}>
+        {cols.map(([name, type_], i) => (
+          <label
+            key={name}
+            className="sp-col-check-item"
+            title={type_}
+            onMouseDown={(e) => handleItemClick(e, i)}
+          >
             <input
               type="checkbox"
               checked={selected.has(name)}
-              onChange={(e) => {
-                const next = new Set(selected);
-                if (e.target.checked) next.add(name); else next.delete(name);
-                onChange(next);
-              }}
+              readOnly
+              tabIndex={-1}
             />
             <span>{name}</span>
             <span className="sp-col-type-hint">{type_}</span>
