@@ -284,7 +284,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       const result = await dataService.queryTable({
         datasetId,
         page: 0,
-        pageSize: 10000,
+        pageSize: 1_000_000,
       });
       setData(result);
       // Load saved display props
@@ -306,7 +306,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       } catch { /* ignore display prop load errors */ }
     } catch (e) {
       console.error("Failed to load table:", e);
-      setData({ columns: [], columnTypes: [], rows: [], totalRows: 0, page: 0, pageSize: 10000 });
+      setData({ columns: [], columnTypes: [], rows: [], totalRows: 0, page: 0, pageSize: 1_000_000 });
     }
   }, [datasetId]);
 
