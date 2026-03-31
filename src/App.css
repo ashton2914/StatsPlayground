@@ -1596,44 +1596,7 @@
 }
 
 /* Snapshot context menu */
-.snapshot-ctx-menu {
-  position: fixed;
-  z-index: 9999;
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border-main);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-  padding: 4px 0;
-  min-width: 120px;
-}
-
-.snapshot-ctx-item {
-  padding: 6px 16px;
-  font-size: 12px;
-  color: var(--fg-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.snapshot-ctx-item:hover {
-  background: var(--bg-menu-hover);
-}
-
-.snapshot-ctx-danger {
-  color: var(--fg-danger);
-}
-
-.snapshot-ctx-danger:hover {
-  background: var(--fg-danger);
-  color: #fff;
-}
-
-.snapshot-ctx-divider {
-  height: 1px;
-  background: var(--border-main);
-  margin: 4px 0;
-}
-
+/* Snapshot delete confirmation (inside sp-ctx-menu) */
 .snapshot-ctx-confirm {
   padding: 6px 16px;
   display: flex;

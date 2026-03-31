@@ -5,7 +5,7 @@ import { useHistoryStore } from "@/stores/useHistoryStore";
 import { dataService } from "@/services/dataService";
 import { ioService } from "@/services/ioService";
 import { DataTableView } from "./DataTableView";
-import { HistoryPanel } from "./HistoryPanel";
+import { HistoryPanel, type SnapshotMenuData } from "./HistoryPanel";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -84,13 +84,16 @@ export function Workspace() {
   const { project, saveProject, closeProject, initProject, dirty, markDirty } = useProjectStore();
   const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
-  const { record: recordHistory, createSnapshot, reset: resetHistory } = useHistoryStore();
+  const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory } = useHistoryStore();
   const [activeTab, setActiveTab] = useState<"files" | "history">("files");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showPrefs, setShowPrefs] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
   const [dsMenu, setDsMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [snapMenu, setSnapMenu] = useState<SnapshotMenuData | null>(null);
+  const [confirmDeleteSnapId, setConfirmDeleteSnapId] = useState<string | null>(null);
+  const snapRenameRef = useRef<((id: string) => void) | null>(null);
   const [importProgress, setImportProgress] = useState<{
     tableName: string;
     tableIndex: number;
@@ -128,6 +131,14 @@ export function Workspace() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [dsMenu]);
+
+  // Dismiss snapshot context menu on click
+  useEffect(() => {
+    if (!snapMenu) return;
+    const handler = () => { setSnapMenu(null); setConfirmDeleteSnapId(null); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [snapMenu]);
 
   // Cmd/Ctrl+S: save project (use ref to avoid stale closure)
   const handleSaveRef = useRef<(() => Promise<void>) | null>(null);
@@ -500,7 +511,11 @@ export function Workspace() {
           </div>
             </>
           ) : (
-            <HistoryPanel onRestored={handleHistoryRestored} setBusyMessage={setBusyMessage} />
+            <HistoryPanel
+              setBusyMessage={setBusyMessage}
+              onSnapshotMenu={(menu) => { setSnapMenu(menu); setConfirmDeleteSnapId(null); }}
+              snapRenameRef={snapRenameRef}
+            />
           )}
         </div>
 
@@ -607,6 +622,64 @@ export function Workspace() {
             handleDeleteDataset(dsMenu.id);
             setDsMenu(null);
           }}>删除</div>
+        </div>
+      )}
+
+      {snapMenu && (
+        <div
+          className="sp-ctx-menu"
+          style={{ left: snapMenu.x, top: snapMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="sp-ctx-item" onClick={() => {
+            snapRenameRef.current?.(snapMenu.id);
+            setSnapMenu(null);
+          }}>重命名</div>
+          <div className="sp-ctx-item" onClick={async () => {
+            const id = snapMenu.id;
+            setSnapMenu(null);
+            setBusyMessage("正在恢复快照…");
+            const unlisten = await listen<{
+              datasetIndex: number;
+              datasetTotal: number;
+              datasetName: string;
+            }>("restore-progress", (event) => {
+              const { datasetIndex, datasetTotal, datasetName } = event.payload;
+              if (datasetTotal > 0 && datasetIndex < datasetTotal) {
+                setBusyMessage(`正在恢复快照… 数据表 ${datasetIndex + 1}/${datasetTotal}: ${datasetName}`);
+              }
+            });
+            try {
+              await restoreSnapshot(id);
+              await handleHistoryRestored();
+            } finally {
+              unlisten();
+              setBusyMessage(null);
+            }
+          }}>恢复</div>
+          <div className="sp-ctx-sep" />
+          {confirmDeleteSnapId === snapMenu.id ? (
+            <div className="snapshot-ctx-confirm" onMouseDown={(e) => e.stopPropagation()}>
+              <span className="snapshot-ctx-confirm-text">确认删除？</span>
+              <div className="snapshot-ctx-confirm-btns">
+                <button className="snapshot-ctx-confirm-yes" onClick={(e) => {
+                  e.stopPropagation();
+                  deleteSnapshot(confirmDeleteSnapId);
+                  setConfirmDeleteSnapId(null);
+                  setSnapMenu(null);
+                }}>确认</button>
+                <button className="snapshot-ctx-confirm-no" onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmDeleteSnapId(null);
+                }}>取消</button>
+              </div>
+            </div>
+          ) : (
+            <div className="sp-ctx-item sp-ctx-danger" onClick={(e) => {
+              e.stopPropagation();
+              setConfirmDeleteSnapId(snapMenu.id);
+            }}>删除</div>
+          )}
         </div>
       )}
 

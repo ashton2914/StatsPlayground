@@ -1,33 +1,33 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type MutableRefObject } from "react";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { listen } from "@tauri-apps/api/event";
 
+export interface SnapshotMenuData {
+  id: string;
+  x: number;
+  y: number;
+}
+
 export function HistoryPanel({
-  onRestored,
   setBusyMessage,
+  onSnapshotMenu,
+  snapRenameRef,
 }: {
-  onRestored: () => Promise<void>;
   setBusyMessage: (msg: string | null) => void;
+  onSnapshotMenu: (menu: SnapshotMenuData) => void;
+  snapRenameRef: MutableRefObject<((id: string) => void) | null>;
 }) {
   const {
     history,
     snapshots,
     currentIdx,
     createSnapshot,
-    restoreSnapshot,
-    deleteSnapshot,
-    renameSnapshot,
     jumpTo,
   } = useHistoryStore();
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameRef = useRef<HTMLInputElement>(null);
-
-  // Context menu state
-  const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  // Delete confirmation state
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // Draggable divider state (percentage of history section)
   const [historyPct, setHistoryPct] = useState(60);
@@ -41,13 +41,17 @@ export function HistoryPanel({
     }
   }, [renamingId]);
 
-  // Close context menu on outside click
+  // Expose rename trigger to parent via ref
   useEffect(() => {
-    if (!ctxMenu) return;
-    const handler = () => setCtxMenu(null);
-    document.addEventListener("click", handler);
-    return () => document.removeEventListener("click", handler);
-  }, [ctxMenu]);
+    snapRenameRef.current = (id: string) => {
+      const snap = snapshots.find(s => s.id === id);
+      if (snap) {
+        setRenamingId(snap.id);
+        setRenameValue(snap.name);
+      }
+    };
+    return () => { snapRenameRef.current = null; };
+  }, [snapshots, snapRenameRef]);
 
   // Divider drag handler
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
@@ -79,31 +83,10 @@ export function HistoryPanel({
     document.addEventListener("mouseup", onMouseUp);
   }, [historyPct]);
 
-  const handleRestoreSnapshot = async (id: string) => {
-    setCtxMenu(null);
-    setBusyMessage("正在恢复快照…");
-    const unlisten = await listen<{
-      datasetIndex: number;
-      datasetTotal: number;
-      datasetName: string;
-    }>("restore-progress", (event) => {
-      const { datasetIndex, datasetTotal, datasetName } = event.payload;
-      if (datasetTotal > 0 && datasetIndex < datasetTotal) {
-        setBusyMessage(`正在恢复快照… 数据表 ${datasetIndex + 1}/${datasetTotal}: ${datasetName}`);
-      }
-    });
-    try {
-      await restoreSnapshot(id);
-      await onRestored();
-    } finally {
-      unlisten();
-      setBusyMessage(null);
-    }
-  };
-
   const handleRenameSubmit = (id: string) => {
     const trimmed = renameValue.trim();
     if (trimmed) {
+      const { renameSnapshot } = useHistoryStore.getState();
       renameSnapshot(id, trimmed);
     }
     setRenamingId(null);
@@ -132,43 +115,7 @@ export function HistoryPanel({
   const handleSnapshotContextMenu = (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     e.stopPropagation();
-    setCtxMenu({ id, x: e.clientX, y: e.clientY });
-    setConfirmDeleteId(null);
-  };
-
-  const handleCtxRename = () => {
-    if (!ctxMenu) return;
-    const snap = snapshots.find(s => s.id === ctxMenu.id);
-    if (snap) {
-      setRenamingId(snap.id);
-      setRenameValue(snap.name);
-    }
-    setCtxMenu(null);
-  };
-
-  const handleCtxRestore = () => {
-    if (!ctxMenu) return;
-    handleRestoreSnapshot(ctxMenu.id);
-  };
-
-  const handleCtxDeleteRequest = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!ctxMenu) return;
-    setConfirmDeleteId(ctxMenu.id);
-  };
-
-  const handleCtxDeleteConfirm = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (confirmDeleteId) {
-      deleteSnapshot(confirmDeleteId);
-      setConfirmDeleteId(null);
-      setCtxMenu(null);
-    }
-  };
-
-  const handleCtxDeleteCancel = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setConfirmDeleteId(null);
+    onSnapshotMenu({ id, x: e.clientX, y: e.clientY });
   };
 
   const formatTime = (iso: string): string => {
@@ -287,29 +234,7 @@ export function HistoryPanel({
         </div>
       </div>
 
-      {/* Snapshot context menu */}
-      {ctxMenu && (
-        <div
-          className="snapshot-ctx-menu"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="snapshot-ctx-item" onClick={handleCtxRename}>重命名</div>
-          <div className="snapshot-ctx-item" onClick={handleCtxRestore}>恢复</div>
-          <div className="snapshot-ctx-divider" />
-          {confirmDeleteId === ctxMenu.id ? (
-            <div className="snapshot-ctx-confirm">
-              <span className="snapshot-ctx-confirm-text">确认删除？</span>
-              <div className="snapshot-ctx-confirm-btns">
-                <button className="snapshot-ctx-confirm-yes" onClick={handleCtxDeleteConfirm}>确认</button>
-                <button className="snapshot-ctx-confirm-no" onClick={handleCtxDeleteCancel}>取消</button>
-              </div>
-            </div>
-          ) : (
-            <div className="snapshot-ctx-item snapshot-ctx-danger" onClick={handleCtxDeleteRequest}>删除</div>
-          )}
-        </div>
-      )}
+
     </div>
   );
 }
