@@ -124,4 +124,80 @@ impl<'a> DataService<'a> {
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         db.restore_snapshot(dataset_id, col_names, col_types, rows)
     }
+
+    // ─── Table Operations ───
+
+    pub fn get_columns(&self, dataset_id: &str) -> Result<Vec<(String, String)>, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.get_user_columns(dataset_id)
+    }
+
+    pub fn sort_table(
+        &self, source_id: &str, sort_cols: &[String], sort_orders: &[String], new_name: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.sort_table(&id, new_name, source_id, sort_cols, sort_orders)
+    }
+
+    pub fn subset_table(
+        &self, source_id: &str, columns: &[String], row_filter: Option<&str>, new_name: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.subset_table(&id, new_name, source_id, columns, row_filter)
+    }
+
+    pub fn transpose_table(&self, source_id: &str, new_name: &str) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.transpose_table(&id, new_name, source_id)
+    }
+
+    pub fn stack_table(
+        &self, source_id: &str, stack_cols: &[String], id_cols: &[String], new_name: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.stack_table(&id, new_name, source_id, stack_cols, id_cols)
+    }
+
+    pub fn split_table(
+        &self, source_id: &str, split_col: &str, value_col: &str, id_cols: &[String], new_name: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.split_table(&id, new_name, source_id, split_col, value_col, id_cols)
+    }
+
+    pub fn summary_table(
+        &self, source_id: &str, stat_cols: &[String], group_cols: &[String], statistics: &[String], new_name: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.summary_table(&id, new_name, source_id, stat_cols, group_cols, statistics)
+    }
+
+    pub fn join_tables(
+        &self, left_id: &str, right_id: &str, join_type: &str, left_key: &str, right_key: &str, new_name: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.join_tables(&id, new_name, left_id, right_id, join_type, left_key, right_key)
+    }
+
+    pub fn update_table(
+        &self, left_id: &str, right_id: &str, match_col: &str, update_cols: &[String],
+    ) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.update_table(left_id, right_id, match_col, update_cols)
+    }
+
+    pub fn concatenate_tables(
+        &self, source_ids: &[String], new_name: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.concatenate_tables(&id, new_name, source_ids)
+    }
 }

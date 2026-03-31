@@ -46,6 +46,16 @@ pub fn run() {
             commands::project_commands::open_project,
             commands::project_commands::save_project,
             commands::project_commands::get_current_project,
+            commands::table_commands::get_columns,
+            commands::table_commands::sort_table,
+            commands::table_commands::subset_table,
+            commands::table_commands::transpose_table,
+            commands::table_commands::stack_table,
+            commands::table_commands::split_table,
+            commands::table_commands::summary_table,
+            commands::table_commands::join_tables,
+            commands::table_commands::update_table,
+            commands::table_commands::concatenate_tables,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -7,6 +7,7 @@ import { ioService } from "@/services/ioService";
 import { DataTableView } from "./DataTableView";
 import { HistoryPanel, type SnapshotMenuData } from "./HistoryPanel";
 import { PreferencesDialog } from "./PreferencesDialog";
+import { TableOpsDialog, type TableOpType } from "./TableOpsDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
@@ -89,6 +90,7 @@ export function Workspace() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showPrefs, setShowPrefs] = useState(false);
+  const [tableOp, setTableOp] = useState<TableOpType | null>(null);
   const [saveToast, setSaveToast] = useState(false);
   const [dsMenu, setDsMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [snapMenu, setSnapMenu] = useState<SnapshotMenuData | null>(null);
@@ -397,6 +399,20 @@ export function Workspace() {
               <div className="menu-item" onClick={handleExportSqlite}>导出为 SQLite</div>
               <div className="menu-item" onClick={handleExportCsvZip}>导出为 CSV (ZIP)</div>
             </MenuDropdown>
+            <MenuDropdown label="操作">
+              <div className="menu-item" onClick={() => setTableOp("summary")}>汇总</div>
+              <div className="menu-sep" />
+              <div className="menu-item" onClick={() => setTableOp("subset")}>子集</div>
+              <div className="menu-item" onClick={() => setTableOp("sort")}>排序</div>
+              <div className="menu-sep" />
+              <div className="menu-item" onClick={() => setTableOp("stack")}>堆叠</div>
+              <div className="menu-item" onClick={() => setTableOp("split")}>拆分</div>
+              <div className="menu-item" onClick={() => setTableOp("transpose")}>转置</div>
+              <div className="menu-sep" />
+              <div className="menu-item" onClick={() => setTableOp("join")}>连接</div>
+              <div className="menu-item" onClick={() => setTableOp("update")}>更新</div>
+              <div className="menu-item" onClick={() => setTableOp("concatenate")}>合并</div>
+            </MenuDropdown>
           </MenuBar>
         </div>
         <div className="menu-spacer" />
@@ -561,6 +577,25 @@ export function Workspace() {
       </div>
 
       {showPrefs && <PreferencesDialog onClose={() => setShowPrefs(false)} />}
+
+      {tableOp && (
+        <TableOpsDialog
+          op={tableOp}
+          datasets={datasets}
+          activeDatasetId={activeDatasetId}
+          onClose={() => setTableOp(null)}
+          onCreated={async (ds) => {
+            await refreshDatasets();
+            setActiveDataset(ds.id);
+            markDirty();
+          }}
+          onUpdated={async () => {
+            await refreshDatasets();
+            setTableKey(k => k + 1);
+            markDirty();
+          }}
+        />
+      )}
 
       {importProgress && (
         <div className="sp-dialog-overlay">

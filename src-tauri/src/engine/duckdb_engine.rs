@@ -1149,4 +1149,489 @@ impl DuckDbEngine {
 
         Ok(())
     }
+
+    // ───────────────────────────────────────────────────────────────
+    //  Table operations (JMP-style)
+    // ───────────────────────────────────────────────────────────────
+
+    /// Helper: create a new dataset from an arbitrary SELECT query.
+    /// Adds `_row_id` via ROW_NUMBER(), registers metadata, returns DatasetMeta.
+    fn create_table_from_query(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_type: &str,
+        select_sql: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let table_name = format!("dataset_{}", new_id.replace('-', "_"));
+
+        // Create table via CTAS wrapped with _row_id
+        let ctas = format!(
+            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __inner__.* FROM ({}) AS __inner__",
+            table_name, select_sql
+        );
+        self.conn.execute(&ctas, [])?;
+
+        // Collect column info (skip _row_id)
+        let col_sql = format!(
+            "SELECT column_name, data_type FROM information_schema.columns \
+             WHERE table_name = '{}' AND column_name != '_row_id' \
+             ORDER BY ordinal_position",
+            table_name
+        );
+        let mut col_stmt = self.conn.prepare(&col_sql)?;
+        let mut col_index = 0i32;
+        let mut rows = col_stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let col_name: String = row.get(0)?;
+            let col_type: String = row.get(1)?;
+            self.conn.execute(
+                "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) \
+                 VALUES ($1, $2, $3, $4)",
+                params![new_id, col_index, col_name, col_type],
+            )?;
+            col_index += 1;
+        }
+
+        let row_count: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+
+        self.conn.execute(
+            "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) \
+             VALUES ($1, $2, NULL, $3, $4, $5)",
+            params![new_id, new_name, source_type, row_count, col_index],
+        )?;
+
+        self.get_dataset_meta(new_id)
+    }
+
+    /// Sort: create sorted copy of a dataset
+    pub fn sort_table(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_id: &str,
+        sort_cols: &[String],
+        sort_orders: &[String],
+    ) -> Result<DatasetMeta, AppError> {
+        let src_table = format!("dataset_{}", source_id.replace('-', "_"));
+        // Get user columns (skip _row_id)
+        let cols = self.get_user_columns(source_id)?;
+        let select_cols = cols.iter().map(|(n, _)| format!("\"{}\"", n)).collect::<Vec<_>>().join(", ");
+
+        let order_parts: Vec<String> = sort_cols.iter().zip(sort_orders.iter()).map(|(col, ord)| {
+            let dir = if ord.eq_ignore_ascii_case("desc") { "DESC" } else { "ASC" };
+            format!("\"{}\" {}", col, dir)
+        }).collect();
+
+        let sql = format!(
+            "SELECT {} FROM \"{}\" ORDER BY {}",
+            select_cols, src_table, order_parts.join(", ")
+        );
+        self.create_table_from_query(new_id, new_name, "sort", &sql)
+    }
+
+    /// Subset: create a subset from selected columns and optional row filter
+    pub fn subset_table(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_id: &str,
+        columns: &[String],       // empty = all
+        row_filter: Option<&str>,  // SQL WHERE clause (e.g. "age > 18")
+    ) -> Result<DatasetMeta, AppError> {
+        let src_table = format!("dataset_{}", source_id.replace('-', "_"));
+        let user_cols = self.get_user_columns(source_id)?;
+
+        let select_cols = if columns.is_empty() {
+            user_cols.iter().map(|(n, _)| format!("\"{}\"", n)).collect::<Vec<_>>().join(", ")
+        } else {
+            columns.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ")
+        };
+
+        let where_clause = match row_filter {
+            Some(f) if !f.trim().is_empty() => format!(" WHERE {}", f),
+            _ => String::new(),
+        };
+
+        let sql = format!("SELECT {} FROM \"{}\"{}",
+            select_cols, src_table, where_clause);
+        self.create_table_from_query(new_id, new_name, "subset", &sql)
+    }
+
+    /// Transpose: swap rows and columns
+    pub fn transpose_table(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_id: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let src_table = format!("dataset_{}", source_id.replace('-', "_"));
+        let user_cols = self.get_user_columns(source_id)?;
+        if user_cols.is_empty() {
+            return Err(AppError::InvalidParam("Source table has no columns".into()));
+        }
+
+        // Fetch all rows
+        let select_cols = user_cols.iter().map(|(n, _)| format!("\"{}\"", n)).collect::<Vec<_>>().join(", ");
+        let query = format!("SELECT {} FROM \"{}\" ORDER BY \"_row_id\"", select_cols, src_table);
+        let mut stmt = self.conn.prepare(&query)?;
+        let mut rows_iter = stmt.query([])?;
+        let mut all_rows: Vec<Vec<String>> = Vec::new();
+        while let Some(row) = rows_iter.next()? {
+            let mut r = Vec::new();
+            for i in 0..user_cols.len() {
+                let v: duckdb::types::Value = row.get(i)?;
+                r.push(self.value_to_string(&v));
+            }
+            all_rows.push(r);
+        }
+
+        // Build transposed table:
+        // First column = original column names ("Label")
+        // Remaining columns = Row1, Row2, ...
+        let n_new_cols = all_rows.len() + 1; // Label + each original row
+        let mut new_col_names: Vec<String> = vec!["Label".to_string()];
+        for i in 0..all_rows.len() {
+            new_col_names.push(format!("Row{}", i + 1));
+        }
+        let new_col_types: Vec<String> = vec!["VARCHAR".to_string(); n_new_cols];
+
+        let table_name = format!("dataset_{}", new_id.replace('-', "_"));
+        let col_defs = new_col_names.iter().zip(new_col_types.iter())
+            .map(|(n, t)| format!("\"{}\" {}", n, t))
+            .collect::<Vec<_>>().join(", ");
+        self.conn.execute(
+            &format!("CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0, {})", table_name, col_defs),
+            [],
+        )?;
+
+        // Insert transposed rows
+        for (ci, (col_name, _)) in user_cols.iter().enumerate() {
+            let mut vals = vec![
+                (ci as i64 + 1).to_string(), // _row_id
+                format!("'{}'", col_name.replace('\'', "''")), // Label
+            ];
+            for row in &all_rows {
+                let v = &row[ci];
+                if v == "NULL" {
+                    vals.push("NULL".to_string());
+                } else {
+                    vals.push(format!("'{}'", v.replace('\'', "''")));
+                }
+            }
+            let insert = format!(
+                "INSERT INTO \"{}\" (\"_row_id\", {}) VALUES ({})",
+                table_name,
+                new_col_names.iter().map(|n| format!("\"{}\"", n)).collect::<Vec<_>>().join(", "),
+                vals.join(", ")
+            );
+            self.conn.execute(&insert, [])?;
+        }
+
+        // Register metadata
+        for (i, name) in new_col_names.iter().enumerate() {
+            self.conn.execute(
+                "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, 'VARCHAR')",
+                params![new_id, i as i32, name],
+            )?;
+        }
+        self.conn.execute(
+            "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) \
+             VALUES ($1, $2, NULL, 'transpose', $3, $4)",
+            params![new_id, new_name, user_cols.len() as i64, n_new_cols as i32],
+        )?;
+        self.get_dataset_meta(new_id)
+    }
+
+    /// Stack: reshape wide to long (multiple columns → label + value)
+    pub fn stack_table(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_id: &str,
+        stack_cols: &[String],   // columns to stack (become values)
+        id_cols: &[String],      // columns to keep as identifiers
+    ) -> Result<DatasetMeta, AppError> {
+        let src_table = format!("dataset_{}", source_id.replace('-', "_"));
+
+        let id_select = if id_cols.is_empty() {
+            String::new()
+        } else {
+            id_cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ") + ", "
+        };
+
+        // UNION ALL for each stacked column
+        let unions: Vec<String> = stack_cols.iter().map(|col| {
+            format!(
+                "SELECT {}CAST('{}' AS VARCHAR) AS \"Label\", CAST(\"{}\" AS VARCHAR) AS \"Value\" FROM \"{}\"",
+                id_select,
+                col.replace('\'', "''"),
+                col,
+                src_table,
+            )
+        }).collect();
+
+        let sql = unions.join(" UNION ALL ");
+        self.create_table_from_query(new_id, new_name, "stack", &sql)
+    }
+
+    /// Split: reshape long to wide (pivot label+value → multiple columns)
+    pub fn split_table(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_id: &str,
+        split_col: &str,    // column containing new column names
+        value_col: &str,     // column containing values
+        id_cols: &[String],  // grouping columns
+    ) -> Result<DatasetMeta, AppError> {
+        let src_table = format!("dataset_{}", source_id.replace('-', "_"));
+
+        // Get distinct values of split_col to become new column names
+        let distinct_sql = format!(
+            "SELECT DISTINCT CAST(\"{}\" AS VARCHAR) AS v FROM \"{}\" WHERE \"{}\" IS NOT NULL ORDER BY v",
+            split_col, src_table, split_col
+        );
+        let mut stmt = self.conn.prepare(&distinct_sql)?;
+        let mut rows = stmt.query([])?;
+        let mut pivot_vals: Vec<String> = Vec::new();
+        while let Some(row) = rows.next()? {
+            let v: String = row.get(0)?;
+            pivot_vals.push(v);
+        }
+        if pivot_vals.is_empty() {
+            return Err(AppError::InvalidParam("Split column has no non-null values".into()));
+        }
+
+        let id_group = if id_cols.is_empty() {
+            // Use all columns except split and value as id
+            let user_cols = self.get_user_columns(source_id)?;
+            user_cols.iter()
+                .filter(|(n, _)| n != split_col && n != value_col)
+                .map(|(n, _)| n.clone())
+                .collect::<Vec<_>>()
+        } else {
+            id_cols.to_vec()
+        };
+
+        let id_select = id_group.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ");
+        let pivot_cols: Vec<String> = pivot_vals.iter().map(|v| {
+            format!(
+                "MAX(CASE WHEN CAST(\"{}\" AS VARCHAR) = '{}' THEN \"{}\" END) AS \"{}\"",
+                split_col, v.replace('\'', "''"), value_col, v.replace('"', "\"\"")
+            )
+        }).collect();
+
+        let sql = if id_group.is_empty() {
+            format!("SELECT {} FROM \"{}\" GROUP BY 1",
+                pivot_cols.join(", "), src_table)
+        } else {
+            format!("SELECT {}, {} FROM \"{}\" GROUP BY {}",
+                id_select, pivot_cols.join(", "), src_table, id_select)
+        };
+
+        self.create_table_from_query(new_id, new_name, "split", &sql)
+    }
+
+    /// Summary: compute descriptive statistics grouped by optional columns
+    pub fn summary_table(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_id: &str,
+        stat_cols: &[String],    // columns to summarize
+        group_cols: &[String],   // group-by columns (can be empty)
+        statistics: &[String],   // which stats: "n", "mean", "std", "min", "max", "sum", "median"
+    ) -> Result<DatasetMeta, AppError> {
+        let src_table = format!("dataset_{}", source_id.replace('-', "_"));
+
+        let mut select_parts: Vec<String> = Vec::new();
+
+        // Group-by columns first
+        for gc in group_cols {
+            select_parts.push(format!("\"{}\"", gc));
+        }
+
+        // Stats for each stat_col
+        for sc in stat_cols {
+            for stat in statistics {
+                let expr = match stat.as_str() {
+                    "n" => format!("COUNT(\"{}\") AS \"{}_N\"", sc, sc),
+                    "mean" => format!("AVG(CAST(\"{}\" AS DOUBLE)) AS \"{}_Mean\"", sc, sc),
+                    "std" => format!("STDDEV(CAST(\"{}\" AS DOUBLE)) AS \"{}_Std\"", sc, sc),
+                    "min" => format!("MIN(\"{}\") AS \"{}_Min\"", sc, sc),
+                    "max" => format!("MAX(\"{}\") AS \"{}_Max\"", sc, sc),
+                    "sum" => format!("SUM(CAST(\"{}\" AS DOUBLE)) AS \"{}_Sum\"", sc, sc),
+                    "median" => format!("MEDIAN(CAST(\"{}\" AS DOUBLE)) AS \"{}_Median\"", sc, sc),
+                    _ => continue,
+                };
+                select_parts.push(expr);
+            }
+        }
+
+        if select_parts.is_empty() {
+            return Err(AppError::InvalidParam("No statistics specified".into()));
+        }
+
+        let group_clause = if group_cols.is_empty() {
+            String::new()
+        } else {
+            format!(" GROUP BY {}", group_cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "))
+        };
+
+        let sql = format!("SELECT {} FROM \"{}\"{}",
+            select_parts.join(", "), src_table, group_clause);
+        self.create_table_from_query(new_id, new_name, "summary", &sql)
+    }
+
+    /// Join: join two tables
+    pub fn join_tables(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        left_id: &str,
+        right_id: &str,
+        join_type: &str,       // "inner", "left", "right", "full"
+        left_key: &str,
+        right_key: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        let left_table = format!("dataset_{}", left_id.replace('-', "_"));
+        let right_table = format!("dataset_{}", right_id.replace('-', "_"));
+        let left_cols = self.get_user_columns(left_id)?;
+        let right_cols = self.get_user_columns(right_id)?;
+
+        let join_kw = match join_type.to_lowercase().as_str() {
+            "left" => "LEFT JOIN",
+            "right" => "RIGHT JOIN",
+            "full" => "FULL OUTER JOIN",
+            _ => "INNER JOIN",
+        };
+
+        // Build select: all left cols as-is, right cols with _r suffix for conflicts
+        let mut select_parts: Vec<String> = Vec::new();
+        let left_names: std::collections::HashSet<&str> = left_cols.iter().map(|(n, _)| n.as_str()).collect();
+
+        for (n, _) in &left_cols {
+            select_parts.push(format!("L.\"{}\"", n));
+        }
+        for (n, _) in &right_cols {
+            if left_names.contains(n.as_str()) {
+                select_parts.push(format!("R.\"{}\" AS \"{}_r\"", n, n));
+            } else {
+                select_parts.push(format!("R.\"{}\"", n));
+            }
+        }
+
+        let sql = format!(
+            "SELECT {} FROM \"{}\" AS L {} \"{}\" AS R ON L.\"{}\" = R.\"{}\"",
+            select_parts.join(", "), left_table, join_kw, right_table, left_key, right_key
+        );
+        self.create_table_from_query(new_id, new_name, "join", &sql)
+    }
+
+    /// Update: update left table using values from right table
+    pub fn update_table(
+        &self,
+        left_id: &str,
+        right_id: &str,
+        match_col: &str,
+        update_cols: &[String],  // columns to update from right into left
+    ) -> Result<(), AppError> {
+        let left_table = format!("dataset_{}", left_id.replace('-', "_"));
+        let right_table = format!("dataset_{}", right_id.replace('-', "_"));
+
+        for col in update_cols {
+            let sql = format!(
+                "UPDATE \"{}\" SET \"{}\" = R.\"{}\" FROM \"{}\" AS R \
+                 WHERE \"{}\".\"{}\" = R.\"{}\"",
+                left_table, col, col, right_table, left_table, match_col, match_col
+            );
+            self.conn.execute(&sql, [])?;
+        }
+
+        // Refresh metadata counts
+        let row_count: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\"", left_table), [], |r| r.get(0)
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![row_count, left_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Concatenate: vertically stack multiple tables
+    pub fn concatenate_tables(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        source_ids: &[String],
+    ) -> Result<DatasetMeta, AppError> {
+        if source_ids.is_empty() {
+            return Err(AppError::InvalidParam("No source tables specified".into()));
+        }
+
+        // Collect union of all column names (in order of first appearance)
+        let mut all_cols: Vec<(String, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for sid in source_ids {
+            let cols = self.get_user_columns(sid)?;
+            for (name, typ) in cols {
+                if seen.insert(name.clone()) {
+                    all_cols.push((name, typ));
+                }
+            }
+        }
+
+        // Build UNION ALL: for each source, SELECT known cols or NULL for missing
+        let unions: Vec<String> = source_ids.iter().map(|sid| {
+            let src_table = format!("dataset_{}", sid.replace('-', "_"));
+            let src_cols: std::collections::HashSet<String> = self.get_user_columns(sid)
+                .unwrap_or_default()
+                .into_iter().map(|(n, _)| n).collect();
+            let selects: Vec<String> = all_cols.iter().map(|(name, _)| {
+                if src_cols.contains(name) {
+                    format!("\"{}\"", name)
+                } else {
+                    format!("NULL AS \"{}\"", name)
+                }
+            }).collect();
+            format!("SELECT {} FROM \"{}\"", selects.join(", "), src_table)
+        }).collect();
+
+        let sql = unions.join(" UNION ALL ");
+        self.create_table_from_query(new_id, new_name, "concatenate", &sql)
+    }
+
+    /// Helper: get user columns (excluding _row_id) for a dataset (public for service layer)
+    pub fn get_user_columns(&self, dataset_id: &str) -> Result<Vec<(String, String)>, AppError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index"
+        )?;
+        let cols = stmt.query_map(params![dataset_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?.collect::<Result<Vec<_>, _>>()?;
+        Ok(cols)
+    }
+
+    /// Helper: convert DuckDB value to string for transpose
+    fn value_to_string(&self, v: &duckdb::types::Value) -> String {
+        match v {
+            duckdb::types::Value::Null => "NULL".to_string(),
+            duckdb::types::Value::Boolean(b) => b.to_string(),
+            duckdb::types::Value::TinyInt(n) => n.to_string(),
+            duckdb::types::Value::SmallInt(n) => n.to_string(),
+            duckdb::types::Value::Int(n) => n.to_string(),
+            duckdb::types::Value::BigInt(n) => n.to_string(),
+            duckdb::types::Value::Float(f) => f.to_string(),
+            duckdb::types::Value::Double(f) => f.to_string(),
+            duckdb::types::Value::Text(s) => s.clone(),
+            _ => format!("{:?}", v),
+        }
+    }
 }
