@@ -252,7 +252,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   // Refs for tracking latest state (used by recordAction and pendingRestore)
   const dataRef = useRef<TableQueryResult | null>(null);
   const colWidthsRef = useRef<number[]>([]);
-  const initialRecordedRef = useRef<string | null>(null);
+  const initialRecordedRef = useRef<Set<string>>(new Set());
   if (data) dataRef.current = data;
   colWidthsRef.current = colWidths;
 
@@ -336,9 +336,9 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   useEffect(() => {
     load().then(() => {
       // Record initial state so the very first operation can be undone
-      if (initialRecordedRef.current !== datasetId && dataRef.current) {
-        initialRecordedRef.current = datasetId;
-        recordHistory("加载数据", captureState());
+      if (!initialRecordedRef.current.has(datasetId) && dataRef.current) {
+        initialRecordedRef.current.add(datasetId);
+        recordHistory("__init__", captureState());
       }
     });
     setActiveCell(null);

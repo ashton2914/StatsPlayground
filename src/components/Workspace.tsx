@@ -11,7 +11,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
-import type { HistoryEntry, NamedSnapshot } from "@/types/history";
+import type { NamedSnapshot } from "@/types/history";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -305,10 +305,8 @@ export function Workspace() {
   };
 
   const handleSave = async () => {
-    const { history, snapshots } = useHistoryStore.getState();
-    // Strip afterState from history entries to keep file size small
-    const historyForSave = history.map(({ afterState, ...rest }) => rest);
-    // If project has no file path yet, prompt for save location
+    const { snapshots } = useHistoryStore.getState();
+    // History is session-only (not persisted); only snapshots are saved
     if (!project?.filePath) {
       const filePath = await save({
         title: "保存项目文件",
@@ -316,9 +314,9 @@ export function Workspace() {
         filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
       });
       if (!filePath) return; // User cancelled
-      await saveProject(filePath, historyForSave, snapshots);
+      await saveProject(filePath, [], snapshots);
     } else {
-      await saveProject(undefined, historyForSave, snapshots);
+      await saveProject(undefined, [], snapshots);
     }
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 1500);
@@ -357,11 +355,11 @@ export function Workspace() {
         const result = await openProject(selected as string);
         await refreshDatasets();
         tableCounter.current = 0;
-        // Restore history/snapshots from project file
-        if (result.history.length > 0 || result.snapshots.length > 0) {
+        // Restore snapshots from project file (history is session-only)
+        if (result.snapshots.length > 0) {
           const { loadFromProject } = useHistoryStore.getState();
           loadFromProject(
-            result.history as HistoryEntry[],
+            [],
             result.snapshots as NamedSnapshot[],
           );
         }

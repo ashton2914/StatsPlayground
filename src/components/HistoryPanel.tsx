@@ -139,13 +139,15 @@ export function HistoryPanel({
       <div className="history-section" style={{ flex: `0 0 ${historyPct}%` }}>
         <div className="history-section-header">
           <h3>历史记录</h3>
-          <span className="history-count">{history.length}</span>
+          <span className="history-count">{history.filter(e => e.description !== "__init__").length}</span>
         </div>
         <div className="history-list">
-          {history.length === 0 ? (
+          {history.filter(e => e.description !== "__init__").length === 0 ? (
             <div className="empty-hint">暂无历史记录</div>
           ) : (
-            history.map((entry, idx) => (
+            history.filter(e => e.description !== "__init__").map((entry) => {
+              const idx = history.indexOf(entry);
+              return (
               <div
                 key={entry.id}
                 className={`history-item${idx === currentIdx ? " history-current" : ""}${entry.afterState ? " history-clickable" : ""}`}
@@ -169,7 +171,8 @@ export function HistoryPanel({
                   <span className="history-item-time">{formatTime(entry.timestamp)}</span>
                 </div>
               </div>
-            ))
+            );
+            })
           )}
         </div>
       </div>
