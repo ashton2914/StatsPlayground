@@ -8,6 +8,7 @@ import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
+import { ctxMenuRef } from "@/utils/ctxMenu";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -464,6 +465,7 @@ export function Workspace() {
 
       {dsMenu && (
         <div
+          ref={ctxMenuRef}
           className="sp-ctx-menu"
           style={{ left: dsMenu.x, top: dsMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}

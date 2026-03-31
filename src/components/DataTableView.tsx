@@ -4,6 +4,7 @@ import type { TableQueryResult, ColumnDisplayProps } from "@/types/data";
 import { useDataStore } from "@/stores/useDataStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { modKey, shiftKey } from "@/utils/platform";
+import { ctxMenuRef } from "@/utils/ctxMenu";
 
 interface DataTableViewProps {
   datasetId: string;
@@ -12,6 +13,7 @@ interface DataTableViewProps {
 const COLUMN_TYPES = [
   { value: "VARCHAR", label: "文本" },
   { value: "INTEGER", label: "整数" },
+  { value: "BIGINT", label: "长整数" },
   { value: "DOUBLE", label: "小数" },
   { value: "BOOLEAN", label: "布尔" },
   { value: "DATE", label: "日期" },
@@ -2073,6 +2075,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       {/* Column context menu */}
       {colMenu && (
         <div
+          ref={ctxMenuRef}
           className="sp-ctx-menu"
           style={{ left: colMenu.x, top: colMenu.y }}
           onClick={(e) => e.stopPropagation()}
@@ -2122,6 +2125,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       {/* Cell context menu */}
       {cellMenu && (
         <div
+          ref={ctxMenuRef}
           className="sp-ctx-menu"
           style={{ left: cellMenu.x, top: cellMenu.y }}
           onClick={(e) => e.stopPropagation()}
@@ -2141,6 +2145,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       {/* Corner context menu */}
       {cornerMenu && (
         <div
+          ref={ctxMenuRef}
           className="sp-ctx-menu"
           style={{ left: cornerMenu.x, top: cornerMenu.y }}
           onClick={(e) => e.stopPropagation()}
@@ -2171,6 +2176,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       {/* Row context menu */}
       {rowMenu && (
         <div
+          ref={ctxMenuRef}
           className="sp-ctx-menu"
           style={{ left: rowMenu.x, top: rowMenu.y }}
           onClick={(e) => e.stopPropagation()}
