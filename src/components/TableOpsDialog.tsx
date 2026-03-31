@@ -367,11 +367,11 @@ function SplitForm({ sourceId, cols, sourceName, exec, busy }: {
           {cols.map(([n]) => <option key={n} value={n}>{n}</option>)}
         </select>
       </div>
-      <ColCheckList cols={cols} selected={idCols} onChange={setIdCols} label="分组列 (可选)" />
+      <ColCheckList cols={cols.filter(([n]) => n !== splitCol && n !== valueCol)} selected={idCols} onChange={setIdCols} label="分组列 (可选)" />
       <div className="sp-dialog-actions">
         <button
           className="sp-dialog-btn sp-dialog-btn-primary"
-          disabled={busy || !sourceId || !splitCol || !valueCol}
+          disabled={busy || !sourceId || !splitCol || !valueCol || splitCol === valueCol}
           onClick={() => exec(() => dataService.splitTable(sourceId, splitCol, valueCol, [...idCols], `${sourceName} - 拆分`))}
         >确定</button>
       </div>

@@ -1426,12 +1426,24 @@ impl DuckDbEngine {
             )
         }).collect();
 
-        let sql = if id_group.is_empty() {
-            format!("SELECT {} FROM \"{}\" GROUP BY 1",
-                pivot_cols.join(", "), src_table)
+        // Add a within-group row number so that duplicate (id_group, split_col) rows
+        // are preserved as separate output rows instead of being collapsed by MAX.
+        let partition_cols = if id_group.is_empty() {
+            format!("\"{}\"", split_col)
         } else {
-            format!("SELECT {}, {} FROM \"{}\" GROUP BY {}",
-                id_select, pivot_cols.join(", "), src_table, id_select)
+            format!("{}, \"{}\"", id_select, split_col)
+        };
+        let cte = format!(
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY \"_row_id\") AS _split_rn FROM \"{}\"",
+            partition_cols, src_table
+        );
+
+        let sql = if id_group.is_empty() {
+            format!("SELECT {} FROM ({}) AS _src GROUP BY _split_rn ORDER BY _split_rn",
+                pivot_cols.join(", "), cte)
+        } else {
+            format!("SELECT {}, {} FROM ({}) AS _src GROUP BY {}, _split_rn ORDER BY {}, _split_rn",
+                id_select, pivot_cols.join(", "), cte, id_select, id_select)
         };
 
         self.create_table_from_query(new_id, new_name, "split", &sql)
