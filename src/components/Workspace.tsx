@@ -306,6 +306,8 @@ export function Workspace() {
 
   const handleSave = async () => {
     const { history, snapshots } = useHistoryStore.getState();
+    // Strip afterState from history entries to keep file size small
+    const historyForSave = history.map(({ afterState, ...rest }) => rest);
     // If project has no file path yet, prompt for save location
     if (!project?.filePath) {
       const filePath = await save({
@@ -314,9 +316,9 @@ export function Workspace() {
         filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
       });
       if (!filePath) return; // User cancelled
-      await saveProject(filePath, history, snapshots);
+      await saveProject(filePath, historyForSave, snapshots);
     } else {
-      await saveProject(undefined, history, snapshots);
+      await saveProject(undefined, historyForSave, snapshots);
     }
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 1500);
