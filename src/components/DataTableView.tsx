@@ -233,6 +233,17 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const [cornerSelected, setCornerSelected] = useState(false);
   const autoScrollRef = useRef<number | null>(null);
 
+  // Column filter state
+  type DiscreteFilter = { kind: "discrete"; selected: Set<string> };
+  type RangeFilter = { kind: "range"; min: string; max: string };
+  type ColumnFilterState = DiscreteFilter | RangeFilter;
+  const [columnFilters, setColumnFilters] = useState<Map<number, ColumnFilterState>>(new Map());
+  const [filterPopover, setFilterPopover] = useState<{ colIdx: number; anchorRect: DOMRect } | null>(null);
+  const [filterWorkingSet, setFilterWorkingSet] = useState<Set<string>>(new Set());
+  const [filterRangeMin, setFilterRangeMin] = useState("");
+  const [filterRangeMax, setFilterRangeMax] = useState("");
+  const filterLastClickRef = useRef<number>(-1);
+
   interface UndoSnapshot {
     data: TableQueryResult;
     colWidths: number[];
@@ -316,6 +327,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setShowInsertMultiCols(false);
     setRenameCol(null);
     setShowAddCol(false);
+    setColumnFilters(new Map());
+    setFilterPopover(null);
     undoStackRef.current = [];
     redoStackRef.current = [];
   }, [datasetId, load]);
@@ -411,10 +424,85 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const cols = useMemo(() => data ? data.columns.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
   const colTypes = useMemo(() => data ? data.columnTypes.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
 
-  const displayRows = useMemo(() =>
+  // Clear filters when column count changes (add/delete column shifts indices)
+  const prevColCountRef = useRef<number>(0);
+  useEffect(() => {
+    if (prevColCountRef.current > 0 && cols.length !== prevColCountRef.current) {
+      setColumnFilters(new Map());
+      setFilterPopover(null);
+    }
+    prevColCountRef.current = cols.length;
+  }, [cols.length]);
+
+  // All rows stripped of _row_id (used by filter popover for unique values)
+  const allRows = useMemo(() =>
     data ? data.rows.map((raw) => (raw as unknown[]).filter((_, i) => i !== rowIdIdx)) : [],
     [data, rowIdIdx]
   );
+
+  // Filtered display rows + index mapping back to data.rows indices
+  const { displayRows, displayIdxMap } = useMemo(() => {
+    if (columnFilters.size === 0) return { displayRows: allRows, displayIdxMap: null as number[] | null };
+    const rows: unknown[][] = [];
+    const map: number[] = [];
+    allRows.forEach((row, i) => {
+      for (const [ci, filter] of columnFilters) {
+        const val = row[ci];
+        const str = val == null ? "" : String(val);
+        if (filter.kind === "discrete") {
+          if (!filter.selected.has(str)) return;
+        } else {
+          const num = val == null ? NaN : Number(val);
+          if (filter.min !== "" && !isNaN(Number(filter.min)) && (isNaN(num) || num < Number(filter.min))) return;
+          if (filter.max !== "" && !isNaN(Number(filter.max)) && (isNaN(num) || num > Number(filter.max))) return;
+        }
+      }
+      rows.push(row);
+      map.push(i);
+    });
+    return { displayRows: rows, displayIdxMap: map };
+  }, [allRows, columnFilters]);
+
+  // Convert visible row index to data.rows index (for _row_id lookup)
+  const toDataIdx = useCallback((vi: number): number =>
+    displayIdxMap ? displayIdxMap[vi] : vi,
+    [displayIdxMap]);
+
+  // Unique values for discrete filter popover (from unfiltered data)
+  const filterUniqueValues = useMemo(() => {
+    if (!filterPopover) return [];
+    const ci = filterPopover.colIdx;
+    const valSet = new Set<string>();
+    allRows.forEach(row => {
+      valSet.add(row[ci] == null ? "" : String(row[ci]));
+    });
+    return Array.from(valSet).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }, [filterPopover?.colIdx, allRows]);
+
+  // Initialize filter working state when popover opens
+  useEffect(() => {
+    if (!filterPopover) return;
+    const ci = filterPopover.colIdx;
+    const colType = colTypes[ci];
+    const existing = columnFilters.get(ci);
+    if (colType !== "DOUBLE") {
+      if (existing?.kind === "discrete") {
+        setFilterWorkingSet(new Set(existing.selected));
+      } else {
+        const values = new Set(allRows.map(row => row[ci] == null ? "" : String(row[ci])));
+        setFilterWorkingSet(values);
+      }
+    } else {
+      if (existing?.kind === "range") {
+        setFilterRangeMin(existing.min);
+        setFilterRangeMax(existing.max);
+      } else {
+        setFilterRangeMin("");
+        setFilterRangeMax("");
+      }
+    }
+    filterLastClickRef.current = -1;
+  }, [filterPopover?.colIdx]);
 
   // Sync status info to global status bar
   useEffect(() => {
@@ -482,10 +570,10 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setStatusInfo({
       cellLabel: activeCell ? `${colLetter(activeCell.col)}${activeCell.row + 1}` : "",
       selectionLabel: selLabel,
-      dimensions: `${data.totalRows} 行 × ${visibleColCount} 列`,
+      dimensions: columnFilters.size > 0 ? `${displayRows.length} / ${data.totalRows} 行 × ${visibleColCount} 列` : `${data.totalRows} 行 × ${visibleColCount} 列`,
       selectionStats,
     });
-  }, [activeCell, selection, selectedRows, selectedCols, data, displayRows, cols, visibleColCount, setStatusInfo]);
+  }, [activeCell, selection, selectedRows, selectedCols, data, displayRows, cols, visibleColCount, setStatusInfo, columnFilters]);
 
   // Precompute active row/col ranges for className computation
   const activeRowRange = useMemo(() => {
@@ -512,7 +600,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const wrapperHeight = tableRef.current?.clientHeight ?? 600;
   const headerHeight = 48; // approximate sticky header height
   const visibleAreaHeight = wrapperHeight - headerHeight;
-  const totalRowCount = data ? data.rows.length : 0;
+  const totalRowCount = displayRows.length;
   const virtualRange = useMemo(() => {
     const startIdx = Math.max(0, Math.floor((scrollTop - headerHeight) / ROW_HEIGHT) - OVERSCAN);
     const visibleCount = Math.ceil(visibleAreaHeight / ROW_HEIGHT) + 2 * OVERSCAN;
@@ -622,7 +710,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (selectedRows.size === 0) return;
     saveSnapshot();
     for (const rowIdx of selectedRows) {
-      const row = data.rows[rowIdx] as unknown[];
+      const row = data.rows[toDataIdx(rowIdx)] as unknown[];
       if (row) await dataService.deleteRow(datasetId, getRowId(row));
     }
     setSelectedRows(new Set());
@@ -633,7 +721,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleDeleteSingleRow = async (rowIdx: number) => {
     saveSnapshot();
-    const row = data.rows[rowIdx] as unknown[];
+    const row = data.rows[toDataIdx(rowIdx)] as unknown[];
     await dataService.deleteRow(datasetId, getRowId(row));
     setRowMenu(null);
     await load();
@@ -876,7 +964,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       return; // Don't commit, keep editing
     }
     setEditCell(null);
-    const row = data.rows[editRow] as unknown[];
+    const row = data.rows[toDataIdx(editRow)] as unknown[];
     const rowId = getRowId(row);
     const colName = cols[editCol];
     saveSnapshot();
@@ -888,7 +976,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     await load();
     markDirty();
 
-    const maxRow = data.rows.length - 1;
+    const maxRow = displayRows.length - 1;
     const maxCol = cols.length - 1;
     if (direction === "down") {
       // Enter: move down; if Tab anchor exists, return to that column
@@ -927,7 +1015,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     saveSnapshot();
     try {
       for (const { row, col } of cells) {
-        const rawRow = data.rows[row] as unknown[];
+        const rawRow = data.rows[toDataIdx(row)] as unknown[];
         const rowId = getRowId(rawRow);
         const colName = cols[col];
         await dataService.updateCell(datasetId, rowId, colName, "");
@@ -941,12 +1029,10 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // ---- Helper: find boundary of continuous data (Excel Ctrl+Arrow behavior) ----
   const findEdge = (row: number, col: number, dRow: number, dCol: number): { row: number; col: number } => {
-    const maxRow = data.rows.length - 1;
+    const maxRow = displayRows.length - 1;
     const maxCol = cols.length - 1;
     const getCellVal = (r: number, c: number): unknown => {
-      const raw = data.rows[r] as unknown[];
-      const display = getDisplayRow(raw);
-      return display[c];
+      return displayRows[r]?.[c];
     };
     const currentVal = getCellVal(row, col);
     const currentEmpty = currentVal == null || currentVal === "";
@@ -1029,21 +1115,21 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       // Copy selected rows (all columns)
       const sortedRows = Array.from(selectedRows).sort((a, b) => a - b);
       for (const ri of sortedRows) {
-        const dr = getDisplayRow(data.rows[ri] as unknown[]);
+        const dr = displayRows[ri];
         rows.push(dr.map((v) => (v == null ? "" : String(v))));
       }
     } else if (selectedCols.size > 0) {
       // Copy selected columns (all rows)
       const sortedCols = Array.from(selectedCols).sort((a, b) => a - b);
-      for (let ri = 0; ri < data.rows.length; ri++) {
-        const dr = getDisplayRow(data.rows[ri] as unknown[]);
+      for (let ri = 0; ri < displayRows.length; ri++) {
+        const dr = displayRows[ri];
         rows.push(sortedCols.map((ci) => (dr[ci] == null ? "" : String(dr[ci]))));
       }
     } else if (selection) {
       // Copy selection range
       const { r1, c1, r2, c2 } = normalizeRange(selection);
       for (let r = r1; r <= r2; r++) {
-        const dr = getDisplayRow(data.rows[r] as unknown[]);
+        const dr = displayRows[r];
         const row: string[] = [];
         for (let c = c1; c <= c2; c++) {
           row.push(dr[c] == null ? "" : String(dr[c]));
@@ -1052,7 +1138,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       }
     } else if (activeCell) {
       // Copy single cell
-      const dr = getDisplayRow(data.rows[activeCell.row] as unknown[]);
+      const dr = displayRows[activeCell.row];
       rows.push([dr[activeCell.col] == null ? "" : String(dr[activeCell.col])]);
     }
 
@@ -1118,8 +1204,8 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     let hasConflicts = false;
     for (let r = 0; r < numPasteRows && !hasConflicts; r++) {
       const targetRow = startRow + r;
-      if (targetRow < data.rows.length) {
-        const dr = getDisplayRow(data.rows[targetRow] as unknown[]);
+      if (targetRow < displayRows.length) {
+        const dr = displayRows[targetRow];
         for (let c = 0; c < numPasteCols; c++) {
           const targetCol = startCol + c;
           if (targetCol < dr.length) {
@@ -1141,7 +1227,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     try {
       saveSnapshot();
       await dataService.pasteAtPosition(
-        datasetId, startRow, startCol, dataRows, headerNames, detectedTypes
+        datasetId, toDataIdx(startRow), startCol, dataRows, headerNames, detectedTypes
       );
       await load();
       await refreshAndMarkDirty();
@@ -1233,13 +1319,13 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
     // Cmd/Ctrl+A: select all
     if (isMeta && !e.shiftKey && e.key.toLowerCase() === "a") {
-      if (!editCell && data && data.rows.length > 0 && cols.length > 0) {
+      if (!editCell && data && displayRows.length > 0 && cols.length > 0) {
         e.preventDefault();
         setActiveCell({ row: 0, col: 0 });
         setSelection({
           startRow: 0,
           startCol: 0,
-          endRow: data.rows.length - 1,
+          endRow: displayRows.length - 1,
           endCol: cols.length - 1,
         });
         setSelectedRows(new Set());
@@ -1270,7 +1356,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
           }
         } else if (selectedCols.size > 0) {
           for (const ci of selectedCols) {
-            for (let ri = 0; ri < data.rows.length; ri++) cellsToCut.push({ row: ri, col: ci });
+            for (let ri = 0; ri < displayRows.length; ri++) cellsToCut.push({ row: ri, col: ci });
           }
         } else if (selection) {
           const { r1, c1, r2, c2 } = normalizeRange(selection);
@@ -1303,7 +1389,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (!activeCell) return;
 
     const { row, col } = activeCell;
-    const maxRow = data.rows.length - 1;
+    const maxRow = displayRows.length - 1;
     const maxCol = cols.length - 1;
     const isMod = e.ctrlKey || e.metaKey; // Ctrl (Windows/Linux) or Cmd (macOS)
 
@@ -1385,7 +1471,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       }
       case "F2": {
         e.preventDefault();
-        const displayRow = getDisplayRow(data.rows[row] as unknown[]);
+        const displayRow = displayRows[row];
         handleCellDoubleClick(row, col, displayRow[col]);
         break;
       }
@@ -1947,6 +2033,17 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
                     <span className="sp-col-letter">{colLetter(ci)}</span>
                     <span className="sp-col-name">{col}</span>
                     <span className="sp-col-type">{COLUMN_TYPES.find(t => t.value === colTypes[ci])?.label ?? colTypes[ci]}</span>
+                    <span
+                      className={`sp-filter-icon${columnFilters.has(ci) ? " sp-filter-active" : ""}`}
+                      title="筛选"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = (e.target as HTMLElement).getBoundingClientRect();
+                        setFilterPopover(prev => prev?.colIdx === ci ? null : { colIdx: ci, anchorRect: rect });
+                      }}
+                    >
+                      ▼
+                    </span>
                   </div>
                   {/* Resize handle */}
                   <div
@@ -2014,7 +2111,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
                 <td colSpan={cols.length + 2} style={{ padding: 0, border: "none" }} />
               </tr>
             )}
-            {data.rows.length > 0 && (
+            {displayRows.length > 0 && (
               displayRows.slice(virtualRange.startIdx, virtualRange.endIdx).map((displayRow, idx) => {
                 const ri = virtualRange.startIdx + idx;
                 return (
@@ -2198,6 +2295,123 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
             </div>
           )}
         </div>
+      )}
+
+      {/* Column filter popover */}
+      {filterPopover && (
+        <>
+          <div className="sp-filter-backdrop" onClick={() => setFilterPopover(null)} />
+          {(() => {
+            const ci = filterPopover.colIdx;
+            const colType = colTypes[ci];
+            const isDiscrete = colType !== "DOUBLE";
+            return (
+              <div
+                ref={ctxMenuRef}
+                className="sp-filter-popover"
+                style={{ position: "fixed", left: filterPopover.anchorRect.left, top: filterPopover.anchorRect.bottom + 2 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="sp-filter-title">筛选: {cols[ci]}</div>
+                {isDiscrete ? (
+                  <div className="sp-filter-body">
+                    <div className="sp-filter-toolbar">
+                      <button className="sp-filter-btn" onClick={() => setFilterWorkingSet(new Set(filterUniqueValues))}>全选</button>
+                      <button className="sp-filter-btn" onClick={() => setFilterWorkingSet(new Set())}>全不选</button>
+                    </div>
+                    <div className="sp-filter-list">
+                      {filterUniqueValues.map((val, idx) => (
+                        <label
+                          key={idx}
+                          className={`sp-filter-item${filterWorkingSet.has(val) ? " sp-filter-item-checked" : ""}`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (e.shiftKey && filterLastClickRef.current >= 0) {
+                              const from = Math.min(filterLastClickRef.current, idx);
+                              const to = Math.max(filterLastClickRef.current, idx);
+                              setFilterWorkingSet(prev => {
+                                const next = new Set(prev);
+                                for (let i = from; i <= to; i++) next.add(filterUniqueValues[i]);
+                                return next;
+                              });
+                            } else if (e.ctrlKey || e.metaKey) {
+                              setFilterWorkingSet(prev => {
+                                const next = new Set(prev);
+                                if (next.has(val)) next.delete(val); else next.add(val);
+                                return next;
+                              });
+                            } else {
+                              setFilterWorkingSet(prev => {
+                                const next = new Set(prev);
+                                if (next.has(val)) next.delete(val); else next.add(val);
+                                return next;
+                              });
+                            }
+                            filterLastClickRef.current = idx;
+                          }}
+                        >
+                          <input type="checkbox" checked={filterWorkingSet.has(val)} readOnly />
+                          <span className="sp-filter-val">{val === "" ? "(空)" : val}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="sp-filter-body">
+                    <div className="sp-filter-range">
+                      <label className="sp-filter-range-label">最小值</label>
+                      <input className="sp-filter-range-input" type="text" value={filterRangeMin} onChange={(e) => setFilterRangeMin(e.target.value)} />
+                      <label className="sp-filter-range-label">最大值</label>
+                      <input className="sp-filter-range-input" type="text" value={filterRangeMax} onChange={(e) => setFilterRangeMax(e.target.value)} />
+                    </div>
+                  </div>
+                )}
+                <div className="sp-filter-actions">
+                  <button className="sp-filter-btn" onClick={() => {
+                    setColumnFilters(prev => {
+                      const next = new Map(prev);
+                      next.delete(ci);
+                      return next;
+                    });
+                    setFilterPopover(null);
+                  }}>清除筛选</button>
+                  <button className="sp-filter-btn sp-filter-btn-primary" onClick={() => {
+                    if (isDiscrete) {
+                      if (filterWorkingSet.size < filterUniqueValues.length) {
+                        setColumnFilters(prev => {
+                          const next = new Map(prev);
+                          next.set(ci, { kind: "discrete", selected: new Set(filterWorkingSet) });
+                          return next;
+                        });
+                      } else {
+                        setColumnFilters(prev => {
+                          const next = new Map(prev);
+                          next.delete(ci);
+                          return next;
+                        });
+                      }
+                    } else {
+                      if (filterRangeMin !== "" || filterRangeMax !== "") {
+                        setColumnFilters(prev => {
+                          const next = new Map(prev);
+                          next.set(ci, { kind: "range", min: filterRangeMin, max: filterRangeMax });
+                          return next;
+                        });
+                      } else {
+                        setColumnFilters(prev => {
+                          const next = new Map(prev);
+                          next.delete(ci);
+                          return next;
+                        });
+                      }
+                    }
+                    setFilterPopover(null);
+                  }}>确定</button>
+                </div>
+              </div>
+            );
+          })()}
+        </>
       )}
 
       {/* Insert multi-rows dialog */}
