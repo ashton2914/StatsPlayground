@@ -3,6 +3,7 @@ import { dataService } from "@/services/dataService";
 import type { TableQueryResult, ColumnDisplayProps } from "@/types/data";
 import { useDataStore } from "@/stores/useDataStore";
 import { useProjectStore } from "@/stores/useProjectStore";
+import { useHistoryStore } from "@/stores/useHistoryStore";
 import { modKey, shiftKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
 
@@ -254,11 +255,29 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const MAX_UNDO = 50;
   const { refreshDatasets, setStatusInfo } = useDataStore();
   const { markDirty } = useProjectStore();
+  const { record: recordHistory } = useHistoryStore();
 
   const refreshAndMarkDirty = useCallback(async () => {
     await refreshDatasets();
     markDirty();
   }, [refreshDatasets, markDirty]);
+
+  // Debounced history recording for batching rapid edits
+  const historyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recordAction = useCallback((description: string, immediate = false) => {
+    if (historyTimerRef.current) {
+      clearTimeout(historyTimerRef.current);
+      historyTimerRef.current = null;
+    }
+    if (immediate) {
+      recordHistory(description);
+    } else {
+      historyTimerRef.current = setTimeout(() => {
+        recordHistory(description);
+        historyTimerRef.current = null;
+      }, 300);
+    }
+  }, [recordHistory]);
 
   const load = useCallback(async () => {
     try {
@@ -691,6 +710,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     await dataService.addRow(datasetId);
     await load();
     await refreshAndMarkDirty();
+    recordAction("添加行", true);
   };
 
   const handleInsertMultiRows = async () => {
@@ -704,6 +724,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setInsertRowCount("5");
     await load();
     await refreshAndMarkDirty();
+    recordAction("批量添加行", true);
   };
 
   const handleDeleteRows = async () => {
@@ -717,6 +738,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setRowMenu(null);
     await load();
     await refreshAndMarkDirty();
+    recordAction("删除行", true);
   };
 
   const handleDeleteSingleRow = async (rowIdx: number) => {
@@ -726,6 +748,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setRowMenu(null);
     await load();
     await refreshAndMarkDirty();
+    recordAction("删除行", true);
   };
 
   const handleInsertRowAbove = async () => {
@@ -734,6 +757,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setRowMenu(null);
     await load();
     await refreshAndMarkDirty();
+    recordAction("插入行", true);
   };
 
   // ---- Column operations ----
@@ -743,6 +767,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     await dataService.addColumn(datasetId, name, "VARCHAR");
     await load();
     await refreshAndMarkDirty();
+    recordAction("添加列", true);
   };
 
   const handleAddColumn = async () => {
@@ -755,6 +780,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setNewColType("VARCHAR");
     await load();
     await refreshAndMarkDirty();
+    recordAction(`添加列 "${name}"`, true);
   };
 
   const handleInsertMultiCols = async () => {
@@ -772,6 +798,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setInsertColType("VARCHAR");
     await load();
     await refreshAndMarkDirty();
+    recordAction("批量添加列", true);
   };
 
   const handleDeleteColumn = async (colName: string) => {
@@ -781,6 +808,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setColMenu(null);
     await load();
     await refreshAndMarkDirty();
+    recordAction(`删除列 "${colName}"`, true);
   };
 
   const handleDeleteSelectedCols = async () => {
@@ -798,6 +826,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setColMenu(null);
     await load();
     await refreshAndMarkDirty();
+    recordAction("删除列", true);
   };
 
   const handleStartRenameCol = (colIdx: number) => {
@@ -847,6 +876,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       await load();
       await refreshAndMarkDirty();
       setBatchColProps(null);
+      recordAction("修改列属性", true);
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -882,6 +912,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
         await refreshAndMarkDirty();
       }
       setRenameCol(null);
+      recordAction("修改列属性", true);
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -975,6 +1006,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     }
     await load();
     markDirty();
+    recordAction("编辑单元格");
 
     const maxRow = displayRows.length - 1;
     const maxCol = cols.length - 1;
@@ -1025,6 +1057,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     }
     await load();
     markDirty();
+    recordAction("清除单元格内容", true);
   };
 
   // ---- Helper: find boundary of continuous data (Excel Ctrl+Arrow behavior) ----
@@ -1231,6 +1264,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       );
       await load();
       await refreshAndMarkDirty();
+      recordAction("粘贴数据", true);
     } catch (err) {
       setErrorMsg(String(err));
     }

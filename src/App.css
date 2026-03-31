@@ -1348,3 +1348,269 @@
   margin: 0;
   accent-color: var(--fg-accent);
 }
+
+/* ========= Activity Bar ========= */
+.activity-bar {
+  width: 40px;
+  min-width: 40px;
+  background: var(--bg-activity-bar);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 4px;
+  gap: 2px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.activity-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  color: var(--fg-activity);
+  transition: color 0.15s;
+  padding: 0;
+}
+
+.activity-btn:hover {
+  color: var(--fg-activity-active);
+}
+
+.activity-btn-active {
+  color: var(--fg-activity-active);
+  border-left-color: var(--bg-activity-indicator);
+}
+
+/* ========= Snapshot Button (menu bar) ========= */
+.menu-bar-snapshot {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: var(--fg-disabled);
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+}
+
+.menu-bar-snapshot:hover {
+  background: var(--bg-header);
+  color: var(--fg-accent);
+}
+
+/* ========= History Panel ========= */
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.history-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.snapshot-section {
+  flex: 0 0 auto;
+  max-height: 45%;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-main);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.history-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 4px;
+  flex-shrink: 0;
+}
+
+.history-section-header h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--fg-hint);
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+
+.history-count {
+  font-size: 10px;
+  color: var(--fg-placeholder);
+  background: var(--bg-header);
+  padding: 0 6px;
+  border-radius: 8px;
+  line-height: 16px;
+}
+
+.history-list,
+.snapshot-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+/* History item */
+.history-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.history-item:hover {
+  background: var(--bg-cell-hover);
+}
+
+.history-current {
+  background: var(--bg-menu-hover);
+}
+
+.history-item-icon {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-top: 3px;
+  color: var(--fg-dim);
+}
+
+.history-current .history-item-icon {
+  color: var(--fg-accent);
+}
+
+.history-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.history-item-desc {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-item-time {
+  font-size: 10px;
+  color: var(--fg-placeholder);
+}
+
+/* Snapshot item */
+.snapshot-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  transition: background 0.1s;
+}
+
+.snapshot-item:hover {
+  background: var(--bg-cell-hover);
+}
+
+.snapshot-item-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-accent);
+}
+
+.snapshot-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.snapshot-item-name {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.snapshot-item-time {
+  font-size: 10px;
+  color: var(--fg-placeholder);
+}
+
+.snapshot-rename-input {
+  width: 100%;
+  padding: 1px 4px;
+  font-size: 12px;
+  border: 1px solid var(--border-input-focus);
+  border-radius: 3px;
+  outline: none;
+  background: var(--bg-input);
+  color: var(--fg-primary);
+}
+
+.snapshot-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.snapshot-item:hover .snapshot-actions {
+  opacity: 1;
+}
+
+.snapshot-action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  display: flex;
+  align-items: center;
+}
+
+.snapshot-action-btn:hover {
+  background: var(--bg-header);
+  color: var(--fg-secondary);
+}
+
+.snapshot-action-danger:hover {
+  color: var(--fg-danger);
+}
+
+.snapshot-add-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--fg-dim);
+  padding: 0 4px;
+  line-height: 1;
+  border-radius: 3px;
+}
+
+.snapshot-add-btn:hover {
+  background: var(--bg-header);
+  color: var(--fg-accent);
+}

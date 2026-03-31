@@ -17,6 +17,21 @@ struct SpprjFile {
     version: String,
     created_at: String,
     datasets: Vec<SpprjDataset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    history: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshots: Option<Vec<serde_json::Value>>,
+}
+
+/// Result of opening a project, including restored history/snapshot data
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenProjectResult {
+    pub project: ProjectInfo,
+    #[serde(default)]
+    pub history: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub snapshots: Vec<serde_json::Value>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -91,6 +106,8 @@ impl<'a> ProjectService<'a> {
             version: "0.1.0".to_string(),
             created_at: now,
             datasets: vec![],
+            history: None,
+            snapshots: None,
         };
 
         let json = serde_json::to_string_pretty(&spprj)
@@ -106,7 +123,7 @@ impl<'a> ProjectService<'a> {
     }
 
     /// Open an existing project from a .spprj file
-    pub fn open_project(&self, file_path: &str) -> Result<ProjectInfo, AppError> {
+    pub fn open_project(&self, file_path: &str, progress_cb: Option<&dyn Fn(usize, usize, &str)>) -> Result<OpenProjectResult, AppError> {
         let content = fs::read_to_string(file_path)?;
         let spprj: SpprjFile = serde_json::from_str(&content)
             .map_err(|e| AppError::FileIO(format!("Invalid project file: {}", e)))?;
@@ -115,34 +132,44 @@ impl<'a> ProjectService<'a> {
         self.state.reset_db()?;
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
 
+        let total_datasets = spprj.datasets.len();
+
         // Restore each dataset
-        for ds in &spprj.datasets {
+        for (ds_idx, ds) in spprj.datasets.iter().enumerate() {
+            if let Some(cb) = &progress_cb {
+                cb(ds_idx, total_datasets, &ds.name);
+            }
+
             let col_names: Vec<String> = ds.columns.iter().map(|c| c.name.clone()).collect();
             let col_types: Vec<String> = ds.columns.iter().map(|c| c.col_type.clone()).collect();
             db.create_empty_table(&ds.id, &ds.name, &col_names, &col_types)?;
 
-            // Insert rows
-            for row in &ds.rows {
-                // Build insert with _row_id + data columns
-                let all_cols: Vec<String> = std::iter::once("\"_row_id\"".to_string())
+            // Batch insert rows (1000 per batch) for performance
+            if !ds.rows.is_empty() {
+                let all_col_defs: Vec<String> = std::iter::once("\"_row_id\"".to_string())
                     .chain(col_names.iter().map(|n| format!("\"{}\"", n)))
                     .collect();
-                // Use raw SQL for variable column count
-                let values_str: Vec<String> = row.iter().map(|v| match v {
-                    serde_json::Value::Null => "NULL".to_string(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    _ => format!("'{}'", v.to_string().replace('\'', "''")),
-                }).collect();
+                let col_list = all_col_defs.join(", ");
+                let table_ident = format!("dataset_{}", ds.id.replace('-', "_"));
 
-                let raw_sql = format!(
-                    "INSERT INTO \"dataset_{}\" ({}) VALUES ({})",
-                    ds.id.replace('-', "_"),
-                    all_cols.join(", "),
-                    values_str.join(", ")
-                );
-                let _ = db.conn().execute(&raw_sql, []);
+                for chunk in ds.rows.chunks(1000) {
+                    let values_lists: Vec<String> = chunk.iter().map(|row| {
+                        let vals: Vec<String> = row.iter().map(|v| match v {
+                            serde_json::Value::Null => "NULL".to_string(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            _ => format!("'{}'", v.to_string().replace('\'', "''")),
+                        }).collect();
+                        format!("({})", vals.join(", "))
+                    }).collect();
+
+                    let raw_sql = format!(
+                        "INSERT INTO \"{}\" ({}) VALUES {}",
+                        table_ident, col_list, values_lists.join(", ")
+                    );
+                    db.conn().execute_batch(&raw_sql).map_err(|e| AppError::Database(e.to_string()))?;
+                }
             }
 
             // Update row count
@@ -178,6 +205,10 @@ impl<'a> ProjectService<'a> {
             }
         }
 
+        if let Some(cb) = &progress_cb {
+            cb(total_datasets, total_datasets, "完成");
+        }
+
         let project = ProjectInfo {
             name: spprj.name,
             file_path: file_path.to_string(),
@@ -188,11 +219,20 @@ impl<'a> ProjectService<'a> {
             .map_err(|e| AppError::Database(e.to_string()))?;
         *proj = Some(project.clone());
 
-        Ok(project)
+        Ok(OpenProjectResult {
+            project,
+            history: spprj.history.unwrap_or_default(),
+            snapshots: spprj.snapshots.unwrap_or_default(),
+        })
     }
 
     /// Save current project state to disk
-    pub fn save_project(&self, file_path: Option<&str>) -> Result<(), AppError> {
+    pub fn save_project(
+        &self,
+        file_path: Option<&str>,
+        history_data: Option<Vec<serde_json::Value>>,
+        snapshots_data: Option<Vec<serde_json::Value>>,
+    ) -> Result<(), AppError> {
         let mut proj = self.state.project.write()
             .map_err(|e| AppError::Database(e.to_string()))?;
         let project = proj.as_mut()
@@ -299,6 +339,8 @@ impl<'a> ProjectService<'a> {
             version: "0.1.0".to_string(),
             created_at: save_created_at,
             datasets: spprj_datasets,
+            history: history_data,
+            snapshots: snapshots_data,
         };
 
         let json = serde_json::to_string_pretty(&spprj)
