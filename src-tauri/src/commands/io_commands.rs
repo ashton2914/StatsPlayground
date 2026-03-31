@@ -51,3 +51,12 @@ pub fn export_sqlite(
     let service = IoService::new(&state);
     service.export_sqlite(&output_path)
 }
+
+#[tauri::command(async)]
+pub fn export_csv_zip(
+    state: State<'_, AppState>,
+    output_path: String,
+) -> Result<(), AppError> {
+    let service = IoService::new(&state);
+    service.export_csv_zip(&output_path)
+}

@@ -252,6 +252,83 @@ impl DuckDbEngine {
         Ok(())
     }
 
+    /// Export all datasets as CSV files packed into a ZIP archive
+    pub fn export_csv_zip(&self, output_path: &str) -> Result<(), AppError> {
+        use std::io::Write;
+
+        let datasets = self.list_datasets()?;
+        if datasets.is_empty() {
+            return Err(AppError::InvalidParam("没有可导出的数据表".to_string()));
+        }
+
+        let file = std::fs::File::create(output_path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        for ds in &datasets {
+            let table_name = format!("dataset_{}", ds.id.replace('-', "_"));
+
+            // Get user column names (exclude _row_id)
+            let mut col_stmt = self.conn.prepare(
+                "SELECT col_name FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index"
+            )?;
+            let col_names: Vec<String> = col_stmt
+                .query_map(params![ds.id], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            if col_names.is_empty() {
+                continue;
+            }
+
+            let select_cols = col_names.iter()
+                .map(|c| format!("CAST(\"{}\" AS VARCHAR) AS \"{}\"", c, c))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            // Query all data
+            let sql = format!("SELECT {} FROM \"{}\"", select_cols, table_name);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let col_count = col_names.len();
+            let mut rows = stmt.query([])?;
+
+            // Build CSV content in memory
+            let mut csv_buf = Vec::new();
+            // Header
+            writeln!(&mut csv_buf, "{}", col_names.join(","))
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            // Data rows
+            while let Some(row) = rows.next()? {
+                let mut parts = Vec::with_capacity(col_count);
+                for i in 0..col_count {
+                    let val: Option<String> = row.get(i)?;
+                    match val {
+                        Some(v) => {
+                            if v.contains(',') || v.contains('"') || v.contains('\n') {
+                                parts.push(format!("\"{}\"", v.replace('"', "\"\"")));
+                            } else {
+                                parts.push(v);
+                            }
+                        }
+                        None => parts.push(String::new()),
+                    }
+                }
+                writeln!(&mut csv_buf, "{}", parts.join(","))
+                    .map_err(|e| AppError::FileIO(e.to_string()))?;
+            }
+
+            // Sanitize file name
+            let file_name = format!("{}.csv", ds.name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_"));
+            zip.start_file(&file_name, options)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            zip.write_all(&csv_buf)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+        }
+
+        zip.finish().map_err(|e| AppError::FileIO(e.to_string()))?;
+        Ok(())
+    }
+
     /// Import all tables from a SQLite database as datasets
     pub fn import_sqlite<F>(&self, file_path: &str, on_progress: &F) -> Result<Vec<(String, DatasetMeta)>, AppError>
     where

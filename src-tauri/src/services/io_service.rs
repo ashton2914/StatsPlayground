@@ -29,4 +29,9 @@ impl<'a> IoService<'a> {
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         db.export_sqlite(output_path)
     }
+
+    pub fn export_csv_zip(&self, output_path: &str) -> Result<(), AppError> {
+        let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.export_csv_zip(output_path)
+    }
 }

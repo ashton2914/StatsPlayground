@@ -13,4 +13,8 @@ export const ioService = {
   /** 导出所有数据表到 SQLite 数据库 */
   exportSqlite: (outputPath: string) =>
     invoke<void>("export_sqlite", { outputPath }),
+
+  /** 导出所有数据表为 CSV 打包成 ZIP */
+  exportCsvZip: (outputPath: string) =>
+    invoke<void>("export_csv_zip", { outputPath }),
 };

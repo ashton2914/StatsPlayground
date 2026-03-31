@@ -247,6 +247,21 @@ export function Workspace() {
     }
   };
 
+  const handleExportCsvZip = async () => {
+    const filePath = await save({
+      title: "导出为 CSV (ZIP)",
+      defaultPath: `${project?.name ?? "export"}.zip`,
+      filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
+    });
+    if (filePath) {
+      try {
+        await ioService.exportCsvZip(filePath);
+      } catch (e) {
+        alert("导出 CSV 失败: " + String(e));
+      }
+    }
+  };
+
   const handleSave = async () => {
     // If project has no file path yet, prompt for save location
     if (!project?.filePath) {
@@ -308,6 +323,7 @@ export function Workspace() {
               <div className="menu-item" onClick={handleImportSqlite}>导入 SQLite</div>
               <div className="menu-sep" />
               <div className="menu-item" onClick={handleExportSqlite}>导出为 SQLite</div>
+              <div className="menu-item" onClick={handleExportCsvZip}>导出为 CSV (ZIP)</div>
             </MenuDropdown>
           </MenuBar>
         </div>
