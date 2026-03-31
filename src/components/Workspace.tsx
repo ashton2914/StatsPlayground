@@ -2,9 +2,11 @@ import { useEffect, useState, useRef } from "react";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { dataService } from "@/services/dataService";
+import { ioService } from "@/services/ioService";
 import { DataTableView } from "./DataTableView";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
 
 function formatStat(n: number): string {
@@ -83,6 +85,13 @@ export function Workspace() {
   const [showPrefs, setShowPrefs] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
   const [dsMenu, setDsMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [importProgress, setImportProgress] = useState<{
+    tableName: string;
+    tableIndex: number;
+    tableTotal: number;
+    rowsDone: number;
+    rowsTotal: number;
+  } | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
 
@@ -186,6 +195,58 @@ export function Workspace() {
     }
   };
 
+  const handleImportSqlite = async () => {
+    const selected = await open({
+      title: "导入 SQLite 数据库",
+      filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
+      multiple: false,
+    });
+    if (selected) {
+      // Listen for progress events
+      const unlisten = await listen<{
+        table_name: string;
+        table_index: number;
+        table_total: number;
+        rows_done: number;
+        rows_total: number;
+      }>("import-progress", (event) => {
+        setImportProgress({
+          tableName: event.payload.table_name,
+          tableIndex: event.payload.table_index,
+          tableTotal: event.payload.table_total,
+          rowsDone: event.payload.rows_done,
+          rowsTotal: event.payload.rows_total,
+        });
+      });
+      try {
+        setImportProgress({ tableName: "准备中...", tableIndex: 0, tableTotal: 0, rowsDone: 0, rowsTotal: 0 });
+        await ioService.importSqlite(selected as string);
+        await refreshDatasets();
+        markDirty();
+      } catch (e) {
+        alert("导入 SQLite 失败: " + String(e));
+      } finally {
+        unlisten();
+        setImportProgress(null);
+      }
+    }
+  };
+
+  const handleExportSqlite = async () => {
+    const filePath = await save({
+      title: "导出为 SQLite 数据库",
+      defaultPath: `${project?.name ?? "export"}.db`,
+      filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
+    });
+    if (filePath) {
+      try {
+        await ioService.exportSqlite(filePath);
+      } catch (e) {
+        alert("导出 SQLite 失败: " + String(e));
+      }
+    }
+  };
+
   const handleSave = async () => {
     // If project has no file path yet, prompt for save location
     if (!project?.filePath) {
@@ -242,7 +303,11 @@ export function Workspace() {
             </MenuDropdown>
             <MenuDropdown label="表格">
               <div className="menu-item" onClick={handleCreateTable}>新建数据表</div>
+              <div className="menu-sep" />
               <div className="menu-item" onClick={handleImportCsv}>导入 CSV</div>
+              <div className="menu-item" onClick={handleImportSqlite}>导入 SQLite</div>
+              <div className="menu-sep" />
+              <div className="menu-item" onClick={handleExportSqlite}>导出为 SQLite</div>
             </MenuDropdown>
           </MenuBar>
         </div>
@@ -349,6 +414,37 @@ export function Workspace() {
       </div>
 
       {showPrefs && <PreferencesDialog onClose={() => setShowPrefs(false)} />}
+
+      {importProgress && (
+        <div className="sp-dialog-overlay">
+          <div className="sp-dialog" style={{ minWidth: 360, padding: "20px 24px" }}>
+            <div style={{ fontWeight: 600, marginBottom: 12 }}>正在导入 SQLite 数据库…</div>
+            <div style={{ fontSize: 13, marginBottom: 8, color: "var(--fg-secondary, #888)" }}>
+              {importProgress.tableTotal > 0
+                ? `表 ${importProgress.tableIndex + 1}/${importProgress.tableTotal}: ${importProgress.tableName}`
+                : importProgress.tableName}
+            </div>
+            {importProgress.rowsTotal > 0 && (
+              <>
+                <div className="sp-progress-bar">
+                  <div
+                    className="sp-progress-fill"
+                    style={{ width: `${Math.round((importProgress.rowsDone / importProgress.rowsTotal) * 100)}%` }}
+                  />
+                </div>
+                <div style={{ fontSize: 12, marginTop: 4, color: "var(--fg-secondary, #888)" }}>
+                  {importProgress.rowsDone.toLocaleString()} / {importProgress.rowsTotal.toLocaleString()} 行
+                </div>
+              </>
+            )}
+            {importProgress.rowsTotal === 0 && (
+              <div className="sp-progress-bar">
+                <div className="sp-progress-fill sp-progress-indeterminate" />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {dsMenu && (
         <div

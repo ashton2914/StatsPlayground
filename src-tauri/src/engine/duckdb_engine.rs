@@ -252,6 +252,261 @@ impl DuckDbEngine {
         Ok(())
     }
 
+    /// Import all tables from a SQLite database as datasets
+    pub fn import_sqlite<F>(&self, file_path: &str, on_progress: &F) -> Result<Vec<(String, DatasetMeta)>, AppError>
+    where
+        F: Fn(&str, usize, usize, usize, usize),
+    {
+        use rusqlite::types::ValueRef;
+
+        // Open SQLite file directly with rusqlite (bypasses DuckDB's scanner type issues)
+        let sqlite_conn = rusqlite::Connection::open_with_flags(
+            file_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+
+        // List user tables
+        let mut table_stmt = sqlite_conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )?;
+        let table_names: Vec<String> = table_stmt.query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(table_stmt);
+
+        let table_total = table_names.len();
+
+        let mut results = Vec::new();
+
+        for (table_index, src_table) in table_names.iter().enumerate() {
+            let id = uuid::Uuid::new_v4().to_string();
+            let table_name = format!("dataset_{}", id.replace('-', "_"));
+
+            // Get column info via PRAGMA table_info
+            let mut pragma_stmt = sqlite_conn.prepare(
+                &format!("PRAGMA table_info(\"{}\")", src_table)
+            )?;
+            let columns: Vec<(String, String)> = pragma_stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // column name
+                    row.get::<_, String>(2)?, // column type
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+            drop(pragma_stmt);
+
+            if columns.is_empty() {
+                continue;
+            }
+
+            // Map SQLite types to DuckDB types (date/time types -> VARCHAR)
+            let col_defs: Vec<String> = columns.iter().map(|(name, sqlite_type)| {
+                let duckdb_type = Self::map_sqlite_type(sqlite_type);
+                format!("\"{}\" {}", name, duckdb_type)
+            }).collect();
+
+            self.conn.execute(
+                &format!(
+                    "CREATE TABLE \"{}\" (\"_row_id\" BIGINT, {})",
+                    table_name, col_defs.join(", ")
+                ),
+                [],
+            )?;
+
+            // Determine target types for value conversion
+            let col_types: Vec<&str> = columns.iter()
+                .map(|(_, t)| Self::map_sqlite_type(t))
+                .collect();
+
+            // Read ALL data from SQLite into memory first, then batch-insert into DuckDB.
+            // This avoids holding the DuckDB mutex while doing slow SQLite I/O.
+            let col_count = columns.len();
+            on_progress(src_table, table_index, table_total, 0, 0); // signal: reading started
+            let all_rows: Vec<Vec<String>> = {
+                let col_names_sql = columns.iter()
+                    .map(|(n, _)| format!("\"{}\"", n))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let select_sql = format!("SELECT {} FROM \"{}\"", col_names_sql, src_table);
+                let mut data_stmt = sqlite_conn.prepare(&select_sql)?;
+                let mut rows = data_stmt.query([])?;
+                let mut collected = Vec::new();
+
+                while let Some(row) = rows.next()? {
+                    let mut row_vals = Vec::with_capacity(col_count);
+                    for i in 0..col_count {
+                        let val_ref = row.get_ref(i)?;
+                        let s = match val_ref {
+                            ValueRef::Null => "\0NULL\0".to_string(),
+                            ValueRef::Integer(v) => v.to_string(),
+                            ValueRef::Real(v) => v.to_string(),
+                            ValueRef::Text(t) => String::from_utf8_lossy(t).to_string(),
+                            ValueRef::Blob(_) => "\0NULL\0".to_string(),
+                        };
+                        row_vals.push(s);
+                    }
+                    collected.push(row_vals);
+                }
+                collected
+            };
+
+            // Batch INSERT using VALUES lists (1000 rows per batch for speed)
+            const BATCH_SIZE: usize = 1000;
+            let total_rows = all_rows.len();
+            let mut rows_done: usize = 0;
+            on_progress(src_table, table_index, table_total, 0, total_rows);
+            self.conn.execute_batch("BEGIN TRANSACTION")?;
+
+            for chunk in all_rows.chunks(BATCH_SIZE) {
+                let mut values_parts: Vec<String> = Vec::with_capacity(chunk.len());
+                for (batch_idx, row_vals) in chunk.iter().enumerate() {
+                    let row_id = values_parts.len(); // placeholder, will compute below
+                    let _ = row_id; // suppress warning
+                    let mut col_parts: Vec<String> = Vec::with_capacity(col_count + 1);
+                    // _row_id will be added via a subquery
+                    for (ci, val) in row_vals.iter().enumerate() {
+                        if val == "\0NULL\0" {
+                            col_parts.push("NULL".to_string());
+                        } else {
+                            match col_types[ci] {
+                                "BIGINT" => {
+                                    match val.parse::<i64>() {
+                                        Ok(v) => col_parts.push(v.to_string()),
+                                        Err(_) => col_parts.push("NULL".to_string()),
+                                    }
+                                }
+                                "DOUBLE" => {
+                                    match val.parse::<f64>() {
+                                        Ok(_) => col_parts.push(val.clone()),
+                                        Err(_) => col_parts.push("NULL".to_string()),
+                                    }
+                                }
+                                _ => { // VARCHAR
+                                    col_parts.push(format!("'{}'", val.replace('\'', "''")));
+                                }
+                            }
+                        }
+                    }
+                    let _ = batch_idx;
+                    values_parts.push(format!("({})", col_parts.join(", ")));
+                }
+
+                // Use INSERT with row_number() to generate _row_id
+                let col_aliases = columns.iter()
+                    .map(|(n, _)| format!("\"{}\"", n))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let insert_sql = format!(
+                    "INSERT INTO \"{}\" SELECT row_number() OVER () + (SELECT COALESCE(MAX(\"_row_id\"), 0) FROM \"{}\"), {} FROM (VALUES {}) AS t({})",
+                    table_name, table_name, col_aliases, values_parts.join(", "), col_aliases
+                );
+                self.conn.execute_batch(&insert_sql)?;
+                rows_done += chunk.len();
+                on_progress(src_table, table_index, table_total, rows_done, total_rows);
+            }
+
+            self.conn.execute_batch("COMMIT")?;
+
+            // Get row count
+            let row_count: i64 = self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+                [],
+                |row| row.get(0),
+            )?;
+
+            // Insert column metadata
+            let col_count_i32 = columns.len() as i32;
+            for (col_index, (col_name, sqlite_type)) in columns.iter().enumerate() {
+                let duckdb_type = Self::map_sqlite_type(sqlite_type);
+                self.conn.execute(
+                    "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+                    params![id, col_index as i32, col_name, duckdb_type],
+                )?;
+            }
+
+            // Insert dataset metadata
+            self.conn.execute(
+                "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'sqlite', $4, $5)",
+                params![id, src_table, file_path, row_count, col_count_i32],
+            )?;
+
+            let meta = self.get_dataset_meta(&id)?;
+            results.push((src_table.clone(), meta));
+        }
+
+        Ok(results)
+    }
+
+    /// Map SQLite column type to DuckDB type, keeping date/time types as VARCHAR
+    fn map_sqlite_type(sqlite_type: &str) -> &'static str {
+        let upper = sqlite_type.to_uppercase();
+        if upper.contains("INT") || upper.contains("BOOL") {
+            "BIGINT"
+        } else if upper.contains("REAL") || upper.contains("FLOA")
+            || upper.contains("DOUB") || upper.contains("NUMERIC")
+            || upper.contains("DECIMAL") {
+            "DOUBLE"
+        } else {
+            "VARCHAR"
+        }
+    }
+
+    /// Export all datasets to a SQLite database file
+    pub fn export_sqlite(&self, output_path: &str) -> Result<(), AppError> {
+        // Install and load the sqlite extension
+        self.conn.execute_batch("INSTALL sqlite; LOAD sqlite;")?;
+
+        // Delete existing file if present (so we get a fresh database)
+        let _ = std::fs::remove_file(output_path);
+
+        // Detach if previously attached (from a failed attempt)
+        let _ = self.conn.execute_batch("DETACH IF EXISTS _sqlite_dst;");
+
+        // Attach the output SQLite database
+        self.conn.execute(
+            &format!("ATTACH '{}' AS _sqlite_dst (TYPE sqlite)", output_path.replace('\'', "''")),
+            [],
+        )?;
+
+        let result = (|| -> Result<(), AppError> {
+            // Get all datasets
+            let datasets = self.list_datasets()?;
+
+            for ds in &datasets {
+                let table_name = format!("dataset_{}", ds.id.replace('-', "_"));
+
+                // Get user column names (exclude _row_id)
+                let mut col_stmt = self.conn.prepare(
+                    "SELECT col_name FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index"
+                )?;
+                let col_names: Vec<String> = col_stmt
+                    .query_map(params![ds.id], |row| row.get(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                if col_names.is_empty() {
+                    continue;
+                }
+
+                let select_cols = col_names.iter().map(|c| format!("\"{}\" ", c)).collect::<Vec<_>>().join(", ");
+
+                // Create the table in the destination SQLite database
+                self.conn.execute(
+                    &format!(
+                        "CREATE TABLE _sqlite_dst.\"{}\" AS SELECT {} FROM \"{}\"",
+                        ds.name, select_cols, table_name
+                    ),
+                    [],
+                )?;
+            }
+
+            Ok(())
+        })();
+
+        // Always detach
+        let _ = self.conn.execute_batch("DETACH _sqlite_dst;");
+
+        result
+    }
+
     /// Get basic descriptive stats for a numeric column
     pub fn column_stats(&self, dataset_id: &str, column_name: &str) -> Result<crate::models::stats::ColumnStats, AppError> {
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
