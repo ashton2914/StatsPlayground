@@ -245,39 +245,37 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const [filterRangeMax, setFilterRangeMax] = useState("");
   const filterLastClickRef = useRef<number>(-1);
 
-  interface UndoSnapshot {
-    data: TableQueryResult;
-    colWidths: number[];
-    colFormats: ColumnFormat[];
-  }
-  const undoStackRef = useRef<UndoSnapshot[]>([]);
-  const redoStackRef = useRef<UndoSnapshot[]>([]);
-  const MAX_UNDO = 50;
   const { refreshDatasets, setStatusInfo } = useDataStore();
   const { markDirty } = useProjectStore();
-  const { record: recordHistory } = useHistoryStore();
+  const { record: recordHistory, undo: historyUndo, redo: historyRedo, pendingRestore, clearPendingRestore } = useHistoryStore();
+
+  // Refs for tracking latest state (used by recordAction and pendingRestore)
+  const dataRef = useRef<TableQueryResult | null>(null);
+  const colWidthsRef = useRef<number[]>([]);
+  const initialRecordedRef = useRef(false);
+  if (data) dataRef.current = data;
+  colWidthsRef.current = colWidths;
 
   const refreshAndMarkDirty = useCallback(async () => {
     await refreshDatasets();
     markDirty();
   }, [refreshDatasets, markDirty]);
 
-  // Debounced history recording for batching rapid edits
-  const historyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const recordAction = useCallback((description: string, immediate = false) => {
-    if (historyTimerRef.current) {
-      clearTimeout(historyTimerRef.current);
-      historyTimerRef.current = null;
-    }
-    if (immediate) {
-      recordHistory(description);
-    } else {
-      historyTimerRef.current = setTimeout(() => {
-        recordHistory(description);
-        historyTimerRef.current = null;
-      }, 300);
-    }
-  }, [recordHistory]);
+  // Capture current state for history (called after each operation)
+  const captureState = useCallback(() => {
+    if (!dataRef.current) return undefined;
+    return {
+      datasetId,
+      data: structuredClone(dataRef.current),
+      colWidths: [...colWidthsRef.current],
+      colFormats: colFormatsRef.current.map((f: ColumnFormat) => ({ ...f })),
+    };
+  }, [datasetId]);
+
+  // History recording — captures afterState for undo/redo
+  const recordAction = useCallback((description: string) => {
+    recordHistory(description, captureState());
+  }, [recordHistory, captureState]);
 
   const load = useCallback(async () => {
     try {
@@ -287,6 +285,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
         pageSize: 1_000_000,
       });
       setData(result);
+      dataRef.current = result;
       // Load saved display props
       try {
         const props = await dataService.getColumnDisplayProps(datasetId);
@@ -297,11 +296,13 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
             return p?.width ?? DEFAULT_COL_WIDTH;
           });
           setColWidths(widths);
+          colWidthsRef.current = widths;
           const formats = Array.from({ length: visCount }, (_, i) => {
             const p = props.find(dp => dp.colIndex === i);
             return p?.format ? { kind: p.format.kind as FormatKind, decimals: p.format.decimals, currency: p.format.currency } : DEFAULT_FORMAT;
           });
           setColFormats(formats);
+          colFormatsRef.current = formats;
         }
       } catch { /* ignore display prop load errors */ }
     } catch (e) {
@@ -333,7 +334,14 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   }, [datasetId]);
 
   useEffect(() => {
-    load();
+    initialRecordedRef.current = false;
+    load().then(() => {
+      // Record initial state so the very first operation can be undone
+      if (!initialRecordedRef.current && dataRef.current) {
+        initialRecordedRef.current = true;
+        recordHistory("加载数据", captureState());
+      }
+    });
     setActiveCell(null);
     setEditCell(null);
     setSelectedRows(new Set());
@@ -348,9 +356,40 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setShowAddCol(false);
     setColumnFilters(new Map());
     setFilterPopover(null);
-    undoStackRef.current = [];
-    redoStackRef.current = [];
   }, [datasetId, load]);
+
+  // Apply pending restore from history store (undo/redo/jumpTo)
+  useEffect(() => {
+    if (!pendingRestore) return;
+    const snapshot = pendingRestore as {
+      datasetId: string;
+      data: TableQueryResult;
+      colWidths: number[];
+      colFormats: ColumnFormat[];
+    };
+    // Only apply if the snapshot is for this dataset
+    if (snapshot.datasetId !== datasetId) {
+      clearPendingRestore();
+      return;
+    }
+    // Optimistic UI update — show restored state immediately
+    setData(snapshot.data);
+    dataRef.current = snapshot.data;
+    setColWidths(snapshot.colWidths);
+    colWidthsRef.current = snapshot.colWidths;
+    setColFormats(snapshot.colFormats);
+    colFormatsRef.current = snapshot.colFormats;
+    clearPendingRestore();
+    // Sync to backend in background (non-blocking)
+    const rowIdIdx2 = snapshot.data.columns.indexOf("_row_id");
+    const colNames = snapshot.data.columns.filter((_: string, i: number) => i !== rowIdIdx2);
+    const colTypesSnap = snapshot.data.columnTypes.filter((_: string, i: number) => i !== rowIdIdx2);
+    const rows = snapshot.data.rows;
+    dataService.restoreSnapshot(datasetId, colNames, colTypesSnap, rows)
+      .then(() => syncDisplayProps(snapshot.colWidths, snapshot.colFormats))
+      .then(() => refreshAndMarkDirty())
+      .catch((e) => setErrorMsg(String(e)));
+  }, [pendingRestore, datasetId, clearPendingRestore, syncDisplayProps, refreshAndMarkDirty]);
 
   // Auto-scroll to keep activeCell visible (virtual scrolling)
   useEffect(() => {
@@ -367,6 +406,22 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       wrapper.scrollTop = rowBottom - wrapper.clientHeight;
     }
   }, [activeCell]);
+
+  // Auto-scroll to keep the selection's moving end visible
+  useEffect(() => {
+    if (!selection || !tableRef.current) return;
+    const wrapper = tableRef.current;
+    const headerH = 48;
+    const rowTop = selection.endRow * ROW_HEIGHT + headerH;
+    const rowBottom = rowTop + ROW_HEIGHT;
+    const viewTop = wrapper.scrollTop;
+    const viewBottom = viewTop + wrapper.clientHeight;
+    if (rowTop < viewTop + headerH) {
+      wrapper.scrollTop = rowTop - headerH;
+    } else if (rowBottom > viewBottom) {
+      wrapper.scrollTop = rowBottom - wrapper.clientHeight;
+    }
+  }, [selection]);
 
   useEffect(() => {
     if (editCell && editInputRef.current) {
@@ -643,80 +698,26 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     return `列${i}`;
   };
 
-  // ---- Undo / Redo ----
-  const saveSnapshot = () => {
-    if (!data) return;
-    undoStackRef.current.push({
-      data: structuredClone(data),
-      colWidths: [...colWidths],
-      colFormats: colFormats.map(f => ({ ...f })),
-    });
-    if (undoStackRef.current.length > MAX_UNDO) {
-      undoStackRef.current.shift();
-    }
-    redoStackRef.current = [];
+  // ---- Undo / Redo (unified with history store) ----
+  const handleUndo = () => {
+    historyUndo();
   };
 
-  const restoreFromSnapshot = async (snapshot: UndoSnapshot) => {
-    // Extract col info (skip _row_id)
-    const rowIdIdx = snapshot.data.columns.indexOf("_row_id");
-    const colNames = snapshot.data.columns.filter((_, i) => i !== rowIdIdx);
-    const colTypesSnap = snapshot.data.columnTypes.filter((_, i) => i !== rowIdIdx);
-    const rows = snapshot.data.rows;
-
-    try {
-      await dataService.restoreSnapshot(datasetId, colNames, colTypesSnap, rows);
-      // Sync display props to backend first (so load() picks them up)
-      await syncDisplayProps(snapshot.colWidths, snapshot.colFormats);
-      await load();
-      // Restore display props after load (override what load() set)
-      setColWidths(snapshot.colWidths);
-      setColFormats(snapshot.colFormats);
-      await refreshAndMarkDirty();
-    } catch (e) {
-      setErrorMsg(String(e));
-    }
-  };
-
-  const handleUndo = async () => {
-    if (undoStackRef.current.length === 0) return;
-    const snapshot = undoStackRef.current.pop()!;
-    if (data) {
-      redoStackRef.current.push({
-        data: structuredClone(data),
-        colWidths: [...colWidths],
-        colFormats: colFormats.map(f => ({ ...f })),
-      });
-    }
-    await restoreFromSnapshot(snapshot);
-  };
-
-  const handleRedo = async () => {
-    if (redoStackRef.current.length === 0) return;
-    const snapshot = redoStackRef.current.pop()!;
-    if (data) {
-      undoStackRef.current.push({
-        data: structuredClone(data),
-        colWidths: [...colWidths],
-        colFormats: colFormats.map(f => ({ ...f })),
-      });
-    }
-    await restoreFromSnapshot(snapshot);
+  const handleRedo = () => {
+    historyRedo();
   };
 
   // ---- Row operations ----
   const handleAddRow = async () => {
-    saveSnapshot();
     await dataService.addRow(datasetId);
     await load();
     await refreshAndMarkDirty();
-    recordAction("添加行", true);
+    recordAction("添加行");
   };
 
   const handleInsertMultiRows = async () => {
     const count = parseInt(insertRowCount, 10);
     if (isNaN(count) || count < 1) return;
-    saveSnapshot();
     for (let i = 0; i < count; i++) {
       await dataService.addRow(datasetId);
     }
@@ -724,12 +725,11 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setInsertRowCount("5");
     await load();
     await refreshAndMarkDirty();
-    recordAction("批量添加行", true);
+    recordAction("批量添加行");
   };
 
   const handleDeleteRows = async () => {
     if (selectedRows.size === 0) return;
-    saveSnapshot();
     for (const rowIdx of selectedRows) {
       const row = data.rows[toDataIdx(rowIdx)] as unknown[];
       if (row) await dataService.deleteRow(datasetId, getRowId(row));
@@ -738,55 +738,50 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setRowMenu(null);
     await load();
     await refreshAndMarkDirty();
-    recordAction("删除行", true);
+    recordAction("删除行");
   };
 
   const handleDeleteSingleRow = async (rowIdx: number) => {
-    saveSnapshot();
     const row = data.rows[toDataIdx(rowIdx)] as unknown[];
     await dataService.deleteRow(datasetId, getRowId(row));
     setRowMenu(null);
     await load();
     await refreshAndMarkDirty();
-    recordAction("删除行", true);
+    recordAction("删除行");
   };
 
   const handleInsertRowAbove = async () => {
-    saveSnapshot();
     await dataService.addRow(datasetId);
     setRowMenu(null);
     await load();
     await refreshAndMarkDirty();
-    recordAction("插入行", true);
+    recordAction("插入行");
   };
 
   // ---- Column operations ----
   const handleAddColumnQuick = async () => {
-    saveSnapshot();
     const name = generateColName(cols);
     await dataService.addColumn(datasetId, name, "VARCHAR");
     await load();
     await refreshAndMarkDirty();
-    recordAction("添加列", true);
+    recordAction("添加列");
   };
 
   const handleAddColumn = async () => {
     const name = newColName.trim();
     if (!name) return;
-    saveSnapshot();
     await dataService.addColumn(datasetId, name, newColType);
     setShowAddCol(false);
     setNewColName("");
     setNewColType("VARCHAR");
     await load();
     await refreshAndMarkDirty();
-    recordAction(`添加列 "${name}"`, true);
+    recordAction(`添加列 "${name}"`);
   };
 
   const handleInsertMultiCols = async () => {
     const count = parseInt(insertColCount, 10);
     if (isNaN(count) || count < 1) return;
-    saveSnapshot();
     const currentNames = [...cols];
     for (let i = 0; i < count; i++) {
       const name = generateColName(currentNames);
@@ -798,17 +793,16 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setInsertColType("VARCHAR");
     await load();
     await refreshAndMarkDirty();
-    recordAction("批量添加列", true);
+    recordAction("批量添加列");
   };
 
   const handleDeleteColumn = async (colName: string) => {
     if (cols.length <= 1) return;
-    saveSnapshot();
     await dataService.deleteColumn(datasetId, colName);
     setColMenu(null);
     await load();
     await refreshAndMarkDirty();
-    recordAction(`删除列 "${colName}"`, true);
+    recordAction(`删除列 "${colName}"`);
   };
 
   const handleDeleteSelectedCols = async () => {
@@ -818,7 +812,6 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       setColMenu(null);
       return;
     }
-    saveSnapshot();
     for (const ci of selectedCols) {
       await dataService.deleteColumn(datasetId, cols[ci]);
     }
@@ -826,7 +819,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     setColMenu(null);
     await load();
     await refreshAndMarkDirty();
-    recordAction("删除列", true);
+    recordAction("删除列");
   };
 
   const handleStartRenameCol = (colIdx: number) => {
@@ -850,7 +843,6 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleApplyBatchColProps = async () => {
     if (!batchColProps) return;
-    saveSnapshot();
     // Apply column widths
     const newW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(batchColWidth) || DEFAULT_COL_WIDTH));
     const newWidths = [...colWidths];
@@ -858,12 +850,14 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       newWidths[ci] = newW;
     }
     setColWidths(newWidths);
+    colWidthsRef.current = newWidths;
     // Apply column formats
     const newFormats = [...colFormats];
     for (const ci of batchColProps.checkedCols) {
       newFormats[ci] = { ...batchColFormat };
     }
     setColFormats(newFormats);
+    colFormatsRef.current = newFormats;
     // Sync display props to backend
     syncDisplayProps(newWidths, newFormats);
     markDirty();
@@ -876,7 +870,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       await load();
       await refreshAndMarkDirty();
       setBatchColProps(null);
-      recordAction("修改列属性", true);
+      recordAction("修改列属性");
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -884,7 +878,6 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   const handleRenameColumn = async () => {
     if (!renameCol || !renameValue.trim()) return;
-    saveSnapshot();
     const nameChanged = renameValue.trim() !== renameCol.oldName;
     const typeChanged = renameType !== renameCol.oldType;
     // Apply column width
@@ -892,10 +885,12 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     const newWidths = [...colWidths];
     newWidths[renameCol.colIdx] = newW;
     setColWidths(newWidths);
+    colWidthsRef.current = newWidths;
     // Apply column format
     const newFormats = [...colFormats];
     newFormats[renameCol.colIdx] = { ...renameFormat };
     setColFormats(newFormats);
+    colFormatsRef.current = newFormats;
     // Sync display props to backend
     syncDisplayProps(newWidths, newFormats);
     markDirty();
@@ -912,7 +907,7 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
         await refreshAndMarkDirty();
       }
       setRenameCol(null);
-      recordAction("修改列属性", true);
+      recordAction("修改列属性");
     } catch (e) {
       setErrorMsg(String(e));
     }
@@ -995,16 +990,28 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
       return; // Don't commit, keep editing
     }
     setEditCell(null);
-    const row = data.rows[toDataIdx(editRow)] as unknown[];
+    const dataIdx = toDataIdx(editRow);
+    const row = data.rows[dataIdx] as unknown[];
     const rowId = getRowId(row);
     const colName = cols[editCol];
-    saveSnapshot();
+
+    // Optimistic UI update — immediately reflect new value, no flash
+    const newData = { ...data, rows: [...data.rows] };
+    const newRow = [...(newData.rows[dataIdx] as unknown[])];
+    // Column index in raw row = editCol offset by _row_id position
+    const rawColIdx = editCol >= rowIdIdx ? editCol + 1 : editCol;
+    newRow[rawColIdx] = editValue === "" ? null : editValue;
+    newData.rows[dataIdx] = newRow;
+    setData(newData);
+    dataRef.current = newData;
+
     try {
       await dataService.updateCell(datasetId, rowId, colName, editValue);
     } catch (e) {
       setErrorMsg(String(e));
+      await load(); // Revert on error
+      return;
     }
-    await load();
     markDirty();
     recordAction("编辑单元格");
 
@@ -1044,20 +1051,32 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
 
   // ---- Clear cells (Delete key) ----
   const clearCells = async (cells: { row: number; col: number }[]) => {
-    saveSnapshot();
+    // Optimistic UI update
+    const newData = { ...data, rows: [...data.rows] };
+    const updateInfos: { rowId: number; colName: string }[] = [];
+    for (const { row, col } of cells) {
+      const dataIdx = toDataIdx(row);
+      const rawRow = [...(newData.rows[dataIdx] as unknown[])];
+      const rowId = getRowId(rawRow as unknown[]);
+      const rawColIdx = col >= rowIdIdx ? col + 1 : col;
+      rawRow[rawColIdx] = null;
+      newData.rows[dataIdx] = rawRow;
+      updateInfos.push({ rowId, colName: cols[col] });
+    }
+    setData(newData);
+    dataRef.current = newData;
+
     try {
-      for (const { row, col } of cells) {
-        const rawRow = data.rows[toDataIdx(row)] as unknown[];
-        const rowId = getRowId(rawRow);
-        const colName = cols[col];
+      for (const { rowId, colName } of updateInfos) {
         await dataService.updateCell(datasetId, rowId, colName, "");
       }
     } catch (e) {
       setErrorMsg(String(e));
+      await load(); // Revert on error
+      return;
     }
-    await load();
     markDirty();
-    recordAction("清除单元格内容", true);
+    recordAction("清除单元格内容");
   };
 
   // ---- Helper: find boundary of continuous data (Excel Ctrl+Arrow behavior) ----
@@ -1258,13 +1277,12 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     }
 
     try {
-      saveSnapshot();
       await dataService.pasteAtPosition(
         datasetId, toDataIdx(startRow), startCol, dataRows, headerNames, detectedTypes
       );
       await load();
       await refreshAndMarkDirty();
-      recordAction("粘贴数据", true);
+      recordAction("粘贴数据");
     } catch (err) {
       setErrorMsg(String(err));
     }
@@ -1431,49 +1449,52 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     if (arrows.includes(e.key)) {
       e.preventDefault();
 
-      let targetRow = row;
-      let targetCol = col;
+      // When extending selection (Shift held), compute movement from the selection's moving end
+      // so the selection grows from that edge; activeCell stays as the anchor.
+      const srcRow = e.shiftKey && selection ? selection.endRow : row;
+      const srcCol = e.shiftKey && selection ? selection.endCol : col;
+
+      let targetRow = srcRow;
+      let targetCol = srcCol;
 
       if (e.key === "ArrowUp") {
         if (isMod) {
-          const edge = findEdge(row, col, -1, 0);
+          const edge = findEdge(srcRow, srcCol, -1, 0);
           targetRow = edge.row;
         } else {
-          targetRow = Math.max(0, row - 1);
+          targetRow = Math.max(0, srcRow - 1);
         }
       } else if (e.key === "ArrowDown") {
         if (isMod) {
-          const edge = findEdge(row, col, 1, 0);
+          const edge = findEdge(srcRow, srcCol, 1, 0);
           targetRow = edge.row;
         } else {
-          targetRow = Math.min(maxRow, row + 1);
+          targetRow = Math.min(maxRow, srcRow + 1);
         }
       } else if (e.key === "ArrowLeft") {
         if (isMod) {
-          const edge = findEdge(row, col, 0, -1);
+          const edge = findEdge(srcRow, srcCol, 0, -1);
           targetCol = edge.col;
         } else {
-          targetCol = Math.max(0, col - 1);
+          targetCol = Math.max(0, srcCol - 1);
         }
       } else if (e.key === "ArrowRight") {
         if (isMod) {
-          const edge = findEdge(row, col, 0, 1);
+          const edge = findEdge(srcRow, srcCol, 0, 1);
           targetCol = edge.col;
         } else {
-          targetCol = Math.min(maxCol, col + 1);
+          targetCol = Math.min(maxCol, srcCol + 1);
         }
       }
 
       if (e.shiftKey) {
-        // Extend selection
-        const anchor = selection ? { row: selection.startRow, col: selection.startCol } : { row, col };
+        // Extend selection; activeCell (anchor) stays in place
         setSelection({
-          startRow: anchor.row,
-          startCol: anchor.col,
+          startRow: row,
+          startCol: col,
           endRow: targetRow,
           endCol: targetCol,
         });
-        setActiveCell({ row: targetRow, col: targetCol });
       } else {
         setActiveCell({ row: targetRow, col: targetCol });
         setSelection(null);
@@ -1829,7 +1850,6 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
   const handleResizeStart = (e: React.MouseEvent, colIdx: number) => {
     e.preventDefault();
     e.stopPropagation();
-    saveSnapshot();
     const startX = e.clientX;
     // Calculate offset: distance from mouse to the actual right border of the column
     const th = (e.target as HTMLElement).closest("th");
@@ -1870,9 +1890,11 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
         }
         // Sync display props to backend
         syncDisplayProps(next, colFormatsRef.current);
+        colWidthsRef.current = next;
         markDirty();
         return next;
       });
+      recordAction("调整列宽");
     };
 
     document.body.style.cursor = "col-resize";
@@ -1916,14 +1938,15 @@ export function DataTableView({ datasetId }: DataTableViewProps) {
     e.stopPropagation();
     // If this column is in the selected set, auto-fit all selected columns
     const targetCols = selectedCols.has(colIdx) ? Array.from(selectedCols) : [colIdx];
-    saveSnapshot();
     const newWidths = [...colWidths];
     for (const ci of targetCols) {
       newWidths[ci] = autoFitColumn(ci);
     }
     setColWidths(newWidths);
+    colWidthsRef.current = newWidths;
     syncDisplayProps(newWidths, colFormatsRef.current);
     markDirty();
+    recordAction("自动调整列宽");
   };
 
   return (

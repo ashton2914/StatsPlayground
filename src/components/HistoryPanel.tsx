@@ -13,11 +13,11 @@ export function HistoryPanel({
     history,
     snapshots,
     currentIdx,
-    restoreHistory,
     createSnapshot,
     restoreSnapshot,
     deleteSnapshot,
     renameSnapshot,
+    jumpTo,
   } = useHistoryStore();
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -30,27 +30,6 @@ export function HistoryPanel({
       renameRef.current.select();
     }
   }, [renamingId]);
-
-  const handleRestoreHistory = async (id: string) => {
-    setBusyMessage("正在恢复历史记录…");
-    const unlisten = await listen<{
-      datasetIndex: number;
-      datasetTotal: number;
-      datasetName: string;
-    }>("restore-progress", (event) => {
-      const { datasetIndex, datasetTotal, datasetName } = event.payload;
-      if (datasetTotal > 0 && datasetIndex < datasetTotal) {
-        setBusyMessage(`正在恢复历史记录… 数据表 ${datasetIndex + 1}/${datasetTotal}: ${datasetName}`);
-      }
-    });
-    try {
-      await restoreHistory(id);
-      await onRestored();
-    } finally {
-      unlisten();
-      setBusyMessage(null);
-    }
-  };
 
   const handleRestoreSnapshot = async (id: string) => {
     setBusyMessage("正在恢复快照…");
@@ -131,9 +110,10 @@ export function HistoryPanel({
             history.map((entry, idx) => (
               <div
                 key={entry.id}
-                className={`history-item${idx === currentIdx ? " history-current" : ""}`}
-                onClick={() => handleRestoreHistory(entry.id)}
+                className={`history-item${idx === currentIdx ? " history-current" : ""}${entry.afterState ? " history-clickable" : ""}`}
                 title={`${entry.description}\n${formatTime(entry.timestamp)}`}
+                onClick={() => entry.afterState && jumpTo(entry.id)}
+                style={entry.afterState ? { cursor: "pointer" } : undefined}
               >
                 <div className="history-item-icon">
                   {idx === currentIdx ? (

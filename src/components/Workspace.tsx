@@ -102,9 +102,9 @@ export function Workspace() {
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
 
-  /** Record an action to history */
-  const recordAction = useCallback(async (desc: string) => {
-    await recordHistory(desc);
+  /** Record an action to history (synchronous — no IPC) */
+  const recordAction = useCallback((desc: string) => {
+    recordHistory(desc);
   }, [recordHistory]);
 
   /** Called when history/snapshot is restored — refresh all UI */
@@ -182,7 +182,7 @@ export function Workspace() {
     await refreshDatasets();
     markDirty();
     setActiveDataset(meta.id);
-    await recordAction(`新建数据表 "${name}"`);
+    recordAction(`新建数据表 "${name}"`);
     // Enter rename mode
     setRenamingId(meta.id);
     setRenameValue(name);
@@ -195,7 +195,7 @@ export function Workspace() {
       await dataService.renameDataset(id, trimmed);
       await refreshDatasets();
       markDirty();
-      await recordAction(`重命名数据表 "${oldName}" → "${trimmed}"`);
+      recordAction(`重命名数据表 "${oldName}" → "${trimmed}"`);
     }
     setRenamingId(null);
   };
@@ -206,7 +206,7 @@ export function Workspace() {
     if (activeDatasetId === id) setActiveDataset(null);
     await refreshDatasets();
     markDirty();
-    await recordAction(`删除数据表 "${name}"`);
+    recordAction(`删除数据表 "${name}"`);
   };
 
   const handleImportCsv = async () => {
@@ -220,7 +220,7 @@ export function Workspace() {
       await refreshDatasets();
       markDirty();
       const fileName = (selected as string).split(/[\\/]/).pop() ?? "CSV";
-      await recordAction(`导入 CSV "${fileName}"`);
+      recordAction(`导入 CSV "${fileName}"`);
     }
   };
 
@@ -253,7 +253,7 @@ export function Workspace() {
         await refreshDatasets();
         markDirty();
         const fileName = (selected as string).split(/[\\\\/]/).pop() ?? "SQLite";
-        await recordAction(`导入 SQLite "${fileName}"`);
+        recordAction(`导入 SQLite "${fileName}"`);
       } catch (e) {
         alert("导入 SQLite 失败: " + String(e));
       } finally {

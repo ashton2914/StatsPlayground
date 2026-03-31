@@ -27,15 +27,16 @@ export interface ProjectDataSnapshot {
   datasets: SnapshotDataset[];
 }
 
-/** A single history entry */
+/** A single history entry — stores the dataset state AFTER this operation */
 export interface HistoryEntry {
   id: string;
   timestamp: string;
   description: string;
-  snapshot: ProjectDataSnapshot;
+  /** Opaque dataset state snapshot taken after this operation (for undo/redo) */
+  afterState?: unknown;
 }
 
-/** A named snapshot (bookmark) */
+/** A named snapshot (bookmark) — full state capture */
 export interface NamedSnapshot {
   id: string;
   name: string;
