@@ -78,6 +78,11 @@
   --scrollbar-thumb: #c1c1c1;
   --scrollbar-thumb-hover: #a8a8a8;
 
+  --bg-activity-bar: #2c2c2c;
+  --fg-activity: #8a8a8a;
+  --fg-activity-active: #ffffff;
+  --bg-activity-indicator: #4a6cf7;
+
   color: var(--fg-primary);
   background-color: var(--bg-app);
 }
@@ -152,6 +157,11 @@
   --scrollbar-track: #2d2d2d;
   --scrollbar-thumb: #555555;
   --scrollbar-thumb-hover: #6e6e6e;
+
+  --bg-activity-bar: #333333;
+  --fg-activity: #858585;
+  --fg-activity-active: #ffffff;
+  --bg-activity-indicator: #569cd6;
 }
 
 *,

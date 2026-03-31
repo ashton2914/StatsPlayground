@@ -39,6 +39,8 @@ pub fn run() {
             commands::io_commands::import_sqlite,
             commands::io_commands::export_sqlite,
             commands::io_commands::export_csv_zip,
+            commands::history_commands::capture_project_snapshot,
+            commands::history_commands::restore_project_snapshot,
             commands::project_commands::init_project,
             commands::project_commands::create_project,
             commands::project_commands::open_project,

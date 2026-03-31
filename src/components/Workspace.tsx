@@ -1,14 +1,17 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useDataStore } from "@/stores/useDataStore";
+import { useHistoryStore } from "@/stores/useHistoryStore";
 import { dataService } from "@/services/dataService";
 import { ioService } from "@/services/ioService";
 import { DataTableView } from "./DataTableView";
+import { HistoryPanel, type SnapshotMenuData } from "./HistoryPanel";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
+import type { NamedSnapshot } from "@/types/history";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -81,11 +84,16 @@ export function Workspace() {
   const { project, saveProject, closeProject, initProject, dirty, markDirty } = useProjectStore();
   const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
+  const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory } = useHistoryStore();
+  const [activeTab, setActiveTab] = useState<"files" | "history">("files");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showPrefs, setShowPrefs] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
   const [dsMenu, setDsMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [snapMenu, setSnapMenu] = useState<SnapshotMenuData | null>(null);
+  const [confirmDeleteSnapId, setConfirmDeleteSnapId] = useState<string | null>(null);
+  const snapRenameRef = useRef<((id: string) => void) | null>(null);
   const [importProgress, setImportProgress] = useState<{
     tableName: string;
     tableIndex: number;
@@ -93,8 +101,27 @@ export function Workspace() {
     rowsDone: number;
     rowsTotal: number;
   } | null>(null);
+  const [busyMessage, setBusyMessage] = useState<string | null>(null);
+  const [tableKey, setTableKey] = useState(0);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
+
+  /** Record an action to history (synchronous — no IPC) */
+  const recordAction = useCallback((desc: string) => {
+    recordHistory(desc);
+  }, [recordHistory]);
+
+  /** Called when history/snapshot is restored — refresh all UI */
+  const handleHistoryRestored = useCallback(async () => {
+    await refreshDatasets();
+    // If activeDataset no longer exists, deselect
+    const updatedDatasets = await dataService.listDatasets();
+    if (activeDatasetId && !updatedDatasets.find((d) => d.id === activeDatasetId)) {
+      setActiveDataset(null);
+    }
+    // Force DataTableView to remount and reload data
+    setTableKey((k) => k + 1);
+  }, [refreshDatasets, activeDatasetId, setActiveDataset]);
 
   useEffect(() => {
     refreshDatasets();
@@ -107,6 +134,14 @@ export function Workspace() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [dsMenu]);
+
+  // Dismiss snapshot context menu on click
+  useEffect(() => {
+    if (!snapMenu) return;
+    const handler = () => { setSnapMenu(null); setConfirmDeleteSnapId(null); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [snapMenu]);
 
   // Cmd/Ctrl+S: save project (use ref to avoid stale closure)
   const handleSaveRef = useRef<(() => Promise<void>) | null>(null);
@@ -161,6 +196,7 @@ export function Workspace() {
     await refreshDatasets();
     markDirty();
     setActiveDataset(meta.id);
+    recordAction(`新建数据表 "${name}"`);
     // Enter rename mode
     setRenamingId(meta.id);
     setRenameValue(name);
@@ -168,19 +204,23 @@ export function Workspace() {
 
   const handleRenameSubmit = async (id: string) => {
     const trimmed = renameValue.trim();
-    if (trimmed && trimmed !== datasets.find((d) => d.id === id)?.name) {
+    const oldName = datasets.find((d) => d.id === id)?.name;
+    if (trimmed && trimmed !== oldName) {
       await dataService.renameDataset(id, trimmed);
       await refreshDatasets();
       markDirty();
+      recordAction(`重命名数据表 "${oldName}" → "${trimmed}"`);
     }
     setRenamingId(null);
   };
 
   const handleDeleteDataset = async (id: string) => {
+    const name = datasets.find((d) => d.id === id)?.name ?? id;
     await dataService.deleteDataset(id);
     if (activeDatasetId === id) setActiveDataset(null);
     await refreshDatasets();
     markDirty();
+    recordAction(`删除数据表 "${name}"`);
   };
 
   const handleImportCsv = async () => {
@@ -193,6 +233,8 @@ export function Workspace() {
       await dataService.importFile(selected as string);
       await refreshDatasets();
       markDirty();
+      const fileName = (selected as string).split(/[\\/]/).pop() ?? "CSV";
+      recordAction(`导入 CSV "${fileName}"`);
     }
   };
 
@@ -224,6 +266,8 @@ export function Workspace() {
         await ioService.importSqlite(selected as string);
         await refreshDatasets();
         markDirty();
+        const fileName = (selected as string).split(/[\\\\/]/).pop() ?? "SQLite";
+        recordAction(`导入 SQLite "${fileName}"`);
       } catch (e) {
         alert("导入 SQLite 失败: " + String(e));
       } finally {
@@ -264,7 +308,8 @@ export function Workspace() {
   };
 
   const handleSave = async () => {
-    // If project has no file path yet, prompt for save location
+    const { snapshots } = useHistoryStore.getState();
+    // History is session-only (not persisted); only snapshots are saved
     if (!project?.filePath) {
       const filePath = await save({
         title: "保存项目文件",
@@ -272,9 +317,9 @@ export function Workspace() {
         filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
       });
       if (!filePath) return; // User cancelled
-      await saveProject(filePath);
+      await saveProject(filePath, [], snapshots);
     } else {
-      await saveProject();
+      await saveProject(undefined, [], snapshots);
     }
     setSaveToast(true);
     setTimeout(() => setSaveToast(false), 1500);
@@ -283,6 +328,7 @@ export function Workspace() {
 
   const handleCloseProject = async () => {
     setActiveDataset(null);
+    resetHistory();
     await initProject();
     await refreshDatasets();
     tableCounter.current = 0;
@@ -296,9 +342,34 @@ export function Workspace() {
     });
     if (selected) {
       setActiveDataset(null);
-      await openProject(selected as string);
-      await refreshDatasets();
-      tableCounter.current = 0;
+      resetHistory();
+      setBusyMessage("正在打开项目…");
+      const unlisten = await listen<{
+        datasetIndex: number;
+        datasetTotal: number;
+        datasetName: string;
+      }>("open-project-progress", (event) => {
+        const { datasetIndex, datasetTotal, datasetName } = event.payload;
+        if (datasetTotal > 0 && datasetIndex < datasetTotal) {
+          setBusyMessage(`正在打开项目… 数据表 ${datasetIndex + 1}/${datasetTotal}: ${datasetName}`);
+        }
+      });
+      try {
+        const result = await openProject(selected as string);
+        await refreshDatasets();
+        tableCounter.current = 0;
+        // Restore snapshots from project file (history is session-only)
+        if (result.snapshots.length > 0) {
+          const { loadFromProject } = useHistoryStore.getState();
+          loadFromProject(
+            [],
+            result.snapshots as NamedSnapshot[],
+          );
+        }
+      } finally {
+        unlisten();
+        setBusyMessage(null);
+      }
     }
   };
 
@@ -330,6 +401,33 @@ export function Workspace() {
         </div>
         <div className="menu-spacer" />
         <button
+          className="menu-bar-snapshot"
+          onClick={async () => {
+            setBusyMessage("正在创建快照…");
+            const unlisten = await listen<{
+              datasetIndex: number;
+              datasetTotal: number;
+              datasetName: string;
+            }>("snapshot-progress", (event) => {
+              const { datasetIndex, datasetTotal, datasetName } = event.payload;
+              if (datasetTotal > 0 && datasetIndex < datasetTotal) {
+                setBusyMessage(`正在创建快照… 数据表 ${datasetIndex + 1}/${datasetTotal}: ${datasetName}`);
+              }
+            });
+            try {
+              await createSnapshot();
+            } finally {
+              unlisten();
+              setBusyMessage(null);
+            }
+          }}
+          title="创建快照"
+        >
+          <svg width="18" height="18" viewBox="0 0 640 640" fill="currentColor">
+            <path d="M257.1 96C238.4 96 220.9 105.4 210.5 120.9L184.5 160L128 160C92.7 160 64 188.7 64 224L64 480C64 515.3 92.7 544 128 544L512 544C547.3 544 576 515.3 576 480L576 224C576 188.7 547.3 160 512 160L455.5 160L429.5 120.9C419.1 105.4 401.6 96 382.9 96L257.1 96zM250.4 147.6C251.9 145.4 254.4 144 257.1 144L382.8 144C385.5 144 388 145.3 389.5 147.6L422.7 197.4C427.2 204.1 434.6 208.1 442.7 208.1L512 208.1C520.8 208.1 528 215.3 528 224.1L528 480.1C528 488.9 520.8 496.1 512 496.1L128 496C119.2 496 112 488.8 112 480L112 224C112 215.2 119.2 208 128 208L197.3 208C205.3 208 212.8 204 217.3 197.3L250.5 147.5zM320 448C381.9 448 432 397.9 432 336C432 274.1 381.9 224 320 224C258.1 224 208 274.1 208 336C208 397.9 258.1 448 320 448zM256 336C256 300.7 284.7 272 320 272C355.3 272 384 300.7 384 336C384 371.3 355.3 400 320 400C284.7 400 256 371.3 256 336z"/>
+          </svg>
+        </button>
+        <button
           className={`menu-bar-save${dirty ? " menu-bar-save-dirty" : ""}`}
           onClick={handleSave}
           title={`保存 (${modKey}S)`}
@@ -342,17 +440,41 @@ export function Workspace() {
 
       {/* Workspace */}
       <div className="workspace">
-        {/* Left: File List Panel */}
+        {/* Activity Bar (VS Code-style) */}
+        <div className="activity-bar">
+          <button
+            className={`activity-btn${activeTab === "files" ? " activity-btn-active" : ""}`}
+            onClick={() => setActiveTab("files")}
+            title="目录"
+          >
+            <svg width="22" height="22" viewBox="0 0 640 640" fill="currentColor">
+              <path d="M104 112C90.7 112 80 122.7 80 136L80 184C80 197.3 90.7 208 104 208L152 208C165.3 208 176 197.3 176 184L176 136C176 122.7 165.3 112 152 112L104 112zM256 128C238.3 128 224 142.3 224 160C224 177.7 238.3 192 256 192L544 192C561.7 192 576 177.7 576 160C576 142.3 561.7 128 544 128L256 128zM256 288C238.3 288 224 302.3 224 320C224 337.7 238.3 352 256 352L544 352C561.7 352 576 337.7 576 320C576 302.3 561.7 288 544 288L256 288zM256 448C238.3 448 224 462.3 224 480C224 497.7 238.3 512 256 512L544 512C561.7 512 576 497.7 576 480C576 462.3 561.7 448 544 448L256 448zM80 296L80 344C80 357.3 90.7 368 104 368L152 368C165.3 368 176 357.3 176 344L176 296C176 282.7 165.3 272 152 272L104 272C90.7 272 80 282.7 80 296zM104 432C90.7 432 80 442.7 80 456L80 504C80 517.3 90.7 528 104 528L152 528C165.3 528 176 517.3 176 504L176 456C176 442.7 165.3 432 152 432L104 432z"/>
+            </svg>
+          </button>
+          <button
+            className={`activity-btn${activeTab === "history" ? " activity-btn-active" : ""}`}
+            onClick={() => setActiveTab("history")}
+            title="历史与快照"
+          >
+            <svg width="22" height="22" viewBox="0 0 640 640" fill="currentColor">
+              <path d="M320 128C426 128 512 214 512 320C512 426 426 512 320 512C254.8 512 197.1 479.5 162.4 429.7C152.3 415.2 132.3 411.7 117.8 421.8C103.3 431.9 99.8 451.9 109.9 466.4C156.1 532.6 233 576 320 576C461.4 576 576 461.4 576 320C576 178.6 461.4 64 320 64C234.3 64 158.5 106.1 112 170.7L112 144C112 126.3 97.7 112 80 112C62.3 112 48 126.3 48 144L48 256C48 273.7 62.3 288 80 288L104.6 288C105.1 288 105.6 288 106.1 288L192.1 288C209.8 288 224.1 273.7 224.1 256C224.1 238.3 209.8 224 192.1 224L153.8 224C186.9 166.6 249 128 320 128zM344 216C344 202.7 333.3 192 320 192C306.7 192 296 202.7 296 216L296 320C296 326.4 298.5 332.5 303 337L375 409C384.4 418.4 399.6 418.4 408.9 409C418.2 399.6 418.3 384.4 408.9 375.1L343.9 310.1L343.9 216z"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* Left: Side Panel */}
         <div className="side-panel">
-          <div className="panel-header">
-            <h3>目录</h3>
-          </div>
-          <div className="dataset-list">
-            {datasets.length === 0 ? (
-              <div className="empty-hint">暂无内容</div>
-            ) : (
-              datasets.map((ds) => (
-                <div
+          {activeTab === "files" ? (
+            <>
+              <div className="panel-header">
+                <h3>目录</h3>
+              </div>
+              <div className="dataset-list">
+                {datasets.length === 0 ? (
+                  <div className="empty-hint">暂无内容</div>
+                ) : (
+                  datasets.map((ds) => (
+                    <div
                   key={ds.id}
                   className={`dataset-item ${activeDatasetId === ds.id ? "active" : ""}`}
                   onClick={() => setActiveDataset(ds.id)}
@@ -390,12 +512,20 @@ export function Workspace() {
               ))
             )}
           </div>
+            </>
+          ) : (
+            <HistoryPanel
+              setBusyMessage={setBusyMessage}
+              onSnapshotMenu={(menu) => { setSnapMenu(menu); setConfirmDeleteSnapId(null); }}
+              snapRenameRef={snapRenameRef}
+            />
+          )}
         </div>
 
         {/* Right: Main Content */}
         <div className="main-area">
           {activeDatasetId ? (
-            <DataTableView datasetId={activeDatasetId} />
+            <DataTableView key={tableKey} datasetId={activeDatasetId} />
           ) : (
             <div className="main-content">
               <div className="workspace-empty">
@@ -463,6 +593,17 @@ export function Workspace() {
         </div>
       )}
 
+      {busyMessage && (
+        <div className="sp-dialog-overlay">
+          <div className="sp-dialog" style={{ minWidth: 320, padding: "20px 24px" }}>
+            <div style={{ fontWeight: 600, marginBottom: 12 }}>{busyMessage}</div>
+            <div className="sp-progress-bar">
+              <div className="sp-progress-fill sp-progress-indeterminate" />
+            </div>
+          </div>
+        </div>
+      )}
+
       {dsMenu && (
         <div
           ref={ctxMenuRef}
@@ -484,6 +625,64 @@ export function Workspace() {
             handleDeleteDataset(dsMenu.id);
             setDsMenu(null);
           }}>删除</div>
+        </div>
+      )}
+
+      {snapMenu && (
+        <div
+          className="sp-ctx-menu"
+          style={{ left: snapMenu.x, top: snapMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="sp-ctx-item" onClick={() => {
+            snapRenameRef.current?.(snapMenu.id);
+            setSnapMenu(null);
+          }}>重命名</div>
+          <div className="sp-ctx-item" onClick={async () => {
+            const id = snapMenu.id;
+            setSnapMenu(null);
+            setBusyMessage("正在恢复快照…");
+            const unlisten = await listen<{
+              datasetIndex: number;
+              datasetTotal: number;
+              datasetName: string;
+            }>("restore-progress", (event) => {
+              const { datasetIndex, datasetTotal, datasetName } = event.payload;
+              if (datasetTotal > 0 && datasetIndex < datasetTotal) {
+                setBusyMessage(`正在恢复快照… 数据表 ${datasetIndex + 1}/${datasetTotal}: ${datasetName}`);
+              }
+            });
+            try {
+              await restoreSnapshot(id);
+              await handleHistoryRestored();
+            } finally {
+              unlisten();
+              setBusyMessage(null);
+            }
+          }}>恢复</div>
+          <div className="sp-ctx-sep" />
+          {confirmDeleteSnapId === snapMenu.id ? (
+            <div className="snapshot-ctx-confirm" onMouseDown={(e) => e.stopPropagation()}>
+              <span className="snapshot-ctx-confirm-text">确认删除？</span>
+              <div className="snapshot-ctx-confirm-btns">
+                <button className="snapshot-ctx-confirm-yes" onClick={(e) => {
+                  e.stopPropagation();
+                  deleteSnapshot(confirmDeleteSnapId);
+                  setConfirmDeleteSnapId(null);
+                  setSnapMenu(null);
+                }}>确认</button>
+                <button className="snapshot-ctx-confirm-no" onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmDeleteSnapId(null);
+                }}>取消</button>
+              </div>
+            </div>
+          ) : (
+            <div className="sp-ctx-item sp-ctx-danger" onClick={(e) => {
+              e.stopPropagation();
+              setConfirmDeleteSnapId(snapMenu.id);
+            }}>删除</div>
+          )}
         </div>
       )}
 
