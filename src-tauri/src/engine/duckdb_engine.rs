@@ -1365,9 +1365,10 @@ impl DuckDbEngine {
         };
 
         // UNION ALL for each stacked column
+        // Let DuckDB resolve common type across the UNION ALL branches
         let unions: Vec<String> = stack_cols.iter().map(|col| {
             format!(
-                "SELECT {}CAST('{}' AS VARCHAR) AS \"Label\", CAST(\"{}\" AS VARCHAR) AS \"Value\" FROM \"{}\"",
+                "SELECT {}'{}' AS \"Label\", \"{}\" AS \"Value\" FROM \"{}\"",
                 id_select,
                 col.replace('\'', "''"),
                 col,
