@@ -67,4 +67,46 @@ export const dataService = {
   /** 设置列显示属性 */
   setColumnDisplayProps: (datasetId: string, props: ColumnDisplayProps[]) =>
     invoke<void>("set_column_display_props", { datasetId, props }),
+
+  // ─── Table Operations ───
+
+  /** 获取列信息 */
+  getColumns: (datasetId: string) =>
+    invoke<[string, string][]>("get_columns", { datasetId }),
+
+  /** 排序 */
+  sortTable: (sourceId: string, sortCols: string[], sortOrders: string[], newName: string) =>
+    invoke<DatasetMeta>("sort_table", { sourceId, sortCols, sortOrders, newName }),
+
+  /** 子集 */
+  subsetTable: (sourceId: string, columns: string[], rowFilter: string | null, newName: string) =>
+    invoke<DatasetMeta>("subset_table", { sourceId, columns, rowFilter, newName }),
+
+  /** 转置 */
+  transposeTable: (sourceId: string, newName: string) =>
+    invoke<DatasetMeta>("transpose_table", { sourceId, newName }),
+
+  /** 堆叠 (宽→长) */
+  stackTable: (sourceId: string, stackCols: string[], idCols: string[], newName: string) =>
+    invoke<DatasetMeta>("stack_table", { sourceId, stackCols, idCols, newName }),
+
+  /** 拆分 (长→宽) */
+  splitTable: (sourceId: string, splitCol: string, valueCol: string, idCols: string[], newName: string) =>
+    invoke<DatasetMeta>("split_table", { sourceId, splitCol, valueCol, idCols, newName }),
+
+  /** 汇总统计 */
+  summaryTable: (sourceId: string, statCols: string[], groupCols: string[], statistics: string[], newName: string) =>
+    invoke<DatasetMeta>("summary_table", { sourceId, statCols, groupCols, statistics, newName }),
+
+  /** 连接 */
+  joinTables: (leftId: string, rightId: string, joinType: string, leftKey: string, rightKey: string, newName: string) =>
+    invoke<DatasetMeta>("join_tables", { leftId, rightId, joinType, leftKey, rightKey, newName }),
+
+  /** 更新 */
+  updateTable: (leftId: string, rightId: string, matchCol: string, updateCols: string[]) =>
+    invoke<void>("update_table", { leftId, rightId, matchCol, updateCols }),
+
+  /** 合并 (纵向拼接) */
+  concatenateTables: (sourceIds: string[], newName: string) =>
+    invoke<DatasetMeta>("concatenate_tables", { sourceIds, newName }),
 };
