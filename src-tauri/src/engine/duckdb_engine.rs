@@ -13,8 +13,8 @@ use crate::models::graph_data::{
     SummaryPacket, GRAPH_VIRTUAL_SOURCE_COLUMN, GRAPH_VIRTUAL_VALUE_COLUMN,
 };
 use crate::models::table::{
-    CellPosition, CellUpdate, DatasetMeta, SqlQueryResult, TableQueryResult, TableWindowFilterRule,
-    TableWindowRequest, TableWindowResult,
+    CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
+    TableQueryResult, TableWindowFilterRule, TableWindowRequest, TableWindowResult,
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
@@ -860,6 +860,214 @@ impl DuckDbEngine {
                 let _ = self.conn.execute_batch("ROLLBACK");
                 Err(error)
             }
+        }
+    }
+
+    pub fn create_table_from_rows(
+        &self,
+        id: &str,
+        request: &CreateTableFromRowsRequest,
+    ) -> Result<DatasetMeta, AppError> {
+        if request.column_names.is_empty() {
+            return Err(AppError::InvalidParam(
+                "Column names and types must not be empty".into(),
+            ));
+        }
+        if request.column_names.len() != request.column_types.len() {
+            return Err(AppError::InvalidParam(
+                "Column names and types length mismatch".into(),
+            ));
+        }
+        for (row_index, row) in request.rows.iter().enumerate() {
+            if row.len() != request.column_names.len() {
+                return Err(AppError::InvalidParam(format!(
+                    "row {} has width {}, expected {}",
+                    row_index + 1,
+                    row.len(),
+                    request.column_names.len()
+                )));
+            }
+            for (column_index, value) in row.iter().enumerate() {
+                if !matches!(
+                    value,
+                    serde_json::Value::Null
+                        | serde_json::Value::Bool(_)
+                        | serde_json::Value::Number(_)
+                        | serde_json::Value::String(_)
+                ) {
+                    return Err(AppError::InvalidParam(format!(
+                        "row {} column {} must be a scalar JSON value",
+                        row_index + 1,
+                        column_index + 1
+                    )));
+                }
+            }
+        }
+
+        self.validate_dataset_name(&request.name, None)?;
+        Self::validate_result_column_names(&request.column_names)?;
+        let canonical_types = request
+            .column_types
+            .iter()
+            .map(|column_type| self.canonicalize_column_type(column_type))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (row_index, row) in request.rows.iter().enumerate() {
+            for (column_index, (value, column_type)) in
+                row.iter().zip(canonical_types.iter()).enumerate()
+            {
+                let duckdb_value = Self::json_scalar_to_duckdb_value(
+                    value,
+                    row_index + 1,
+                    column_index + 1,
+                )?;
+                let validation_sql = format!(
+                    "SELECT {}",
+                    Self::typed_parameter_expression(column_type)
+                );
+                self.conn
+                    .query_row(&validation_sql, params![duckdb_value], |_| Ok(()))
+                    .map_err(|error| {
+                        AppError::InvalidParam(format!(
+                            "row {} column {} is incompatible with {}: {}",
+                            row_index + 1,
+                            column_index + 1,
+                            column_type,
+                            error
+                        ))
+                    })?;
+            }
+        }
+
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+
+        let outcome = (|| -> Result<DatasetMeta, AppError> {
+            let table_name = Self::internal_table_name(id);
+            let quoted_table = Self::quote_identifier(&table_name);
+            let column_defs = request
+                .column_names
+                .iter()
+                .zip(canonical_types.iter())
+                .map(|(column_name, column_type)| {
+                    format!("{} {}", Self::quote_identifier(column_name), column_type)
+                })
+                .collect::<Vec<_>>();
+
+            let create_sql = format!(
+                "CREATE TABLE {} (\"_row_id\" INTEGER, {})",
+                quoted_table,
+                column_defs.join(", ")
+            );
+            self.conn.execute(&create_sql, [])?;
+
+            for (col_index, (col_name, col_type)) in request
+                .column_names
+                .iter()
+                .zip(canonical_types.iter())
+                .enumerate()
+            {
+                self.conn.execute(
+                    "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+                    params![id, col_index as i32, col_name, col_type],
+                )?;
+            }
+
+            let insert_columns = std::iter::once(Self::quote_identifier("_row_id"))
+                .chain(
+                    request
+                        .column_names
+                        .iter()
+                        .map(|column_name| Self::quote_identifier(column_name)),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
+            let placeholders = std::iter::once("?".to_string())
+                .chain(
+                    canonical_types
+                        .iter()
+                        .map(|column_type| Self::typed_parameter_expression(column_type)),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                quoted_table, insert_columns, placeholders
+            );
+            let mut insert_stmt = self.conn.prepare(&insert_sql)?;
+
+            for (row_index, row) in request.rows.iter().enumerate() {
+                let row_id = i64::try_from(row_index + 1).map_err(|_| {
+                    AppError::InvalidParam("row count exceeds supported limits".into())
+                })?;
+                let mut values = Vec::with_capacity(row.len() + 1);
+                values.push(Value::BigInt(row_id));
+                for (column_index, value) in row.iter().enumerate() {
+                    values.push(Self::json_scalar_to_duckdb_value(
+                        value,
+                        row_index + 1,
+                        column_index + 1,
+                    )?);
+                }
+                insert_stmt.execute(params_from_iter(values))?;
+            }
+
+            self.conn.execute(
+                "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, NULL, 'manual', $3, $4)",
+                params![id, request.name, request.rows.len() as i64, request.column_names.len() as i32],
+            )?;
+            self.conn.execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                params![request.rows.len() as i64, id],
+            )?;
+
+            self.get_dataset_meta(id)
+        })();
+
+        match outcome {
+            Ok(meta) => {
+                Self::finalize_transaction(
+                    || {
+                        self.conn.execute_batch("COMMIT")?;
+                        Ok(())
+                    },
+                    || {
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                    },
+                )?;
+                Ok(meta)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    fn json_scalar_to_duckdb_value(
+        value: &serde_json::Value,
+        row_index: usize,
+        column_index: usize,
+    ) -> Result<Value, AppError> {
+        match value {
+            serde_json::Value::Null => Ok(Value::Null),
+            serde_json::Value::Bool(value) => Ok(Value::Boolean(*value)),
+            serde_json::Value::Number(value) => {
+                if let Some(integer) = value.as_i64() {
+                    Ok(Value::BigInt(integer))
+                } else if let Some(integer) = value.as_u64() {
+                    Ok(Value::UBigInt(integer))
+                } else if let Some(float) = value.as_f64() {
+                    Ok(Value::Double(float))
+                } else {
+                    Err(AppError::InvalidParam(format!(
+                        "row {row_index} column {column_index} number is not representable"
+                    )))
+                }
+            }
+            serde_json::Value::String(value) => Ok(Value::Text(value.clone())),
+            _ => Err(AppError::InvalidParam(format!(
+                "row {row_index} column {column_index} must be a scalar JSON value"
+            ))),
         }
     }
 
@@ -7182,7 +7390,8 @@ mod tests {
         archive_cell_to_json_call_count, reset_archive_cell_to_json_call_count,
     };
     use crate::models::table::{
-        TableWindowFilter, TableWindowFilterRule, TableWindowRequest, TableWindowSort,
+        CreateTableFromRowsRequest, TableWindowFilter, TableWindowFilterRule, TableWindowRequest,
+        TableWindowSort,
     };
     use duckdb::types::Decimal;
 
@@ -9617,6 +9826,118 @@ mod tests {
             .unwrap();
 
         assert!(db.get_dataset_meta(dataset_id).is_err());
+        assert!(!dataset_table_exists(
+            &db,
+            &format!("dataset_{}", dataset_id.replace('-', "_"))
+        ));
+    }
+
+    #[test]
+    fn create_table_from_rows_persists_manual_dataset_and_typed_values() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        let request = CreateTableFromRowsRequest {
+            name: "Rows Typed".to_string(),
+            column_names: vec!["label".to_string(), "value".to_string()],
+            column_types: vec!["VARCHAR".to_string(), "DOUBLE".to_string()],
+            rows: vec![
+                vec![json!("alpha"), json!(1.5)],
+                vec![serde_json::Value::Null, json!(2.25)],
+                vec![json!("gamma"), serde_json::Value::Null],
+            ],
+        };
+
+        let meta = db
+            .create_table_from_rows("rows-typed-id", &request)
+            .unwrap();
+
+        assert_eq!(meta.source_type, "manual");
+        assert_eq!(meta.row_count, 3);
+        assert_eq!(meta.col_count, 2);
+
+        let table = db.query_table("rows-typed-id", 0, 10, None, None).unwrap();
+        assert_eq!(table.columns, vec!["_row_id", "label", "value"]);
+        assert_eq!(
+            table.column_types,
+            vec![
+                "INTEGER".to_string(),
+                "VARCHAR".to_string(),
+                "DOUBLE".to_string()
+            ]
+        );
+        assert_eq!(table.rows.len(), 3);
+        assert_eq!(
+            table.rows,
+            vec![
+                vec![json!(1), json!("alpha"), json!(1.5)],
+                vec![json!(2), serde_json::Value::Null, json!(2.25)],
+                vec![json!(3), json!("gamma"), serde_json::Value::Null],
+            ]
+        );
+    }
+
+    #[test]
+    fn create_table_from_rows_rejects_mismatched_row_width_without_metadata_residue() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        let request = CreateTableFromRowsRequest {
+            name: "Width Reject".to_string(),
+            column_names: vec!["left".to_string(), "right".to_string()],
+            column_types: vec!["VARCHAR".to_string(), "DOUBLE".to_string()],
+            rows: vec![vec![json!("ok"), json!(1.0)], vec![json!("missing")]],
+        };
+
+        let dataset_id = "rows-width-reject-id";
+        let error = db.create_table_from_rows(dataset_id, &request).unwrap_err();
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(metadata_row_count(&db, dataset_id), 0);
+        assert!(!dataset_table_exists(
+            &db,
+            &format!("dataset_{}", dataset_id.replace('-', "_"))
+        ));
+    }
+
+    #[test]
+    fn create_table_from_rows_rejects_nested_json_values_without_metadata_residue() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        let request = CreateTableFromRowsRequest {
+            name: "Nested Reject".to_string(),
+            column_names: vec!["label".to_string(), "value".to_string()],
+            column_types: vec!["VARCHAR".to_string(), "DOUBLE".to_string()],
+            rows: vec![
+                vec![json!("ok"), json!(1.0)],
+                vec![json!({ "nested": true }), json!(2.0)],
+            ],
+        };
+
+        let dataset_id = "rows-nested-reject-id";
+        let error = db.create_table_from_rows(dataset_id, &request).unwrap_err();
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(metadata_row_count(&db, dataset_id), 0);
+        assert!(!dataset_table_exists(
+            &db,
+            &format!("dataset_{}", dataset_id.replace('-', "_"))
+        ));
+    }
+
+    #[test]
+    fn create_table_from_rows_rejects_type_incompatible_scalar_without_metadata_residue() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        let request = CreateTableFromRowsRequest {
+            name: "Type Reject".to_string(),
+            column_names: vec!["value".to_string()],
+            column_types: vec!["DOUBLE".to_string()],
+            rows: vec![vec![json!("not-a-number")]],
+        };
+
+        let dataset_id = "rows-type-reject-id";
+        let error = db.create_table_from_rows(dataset_id, &request).unwrap_err();
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(metadata_row_count(&db, dataset_id), 0);
         assert!(!dataset_table_exists(
             &db,
             &format!("dataset_{}", dataset_id.replace('-', "_"))

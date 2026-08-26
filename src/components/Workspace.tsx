@@ -1623,7 +1623,20 @@ export function Workspace() {
                 return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.tabulateMissing", { defaultValue: "Tabulate no longer exists" })}</p></div></div>;
               }
               const ds = datasets.find((d) => d.id === item.sourceDatasetId);
-              return <TabulateView item={item} dataset={ds} />;
+              return (
+                <TabulateView
+                  item={item}
+                  dataset={ds}
+                  onTableCreated={async (dataset) => {
+                    await refreshDatasets();
+                    markDirty();
+                    setActiveGraphBuilderId(null);
+                    setActiveTabulateId(null);
+                    setActiveDataset(dataset.id);
+                    recordAction(t("history.tabulateTableCreated", { name: dataset.name }));
+                  }}
+                />
+              );
             })()
           ) : activeGraphBuilderId ? (
             (() => {

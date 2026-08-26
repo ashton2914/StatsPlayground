@@ -4,6 +4,7 @@ import type {
   CellPosition,
   CellUpdate,
   DatasetMeta,
+  CreateTableFromRowsRequest,
   SqlQueryResult,
   TableQueryParams,
   TableQueryResult,
@@ -69,6 +70,10 @@ export const dataService = {
   /** 创建空数据表 */
   createTable: (name: string, columnNames: string[], columnTypes: string[]) =>
     invoke<DatasetMeta>("create_table", { name, columnNames, columnTypes }),
+
+  /** 通过类型化行数据原子创建数据表 */
+  createTableFromRows: (request: CreateTableFromRowsRequest) =>
+    invoke<DatasetMeta>("create_table_from_rows", { request }),
 
   /** 添加空行 */
   addRow: (datasetId: string) => invoke<number>("add_row", { datasetId }),

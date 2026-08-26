@@ -26,7 +26,10 @@ import {
   formatStatisticLabel,
 } from "./TabulateStatisticEditor";
 import {
+  buildTabulateExportRequest,
+  canExportTabulateResult,
   canShowReadyResult,
+  canAssignTabulateField,
   isLatestSequence,
   isNumericDuckDbType,
   reorderForDrop,
@@ -36,9 +39,10 @@ import "./tabulate.css";
 interface TabulateViewProps {
   item: TabulateItem;
   dataset: DatasetMeta | undefined;
+  onTableCreated: (dataset: DatasetMeta) => Promise<void>;
 }
 
-export function TabulateView({ item, dataset }: TabulateViewProps) {
+export function TabulateView({ item, dataset, onTableCreated }: TabulateViewProps) {
   const { t } = useTranslation();
   const updateItemRaw = useTabulateStore((state) => state.updateItem);
   const markDirtyRaw = useProjectStore((state) => state.markDirty);
@@ -59,8 +63,11 @@ export function TabulateView({ item, dataset }: TabulateViewProps) {
   const [fieldsLoading, setFieldsLoading] = useState(false);
   const [fieldLoadError, setFieldLoadError] = useState<string | null>(null);
   const [result, setResult] = useState<TabulateResult | null>(null);
+  const [completedQueryRequest, setCompletedQueryRequest] = useState<TabulateRequest | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [visibleRowDepth, setVisibleRowDepth] = useState(item.rowFields.length);
   const [visibleColumnDepth, setVisibleColumnDepth] = useState(item.columnFields.length);
   const [editingStatistic, setEditingStatistic] = useState<TabulateStatistic | null>(null);
@@ -74,7 +81,10 @@ export function TabulateView({ item, dataset }: TabulateViewProps) {
   useEffect(() => {
     requestSequence.current += 1;
     setResult(null);
+    setCompletedQueryRequest(null);
     setError(null);
+    setExportError(null);
+    setExporting(false);
     setLoading(false);
     setVisibleRowDepth(item.rowFields.length);
     setVisibleColumnDepth(item.columnFields.length);
@@ -188,26 +198,46 @@ export function TabulateView({ item, dataset }: TabulateViewProps) {
     };
   }, [dataset, item, visibleColumnDepth, visibleRowDepth]);
 
+  const fullQueryRequest = useMemo<TabulateRequest | null>(() => {
+    if (!dataset || item.statistics.length === 0) {
+      return null;
+    }
+
+    return {
+      datasetId: dataset.id,
+      rowFields: item.rowFields,
+      columnFields: item.columnFields,
+      statistics: item.statistics,
+      includeRowTotals: item.includeRowTotals,
+      includeColumnTotals: item.includeColumnTotals,
+      maxResultCells: 10000,
+    };
+  }, [dataset, item]);
+
   useEffect(() => {
     if (!queryRequest) {
       requestSequence.current += 1;
       setResult(null);
+      setCompletedQueryRequest(null);
       setLoading(false);
       setError(null);
       return;
     }
 
     const sequence = ++requestSequence.current;
+    setCompletedQueryRequest(null);
+    setLoading(true);
     const timer = window.setTimeout(async () => {
-      setLoading(true);
       try {
         const next = await tabulateService.run(queryRequest);
         if (isLatestSequence(sequence, requestSequence.current)) {
           setResult(next);
+          setCompletedQueryRequest(queryRequest);
           setError(null);
         }
       } catch (reason: unknown) {
         if (isLatestSequence(sequence, requestSequence.current)) {
+          setCompletedQueryRequest(null);
           setError(String(reason));
         }
       } finally {
@@ -265,13 +295,58 @@ export function TabulateView({ item, dataset }: TabulateViewProps) {
   const showStandaloneLoading = !result && loading;
   const showReadyTable = result != null
     && canShowReadyResult(result.cellCount, dataset != null, item.statistics.length);
+  const canExport = canExportTabulateResult(
+    showReadyTable,
+    completedQueryRequest === queryRequest,
+    loading,
+    readOnly,
+    exporting,
+  );
 
   const updateCurrentItem = (patch: Partial<TabulateItem>) => {
     updateItem(item.id, patch);
     markDirty();
   };
 
+  const handleExport = async () => {
+    if (!canExport || !fullQueryRequest) {
+      return;
+    }
+
+    setExporting(true);
+    setExportError(null);
+
+    try {
+      const exportResult = await tabulateService.run(fullQueryRequest);
+      const request = buildTabulateExportRequest(item, exportResult, {
+        tableName: item.name,
+        missingLabel: t("tabulate.missing"),
+        statisticLabel: formatStatisticLabel,
+      });
+      const created = await dataService.createTableFromRows(request);
+      await onTableCreated(created);
+    } catch {
+      setExportError(t("tabulate.exportTableFailed"));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const currentFieldsForRole = (role: TabulateAssignmentRole): readonly string[] => {
+    if (role === "rows") {
+      return item.rowFields;
+    }
+    if (role === "columns") {
+      return item.columnFields;
+    }
+    return item.statistics.map((statistic) => statistic.field);
+  };
+
   const assignField = (field: TabulateFieldInfo, role: TabulateAssignmentRole, insertIndex?: number | null) => {
+    if (!canAssignTabulateField(role, currentFieldsForRole(role), field.name)) {
+      return;
+    }
+
     if (role === "statistics") {
       const nextStatistic: TabulateStatistic = {
         id: crypto.randomUUID(),
@@ -318,7 +393,7 @@ export function TabulateView({ item, dataset }: TabulateViewProps) {
 
     if (payload.kind === "field") {
       const field = fieldsByName.get(payload.fieldName);
-      if (!field || target.includes(field.name)) {
+      if (!field || !canAssignTabulateField(zone, target, field.name)) {
         return;
       }
       target.splice(insertIndex ?? target.length, 0, field.name);
@@ -340,6 +415,9 @@ export function TabulateView({ item, dataset }: TabulateViewProps) {
     const sourceKey = payload.role === "rows" ? "rowFields" : "columnFields";
     const source = item[sourceKey].filter((fieldName) => fieldName !== payload.fieldName);
     const nextTarget = item[targetKey].filter((fieldName) => fieldName !== payload.fieldName);
+    if (!canAssignTabulateField(zone, nextTarget, payload.fieldName)) {
+      return;
+    }
     nextTarget.splice(insertIndex ?? nextTarget.length, 0, payload.fieldName);
     updateCurrentItem({
       [sourceKey]: source,
@@ -502,10 +580,14 @@ export function TabulateView({ item, dataset }: TabulateViewProps) {
                 visibleColumnDepth={visibleColumnDepth}
                 onVisibleRowDepthChange={setVisibleRowDepth}
                 onVisibleColumnDepthChange={setVisibleColumnDepth}
+                onExport={handleExport}
+                exporting={exporting}
+                exportDisabled={!canExport}
               />
               {loading ? <ResultBanner tone="info" message={t("tabulate.refreshingAggregate")} /> : null}
               {tooLargeError ? <ResultBanner tone="warning" message={error ?? t("tabulate.resultTooLargeTitle")} /> : null}
               {error != null && !tooLargeError ? <ResultBanner tone="error" message={error} /> : null}
+              {exportError ? <ResultBanner tone="error" message={exportError} /> : null}
             </>
           ) : resultsState ? (
             <ResultStateCard title={resultsState.title} detail={resultsState.detail} />

@@ -117,3 +117,10 @@ export interface ColumnDisplayProps {
    */
   extras?: Record<string, unknown>;
 }
+
+export interface CreateTableFromRowsRequest {
+  name: string;
+  columnNames: string[];
+  columnTypes: string[];
+  rows: Array<Array<string | number | boolean | null>>;
+}

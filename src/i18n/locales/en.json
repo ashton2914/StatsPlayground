@@ -134,7 +134,8 @@
     "pasteData": "Paste data",
     "resizeColumn": "Resize column",
     "autoFitColumn": "Auto-fit column",
-    "sqlQueryTableCreated": "Create table \"{{name}}\" from SQL query"
+    "sqlQueryTableCreated": "Create table \"{{name}}\" from SQL query",
+    "tabulateTableCreated": "Create data table \"{{name}}\" from tabulate result"
   },
   "workspace": {
     "directory": "Directory",
@@ -219,6 +220,9 @@
     "removeLabel": "Remove {{label}}",
     "rowTotals": "Row totals",
     "columnTotals": "Column totals",
+    "exportTable": "Export to Data Table",
+    "exportingTable": "Exporting...",
+    "exportTableFailed": "Failed to export Tabulate result to data table.",
     "visibleFieldsHint": "{{rows}}×{{columns}} visible levels",
     "waiting": "Waiting",
     "refreshingAggregate": "Refreshing aggregate...",

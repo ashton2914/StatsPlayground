@@ -134,7 +134,8 @@
     "pasteData": "粘贴数据",
     "resizeColumn": "调整列宽",
     "autoFitColumn": "自动调整列宽",
-    "sqlQueryTableCreated": "从 SQL 查询创建数据表 \"{{name}}\""
+    "sqlQueryTableCreated": "从 SQL 查询创建数据表 \"{{name}}\"",
+    "tabulateTableCreated": "从 Tabulate 结果创建数据表 \"{{name}}\""
   },
   "workspace": {
     "directory": "目录",
@@ -219,6 +220,9 @@
     "removeLabel": "Remove {{label}}",
     "rowTotals": "Row totals",
     "columnTotals": "Column totals",
+    "exportTable": "导出到数据表",
+    "exportingTable": "正在导出...",
+    "exportTableFailed": "导出 Tabulate 结果到数据表失败。",
     "visibleFieldsHint": "{{rows}}×{{columns}} 个可见层级",
     "waiting": "Waiting",
     "refreshingAggregate": "Refreshing aggregate...",

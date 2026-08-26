@@ -33,6 +33,7 @@ pub fn run() {
             commands::data_commands::execute_sql_query,
             commands::data_commands::create_table_from_sql_query,
             commands::data_commands::create_table,
+            commands::data_commands::create_table_from_rows,
             commands::data_commands::add_row,
             commands::data_commands::add_rows,
             commands::data_commands::apply_added_rows,

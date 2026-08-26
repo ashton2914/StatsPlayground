@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::models::table::{
-    DatasetMeta, SqlQueryResult, TableQueryResult, TableWindowRequest, TableWindowResult,
+    CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult, TableQueryResult,
+    TableWindowRequest, TableWindowResult,
 };
 use crate::state::AppState;
 
@@ -165,6 +166,19 @@ impl<'a> DataService<'a> {
         let db = self.state.db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         let id = uuid::Uuid::new_v4().to_string();
         db.create_table_from_sql_query(&id, name, sql)
+    }
+
+    pub fn create_table_from_rows(
+        &self,
+        request: &CreateTableFromRowsRequest,
+    ) -> Result<DatasetMeta, AppError> {
+        let db = self
+            .state
+            .db
+            .lock()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        db.create_table_from_rows(&id, request)
     }
 
     pub fn add_row(&self, dataset_id: &str) -> Result<i64, AppError> {

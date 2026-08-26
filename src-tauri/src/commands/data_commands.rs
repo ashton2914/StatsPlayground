@@ -2,8 +2,8 @@ use tauri::State;
 
 use crate::error::AppError;
 use crate::models::table::{
-    CellPosition, CellUpdate, ColumnDisplayProps, DatasetMeta, TableQueryResult, TableWindowRequest,
-    TableWindowResult,
+    CellPosition, CellUpdate, ColumnDisplayProps, CreateTableFromRowsRequest, DatasetMeta,
+    TableQueryResult, TableWindowRequest, TableWindowResult,
 };
 use crate::services::data_service::DataService;
 use crate::state::AppState;
@@ -139,6 +139,16 @@ pub fn create_table(
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
     service.create_table(&name, &column_names, &column_types)
+}
+
+#[tauri::command]
+pub fn create_table_from_rows(
+    state: State<'_, AppState>,
+    request: CreateTableFromRowsRequest,
+) -> Result<DatasetMeta, AppError> {
+    let _permit = acquire_mutation_permit(state.inner())?;
+    let service = DataService::new(&state);
+    service.create_table_from_rows(&request)
 }
 
 #[tauri::command]

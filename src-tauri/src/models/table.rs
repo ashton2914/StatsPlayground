@@ -30,6 +30,15 @@ pub struct ColumnDefinition {
     pub column_type: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTableFromRowsRequest {
+    pub name: String,
+    pub column_names: Vec<String>,
+    pub column_types: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+}
+
 /// Column metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
