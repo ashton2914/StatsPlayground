@@ -8,7 +8,7 @@ import {
 } from "@/components/fitModel/fitModelConfig";
 import type { FieldRef } from "@/graphCore";
 import { useProjectStore } from "@/stores/useProjectStore";
-import type { FitModelItem, FitModelLoadIssue, FitModelTerm } from "@/types/fitModel";
+import type { FitModelConstruct, FitModelItem, FitModelLoadIssue, FitModelTerm } from "@/types/fitModel";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 
 interface FitModelStore {
@@ -53,7 +53,22 @@ function cloneResponse(value: FieldRef): FieldRef {
 }
 
 function cloneTerms(terms: readonly FitModelTerm[]): FitModelTerm[] {
-  return terms.map((term) => ({ kind: term.kind, columnNames: [...term.columnNames] }));
+  return terms.map((term) => {
+    if (term.kind === "main") {
+      return { kind: "main", columnNames: [term.columnNames[0]] };
+    }
+    if (term.kind === "power") {
+      return { kind: "power", columnNames: [term.columnNames[0]], exponent: 2 };
+    }
+    return { kind: "interaction", columnNames: [...term.columnNames] };
+  });
+}
+
+function cloneConstruct(construct: FitModelConstruct): FitModelConstruct {
+  if (construct.kind === "factorialToDegree") {
+    return { kind: "factorialToDegree", degree: construct.degree };
+  }
+  return { kind: construct.kind };
 }
 
 function sanitizeItem(item: FitModelItem): FitModelItem {
@@ -70,6 +85,7 @@ function sanitizeItem(item: FitModelItem): FitModelItem {
     name: item.name,
     sourceDatasetId: item.sourceDatasetId,
     response: cloneResponse(item.response),
+    construct: cloneConstruct(item.construct),
     terms: cloneTerms(canonicalizeFitModelTerms(item.terms)),
     centeringMethod: item.centeringMethod,
     createdAt: item.createdAt,
@@ -93,6 +109,7 @@ function sanitizeOrPreserveItem(item: FitModelItem): FitModelItem {
       name: item.name,
       sourceDatasetId: item.sourceDatasetId,
       response: cloneResponse(item.response),
+      construct: cloneConstruct(item.construct),
       terms: cloneTerms(canonicalizeFitModelTerms(item.terms)),
       centeringMethod: item.centeringMethod,
       createdAt: item.createdAt,
@@ -121,16 +138,85 @@ function parseTerm(value: unknown): FitModelTerm | null {
   if (!isObject(value)) return null;
   const kind = value.kind;
   const columnNames = value.columnNames;
-  if ((kind !== "main" && kind !== "interaction") || !Array.isArray(columnNames)) {
+  if ((kind !== "main" && kind !== "interaction" && kind !== "power") || !Array.isArray(columnNames)) {
     return null;
   }
   if (!columnNames.every((entry) => typeof entry === "string")) {
     return null;
   }
+
+  if (kind === "main") {
+    if (columnNames.length !== 1) {
+      return null;
+    }
+    return {
+      kind: "main",
+      columnNames: [columnNames[0]],
+    };
+  }
+
+  if (kind === "power") {
+    if (columnNames.length !== 1 || value.exponent !== 2) {
+      return null;
+    }
+    return {
+      kind: "power",
+      columnNames: [columnNames[0]],
+      exponent: 2,
+    };
+  }
+
+  if (columnNames.length < 2) {
+    return null;
+  }
+  if (new Set(columnNames).size !== columnNames.length) {
+    return null;
+  }
+
   return {
-    kind,
+    kind: "interaction",
     columnNames: [...columnNames],
   };
+}
+
+function parseConstruct(value: unknown): {
+  construct: FitModelConstruct;
+  migratedFromMissing: boolean;
+  invalid: boolean;
+} {
+  if (value === undefined) {
+    return {
+      construct: { kind: "manual" },
+      migratedFromMissing: true,
+      invalid: false,
+    };
+  }
+
+  if (!isObject(value) || typeof value.kind !== "string") {
+    return { construct: { kind: "manual" }, migratedFromMissing: false, invalid: true };
+  }
+
+  const kind = value.kind;
+  if (kind === "manual" || kind === "fullFactorial" || kind === "responseSurface") {
+    return {
+      construct: { kind },
+      migratedFromMissing: false,
+      invalid: false,
+    };
+  }
+
+  if (kind === "factorialToDegree") {
+    const degree = value.degree;
+    if (typeof degree === "number" && Number.isInteger(degree) && degree >= 1) {
+      return {
+        construct: { kind: "factorialToDegree", degree },
+        migratedFromMissing: false,
+        invalid: false,
+      };
+    }
+  }
+
+  return { construct: { kind: "manual" }, migratedFromMissing: false, invalid: true };
 }
 
 function normalizeLoadedFitModel(value: unknown): {
@@ -149,6 +235,7 @@ function normalizeLoadedFitModel(value: unknown): {
   }
 
   const response = value.response;
+  const construct = value.construct;
   const terms = value.terms;
   const centeringMethod = value.centeringMethod;
 
@@ -159,6 +246,11 @@ function normalizeLoadedFitModel(value: unknown): {
     normalizedResponse = { name: response.name, type: response.type };
   } else {
     loadIssueDetails.push("invalidResponseShape");
+  }
+
+  const parsedConstruct = parseConstruct(construct);
+  if (parsedConstruct.invalid) {
+    loadIssueDetails.push("invalidConstruct");
   }
 
   const parsedTerms: FitModelTerm[] = [];
@@ -199,6 +291,7 @@ function normalizeLoadedFitModel(value: unknown): {
     name,
     sourceDatasetId,
     response: normalizedResponse,
+    construct: parsedConstruct.construct,
     terms: dedupedTerms,
     centeringMethod: normalizedCenteringMethod,
     createdAt,
@@ -265,6 +358,7 @@ export const useFitModelStore = create<FitModelStore>((set, get) => ({
           name: typeof patch.name === "string" ? patch.name : item.name,
           sourceDatasetId: typeof patch.sourceDatasetId === "string" ? patch.sourceDatasetId : item.sourceDatasetId,
           response: patch.response ? cloneResponse(patch.response) : cloneResponse(item.response),
+          construct: patch.construct ? cloneConstruct(patch.construct) : cloneConstruct(item.construct),
           terms: patch.terms ? cloneTerms(canonicalizeFitModelTerms(patch.terms)) : cloneTerms(item.terms),
           centeringMethod: patch.centeringMethod ?? item.centeringMethod,
           createdAt: typeof patch.createdAt === "string" ? patch.createdAt : item.createdAt,

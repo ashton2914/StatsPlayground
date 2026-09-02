@@ -1,12 +1,22 @@
 import type { FieldRef } from "@/graphCore";
 
 export type FitModelCenteringMethod = "none" | "mean";
-export type FitModelTermKind = "main" | "interaction";
+export type FitModelConstruct =
+  | { kind: "manual" }
+  | { kind: "fullFactorial" }
+  | { kind: "factorialToDegree"; degree: number }
+  | { kind: "responseSurface" };
 
-export interface FitModelTerm {
-  kind: FitModelTermKind;
-  columnNames: string[];
-}
+type FitModelStrictTerm =
+  | { kind: "main"; columnNames: [string] }
+  | { kind: "interaction"; columnNames: string[] }
+  | { kind: "power"; columnNames: [string]; exponent?: 2 };
+
+export type FitModelTerm =
+  | FitModelStrictTerm
+  | { kind: "main" | "interaction" | "power"; columnNames: string[]; exponent?: 2 };
+
+export type FitModelTermKind = FitModelTerm["kind"];
 
 export interface FitModelLoadIssue {
   code: string;
@@ -18,6 +28,7 @@ export interface FitModelItem {
   name: string;
   sourceDatasetId: string;
   response: FieldRef;
+  construct: FitModelConstruct;
   terms: FitModelTerm[];
   centeringMethod: FitModelCenteringMethod;
   createdAt: string;

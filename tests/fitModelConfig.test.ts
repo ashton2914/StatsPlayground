@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   applyFactorialDegree,
   canonicalInteraction,
+  canonicalizeFitModelTerms,
   createFitModelItem,
   fitModelParameterCount,
+  fitModelTermIdentityKey,
   FitModelValidationError,
   validateFitModelDefinition,
 } from "../src/components/fitModel/fitModelConfig.ts";
@@ -15,6 +17,10 @@ const pressure = { name: "Pressure", type: "continuous" as const };
 const batch = { name: "Batch", type: "nominal" as const };
 
 assert.deepEqual(canonicalInteraction("Temperature", "Pressure"), ["Pressure", "Temperature"]);
+assert.deepEqual(
+  canonicalizeFitModelTerms([{ kind: "interaction", columnNames: ["C", "A", "B"] }]),
+  [{ kind: "interaction", columnNames: ["A", "B", "C"] }],
+);
 assert.deepEqual(applyFactorialDegree([temperature, pressure], 1), [
   { kind: "main", columnNames: ["Temperature"] },
   { kind: "main", columnNames: ["Pressure"] },
@@ -32,6 +38,62 @@ assert.deepEqual(
     fields: [response, temperature, pressure],
   }),
   { ok: true },
+);
+assert.deepEqual(
+  validateFitModelDefinition({
+    response: { name: "Y", type: "continuous" },
+    terms: [
+      { kind: "main", columnNames: ["A"] },
+      { kind: "main", columnNames: ["B"] },
+      { kind: "main", columnNames: ["C"] },
+      { kind: "interaction", columnNames: ["A", "B", "C"] },
+    ],
+  }),
+  { ok: true },
+);
+
+assert.deepEqual(
+  validateFitModelDefinition({
+    response,
+    terms: [
+      { kind: "main", columnNames: ["Temperature"] },
+      { kind: "power", columnNames: ["Temperature"], exponent: 2 },
+    ],
+  }),
+  { ok: true },
+);
+assert.deepEqual(
+  validateFitModelDefinition({
+    response,
+    terms: [{ kind: "power", columnNames: ["Temperature"], exponent: 2 }],
+  }),
+  { ok: false, reason: "missingMainEffect", columnName: "Temperature" },
+);
+assert.deepEqual(
+  validateFitModelDefinition({
+    response,
+    terms: [
+      { kind: "main", columnNames: ["Temperature"] },
+      { kind: "power", columnNames: ["Temperature"], exponent: 3 } as unknown as { kind: "power"; columnNames: [string]; exponent: 2 },
+    ],
+  }),
+  { ok: false, reason: "invalidPowerExponent", columnName: "Temperature", termKind: "power" },
+);
+assert.equal(
+  fitModelTermIdentityKey({ kind: "interaction", columnNames: ["AB", "C"] }),
+  "interaction\u00002:AB\u00001:C",
+);
+assert.equal(
+  fitModelTermIdentityKey({ kind: "interaction", columnNames: ["A", "BC"] }),
+  "interaction\u00001:A\u00002:BC",
+);
+assert.notEqual(
+  fitModelTermIdentityKey({ kind: "interaction", columnNames: ["AB", "C"] }),
+  fitModelTermIdentityKey({ kind: "interaction", columnNames: ["A", "BC"] }),
+);
+assert.equal(
+  fitModelTermIdentityKey({ kind: "power", columnNames: ["Temperature"], exponent: 2 }),
+  "power\u000011:Temperature\u00002",
 );
 
 assert.deepEqual(
@@ -165,7 +227,25 @@ const item = createFitModelItem({
   createdAt: "2026-09-01T00:00:00.000Z",
 });
 assert.equal(item.centeringMethod, "mean");
+assert.deepEqual(item.construct, { kind: "manual" });
 assert.equal(Object.hasOwn(item, "fields"), false);
+
+const responseSurfaceItem = createFitModelItem({
+  fields: [response, temperature, pressure],
+  id: "fit-model-rsm",
+  name: "Fit Model RSM",
+  sourceDatasetId: "dataset-1",
+  response,
+  terms: [
+    { kind: "main", columnNames: ["Temperature"] },
+    { kind: "main", columnNames: ["Pressure"] },
+    { kind: "power", columnNames: ["Temperature"], exponent: 2 },
+  ],
+  construct: { kind: "responseSurface" },
+  centeringMethod: "mean",
+  createdAt: "2026-09-01T00:00:00.000Z",
+});
+assert.deepEqual(responseSurfaceItem.construct, { kind: "responseSurface" });
 
 assert.throws(
   () =>

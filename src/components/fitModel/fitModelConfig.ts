@@ -1,5 +1,7 @@
 import type { FieldRef } from "@/graphCore";
-import type { FitModelItem, FitModelTerm } from "@/types/fitModel";
+import type { FitModelConstruct, FitModelItem, FitModelTerm } from "@/types/fitModel";
+
+import { buildFactorialToDegreeTerms } from "./fitModelConstruct";
 
 export type FitModelValidationReason =
   | "missingResponse"
@@ -11,7 +13,8 @@ export type FitModelValidationReason =
   | "nonContinuousResponse"
   | "nonContinuousPredictor"
   | "duplicateTerm"
-  | "missingMainEffect";
+  | "missingMainEffect"
+  | "invalidPowerExponent";
 
 export type FitModelValidationResult =
   | { ok: true }
@@ -51,26 +54,30 @@ export function canonicalInteraction(first: string, second: string): [string, st
   return first.localeCompare(second) <= 0 ? [first, second] : [second, first];
 }
 
+function canonicalInteractionColumns(columnNames: readonly string[]): string[] {
+  return [...columnNames].sort((left, right) => left.localeCompare(right));
+}
+
 export function canonicalizeFitModelTerms(terms: readonly FitModelTerm[]): FitModelTerm[] {
   return terms.map((term) => {
-    if (term.kind !== "interaction") {
+    if (term.kind === "main") {
       return {
-        kind: term.kind,
-        columnNames: [...term.columnNames],
+        kind: "main",
+        columnNames: [...term.columnNames] as [string],
       };
     }
 
-    if (term.columnNames.length !== 2) {
+    if (term.kind === "power") {
       return {
-        kind: term.kind,
-        columnNames: [...term.columnNames],
+        kind: "power",
+        columnNames: [...term.columnNames] as [string],
+        exponent: term.exponent,
       };
     }
 
-    const [first, second] = term.columnNames;
     return {
       kind: "interaction",
-      columnNames: canonicalInteraction(first, second),
+      columnNames: canonicalInteractionColumns(term.columnNames),
     };
   });
 }
@@ -79,17 +86,30 @@ function termKey(term: FitModelTerm): string {
   if (term.kind === "main") {
     return `main:${term.columnNames[0] ?? ""}`;
   }
-  return `interaction:${(term.columnNames[0] ?? "")}*${(term.columnNames[1] ?? "")}`;
+  if (term.kind === "power") {
+    return `power:${term.columnNames[0] ?? ""}^${term.exponent}`;
+  }
+  return `interaction:${term.columnNames.join("*")}`;
+}
+
+function encodeIdentityPart(value: string): string {
+  return `${value.length}:${value}`;
 }
 
 export function fitModelTermIdentityKey(term: FitModelTerm): string {
   if (term.kind === "main") {
-    return `main\u0000${term.columnNames[0] ?? ""}`;
+    return `main\u0000${encodeIdentityPart(term.columnNames[0] ?? "")}`;
   }
 
-  const left = term.columnNames[0] ?? "";
-  const right = term.columnNames[1] ?? "";
-  return `interaction\u0000${left.length}:${left}\u0000${right.length}:${right}`;
+  if (term.kind === "power") {
+    const columnName = term.columnNames[0] ?? "";
+    return `power\u0000${encodeIdentityPart(columnName)}\u0000${term.exponent}`;
+  }
+
+  const encodedColumns = canonicalInteractionColumns(term.columnNames)
+    .map((columnName) => encodeIdentityPart(columnName))
+    .join("\u0000");
+  return `interaction\u0000${encodedColumns}`;
 }
 
 export function validateFitModelDefinition(input: {
@@ -108,22 +128,29 @@ export function validateFitModelDefinition(input: {
   }
 
   const fieldsByName = new Map(input.fields?.map((field) => [field.name, field.type]) ?? []);
-  const normalized = canonicalizeFitModelTerms(input.terms);
   const seen = new Set<string>();
   const mainEffects = new Set<string>();
-  const interactions: Array<[string, string]> = [];
+  const interactions: string[][] = [];
+  const powers: string[] = [];
 
-  for (const term of normalized) {
-    if (term.kind !== "main" && term.kind !== "interaction") {
-      return { ok: false, reason: "invalidTermKind", termKind: String(term.kind) };
+  for (const term of input.terms) {
+    const rawKind = (term as { kind?: unknown }).kind;
+    const rawColumnNames = (term as { columnNames?: unknown }).columnNames;
+
+    if (rawKind !== "main" && rawKind !== "interaction" && rawKind !== "power") {
+      return { ok: false, reason: "invalidTermKind", termKind: String(rawKind) };
     }
 
-    if (term.kind === "main") {
-      if (term.columnNames.length !== 1) {
-        return { ok: false, reason: "invalidTermArity", termKind: term.kind };
+    if (!Array.isArray(rawColumnNames) || !rawColumnNames.every((entry) => typeof entry === "string")) {
+      return { ok: false, reason: "invalidTermArity", termKind: rawKind };
+    }
+
+    if (rawKind === "main") {
+      if (rawColumnNames.length !== 1) {
+        return { ok: false, reason: "invalidTermArity", termKind: rawKind };
       }
 
-      const [columnName] = term.columnNames;
+      const [columnName] = rawColumnNames;
       if (columnName === input.response.name) {
         return { ok: false, reason: "responseInModel", columnName };
       }
@@ -133,50 +160,97 @@ export function validateFitModelDefinition(input: {
         return { ok: false, reason: "nonContinuousPredictor", columnName };
       }
 
-      const key = fitModelTermIdentityKey(term);
+      const key = fitModelTermIdentityKey({ kind: "main", columnNames: [columnName] });
       if (seen.has(key)) {
-        return { ok: false, reason: "duplicateTerm", termKey: termKey(term) };
+        return { ok: false, reason: "duplicateTerm", termKey: termKey({ kind: "main", columnNames: [columnName] }) };
       }
       seen.add(key);
       mainEffects.add(columnName);
       continue;
     }
 
-    if (term.columnNames.length !== 2) {
-      return { ok: false, reason: "invalidTermArity", termKind: term.kind };
+    if (rawKind === "power") {
+      if (rawColumnNames.length !== 1) {
+        return { ok: false, reason: "invalidTermArity", termKind: rawKind };
+      }
+
+      const [columnName] = rawColumnNames;
+      const rawExponent = (term as { exponent?: unknown }).exponent;
+      if (rawExponent !== 2) {
+        return {
+          ok: false,
+          reason: "invalidPowerExponent",
+          columnName,
+          termKind: rawKind,
+        };
+      }
+
+      if (columnName === input.response.name) {
+        return { ok: false, reason: "responseInModel", columnName };
+      }
+
+      const fieldType = fieldsByName.get(columnName);
+      if (fieldType && fieldType !== "continuous") {
+        return { ok: false, reason: "nonContinuousPredictor", columnName };
+      }
+
+      const key = fitModelTermIdentityKey({ kind: "power", columnNames: [columnName], exponent: 2 });
+      if (seen.has(key)) {
+        return {
+          ok: false,
+          reason: "duplicateTerm",
+          termKey: termKey({ kind: "power", columnNames: [columnName], exponent: 2 }),
+        };
+      }
+      seen.add(key);
+      powers.push(columnName);
+      continue;
     }
 
-    const [first, second] = term.columnNames;
-    if (first === second) {
-      return { ok: false, reason: "sameColumnInteraction", columnName: first };
-    }
-    if (first === input.response.name || second === input.response.name) {
-      return { ok: false, reason: "responseInModel", columnName: input.response.name };
+    if (rawColumnNames.length < 2) {
+      return { ok: false, reason: "invalidTermArity", termKind: rawKind };
     }
 
-    const firstType = fieldsByName.get(first);
-    const secondType = fieldsByName.get(second);
-    if (firstType && firstType !== "continuous") {
-      return { ok: false, reason: "nonContinuousPredictor", columnName: first };
-    }
-    if (secondType && secondType !== "continuous") {
-      return { ok: false, reason: "nonContinuousPredictor", columnName: second };
+    const normalizedColumns = canonicalInteractionColumns(rawColumnNames);
+    const uniqueColumns = new Set(normalizedColumns);
+    if (uniqueColumns.size !== normalizedColumns.length) {
+      return { ok: false, reason: "sameColumnInteraction", columnName: normalizedColumns[0] };
     }
 
-    const key = fitModelTermIdentityKey(term);
+    for (const columnName of normalizedColumns) {
+      if (columnName === input.response.name) {
+        return { ok: false, reason: "responseInModel", columnName: input.response.name };
+      }
+
+      const fieldType = fieldsByName.get(columnName);
+      if (fieldType && fieldType !== "continuous") {
+        return { ok: false, reason: "nonContinuousPredictor", columnName };
+      }
+    }
+
+    const key = fitModelTermIdentityKey({ kind: "interaction", columnNames: normalizedColumns });
     if (seen.has(key)) {
-      return { ok: false, reason: "duplicateTerm", termKey: termKey(term) };
+      return {
+        ok: false,
+        reason: "duplicateTerm",
+        termKey: termKey({ kind: "interaction", columnNames: normalizedColumns }),
+      };
     }
     seen.add(key);
-    interactions.push([first, second]);
+    interactions.push(normalizedColumns);
   }
 
-  for (const [first, second] of interactions) {
-    if (!mainEffects.has(first)) {
-      return { ok: false, reason: "missingMainEffect", columnName: first };
+  for (const columns of interactions) {
+    for (const columnName of columns) {
+      if (!mainEffects.has(columnName)) {
+        return { ok: false, reason: "missingMainEffect", columnName };
+      }
     }
-    if (!mainEffects.has(second)) {
-      return { ok: false, reason: "missingMainEffect", columnName: second };
+  }
+
+  for (const columnName of powers) {
+    if (!mainEffects.has(columnName)) {
+      return { ok: false, reason: "missingMainEffect", columnName };
     }
   }
 
@@ -184,47 +258,28 @@ export function validateFitModelDefinition(input: {
 }
 
 export function applyFactorialDegree(fields: readonly FieldRef[], degree: 1 | 2): FitModelTerm[] {
-  const predictorNames: string[] = [];
-  const seen = new Set<string>();
-
-  for (const field of fields) {
-    if (field.type !== "continuous") {
-      continue;
-    }
-    if (seen.has(field.name)) {
-      continue;
-    }
-    seen.add(field.name);
-    predictorNames.push(field.name);
-  }
-
-  const mains: FitModelTerm[] = predictorNames.map((columnName) => ({
-    kind: "main",
-    columnNames: [columnName],
-  }));
-
-  if (degree === 1) {
-    return mains;
-  }
-
-  const interactions: FitModelTerm[] = [];
-  for (let i = 0; i < predictorNames.length; i += 1) {
-    for (let j = i + 1; j < predictorNames.length; j += 1) {
-      interactions.push({
-        kind: "interaction",
-        columnNames: canonicalInteraction(predictorNames[i], predictorNames[j]),
-      });
-    }
-  }
-
-  return [...mains, ...interactions];
+  return canonicalizeFitModelTerms(buildFactorialToDegreeTerms(fields, degree));
 }
 
 export function fitModelParameterCount(terms: readonly FitModelTerm[]): number {
   return 1 + terms.length;
 }
 
-export function createFitModelItem(input: Omit<FitModelItem, never> & { fields: readonly FieldRef[] }): FitModelItem {
+function cloneConstruct(construct: FitModelConstruct): FitModelConstruct {
+  if (construct.kind === "factorialToDegree") {
+    return { kind: "factorialToDegree", degree: construct.degree };
+  }
+  return { kind: construct.kind };
+}
+
+type CreateFitModelItemInput = Omit<FitModelItem, "construct" | "terms" | "response"> & {
+  fields: readonly FieldRef[];
+  response: FieldRef;
+  terms: readonly FitModelTerm[];
+  construct?: FitModelConstruct;
+};
+
+export function createFitModelItem(input: CreateFitModelItemInput): FitModelItem {
   const validation = validateFitModelDefinition({
     response: input.response,
     terms: input.terms,
@@ -239,6 +294,7 @@ export function createFitModelItem(input: Omit<FitModelItem, never> & { fields: 
     name: input.name,
     sourceDatasetId: input.sourceDatasetId,
     response: clone(input.response),
+    construct: cloneConstruct(input.construct ?? { kind: "manual" }),
     terms: canonicalizeFitModelTerms(input.terms),
     centeringMethod: input.centeringMethod,
     createdAt: input.createdAt,

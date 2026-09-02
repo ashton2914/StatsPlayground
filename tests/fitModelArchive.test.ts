@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { createFitModelItem } from "../src/components/fitModel/fitModelConfig.ts";
+import { createFitModelRequest } from "../src/components/fitModel/useFitModelReport.ts";
 import { useFitModelStore } from "../src/stores/useFitModelStore.ts";
 import { useFolderStore } from "../src/stores/useFolderStore.ts";
 
@@ -9,12 +10,17 @@ const fitModel = createFitModelItem({
   name: "Fit Model 1",
   sourceDatasetId: "table-1",
   response: { name: "height", type: "continuous" },
-  terms: [{ kind: "main", columnNames: ["age"] }],
-  centeringMethod: "none",
+  terms: [
+    { kind: "main", columnNames: ["age"] },
+    { kind: "main", columnNames: ["dose"] },
+    { kind: "interaction", columnNames: ["dose", "age"] },
+  ],
+  centeringMethod: "mean",
   createdAt: "2026-09-01T00:00:00.000Z",
   fields: [
     { name: "height", type: "continuous" },
     { name: "age", type: "continuous" },
+    { name: "dose", type: "continuous" },
   ],
 });
 
@@ -111,9 +117,24 @@ assert.deepEqual(reopened.fitModelFolders, { "fit-model-1": "Analyses/Fit Models
 useFitModelStore.getState().loadFromProject(reopened.fitModels ?? []);
 const normalized = useFitModelStore.getState().items[0] as Record<string, unknown>;
 assert.equal(normalized.id, "fit-model-1");
+assert.deepEqual(normalized.construct, { kind: "manual" });
 assert.equal(Object.hasOwn(normalized, "result"), false);
 assert.equal(Object.hasOwn(normalized, "plotRows"), false);
 assert.equal(Object.hasOwn(normalized, "reportState"), false);
+
+const generatedRequest = createFitModelRequest(useFitModelStore.getState().items[0]!, 3);
+assert.deepEqual(generatedRequest, {
+  datasetId: "table-1",
+  generation: 3,
+  responseColumn: "height",
+  terms: [
+    { kind: "main", columnNames: ["age"] },
+    { kind: "main", columnNames: ["dose"] },
+    { kind: "interaction", columnNames: ["age", "dose"] },
+  ],
+  centeringMethod: "mean",
+  confidenceLevel: 0.95,
+});
 
 useFolderStore.getState().loadFromProject({
   folders: [],

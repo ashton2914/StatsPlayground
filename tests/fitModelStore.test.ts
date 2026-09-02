@@ -82,6 +82,18 @@ const persisted = {
   plotRows: [{ observed: 1 }],
   disclosureState: { section: true },
 };
+const invalidPowerPersisted = {
+  id: "fit-invalid-power",
+  name: "Fit Model 10",
+  sourceDatasetId: "dataset-loaded",
+  response: { name: "Yield", type: "continuous" },
+  terms: [
+    { kind: "main", columnNames: ["Temperature"] },
+    { kind: "power", columnNames: ["Temperature"], exponent: 3 },
+  ],
+  centeringMethod: "mean",
+  createdAt: "2026-09-01T00:00:00.000Z",
+};
 const malformed = {
   id: "fit-malformed",
   name: "Fit Model 100",
@@ -93,23 +105,31 @@ const malformed = {
 };
 
 useProjectStore.setState({ readOnly: true });
-useFitModelStore.getState().loadFromProject([persisted, malformed]);
-assert.equal(useFitModelStore.getState().items.length, 2);
+useFitModelStore.getState().loadFromProject([persisted, invalidPowerPersisted, malformed]);
+assert.equal(useFitModelStore.getState().items.length, 3);
 assert.equal(useFitModelStore.getState().items[0]?.id, "fit-loaded");
+assert.deepEqual(useFitModelStore.getState().items[0]?.construct, { kind: "manual" });
 assert.deepEqual(useFitModelStore.getState().items[0]?.terms, [
   { kind: "main", columnNames: ["Temperature"] },
   { kind: "main", columnNames: ["Pressure"] },
   { kind: "interaction", columnNames: ["Pressure", "Temperature"] },
 ]);
-assert.equal(useFitModelStore.getState().items[1]?.id, "fit-malformed");
-assert.equal(useFitModelStore.getState().items[1]?.response.name, "Yield");
-assert.equal(useFitModelStore.getState().items[1]?.response.type, "nominal");
+assert.equal(useFitModelStore.getState().items[1]?.id, "fit-invalid-power");
+assert.deepEqual(useFitModelStore.getState().items[1]?.construct, { kind: "manual" });
+assert.equal(useFitModelStore.getState().items[1]?.centeringMethod, "mean");
+assert.equal(useFitModelStore.getState().items[1]?.terms.length, 1);
+assert.equal(useFitModelStore.getState().items[1]?.terms[0]?.kind, "main");
+assert.equal(useFitModelStore.getState().items[1]?.loadIssue?.code, "invalidPersistedDefinition");
+assert.match(useFitModelStore.getState().items[1]?.loadIssue?.detail ?? "", /invalidTerm:1/i);
+assert.equal(useFitModelStore.getState().items[2]?.id, "fit-malformed");
+assert.equal(useFitModelStore.getState().items[2]?.response.name, "Yield");
+assert.equal(useFitModelStore.getState().items[2]?.response.type, "nominal");
 assert.deepEqual(useFitModelStore.getState().items[1]?.terms, [
   { kind: "main", columnNames: ["Temperature"] },
 ]);
-assert.equal(useFitModelStore.getState().items[1]?.centeringMethod, "none");
-assert.equal(typeof useFitModelStore.getState().items[1]?.loadIssue?.code, "string");
-assert.match(useFitModelStore.getState().items[1]?.loadIssue?.detail ?? "", /nonContinuousResponse/i);
+assert.equal(useFitModelStore.getState().items[2]?.centeringMethod, "none");
+assert.equal(typeof useFitModelStore.getState().items[2]?.loadIssue?.code, "string");
+assert.match(useFitModelStore.getState().items[2]?.loadIssue?.detail ?? "", /nonContinuousResponse/i);
 assert.equal(useFitModelStore.getState().items[0]?.centeringMethod, "none");
 assert.equal(Object.hasOwn(useFitModelStore.getState().items[0]!, "result"), false);
 assert.equal(Object.hasOwn(useFitModelStore.getState().items[0]!, "plotRows"), false);

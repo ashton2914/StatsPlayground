@@ -74,6 +74,15 @@ export {
 } from "./fitModelDialogState";
 
 export {
+  MAX_FIT_MODEL_TERMS,
+  FitModelTermLimitError,
+  buildFactorialToDegreeTerms,
+  buildFullFactorialTerms,
+  buildResponseSurfaceTerms,
+  countFactorialTerms,
+} from "./fitModelConstruct";
+
+export {
   applyFactorialDegree,
   canonicalInteraction,
   canonicalizeFitModelTerms,
