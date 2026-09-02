@@ -2139,6 +2139,7 @@ export function Workspace() {
                 <TabulateView
                   item={item}
                   dataset={ds}
+                  existingDatasetNames={datasets.map((dataset) => dataset.name)}
                   onTableCreated={async (dataset) => {
                     await refreshDatasets();
                     markDirty();
