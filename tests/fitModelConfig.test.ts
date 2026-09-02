@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 import {
   applyFactorialDegree,
@@ -11,6 +14,56 @@ import {
   validateFitModelDefinition,
 } from "../src/components/fitModel/fitModelConfig.ts";
 import type { FitModelTerm } from "../src/types/fitModel.ts";
+
+function assertCompilerBackedTypecheckPasses(): void {
+  const testFilePath = fileURLToPath(import.meta.url);
+  const testDir = path.dirname(testFilePath);
+  const repoRoot = path.resolve(testDir, "..");
+  const tsconfigPath = path.join(repoRoot, "tsconfig.app.json");
+
+  const readConfig = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (readConfig.error) {
+    throw new Error(ts.flattenDiagnosticMessageText(readConfig.error.messageText, "\n"));
+  }
+
+  const parsed = ts.parseJsonConfigFileContent(readConfig.config, ts.sys, repoRoot);
+  const rootNames = Array.from(new Set([...parsed.fileNames, testFilePath]));
+  const program = ts.createProgram({
+    rootNames,
+    options: parsed.options,
+  });
+
+  const diagnostics = ts
+    .getPreEmitDiagnostics(program)
+    .filter((diagnostic) => {
+      if (!diagnostic.file) {
+        return true;
+      }
+      const normalized = path.normalize(diagnostic.file.fileName);
+      return (
+        normalized === path.normalize(testFilePath) ||
+        normalized.startsWith(path.normalize(path.join(repoRoot, "src")) + path.sep)
+      );
+    });
+
+  assert.equal(
+    diagnostics.length,
+    0,
+    diagnostics
+      .map((diagnostic) => {
+        const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+        if (!diagnostic.file || diagnostic.start === undefined) {
+          return `TS${diagnostic.code}: ${message}`;
+        }
+        const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+        const relativePath = path.relative(repoRoot, diagnostic.file.fileName).split("\\").join("/");
+        return `${relativePath}:${position.line + 1}:${position.character + 1} TS${diagnostic.code}: ${message}`;
+      })
+      .join("\n"),
+  );
+}
+
+assertCompilerBackedTypecheckPasses();
 
 const response = { name: "Yield", type: "continuous" as const };
 const temperature = { name: "Temperature", type: "continuous" as const };
@@ -256,7 +309,7 @@ assert.deepEqual(
       {
         kind: "quadratic",
         columnNames: ["Temperature"],
-      } as unknown as { kind: "main" | "interaction"; columnNames: string[] },
+      } as unknown as FitModelTerm,
     ],
   }),
   { ok: false, reason: "invalidTermKind", termKind: "quadratic" },
@@ -274,7 +327,7 @@ const item = createFitModelItem({
 });
 assert.equal(item.centeringMethod, "mean");
 assert.deepEqual(item.construct, { kind: "manual" });
-assert.equal(Object.hasOwn(item, "fields"), false);
+assert.equal(Object.prototype.hasOwnProperty.call(item, "fields"), false);
 
 const responseSurfaceItem = createFitModelItem({
   fields: [response, temperature, pressure],
