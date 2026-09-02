@@ -69,6 +69,31 @@
   border-top: 1px solid var(--border-main);
 }
 
+.sp-fit-model-construct-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border-main);
+}
+
+.sp-fit-model-degree-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--border-main);
+}
+
+.sp-fit-model-degree-input-label {
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+
+.sp-fit-model-degree-input-row input[type="number"] {
+  width: 110px;
+}
+
 .sp-fit-model-view {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);

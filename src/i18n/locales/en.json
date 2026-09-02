@@ -1028,5 +1028,26 @@
       "metaError": "Column metadata unavailable",
       "progress": "Graph data loading progress"
     }
+  },
+  "fitModel": {
+    "dialog": {
+      "construct": "Construct",
+      "constructManual": "Manual",
+      "constructFactorial": "Factorial to Degree",
+      "constructResponseSurface": "Response Surface",
+      "degreeInputLabel": "Degree",
+      "termCount": "{{count}} / 256 terms",
+      "tooManyTermsFormula": "Construct has {{count}} terms, exceeding 256. {{formula}}",
+      "centerInteractions": "Center Interactions",
+      "currentTerms": "Current Model Terms",
+      "searchTerms": "Search terms",
+      "parameterCount": "{{count}} parameters",
+      "termsEmpty": "No model terms selected.",
+      "noTermMatch": "No terms match the current search.",
+      "termKindMain": "Main",
+      "termKindInteraction": "Interaction",
+      "termKindPower": "Power",
+      "removeTerm": "Remove term {{term}}"
+    }
   }
 }

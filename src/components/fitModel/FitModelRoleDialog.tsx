@@ -2,8 +2,10 @@ import { useEffect, useId, useMemo, useRef, useState, type DragEvent } from "rea
 import { useTranslation } from "react-i18next";
 
 import { fitModelParameterCount } from "@/components/fitModel/fitModelConfig";
+import { MAX_FIT_MODEL_TERMS, countFactorialTerms } from "@/components/fitModel/fitModelConstruct";
 import { dataService } from "@/services/dataService";
 import type { ColumnDisplayProps, DatasetMeta } from "@/types/data";
+import type { FitModelConstruct, FitModelTerm } from "@/types/fitModel";
 
 import {
   beginFitModelFieldLoad,
@@ -15,7 +17,6 @@ import {
   createFitModelDropAction,
   createFitModelDraft,
   createFitModelFieldLoadSnapshot,
-  createToggleInteractionAction,
   createToggleMainEffectAction,
   filterFitModelFields,
   hasFitModelDragType,
@@ -46,6 +47,7 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
   const [responseDragOver, setResponseDragOver] = useState(false);
   const [mainEffectsDragOver, setMainEffectsDragOver] = useState(false);
   const [search, setSearch] = useState("");
+  const [termSearch, setTermSearch] = useState("");
   const [submitState, setSubmitState] = useState(() => createFitModelSubmitState());
   const mountedRef = useRef(true);
   const onCreateDefinitionRef = useRef(onCreateDefinition);
@@ -108,15 +110,16 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
     [fields, search],
   );
 
-  const allFieldRefs = useMemo(
-    () => fields.map((field) => field.field),
-    [fields],
-  );
-
   const terms = useMemo(() => termsFromDraft(draft), [draft]);
   const parameterCount = useMemo(() => fitModelParameterCount(terms), [terms]);
   const validationText = useMemo(() => toValidationText(draft.validationMessage, t), [draft.validationMessage, t]);
-  const createDisabled = loading || submitState.creating || !canCreateFitModel(draft);
+  const predictorCount = draft.predictors.length;
+  const projectedTermCount = useMemo(
+    () => estimateConstructTermCount(draft.construct, predictorCount, terms.length),
+    [draft.construct, predictorCount, terms.length],
+  );
+  const overTermLimit = projectedTermCount > MAX_FIT_MODEL_TERMS;
+  const createDisabled = loading || submitState.creating || overTermLimit || !canCreateFitModel(draft);
   const createErrorText = submitState.createError
     ? t("fitModel.dialog.createError", {
       defaultValue: "Failed to create Fit Model: {{message}}",
@@ -124,23 +127,12 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
     })
     : null;
 
-  const assignedMainNames = new Set(draft.mainEffects.map((field) => field.name));
+  const assignedMainNames = new Set(draft.predictors.map((field) => field.name));
   const fieldsByName = useMemo(
     () => new Map(fields.map((field) => [field.name, field])),
     [fields],
   );
-  const interactionSet = new Set(draft.interactions.map(([leftName, rightName]) => `${leftName}*${rightName}`));
-  const interactionOptions = useMemo(() => {
-    const pairs: Array<[string, string]> = [];
-    for (let i = 0; i < draft.mainEffects.length; i += 1) {
-      for (let j = i + 1; j < draft.mainEffects.length; j += 1) {
-        const left = draft.mainEffects[i].name;
-        const right = draft.mainEffects[j].name;
-        pairs.push(left.localeCompare(right) <= 0 ? [left, right] : [right, left]);
-      }
-    }
-    return pairs;
-  }, [draft.mainEffects]);
+  const visibleTerms = useMemo(() => filterTerms(terms, termSearch), [terms, termSearch]);
 
   const handleCreate = async () => {
     if (createDisabled || !draft.response) {
@@ -149,6 +141,7 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
 
     const definition: FitModelCreateDefinition = {
       response: { ...draft.response },
+      construct: draft.construct,
       terms,
       centeringMethod: draft.centeringMethod,
     };
@@ -362,9 +355,9 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
                   <span className="sp-tabulate-header-hint">{t("fitModel.dialog.continuousOnly", { defaultValue: "Continuous" })}</span>
                 </div>
                 <div className="sp-tabulate-zone-body" role="list">
-                  {draft.mainEffects.length === 0 ? (
+                  {draft.predictors.length === 0 ? (
                     <div className="sp-tabulate-empty-note">{t("fitModel.dialog.mainEffectsEmpty", { defaultValue: "Select one or more continuous predictors." })}</div>
-                  ) : draft.mainEffects.map((field) => (
+                  ) : draft.predictors.map((field) => (
                     <div key={field.name} role="listitem" className="sp-tabulate-zone-item">
                       <div className="sp-tabulate-zone-copy">
                         <span className="sp-tabulate-zone-label">{field.name}</span>
@@ -394,110 +387,100 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
                 </div>
               </section>
 
-              <section className="sp-tabulate-zone sp-fit-model-zone" aria-label={t("fitModel.dialog.interactions", { defaultValue: "Interactions" })}>
+              <section className="sp-tabulate-zone sp-fit-model-zone" aria-label={t("fitModel.dialog.construct", { defaultValue: "Construct" })}>
                 <div className="sp-panel-header">
-                  <span className="sp-panel-header-title">{t("fitModel.dialog.interactions", { defaultValue: "Interactions" })}</span>
-                  <span className="sp-tabulate-header-hint">{t("fitModel.dialog.twoWayOnly", { defaultValue: "Two-way" })}</span>
+                  <span className="sp-panel-header-title">{t("fitModel.dialog.construct", { defaultValue: "Construct" })}</span>
+                  <span className="sp-tabulate-header-hint">
+                    {t("fitModel.dialog.termCount", {
+                      defaultValue: "{{count}} / 256 terms",
+                      count: terms.length,
+                    })}
+                  </span>
                 </div>
 
-                <div className="sp-tabulate-zone-body" role="list">
-                  {draft.interactions.length === 0 ? (
-                    <div className="sp-tabulate-empty-note">{t("fitModel.dialog.interactionsEmpty", { defaultValue: "Add two-way interactions from selected main effects." })}</div>
-                  ) : draft.interactions.map(([leftName, rightName]) => (
-                    <div key={`${leftName}*${rightName}`} role="listitem" className="sp-tabulate-zone-item">
-                      <div className="sp-tabulate-zone-copy">
-                        <span className="sp-tabulate-zone-label">{`${leftName}*${rightName}`}</span>
-                      </div>
-                      <div className="sp-tabulate-zone-actions">
-                        <button
-                          type="button"
-                          className="sp-tabulate-inline-button"
-                          onClick={() => setDraft((current) => reduceFitModelDraft(current, {
-                            type: "removeInteraction",
-                            leftName,
-                            rightName,
-                          }))}
-                          aria-label={t("fitModel.dialog.removeInteraction", {
-                            defaultValue: "Remove interaction {{term}}",
-                            term: `${leftName}*${rightName}`,
-                          })}
-                        >
-                          <i className="fa-solid fa-xmark" aria-hidden="true" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="sp-fit-model-construct-segmented" role="group" aria-label={t("fitModel.dialog.construct", { defaultValue: "Construct" })}>
+                  <button
+                    type="button"
+                    className={`sp-dialog-btn${draft.construct.kind === "manual" ? " sp-dialog-btn-primary" : ""}`}
+                    onClick={() => setDraft((current) => reduceFitModelDraft(current, {
+                      type: "setConstruct",
+                      construct: { kind: "manual" },
+                    }))}
+                  >
+                    {t("fitModel.dialog.constructManual", { defaultValue: "Manual" })}
+                  </button>
+                  <button
+                    type="button"
+                    className={`sp-dialog-btn${draft.construct.kind === "factorialToDegree" ? " sp-dialog-btn-primary" : ""}`}
+                    onClick={() => setDraft((current) => reduceFitModelDraft(current, {
+                      type: "setConstruct",
+                      construct: { kind: "factorialToDegree", degree: 2 },
+                    }))}
+                  >
+                    {t("fitModel.dialog.constructFactorial", { defaultValue: "Factorial to Degree" })}
+                  </button>
+                  <button
+                    type="button"
+                    className={`sp-dialog-btn${draft.construct.kind === "responseSurface" ? " sp-dialog-btn-primary" : ""}`}
+                    onClick={() => setDraft((current) => reduceFitModelDraft(current, {
+                      type: "setConstruct",
+                      construct: { kind: "responseSurface" },
+                    }))}
+                  >
+                    {t("fitModel.dialog.constructResponseSurface", { defaultValue: "Response Surface" })}
+                  </button>
                 </div>
 
-                {interactionOptions.length > 0 ? (
-                  <div className="sp-fit-model-interaction-builder" aria-label={t("fitModel.dialog.addInteraction", { defaultValue: "Add interaction" })}>
-                    {interactionOptions.map(([leftName, rightName]) => {
-                      const termLabel = `${leftName}*${rightName}`;
-                      const selected = interactionSet.has(termLabel);
-                      return (
-                        <button
-                          key={termLabel}
-                          type="button"
-                          className={`sp-tabulate-inline-button${selected ? " sp-tabulate-inline-button-selected" : ""}`}
-                          onClick={() => setDraft((current) => reduceFitModelDraft(
-                            current,
-                            createToggleInteractionAction(current, leftName, rightName),
-                          ))}
-                          aria-pressed={selected}
-                          aria-label={t("fitModel.dialog.toggleInteraction", {
-                            defaultValue: "Toggle interaction {{term}}",
-                            term: termLabel,
-                          })}
-                        >
-                          {termLabel}
-                        </button>
-                      );
+                {draft.construct.kind === "factorialToDegree" ? (
+                  <div className="sp-fit-model-degree-input-row">
+                    <label className="sp-fit-model-degree-input-label" htmlFor={`${titleId}-construct-degree`}>
+                      {t("fitModel.dialog.degreeInputLabel", { defaultValue: "Degree" })}
+                    </label>
+                    <input
+                      id={`${titleId}-construct-degree`}
+                      type="number"
+                      min={1}
+                      max={Math.max(1, predictorCount)}
+                      step={1}
+                      value={draft.construct.degree}
+                      onChange={(event) => {
+                        const nextDegree = Number.parseInt(event.target.value, 10);
+                        if (!Number.isFinite(nextDegree)) {
+                          return;
+                        }
+                        setDraft((current) => reduceFitModelDraft(current, {
+                          type: "setConstruct",
+                          construct: { kind: "factorialToDegree", degree: nextDegree },
+                        }));
+                      }}
+                    />
+                  </div>
+                ) : null}
+
+                {overTermLimit ? (
+                  <div className="sp-tabulate-inline-error" role="alert">
+                    {t("fitModel.dialog.tooManyTermsFormula", {
+                      defaultValue: "Construct has {{count}} terms, exceeding 256. {{formula}}",
+                      count: projectedTermCount,
+                      formula: describeConstructFormula(draft.construct, predictorCount),
                     })}
                   </div>
                 ) : null}
-              </section>
 
-              <section className="sp-tabulate-zone sp-fit-model-zone" aria-label={t("fitModel.dialog.macros", { defaultValue: "Macros" })}>
-                <div className="sp-panel-header">
-                  <span className="sp-panel-header-title">{t("fitModel.dialog.macros", { defaultValue: "Macros" })}</span>
-                </div>
                 <div className="sp-fit-model-macro-actions">
-                  <button
-                    type="button"
-                    className="sp-dialog-btn"
-                    onClick={() => setDraft((current) => reduceFitModelDraft(current, {
-                      type: "applyDegree",
-                      degree: 1,
-                      fields: allFieldRefs,
-                    }))}
-                  >
-                    {t("fitModel.dialog.degree1", { defaultValue: "Degree 1" })}
-                  </button>
-                  <button
-                    type="button"
-                    className="sp-dialog-btn"
-                    onClick={() => setDraft((current) => reduceFitModelDraft(current, {
-                      type: "applyDegree",
-                      degree: 2,
-                      fields: allFieldRefs,
-                    }))}
-                  >
-                    {t("fitModel.dialog.degree2", { defaultValue: "Degree 2" })}
-                  </button>
+                  <label className="sp-fit-model-centering-toggle">
+                    <input
+                      type="checkbox"
+                      checked={draft.centeringMethod === "mean"}
+                      disabled={!terms.some((term) => term.kind === "interaction")}
+                      onChange={(event) => setDraft((current) => reduceFitModelDraft(current, {
+                        type: "setCenteringMethod",
+                        centeringMethod: event.target.checked ? "mean" : "none",
+                      }))}
+                    />
+                    {t("fitModel.dialog.centerInteractions", { defaultValue: "Center Interactions" })}
+                  </label>
                 </div>
-
-                <label className="sp-fit-model-centering-toggle">
-                  <input
-                    type="checkbox"
-                    checked={draft.centeringMethod === "mean"}
-                    disabled={draft.interactions.length === 0}
-                    onChange={(event) => setDraft((current) => reduceFitModelDraft(current, {
-                      type: "setCenteringMethod",
-                      centeringMethod: event.target.checked ? "mean" : "none",
-                    }))}
-                  />
-                  {t("fitModel.dialog.centerInteractions", { defaultValue: "Center Interactions" })}
-                </label>
               </section>
 
               <section className="sp-tabulate-zone sp-fit-model-zone" aria-label={t("fitModel.dialog.currentTerms", { defaultValue: "Current Model Terms" })}>
@@ -510,11 +493,27 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
                     })}
                   </span>
                 </div>
+
+                <div className="sp-tabulate-field-toolbar">
+                  <label className="sp-tabulate-search" aria-label={t("fitModel.dialog.searchTerms", { defaultValue: "Search terms" })}>
+                    <i className="fa-solid fa-magnifying-glass" aria-hidden="true" />
+                    <input
+                      type="search"
+                      value={termSearch}
+                      onChange={(event) => setTermSearch(event.target.value)}
+                      placeholder={t("fitModel.dialog.searchTerms", { defaultValue: "Search terms" })}
+                      aria-label={t("fitModel.dialog.searchTerms", { defaultValue: "Search terms" })}
+                    />
+                  </label>
+                </div>
+
                 <div className="sp-tabulate-zone-body" role="list">
                   {terms.length === 0 ? (
                     <div className="sp-tabulate-empty-note">{t("fitModel.dialog.termsEmpty", { defaultValue: "No model terms selected." })}</div>
-                  ) : terms.map((term) => {
-                    const termLabel = term.kind === "main" ? term.columnNames[0] : `${term.columnNames[0]}*${term.columnNames[1]}`;
+                  ) : visibleTerms.length === 0 ? (
+                    <div className="sp-tabulate-empty-note">{t("fitModel.dialog.noTermMatch", { defaultValue: "No terms match the current search." })}</div>
+                  ) : visibleTerms.map((term) => {
+                    const termLabel = labelForTerm(term);
                     return (
                       <div key={`${term.kind}:${termLabel}`} role="listitem" className="sp-tabulate-zone-item">
                         <div className="sp-tabulate-zone-copy">
@@ -522,8 +521,26 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
                           <span className="sp-tabulate-zone-hint">
                             {term.kind === "main"
                               ? t("fitModel.dialog.termKindMain", { defaultValue: "Main" })
-                              : t("fitModel.dialog.termKindInteraction", { defaultValue: "Interaction" })}
+                              : term.kind === "power"
+                                ? t("fitModel.dialog.termKindPower", { defaultValue: "Power" })
+                                : t("fitModel.dialog.termKindInteraction", { defaultValue: "Interaction" })}
                           </span>
+                        </div>
+                        <div className="sp-tabulate-zone-actions">
+                          <button
+                            type="button"
+                            className="sp-tabulate-inline-button"
+                            onClick={() => setDraft((current) => reduceFitModelDraft(current, {
+                              type: "removeTerm",
+                              term,
+                            }))}
+                            aria-label={t("fitModel.dialog.removeTerm", {
+                              defaultValue: "Remove term {{term}}",
+                              term: termLabel,
+                            })}
+                          >
+                            <i className="fa-solid fa-xmark" aria-hidden="true" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -608,7 +625,64 @@ function toValidationText(
     });
   }
 
+  if (message.code === "tooManyTerms") {
+    return t("fitModel.dialog.validation.tooManyTerms", {
+      defaultValue: "Model has too many terms (max 256).",
+      detail: message.detail ?? "",
+    });
+  }
+
   return t("fitModel.dialog.validation.invalidInteraction", {
     defaultValue: "Interaction must reference two different selected main effects.",
   });
+}
+
+function labelForTerm(term: FitModelTerm): string {
+  if (term.kind === "main") {
+    return term.columnNames[0];
+  }
+  if (term.kind === "power") {
+    return `${term.columnNames[0]}^2`;
+  }
+  return term.columnNames.join("*");
+}
+
+function filterTerms(terms: readonly FitModelTerm[], query: string): FitModelTerm[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return [...terms];
+  }
+  return terms.filter((term) => {
+    const label = labelForTerm(term).toLowerCase();
+    return label.includes(needle) || term.kind.toLowerCase().includes(needle);
+  });
+}
+
+function estimateConstructTermCount(construct: FitModelConstruct, predictorCount: number, manualCount: number): number {
+  const p = Math.max(0, predictorCount);
+  if (construct.kind === "manual") {
+    return manualCount;
+  }
+  if (construct.kind === "responseSurface") {
+    return (2 * p) + ((p * (p - 1)) / 2);
+  }
+  if (construct.kind === "fullFactorial") {
+    return countFactorialTerms(p, p);
+  }
+  return countFactorialTerms(p, Math.min(p, Math.max(1, Math.trunc(construct.degree))));
+}
+
+function describeConstructFormula(construct: FitModelConstruct, predictorCount: number): string {
+  const p = Math.max(0, predictorCount);
+  if (construct.kind === "responseSurface") {
+    return `2*${p} + C(${p},2)`;
+  }
+  if (construct.kind === "fullFactorial") {
+    return `sum C(${p},k), k=1..${p}`;
+  }
+  if (construct.kind === "factorialToDegree") {
+    const degree = Math.min(p, Math.max(1, Math.trunc(construct.degree)));
+    return `sum C(${p},k), k=1..${degree}`;
+  }
+  return `${p}`;
 }

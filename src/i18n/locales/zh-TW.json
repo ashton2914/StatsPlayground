@@ -1013,5 +1013,26 @@
       "metaError": "欄位中繼資料不可用",
       "progress": "圖形資料載入進度"
     }
+  },
+  "fitModel": {
+    "dialog": {
+      "construct": "建構方式",
+      "constructManual": "手動",
+      "constructFactorial": "階乘到階數",
+      "constructResponseSurface": "反應曲面",
+      "degreeInputLabel": "階數",
+      "termCount": "{{count}} / 256 項",
+      "tooManyTermsFormula": "目前建構有 {{count}} 項，超過 256。{{formula}}",
+      "centerInteractions": "中心化交互項",
+      "currentTerms": "目前模型項",
+      "searchTerms": "搜尋模型項",
+      "parameterCount": "{{count}} 個參數",
+      "termsEmpty": "尚未選擇模型項。",
+      "noTermMatch": "沒有模型項符合目前搜尋。",
+      "termKindMain": "主效應",
+      "termKindInteraction": "交互",
+      "termKindPower": "冪次項",
+      "removeTerm": "移除模型項 {{term}}"
+    }
   }
 }

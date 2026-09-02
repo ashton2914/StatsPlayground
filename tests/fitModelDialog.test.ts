@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import type { FieldRef } from "../src/graphCore/types.ts";
 import type { FitModelCenteringMethod } from "../src/types/fitModel.ts";
 import {
   beginFitModelFieldLoad,
@@ -123,8 +122,9 @@ assert.equal(createFitModelDropAction("response", { fieldName: "Unknown" }, fiel
 let draft = createFitModelDraft();
 assert.deepEqual(draft, {
   response: null,
-  mainEffects: [],
-  interactions: [],
+  predictors: [],
+  construct: { kind: "manual" },
+  terms: [],
   centeringMethod: "none",
   validationMessage: null,
 });
@@ -141,35 +141,35 @@ const addNominalMain = reduceFitModelDraft(draft, {
   type: "toggleMainEffect",
   field: nominalField,
 });
-assert.equal(addNominalMain.mainEffects.length, 0);
+assert.equal(addNominalMain.predictors.length, 0);
 assert.equal(addNominalMain.validationMessage?.code, "nonContinuousField");
 
 const addOrdinalMain = reduceFitModelDraft(draft, {
   type: "toggleMainEffect",
   field: ordinalField,
 });
-assert.equal(addOrdinalMain.mainEffects.length, 0);
+assert.equal(addOrdinalMain.predictors.length, 0);
 assert.equal(addOrdinalMain.validationMessage?.code, "nonContinuousField");
 
 const addDatetimeMain = reduceFitModelDraft(draft, {
   type: "toggleMainEffect",
   field: datetimeField,
 });
-assert.equal(addDatetimeMain.mainEffects.length, 0);
+assert.equal(addDatetimeMain.predictors.length, 0);
 assert.equal(addDatetimeMain.validationMessage?.code, "nonContinuousField");
 
 const addIdMain = reduceFitModelDraft(draft, {
   type: "toggleMainEffect",
   field: idField,
 });
-assert.equal(addIdMain.mainEffects.length, 0);
+assert.equal(addIdMain.predictors.length, 0);
 assert.equal(addIdMain.validationMessage?.code, "nonContinuousField");
 
 draft = reduceFitModelDraft(draft, {
   type: "toggleMainEffect",
   field: temperature,
 });
-assert.deepEqual(draft.mainEffects, [temperature.field]);
+assert.deepEqual(draft.predictors, [temperature.field]);
 
 const responseCollision = assignFitModelResponse(draft, temperature);
 assert.equal(responseCollision.response?.name, "Yield");
@@ -179,14 +179,18 @@ draft = reduceFitModelDraft(draft, {
   type: "toggleMainEffect",
   field: pressure,
 });
-assert.deepEqual(draft.mainEffects.map((field) => field.name), ["Temperature", "Pressure"]);
+assert.deepEqual(draft.predictors.map((field) => field.name), ["Temperature", "Pressure"]);
 
 draft = reduceFitModelDraft(draft, {
   type: "addInteraction",
   leftName: "Temperature",
   rightName: "Pressure",
 });
-assert.deepEqual(draft.interactions, [["Pressure", "Temperature"]]);
+assert.deepEqual(termsFromDraft(draft), [
+  { kind: "main", columnNames: ["Temperature"] },
+  { kind: "main", columnNames: ["Pressure"] },
+  { kind: "interaction", columnNames: ["Pressure", "Temperature"] },
+]);
 
 const toggleRemoveAction = createToggleInteractionAction(draft, "Temperature", "Pressure");
 assert.deepEqual(toggleRemoveAction, {
@@ -195,7 +199,10 @@ assert.deepEqual(toggleRemoveAction, {
   rightName: "Temperature",
 });
 draft = reduceFitModelDraft(draft, toggleRemoveAction);
-assert.deepEqual(draft.interactions, []);
+assert.deepEqual(termsFromDraft(draft), [
+  { kind: "main", columnNames: ["Temperature"] },
+  { kind: "main", columnNames: ["Pressure"] },
+]);
 
 const toggleAddAction = createToggleInteractionAction(draft, "Temperature", "Pressure");
 assert.deepEqual(toggleAddAction, {
@@ -204,7 +211,11 @@ assert.deepEqual(toggleAddAction, {
   rightName: "Temperature",
 });
 draft = reduceFitModelDraft(draft, toggleAddAction);
-assert.deepEqual(draft.interactions, [["Pressure", "Temperature"]]);
+assert.deepEqual(termsFromDraft(draft), [
+  { kind: "main", columnNames: ["Temperature"] },
+  { kind: "main", columnNames: ["Pressure"] },
+  { kind: "interaction", columnNames: ["Pressure", "Temperature"] },
+]);
 
 const withCentering = reduceFitModelDraft(draft, {
   type: "setCenteringMethod",
@@ -224,21 +235,24 @@ const removedInteraction = reduceFitModelDraft(withCentering, {
   leftName: "Pressure",
   rightName: "Temperature",
 });
-assert.deepEqual(removedInteraction.interactions, []);
+assert.deepEqual(termsFromDraft(removedInteraction), [
+  { kind: "main", columnNames: ["Temperature"] },
+  { kind: "main", columnNames: ["Pressure"] },
+]);
 assert.equal(removedInteraction.centeringMethod, "none");
 
 const removeMain = reduceFitModelDraft(removedInteraction, {
   type: "toggleMainEffect",
   field: temperature,
 });
-assert.deepEqual(removeMain.mainEffects.map((field) => field.name), ["Pressure"]);
+assert.deepEqual(removeMain.predictors.map((field) => field.name), ["Pressure"]);
 
 const blockedLastMain = reduceFitModelDraft(removeMain, {
   type: "toggleMainEffect",
   field: pressure,
 });
 assert.equal(blockedLastMain.validationMessage?.code, "lastMainEffect");
-assert.deepEqual(blockedLastMain.mainEffects.map((field) => field.name), ["Pressure"]);
+assert.deepEqual(blockedLastMain.predictors.map((field) => field.name), ["Pressure"]);
 
 const macroSeed = reduceFitModelDraft(
   reduceFitModelDraft(
@@ -262,32 +276,20 @@ const macroSeedWithCentering = reduceFitModelDraft(macroSeed, {
   centeringMethod: "mean",
 });
 
-const allFields: readonly FieldRef[] = [
-  response.field,
-  temperature.field,
-  pressure.field,
-  nominalField.field,
-  ordinalField.field,
-  datetimeField.field,
-  idField.field,
-];
-
 const degreeOne = reduceFitModelDraft(macroSeedWithCentering, {
-  type: "applyDegree",
-  degree: 1,
-  fields: allFields,
+  type: "setConstruct",
+  construct: { kind: "factorialToDegree", degree: 1 },
 });
 assert.equal(degreeOne.response?.name, "Yield");
-assert.equal(degreeOne.centeringMethod, "mean");
+assert.equal(degreeOne.centeringMethod, "none");
 assert.deepEqual(termsFromDraft(degreeOne), [
   { kind: "main", columnNames: ["Temperature"] },
   { kind: "main", columnNames: ["Pressure"] },
 ]);
 
 const degreeTwo = reduceFitModelDraft(macroSeedWithCentering, {
-  type: "applyDegree",
-  degree: 2,
-  fields: allFields,
+  type: "setConstruct",
+  construct: { kind: "factorialToDegree", degree: 2 },
 });
 assert.equal(degreeTwo.response?.name, "Yield");
 assert.equal(degreeTwo.centeringMethod, "mean");
@@ -296,6 +298,29 @@ assert.deepEqual(termsFromDraft(degreeTwo), [
   { kind: "main", columnNames: ["Pressure"] },
   { kind: "interaction", columnNames: ["Pressure", "Temperature"] },
 ]);
+
+const withThreePredictors = reduceFitModelDraft(macroSeedWithCentering, {
+  type: "toggleMainEffect",
+  field: {
+    name: "Flow",
+    sqlType: "DOUBLE",
+    modelingRole: "Continuous",
+    field: { name: "Flow", type: "continuous" },
+  },
+});
+
+const responseSurface = reduceFitModelDraft(withThreePredictors, {
+  type: "setConstruct",
+  construct: { kind: "responseSurface" },
+});
+assert.equal(responseSurface.centeringMethod, "mean");
+assert.equal(responseSurface.terms.filter((term) => term.kind === "power").length, 3);
+
+const degreeThree = reduceFitModelDraft(withThreePredictors, {
+  type: "setConstruct",
+  construct: { kind: "factorialToDegree", degree: 3 },
+});
+assert.equal(degreeThree.terms.length, 7);
 
 const invalidCentering = reduceFitModelDraft(degreeOne, {
   type: "setCenteringMethod",
@@ -308,8 +333,12 @@ assert.equal(canCreateFitModel(validDraft), true);
 
 const invalidHierarchy: FitModelDraft = {
   response: response.field,
-  mainEffects: [{ name: "Temperature", type: "continuous" }],
-  interactions: [["Pressure", "Temperature"]],
+  predictors: [{ name: "Temperature", type: "continuous" }],
+  construct: { kind: "manual" },
+  terms: [
+    { kind: "main", columnNames: ["Temperature"] },
+    { kind: "interaction", columnNames: ["Pressure", "Temperature"] },
+  ],
   centeringMethod: "mean" satisfies FitModelCenteringMethod,
   validationMessage: null,
 };
@@ -334,10 +363,10 @@ assert.equal(
 assert.equal(
   fitModelRoleDialogSource.includes("onDragOver")
     && fitModelRoleDialogSource.includes("onDrop")
-    && fitModelRoleDialogSource.includes("aria-pressed")
+    && fitModelRoleDialogSource.includes("type=\"search\"")
     && fitModelRoleDialogSource.includes("common.retry"),
   true,
-  "FitModelRoleDialog must keep structural drag/drop zones, pressed-state interactions, and retry affordance",
+  "FitModelRoleDialog must keep structural drag/drop zones, searchable lists, and retry affordance",
 );
 assert.equal(
   fitModelRoleDialogSource.includes("Create") && fitModelRoleDialogSource.includes("Cancel"),
@@ -352,11 +381,25 @@ assert.equal(
   "FitModelRoleDialog must keep keyboard assignment shortcuts",
 );
 assert.equal(
-  fitModelRoleDialogSource.includes("aria-label={t(\"fitModel.dialog.assignResponseLabel\"")
-    && fitModelRoleDialogSource.includes("aria-label={t(\"fitModel.dialog.assignMainLabel\"")
-    && fitModelRoleDialogSource.includes("aria-label={t(\"fitModel.dialog.toggleInteraction\""),
+  fitModelRoleDialogSource.includes("fitModel.dialog.constructManual")
+    && fitModelRoleDialogSource.includes("fitModel.dialog.constructFactorial")
+    && fitModelRoleDialogSource.includes("fitModel.dialog.constructResponseSurface")
+    && fitModelRoleDialogSource.includes("fitModel.dialog.termCount")
+    && fitModelRoleDialogSource.includes("fitModel.dialog.searchTerms"),
   true,
-  "FitModelRoleDialog must keep localized accessibility labels for role assignment and interaction toggle",
+  "FitModelRoleDialog must render construct segmented controls, degree input, term count, and searchable term list",
+);
+assert.equal(
+  !fitModelRoleDialogSource.includes("fitModel.dialog.twoWayOnly")
+    && !fitModelRoleDialogSource.includes("sp-fit-model-interaction-builder"),
+  true,
+  "FitModelRoleDialog must remove two-way-only interaction matrix controls",
+);
+assert.equal(
+  fitModelRoleDialogSource.includes("aria-label={t(\"fitModel.dialog.assignResponseLabel\"")
+    && fitModelRoleDialogSource.includes("aria-label={t(\"fitModel.dialog.assignMainLabel\""),
+  true,
+  "FitModelRoleDialog must keep localized accessibility labels for role assignment",
 );
 
 const baseLoad = createFitModelFieldLoadSnapshot();
@@ -450,6 +493,7 @@ assert.deepEqual(coordinator.getState(), { creating: false, createError: null })
 
 const submitDefinition = {
   response: response.field,
+  construct: { kind: "manual" } as const,
   terms: termsFromDraft(validDraft),
   centeringMethod: validDraft.centeringMethod,
 };

@@ -1,7 +1,18 @@
-import { applyFactorialDegree, canonicalInteraction, fitModelParameterCount, validateFitModelDefinition } from "@/components/fitModel/fitModelConfig";
+import {
+  canonicalInteraction,
+  canonicalizeFitModelTerms,
+  fitModelParameterCount,
+  validateFitModelDefinition,
+} from "@/components/fitModel/fitModelConfig";
+import {
+  buildFactorialToDegreeTerms,
+  buildFullFactorialTerms,
+  buildResponseSurfaceTerms,
+  FitModelTermLimitError,
+} from "@/components/fitModel/fitModelConstruct";
 import { inferFieldType, type FieldRef } from "@/graphCore/types";
 import type { ColumnDisplayProps } from "@/types/data";
-import type { FitModelCenteringMethod, FitModelTerm } from "@/types/fitModel";
+import type { FitModelCenteringMethod, FitModelConstruct, FitModelTerm } from "@/types/fitModel";
 
 export const FIT_MODEL_DIALOG_FIELD_DRAG_MIME = "application/x-statsplayground-fit-model-field";
 
@@ -23,18 +34,21 @@ export type FitModelDialogMessageCode =
   | "mainRequiredByInteraction"
   | "lastMainEffect"
   | "nonContinuousField"
-  | "invalidInteraction";
+  | "invalidInteraction"
+  | "tooManyTerms";
 
 export interface FitModelDialogMessage {
   code: FitModelDialogMessageCode;
   fieldName?: string;
   interactionLabels?: string[];
+  detail?: string;
 }
 
 export interface FitModelDraft {
   response: FieldRef | null;
-  mainEffects: FieldRef[];
-  interactions: Array<[string, string]>;
+  predictors: FieldRef[];
+  construct: FitModelConstruct;
+  terms: FitModelTerm[];
   centeringMethod: FitModelCenteringMethod;
   validationMessage: FitModelDialogMessage | null;
 }
@@ -45,6 +59,8 @@ export type FitModelDraftAction =
   | { type: "toggleMainEffect"; field: FitModelFieldInfo }
   | { type: "addInteraction"; leftName: string; rightName: string }
   | { type: "removeInteraction"; leftName: string; rightName: string }
+  | { type: "removeTerm"; term: FitModelTerm }
+  | { type: "setConstruct"; construct: FitModelConstruct }
   | { type: "applyDegree"; degree: 1 | 2; fields: readonly FieldRef[] }
   | { type: "setCenteringMethod"; centeringMethod: FitModelCenteringMethod }
   | { type: "clearValidation" };
@@ -58,6 +74,7 @@ export interface FitModelFieldLoadSnapshot {
 
 export interface FitModelCreateDefinition {
   response: FieldRef;
+  construct: FitModelConstruct;
   terms: FitModelTerm[];
   centeringMethod: FitModelCenteringMethod;
 }
@@ -77,8 +94,9 @@ export type FitModelCreateHandler = (definition: FitModelCreateDefinition) => vo
 export function createFitModelDraft(): FitModelDraft {
   return {
     response: null,
-    mainEffects: [],
-    interactions: [],
+    predictors: [],
+    construct: { kind: "manual" },
+    terms: [],
     centeringMethod: "none",
     validationMessage: null,
   };
@@ -213,13 +231,16 @@ export function createToggleMainEffectAction(field: FitModelFieldInfo): FitModel
 }
 
 export function createToggleInteractionAction(
-  draft: Pick<FitModelDraft, "interactions">,
+  draft: Pick<FitModelDraft, "terms">,
   leftName: string,
   rightName: string,
 ): FitModelDraftAction {
   const [left, right] = canonicalInteraction(leftName, rightName);
-  const exists = draft.interactions.some(([existingLeft, existingRight]) => (
-    existingLeft === left && existingRight === right
+  const exists = draft.terms.some((term) => (
+    term.kind === "interaction"
+    && term.columnNames.length === 2
+    && canonicalInteraction(term.columnNames[0], term.columnNames[1])[0] === left
+    && canonicalInteraction(term.columnNames[0], term.columnNames[1])[1] === right
   ));
 
   return exists
@@ -316,6 +337,148 @@ function cloneField(field: FieldRef): FieldRef {
   return { name: field.name, type: field.type };
 }
 
+function cloneConstruct(construct: FitModelConstruct): FitModelConstruct {
+  if (construct.kind === "factorialToDegree") {
+    return { kind: "factorialToDegree", degree: construct.degree };
+  }
+  return { kind: construct.kind };
+}
+
+function normalizePredictors(predictors: readonly FieldRef[], response: FieldRef | null): FieldRef[] {
+  const deduped: FieldRef[] = [];
+  const names = new Set<string>();
+  for (const predictor of predictors) {
+    if (predictor.type !== "continuous") {
+      continue;
+    }
+    if (response?.name === predictor.name) {
+      continue;
+    }
+    if (names.has(predictor.name)) {
+      continue;
+    }
+    names.add(predictor.name);
+    deduped.push(cloneField(predictor));
+  }
+  return deduped;
+}
+
+function mainNamesFromTerms(terms: readonly FitModelTerm[]): Set<string> {
+  const names = new Set<string>();
+  for (const term of terms) {
+    if (term.kind === "main") {
+      names.add(term.columnNames[0]);
+    }
+  }
+  return names;
+}
+
+function hasInteractionTerms(terms: readonly FitModelTerm[]): boolean {
+  return terms.some((term) => term.kind === "interaction");
+}
+
+function normalizeConstruct(construct: FitModelConstruct, predictorCount: number): FitModelConstruct {
+  if (construct.kind !== "factorialToDegree") {
+    return cloneConstruct(construct);
+  }
+
+  const minDegree = 1;
+  const maxDegree = Math.max(1, predictorCount);
+  const boundedDegree = Math.max(minDegree, Math.min(maxDegree, Math.trunc(construct.degree)));
+  return { kind: "factorialToDegree", degree: boundedDegree };
+}
+
+function buildTermsFromConstruct(construct: FitModelConstruct, predictors: readonly FieldRef[]): FitModelTerm[] {
+  if (construct.kind === "manual") {
+    return [];
+  }
+  if (construct.kind === "fullFactorial") {
+    return buildFullFactorialTerms(predictors);
+  }
+  if (construct.kind === "responseSurface") {
+    return buildResponseSurfaceTerms(predictors);
+  }
+  return buildFactorialToDegreeTerms(predictors, construct.degree);
+}
+
+function applyConstruct(
+  draft: FitModelDraft,
+  construct: FitModelConstruct,
+  predictors: readonly FieldRef[] = draft.predictors,
+): FitModelDraft {
+  const normalizedPredictors = normalizePredictors(predictors, draft.response);
+  const normalizedConstruct = normalizeConstruct(construct, normalizedPredictors.length);
+
+  if (normalizedConstruct.kind === "manual") {
+    const centeringMethod = hasInteractionTerms(draft.terms) ? draft.centeringMethod : "none";
+    return {
+      ...draft,
+      predictors: normalizedPredictors,
+      construct: normalizedConstruct,
+      centeringMethod,
+      validationMessage: null,
+    };
+  }
+
+  try {
+    const terms = canonicalizeFitModelTerms(buildTermsFromConstruct(normalizedConstruct, normalizedPredictors));
+    const centeringMethod = normalizedConstruct.kind === "responseSurface"
+      ? "mean"
+      : (draft.centeringMethod === "mean" && hasInteractionTerms(terms) ? "mean" : "none");
+    return {
+      ...draft,
+      predictors: normalizedPredictors,
+      construct: normalizedConstruct,
+      terms,
+      centeringMethod,
+      validationMessage: null,
+    };
+  } catch (error) {
+    if (error instanceof FitModelTermLimitError) {
+      return {
+        ...draft,
+        predictors: normalizedPredictors,
+        construct: normalizedConstruct,
+        terms: [],
+        centeringMethod: "none",
+        validationMessage: {
+          code: "tooManyTerms",
+          detail: error.message,
+        },
+      };
+    }
+    throw error;
+  }
+}
+
+function termLabel(term: FitModelTerm): string {
+  if (term.kind === "main") {
+    return term.columnNames[0];
+  }
+  if (term.kind === "power") {
+    return `${term.columnNames[0]}^2`;
+  }
+  return term.columnNames.join("*");
+}
+
+function termEquals(left: FitModelTerm, right: FitModelTerm): boolean {
+  if (left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === "power" && right.kind === "power" && left.exponent !== right.exponent) {
+    return false;
+  }
+  if (left.columnNames.length !== right.columnNames.length) {
+    return false;
+  }
+  for (let index = 0; index < left.columnNames.length; index += 1) {
+    if (left.columnNames[index] !== right.columnNames[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isContinuousField(field: FieldRef): boolean {
   return field.type === "continuous";
 }
@@ -332,7 +495,7 @@ export function assignFitModelResponse(draft: FitModelDraft, fieldInfo: FitModel
     };
   }
 
-  if (draft.mainEffects.some((entry) => entry.name === field.name)) {
+  if (draft.predictors.some((entry) => entry.name === field.name)) {
     return {
       ...draft,
       validationMessage: {
@@ -371,15 +534,25 @@ function addMainEffect(draft: FitModelDraft, fieldInfo: FitModelFieldInfo): FitM
     };
   }
 
+  const predictors = [...draft.predictors, cloneField(field)];
+  if (draft.construct.kind !== "manual") {
+    return applyConstruct(draft, draft.construct, predictors);
+  }
+
+  const terms = canonicalizeFitModelTerms([
+    ...draft.terms,
+    { kind: "main", columnNames: [field.name] },
+  ]);
   return {
     ...draft,
-    mainEffects: [...draft.mainEffects, cloneField(field)],
+    predictors,
+    terms,
     validationMessage: null,
   };
 }
 
 function removeMainEffect(draft: FitModelDraft, fieldName: string): FitModelDraft {
-  if (draft.mainEffects.length <= 1) {
+  if (draft.predictors.length <= 1) {
     return {
       ...draft,
       validationMessage: {
@@ -389,8 +562,9 @@ function removeMainEffect(draft: FitModelDraft, fieldName: string): FitModelDraf
     };
   }
 
-  const requiredBy = draft.interactions.filter(([leftName, rightName]) => (
-    leftName === fieldName || rightName === fieldName
+  const requiredBy = draft.terms.filter((term) => (
+    (term.kind === "interaction" && term.columnNames.includes(fieldName))
+    || (term.kind === "power" && term.columnNames[0] === fieldName)
   ));
   if (requiredBy.length > 0) {
     return {
@@ -398,14 +572,23 @@ function removeMainEffect(draft: FitModelDraft, fieldName: string): FitModelDraf
       validationMessage: {
         code: "mainRequiredByInteraction",
         fieldName,
-        interactionLabels: requiredBy.map(([leftName, rightName]) => `${leftName}*${rightName}`),
+        interactionLabels: requiredBy.map((term) => termLabel(term)),
       },
     };
   }
 
+  const predictors = draft.predictors.filter((field) => field.name !== fieldName);
+  if (draft.construct.kind !== "manual") {
+    return applyConstruct(draft, draft.construct, predictors);
+  }
+
+  const terms = draft.terms.filter((term) => !(
+    term.kind === "main" && term.columnNames[0] === fieldName
+  ));
   return {
     ...draft,
-    mainEffects: draft.mainEffects.filter((field) => field.name !== fieldName),
+    predictors,
+    terms,
     validationMessage: null,
   };
 }
@@ -420,7 +603,7 @@ function addInteraction(draft: FitModelDraft, leftName: string, rightName: strin
     };
   }
 
-  const mainNames = new Set(draft.mainEffects.map((field) => field.name));
+  const mainNames = mainNamesFromTerms(draft.terms);
   if (!mainNames.has(leftName) || !mainNames.has(rightName)) {
     return {
       ...draft,
@@ -431,27 +614,43 @@ function addInteraction(draft: FitModelDraft, leftName: string, rightName: strin
   }
 
   const nextInteraction = canonicalInteraction(leftName, rightName);
-  if (draft.interactions.some(([left, right]) => left === nextInteraction[0] && right === nextInteraction[1])) {
+  if (draft.terms.some((term) => (
+    term.kind === "interaction"
+    && term.columnNames.length === 2
+    && canonicalInteraction(term.columnNames[0], term.columnNames[1])[0] === nextInteraction[0]
+    && canonicalInteraction(term.columnNames[0], term.columnNames[1])[1] === nextInteraction[1]
+  ))) {
     return {
       ...draft,
       validationMessage: null,
     };
   }
 
+  const terms = canonicalizeFitModelTerms([
+    ...draft.terms,
+    { kind: "interaction", columnNames: nextInteraction },
+  ]);
   return {
     ...draft,
-    interactions: [...draft.interactions, nextInteraction],
+    construct: { kind: "manual" },
+    terms,
     validationMessage: null,
   };
 }
 
 function removeInteraction(draft: FitModelDraft, leftName: string, rightName: string): FitModelDraft {
   const target = canonicalInteraction(leftName, rightName);
-  const interactions = draft.interactions.filter(([left, right]) => !(left === target[0] && right === target[1]));
-  const centeringMethod = interactions.length === 0 ? "none" : draft.centeringMethod;
+  const terms = draft.terms.filter((term) => !(
+    term.kind === "interaction"
+    && term.columnNames.length === 2
+    && canonicalInteraction(term.columnNames[0], term.columnNames[1])[0] === target[0]
+    && canonicalInteraction(term.columnNames[0], term.columnNames[1])[1] === target[1]
+  ));
+  const centeringMethod = hasInteractionTerms(terms) ? draft.centeringMethod : "none";
   return {
     ...draft,
-    interactions,
+    construct: { kind: "manual" },
+    terms,
     centeringMethod,
     validationMessage: null,
   };
@@ -459,28 +658,32 @@ function removeInteraction(draft: FitModelDraft, leftName: string, rightName: st
 
 function applyDegreeMacro(draft: FitModelDraft, degree: 1 | 2, fields: readonly FieldRef[]): FitModelDraft {
   const predictors = fields.filter((field) => field.type === "continuous" && field.name !== draft.response?.name);
-  const nextTerms = applyFactorialDegree(predictors, degree);
-  const mainEffects = nextTerms
-    .filter((term) => term.kind === "main")
-    .map((term) => ({ name: term.columnNames[0], type: "continuous" as const }));
-  const interactions: Array<[string, string]> = [];
-  for (const term of nextTerms) {
-    if (term.kind !== "interaction") {
-      continue;
-    }
-    interactions.push(canonicalInteraction(term.columnNames[0], term.columnNames[1]));
+  const nextDraft: FitModelDraft = {
+    ...draft,
+    predictors: normalizePredictors(predictors, draft.response),
+  };
+  return applyConstruct(nextDraft, { kind: "factorialToDegree", degree });
+}
+
+function removeTerm(draft: FitModelDraft, target: FitModelTerm): FitModelDraft {
+  const canonicalTarget = canonicalizeFitModelTerms([target])[0];
+  if (canonicalTarget.kind === "main") {
+    return removeMainEffect(draft, canonicalTarget.columnNames[0]);
   }
 
+  const terms = draft.terms.filter((term) => !termEquals(term, canonicalTarget));
+  const centeringMethod = hasInteractionTerms(terms) ? draft.centeringMethod : "none";
   return {
     ...draft,
-    mainEffects,
-    interactions,
+    construct: { kind: "manual" },
+    terms,
+    centeringMethod,
     validationMessage: null,
   };
 }
 
 function setCenteringMethod(draft: FitModelDraft, centeringMethod: FitModelCenteringMethod): FitModelDraft {
-  if (centeringMethod === "mean" && draft.interactions.length === 0) {
+  if (centeringMethod === "mean" && !hasInteractionTerms(draft.terms)) {
     return {
       ...draft,
       centeringMethod: "none",
@@ -506,13 +709,17 @@ export function reduceFitModelDraft(draft: FitModelDraft, action: FitModelDraftA
         validationMessage: null,
       };
     case "toggleMainEffect": {
-      const exists = draft.mainEffects.some((field) => field.name === action.field.name);
+      const exists = draft.predictors.some((field) => field.name === action.field.name);
       return exists ? removeMainEffect(draft, action.field.name) : addMainEffect(draft, action.field);
     }
     case "addInteraction":
       return addInteraction(draft, action.leftName, action.rightName);
     case "removeInteraction":
       return removeInteraction(draft, action.leftName, action.rightName);
+    case "removeTerm":
+      return removeTerm(draft, action.term);
+    case "setConstruct":
+      return applyConstruct(draft, action.construct);
     case "applyDegree":
       return applyDegreeMacro(draft, action.degree, action.fields);
     case "setCenteringMethod":
@@ -528,20 +735,7 @@ export function reduceFitModelDraft(draft: FitModelDraft, action: FitModelDraftA
 }
 
 export function termsFromDraft(draft: FitModelDraft): FitModelTerm[] {
-  const terms: FitModelTerm[] = [];
-  for (const field of draft.mainEffects) {
-    terms.push({
-      kind: "main",
-      columnNames: [field.name],
-    });
-  }
-  for (const [leftName, rightName] of draft.interactions) {
-    terms.push({
-      kind: "interaction",
-      columnNames: canonicalInteraction(leftName, rightName),
-    });
-  }
-  return terms;
+  return canonicalizeFitModelTerms(draft.terms);
 }
 
 export function canCreateFitModel(draft: FitModelDraft): boolean {
@@ -549,19 +743,19 @@ export function canCreateFitModel(draft: FitModelDraft): boolean {
     return false;
   }
 
-  const terms = termsFromDraft(draft);
+  const terms = draft.terms;
   if (terms.length === 0) {
     return false;
   }
 
-  if (draft.centeringMethod === "mean" && draft.interactions.length === 0) {
+  if (draft.centeringMethod === "mean" && !hasInteractionTerms(terms)) {
     return false;
   }
 
   const validation = validateFitModelDefinition({
     response: draft.response,
     terms,
-    fields: [draft.response, ...draft.mainEffects],
+    fields: [draft.response, ...draft.predictors],
   });
 
   return validation.ok && fitModelParameterCount(terms) >= 2;

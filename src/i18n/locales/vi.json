@@ -1012,5 +1012,26 @@
       "metaError": "Không tải được metadata cột",
       "progress": "Tiến độ tải dữ liệu đồ thị"
     }
+  },
+  "fitModel": {
+    "dialog": {
+      "construct": "Cấu trúc",
+      "constructManual": "Thủ công",
+      "constructFactorial": "Giai thừa đến bậc",
+      "constructResponseSurface": "Bề mặt đáp ứng",
+      "degreeInputLabel": "Bậc",
+      "termCount": "{{count}} / 256 số hạng",
+      "tooManyTermsFormula": "Cấu trúc hiện có {{count}} số hạng, vượt quá 256. {{formula}}",
+      "centerInteractions": "Tâm hóa tương tác",
+      "currentTerms": "Số hạng mô hình hiện tại",
+      "searchTerms": "Tìm số hạng",
+      "parameterCount": "{{count}} tham số",
+      "termsEmpty": "Chưa chọn số hạng mô hình.",
+      "noTermMatch": "Không có số hạng nào khớp với tìm kiếm hiện tại.",
+      "termKindMain": "Main",
+      "termKindInteraction": "Tương tác",
+      "termKindPower": "Lũy thừa",
+      "removeTerm": "Xóa số hạng {{term}}"
+    }
   }
 }

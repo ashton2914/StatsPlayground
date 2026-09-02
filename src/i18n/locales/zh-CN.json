@@ -1028,5 +1028,26 @@
       "metaError": "列元数据不可用",
       "progress": "图形数据加载进度"
     }
+  },
+  "fitModel": {
+    "dialog": {
+      "construct": "构建方式",
+      "constructManual": "手工",
+      "constructFactorial": "阶乘到阶数",
+      "constructResponseSurface": "响应曲面",
+      "degreeInputLabel": "阶数",
+      "termCount": "{{count}} / 256 项",
+      "tooManyTermsFormula": "当前构建有 {{count}} 项，超过 256。{{formula}}",
+      "centerInteractions": "中心化交互项",
+      "currentTerms": "当前模型项",
+      "searchTerms": "搜索模型项",
+      "parameterCount": "{{count}} 个参数",
+      "termsEmpty": "尚未选择模型项。",
+      "noTermMatch": "没有模型项匹配当前搜索。",
+      "termKindMain": "主效应",
+      "termKindInteraction": "交互",
+      "termKindPower": "幂项",
+      "removeTerm": "移除模型项 {{term}}"
+    }
   }
 }
