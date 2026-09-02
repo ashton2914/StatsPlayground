@@ -1016,6 +1016,7 @@
   "fitModel": {
     "dialog": {
       "construct": "Cấu trúc",
+      "constructFullFactorial": "Giai th\u1eeba \u0111\u1ea7y \u0111\u1ee7",
       "constructManual": "Thủ công",
       "constructFactorial": "Giai thừa đến bậc",
       "constructResponseSurface": "Bề mặt đáp ứng",

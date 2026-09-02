@@ -401,13 +401,13 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
                 <div className="sp-fit-model-construct-segmented" role="group" aria-label={t("fitModel.dialog.construct", { defaultValue: "Construct" })}>
                   <button
                     type="button"
-                    className={`sp-dialog-btn${draft.construct.kind === "manual" ? " sp-dialog-btn-primary" : ""}`}
+                    className={`sp-dialog-btn${draft.construct.kind === "fullFactorial" ? " sp-dialog-btn-primary" : ""}`}
                     onClick={() => setDraft((current) => reduceFitModelDraft(current, {
                       type: "setConstruct",
-                      construct: { kind: "manual" },
+                      construct: { kind: "fullFactorial" },
                     }))}
                   >
-                    {t("fitModel.dialog.constructManual", { defaultValue: "Manual" })}
+                    {t("fitModel.dialog.constructFullFactorial", { defaultValue: "Full Factorial" })}
                   </button>
                   <button
                     type="button"

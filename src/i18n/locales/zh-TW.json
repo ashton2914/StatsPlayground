@@ -1017,6 +1017,7 @@
   "fitModel": {
     "dialog": {
       "construct": "建構方式",
+      "constructFullFactorial": "\u5168\u56e0\u5b50",
       "constructManual": "手動",
       "constructFactorial": "階乘到階數",
       "constructResponseSurface": "反應曲面",

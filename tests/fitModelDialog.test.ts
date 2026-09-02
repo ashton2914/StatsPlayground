@@ -322,6 +322,12 @@ const degreeThree = reduceFitModelDraft(withThreePredictors, {
 });
 assert.equal(degreeThree.terms.length, 7);
 
+const fullFactorial = reduceFitModelDraft(withThreePredictors, {
+  type: "setConstruct",
+  construct: { kind: "fullFactorial" },
+});
+assert.equal(fullFactorial.terms.length, 7);
+
 const invalidCentering = reduceFitModelDraft(degreeOne, {
   type: "setCenteringMethod",
   centeringMethod: "mean",
@@ -381,13 +387,15 @@ assert.equal(
   "FitModelRoleDialog must keep keyboard assignment shortcuts",
 );
 assert.equal(
-  fitModelRoleDialogSource.includes("fitModel.dialog.constructManual")
+  fitModelRoleDialogSource.includes("fitModel.dialog.constructFullFactorial")
+    && fitModelRoleDialogSource.includes("construct: { kind: \"fullFactorial\" }")
+    && fitModelRoleDialogSource.includes("draft.construct.kind === \"fullFactorial\"")
     && fitModelRoleDialogSource.includes("fitModel.dialog.constructFactorial")
     && fitModelRoleDialogSource.includes("fitModel.dialog.constructResponseSurface")
     && fitModelRoleDialogSource.includes("fitModel.dialog.termCount")
     && fitModelRoleDialogSource.includes("fitModel.dialog.searchTerms"),
   true,
-  "FitModelRoleDialog must render construct segmented controls, degree input, term count, and searchable term list",
+  "FitModelRoleDialog must render Full Factorial / Factorial to Degree / Response Surface construct controls, degree input, term count, and searchable term list",
 );
 assert.equal(
   !fitModelRoleDialogSource.includes("fitModel.dialog.twoWayOnly")

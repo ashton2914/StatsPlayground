@@ -1032,6 +1032,7 @@
   "fitModel": {
     "dialog": {
       "construct": "Construct",
+      "constructFullFactorial": "Full Factorial",
       "constructManual": "Manual",
       "constructFactorial": "Factorial to Degree",
       "constructResponseSurface": "Response Surface",
