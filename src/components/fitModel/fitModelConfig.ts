@@ -58,6 +58,13 @@ function canonicalInteractionColumns(columnNames: readonly string[]): string[] {
   return [...columnNames].sort((left, right) => left.localeCompare(right));
 }
 
+function asInteractionColumns(columnNames: readonly string[]): [string, string, ...string[]] {
+  if (columnNames.length < 2) {
+    throw new RangeError("interaction requires at least two columns");
+  }
+  return [...columnNames] as [string, string, ...string[]];
+}
+
 export function canonicalizeFitModelTerms(terms: readonly FitModelTerm[]): FitModelTerm[] {
   return terms.map((term) => {
     if (term.kind === "main") {
@@ -71,13 +78,13 @@ export function canonicalizeFitModelTerms(terms: readonly FitModelTerm[]): FitMo
       return {
         kind: "power",
         columnNames: [...term.columnNames] as [string],
-        exponent: term.exponent,
+        exponent: 2,
       };
     }
 
     return {
       kind: "interaction",
-      columnNames: canonicalInteractionColumns(term.columnNames),
+      columnNames: asInteractionColumns(canonicalInteractionColumns(term.columnNames)),
     };
   });
 }
@@ -228,12 +235,13 @@ export function validateFitModelDefinition(input: {
       }
     }
 
-    const key = fitModelTermIdentityKey({ kind: "interaction", columnNames: normalizedColumns });
+    const interactionColumns = asInteractionColumns(normalizedColumns);
+    const key = fitModelTermIdentityKey({ kind: "interaction", columnNames: interactionColumns });
     if (seen.has(key)) {
       return {
         ok: false,
         reason: "duplicateTerm",
-        termKey: termKey({ kind: "interaction", columnNames: normalizedColumns }),
+        termKey: termKey({ kind: "interaction", columnNames: interactionColumns }),
       };
     }
     seen.add(key);

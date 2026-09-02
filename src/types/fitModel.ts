@@ -9,12 +9,10 @@ export type FitModelConstruct =
 
 type FitModelStrictTerm =
   | { kind: "main"; columnNames: [string] }
-  | { kind: "interaction"; columnNames: string[] }
-  | { kind: "power"; columnNames: [string]; exponent?: 2 };
+  | { kind: "interaction"; columnNames: [string, string, ...string[]] }
+  | { kind: "power"; columnNames: [string]; exponent: 2 };
 
-export type FitModelTerm =
-  | FitModelStrictTerm
-  | { kind: "main" | "interaction" | "power"; columnNames: string[]; exponent?: 2 };
+export type FitModelTerm = FitModelStrictTerm;
 
 export type FitModelTermKind = FitModelTerm["kind"];
 

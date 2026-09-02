@@ -10,11 +10,52 @@ import {
   FitModelValidationError,
   validateFitModelDefinition,
 } from "../src/components/fitModel/fitModelConfig.ts";
+import type { FitModelTerm } from "../src/types/fitModel.ts";
 
 const response = { name: "Yield", type: "continuous" as const };
 const temperature = { name: "Temperature", type: "continuous" as const };
 const pressure = { name: "Pressure", type: "continuous" as const };
 const batch = { name: "Batch", type: "nominal" as const };
+
+const compileTimeMainTerm = {
+  kind: "main",
+  columnNames: ["Temperature"],
+} satisfies FitModelTerm;
+assert.equal(compileTimeMainTerm.kind, "main");
+
+const compileTimeInteractionTerm = {
+  kind: "interaction",
+  columnNames: ["Temperature", "Pressure"],
+} satisfies FitModelTerm;
+assert.equal(compileTimeInteractionTerm.kind, "interaction");
+
+const compileTimePowerTerm = {
+  kind: "power",
+  columnNames: ["Temperature"],
+  exponent: 2,
+} satisfies FitModelTerm;
+assert.equal(compileTimePowerTerm.kind, "power");
+
+// @ts-expect-error main must have exactly one column at compile time
+const compileTimeInvalidMainArity: FitModelTerm = {
+  kind: "main",
+  columnNames: ["Temperature", "Pressure"],
+};
+assert.equal(compileTimeInvalidMainArity.kind, "main");
+
+// @ts-expect-error interaction must have at least two columns at compile time
+const compileTimeInvalidInteractionArity: FitModelTerm = {
+  kind: "interaction",
+  columnNames: ["Temperature"],
+};
+assert.equal(compileTimeInvalidInteractionArity.kind, "interaction");
+
+// @ts-expect-error power exponent must be required and equal to 2 at compile time
+const compileTimeMissingPowerExponent: FitModelTerm = {
+  kind: "power",
+  columnNames: ["Temperature"],
+};
+assert.equal(compileTimeMissingPowerExponent.kind, "power");
 
 assert.deepEqual(canonicalInteraction("Temperature", "Pressure"), ["Pressure", "Temperature"]);
 assert.deepEqual(
@@ -192,7 +233,12 @@ assert.deepEqual(
 assert.deepEqual(
   validateFitModelDefinition({
     response,
-    terms: [{ kind: "main", columnNames: ["Temperature", "Pressure"] }],
+    terms: [
+      {
+        kind: "main",
+        columnNames: ["Temperature", "Pressure"],
+      } as unknown as FitModelTerm,
+    ],
   }),
   { ok: false, reason: "invalidTermArity", termKind: "main" },
 );

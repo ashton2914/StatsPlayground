@@ -73,10 +73,27 @@ export interface FitModelUndoTransitionResult {
 }
 
 function cloneTerms(terms: readonly FitModelTerm[]): FitModelTerm[] {
-  return terms.map((term) => ({
-    kind: term.kind,
-    columnNames: [...term.columnNames],
-  }));
+  return terms.map((term) => {
+    if (term.kind === "main") {
+      return {
+        kind: "main",
+        columnNames: [term.columnNames[0]],
+      };
+    }
+
+    if (term.kind === "power") {
+      return {
+        kind: "power",
+        columnNames: [term.columnNames[0]],
+        exponent: 2,
+      };
+    }
+
+    return {
+      kind: "interaction",
+      columnNames: [...term.columnNames] as [string, string, ...string[]],
+    };
+  });
 }
 
 export function createFitModelDefinitionConfig(input: FitModelDefinitionConfig): FitModelDefinitionConfig {

@@ -104,7 +104,10 @@ export function buildFactorialToDegreeTerms(
         terms.push({ kind: "main", columnNames: [columns[0]] });
         return;
       }
-      terms.push({ kind: "interaction", columnNames: columns });
+      terms.push({
+        kind: "interaction",
+        columnNames: columns as [string, string, ...string[]],
+      });
     });
   }
   return terms;

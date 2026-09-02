@@ -60,7 +60,10 @@ function cloneTerms(terms: readonly FitModelTerm[]): FitModelTerm[] {
     if (term.kind === "power") {
       return { kind: "power", columnNames: [term.columnNames[0]], exponent: 2 };
     }
-    return { kind: "interaction", columnNames: [...term.columnNames] };
+    return {
+      kind: "interaction",
+      columnNames: [...term.columnNames] as [string, string, ...string[]],
+    };
   });
 }
 
@@ -175,7 +178,7 @@ function parseTerm(value: unknown): FitModelTerm | null {
 
   return {
     kind: "interaction",
-    columnNames: [...columnNames],
+    columnNames: [...columnNames] as [string, string, ...string[]],
   };
 }
 
