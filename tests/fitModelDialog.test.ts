@@ -123,7 +123,7 @@ let draft = createFitModelDraft();
 assert.deepEqual(draft, {
   response: null,
   predictors: [],
-  construct: { kind: "manual" },
+  construct: { kind: "fullFactorial" },
   terms: [],
   centeringMethod: "none",
   validationMessage: null,
@@ -327,6 +327,13 @@ const fullFactorial = reduceFitModelDraft(withThreePredictors, {
   construct: { kind: "fullFactorial" },
 });
 assert.equal(fullFactorial.terms.length, 7);
+
+const customizedFullFactorial = reduceFitModelDraft(fullFactorial, {
+  type: "removeTerm",
+  term: { kind: "interaction", columnNames: ["Flow", "Pressure", "Temperature"] },
+});
+assert.deepEqual(customizedFullFactorial.construct, { kind: "manual" });
+assert.equal(customizedFullFactorial.terms.length, 6);
 
 const invalidCentering = reduceFitModelDraft(degreeOne, {
   type: "setCenteringMethod",

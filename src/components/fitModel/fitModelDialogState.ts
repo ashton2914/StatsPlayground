@@ -95,7 +95,7 @@ export function createFitModelDraft(): FitModelDraft {
   return {
     response: null,
     predictors: [],
-    construct: { kind: "manual" },
+    construct: { kind: "fullFactorial" },
     terms: [],
     centeringMethod: "none",
     validationMessage: null,
