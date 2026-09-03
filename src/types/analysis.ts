@@ -32,3 +32,8 @@ export interface AnalysisDocument {
   createdAt: string;
   updatedAt: string;
 }
+
+export type AnalysisDocumentPatch = Partial<Pick<
+  AnalysisDocument,
+  "name" | "definition" | "presentation" | "source" | "configRevision" | "updatedAt"
+>>;

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import { useProjectStore } from "@/stores/useProjectStore";
-import type { AnalysisDocument } from "@/types/analysis";
+import type { AnalysisDocument, AnalysisDocumentPatch } from "@/types/analysis";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 import { createNamedDocumentHelpers, removeDocumentById, updateDocumentById } from "./documentStore";
 
@@ -9,7 +9,7 @@ interface AnalysisStore {
   items: AnalysisDocument[];
   counter: number;
   addAnalysis: (analysis: AnalysisDocument) => void;
-  updateAnalysis: (id: string, patch: Partial<AnalysisDocument>) => void;
+  updateAnalysis: (id: string, patch: AnalysisDocumentPatch) => void;
   removeAnalysis: (id: string) => void;
   loadAnalyses: (items: AnalysisDocument[]) => void;
   reset: () => void;
@@ -17,6 +17,18 @@ interface AnalysisStore {
 }
 
 const ANALYSIS_HELPERS = createNamedDocumentHelpers("Analysis");
+
+function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentPatch): AnalysisDocument {
+  return {
+    ...analysis,
+    ...(patch.name !== undefined ? { name: patch.name } : {}),
+    ...(patch.definition !== undefined ? { definition: patch.definition } : {}),
+    ...(patch.presentation !== undefined ? { presentation: patch.presentation } : {}),
+    ...(patch.source !== undefined ? { source: patch.source } : {}),
+    ...(patch.configRevision !== undefined ? { configRevision: patch.configRevision } : {}),
+    ...(patch.updatedAt !== undefined ? { updatedAt: patch.updatedAt } : {}),
+  };
+}
 
 export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
   items: [],
@@ -31,7 +43,7 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
   updateAnalysis: (id, patch) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((state) => {
-      const items = updateDocumentById(state.items, id, (analysis) => ({ ...analysis, ...patch }));
+      const items = updateDocumentById(state.items, id, (analysis) => applyAnalysisPatch(analysis, patch));
       return { items, counter: Math.max(state.counter, ANALYSIS_HELPERS.maxSuffix(items)) };
     });
   },
