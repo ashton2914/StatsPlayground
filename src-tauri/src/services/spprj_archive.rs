@@ -1318,10 +1318,7 @@ pub fn build_bundle_with_workflows(
         .into_iter()
         .map(strip_transient_distribution_fields)
         .collect();
-    let mut analyses: Vec<Value> = analyses
-        .into_iter()
-        .map(strip_transient_analysis_fields)
-        .collect();
+    let mut analyses = analyses;
     let mut tabulates = tabulates;
     let mut snapshots = snapshots;
     let workflows = workflows;
@@ -2079,18 +2076,6 @@ fn strip_transient_distribution_fields(value: Value) -> Value {
     match value {
         Value::Object(mut map) => {
             for field in ["result", "reportResult", "graphFrames", "frames", "snapshot", "snapshots", "runState"] {
-                map.remove(field);
-            }
-            Value::Object(map)
-        }
-        other => other,
-    }
-}
-
-fn strip_transient_analysis_fields(value: Value) -> Value {
-    match value {
-        Value::Object(mut map) => {
-            for field in ["markdown", "reportBlocks", "graphFrames", "result"] {
                 map.remove(field);
             }
             Value::Object(map)
@@ -3276,21 +3261,7 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
         .get("analysis")
         .and_then(Value::as_object)
         .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.analysis is missing")))?;
-    if analysis.get("confidenceLevel").and_then(Value::as_f64).is_none() {
-        return Err(AppError::FileIO(format!(
-            "{context} analysis definition.analysis.confidenceLevel is missing"
-        )));
-    }
-    if analysis.get("specLimits").and_then(Value::as_object).is_none() {
-        return Err(AppError::FileIO(format!(
-            "{context} analysis definition.analysis.specLimits is missing"
-        )));
-    }
-    if analysis.get("fitDistributions").and_then(Value::as_array).is_none() {
-        return Err(AppError::FileIO(format!(
-            "{context} analysis definition.analysis.fitDistributions is missing"
-        )));
-    }
+    validate_distribution_analysis_config(analysis, &format!("{context} analysis definition.analysis"))?;
 
     let graphs = definition
         .get("graphs")
@@ -3301,24 +3272,7 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
             .get(key)
             .and_then(Value::as_object)
             .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs.{key} is missing")))?;
-        require_non_empty_string(graph.get("mode"), &format!("{context} analysis definition.graphs.{key}.mode"))?;
-        let mode_states = graph
-            .get("modeStates")
-            .and_then(Value::as_object)
-            .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs.{key}.modeStates is missing")))?;
-        let two_d = mode_states
-            .get("twoD")
-            .and_then(Value::as_object)
-            .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs.{key}.modeStates.twoD is missing")))?;
-        if two_d.get("encoding").and_then(Value::as_object).is_none()
-            || two_d.get("multiX").and_then(Value::as_array).is_none()
-            || two_d.get("multiY").and_then(Value::as_array).is_none()
-            || two_d.get("elements").and_then(Value::as_array).is_none()
-        {
-            return Err(AppError::FileIO(format!(
-                "{context} analysis definition.graphs.{key}.modeStates.twoD.elements is malformed"
-            )));
-        }
+        validate_embedded_graph_config(graph, &format!("{context} analysis definition.graphs.{key}"))?;
     }
 
     let presentation = object
@@ -3345,11 +3299,7 @@ fn validate_field_ref_array(value: Option<&Value>, context: &str) -> Result<(), 
         .and_then(Value::as_array)
         .ok_or_else(|| AppError::FileIO(format!("{context} must be an array")))?;
     for item in items {
-        let object = item
-            .as_object()
-            .ok_or_else(|| AppError::FileIO(format!("{context} must contain objects")))?;
-        require_non_empty_string(object.get("name"), &format!("{context}.name"))?;
-        require_non_empty_string(object.get("type"), &format!("{context}.type"))?;
+        validate_field_ref_value(item, context)?;
     }
     Ok(())
 }
@@ -3357,15 +3307,197 @@ fn validate_field_ref_array(value: Option<&Value>, context: &str) -> Result<(), 
 fn validate_optional_field_ref(value: Option<&Value>, context: &str) -> Result<(), AppError> {
     match value {
         None | Some(Value::Null) => Ok(()),
-        Some(item) => {
-            let object = item
-                .as_object()
-                .ok_or_else(|| AppError::FileIO(format!("{context} must be an object")))?;
-            require_non_empty_string(object.get("name"), &format!("{context}.name"))?;
-            require_non_empty_string(object.get("type"), &format!("{context}.type"))?;
-            Ok(())
+        Some(item) => validate_field_ref_value(item, context),
+    }
+}
+
+fn validate_field_ref_value(value: &Value, context: &str) -> Result<(), AppError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::FileIO(format!("{context} must contain objects")))?;
+    require_non_empty_string(object.get("name"), &format!("{context}.name"))?;
+    let field_type = require_non_empty_string(object.get("type"), &format!("{context}.type"))?;
+    if !matches!(field_type, "continuous" | "nominal" | "ordinal" | "datetime" | "id") {
+        return Err(AppError::FileIO(format!(
+            "{context}.type must be a supported field type"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_distribution_analysis_config(
+    analysis: &serde_json::Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    let confidence_level = analysis
+        .get("confidenceLevel")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0 && *value < 1.0)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context}.confidenceLevel must be a finite number between 0 and 1"
+            ))
+        })?;
+    let _ = confidence_level;
+
+    let spec_limits = analysis
+        .get("specLimits")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context}.specLimits is missing")))?;
+    for (field_name, limits) in spec_limits {
+        validate_spec_limit_override(limits, &format!("{context}.specLimits.{field_name}"))?;
+    }
+
+    let fit_distributions = analysis
+        .get("fitDistributions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::FileIO(format!("{context}.fitDistributions is missing")))?;
+    for fit in fit_distributions {
+        let fit_id = fit.as_str().ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context}.fitDistributions must contain known distribution ids"
+            ))
+        })?;
+        if !matches!(fit_id, "normal" | "lognormal" | "exponential" | "gamma" | "weibull") {
+            return Err(AppError::FileIO(format!(
+                "{context}.fitDistributions contains unsupported distribution id {fit_id}"
+            )));
         }
     }
+
+    Ok(())
+}
+
+fn validate_spec_limit_override(value: &Value, context: &str) -> Result<(), AppError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::FileIO(format!("{context} must be an object")))?;
+    for key in ["lsl", "target", "usl"] {
+        validate_nullable_finite_number(object.get(key), &format!("{context}.{key}"))?;
+    }
+    Ok(())
+}
+
+fn validate_nullable_finite_number(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    match value {
+        Some(Value::Null) => Ok(()),
+        Some(number) if number.as_f64().is_some_and(|raw| raw.is_finite()) => Ok(()),
+        Some(_) => Err(AppError::FileIO(format!(
+            "{context} must be null or a finite number"
+        ))),
+        None => Err(AppError::FileIO(format!("{context} is missing"))),
+    }
+}
+
+fn validate_embedded_graph_config(
+    graph: &serde_json::Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    let mode = require_non_empty_string(graph.get("mode"), &format!("{context}.mode"))?;
+    if !matches!(mode, "2d" | "3d" | "multivariate") {
+        return Err(AppError::FileIO(format!(
+            "{context}.mode must be one of 2d, 3d, or multivariate"
+        )));
+    }
+    let mode_states = graph
+        .get("modeStates")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context}.modeStates is missing")))?;
+    validate_graph_2d_state(mode_states.get("twoD"), &format!("{context}.modeStates.twoD"))?;
+    validate_graph_3d_state(mode_states.get("threeD"), &format!("{context}.modeStates.threeD"))?;
+    validate_multivariate_graph_state(
+        mode_states.get("multivariate"),
+        &format!("{context}.modeStates.multivariate"),
+    )?;
+    Ok(())
+}
+
+fn validate_graph_2d_state(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    let object = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} is missing")))?;
+    validate_field_ref_record(object.get("encoding"), &format!("{context}.encoding"))?;
+    validate_field_ref_array(object.get("multiX"), &format!("{context}.multiX"))?;
+    validate_field_ref_array(object.get("multiY"), &format!("{context}.multiY"))?;
+    validate_graph_elements(object.get("elements"), &format!("{context}.elements"))?;
+    require_finite_number(object.get("smootherLambda"), &format!("{context}.smootherLambda"))?;
+    Ok(())
+}
+
+fn validate_graph_3d_state(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    let object = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} is missing")))?;
+    validate_field_ref_record(object.get("encoding"), &format!("{context}.encoding"))?;
+    validate_graph_elements(object.get("elements"), &format!("{context}.elements"))?;
+    require_finite_number(object.get("smootherLambda"), &format!("{context}.smootherLambda"))?;
+    Ok(())
+}
+
+fn validate_multivariate_graph_state(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    let object = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} is missing")))?;
+    validate_field_ref_array(object.get("columns"), &format!("{context}.columns"))?;
+    if object.get("chartType").and_then(Value::as_str) != Some("correlationMatrix") {
+        return Err(AppError::FileIO(format!(
+            "{context}.chartType must be correlationMatrix"
+        )));
+    }
+    let correlation_method = require_non_empty_string(
+        object.get("correlationMethod"),
+        &format!("{context}.correlationMethod"),
+    )?;
+    if !matches!(correlation_method, "pearson" | "spearman" | "kendall") {
+        return Err(AppError::FileIO(format!(
+            "{context}.correlationMethod must be a supported correlation method"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_field_ref_record(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    let object = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} must be an object")))?;
+    for (slot, field) in object {
+        validate_field_ref_value(field, &format!("{context}.{slot}"))?;
+    }
+    Ok(())
+}
+
+fn validate_graph_elements(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    let elements = value
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::FileIO(format!("{context} must be an array")))?;
+    for (index, element) in elements.iter().enumerate() {
+        let object = element
+            .as_object()
+            .ok_or_else(|| AppError::FileIO(format!("{context}[{index}] must be an object")))?;
+        require_non_empty_string(object.get("kind"), &format!("{context}[{index}].kind"))?;
+        if let Some(enabled) = object.get("enabled") {
+            if enabled.as_bool().is_none() {
+                return Err(AppError::FileIO(format!(
+                    "{context}[{index}].enabled must be a boolean"
+                )));
+            }
+        }
+        if let Some(options) = object.get("options") {
+            if options.as_object().is_none() {
+                return Err(AppError::FileIO(format!(
+                    "{context}[{index}].options must be an object"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_finite_number(value: Option<&Value>, context: &str) -> Result<f64, AppError> {
+    value
+        .and_then(Value::as_f64)
+        .filter(|number| number.is_finite())
+        .ok_or_else(|| AppError::FileIO(format!("{context} must be a finite number")))
 }
 
 fn require_non_empty_string<'a>(value: Option<&'a Value>, context: &str) -> Result<&'a str, AppError> {
@@ -4694,11 +4826,7 @@ mod tests {
     #[test]
     fn analysis_document_round_trip_requires_v4_analysis_entries_and_definition_only_body() {
         let path = temp_project_path("analysis-round-trip");
-        let mut analysis = analysis_doc("analysis-1", "DIM1 Analysis");
-        analysis["markdown"] = json!("# transient");
-        analysis["reportBlocks"] = json!([{"kind": "summary"}]);
-        analysis["graphFrames"] = json!({"overview": []});
-        analysis["result"] = json!({"status": "ready"});
+        let analysis = analysis_doc("analysis-1", "DIM1 Analysis");
         let folders = HashMap::from([("analysis-1".to_string(), "Analyses/Sample".to_string())]);
 
         let bundle = super::build_bundle_with_workflows(
@@ -4736,10 +4864,7 @@ mod tests {
         assert_eq!(loaded.manifest.analyses[0].kind, DocumentKind::Analysis);
         assert_eq!(loaded.manifest.analysis_folders, folders);
         assert_eq!(loaded.analyses.len(), 1);
-        assert_eq!(loaded.analyses[0].get("markdown"), None);
-        assert_eq!(loaded.analyses[0].get("reportBlocks"), None);
-        assert_eq!(loaded.analyses[0].get("graphFrames"), None);
-        assert_eq!(loaded.analyses[0].get("result"), None);
+        assert_eq!(loaded.analyses[0], analysis);
 
         let _ = std::fs::remove_file(path);
     }
@@ -4759,6 +4884,102 @@ mod tests {
             validate_analysis_value(&malformed, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("elements")
         ));
+
+        let mut invalid_spec_limits = analysis_doc("analysis-1", "DIM1 Analysis");
+        invalid_spec_limits["definition"]["analysis"]["specLimits"] = json!({
+            "DIM1": { "lsl": 1, "usl": 3 }
+        });
+        assert!(matches!(
+            validate_analysis_value(&invalid_spec_limits, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("specLimits")
+        ));
+
+        let mut invalid_confidence = analysis_doc("analysis-1", "DIM1 Analysis");
+        invalid_confidence["definition"]["analysis"]["confidenceLevel"] = json!(1.0);
+        assert!(matches!(
+            validate_analysis_value(&invalid_confidence, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("confidenceLevel")
+        ));
+
+        let mut invalid_fit = analysis_doc("analysis-1", "DIM1 Analysis");
+        invalid_fit["definition"]["analysis"]["fitDistributions"] = json!(["normal", "bogus"]);
+        assert!(matches!(
+            validate_analysis_value(&invalid_fit, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("fitDistributions")
+        ));
+
+        let mut invalid_mode = analysis_doc("analysis-1", "DIM1 Analysis");
+        invalid_mode["definition"]["graphs"]["overview"]["mode"] = json!("polar");
+        assert!(matches!(
+            validate_analysis_value(&invalid_mode, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("mode")
+        ));
+
+        let mut missing_three_d = analysis_doc("analysis-1", "DIM1 Analysis");
+        missing_three_d["definition"]["graphs"]["overview"]["modeStates"]
+            .as_object_mut()
+            .unwrap()
+            .remove("threeD");
+        assert!(matches!(
+            validate_analysis_value(&missing_three_d, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("threeD")
+        ));
+
+        let mut missing_multivariate = analysis_doc("analysis-1", "DIM1 Analysis");
+        missing_multivariate["definition"]["graphs"]["overview"]["modeStates"]
+            .as_object_mut()
+            .unwrap()
+            .remove("multivariate");
+        assert!(matches!(
+            validate_analysis_value(&missing_multivariate, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("multivariate")
+        ));
+    }
+
+    #[test]
+    fn analysis_build_bundle_rejects_forbidden_runtime_keys_instead_of_stripping_them() {
+        for forbidden_key in ["markdown", "reportBlocks", "graphFrames", "result"] {
+            let mut analysis = analysis_doc("analysis-1", "DIM1 Analysis");
+            analysis[forbidden_key] = match forbidden_key {
+                "markdown" => json!("# transient"),
+                "reportBlocks" => json!([{"kind": "summary"}]),
+                "graphFrames" => json!({"overview": []}),
+                _ => json!({"status": "ready"}),
+            };
+
+            let error = super::build_bundle_with_workflows(
+                "Project".to_string(),
+                "4.0.0".to_string(),
+                "2026-09-03T00:00:00.000Z".to_string(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![analysis],
+                Vec::new(),
+                vec!["Analyses".to_string()],
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .err()
+            .expect("analysis bundle should reject forbidden runtime keys");
+
+            assert!(matches!(
+                error,
+                AppError::FileIO(message) if message.contains(forbidden_key)
+            ));
+        }
     }
 
     use serde_json::json;
