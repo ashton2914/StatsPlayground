@@ -2319,6 +2319,9 @@ function LayerCard({
         {kind === "histogram" && (
           <HistogramOptions options={options} onChange={onChangeOptions} t={t} />
         )}
+        {kind === "normalCurve" && (
+          <NormalCurveOptions options={options} onChange={onChangeOptions} t={t} />
+        )}
         {kind === "smoother" && (
           <SmootherOptions options={options} onChange={onChangeOptions} t={t} />
         )}
@@ -2673,6 +2676,19 @@ function HistogramOptions({ options, onChange, t }: OptionsEditorProps) {
         />
       </OptRow>
     </>
+  );
+}
+
+function NormalCurveOptions({ options, onChange, t }: OptionsEditorProps) {
+  const showSigmaBands = getOpt<boolean>(options, "showSigmaBands", false);
+  return (
+    <OptRow label={t("graph.opt.showSigmaBands")}>
+      <input
+        type="checkbox"
+        checked={showSigmaBands}
+        onChange={(event) => onChange({ showSigmaBands: event.target.checked })}
+      />
+    </OptRow>
   );
 }
 

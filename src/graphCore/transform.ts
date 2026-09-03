@@ -1252,6 +1252,28 @@ function normalCurve(
   });
 }
 
+function normalSigmaBands(
+  mean: number,
+  std: number,
+  count: number,
+  binWidth: number,
+  pointsPerBand = 25,
+): [number, number][][] {
+  if (
+    !Number.isFinite(mean) || !Number.isFinite(std) || std <= 0 ||
+    !Number.isFinite(count) || count < 2 || !Number.isFinite(binWidth) || binWidth <= 0 ||
+    pointsPerBand < 2
+  ) return [];
+  const coefficient = count * binWidth / (std * Math.sqrt(2 * Math.PI));
+  return Array.from({ length: 6 }, (_, bandIndex) => {
+    const startZ = bandIndex - 3;
+    return Array.from({ length: pointsPerBand }, (_, pointIndex) => {
+      const z = startZ + pointIndex / (pointsPerBand - 1);
+      return [mean + z * std, coefficient * Math.exp(-0.5 * z * z)];
+    });
+  });
+}
+
 /** 箱线图统计：min, Q1, median, Q3, max */
 function boxStats(values: number[]): [number, number, number, number, number] | null {
   const v = values.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
@@ -2928,7 +2950,11 @@ function transposeSeriesData(s: any): any {
   if (
     seriesType === "custom" &&
     typeof s.id === "string" &&
-    (s.id.startsWith("__hist_cat_") || s.id.startsWith("__normal_cat_")) &&
+    (
+      s.id.startsWith("__hist_cat_") ||
+      s.id.startsWith("__normal_cat_") ||
+      s.id.startsWith("__normal_sigma_cat_")
+    ) &&
     !s.id.endsWith("__t") &&
     Array.isArray(s.data)
   ) {
@@ -3115,9 +3141,11 @@ function buildSingleOption(
   const hasHistogramEl = elements.some(
     (e) => e.kind === "histogram" && e.enabled !== false,
   );
-  const hasNormalCurveEl = elements.some(
+  const normalCurveElement = elements.find(
     (e) => e.kind === "normalCurve" && e.enabled !== false,
   );
+  const hasNormalCurveEl = !!normalCurveElement;
+  const showNormalSigmaBands = normalCurveElement?.options?.showSigmaBands === true;
   const hasDistributionEl = hasHistogramEl || hasNormalCurveEl;
   const yOnlyHistogram =
     !xField && !!yField && yField.type === "continuous" && hasDistributionEl;
@@ -4494,7 +4522,12 @@ function buildSingleOption(
       });
 
       if (hasNormalCurve) {
-        type NormalCatInfo = { cat: string; points: [number, number][]; maxWeight: number };
+        type NormalCatInfo = {
+          cat: string;
+          points: [number, number][];
+          sigmaBands: [number, number][][];
+          maxWeight: number;
+        };
         const byGroup = new Map<string, NormalCatInfo[]>();
         const maxByCat = new Map<string, number>();
         for (const slot of histGroupSlots) {
@@ -4512,18 +4545,24 @@ function buildSingleOption(
                 .filter(Number.isFinite);
             }
             const raw = meanStd(values);
+            const mean = packetEntry?.mean ?? raw.mean;
+            const std = packetEntry?.stddev ?? raw.std;
+            const count = packetEntry?.count ?? raw.n;
             const points = normalCurve(
-              packetEntry?.mean ?? raw.mean,
-              packetEntry?.stddev ?? raw.std,
-              packetEntry?.count ?? raw.n,
+              mean,
+              std,
+              count,
               yWidth,
               packetEntry?.min ?? dataLo,
               packetEntry?.max ?? dataHi,
             );
             if (points.length === 0) continue;
+            const sigmaBands = showNormalSigmaBands
+              ? normalSigmaBands(mean, std, count, yWidth)
+              : [];
             let maxWeight = 0;
             for (const point of points) if (point[1] > maxWeight) maxWeight = point[1];
-            infos.push({ cat, points, maxWeight });
+            infos.push({ cat, points, sigmaBands, maxWeight });
             maxByCat.set(cat, Math.max(maxByCat.get(cat) ?? 0, maxWeight));
           }
           byGroup.set(slot.key, infos);
@@ -4537,6 +4576,63 @@ function buildSingleOption(
           const strokeColor = resolved.line.color || slot.baseColor;
           const safeMidY = (yLo + yHi) / 2;
           const tuples = infos.map((info) => [info.cat, safeMidY]);
+          if (showNormalSigmaBands) {
+            const bandOpacity = [0.1, 0.16, 0.24, 0.24, 0.16, 0.1];
+            for (let bandIndex = 0; bandIndex < 6; bandIndex++) {
+              series.push({
+                id: `__normal_sigma_cat_${slot.key}_${bandIndex}`,
+                type: "custom",
+                name: slot.key,
+                coordinateSystem: "cartesian2d",
+                clip: true,
+                silent: true,
+                data: tuples,
+                renderItem: (params: any, api: any) => {
+                  const info = infos[params.dataIndex];
+                  const band = info?.sigmaBands[bandIndex];
+                  if (!info || !band) return null;
+                  const catIsX = !String(params.seriesId || "").endsWith("__t");
+                  const xy = (value: number): [string | number, string | number] =>
+                    catIsX ? [info.cat, value] : [value, info.cat];
+                  const center = api.coord(xy(safeMidY));
+                  if (!center) return null;
+                  const slotSize = catIsX ? api.size([1, 0])[0] : api.size([0, 1])[1];
+                  const maxExtent = Math.max(0, slotSize * 0.85 - 1) * histHeight;
+                  const maxWeight = hasHistogramEl
+                    ? (perCatMaxCount.get(info.cat) ?? 0)
+                    : (maxByCat.get(info.cat) ?? info.maxWeight);
+                  if (maxWeight <= 0) return null;
+                  const curvePoints: number[][] = [];
+                  for (const [value, weight] of band) {
+                    if (value < yLo || value > yHi) continue;
+                    const coordinate = api.coord(xy(value));
+                    if (!coordinate) continue;
+                    if (catIsX) {
+                      const baseline = center[0] - slotSize / 2 + 1;
+                      curvePoints.push([baseline + (weight / maxWeight) * maxExtent, coordinate[1]]);
+                    } else {
+                      const baseline = center[1] + slotSize / 2 - 1;
+                      curvePoints.push([coordinate[0], baseline - (weight / maxWeight) * maxExtent]);
+                    }
+                  }
+                  if (curvePoints.length < 2) return null;
+                  const baseline = catIsX
+                    ? center[0] - slotSize / 2 + 1
+                    : center[1] + slotSize / 2 - 1;
+                  const lastCurvePoint = curvePoints[curvePoints.length - 1];
+                  const polygonPoints = catIsX
+                    ? [[baseline, curvePoints[0][1]], ...curvePoints, [baseline, lastCurvePoint[1]]]
+                    : [[curvePoints[0][0], baseline], ...curvePoints, [lastCurvePoint[0], baseline]];
+                  return {
+                    type: "polygon",
+                    shape: { points: polygonPoints },
+                    style: { fill: strokeColor, stroke: null, opacity: bandOpacity[bandIndex] },
+                  };
+                },
+                z: 2,
+              });
+            }
+          }
           series.push({
             id: `__normal_cat_${slot.key}`,
             type: "custom",
@@ -4927,6 +5023,28 @@ function buildSingleOption(
             packetSummary?.max ?? xDataHi,
           );
           if (points.length > 0) {
+            if (showNormalSigmaBands) {
+              const bandOpacity = [0.1, 0.16, 0.24, 0.24, 0.16, 0.1];
+              normalSigmaBands(
+                packetSummary?.mean ?? rawSummary.mean,
+                packetSummary?.stddev ?? rawSummary.std,
+                packetSummary?.count ?? rawSummary.n,
+                width,
+              ).forEach((band, bandIndex) => {
+                series.push({
+                  id: `__normal_sigma_band_${slot.key}_${bandIndex}`,
+                  type: "line",
+                  name: slot.key,
+                  data: band,
+                  showSymbol: false,
+                  smooth: false,
+                  silent: true,
+                  lineStyle: { color: lineColor, opacity: 0 },
+                  areaStyle: { color: lineColor, opacity: bandOpacity[bandIndex] },
+                  z: 2,
+                });
+              });
+            }
             series.push({
               id: `__normal_curve_${slot.key}`,
               type: "line",

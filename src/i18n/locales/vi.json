@@ -875,6 +875,7 @@
         "kendall": "Kendall"
       },
       "summaryStat": "Thống kê tóm tắt",
+      "showSigmaBands": "Hiện vùng tham chiếu σ",
       "errorInterval": "Khoảng sai số",
       "intervalStyle": "Kiểu khoảng",
       "jitter": "Jitter",
