@@ -121,6 +121,46 @@ pub struct FitModelCentering {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct FitModelPredictorRange {
+    pub column_name: String,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub mean: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelSnapshot {
+    pub coefficient_term_ids: Vec<String>,
+    pub coefficients: Vec<f64>,
+    pub covariance: Option<Vec<Vec<f64>>>,
+    pub mean_square_error: Option<f64>,
+    pub error_degrees_of_freedom: u64,
+    pub confidence_level: f64,
+    pub terms: Vec<FitModelResolvedTerm>,
+    pub centering: FitModelCentering,
+    pub predictor_ranges: Vec<FitModelPredictorRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FitModelInferenceReason {
+    InferenceNotEstimable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelPrediction {
+    pub predicted: f64,
+    pub mean_confidence_lower: Option<f64>,
+    pub mean_confidence_upper: Option<f64>,
+    pub prediction_lower: Option<f64>,
+    pub prediction_upper: Option<f64>,
+    pub inference_reason: Option<FitModelInferenceReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct FitModelFittedResult {
     pub used_rows: u64,
     pub excluded_rows: u64,
@@ -129,6 +169,7 @@ pub struct FitModelFittedResult {
     pub predictor_columns: Vec<String>,
     pub terms: Vec<FitModelResolvedTerm>,
     pub centering: FitModelCentering,
+    pub snapshot: FitModelSnapshot,
     pub summary_of_fit: FitModelSummaryOfFit,
     pub anova: Vec<FitModelAnovaRow>,
     pub parameter_estimates: Vec<FitModelParameterEstimate>,
@@ -207,6 +248,25 @@ mod tests {
             centering: FitModelCentering {
                 method: FitModelCenteringMethod::None,
                 centers: vec![],
+            },
+            snapshot: FitModelSnapshot {
+                coefficient_term_ids: vec!["Intercept".into(), "A".into()],
+                coefficients: vec![0.0, 1.0],
+                covariance: None,
+                mean_square_error: None,
+                error_degrees_of_freedom: 0,
+                confidence_level: 0.95,
+                terms: vec![FitModelResolvedTerm {
+                    term_id: "A".into(),
+                    kind: FitModelTermKind::Main,
+                    column_names: vec!["A".into()],
+                    label: "A".into(),
+                }],
+                centering: FitModelCentering {
+                    method: FitModelCenteringMethod::None,
+                    centers: vec![],
+                },
+                predictor_ranges: vec![],
             },
             summary_of_fit: FitModelSummaryOfFit {
                 r_squared: Some(0.9),

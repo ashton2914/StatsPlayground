@@ -39,7 +39,7 @@ export interface FitModelRequest {
   responseColumn: string;
   terms: FitModelTerm[];
   centeringMethod: FitModelCenteringMethod;
-  confidenceLevel: number;
+  confidenceLevel: 0.95;
 }
 
 export type FitModelNotComputableReason = "insufficientRows" | "rankDeficient";
@@ -91,11 +91,46 @@ export interface FitModelCenter {
   mean: number;
 }
 
+export interface FitModelCentering {
+  method: FitModelCenteringMethod;
+  centers: FitModelCenter[];
+}
+
 export interface FitModelResolvedTerm {
   termId: string;
   kind: FitModelTermKind;
   columnNames: string[];
   label: string;
+}
+
+export interface FitModelPredictorRange {
+  columnName: string;
+  minimum: number;
+  maximum: number;
+  mean: number;
+}
+
+export interface FitModelSnapshot {
+  coefficientTermIds: string[];
+  coefficients: number[];
+  covariance: number[][] | null;
+  meanSquareError: number | null;
+  errorDegreesOfFreedom: number;
+  confidenceLevel: 0.95;
+  terms: FitModelResolvedTerm[];
+  centering: FitModelCentering;
+  predictorRanges: FitModelPredictorRange[];
+}
+
+export type FitModelInferenceReason = "inferenceNotEstimable";
+
+export interface FitModelPrediction {
+  predicted: number;
+  meanConfidenceLower: number | null;
+  meanConfidenceUpper: number | null;
+  predictionLower: number | null;
+  predictionUpper: number | null;
+  inferenceReason: FitModelInferenceReason | null;
 }
 
 export interface FitModelFittedResult {
@@ -106,10 +141,8 @@ export interface FitModelFittedResult {
   responseColumn: string;
   predictorColumns: string[];
   terms: FitModelResolvedTerm[];
-  centering: {
-    method: FitModelCenteringMethod;
-    centers: FitModelCenter[];
-  };
+  centering: FitModelCentering;
+  snapshot: FitModelSnapshot;
   summaryOfFit: FitModelSummaryOfFit;
   anova: FitModelAnovaRow[];
   parameterEstimates: FitModelParameterEstimate[];

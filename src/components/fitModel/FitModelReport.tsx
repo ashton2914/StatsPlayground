@@ -8,8 +8,11 @@ import {
 import type { FitModelItem, FitModelFittedResult } from "@/types/fitModel";
 
 import {
+  buildNumericFitModelEquation,
+  type FitModelEquationPart,
+} from "./fitModelEquation";
+import {
   buildEffectSummary,
-  buildFittedEquationModel,
   formatFitModelReportPValue,
   formatFitModelReportValue,
 } from "./fitModelReportModel";
@@ -66,16 +69,23 @@ function notComputableText(reason: "insufficientRows" | "rankDeficient", t: (key
   return localized === `fitModel.report.reason.${reason}` ? reason : localized;
 }
 
-function FittedEquation({ response, terms }: { response: string; terms: string[] }) {
-
+function FittedEquation({ response, parts }: { response: string; parts: FitModelEquationPart[] }) {
   return (
     <div className="sp-fit-model-report-equation" aria-label="fitted-equation-inputs">
       <span>{response}</span>
       <span>=</span>
-      <span>Intercept</span>
-      {terms.map((term) => (
-        <span key={`eq:${term}`}>{` + ${term}`}</span>
-      ))}
+      {parts.map((part, index) => {
+        const magnitude = formatFitModelReportValue(Math.abs(part.coefficient));
+        const feature = part.featureLabel ? ` ${part.featureLabel}` : "";
+        if (index === 0) {
+          return <span key="eq:intercept">{`${part.coefficient < 0 ? "-" : ""}${magnitude}`}</span>;
+        }
+        return (
+          <span key={`eq:${index}:${part.featureLabel}`}>
+            {`${part.coefficient < 0 ? "-" : "+"} ${magnitude}${feature}`}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -135,7 +145,7 @@ export function FitModelReport({
     [fittedResult],
   );
   const equation = useMemo(
-    () => (fittedResult ? buildFittedEquationModel(fittedResult) : null),
+    () => (fittedResult ? buildNumericFitModelEquation(fittedResult) : null),
     [fittedResult],
   );
 
@@ -286,7 +296,7 @@ export function FitModelReport({
             onToggle={() => toggle("summaryOfFit")}
           >
             {equation ? (
-              <FittedEquation response={equation.response} terms={equation.terms} />
+              <FittedEquation response={equation.response} parts={equation.parts} />
             ) : null}
             <div className="sp-fit-model-report-table-wrap">
               <table className="sp-fit-model-report-table">

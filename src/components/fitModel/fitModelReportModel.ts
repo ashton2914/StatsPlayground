@@ -1,7 +1,4 @@
-import {
-  canonicalInteraction,
-  canonicalizeFitModelTerms,
-} from "@/components/fitModel/fitModelConfig";
+import { canonicalizeFitModelTerms } from "@/components/fitModel/fitModelConfig";
 import type {
   FitModelCenteringMethod,
   FitModelFittedResult,
@@ -25,11 +22,6 @@ export interface FitModelUndoSnapshot {
 export interface FitModelDefinitionConfig {
   terms: readonly FitModelTerm[];
   centeringMethod: FitModelCenteringMethod;
-}
-
-export interface FitModelEquationModel {
-  response: string;
-  terms: string[];
 }
 
 export type FitModelRemoveBlockedReason =
@@ -104,21 +96,50 @@ export function createFitModelDefinitionConfig(input: FitModelDefinitionConfig):
 }
 
 function canonicalTermColumns(term: FitModelTerm): string[] {
-  if (term.kind !== "interaction" || term.columnNames.length !== 2) {
+  if (term.kind !== "interaction") {
     return [...term.columnNames];
   }
 
-  const [first, second] = canonicalInteraction(term.columnNames[0], term.columnNames[1]);
-  return [first, second];
+  return [...term.columnNames].sort(compareUtf8);
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function compareUtf8(left: string, right: string): number {
+  const encoder = new TextEncoder();
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  const sharedLength = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) {
+      return leftBytes[index] - rightBytes[index];
+    }
+  }
+  return leftBytes.length - rightBytes.length;
 }
 
 export function fitModelTermId(term: FitModelTerm): string {
   const columnNames = canonicalTermColumns(term);
   if (term.kind === "main") {
-    return `main:${columnNames[0] ?? ""}`;
+    const columnName = columnNames[0] ?? "";
+    return ["main:", "interaction:", "power:"].some((prefix) => columnName.startsWith(prefix))
+      ? `main:${utf8Length(columnName)}:${columnName}`
+      : columnName;
   }
 
-  return `interaction:${(columnNames[0] ?? "")}*${(columnNames[1] ?? "")}`;
+  if (term.kind === "power") {
+    const columnName = columnNames[0] ?? "";
+    return /[*^:]/u.test(columnName)
+      ? `power:${utf8Length(columnName)}:${columnName}^2`
+      : `power:${columnName}^2`;
+  }
+
+  const label = columnNames.join("*");
+  return columnNames.some((columnName) => /[*^:]/u.test(columnName))
+    ? `interaction:tuple:${columnNames.map((columnName) => `${utf8Length(columnName)}:${columnName}`).join("")}`
+    : `interaction:${label}`;
 }
 
 export function formatFitModelReportValue(
@@ -197,36 +218,6 @@ export function buildEffectSummary(result: FitModelFittedResult): FitModelEffect
     });
 }
 
-export function buildFittedEquationModel(result: FitModelFittedResult): FitModelEquationModel | null {
-  const response = result.responseColumn.trim();
-  if (response.length === 0) {
-    return null;
-  }
-
-  const parameterByTermId = new Map(
-    result.parameterEstimates.map((parameter) => [parameter.termId, parameter]),
-  );
-  const parameterByLabel = new Map(
-    result.parameterEstimates.map((parameter) => [parameter.termLabel, parameter]),
-  );
-
-  const terms: string[] = [];
-  for (const term of result.terms) {
-    const parameter = parameterByTermId.get(term.termId) ?? parameterByLabel.get(term.label);
-    if (!parameter) {
-      return null;
-    }
-
-    const label = parameter.termLabel.trim();
-    if (label.length === 0) {
-      return null;
-    }
-    terms.push(label);
-  }
-
-  return { response, terms };
-}
-
 export function removeFitModelTerm(
   terms: readonly FitModelTerm[],
   termId: string,
@@ -245,7 +236,7 @@ export function removeFitModelTerm(
     terms: cloneTerms(canonicalTerms),
   };
 
-  if (target.kind === "interaction") {
+  if (target.kind !== "main") {
     return {
       ok: true,
       nextTerms: canonicalTerms.filter((_, index) => index !== targetIndex),

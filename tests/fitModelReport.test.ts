@@ -119,7 +119,10 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
     ],
     centering: {
       method: "mean",
-      centers: [{ columnName: "A", mean: 10 }],
+      centers: [
+        { columnName: "A", mean: 10 },
+        { columnName: "B", mean: 20 },
+      ],
     },
     summaryOfFit: {
       rSquared: 0.9,
@@ -149,6 +152,16 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
       },
     ],
     parameterEstimates: [
+      {
+        termId: "Intercept",
+        termLabel: "Intercept",
+        estimate: 1,
+        standardError: 0.1,
+        tRatio: 10,
+        pValue: 0.01,
+        lowerConfidenceLimit: 0,
+        upperConfidenceLimit: 2,
+      },
       {
         termId: "main:A",
         termLabel: "A",
@@ -285,6 +298,42 @@ function testRemoveInteractionSucceeds(): void {
   assert.equal(removal.undoSnapshot.terms.length, 3);
 }
 
+function testResolvedTermIdsMatchRustForPowerAndHigherOrderInteraction(): void {
+  assert.equal(fitModelTermId({ kind: "main", columnNames: ["A"] }), "A");
+  assert.equal(
+    fitModelTermId({ kind: "interaction", columnNames: ["C", "A", "B"] }),
+    "interaction:A*B*C",
+  );
+  assert.equal(
+    fitModelTermId({ kind: "power", columnNames: ["A"], exponent: 2 }),
+    "power:A^2",
+  );
+  assert.equal(
+    fitModelTermId({ kind: "interaction", columnNames: ["ä:x", "A", "z*y"] }),
+    "interaction:tuple:1:A3:z*y4:ä:x",
+  );
+}
+
+function testRemovePowerAndHigherOrderInteractionSucceeds(): void {
+  const terms = [
+    { kind: "main", columnNames: ["A"] },
+    { kind: "main", columnNames: ["B"] },
+    { kind: "main", columnNames: ["C"] },
+    { kind: "interaction", columnNames: ["A", "B", "C"] },
+    { kind: "power", columnNames: ["A"], exponent: 2 },
+  ] as const;
+
+  const withoutInteraction = removeFitModelTerm(terms, "interaction:A*B*C");
+  assert.equal(withoutInteraction.ok, true);
+  if (!withoutInteraction.ok) return;
+  assert.equal(withoutInteraction.nextTerms.some((term) => term.kind === "interaction"), false);
+
+  const withoutPower = removeFitModelTerm(terms, "power:A^2");
+  assert.equal(withoutPower.ok, true);
+  if (!withoutPower.ok) return;
+  assert.equal(withoutPower.nextTerms.some((term) => term.kind === "power"), false);
+}
+
 function testRemoveMainBlockedByInteraction(): void {
   const terms = createItem().terms;
   const mainId = fitModelTermId({ kind: "main", columnNames: ["A"] });
@@ -411,6 +460,7 @@ function testRenderFittedContracts(): void {
   assert.match(html, /Analysis of Variance/);
   assert.match(html, /Parameter Estimates/);
   assert.match(html, /fitted-equation-inputs/);
+  assert.match(html, />1<.*\+ 2 A/);
   assert.match(html, /saturatedModel|fitModel\.report\.warning\.saturatedModel/);
   assert.match(html, /Remove/);
   assert.match(html, /Undo/);
@@ -512,7 +562,7 @@ function testStaleEquationUsesResultTermsNotCurrentItemTerms(): void {
   }), staleState);
 
   assert.match(html, /Y_old/);
-  assert.match(html, /\+ A/);
+  assert.match(html, /\+ 2 A/);
   assert.doesNotMatch(html, /Y_new/);
   assert.doesNotMatch(html, /\+ B/);
 }
@@ -559,6 +609,8 @@ testLogWorthContracts();
 testEffectSummarySortAndPValueMapping();
 testMeanCenteringDoesNotRelabelMainEffect();
 testRemoveInteractionSucceeds();
+testResolvedTermIdsMatchRustForPowerAndHigherOrderInteraction();
+testRemovePowerAndHigherOrderInteractionSucceeds();
 testRemoveMainBlockedByInteraction();
 testRemoveLastMainBlocked();
 testValidMainRemovalReturnsUndoSnapshot();

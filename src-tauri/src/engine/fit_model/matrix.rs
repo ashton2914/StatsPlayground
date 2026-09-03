@@ -27,6 +27,30 @@ pub struct ModelMatrixSpec {
 }
 
 impl ModelMatrixSpec {
+    pub(crate) fn from_snapshot_parts(
+        terms: Vec<ResolvedTerm>,
+        centering_method: FitModelCenteringMethod,
+        centers: Vec<FitModelCenter>,
+    ) -> Result<Self, MatrixError> {
+        validate_resolved_terms(&terms)?;
+        let center_names = centers
+            .iter()
+            .map(|center| center.column_name.as_str())
+            .collect::<BTreeSet<_>>();
+        if centering_method == FitModelCenteringMethod::Mean {
+            for column in centered_columns(&terms) {
+                if !center_names.contains(column.as_str()) {
+                    return Err(MatrixError::MissingCenter(column));
+                }
+            }
+        }
+        Ok(Self {
+            terms,
+            centering_method,
+            centers,
+        })
+    }
+
     pub fn from_columns(
         terms: Vec<ResolvedTerm>,
         centering_method: FitModelCenteringMethod,
@@ -278,13 +302,14 @@ fn compute_centers(
 
     let mut centers = Vec::with_capacity(centered_columns.len());
     for name in centered_columns {
-        let mut sum = 0.0;
-        for row in &complete_rows {
-            sum += read_value(columns, name, *row)?;
+        let mut mean = 0.0;
+        for (index, row) in complete_rows.iter().enumerate() {
+            let count = (index + 1) as f64;
+            mean = mean * ((count - 1.0) / count) + read_value(columns, name, *row)? / count;
         }
         centers.push(FitModelCenter {
             column_name: name.clone(),
-            mean: sum / (complete_rows.len() as f64),
+            mean,
         });
     }
 
@@ -491,6 +516,31 @@ mod tests {
             ])),
             Ok(vec![1.0, 3.0, 6.0, 2.0, 1.0, 4.0]),
         );
+    }
+
+    #[test]
+    fn center_mean_does_not_overflow_for_finite_values() {
+        let terms = resolve_terms(&[
+            FitModelTerm {
+                kind: FitModelTermKind::Main,
+                column_names: vec!["A".to_string()],
+                exponent: None,
+            },
+            FitModelTerm {
+                kind: FitModelTermKind::Power,
+                column_names: vec!["A".to_string()],
+                exponent: Some(2),
+            },
+        ])
+        .expect("terms should resolve");
+        let spec = ModelMatrixSpec::from_columns(
+            terms,
+            FitModelCenteringMethod::Mean,
+            &BTreeMap::from([("A".to_string(), vec![f64::MAX, f64::MAX])]),
+        )
+        .expect("finite centers should remain representable");
+
+        assert_eq!(spec.centers()[0].mean, f64::MAX);
     }
 }
 

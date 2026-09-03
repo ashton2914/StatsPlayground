@@ -62,6 +62,7 @@ impl<'a> FitModelService<'a> {
         let fit_input = FitModelData {
             response_column: request.response_column,
             predictor_columns: rows.predictor_names,
+            predictor_ranges: predictor_ranges(&columns)?,
             model_matrix_spec,
             design_matrix,
             response_values,
@@ -73,10 +74,41 @@ impl<'a> FitModelService<'a> {
     }
 }
 
+fn predictor_ranges(
+    columns: &BTreeMap<String, Vec<f64>>,
+) -> Result<Vec<crate::models::fit_model::FitModelPredictorRange>, AppError> {
+    let mut ranges = Vec::with_capacity(columns.len());
+    for (column_name, values) in columns {
+        if values.is_empty() || values.iter().any(|value| !value.is_finite()) {
+            return Err(AppError::Stats(format!(
+                "fit model predictor range is unavailable for {column_name}"
+            )));
+        }
+        let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let mean = values.iter().enumerate().fold(0.0, |mean, (index, value)| {
+            let count = (index + 1) as f64;
+            mean * ((count - 1.0) / count) + value / count
+        });
+        if !minimum.is_finite() || !maximum.is_finite() || !mean.is_finite() {
+            return Err(AppError::Stats(format!(
+                "fit model predictor range is non-finite for {column_name}"
+            )));
+        }
+        ranges.push(crate::models::fit_model::FitModelPredictorRange {
+            column_name: column_name.clone(),
+            minimum,
+            maximum,
+            mean,
+        });
+    }
+    Ok(ranges)
+}
+
 fn validate_confidence_level(confidence_level: f64) -> Result<(), AppError> {
-    if !confidence_level.is_finite() || confidence_level <= 0.0 || confidence_level >= 1.0 {
+    if confidence_level != 0.95 {
         return Err(AppError::InvalidParam(
-            "confidence level must be finite and strictly inside (0, 1)".into(),
+            "Fit Model confidence level must be 0.95".into(),
         ));
     }
     Ok(())
@@ -171,13 +203,15 @@ fn map_engine_error(error: FitModelEngineError) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::error::AppError;
     use crate::models::fit_model::{
         FitModelCenteringMethod, FitModelRequest, FitModelResult, FitModelTerm, FitModelTermKind,
     };
     use crate::state::AppState;
 
-    use super::FitModelService;
+    use super::{predictor_ranges, validate_confidence_level, FitModelService};
 
     fn seed_dataset(state: &AppState, dataset_id: &str) {
         let db = state.db.lock().expect("test db lock");
@@ -239,6 +273,23 @@ mod tests {
             .run(request("fit-model-confidence", 0, 1.0))
             .expect_err("confidence level must fail");
         assert!(matches!(error, AppError::InvalidParam(message) if message.contains("confidence")));
+    }
+
+    #[test]
+    fn rejects_confidence_level_other_than_frozen_default() {
+        assert!(validate_confidence_level(0.95).is_ok());
+        assert!(validate_confidence_level(0.90).is_err());
+    }
+
+    #[test]
+    fn predictor_range_mean_does_not_overflow_for_finite_values() {
+        let ranges = predictor_ranges(&BTreeMap::from([(
+            "A".to_string(),
+            vec![f64::MAX, f64::MAX],
+        )]))
+        .expect("finite predictor range should remain representable");
+
+        assert_eq!(ranges[0].mean, f64::MAX);
     }
 
     #[test]

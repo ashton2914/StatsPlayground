@@ -5,8 +5,8 @@ use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
-    FitModelParameterEstimate, FitModelPlotRow, FitModelResolvedTerm, FitModelResult,
-    FitModelSummaryOfFit, FitModelWarningCode,
+    FitModelParameterEstimate, FitModelPlotRow, FitModelPredictorRange, FitModelResolvedTerm,
+    FitModelResult, FitModelSnapshot, FitModelSummaryOfFit, FitModelWarningCode,
 };
 
 const CONDITION_WARNING_THRESHOLD: f64 = 1e10;
@@ -27,6 +27,7 @@ pub enum FitModelEngineError {
 pub struct FitModelData {
     pub response_column: String,
     pub predictor_columns: Vec<String>,
+    pub predictor_ranges: Vec<FitModelPredictorRange>,
     pub model_matrix_spec: ModelMatrixSpec,
     pub design_matrix: DMatrix<f64>,
     pub response_values: Vec<f64>,
@@ -61,7 +62,10 @@ fn fit_geometry_from_svd(
 ) -> Result<FitGeometry, FitModelEngineError> {
     let singular_values = svd.singular_values.clone();
     let sigma_max = singular_values.iter().copied().fold(0.0_f64, f64::max);
-    let sigma_min = singular_values.iter().copied().fold(f64::INFINITY, f64::min);
+    let sigma_min = singular_values
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
     let rank_tolerance = (n.max(p) as f64) * f64::EPSILON * sigma_max;
     let rank = singular_values
         .iter()
@@ -88,7 +92,9 @@ pub fn fit_linear_model(
     confidence_level: f64,
 ) -> Result<FitModelResult, FitModelEngineError> {
     if !(0.0..1.0).contains(&confidence_level) {
-        return Err(FitModelEngineError::InvalidConfidenceLevel(confidence_level));
+        return Err(FitModelEngineError::InvalidConfidenceLevel(
+            confidence_level,
+        ));
     }
 
     let n = input.response_values.len();
@@ -146,7 +152,11 @@ pub fn fit_linear_model(
         .sum::<f64>();
     let sse_raw = residuals.iter().map(|value| square(*value)).sum::<f64>();
     let rounding_tolerance = ROUNDING_CLAMP_FACTOR * sst.abs().max(1.0);
-    let response_energy = input.response_values.iter().map(|value| square(*value)).sum::<f64>();
+    let response_energy = input
+        .response_values
+        .iter()
+        .map(|value| square(*value))
+        .sum::<f64>();
     let sse = normalize_sse_roundoff_to_zero(
         clamp_roundoff_negative(sse_raw, rounding_tolerance, "SSE")?,
         n,
@@ -164,7 +174,8 @@ pub fn fit_linear_model(
     let constant_response = sst == 0.0;
     let perfect_fit = sse == 0.0 || (sst > 0.0 && sse <= PERFECT_FIT_RELATIVE_TOLERANCE * sst);
     let saturated_model = df_error == 0;
-    let ill_conditioned = condition_number.is_finite() && condition_number > CONDITION_WARNING_THRESHOLD;
+    let ill_conditioned =
+        condition_number.is_finite() && condition_number > CONDITION_WARNING_THRESHOLD;
 
     let mse = if df_error > 0 {
         Some(sse / (df_error as f64))
@@ -253,58 +264,102 @@ pub fn fit_linear_model(
         perfect_fit,
         ill_conditioned,
     );
-
-    Ok(FitModelResult::Fitted(Box::new(crate::models::fit_model::FitModelFittedResult {
-        used_rows: n as u64,
-        excluded_rows: input.excluded_rows,
+    let resolved = resolved_terms(&input.model_matrix_spec);
+    let centering = FitModelCentering {
+        method: input.model_matrix_spec.centering_method().clone(),
+        centers: input.model_matrix_spec.centers().to_vec(),
+    };
+    let mut coefficient_term_ids = Vec::with_capacity(coefficients.len());
+    coefficient_term_ids.push("Intercept".to_string());
+    coefficient_term_ids.extend(resolved.iter().map(|term| term.term_id.clone()));
+    let snapshot_covariance = if allow_parameter_inference {
+        covariance_matrix(&geometry, mse)?
+            .map(matrix_to_finite_rows)
+            .transpose()?
+    } else {
+        None
+    };
+    let snapshot = FitModelSnapshot {
+        coefficient_term_ids,
+        coefficients: coefficients
+            .iter()
+            .map(|value| normalize_signed_zero(*value))
+            .collect(),
+        covariance: snapshot_covariance,
+        mean_square_error: mse.filter(|value| value.is_finite() && *value > 0.0),
+        error_degrees_of_freedom: df_error as u64,
         confidence_level,
-        response_column: input.response_column,
-        predictor_columns: input.predictor_columns,
-        terms: resolved_terms(&input.model_matrix_spec),
-        centering: FitModelCentering {
-            method: input.model_matrix_spec.centering_method().clone(),
-            centers: input.model_matrix_spec.centers().to_vec(),
+        terms: resolved.clone(),
+        centering: centering.clone(),
+        predictor_ranges: input.predictor_ranges,
+    };
+
+    Ok(FitModelResult::Fitted(Box::new(
+        crate::models::fit_model::FitModelFittedResult {
+            used_rows: n as u64,
+            excluded_rows: input.excluded_rows,
+            confidence_level,
+            response_column: input.response_column,
+            predictor_columns: input.predictor_columns,
+            terms: resolved,
+            centering,
+            snapshot,
+            summary_of_fit: FitModelSummaryOfFit {
+                r_squared,
+                adjusted_r_squared,
+                root_mean_square_error: rmse,
+                mean_of_response: normalize_signed_zero(mean_response),
+                observation_count: n as u64,
+                model_degrees_of_freedom: df_model as u64,
+                error_degrees_of_freedom: df_error as u64,
+            },
+            anova: vec![
+                FitModelAnovaRow {
+                    source: "Model".to_string(),
+                    degrees_of_freedom: df_model as u64,
+                    sum_of_squares: normalize_signed_zero(ssm),
+                    mean_square: ms_model,
+                    f_ratio,
+                    p_value: model_p_value,
+                },
+                FitModelAnovaRow {
+                    source: "Error".to_string(),
+                    degrees_of_freedom: df_error as u64,
+                    sum_of_squares: normalize_signed_zero(sse),
+                    mean_square: ms_error,
+                    f_ratio: None,
+                    p_value: None,
+                },
+                FitModelAnovaRow {
+                    source: "Total".to_string(),
+                    degrees_of_freedom: df_total as u64,
+                    sum_of_squares: normalize_signed_zero(sst),
+                    mean_square: None,
+                    f_ratio: None,
+                    p_value: None,
+                },
+            ],
+            parameter_estimates,
+            plot_rows,
+            plot_rows_sampled: sampled,
+            warnings,
         },
-        summary_of_fit: FitModelSummaryOfFit {
-            r_squared,
-            adjusted_r_squared,
-            root_mean_square_error: rmse,
-            mean_of_response: normalize_signed_zero(mean_response),
-            observation_count: n as u64,
-            model_degrees_of_freedom: df_model as u64,
-            error_degrees_of_freedom: df_error as u64,
-        },
-        anova: vec![
-            FitModelAnovaRow {
-                source: "Model".to_string(),
-                degrees_of_freedom: df_model as u64,
-                sum_of_squares: normalize_signed_zero(ssm),
-                mean_square: ms_model,
-                f_ratio,
-                p_value: model_p_value,
-            },
-            FitModelAnovaRow {
-                source: "Error".to_string(),
-                degrees_of_freedom: df_error as u64,
-                sum_of_squares: normalize_signed_zero(sse),
-                mean_square: ms_error,
-                f_ratio: None,
-                p_value: None,
-            },
-            FitModelAnovaRow {
-                source: "Total".to_string(),
-                degrees_of_freedom: df_total as u64,
-                sum_of_squares: normalize_signed_zero(sst),
-                mean_square: None,
-                f_ratio: None,
-                p_value: None,
-            },
-        ],
-        parameter_estimates,
-        plot_rows,
-        plot_rows_sampled: sampled,
-        warnings,
-    })))
+    )))
+}
+
+fn matrix_to_finite_rows(matrix: DMatrix<f64>) -> Result<Vec<Vec<f64>>, FitModelEngineError> {
+    if matrix.nrows() != matrix.ncols() || matrix.iter().any(|value| !value.is_finite()) {
+        return Err(FitModelEngineError::NumericalFailure(
+            "coefficient covariance matrix is invalid".to_string(),
+        ));
+    }
+    Ok((0..matrix.nrows())
+        .map(|row| {
+            (0..matrix.ncols())
+                .map(|column| matrix[(row, column)])
+                .collect()
+        })
+        .collect())
 }
 
 fn parameter_estimates(
@@ -562,7 +617,11 @@ fn deterministic_rank_grid(logical_n: u64, max_points: usize) -> Vec<u64> {
     sorted
 }
 
-fn not_computable(reason: FitModelNotComputableReason, used_rows: u64, excluded_rows: u64) -> FitModelResult {
+fn not_computable(
+    reason: FitModelNotComputableReason,
+    used_rows: u64,
+    excluded_rows: u64,
+) -> FitModelResult {
     FitModelResult::NotComputable(FitModelNotComputableResult {
         reason,
         used_rows,
@@ -691,11 +750,11 @@ mod tests {
     use statrs::distribution::{ContinuousCDF, StudentsT};
 
     use crate::engine::fit_model::ols::{fit_linear_model, FitModelData};
-    use crate::engine::fit_model::ModelMatrixSpec;
     use crate::engine::fit_model::terms::resolve_terms;
+    use crate::engine::fit_model::ModelMatrixSpec;
     use crate::models::fit_model::{
-        FitModelCenteringMethod, FitModelNotComputableReason, FitModelResult, FitModelTerm,
-        FitModelTermKind, FitModelWarningCode,
+        FitModelCenteringMethod, FitModelNotComputableReason, FitModelPredictorRange,
+        FitModelResult, FitModelTerm, FitModelTermKind, FitModelWarningCode,
     };
 
     const GRAPH_SCATTER_RENDER_BUDGET: usize = 8_000;
@@ -725,6 +784,15 @@ mod tests {
         row_indexes: Vec<u64>,
         excluded_rows: u64,
     ) -> FitModelData {
+        let predictor_ranges = columns
+            .iter()
+            .map(|(column_name, values)| FitModelPredictorRange {
+                column_name: column_name.clone(),
+                minimum: values.iter().copied().fold(f64::INFINITY, f64::min),
+                maximum: values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                mean: values.iter().sum::<f64>() / values.len() as f64,
+            })
+            .collect();
         let resolved_terms = resolve_terms(&terms).expect("terms should resolve");
         let spec = ModelMatrixSpec::from_columns(resolved_terms, centering, &columns)
             .expect("spec should build");
@@ -735,6 +803,7 @@ mod tests {
         FitModelData {
             response_column: response_column.to_string(),
             predictor_columns: columns.keys().cloned().collect(),
+            predictor_ranges,
             model_matrix_spec: spec,
             design_matrix: matrix,
             response_values: response,
@@ -762,11 +831,15 @@ mod tests {
         assert_close(result.t_ratio.expect("t-ratio"), t_ratio);
         assert_close(result.p_value.expect("p-value"), p_value);
         assert_close(
-            result.lower_confidence_limit.expect("lower confidence limit"),
+            result
+                .lower_confidence_limit
+                .expect("lower confidence limit"),
             estimate - margin,
         );
         assert_close(
-            result.upper_confidence_limit.expect("upper confidence limit"),
+            result
+                .upper_confidence_limit
+                .expect("upper confidence limit"),
             estimate + margin,
         );
     }
@@ -799,7 +872,10 @@ mod tests {
             assert_close(row.residual, 0.0);
         }
 
-        assert_close(fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares, fitted.anova[2].sum_of_squares);
+        assert_close(
+            fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares,
+            fitted.anova[2].sum_of_squares,
+        );
         assert_eq!(fitted.summary_of_fit.model_degrees_of_freedom, 1);
         assert_eq!(fitted.summary_of_fit.error_degrees_of_freedom, 3);
         assert_eq!(fitted.summary_of_fit.r_squared, Some(1.0));
@@ -873,7 +949,10 @@ mod tests {
         assert_close(fitted.anova[1].sum_of_squares, 0.37696969696969823);
         assert_close(fitted.anova[2].sum_of_squares, 328.37999999999994);
         assert_close(fitted.anova[0].sum_of_squares, 328.00303030303024);
-        assert_close(fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares, fitted.anova[2].sum_of_squares);
+        assert_close(
+            fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares,
+            fitted.anova[2].sum_of_squares,
+        );
 
         assert_eq!(fitted.summary_of_fit.model_degrees_of_freedom, 1);
         assert_eq!(fitted.summary_of_fit.error_degrees_of_freedom, 8);
@@ -982,7 +1061,10 @@ mod tests {
         assert_close(fitted.anova[1].sum_of_squares, 0.003633333333333347);
         assert_close(fitted.anova[2].sum_of_squares, 21.921133333333334);
         assert_close(fitted.anova[0].sum_of_squares, 21.9175);
-        assert_close(fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares, fitted.anova[2].sum_of_squares);
+        assert_close(
+            fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares,
+            fitted.anova[2].sum_of_squares,
+        );
 
         assert_eq!(fitted.summary_of_fit.model_degrees_of_freedom, 2);
         assert_eq!(fitted.summary_of_fit.error_degrees_of_freedom, 3);
@@ -1060,7 +1142,10 @@ mod tests {
         assert_close(fitted.anova[1].sum_of_squares, 0.0070999999999999995);
         assert_close(fitted.anova[2].sum_of_squares, 196.18819999999997);
         assert_close(fitted.anova[0].sum_of_squares, 196.18109999999996);
-        assert_close(fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares, fitted.anova[2].sum_of_squares);
+        assert_close(
+            fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares,
+            fitted.anova[2].sum_of_squares,
+        );
 
         assert_eq!(fitted.summary_of_fit.model_degrees_of_freedom, 3);
         assert_eq!(fitted.summary_of_fit.error_degrees_of_freedom, 4);
@@ -1117,9 +1202,9 @@ mod tests {
     #[test]
     fn mean_centered_interaction_fixture_matches_oracle() {
         let runtime = vec![
-            8.17, 8.63, 8.65, 8.92, 8.95, 9.22, 9.4, 9.63, 9.93, 10.0, 10.07, 10.08, 10.13,
-            10.25, 10.33, 10.47, 10.5, 10.6, 10.85, 10.95, 11.08, 11.12, 11.17, 11.37, 11.5,
-            11.63, 11.95, 12.63, 12.88, 13.08, 14.03,
+            8.17, 8.63, 8.65, 8.92, 8.95, 9.22, 9.4, 9.63, 9.93, 10.0, 10.07, 10.08, 10.13, 10.25,
+            10.33, 10.47, 10.5, 10.6, 10.85, 10.95, 11.08, 11.12, 11.17, 11.37, 11.5, 11.63, 11.95,
+            12.63, 12.88, 13.08, 14.03,
         ];
         let runpulse = vec![
             166.0, 170.0, 156.0, 146.0, 180.0, 178.0, 186.0, 164.0, 148.0, 162.0, 185.0, 168.0,
@@ -1170,7 +1255,10 @@ mod tests {
         assert_close(fitted.anova[1].sum_of_squares, 181.9635518437887);
         assert_close(fitted.anova[2].sum_of_squares, 851.6441354838712);
         assert_close(fitted.anova[0].sum_of_squares, 669.6805836400824);
-        assert_close(fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares, fitted.anova[2].sum_of_squares);
+        assert_close(
+            fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares,
+            fitted.anova[2].sum_of_squares,
+        );
 
         assert_eq!(fitted.summary_of_fit.model_degrees_of_freedom, 4);
         assert_eq!(fitted.summary_of_fit.error_degrees_of_freedom, 26);
@@ -1284,7 +1372,10 @@ mod tests {
             panic!("expected not computable result");
         };
 
-        assert_eq!(not_computable.reason, FitModelNotComputableReason::RankDeficient);
+        assert_eq!(
+            not_computable.reason,
+            FitModelNotComputableReason::RankDeficient
+        );
     }
 
     #[test]
@@ -1313,7 +1404,10 @@ mod tests {
 
         assert_eq!(
             fitted.warnings,
-            vec![FitModelWarningCode::SaturatedModel, FitModelWarningCode::PerfectFit]
+            vec![
+                FitModelWarningCode::SaturatedModel,
+                FitModelWarningCode::PerfectFit
+            ]
         );
         for parameter in &fitted.parameter_estimates {
             assert!(parameter.standard_error.is_none());
@@ -1361,8 +1455,7 @@ mod tests {
     fn tiny_scale_noisy_data_is_not_classified_as_perfect_fit() {
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
         let y = vec![
-            3.1e-9, 4.8e-9, 7.2e-9, 8.9e-9, 11.3e-9, 12.7e-9, 15.1e-9, 16.8e-9, 19.2e-9,
-            20.9e-9,
+            3.1e-9, 4.8e-9, 7.2e-9, 8.9e-9, 11.3e-9, 12.7e-9, 15.1e-9, 16.8e-9, 19.2e-9, 20.9e-9,
         ];
         let input = build_input(
             "Y",
@@ -1379,12 +1472,10 @@ mod tests {
             panic!("expected fitted result");
         };
 
-        assert!(
-            !fitted
-                .warnings
-                .iter()
-                .any(|warning| warning == &FitModelWarningCode::PerfectFit)
-        );
+        assert!(!fitted
+            .warnings
+            .iter()
+            .any(|warning| warning == &FitModelWarningCode::PerfectFit));
         assert!(fitted.anova[0].f_ratio.is_some());
         for parameter in &fitted.parameter_estimates {
             assert!(parameter.standard_error.is_some());
@@ -1423,7 +1514,10 @@ mod tests {
     fn ill_conditioned_model_sets_warning() {
         let scale = 1e-11;
         let x1 = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let x2 = x1.iter().map(|value| value + scale * value * value).collect::<Vec<_>>();
+        let x2 = x1
+            .iter()
+            .map(|value| value + scale * value * value)
+            .collect::<Vec<_>>();
         let y = x1
             .iter()
             .zip(x2.iter())
@@ -1496,17 +1590,18 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning == &FitModelWarningCode::IllConditioned));
-        assert!(
-            !fitted
-                .warnings
-                .iter()
-                .any(|warning| warning == &FitModelWarningCode::PerfectFit)
-        );
+        assert!(!fitted
+            .warnings
+            .iter()
+            .any(|warning| warning == &FitModelWarningCode::PerfectFit));
         assert!(fitted.summary_of_fit.error_degrees_of_freedom > 0);
 
         assert_close(fitted.parameter_estimates[0].estimate, 2.4999699999999994);
         assert_close(fitted.parameter_estimates[1].estimate, -1.7499842105263166);
-        assert_close(fitted.parameter_estimates[2].estimate, 7.9999906964380661e10);
+        assert_close(
+            fitted.parameter_estimates[2].estimate,
+            7.9999906964380661e10,
+        );
 
         assert_close(fitted.anova[1].sum_of_squares, 2.766976076546134e-06);
         assert_close(fitted.anova[0].sum_of_squares, 38440.562678215014);
@@ -1515,9 +1610,18 @@ mod tests {
             fitted.anova[0].sum_of_squares + fitted.anova[1].sum_of_squares,
             fitted.anova[2].sum_of_squares,
         );
-        assert_close(fitted.anova[0].mean_square.expect("ms_model"), 19220.281339107507);
-        assert_close(fitted.anova[0].f_ratio.expect("f_ratio"), 118087317607.99515);
-        assert_close(fitted.anova[0].p_value.expect("model p"), 6.1141090285572085e-87);
+        assert_close(
+            fitted.anova[0].mean_square.expect("ms_model"),
+            19220.281339107507,
+        );
+        assert_close(
+            fitted.anova[0].f_ratio.expect("f_ratio"),
+            118087317607.99515,
+        );
+        assert_close(
+            fitted.anova[0].p_value.expect("model p"),
+            6.1141090285572085e-87,
+        );
         assert_close(
             fitted.anova[1].mean_square.expect("ms_error"),
             1.6276329862036082e-07,
@@ -1561,15 +1665,22 @@ mod tests {
         ];
 
         for (index, parameter) in fitted.parameter_estimates.iter().enumerate() {
-            assert_close(parameter.standard_error.expect("standard_error"), expected_se[index]);
+            assert_close(
+                parameter.standard_error.expect("standard_error"),
+                expected_se[index],
+            );
             assert_close(parameter.t_ratio.expect("t_ratio"), expected_t[index]);
             assert_close(parameter.p_value.expect("p_value"), expected_p[index]);
             assert_close(
-                parameter.lower_confidence_limit.expect("lower_confidence_limit"),
+                parameter
+                    .lower_confidence_limit
+                    .expect("lower_confidence_limit"),
                 expected_ci[index].0,
             );
             assert_close(
-                parameter.upper_confidence_limit.expect("upper_confidence_limit"),
+                parameter
+                    .upper_confidence_limit
+                    .expect("upper_confidence_limit"),
                 expected_ci[index].1,
             );
         }
@@ -1623,7 +1734,10 @@ mod tests {
 
         assert_eq!(rows_a, rows_b);
         assert_eq!(rows_a.first().copied(), Some(1));
-        assert_eq!(rows_a.last().copied(), Some((GRAPH_SCATTER_RENDER_BUDGET + 1) as u64));
+        assert_eq!(
+            rows_a.last().copied(),
+            Some((GRAPH_SCATTER_RENDER_BUDGET + 1) as u64)
+        );
     }
 
     #[test]
@@ -1632,8 +1746,7 @@ mod tests {
             4,
             4,
             &[
-                1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0,
-                0.0, 1.0,
+                1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
             ],
         );
         let terms = resolve_terms(&[
@@ -1652,6 +1765,7 @@ mod tests {
         let input = FitModelData {
             response_column: String::from("Y"),
             predictor_columns: vec![String::from("X1"), String::from("X2"), String::from("X3")],
+            predictor_ranges: vec![],
             model_matrix_spec: spec,
             design_matrix: matrix,
             response_values: vec![5.0, 5.0, 5.0, 5.0],
