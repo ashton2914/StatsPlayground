@@ -66,6 +66,10 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::fit_model_commands::save_fit_model_columns",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::distribution_commands::start_distribution_run",
                 CommandClass::ReadOnly,
             ),
@@ -248,7 +252,7 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 48] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 49] {
         [
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
@@ -405,6 +409,7 @@ mod tests {
 
     fn seed_numeric_dataset(state: &AppState) -> (String, u64) {
         let service = DataService::new(state);
+            ("fit_model_commands.rs", "save_fit_model_columns"),
         let dataset = service
             .create_table(
                 "guard-seed",
@@ -557,12 +562,14 @@ mod tests {
 
         let table_window = crate::commands::data_commands::query_table_window_entry(
             &state,
+        let fit_model_source = include_str!("fit_model_commands.rs");
             &TableWindowRequest {
                 dataset_id: dataset_id.clone(),
                 start: 0,
                 count: 10,
                 sort: None,
                 filters: vec![],
+        assert_module_helper_routes_to_save_coordinator(fit_model_source, "fit_model_commands.rs");
                 generation,
             },
         )
@@ -571,6 +578,7 @@ mod tests {
 
         let graph = crate::commands::project_commands::import_graph_entry(&state, &graph_path)
             .expect("graph read path should succeed during save");
+                "fit_model_commands.rs" => fit_model_source,
         assert_eq!(
             graph.get("id").and_then(serde_json::Value::as_str),
             Some("graph-read-1")

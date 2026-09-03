@@ -35,6 +35,48 @@ pub struct FitModelRequest {
     pub confidence_level: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum FitModelSavedMetric {
+    Predicted,
+    Residual,
+    StudentizedResidual,
+    Leverage,
+    CooksDistance,
+    MeanConfidenceLower,
+    MeanConfidenceUpper,
+    PredictionLower,
+    PredictionUpper,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveFitModelColumnsRequest {
+    pub dataset_id: String,
+    pub expected_generation: u64,
+    pub model_name: String,
+    pub response_column: String,
+    pub terms: Vec<FitModelTerm>,
+    pub centering_method: FitModelCenteringMethod,
+    pub confidence_level: f64,
+    pub metrics: Vec<FitModelSavedMetric>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelSavedColumn {
+    pub metric: FitModelSavedMetric,
+    pub column_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveFitModelColumnsResult {
+    pub change_set_id: String,
+    pub generation: u64,
+    pub columns: Vec<FitModelSavedColumn>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum FitModelNotComputableReason {
@@ -309,6 +351,51 @@ mod tests {
         .expect("power term should deserialize");
         assert_eq!(power.kind, FitModelTermKind::Power);
         assert_eq!(power.exponent, Some(2));
+    }
+
+    #[test]
+    fn save_fit_model_columns_contract_uses_nine_camel_case_metrics() {
+        let request: SaveFitModelColumnsRequest = serde_json::from_value(serde_json::json!({
+            "datasetId": "ds-1",
+            "expectedGeneration": 4,
+            "modelName": "Response Surface",
+            "responseColumn": "Y",
+            "terms": [{ "kind": "main", "columnNames": ["A"] }],
+            "centeringMethod": "mean",
+            "confidenceLevel": 0.95,
+            "metrics": [
+                "predicted",
+                "residual",
+                "studentizedResidual",
+                "leverage",
+                "cooksDistance",
+                "meanConfidenceLower",
+                "meanConfidenceUpper",
+                "predictionLower",
+                "predictionUpper"
+            ]
+        }))
+        .expect("save request should deserialize");
+
+        assert_eq!(request.metrics.len(), 9);
+        assert_eq!(request.metrics[0], FitModelSavedMetric::Predicted);
+        assert_eq!(request.metrics[8], FitModelSavedMetric::PredictionUpper);
+        let result = SaveFitModelColumnsResult {
+            change_set_id: "change-1".into(),
+            generation: 5,
+            columns: vec![FitModelSavedColumn {
+                metric: FitModelSavedMetric::Predicted,
+                column_name: "Response Surface Predicted".into(),
+            }],
+        };
+        let value = serde_json::to_value(result).expect("save result should serialize");
+        assert_eq!(value["changeSetId"], "change-1");
+        assert_eq!(value["generation"], 5);
+        assert_eq!(value["columns"][0]["metric"], "predicted");
+        assert_eq!(
+            value["columns"][0]["columnName"],
+            "Response Surface Predicted"
+        );
     }
 
     #[test]

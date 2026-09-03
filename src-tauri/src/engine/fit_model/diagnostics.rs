@@ -23,6 +23,36 @@ pub fn compute_diagnostics(
     confidence_level: f64,
     covariance: Option<&[Vec<f64>]>,
 ) -> Result<FitModelDiagnostics, FitModelEngineError> {
+    compute_diagnostics_with_rows(
+        design_matrix,
+        response,
+        fitted,
+        residuals,
+        row_indexes,
+        predictor_rows,
+        terms,
+        mse,
+        error_degrees_of_freedom,
+        confidence_level,
+        covariance,
+    )
+    .map(|(diagnostics, _)| diagnostics)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_diagnostics_with_rows(
+    design_matrix: &DMatrix<f64>,
+    response: &[f64],
+    fitted: &[f64],
+    residuals: &[f64],
+    row_indexes: &[u64],
+    predictor_rows: &[Vec<f64>],
+    terms: &[FitModelResolvedTerm],
+    mse: Option<f64>,
+    error_degrees_of_freedom: u64,
+    confidence_level: f64,
+    covariance: Option<&[Vec<f64>]>,
+) -> Result<(FitModelDiagnostics, Vec<FitModelRowDiagnostic>), FitModelEngineError> {
     let row_count = response.len();
     if row_count == 0
         || design_matrix.nrows() != row_count
@@ -190,7 +220,7 @@ pub fn compute_diagnostics(
         qq_reason,
     };
     validate_finite_diagnostics(&diagnostics)?;
-    Ok(diagnostics)
+    Ok((diagnostics, all_rows))
 }
 
 fn validate_finite_diagnostics(
@@ -503,7 +533,7 @@ fn lack_of_fit(
 mod tests {
     use nalgebra::DMatrix;
 
-    use super::compute_diagnostics;
+    use super::{compute_diagnostics, compute_diagnostics_with_rows};
     use crate::engine::fit_model::ols::FitModelEngineError;
     use crate::models::fit_model::{
         FitModelInferenceReason, FitModelResolvedTerm, FitModelTermKind,
@@ -703,7 +733,7 @@ mod tests {
             .zip(&fitted)
             .map(|(observed, predicted)| observed - predicted)
             .collect::<Vec<_>>();
-        let diagnostics = compute_diagnostics(
+        let (diagnostics, all_rows) = compute_diagnostics_with_rows(
             &design,
             &response,
             &fitted,
@@ -729,6 +759,12 @@ mod tests {
         );
         assert!(diagnostics.rows_sampled);
         assert_eq!(diagnostics.source_row_count, row_count as u64);
+        assert_eq!(all_rows.len(), row_count);
+        assert_eq!(all_rows.first().map(|row| row.row_index), Some(1));
+        assert_eq!(
+            all_rows.last().map(|row| row.row_index),
+            Some(row_count as u64)
+        );
         assert_eq!(
             diagnostics.qq_rows.len(),
             crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET

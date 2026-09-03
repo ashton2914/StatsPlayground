@@ -2,12 +2,13 @@ use nalgebra::linalg::SVD;
 use nalgebra::{DMatrix, DVector, Dyn};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
-use crate::engine::fit_model::diagnostics::compute_diagnostics;
+use crate::engine::fit_model::diagnostics::compute_diagnostics_with_rows;
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
     FitModelParameterEstimate, FitModelPlotRow, FitModelPredictorRange, FitModelResolvedTerm,
-    FitModelResult, FitModelSnapshot, FitModelSummaryOfFit, FitModelWarningCode,
+    FitModelResult, FitModelRowDiagnostic, FitModelSnapshot, FitModelSummaryOfFit,
+    FitModelWarningCode,
 };
 
 const CONDITION_WARNING_THRESHOLD: f64 = 1e10;
@@ -35,6 +36,12 @@ pub struct FitModelData {
     pub response_values: Vec<f64>,
     pub row_indexes: Vec<u64>,
     pub excluded_rows: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FitModelComputation {
+    pub result: FitModelResult,
+    pub diagnostic_rows: Vec<FitModelRowDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +100,13 @@ pub fn fit_linear_model(
     input: FitModelData,
     confidence_level: f64,
 ) -> Result<FitModelResult, FitModelEngineError> {
+    fit_linear_model_with_diagnostics(input, confidence_level).map(|computation| computation.result)
+}
+
+pub(crate) fn fit_linear_model_with_diagnostics(
+    input: FitModelData,
+    confidence_level: f64,
+) -> Result<FitModelComputation, FitModelEngineError> {
     if !(0.0..1.0).contains(&confidence_level) {
         return Err(FitModelEngineError::InvalidConfidenceLevel(
             confidence_level,
@@ -118,21 +132,27 @@ pub fn fit_linear_model(
     }
 
     if n < p {
-        return Ok(not_computable(
-            FitModelNotComputableReason::InsufficientRows,
-            n as u64,
-            input.excluded_rows,
-        ));
+        return Ok(FitModelComputation {
+            result: not_computable(
+                FitModelNotComputableReason::InsufficientRows,
+                n as u64,
+                input.excluded_rows,
+            ),
+            diagnostic_rows: Vec::new(),
+        });
     }
 
     let svd = input.design_matrix.clone().svd(true, true);
     let geometry = fit_geometry_from_svd(&svd, n, p)?;
     if geometry.rank < p {
-        return Ok(not_computable(
-            FitModelNotComputableReason::RankDeficient,
-            n as u64,
-            input.excluded_rows,
-        ));
+        return Ok(FitModelComputation {
+            result: not_computable(
+                FitModelNotComputableReason::RankDeficient,
+                n as u64,
+                input.excluded_rows,
+            ),
+            diagnostic_rows: Vec::new(),
+        });
     }
 
     let response = DVector::from_vec(input.response_values.clone());
@@ -295,7 +315,7 @@ pub fn fit_linear_model(
         centering: centering.clone(),
         predictor_ranges: input.predictor_ranges,
     };
-    let diagnostics = compute_diagnostics(
+    let (diagnostics, diagnostic_rows) = compute_diagnostics_with_rows(
         &input.design_matrix,
         input.response_values.as_slice(),
         fitted.as_slice(),
@@ -309,8 +329,8 @@ pub fn fit_linear_model(
         snapshot.covariance.as_deref(),
     )?;
 
-    Ok(FitModelResult::Fitted(Box::new(
-        crate::models::fit_model::FitModelFittedResult {
+    Ok(FitModelComputation {
+        result: FitModelResult::Fitted(Box::new(crate::models::fit_model::FitModelFittedResult {
             used_rows: n as u64,
             excluded_rows: input.excluded_rows,
             confidence_level,
@@ -359,8 +379,9 @@ pub fn fit_linear_model(
             plot_rows,
             plot_rows_sampled: sampled,
             warnings,
-        },
-    )))
+        })),
+        diagnostic_rows,
+    })
 }
 
 fn matrix_to_finite_rows(matrix: DMatrix<f64>) -> Result<Vec<Vec<f64>>, FitModelEngineError> {

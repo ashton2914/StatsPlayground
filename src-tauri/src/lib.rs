@@ -72,6 +72,7 @@ pub fn run() {
             commands::stats_commands::get_column_stats,
             commands::stats_commands::get_descriptive_stats,
             commands::fit_model_commands::fit_model,
+            commands::fit_model_commands::save_fit_model_columns,
             commands::fit_y_by_x_commands::fit_y_by_x,
             commands::tabulate_commands::tabulate,
             commands::io_commands::export_csv,

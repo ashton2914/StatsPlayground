@@ -1,10 +1,16 @@
 use std::collections::BTreeMap;
 
+use crate::engine::duckdb_engine::{DuckDbEngine, ValuedColumn};
 use crate::engine::fit_model::matrix::{MatrixError, ModelMatrixSpec};
-use crate::engine::fit_model::ols::{fit_linear_model, FitModelData, FitModelEngineError};
+use crate::engine::fit_model::ols::{
+    fit_linear_model_with_diagnostics, FitModelData, FitModelEngineError,
+};
 use crate::engine::fit_model::terms::{resolve_terms, TermError};
 use crate::error::AppError;
-use crate::models::fit_model::{FitModelRequest, FitModelResult};
+use crate::models::fit_model::{
+    FitModelRequest, FitModelResult, FitModelRowDiagnostic, FitModelSavedColumn,
+    FitModelSavedMetric, SaveFitModelColumnsRequest, SaveFitModelColumnsResult,
+};
 use crate::state::AppState;
 
 pub struct FitModelService<'a> {
@@ -18,65 +24,202 @@ impl<'a> FitModelService<'a> {
 
     pub fn run(&self, request: FitModelRequest) -> Result<FitModelResult, AppError> {
         validate_confidence_level(request.confidence_level)?;
-        let terms = resolve_terms(&request.terms).map_err(map_term_error)?;
-        let predictor_names = required_column_names(&terms);
+        let db = self
+            .state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let fit_input = prepare_fit_input(
+            &db,
+            &request.dataset_id,
+            request.generation,
+            &request.response_column,
+            &request.terms,
+            request.centering_method,
+        )?;
+        fit_linear_model_with_diagnostics(fit_input, request.confidence_level)
+            .map(|computation| computation.result)
+            .map_err(map_engine_error)
+    }
+
+    pub fn save_columns(
+        &self,
+        request: SaveFitModelColumnsRequest,
+    ) -> Result<SaveFitModelColumnsResult, AppError> {
+        validate_confidence_level(request.confidence_level)?;
+        if request.metrics.is_empty() {
+            return Err(AppError::InvalidParam(
+                "at least one Fit Model metric must be selected".into(),
+            ));
+        }
+        let mut unique_metrics = std::collections::HashSet::new();
+        if request
+            .metrics
+            .iter()
+            .any(|metric| !unique_metrics.insert(metric.clone()))
+        {
+            return Err(AppError::InvalidParam(
+                "Fit Model save metrics must be unique".into(),
+            ));
+        }
+        let prefix = clean_model_name(&request.model_name)?;
 
         let db = self
             .state
             .db
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
-        let rows = db.read_fit_model_rows(
+        let fit_input = prepare_fit_input(
+            &db,
             &request.dataset_id,
-            request.generation,
+            request.expected_generation,
             &request.response_column,
-            &predictor_names,
+            &request.terms,
+            request.centering_method,
         )?;
+        let computation = fit_linear_model_with_diagnostics(fit_input, request.confidence_level)
+            .map_err(map_engine_error)?;
+        if !matches!(computation.result, FitModelResult::Fitted(_)) {
+            return Err(AppError::InvalidParam(
+                "Fit Model diagnostic columns require a computable fit".into(),
+            ));
+        }
 
-        let mut columns = BTreeMap::new();
-        for (index, name) in rows.predictor_names.iter().enumerate() {
-            let values = rows
-                .used_rows
+        let requested_names = request
+            .metrics
+            .iter()
+            .map(|metric| format!("{prefix} {}", metric_label(metric)))
+            .collect::<Vec<_>>();
+        let resolved_names = db.resolve_valued_column_names(&request.dataset_id, &requested_names)?;
+        let columns = request
+            .metrics
+            .iter()
+            .zip(&requested_names)
+            .map(|(metric, name)| {
+                let values = computation
+                    .diagnostic_rows
+                    .iter()
+                    .map(|row| {
+                        metric_value(row, metric).map(|value| (row.row_index, Some(value)))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        AppError::InvalidParam(format!(
+                            "Fit Model metric is not estimable: {}",
+                            metric_label(metric)
+                        ))
+                    })?;
+                Ok(ValuedColumn {
+                    name: name.clone(),
+                    column_type: "DOUBLE".into(),
+                    values,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        let (change_set_id, generation) = db.add_valued_columns_with_change_set(
+            &request.dataset_id,
+            &columns,
+            request.expected_generation,
+        )?;
+        Ok(SaveFitModelColumnsResult {
+            change_set_id,
+            generation,
+            columns: request
+                .metrics
+                .into_iter()
+                .zip(resolved_names)
+                .map(|(metric, column_name)| FitModelSavedColumn {
+                    metric,
+                    column_name,
+                })
+                .collect(),
+        })
+    }
+}
+
+fn prepare_fit_input(
+    db: &DuckDbEngine,
+    dataset_id: &str,
+    generation: u64,
+    response_column: &str,
+    requested_terms: &[crate::models::fit_model::FitModelTerm],
+    centering_method: crate::models::fit_model::FitModelCenteringMethod,
+) -> Result<FitModelData, AppError> {
+    let terms = resolve_terms(requested_terms).map_err(map_term_error)?;
+    let predictor_names = required_column_names(&terms);
+    let rows = db.read_fit_model_rows(
+        dataset_id,
+        generation,
+        response_column,
+        &predictor_names,
+    )?;
+    let mut columns = BTreeMap::new();
+    for (index, name) in rows.predictor_names.iter().enumerate() {
+        columns.insert(
+            name.clone(),
+            rows.used_rows
                 .iter()
                 .map(|row| row.predictors[index])
-                .collect::<Vec<_>>();
-            columns.insert(name.clone(), values);
-        }
-        let response_values = rows
-            .used_rows
-            .iter()
-            .map(|row| row.response)
-            .collect::<Vec<_>>();
-        let row_indexes = rows
-            .used_rows
-            .iter()
-            .map(|row| row.row_index)
-            .collect::<Vec<_>>();
-        let predictor_rows = rows
+                .collect(),
+        );
+    }
+    let model_matrix_spec = ModelMatrixSpec::from_columns(terms, centering_method, &columns)
+        .map_err(map_matrix_error)?;
+    let design_matrix = model_matrix_spec
+        .transform_training_columns(&columns)
+        .map_err(map_matrix_error)?;
+    Ok(FitModelData {
+        response_column: response_column.to_string(),
+        predictor_columns: rows.predictor_names,
+        predictor_ranges: predictor_ranges(&columns)?,
+        predictor_rows: rows
             .used_rows
             .iter()
             .map(|row| row.predictors.clone())
-            .collect::<Vec<_>>();
+            .collect(),
+        model_matrix_spec,
+        design_matrix,
+        response_values: rows.used_rows.iter().map(|row| row.response).collect(),
+        row_indexes: rows.used_rows.iter().map(|row| row.row_index).collect(),
+        excluded_rows: rows.excluded_rows,
+    })
+}
 
-        let model_matrix_spec =
-            ModelMatrixSpec::from_columns(terms, request.centering_method, &columns)
-                .map_err(map_matrix_error)?;
-        let design_matrix = model_matrix_spec
-            .transform_training_columns(&columns)
-            .map_err(map_matrix_error)?;
-        let fit_input = FitModelData {
-            response_column: request.response_column,
-            predictor_columns: rows.predictor_names,
-            predictor_ranges: predictor_ranges(&columns)?,
-            predictor_rows,
-            model_matrix_spec,
-            design_matrix,
-            response_values,
-            row_indexes,
-            excluded_rows: rows.excluded_rows,
-        };
+fn clean_model_name(model_name: &str) -> Result<String, AppError> {
+    let name = model_name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().any(char::is_control) {
+        return Err(AppError::InvalidParam(
+            "Fit Model name must contain visible characters".into(),
+        ));
+    }
+    Ok(name)
+}
 
-        fit_linear_model(fit_input, request.confidence_level).map_err(map_engine_error)
+fn metric_label(metric: &FitModelSavedMetric) -> &'static str {
+    match metric {
+        FitModelSavedMetric::Predicted => "Predicted",
+        FitModelSavedMetric::Residual => "Residual",
+        FitModelSavedMetric::StudentizedResidual => "Studentized Residual",
+        FitModelSavedMetric::Leverage => "Leverage",
+        FitModelSavedMetric::CooksDistance => "Cook's D",
+        FitModelSavedMetric::MeanConfidenceLower => "Mean CI Lower",
+        FitModelSavedMetric::MeanConfidenceUpper => "Mean CI Upper",
+        FitModelSavedMetric::PredictionLower => "Prediction Lower",
+        FitModelSavedMetric::PredictionUpper => "Prediction Upper",
+    }
+}
+
+fn metric_value(row: &FitModelRowDiagnostic, metric: &FitModelSavedMetric) -> Option<f64> {
+    match metric {
+        FitModelSavedMetric::Predicted => Some(row.fitted),
+        FitModelSavedMetric::Residual => Some(row.residual),
+        FitModelSavedMetric::StudentizedResidual => row.studentized_residual,
+        FitModelSavedMetric::Leverage => row.leverage,
+        FitModelSavedMetric::CooksDistance => row.cooks_distance,
+        FitModelSavedMetric::MeanConfidenceLower => row.mean_confidence_lower,
+        FitModelSavedMetric::MeanConfidenceUpper => row.mean_confidence_upper,
+        FitModelSavedMetric::PredictionLower => row.prediction_lower,
+        FitModelSavedMetric::PredictionUpper => row.prediction_upper,
     }
 }
 
@@ -213,7 +356,8 @@ mod tests {
 
     use crate::error::AppError;
     use crate::models::fit_model::{
-        FitModelCenteringMethod, FitModelRequest, FitModelResult, FitModelTerm, FitModelTermKind,
+        FitModelCenteringMethod, FitModelRequest, FitModelResult, FitModelSavedMetric,
+        FitModelTerm, FitModelTermKind, SaveFitModelColumnsRequest,
     };
     use crate::state::AppState;
 
@@ -346,5 +490,110 @@ mod tests {
             .expect("expected successful fit model run");
 
         assert!(matches!(result, FitModelResult::Fitted(_)));
+    }
+
+    #[test]
+    fn save_columns_writes_complete_cases_and_leaves_excluded_rows_null() {
+        let state = AppState::new().expect("state");
+        seed_dataset(&state, "fit-model-save-columns");
+        {
+            let db = state.db.lock().expect("lock");
+            db.conn()
+                .execute_batch(
+                    r#"INSERT INTO "dataset_fit_model_save_columns" (_row_id, Y, A, B)
+                       VALUES (4, 40.0, NULL, 8.0);
+                       UPDATE _meta_datasets SET row_count = 4
+                       WHERE id = 'fit-model-save-columns';"#,
+                )
+                .expect("excluded row");
+        }
+
+        let fit_request = request("fit-model-save-columns", 0, 0.95);
+        let result = FitModelService::new(&state)
+            .save_columns(SaveFitModelColumnsRequest {
+                dataset_id: fit_request.dataset_id,
+                expected_generation: fit_request.generation,
+                model_name: "Response Surface".into(),
+                response_column: fit_request.response_column,
+                terms: fit_request.terms,
+                centering_method: fit_request.centering_method,
+                confidence_level: fit_request.confidence_level,
+                metrics: vec![
+                    FitModelSavedMetric::Predicted,
+                    FitModelSavedMetric::Residual,
+                ],
+            })
+            .expect("save columns");
+
+        assert_eq!(result.generation, 1);
+        assert!(!result.change_set_id.is_empty());
+        assert_eq!(result.columns[0].column_name, "Response Surface Predicted");
+        assert_eq!(result.columns[1].column_name, "Response Surface Residual");
+        let db = state.db.lock().expect("lock");
+        let values = db
+            .conn()
+            .prepare(
+                r#"SELECT "Response Surface Predicted", "Response Surface Residual"
+                   FROM "dataset_fit_model_save_columns" ORDER BY _row_id"#,
+            )
+            .expect("prepare")
+            .query_map([], |row| {
+                Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<f64>>(1)?))
+            })
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("values");
+        assert_eq!(values.len(), 4);
+        assert!(values[..3]
+            .iter()
+            .all(|(predicted, residual)| predicted.is_some() && residual.is_some()));
+        assert_eq!(values[3], (None, None));
+        assert_eq!(db.get_dataset_generation("fit-model-save-columns").unwrap(), 1);
+    }
+
+    #[test]
+    fn save_columns_rejects_invalid_metric_sets_without_mutation() {
+        let state = AppState::new().expect("state");
+        seed_dataset(&state, "fit-model-save-invalid");
+        let fit_request = request("fit-model-save-invalid", 0, 0.95);
+        let make_request = |metrics| SaveFitModelColumnsRequest {
+            dataset_id: fit_request.dataset_id.clone(),
+            expected_generation: 0,
+            model_name: "Invalid Save".into(),
+            response_column: fit_request.response_column.clone(),
+            terms: fit_request.terms.clone(),
+            centering_method: fit_request.centering_method.clone(),
+            confidence_level: 0.95,
+            metrics,
+        };
+        let service = FitModelService::new(&state);
+
+        assert!(matches!(
+            service.save_columns(make_request(vec![])),
+            Err(AppError::InvalidParam(_))
+        ));
+        assert!(matches!(
+            service.save_columns(make_request(vec![
+                FitModelSavedMetric::Residual,
+                FitModelSavedMetric::Residual,
+            ])),
+            Err(AppError::InvalidParam(_))
+        ));
+        assert!(matches!(
+            service.save_columns(make_request(vec![FitModelSavedMetric::PredictionUpper])),
+            Err(AppError::InvalidParam(message)) if message.contains("not estimable")
+        ));
+
+        let db = state.db.lock().expect("lock");
+        assert_eq!(db.get_dataset_generation("fit-model-save-invalid").unwrap(), 0);
+        let saved_columns: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ? AND col_name LIKE 'Invalid Save%'",
+                duckdb::params!["fit-model-save-invalid"],
+                |row| row.get(0),
+            )
+            .expect("column count");
+        assert_eq!(saved_columns, 0);
     }
 }

@@ -27,6 +27,13 @@ pub struct DuckDbEngine {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValuedColumn {
+    pub name: String,
+    pub column_type: String,
+    pub values: Vec<(u64, Option<f64>)>,
+}
+
 pub struct GraphProjectionStats {
     pub source_rows: u64,
     pub projected_columns: Vec<String>,
@@ -5280,6 +5287,219 @@ impl DuckDbEngine {
         }
         let mut requested = column_names.to_vec();
         requested.sort();
+    pub fn add_valued_columns_with_change_set(
+        &self,
+        dataset_id: &str,
+        columns: &[ValuedColumn],
+        expected_generation: u64,
+    ) -> Result<(String, u64), AppError> {
+        const MAX_COLUMNS: usize = 1_000;
+        if columns.is_empty() || columns.len() > MAX_COLUMNS {
+            return Err(AppError::InvalidParam(format!(
+                "column count must be between 1 and {MAX_COLUMNS}"
+            )));
+        }
+        let mut names = std::collections::HashSet::new();
+        let canonical_columns = columns
+            .iter()
+            .map(|column| {
+                if column.name.trim().is_empty()
+                    || !names.insert(column.name.to_ascii_lowercase())
+                    || column
+                        .values
+                        .iter()
+                        .any(|(_, value)| value.is_some_and(|value| !value.is_finite()))
+                {
+                    return Err(AppError::InvalidParam(
+                        "valued columns contain an invalid name or value".into(),
+                    ));
+                }
+                let mut row_ids = std::collections::HashSet::new();
+                if column
+                    .values
+                    .iter()
+                    .any(|(row_id, _)| !row_ids.insert(*row_id))
+                {
+                    return Err(AppError::InvalidParam(format!(
+                        "valued column contains duplicate row IDs: {}",
+                        column.name
+                    )));
+                }
+                self.canonicalize_column_type(&column.column_type)
+                    .map(|column_type| (column, column_type))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let resolved_names = self.resolve_valued_column_names(
+            dataset_id,
+            &columns
+                .iter()
+                .map(|column| column.name.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let generation = self.get_dataset_generation(dataset_id)?;
+        if generation != expected_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {generation}, received {expected_generation}"
+            )));
+        }
+        let next_generation = generation
+            .checked_add(1)
+            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
+        let first_index: i32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        let added_count = i32::try_from(canonical_columns.len())
+            .map_err(|_| AppError::InvalidParam("too many columns".into()))?;
+        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let change_set_id = uuid::Uuid::new_v4().to_string();
+        let suffix = change_set_id.replace('-', "_");
+        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
+        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
+        let replacement_name = format!("_valued_columns_{suffix}");
+        let replacement_table = Self::quote_identifier(&replacement_name);
+
+        self.conn.execute_batch("BEGIN TRANSACTION;")?;
+        let result = (|| -> Result<(), AppError> {
+            self.conn.execute(
+                &format!(
+                    "CREATE TABLE {before_table} AS SELECT \"_row_id\" FROM {dataset_table} WHERE FALSE"
+                ),
+                [],
+            )?;
+            let added_select = canonical_columns
+                .iter()
+                .enumerate()
+                .map(|(ordinal, (_, column_type))| {
+                    format!(
+                        "NULL::{column_type} AS {}",
+                        Self::quote_identifier(&resolved_names[ordinal])
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.conn.execute(
+                &format!(
+                    "CREATE TABLE {replacement_table} AS SELECT *, {added_select} FROM {dataset_table}"
+                ),
+                [],
+            )?;
+            for (ordinal, (column, column_type)) in canonical_columns.iter().enumerate() {
+                let column_index = first_index + ordinal as i32;
+                let resolved_name = &resolved_names[ordinal];
+                let column_identifier = Self::quote_identifier(resolved_name);
+                self.conn.execute(
+                    "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
+                    params![dataset_id, column_index, resolved_name, column_type],
+                )?;
+                let mut update = self.conn.prepare(&format!(
+                    "UPDATE {replacement_table} SET {column_identifier} = ? WHERE \"_row_id\" = ?"
+                ))?;
+                for (row_id, value) in &column.values {
+                    if update.execute(params![value, row_id])? != 1 {
+                        return Err(AppError::InvalidParam(format!(
+                            "valued column references unknown row ID: {row_id}"
+                        )));
+                    }
+                }
+            }
+            let after_select = std::iter::once("\"_row_id\"".to_string())
+                .chain(canonical_columns.iter().enumerate().map(|(ordinal, _)| {
+                    format!(
+                        "{} AS {}",
+                        Self::quote_identifier(&resolved_names[ordinal]),
+                        Self::quote_identifier(&format!("c{ordinal}"))
+                    )
+                }))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.conn.execute(
+                &format!(
+                    "CREATE TABLE {after_table} AS SELECT {after_select} FROM {replacement_table}"
+                ),
+                [],
+            )?;
+            self.conn
+                .execute(&format!("DROP TABLE {dataset_table}"), [])?;
+            self.conn.execute(
+                &format!(
+                    "ALTER TABLE {replacement_table} RENAME TO {}",
+                    Self::quote_identifier(&Self::internal_table_name(dataset_id))
+                ),
+                [],
+            )?;
+            self.conn.execute(
+                "UPDATE _meta_datasets SET col_count = col_count + ?, generation = ? WHERE id = ?",
+                params![added_count, next_generation, dataset_id],
+            )?;
+            self.conn.execute(
+                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
+                params![&change_set_id, dataset_id, next_generation],
+            )?;
+            for (ordinal, (_, column_type)) in canonical_columns.iter().enumerate() {
+                let column_index = first_index + ordinal as i32;
+                self.conn.execute(
+                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, ?, ?, NULL, NULL, ?, ?)",
+                    params![&change_set_id, ordinal as i32, column_index, &resolved_names[ordinal], column_type],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => match self.conn.execute_batch("COMMIT;") {
+                Ok(()) => Ok((change_set_id, next_generation)),
+                Err(error) => {
+                    let _ = self.conn.execute_batch("ROLLBACK;");
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(error)
+            }
+        }
+    }
+
+    pub fn resolve_valued_column_names(
+        &self,
+        dataset_id: &str,
+        requested_names: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        if requested_names.is_empty() || requested_names.iter().any(|name| name.trim().is_empty()) {
+            return Err(AppError::InvalidParam(
+                "valued column names must not be empty".into(),
+            ));
+        }
+        let existing = self
+            .get_user_columns(dataset_id)?
+            .into_iter()
+            .map(|(name, _)| name.to_ascii_lowercase())
+            .collect::<std::collections::HashSet<_>>();
+        for suffix in 1usize.. {
+            let candidates = requested_names
+                .iter()
+                .map(|name| {
+                    if suffix == 1 {
+                        name.clone()
+                    } else {
+                        format!("{name}-{suffix}")
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut group_names = std::collections::HashSet::new();
+            if candidates.iter().all(|candidate| {
+                let canonical = candidate.to_ascii_lowercase();
+                !existing.contains(&canonical) && group_names.insert(canonical)
+            }) {
+                return Ok(candidates);
+            }
+        }
+        Err(AppError::InvalidParam(
+            "valued column name suffix space is exhausted".into(),
+        ))
+    }
+
         requested.dedup();
         if requested.len() != column_names.len() {
             return Err(AppError::InvalidParam("column names must be unique".into()));
@@ -9612,6 +9832,220 @@ mod tests {
         assert_eq!(row_ids, vec![1, 2, 3]);
         assert_eq!(db.get_dataset_generation("added-rows-id").unwrap(), 1);
         assert_eq!(db.get_dataset_meta("added-rows-id").unwrap().row_count, 3);
+    #[test]
+    fn valued_columns_change_set_restores_values_as_one_history_action() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-columns-id",
+            "History Valued Columns",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO dataset_history_valued_columns_id VALUES
+                    (1, 'one'), (2, 'two'), (3, 'three');
+                 UPDATE _meta_datasets SET row_count = 3 WHERE id = 'history-valued-columns-id';",
+            )
+            .unwrap();
+
+        let columns = vec![
+            ValuedColumn {
+                name: "Predicted".into(),
+                column_type: "DOUBLE".into(),
+                values: vec![(1, Some(10.0)), (3, Some(30.0))],
+            },
+            ValuedColumn {
+                name: "Residual".into(),
+                column_type: "DOUBLE".into(),
+                values: vec![(1, Some(-1.0)), (3, Some(1.0))],
+            },
+        ];
+        let (change_set_id, generation) = db
+            .add_valued_columns_with_change_set("history-valued-columns-id", &columns, 0)
+            .unwrap();
+
+        assert_eq!(generation, 1);
+        assert_eq!(
+            db.get_dataset_generation("history-valued-columns-id")
+                .unwrap(),
+            1
+        );
+        let values: Vec<(u64, Option<f64>, Option<f64>)> = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, Predicted, Residual
+                 FROM dataset_history_valued_columns_id ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![
+                (1, Some(10.0), Some(-1.0)),
+                (2, None, None),
+                (3, Some(30.0), Some(1.0))
+            ]
+        );
+
+        db.apply_change_set(&change_set_id, true).unwrap();
+        assert_eq!(
+            db.get_user_columns("history-valued-columns-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+
+        db.apply_change_set(&change_set_id, false).unwrap();
+        let restored: (Option<f64>, Option<f64>) = db
+            .conn()
+            .query_row(
+                "SELECT Predicted, Residual FROM dataset_history_valued_columns_id WHERE _row_id = 3",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(restored, (Some(30.0), Some(1.0)));
+        assert_eq!(
+            db.get_dataset_generation("history-valued-columns-id")
+                .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn valued_columns_reject_stale_generation_without_mutation() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-stale-id",
+            "History Valued Stale",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+
+        let error = db
+            .add_valued_columns_with_change_set(
+                "history-valued-stale-id",
+                &[ValuedColumn {
+                    name: "Predicted".into(),
+                    column_type: "DOUBLE".into(),
+                    values: vec![],
+                }],
+                1,
+            )
+            .expect_err("stale generation must fail");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("generation")));
+        assert_eq!(
+            db.get_user_columns("history-valued-stale-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+        assert_eq!(
+            db.get_dataset_generation("history-valued-stale-id")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn valued_columns_apply_one_suffix_to_the_whole_conflicting_group() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-suffix-id",
+            "History Valued Suffix",
+            &["Predicted".into()],
+            &["DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.add_valued_columns_with_change_set(
+            "history-valued-suffix-id",
+            &[
+                ValuedColumn {
+                    name: "Predicted".into(),
+                    column_type: "DOUBLE".into(),
+                    values: vec![],
+                },
+                ValuedColumn {
+                    name: "Residual".into(),
+                    column_type: "DOUBLE".into(),
+                    values: vec![],
+                },
+            ],
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.get_user_columns("history-valued-suffix-id")
+                .unwrap()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["Predicted", "Predicted-2", "Residual-2"]
+        );
+    }
+
+    #[test]
+    fn valued_columns_roll_back_all_changes_when_a_row_is_missing() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-rollback-id",
+            "History Valued Rollback",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO dataset_history_valued_rollback_id VALUES (1, 'kept')",
+                [],
+            )
+            .unwrap();
+
+        let error = db
+            .add_valued_columns_with_change_set(
+                "history-valued-rollback-id",
+                &[
+                    ValuedColumn {
+                        name: "Predicted".into(),
+                        column_type: "DOUBLE".into(),
+                        values: vec![(1, Some(10.0))],
+                    },
+                    ValuedColumn {
+                        name: "Residual".into(),
+                        column_type: "DOUBLE".into(),
+                        values: vec![(99, Some(1.0))],
+                    },
+                ],
+                0,
+            )
+            .expect_err("unknown row must roll back");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("row ID")));
+        assert_eq!(
+            db.get_user_columns("history-valued-rollback-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+        assert_eq!(
+            db.get_dataset_generation("history-valued-rollback-id")
+                .unwrap(),
+            0
+        );
+        let history_count: u64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _history_change_sets WHERE dataset_id = 'history-valued-rollback-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_count, 0);
+    }
+
 
         let generation = db
             .apply_added_rows("added-rows-id", &row_ids, true, 1)
