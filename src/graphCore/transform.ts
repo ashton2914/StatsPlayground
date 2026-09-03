@@ -5499,7 +5499,7 @@ function buildSingleOption(
   // multiple lines — wrapped labels read better horizontally.
   const xRotated = xIsCategory && xMaxLines === 1 && needsRotation(xDecisionCats);
   const bottomGap = xIsCategory
-    ? (xRotated ? 56 : 16) + Math.max(0, xMaxLines - 1) * 14
+    ? (xRotated ? 56 : 28) + Math.max(0, xMaxLines - 1) * 14
     : 28;
 
   // Resolve final X-axis bounds + tick interval for the VALUE-type X
