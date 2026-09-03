@@ -56,7 +56,7 @@ import {
   createDefaultMultivariateGraphState,
 } from "@/components/graphBuilder/graphBuilderMode";
 import type { FitYByXItem } from "@/types/fitYByX";
-import type { FitModelItem } from "@/types/fitModel";
+import type { FitModelItem, FitModelPrefill } from "@/types/fitModel";
 import type { TabulateItem } from "@/types/tabulate";
 import type {
   DistributionAnalysisConfigV1,
@@ -261,6 +261,7 @@ export function Workspace() {
   const [tableOp, setTableOp] = useState<TableOpType | null>(null);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
   const [showFitModelDialog, setShowFitModelDialog] = useState(false);
+  const [fitModelPrefill, setFitModelPrefill] = useState<FitModelPrefill | null>(null);
   const [distributionDialog, setDistributionDialog] = useState<{
     datasetId: string;
     columns: DistributionColumnInfoV1[];
@@ -603,14 +604,19 @@ export function Workspace() {
     setShowFitYByXDialog(true);
   };
 
-  const handleCreateFitModel = () => {
+  const openFitModel = (prefill?: FitModelPrefill) => {
     if (readOnly) return;
-    if (!activeDatasetId) {
+    const sourceDatasetId = prefill?.sourceDatasetId ?? activeDatasetId;
+    if (!sourceDatasetId || !datasets.some((dataset) => dataset.id === sourceDatasetId)) {
       alert(t("alert.selectDatasetFirst"));
       return;
     }
+    setActiveDataset(sourceDatasetId);
+    setFitModelPrefill(prefill ?? null);
     setShowFitModelDialog(true);
   };
+
+  const handleCreateFitModel = () => openFitModel();
 
   const handleCreateFitModelItem = async (definition: FitModelCreateDefinition) => {
     if (!activeDatasetId) return;
@@ -644,6 +650,7 @@ export function Workspace() {
     setActiveTabulateId(null);
     setActiveFitModelId(id);
     setShowFitModelDialog(false);
+    setFitModelPrefill(null);
     markDirty();
     recordAction(t("history.newFitModel", { name, source }));
     setRenamingId(id);
@@ -2545,7 +2552,11 @@ export function Workspace() {
       {showFitModelDialog && activeDatasetId && (
         <FitModelRoleDialog
           dataset={datasets.find((dataset) => dataset.id === activeDatasetId)!}
-          onCancel={() => setShowFitModelDialog(false)}
+          prefill={fitModelPrefill}
+          onCancel={() => {
+            setShowFitModelDialog(false);
+            setFitModelPrefill(null);
+          }}
           onCreateDefinition={handleCreateFitModelItem}
         />
       )}

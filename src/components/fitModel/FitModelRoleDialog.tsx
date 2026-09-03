@@ -5,7 +5,7 @@ import { fitModelParameterCount } from "@/components/fitModel/fitModelConfig";
 import { MAX_FIT_MODEL_TERMS, countFactorialTerms } from "@/components/fitModel/fitModelConstruct";
 import { dataService } from "@/services/dataService";
 import type { ColumnDisplayProps, DatasetMeta } from "@/types/data";
-import type { FitModelConstruct, FitModelTerm } from "@/types/fitModel";
+import type { FitModelConstruct, FitModelPrefill, FitModelTerm } from "@/types/fitModel";
 
 import {
   beginFitModelFieldLoad,
@@ -17,6 +17,7 @@ import {
   createFitModelDropAction,
   createFitModelDraft,
   createFitModelFieldLoadSnapshot,
+  createValidatedFitModelDraft,
   createToggleMainEffectAction,
   filterFitModelFields,
   hasFitModelDragType,
@@ -33,11 +34,12 @@ import {
 
 export interface FitModelRoleDialogProps {
   dataset: DatasetMeta;
+  prefill?: FitModelPrefill | null;
   onCreateDefinition: (definition: FitModelCreateDefinition) => void | Promise<void>;
   onCancel: () => void;
 }
 
-export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: FitModelRoleDialogProps) {
+export function FitModelRoleDialog({ dataset, prefill, onCreateDefinition, onCancel }: FitModelRoleDialogProps) {
   const { t } = useTranslation();
   const titleId = useId();
   const validationId = `${titleId}-validation`;
@@ -57,8 +59,11 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
   const loading = loadSnapshot.loading;
   const loadError = loadSnapshot.error;
 
-  useEffect(() => () => {
-    mountedRef.current = false;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -68,7 +73,7 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
   useEffect(() => {
     setDraft(createFitModelDraft());
     setSubmitState(createFitModelSubmitState());
-  }, [dataset.id]);
+  }, [dataset.id, prefill]);
 
   useEffect(() => {
     let active = true;
@@ -87,11 +92,13 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
         if (!active) {
           return;
         }
+        const nextFields = buildFitModelFieldInfoList(columns, displayProps);
         setLoadSnapshot((current) => resolveFitModelFieldLoadSuccess(
           current,
           generation,
-          buildFitModelFieldInfoList(columns, displayProps),
+          nextFields,
         ));
+        setDraft(createValidatedFitModelDraft(prefill, dataset.id, nextFields));
       })
       .catch((reason: unknown) => {
         if (!active) {
@@ -103,7 +110,7 @@ export function FitModelRoleDialog({ dataset, onCreateDefinition, onCancel }: Fi
     return () => {
       active = false;
     };
-  }, [dataset.id, retryGeneration]);
+  }, [dataset.id, prefill, retryGeneration]);
 
   const visibleFields = useMemo(
     () => filterFitModelFields(fields, search),
@@ -629,6 +636,12 @@ function toValidationText(
     return t("fitModel.dialog.validation.tooManyTerms", {
       defaultValue: "Model has too many terms (max 256).",
       detail: message.detail ?? "",
+    });
+  }
+
+  if (message.code === "prefillInvalid") {
+    return message.detail ?? t("fitModel.dialog.validation.prefillInvalid", {
+      defaultValue: "The Fit Model prefill does not match the selected data table.",
     });
   }
 

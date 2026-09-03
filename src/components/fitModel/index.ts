@@ -60,6 +60,7 @@ export {
   createFitModelDropAction,
   createFitModelDraft,
   createFitModelFieldLoadSnapshot,
+  createValidatedFitModelDraft,
   createToggleInteractionAction,
   createToggleMainEffectAction,
   filterFitModelFields,

@@ -33,6 +33,13 @@ export interface FitModelItem {
   loadIssue?: FitModelLoadIssue;
 }
 
+export interface FitModelPrefill {
+  sourceDatasetId: string;
+  response: FieldRef;
+  predictors: FieldRef[];
+  construct: FitModelConstruct;
+}
+
 export interface FitModelRequest {
   datasetId: string;
   generation: number;

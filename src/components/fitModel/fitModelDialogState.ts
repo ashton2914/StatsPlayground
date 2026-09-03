@@ -12,7 +12,12 @@ import {
 } from "@/components/fitModel/fitModelConstruct";
 import { inferFieldType, type FieldRef } from "@/graphCore/types";
 import type { ColumnDisplayProps } from "@/types/data";
-import type { FitModelCenteringMethod, FitModelConstruct, FitModelTerm } from "@/types/fitModel";
+import type {
+  FitModelCenteringMethod,
+  FitModelConstruct,
+  FitModelPrefill,
+  FitModelTerm,
+} from "@/types/fitModel";
 
 export const FIT_MODEL_DIALOG_FIELD_DRAG_MIME = "application/x-statsplayground-fit-model-field";
 
@@ -35,6 +40,7 @@ export type FitModelDialogMessageCode =
   | "lastMainEffect"
   | "nonContinuousField"
   | "invalidInteraction"
+  | "prefillInvalid"
   | "tooManyTerms";
 
 export interface FitModelDialogMessage {
@@ -91,8 +97,8 @@ export interface FitModelSubmitCoordinator {
 
 export type FitModelCreateHandler = (definition: FitModelCreateDefinition) => void | Promise<void>;
 
-export function createFitModelDraft(): FitModelDraft {
-  return {
+export function createFitModelDraft(prefill?: FitModelPrefill): FitModelDraft {
+  const emptyDraft: FitModelDraft = {
     response: null,
     predictors: [],
     construct: { kind: "fullFactorial" },
@@ -100,6 +106,57 @@ export function createFitModelDraft(): FitModelDraft {
     centeringMethod: "none",
     validationMessage: null,
   };
+  if (!prefill) {
+    return emptyDraft;
+  }
+
+  return applyConstruct({
+    ...emptyDraft,
+    response: { ...prefill.response },
+    predictors: prefill.predictors.map((field) => ({ ...field })),
+  }, prefill.construct, prefill.predictors);
+}
+
+export function createValidatedFitModelDraft(
+  prefill: FitModelPrefill | null | undefined,
+  datasetId: string,
+  fields: readonly FitModelFieldInfo[],
+): FitModelDraft {
+  if (!prefill) {
+    return createFitModelDraft();
+  }
+
+  const referencedFields = [prefill.response, ...prefill.predictors];
+  if (referencedFields.some((field) => field.type !== "continuous")) {
+    return {
+      ...createFitModelDraft(),
+      validationMessage: { code: "nonContinuousField" },
+    };
+  }
+
+  const predictorNames = prefill.predictors.map((field) => field.name);
+  const hasFieldCollision = predictorNames.includes(prefill.response.name)
+    || new Set(predictorNames).size !== predictorNames.length;
+  const availableByName = new Map(fields.map((field) => [field.name, field]));
+  const mismatch = hasFieldCollision
+    || prefill.sourceDatasetId !== datasetId
+    || referencedFields.some((field) => {
+      const available = availableByName.get(field.name);
+      return !available
+        || available.modelingRole !== "Continuous"
+        || available.field.type !== field.type;
+    });
+  if (mismatch) {
+    return {
+      ...createFitModelDraft(),
+      validationMessage: {
+        code: "prefillInvalid",
+        detail: "The Fit Model prefill does not match the selected data table.",
+      },
+    };
+  }
+
+  return createFitModelDraft(prefill);
 }
 
 export function createFitModelFieldLoadSnapshot(): FitModelFieldLoadSnapshot {

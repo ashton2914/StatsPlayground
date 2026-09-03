@@ -34,7 +34,10 @@ const workspaceSource = readSource("../src/components/Workspace.tsx");
 assertSourceIncludes(workspaceSource, "useFitModelStore", "Workspace must consume the Fit Model store");
 assertSourceIncludes(workspaceSource, "FitModelRoleDialog", "Workspace must render the Fit Model role dialog");
 assertSourceIncludes(workspaceSource, "FitModelView", "Workspace must render the Fit Model main-pane view");
+assertSourceIncludes(workspaceSource, "openFitModel", "Workspace must expose the shared Fit Model dialog entry point");
+assertSourceIncludes(workspaceSource, "prefill={fitModelPrefill}", "Workspace must pass optional DOE prefill to the Fit Model dialog");
 assertSourceIncludes(workspaceSource, "onCreateDefinition={handleCreateFitModelItem}", "Workspace must pass the async fit model creation callback directly for awaited error handling");
+assertSourceIncludes(workspaceSource, "construct: definition.construct", "Workspace must preserve the selected construct when creating a Fit Model item");
 
 assertSourceIncludes(workspaceSource, "menu.fitModel", "Analysis menu must include menu.fitModel");
 assertSourceIncludes(workspaceSource, "handleCreateFitModel", "Fit Model menu entry must open the creation flow");
