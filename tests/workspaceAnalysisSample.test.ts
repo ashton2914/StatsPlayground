@@ -26,44 +26,39 @@ for (const required of [
   "dataService.createTableFromRows({",
   "columnNames: [ANALYSIS_SAMPLE_COLUMN]",
   'columnTypes: ["DOUBLE"]',
-  "createAnalysisSampleGraph({",
-  "createAnalysisSampleReport({",
-  "addGraphBuilder(graph)",
-  "addReport(report)",
+  "createAnalysisSampleDocument({",
+  "addAnalysis(analysis)",
   "await refreshDatasets()",
   "dataService.deleteDataset(createdDatasetId)",
-  "setActiveReportId(report.id)",
+  "setActiveAnalysisId(analysis.id)",
   "markDirty()",
-  "history.analysisSample",
+  "history.newAnalysis",
 ]) {
   assert.equal(handler.includes(required), true, `sample handler must include ${required}`);
+}
+for (const forbidden of [
+  "createAnalysisSampleDistribution({",
+  "addDistribution(distribution)",
+  "addGraphBuilder(graph)",
+  "addReport(report)",
+]) {
+  assert.equal(handler.includes(forbidden), false, `sample handler must not include ${forbidden}`);
 }
 
 assert.match(workspace, /menu\.analysisSample/);
 assert.match(workspace, /onClick=\{readOnly \? undefined : handleCreateAnalysisSample\}/);
 assert.ok(
-  handler.indexOf("await refreshDatasets()") < handler.indexOf("addGraphBuilder(graph)"),
-  "backend table registration must succeed before frontend documents are added",
-);
-
-const reportCss = readSource("src/components/report/report.css");
-assert.match(
-  reportCss,
-  /\.sp-report-markdown-flow h1,[\s\S]*background:\s*var\(--bg-header\)/,
-  "analysis headings must render as the standard frame title bars",
+  handler.indexOf("await refreshDatasets()") < handler.indexOf("addAnalysis(analysis)"),
+  "backend table registration must succeed before the analysis is added",
 );
 
 for (const locale of ["en", "vi", "zh-CN", "zh-TW"]) {
   const messages = JSON.parse(readSource(`src/i18n/locales/${locale}.json`)) as {
     menu?: Record<string, unknown>;
     history?: Record<string, unknown>;
-    analysisSample?: { report?: Record<string, unknown> };
   };
   assert.equal(typeof messages.menu?.analysisSample, "string", `${locale} must localize menu.analysisSample`);
   assert.equal(typeof messages.history?.analysisSample, "string", `${locale} must localize history.analysisSample`);
-  for (const key of ["description", "quantiles", "summaryStatistics", "probability", "quantile", "value", "statistic"]) {
-    assert.equal(typeof messages.analysisSample?.report?.[key], "string", `${locale} must localize analysisSample.report.${key}`);
-  }
 }
 
 console.log("Workspace analysis sample integration contract passed");
