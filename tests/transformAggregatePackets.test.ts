@@ -154,6 +154,62 @@ function frameScatterValues(panel: { option: unknown }): Array<{
 }
 
 {
+  const selectedOrder = ["203-A2", "203-A4", "203-A1", "203-A3"];
+  const frameDictionaryOrder = ["203-A1", "203-A4", "203-A3", "203-A2"];
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "__sp_value__", type: "continuous" },
+      y: { name: "__sp_variable__", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true }],
+    transpose: true,
+    hiddenGroups: ["EV2"],
+    styles: { "TC1.6": { point: { color: "#ff0000" } } },
+  };
+  const frame: GraphDataFrame = {
+    ...baseFrame([]),
+    sourceRows: 4,
+    processedRows: 4,
+    dictionaries: { y: frameDictionaryOrder },
+    extents: { x: { min: 1, max: 4 } },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 4,
+      xValues: new Float64Array([1, 2, 3, 4]),
+      yValues: new Uint32Array([0, 1, 2, 3]),
+      rowIds: new BigInt64Array([1n, 2n, 3n, 4n]),
+      validity: {
+        x: new Uint8Array([0b00001111]),
+        y: new Uint8Array([0b00001111]),
+      },
+    }],
+  };
+
+  const built = buildGraph(
+    spec,
+    baseData(["_row_id", "__sp_variable__", "__sp_value__"], []),
+    theme,
+    { __sp_variable__: selectedOrder },
+    frame,
+  );
+  const option = built.panels[0].option as { xAxis?: { data?: string[] } };
+  const xAxis = option.xAxis;
+  const scatter = panelSeries(option).find((entry) => entry.type === "scatter");
+
+  assert.deepEqual(
+    xAxis?.data,
+    selectedOrder,
+    "visual-only legend and style changes must not let frame dictionary order replace the selected multi-column order",
+  );
+  assert.deepEqual(
+    (scatter?.data as Array<{ value: [string, number] }>).map((point) => point.value[0]),
+    frameDictionaryOrder,
+    "selected axis order must not replace the frame dictionary used to decode category codes",
+  );
+}
+
+{
   const spec: GraphSpec = {
     encoding: {
       x: { name: "x", type: "continuous" },
