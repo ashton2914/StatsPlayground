@@ -1669,7 +1669,13 @@ fn build_project_lineage_graph(
                 ))
             })?;
         if let Some(source_id) = non_blank_string(tabulate_value.get("sourceDatasetId")) {
-            ensure_known_source_table(source_id, known_documents)?;
+            let source_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Table,
+                id: source_id.to_string(),
+            };
+            if !known_documents.contains(&source_ref) {
+                continue;
+            }
             let target_ref = ProjectDocumentRef {
                 kind: ProjectDocumentKind::Tabulate,
                 id: tabulate_ref.id.clone(),
@@ -4943,6 +4949,48 @@ mod tests {
         };
 
         assert!(matches!(error, AppError::InvalidParam(message) if message.contains("unknown") && message.contains("missing-table")));
+    }
+
+    #[test]
+    fn build_bundle_v4_preserves_tabulate_with_deleted_source_without_lineage_edges() {
+        let path = temp_project_path("tabulate-deleted-source");
+        let bundle = build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![table_doc("table-1", "Remaining Table")],
+            vec![],
+            vec![],
+            vec![],
+            vec![tabulate_doc_with_source(
+                "tab-1",
+                "Recoverable Tabulate",
+                "deleted-table",
+            )],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(bundle.tabulates.len(), 1);
+        assert_eq!(bundle.manifest.tabulate_files.len(), 1);
+        assert!(bundle.manifest.lineage_graph.edges.is_empty());
+        assert!(bundle.manifest.relationships.is_empty());
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let reopened = read_project_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.tabulates.len(), 1);
+        assert_eq!(reopened.manifest.tabulate_files.len(), 1);
+        assert!(reopened.manifest.lineage_graph.edges.is_empty());
+        assert!(reopened.manifest.relationships.is_empty());
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
