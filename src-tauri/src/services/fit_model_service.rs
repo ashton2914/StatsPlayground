@@ -52,6 +52,11 @@ impl<'a> FitModelService<'a> {
             .iter()
             .map(|row| row.row_index)
             .collect::<Vec<_>>();
+        let predictor_rows = rows
+            .used_rows
+            .iter()
+            .map(|row| row.predictors.clone())
+            .collect::<Vec<_>>();
 
         let model_matrix_spec =
             ModelMatrixSpec::from_columns(terms, request.centering_method, &columns)
@@ -63,6 +68,7 @@ impl<'a> FitModelService<'a> {
             response_column: request.response_column,
             predictor_columns: rows.predictor_names,
             predictor_ranges: predictor_ranges(&columns)?,
+            predictor_rows,
             model_matrix_spec,
             design_matrix,
             response_values,

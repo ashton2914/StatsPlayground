@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod matrix;
 pub mod ols;
 pub mod prediction;

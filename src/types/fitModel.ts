@@ -122,7 +122,74 @@ export interface FitModelSnapshot {
   predictorRanges: FitModelPredictorRange[];
 }
 
-export type FitModelInferenceReason = "inferenceNotEstimable";
+export type FitModelInferenceReason =
+  | "noReplicates"
+  | "lackOfFitDegreesOfFreedomZero"
+  | "pureErrorZero"
+  | "inferenceNotEstimable"
+  | "constantFeature"
+  | "auxiliaryRankDeficient"
+  | "insufficientDiagnosticRows";
+
+export interface FitModelLackOfFitResult {
+  sumOfSquaresError: number;
+  sumOfSquaresPureError: number;
+  sumOfSquaresLackOfFit: number;
+  errorDegreesOfFreedom: number;
+  pureErrorDegreesOfFreedom: number;
+  lackOfFitDegreesOfFreedom: number;
+  meanSquarePureError: number | null;
+  meanSquareLackOfFit: number | null;
+  fRatio: number | null;
+  pValue: number | null;
+  reason: FitModelInferenceReason | null;
+}
+
+export interface FitModelVifRow {
+  termId: string;
+  termLabel: string;
+  value: number | null;
+  reason: FitModelInferenceReason | null;
+}
+
+export type FitModelDiagnosticFlag =
+  | "residualWarning"
+  | "residualSevere"
+  | "highLeverage"
+  | "influential";
+
+export interface FitModelRowDiagnostic {
+  rowIndex: number;
+  observed: number;
+  fitted: number;
+  residual: number;
+  studentizedResidual: number | null;
+  leverage: number | null;
+  cooksDistance: number | null;
+  meanConfidenceLower: number | null;
+  meanConfidenceUpper: number | null;
+  predictionLower: number | null;
+  predictionUpper: number | null;
+  flags: FitModelDiagnosticFlag[];
+}
+
+export interface FitModelQqRow {
+  rowIndex: number;
+  theoreticalQuantile: number;
+  studentizedResidual: number;
+}
+
+export interface FitModelDiagnostics {
+  lackOfFit: FitModelLackOfFitResult;
+  featureVif: FitModelVifRow[];
+  rows: FitModelRowDiagnostic[];
+  rowsSampled: boolean;
+  sourceRowCount: number;
+  qqRows: FitModelQqRow[];
+  qqRowsSampled: boolean;
+  qqSourceRowCount: number;
+  qqReason: FitModelInferenceReason | null;
+}
 
 export interface FitModelPrediction {
   predicted: number;
@@ -143,6 +210,7 @@ export interface FitModelFittedResult {
   terms: FitModelResolvedTerm[];
   centering: FitModelCentering;
   snapshot: FitModelSnapshot;
+  diagnostics: FitModelDiagnostics;
   summaryOfFit: FitModelSummaryOfFit;
   anova: FitModelAnovaRow[];
   parameterEstimates: FitModelParameterEstimate[];

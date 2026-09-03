@@ -2,6 +2,7 @@ use nalgebra::linalg::SVD;
 use nalgebra::{DMatrix, DVector, Dyn};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
+use crate::engine::fit_model::diagnostics::compute_diagnostics;
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
@@ -28,6 +29,7 @@ pub struct FitModelData {
     pub response_column: String,
     pub predictor_columns: Vec<String>,
     pub predictor_ranges: Vec<FitModelPredictorRange>,
+    pub predictor_rows: Vec<Vec<f64>>,
     pub model_matrix_spec: ModelMatrixSpec,
     pub design_matrix: DMatrix<f64>,
     pub response_values: Vec<f64>,
@@ -293,6 +295,19 @@ pub fn fit_linear_model(
         centering: centering.clone(),
         predictor_ranges: input.predictor_ranges,
     };
+    let diagnostics = compute_diagnostics(
+        &input.design_matrix,
+        input.response_values.as_slice(),
+        fitted.as_slice(),
+        residuals.as_slice(),
+        &input.row_indexes,
+        &input.predictor_rows,
+        &resolved,
+        mse,
+        df_error as u64,
+        confidence_level,
+        snapshot.covariance.as_deref(),
+    )?;
 
     Ok(FitModelResult::Fitted(Box::new(
         crate::models::fit_model::FitModelFittedResult {
@@ -304,6 +319,7 @@ pub fn fit_linear_model(
             terms: resolved,
             centering,
             snapshot,
+            diagnostics,
             summary_of_fit: FitModelSummaryOfFit {
                 r_squared,
                 adjusted_r_squared,
@@ -793,6 +809,9 @@ mod tests {
                 mean: values.iter().sum::<f64>() / values.len() as f64,
             })
             .collect();
+        let predictor_rows = (0..response.len())
+            .map(|row| columns.values().map(|values| values[row]).collect())
+            .collect();
         let resolved_terms = resolve_terms(&terms).expect("terms should resolve");
         let spec = ModelMatrixSpec::from_columns(resolved_terms, centering, &columns)
             .expect("spec should build");
@@ -804,6 +823,7 @@ mod tests {
             response_column: response_column.to_string(),
             predictor_columns: columns.keys().cloned().collect(),
             predictor_ranges,
+            predictor_rows,
             model_matrix_spec: spec,
             design_matrix: matrix,
             response_values: response,
@@ -882,6 +902,9 @@ mod tests {
         assert_eq!(fitted.summary_of_fit.adjusted_r_squared, Some(1.0));
         assert_eq!(fitted.summary_of_fit.root_mean_square_error, Some(0.0));
         assert_eq!(fitted.warnings, vec![FitModelWarningCode::PerfectFit]);
+        assert_eq!(fitted.diagnostics.rows.len(), fitted.used_rows as usize);
+        assert_eq!(fitted.diagnostics.source_row_count, fitted.used_rows);
+        assert_eq!(fitted.diagnostics.feature_vif.len(), fitted.terms.len());
 
         for parameter in &fitted.parameter_estimates {
             assert!(parameter.standard_error.is_none());
@@ -1766,6 +1789,12 @@ mod tests {
             response_column: String::from("Y"),
             predictor_columns: vec![String::from("X1"), String::from("X2"), String::from("X3")],
             predictor_ranges: vec![],
+            predictor_rows: vec![
+                vec![1.0, 1.0, 1.0],
+                vec![2.0, 4.0, 8.0],
+                vec![3.0, 9.0, 27.0],
+                vec![4.0, 16.0, 64.0],
+            ],
             model_matrix_spec: spec,
             design_matrix: matrix,
             response_values: vec![5.0, 5.0, 5.0, 5.0],

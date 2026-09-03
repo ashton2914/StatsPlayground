@@ -145,7 +145,86 @@ pub struct FitModelSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum FitModelInferenceReason {
+    NoReplicates,
+    LackOfFitDegreesOfFreedomZero,
+    PureErrorZero,
     InferenceNotEstimable,
+    ConstantFeature,
+    AuxiliaryRankDeficient,
+    InsufficientDiagnosticRows,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelLackOfFitResult {
+    pub sum_of_squares_error: f64,
+    pub sum_of_squares_pure_error: f64,
+    pub sum_of_squares_lack_of_fit: f64,
+    pub error_degrees_of_freedom: u64,
+    pub pure_error_degrees_of_freedom: u64,
+    pub lack_of_fit_degrees_of_freedom: u64,
+    pub mean_square_pure_error: Option<f64>,
+    pub mean_square_lack_of_fit: Option<f64>,
+    pub f_ratio: Option<f64>,
+    pub p_value: Option<f64>,
+    pub reason: Option<FitModelInferenceReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelVifRow {
+    pub term_id: String,
+    pub term_label: String,
+    pub value: Option<f64>,
+    pub reason: Option<FitModelInferenceReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FitModelDiagnosticFlag {
+    ResidualWarning,
+    ResidualSevere,
+    HighLeverage,
+    Influential,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelRowDiagnostic {
+    pub row_index: u64,
+    pub observed: f64,
+    pub fitted: f64,
+    pub residual: f64,
+    pub studentized_residual: Option<f64>,
+    pub leverage: Option<f64>,
+    pub cooks_distance: Option<f64>,
+    pub mean_confidence_lower: Option<f64>,
+    pub mean_confidence_upper: Option<f64>,
+    pub prediction_lower: Option<f64>,
+    pub prediction_upper: Option<f64>,
+    pub flags: Vec<FitModelDiagnosticFlag>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelQqRow {
+    pub row_index: u64,
+    pub theoretical_quantile: f64,
+    pub studentized_residual: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelDiagnostics {
+    pub lack_of_fit: FitModelLackOfFitResult,
+    pub feature_vif: Vec<FitModelVifRow>,
+    pub rows: Vec<FitModelRowDiagnostic>,
+    pub rows_sampled: bool,
+    pub source_row_count: u64,
+    pub qq_rows: Vec<FitModelQqRow>,
+    pub qq_rows_sampled: bool,
+    pub qq_source_row_count: u64,
+    pub qq_reason: Option<FitModelInferenceReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -170,6 +249,7 @@ pub struct FitModelFittedResult {
     pub terms: Vec<FitModelResolvedTerm>,
     pub centering: FitModelCentering,
     pub snapshot: FitModelSnapshot,
+    pub diagnostics: FitModelDiagnostics,
     pub summary_of_fit: FitModelSummaryOfFit,
     pub anova: Vec<FitModelAnovaRow>,
     pub parameter_estimates: Vec<FitModelParameterEstimate>,
@@ -267,6 +347,29 @@ mod tests {
                     centers: vec![],
                 },
                 predictor_ranges: vec![],
+            },
+            diagnostics: FitModelDiagnostics {
+                lack_of_fit: FitModelLackOfFitResult {
+                    sum_of_squares_error: 0.0,
+                    sum_of_squares_pure_error: 0.0,
+                    sum_of_squares_lack_of_fit: 0.0,
+                    error_degrees_of_freedom: 0,
+                    pure_error_degrees_of_freedom: 0,
+                    lack_of_fit_degrees_of_freedom: 0,
+                    mean_square_pure_error: None,
+                    mean_square_lack_of_fit: None,
+                    f_ratio: None,
+                    p_value: None,
+                    reason: Some(FitModelInferenceReason::InferenceNotEstimable),
+                },
+                feature_vif: vec![],
+                rows: vec![],
+                rows_sampled: false,
+                source_row_count: 0,
+                qq_rows: vec![],
+                qq_rows_sampled: false,
+                qq_source_row_count: 0,
+                qq_reason: Some(FitModelInferenceReason::InferenceNotEstimable),
             },
             summary_of_fit: FitModelSummaryOfFit {
                 r_squared: Some(0.9),
