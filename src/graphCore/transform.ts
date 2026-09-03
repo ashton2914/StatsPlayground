@@ -1212,6 +1212,21 @@ function kdeCurve(
   return out;
 }
 
+function normalCurveDomain(
+  mean: number,
+  std: number,
+  min: number,
+  max: number,
+): [number, number] | null {
+  if (
+    !Number.isFinite(mean) || !Number.isFinite(std) || std <= 0 ||
+    !Number.isFinite(min) || !Number.isFinite(max)
+  ) return null;
+  const x0 = Math.min(min, mean - 4 * std);
+  const x1 = Math.max(max, mean + 4 * std);
+  return Number.isFinite(x0) && Number.isFinite(x1) && x1 > x0 ? [x0, x1] : null;
+}
+
 function normalCurve(
   mean: number,
   std: number,
@@ -1225,9 +1240,9 @@ function normalCurve(
     !Number.isFinite(mean) || !Number.isFinite(std) || std <= 0 ||
     !Number.isFinite(count) || count < 2 || !Number.isFinite(binWidth) || binWidth <= 0
   ) return [];
-  const x0 = Math.min(min, mean - 4 * std);
-  const x1 = Math.max(max, mean + 4 * std);
-  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0 || npoints < 2) return [];
+  const domain = normalCurveDomain(mean, std, min, max);
+  if (!domain || npoints < 2) return [];
+  const [x0, x1] = domain;
   const step = (x1 - x0) / (npoints - 1);
   const coefficient = count * binWidth / (std * Math.sqrt(2 * Math.PI));
   return Array.from({ length: npoints }, (_, index) => {
@@ -3247,6 +3262,7 @@ function buildSingleOption(
     && enabledElements.length === 1
     && enabledElements[0].kind === "points"
     && getOpt<string>(enabledElements[0].options, "summaryStat", "none") === "none";
+  const summaryPacket = findSummaryPacket(aggregatePackets, panelFacet);
 
   if (frame) {
     const frameRanges: SharedAxisRanges = {};
@@ -3280,6 +3296,28 @@ function buildSingleOption(
       frameRanges.yMin = yExtent.min;
       frameRanges.yMax = yExtent.max;
     }
+    if (xIsCategory && yField?.type === "continuous" && hasNormalCurveEl && summaryPacket) {
+      let curveMin = frameRanges.yMin ?? Infinity;
+      let curveMax = frameRanges.yMax ?? -Infinity;
+      for (const entry of summaryPacket.summaries) {
+        if (entry.count < 2) continue;
+        const domain = normalCurveDomain(entry.mean, entry.stddev, entry.min, entry.max);
+        if (!domain) continue;
+        curveMin = Math.min(curveMin, domain[0]);
+        curveMax = Math.max(curveMax, domain[1]);
+      }
+      const fit = computeNiceBounds(
+        Number.isFinite(curveMin) ? curveMin : undefined,
+        Number.isFinite(curveMax) ? curveMax : undefined,
+        collectRefLineYs(spec),
+        AUTO_TARGET_TICKS,
+      );
+      if (fit) {
+        frameRanges.yMin = fit.min;
+        frameRanges.yMax = fit.max;
+        frameRanges.yInterval = fit.interval;
+      }
+    }
     sharedRanges = { ...frameRanges, ...sharedRanges };
   }
 
@@ -3290,7 +3328,6 @@ function buildSingleOption(
     x?: { min: number; max: number };
     y?: { min: number; max: number };
   } | undefined;
-  const summaryPacket = findSummaryPacket(aggregatePackets, panelFacet);
   const boxPlotPacket = findBoxPlotPacket(aggregatePackets, panelFacet);
   const histogramPacket = findHistogramPacket(aggregatePackets, panelFacet);
   const heatmapPacket = findHeatmapPacket(aggregatePackets, panelFacet);

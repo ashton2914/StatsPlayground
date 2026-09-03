@@ -2322,6 +2322,66 @@ for (const element of [
       x: { name: "category", type: "nominal" },
       y: { name: "measurement", type: "continuous" },
     },
+    elements: [{ kind: "normalCurve", enabled: true }],
+  };
+  const mean = 4.43;
+  const stddev = 0.05;
+  const expectedCurveMin = mean - 4 * stddev;
+  const expectedCurveMax = mean + 4 * stddev;
+  const frame: GraphDataFrame = {
+    ...baseFrame([{
+      kind: "summary",
+      xColumn: "category",
+      yColumn: "measurement",
+      summaries: [{
+        category: "A",
+        count: 50,
+        mean,
+        median: mean,
+        stddev,
+        min: 4.28,
+        max: 4.57,
+      }],
+    }]),
+    dictionaries: { x: ["A"] },
+    extents: { y: { min: 4.28, max: 4.57 } },
+  };
+
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["category", "measurement"], 50),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const yAxis = option.yAxis as Record<string, unknown>;
+  assert.ok(
+    Number(yAxis.min) <= expectedCurveMin,
+    "the value axis must include the fitted normal curve's lower tail",
+  );
+  assert.ok(
+    Number(yAxis.max) >= expectedCurveMax,
+    "the value axis must include the fitted normal curve's upper tail",
+  );
+
+  const pinnedOption = buildGraph(
+    { ...spec, yAxis: { min: 4.3, max: 4.55 } },
+    frameBackedAggregateData(["category", "measurement"], 50),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const pinnedYAxis = pinnedOption.yAxis as Record<string, unknown>;
+  assert.equal(pinnedYAxis.min, 4.3, "an explicit lower axis pin must override automatic tail expansion");
+  assert.equal(pinnedYAxis.max, 4.55, "an explicit upper axis pin must override automatic tail expansion");
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+    },
     elements: [
       { kind: "histogram", enabled: true },
       { kind: "normalCurve", enabled: true },
