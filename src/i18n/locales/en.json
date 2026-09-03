@@ -65,7 +65,8 @@
     "opConcatenate": "Concatenate",
     "help": "Help",
     "about": "About",
-    "license": "License"
+    "license": "License",
+    "fitModel": "Fit Model"
   },
   "alert": {
     "selectDatasetFirst": "Please select a data table as the source first.",
@@ -818,14 +819,48 @@
       "fiveNumberSummary": "5 Number Summary",
       "widthProportion": "Width Proportion",
       "auto": "Auto",
-      "summary": { "none": "None", "mean": "Mean", "median": "Median", "sum": "Sum" },
-      "interval": { "stdErr": "Std Err", "stdDev": "Std Dev", "ci95": "95% CI" },
-      "style": { "errorBar": "Error Bar", "band": "Band", "sphere": "Sphere" },
-      "jitterMode": { "stacked": "Stacked", "uniform": "Uniform", "normal": "Normal" },
-      "conn": { "line": "Line", "step": "Step", "spline": "Spline" },
-      "fillMode": { "toZero": "To Zero", "between": "Between" },
-      "missing": { "skip": "Skip", "include": "Include", "connect": "Connect Through", "break": "Break" },
-      "box": { "outlier": "Outlier", "quantile": "Quantile", "normal": "Normal", "notched": "Notched" },
+      "summary": {
+        "none": "None",
+        "mean": "Mean",
+        "median": "Median",
+        "sum": "Sum"
+      },
+      "interval": {
+        "stdErr": "Std Err",
+        "stdDev": "Std Dev",
+        "ci95": "95% CI"
+      },
+      "style": {
+        "errorBar": "Error Bar",
+        "band": "Band",
+        "sphere": "Sphere"
+      },
+      "jitterMode": {
+        "stacked": "Stacked",
+        "uniform": "Uniform",
+        "normal": "Normal"
+      },
+      "conn": {
+        "line": "Line",
+        "step": "Step",
+        "spline": "Spline"
+      },
+      "fillMode": {
+        "toZero": "To Zero",
+        "between": "Between"
+      },
+      "missing": {
+        "skip": "Skip",
+        "include": "Include",
+        "connect": "Connect Through",
+        "break": "Break"
+      },
+      "box": {
+        "outlier": "Outlier",
+        "quantile": "Quantile",
+        "normal": "Normal",
+        "notched": "Notched"
+      },
       "histStyle": "Histogram Style",
       "smoothness": "Smoothness",
       "surfaceSmoothness": "Smoothness",
@@ -833,21 +868,50 @@
       "histHeight": "Histogram Height",
       "showCounts": "Show Counts",
       "showPercents": "Show Percents",
-      "histStyles": { "bar": "Bar", "polygon": "Polygon", "kde": "Kernel Density", "shadowgram": "Shadowgram" },
+      "histStyles": {
+        "bar": "Bar",
+        "polygon": "Polygon",
+        "kde": "Kernel Density",
+        "shadowgram": "Shadowgram"
+      },
       "smootherAlgo": "Algorithm",
-      "smootherAlgos": { "spline": "Spline", "kernel": "Local Kernel", "savgol": "Savitzky-Golay", "movingAvg": "Moving Average", "movingBox": "Moving Box" },
+      "smootherAlgos": {
+        "spline": "Spline",
+        "kernel": "Local Kernel",
+        "savgol": "Savitzky-Golay",
+        "movingAvg": "Moving Average",
+        "movingBox": "Moving Box"
+      },
       "smootherSplineSmoothness": "Smoothness",
       "smootherKernelBandwidth": "Bandwidth",
       "smootherSavgolWindow": "Window",
       "smootherSavgolPolyOrder": "Poly Order",
       "smootherWindow": "Window",
       "fitType": "Fit",
-      "fitTypes": { "polynomial": "Polynomial", "robustCauchy": "Robust Cauchy" },
+      "fitTypes": {
+        "polynomial": "Polynomial",
+        "robustCauchy": "Robust Cauchy"
+      },
       "fitDegree": "Degree",
-      "fitDegrees": { "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6" },
-      "fitConf": { "fit": "Fit Confidence", "prediction": "Prediction Confidence" },
+      "fitDegrees": {
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4",
+        "5": "5",
+        "6": "6"
+      },
+      "fitConf": {
+        "fit": "Fit Confidence",
+        "prediction": "Prediction Confidence"
+      },
       "fitStats": "Statistics",
-      "fitStat": { "equation": "Equation", "rmse": "RMSE", "r2": "R²", "fTest": "F Test" }
+      "fitStat": {
+        "equation": "Equation",
+        "rmse": "RMSE",
+        "r2": "R²",
+        "fTest": "F Test"
+      }
     },
     "loading": "Loading data…",
     "loadingProgress": "{{loaded}} / {{total}} rows",

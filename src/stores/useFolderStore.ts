@@ -98,6 +98,8 @@ interface FolderStore {
   tabulateFolders: Record<string, string>;
   /** fitYByXId → 文件夹路径。 */
   fitYByXFolders: Record<string, string>;
+  /** fitModelId → 文件夹路径。 */
+  fitModelFolders: Record<string, string>;
   /** distributionId → 文件夹路径。 */
   distributionFolders: Record<string, string>;
   /** 折叠态：`{path: true}` 表示该文件夹处于折叠。仅 UI 用。 */
@@ -110,6 +112,7 @@ interface FolderStore {
     graphFolders: Record<string, string>;
     tabulateFolders: Record<string, string>;
     fitYByXFolders?: Record<string, string>;
+    fitModelFolders?: Record<string, string>;
     distributionFolders?: Record<string, string>;
   }) => void;
 
@@ -140,6 +143,8 @@ interface FolderStore {
   setTabulateFolder: (tabulateId: string, folder: string | null) => void;
   /** 把单个 Fit Y by X 配置移动到指定文件夹。 */
   setFitYByXFolder: (fitYByXId: string, folder: string | null) => void;
+  /** 把单个 Fit Model 配置移动到指定文件夹。 */
+  setFitModelFolder: (fitModelId: string, folder: string | null) => void;
   /** 把单个 Distribution 配置移动到指定文件夹。 */
   setDistributionFolder: (distributionId: string, folder: string | null) => void;
 
@@ -150,6 +155,7 @@ interface FolderStore {
     validTabulateIds: Set<string>,
     validFitYByXIds: Set<string>,
     validDistributionIds: Set<string>,
+    validFitModelIds?: Set<string>,
   ) => void;
 
   /** 切换文件夹折叠态。 */
@@ -187,10 +193,11 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
   graphFolders: {},
   tabulateFolders: {},
   fitYByXFolders: {},
+  fitModelFolders: {},
   distributionFolders: {},
   collapsed: loadCollapsed(),
 
-  loadFromProject: ({ folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders = {}, distributionFolders = {} }) => {
+  loadFromProject: ({ folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders = {}, fitModelFolders = {}, distributionFolders = {} }) => {
     // Normalize incoming paths and rebuild assignment maps with the
     // normalized forms so subsequent lookups always agree.
     const allFolders = new Set<string>();
@@ -198,6 +205,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     const grp: Record<string, string> = {};
     const tab: Record<string, string> = {};
     const fit: Record<string, string> = {};
+    const fitModel: Record<string, string> = {};
     const distribution: Record<string, string> = {};
     for (const f of folders) {
       const n = normalizeFolderPath(f);
@@ -231,6 +239,13 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
         for (const anc of folderAncestors(n)) allFolders.add(anc);
       }
     }
+    for (const [id, f] of Object.entries(fitModelFolders)) {
+      const n = normalizeFolderPath(f);
+      if (n) {
+        fitModel[id] = n;
+        for (const anc of folderAncestors(n)) allFolders.add(anc);
+      }
+    }
     for (const [id, f] of Object.entries(distributionFolders)) {
       const n = normalizeFolderPath(f);
       if (n) {
@@ -244,12 +259,13 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
       graphFolders: grp,
       tabulateFolders: tab,
       fitYByXFolders: fit,
+      fitModelFolders: fitModel,
       distributionFolders: distribution,
     });
   },
 
   reset: () => {
-    set({ folders: [], tableFolders: {}, graphFolders: {}, tabulateFolders: {}, fitYByXFolders: {}, distributionFolders: {} });
+    set({ folders: [], tableFolders: {}, graphFolders: {}, tabulateFolders: {}, fitYByXFolders: {}, fitModelFolders: {}, distributionFolders: {} });
   },
 
   createFolder: (parent, baseName) => {
@@ -272,7 +288,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     const finalPath = uniqueFolderPath(parent, cleaned, existing);
 
     // Replace every reference to oldPath (and its descendants) with the new prefix.
-    const { folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders, distributionFolders } = get();
+    const { folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders, fitModelFolders, distributionFolders } = get();
     const remap = (p: string): string => {
       if (p === oldPath) return finalPath;
       if (p.startsWith(`${oldPath}/`)) return `${finalPath}${p.slice(oldPath.length)}`;
@@ -287,6 +303,8 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     for (const [id, f] of Object.entries(tabulateFolders)) newTabulateFolders[id] = remap(f);
     const newFitYByXFolders: Record<string, string> = {};
     for (const [id, f] of Object.entries(fitYByXFolders)) newFitYByXFolders[id] = remap(f);
+    const newFitModelFolders: Record<string, string> = {};
+    for (const [id, f] of Object.entries(fitModelFolders)) newFitModelFolders[id] = remap(f);
     const newDistributionFolders: Record<string, string> = {};
     for (const [id, f] of Object.entries(distributionFolders)) newDistributionFolders[id] = remap(f);
     set({
@@ -295,6 +313,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
       graphFolders: newGraphFolders,
       tabulateFolders: newTabulateFolders,
       fitYByXFolders: newFitYByXFolders,
+      fitModelFolders: newFitModelFolders,
       distributionFolders: newDistributionFolders,
     });
     return finalPath;
@@ -302,7 +321,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
 
   deleteFolder: (path) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
-    const { folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders, distributionFolders } = get();
+    const { folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders, fitModelFolders, distributionFolders } = get();
     const parent = folderParent(path); // may be null (move to root)
     const movePrefix = (p: string): string => {
       // `<path>` and `<path>/sub` lose their leading segment.
@@ -339,6 +358,11 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
       const moved = movePrefix(f);
       if (moved) newFitYByXFolders[id] = moved;
     }
+    const newFitModelFolders: Record<string, string> = {};
+    for (const [id, f] of Object.entries(fitModelFolders)) {
+      const moved = movePrefix(f);
+      if (moved) newFitModelFolders[id] = moved;
+    }
     const newDistributionFolders: Record<string, string> = {};
     for (const [id, f] of Object.entries(distributionFolders)) {
       const moved = movePrefix(f);
@@ -350,6 +374,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
       graphFolders: newGraphFolders,
       tabulateFolders: newTabulateFolders,
       fitYByXFolders: newFitYByXFolders,
+      fitModelFolders: newFitModelFolders,
       distributionFolders: newDistributionFolders,
     });
   },
@@ -372,7 +397,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     );
     const finalPath = uniqueFolderPath(newParentNorm, baseName, existing);
 
-    const { folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders, distributionFolders } = get();
+    const { folders, tableFolders, graphFolders, tabulateFolders, fitYByXFolders, fitModelFolders, distributionFolders } = get();
     const remap = (p: string): string => {
       if (p === path) return finalPath;
       if (p.startsWith(`${path}/`)) return `${finalPath}${p.slice(path.length)}`;
@@ -387,6 +412,8 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     for (const [id, f] of Object.entries(tabulateFolders)) newTabulateFolders[id] = remap(f);
     const newFitYByXFolders: Record<string, string> = {};
     for (const [id, f] of Object.entries(fitYByXFolders)) newFitYByXFolders[id] = remap(f);
+    const newFitModelFolders: Record<string, string> = {};
+    for (const [id, f] of Object.entries(fitModelFolders)) newFitModelFolders[id] = remap(f);
     const newDistributionFolders: Record<string, string> = {};
     for (const [id, f] of Object.entries(distributionFolders)) newDistributionFolders[id] = remap(f);
     set({
@@ -395,6 +422,7 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
       graphFolders: newGraphFolders,
       tabulateFolders: newTabulateFolders,
       fitYByXFolders: newFitYByXFolders,
+      fitModelFolders: newFitModelFolders,
       distributionFolders: newDistributionFolders,
     });
     return finalPath;
@@ -456,6 +484,20 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     });
   },
 
+  setFitModelFolder: (fitModelId, folder) => {
+    assertProjectMutable(useProjectStore.getState().readOnly);
+    const norm = normalizeFolderPath(folder);
+    set((s) => {
+      const next: Record<string, string> = { ...s.fitModelFolders };
+      if (norm) next[fitModelId] = norm; else delete next[fitModelId];
+      const ancestors = norm ? folderAncestors(norm) : [];
+      const folders = ancestors.length
+        ? normalizeFolderList([...s.folders, ...ancestors])
+        : s.folders;
+      return { fitModelFolders: next, folders };
+    });
+  },
+
   setDistributionFolder: (distributionId, folder) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     const norm = normalizeFolderPath(folder);
@@ -470,8 +512,8 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     });
   },
 
-  pruneAssignments: (validDatasetIds, validGraphIds, validTabulateIds, validFitYByXIds, validDistributionIds) => {
-    const { tableFolders, graphFolders, tabulateFolders, fitYByXFolders, distributionFolders } = get();
+  pruneAssignments: (validDatasetIds, validGraphIds, validTabulateIds, validFitYByXIds, validDistributionIds, validFitModelIds = new Set<string>()) => {
+    const { tableFolders, graphFolders, tabulateFolders, fitYByXFolders, fitModelFolders, distributionFolders } = get();
     const tbl: Record<string, string> = {};
     for (const [id, f] of Object.entries(tableFolders)) if (validDatasetIds.has(id)) tbl[id] = f;
     const grp: Record<string, string> = {};
@@ -480,9 +522,11 @@ export const useFolderStore = create<FolderStore>((set, get) => ({
     for (const [id, f] of Object.entries(tabulateFolders)) if (validTabulateIds.has(id)) tab[id] = f;
     const fit: Record<string, string> = {};
     for (const [id, f] of Object.entries(fitYByXFolders)) if (validFitYByXIds.has(id)) fit[id] = f;
+    const fitModel: Record<string, string> = {};
+    for (const [id, f] of Object.entries(fitModelFolders)) if (validFitModelIds.has(id)) fitModel[id] = f;
     const distribution: Record<string, string> = {};
     for (const [id, f] of Object.entries(distributionFolders)) if (validDistributionIds.has(id)) distribution[id] = f;
-    set({ tableFolders: tbl, graphFolders: grp, tabulateFolders: tab, fitYByXFolders: fit, distributionFolders: distribution });
+    set({ tableFolders: tbl, graphFolders: grp, tabulateFolders: tab, fitYByXFolders: fit, fitModelFolders: fitModel, distributionFolders: distribution });
   },
 
   toggleCollapsed: (path) => {

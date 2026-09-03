@@ -255,10 +255,20 @@ pub enum GraphRawPointOmissionReason {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum GraphRawPointDisposition {
-    Included { valid_rows: u64, budget: usize },
-    Empty { valid_rows: u64, budget: usize },
+    Included {
+        valid_rows: u64,
+        budget: usize,
+    },
+    Empty {
+        valid_rows: u64,
+        budget: usize,
+    },
     Omitted {
         reason: GraphRawPointOmissionReason,
         valid_rows: u64,
@@ -303,7 +313,10 @@ mod tests {
 
         assert_eq!(request.request_id, "req-1");
         assert!(matches!(request.sampling, GraphSampling::Full));
-        assert_eq!(serde_json::to_value(&request).unwrap()["rawPointBudget"], 8000);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["rawPointBudget"],
+            8000
+        );
     }
 
     #[test]

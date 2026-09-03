@@ -1180,9 +1180,9 @@ pub struct DistributionIssueV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use proptest::prelude::*;
     use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+    use serde_json::json;
 
     #[test]
     fn fit_convergence_serializes_optional_objective_and_gradient_norm_only_when_present() {
@@ -1196,7 +1196,8 @@ mod tests {
             objective: None,
             gradient_norm: None,
         };
-        let without_optionals_json = serde_json::to_value(&without_optionals).expect("serialize fit convergence without optionals");
+        let without_optionals_json = serde_json::to_value(&without_optionals)
+            .expect("serialize fit convergence without optionals");
         assert_eq!(without_optionals_json.get("objective"), None);
         assert_eq!(without_optionals_json.get("gradientNorm"), None);
 
@@ -1205,7 +1206,8 @@ mod tests {
             gradient_norm: Some(0.25),
             ..without_optionals
         };
-        let with_optionals_json = serde_json::to_value(&with_optionals).expect("serialize fit convergence with optionals");
+        let with_optionals_json = serde_json::to_value(&with_optionals)
+            .expect("serialize fit convergence with optionals");
         assert_eq!(with_optionals_json["objective"], json!(12.5));
         assert_eq!(with_optionals_json["gradientNorm"], json!(0.25));
     }

@@ -15,6 +15,8 @@ export interface SaveProjectFolders {
   graphFolders: Record<string, string>;
   /** fitYByXId → folder path. Root analyses are simply absent. */
   fitYByXFolders: Record<string, string>;
+  /** fitModelId → folder path. Root analyses are simply absent. */
+  fitModelFolders?: Record<string, string>;
   /** tabulateId → folder path. Root tabulates are simply absent. */
   tabulateFolders: Record<string, string>;
   /** analysisId → folder path. Root distributions are simply absent. */
@@ -27,6 +29,7 @@ export interface SaveProjectRequest {
   snapshots: unknown[];
   graphBuilders: unknown[];
   fitYByX: unknown[];
+  fitModels?: unknown[];
   tabulates: unknown[];
   distributions: DistributionDocV1[];
   derivedFormulas: DerivedFormulaDocV1[];
@@ -35,6 +38,7 @@ export interface SaveProjectRequest {
   tableFolders: Record<string, string>;
   graphFolders: Record<string, string>;
   fitYByXFolders: Record<string, string>;
+  fitModelFolders?: Record<string, string>;
   tabulateFolders: Record<string, string>;
   distributionFolders: Record<string, string>;
 }

@@ -65,7 +65,8 @@
     "opConcatenate": "Nối",
     "help": "Trợ giúp",
     "about": "Giới thiệu",
-    "license": "Giấy phép"
+    "license": "Giấy phép",
+    "fitModel": "Khớp Mô hình"
   },
   "alert": {
     "selectDatasetFirst": "Vui lòng chọn một bảng dữ liệu làm nguồn trước.",
@@ -803,14 +804,48 @@
       "fiveNumberSummary": "Tóm tắt 5 số",
       "widthProportion": "Tỷ lệ độ rộng",
       "auto": "Tự động",
-      "summary": { "none": "Không", "mean": "Trung bình", "median": "Trung vị", "sum": "Tổng" },
-      "interval": { "stdErr": "Sai số chuẩn", "stdDev": "Độ lệch chuẩn", "ci95": "CI 95%" },
-      "style": { "errorBar": "Thanh sai số", "band": "Dải", "sphere": "Hình cầu" },
-      "jitterMode": { "stacked": "Xếp chồng", "uniform": "Đều", "normal": "Chuẩn" },
-      "conn": { "line": "Đường thẳng", "step": "Bậc", "spline": "Đường cong" },
-      "fillMode": { "toZero": "Về 0", "between": "Giữa" },
-      "missing": { "skip": "Bỏ qua", "include": "Bao gồm", "connect": "Nối qua", "break": "Ngắt" },
-      "box": { "outlier": "Ngoại lai", "quantile": "Phân vị", "normal": "Bình thường", "notched": "Có khe" },
+      "summary": {
+        "none": "Không",
+        "mean": "Trung bình",
+        "median": "Trung vị",
+        "sum": "Tổng"
+      },
+      "interval": {
+        "stdErr": "Sai số chuẩn",
+        "stdDev": "Độ lệch chuẩn",
+        "ci95": "CI 95%"
+      },
+      "style": {
+        "errorBar": "Thanh sai số",
+        "band": "Dải",
+        "sphere": "Hình cầu"
+      },
+      "jitterMode": {
+        "stacked": "Xếp chồng",
+        "uniform": "Đều",
+        "normal": "Chuẩn"
+      },
+      "conn": {
+        "line": "Đường thẳng",
+        "step": "Bậc",
+        "spline": "Đường cong"
+      },
+      "fillMode": {
+        "toZero": "Về 0",
+        "between": "Giữa"
+      },
+      "missing": {
+        "skip": "Bỏ qua",
+        "include": "Bao gồm",
+        "connect": "Nối qua",
+        "break": "Ngắt"
+      },
+      "box": {
+        "outlier": "Ngoại lai",
+        "quantile": "Phân vị",
+        "normal": "Bình thường",
+        "notched": "Có khe"
+      },
       "histStyle": "Kiểu biểu đồ",
       "smoothness": "Độ mịn",
       "surfaceSmoothness": "Độ mịn bề mặt",
@@ -818,21 +853,50 @@
       "histHeight": "Chiều cao biểu đồ",
       "showCounts": "Hiện số đếm",
       "showPercents": "Hiện phần trăm",
-      "histStyles": { "bar": "Cột", "polygon": "Đa giác", "kde": "Kernel Density", "shadowgram": "Shadowgram" },
+      "histStyles": {
+        "bar": "Cột",
+        "polygon": "Đa giác",
+        "kde": "Kernel Density",
+        "shadowgram": "Shadowgram"
+      },
       "smootherAlgo": "Thuật toán",
-      "smootherAlgos": { "spline": "Spline", "kernel": "Kernel cục bộ", "savgol": "Savitzky-Golay", "movingAvg": "Trung bình động", "movingBox": "Trung vị động" },
+      "smootherAlgos": {
+        "spline": "Spline",
+        "kernel": "Kernel cục bộ",
+        "savgol": "Savitzky-Golay",
+        "movingAvg": "Trung bình động",
+        "movingBox": "Trung vị động"
+      },
       "smootherSplineSmoothness": "Độ mịn",
       "smootherKernelBandwidth": "Băng thông",
       "smootherSavgolWindow": "Cửa sổ",
       "smootherSavgolPolyOrder": "Bậc đa thức",
       "smootherWindow": "Cửa sổ",
       "fitType": "Kiểu khớp",
-      "fitTypes": { "polynomial": "Đa thức", "robustCauchy": "Cauchy bền vững" },
+      "fitTypes": {
+        "polynomial": "Đa thức",
+        "robustCauchy": "Cauchy bền vững"
+      },
       "fitDegree": "Bậc",
-      "fitDegrees": { "1": "Bậc 1", "2": "Bậc 2", "3": "Bậc 3", "4": "Bậc 4", "5": "Bậc 5", "6": "Bậc 6" },
-      "fitConf": { "fit": "Khoảng tin cậy khớp", "prediction": "Khoảng tin cậy dự báo" },
+      "fitDegrees": {
+        "1": "Bậc 1",
+        "2": "Bậc 2",
+        "3": "Bậc 3",
+        "4": "Bậc 4",
+        "5": "Bậc 5",
+        "6": "Bậc 6"
+      },
+      "fitConf": {
+        "fit": "Khoảng tin cậy khớp",
+        "prediction": "Khoảng tin cậy dự báo"
+      },
       "fitStats": "Thống kê",
-      "fitStat": { "equation": "Phương trình", "rmse": "RMSE", "r2": "R²", "fTest": "Kiểm định F" }
+      "fitStat": {
+        "equation": "Phương trình",
+        "rmse": "RMSE",
+        "r2": "R²",
+        "fTest": "Kiểm định F"
+      }
     },
     "loading": "Đang tải dữ liệu…",
     "loadingProgress": "{{loaded}} / {{total}} hàng",
@@ -969,7 +1033,8 @@
       "diamond": "Thoi (đặc)",
       "emptyDiamond": "Thoi (rỗng)",
       "triangle": "Tam giác (đặc)",
-      "emptyTriangle": "Tam giác (rỗng)"    },
+      "emptyTriangle": "Tam giác (rỗng)"
+    },
     "filter": {
       "toolbarBtn": "Lọc",
       "toggleTitle": "Hiện/Ẩn bộ lọc dữ liệu cục bộ",

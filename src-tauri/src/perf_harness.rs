@@ -5,16 +5,16 @@ use serde::Serialize;
 
 use crate::engine::duckdb_engine::DuckDbEngine;
 use crate::error::AppError;
+#[cfg(test)]
+use crate::models::graph_data::{GraphAggregatePacket, GraphChunkHeader, GraphDataCompletion};
 use crate::models::graph_data::{
     GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphRawPointDisposition,
     GraphSampling, GraphViewport,
 };
-use crate::services::graph_data_service::GraphDataService;
-#[cfg(test)]
-use crate::models::graph_data::{GraphAggregatePacket, GraphChunkHeader, GraphDataCompletion};
+use crate::models::save::SaveProjectRequest;
 #[cfg(test)]
 use crate::services::graph_data_service::GraphDataChunk;
-use crate::models::save::SaveProjectRequest;
+use crate::services::graph_data_service::GraphDataService;
 use crate::services::project_service::{seed_save_project, ProjectService};
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
@@ -325,7 +325,11 @@ fn build_graph_request(dataset_id: &str, generation: u64) -> GraphDataRequest {
     }
 }
 
-fn seed_graph_benchmark_dataset(state: &AppState, dataset_id: &str, rows: usize) -> Result<(), AppError> {
+fn seed_graph_benchmark_dataset(
+    state: &AppState,
+    dataset_id: &str,
+    rows: usize,
+) -> Result<(), AppError> {
     let db = state
         .db
         .lock()
@@ -385,11 +389,12 @@ fn measure_transferred_bytes(
                 AppError::InvalidParam("header payload length overflow".to_string())
             })?)
             .ok_or_else(|| AppError::InvalidParam("transferred bytes overflow".to_string()))?;
-        transferred = transferred
-            .checked_add(u64::try_from(chunk.payload.len()).map_err(|_| {
-                AppError::InvalidParam("graph payload length overflow".to_string())
-            })?)
-            .ok_or_else(|| AppError::InvalidParam("transferred bytes overflow".to_string()))?;
+        transferred =
+            transferred
+                .checked_add(u64::try_from(chunk.payload.len()).map_err(|_| {
+                    AppError::InvalidParam("graph payload length overflow".to_string())
+                })?)
+                .ok_or_else(|| AppError::InvalidParam("transferred bytes overflow".to_string()))?;
     }
 
     for packet in aggregates {
@@ -412,11 +417,12 @@ fn measure_transferred_bytes(
     };
     let terminal_bytes = serde_json::to_vec(&terminal_message)
         .map_err(|error| AppError::InvalidParam(error.to_string()))?;
-    transferred = transferred
-        .checked_add(u64::try_from(terminal_bytes.len()).map_err(|_| {
-            AppError::InvalidParam("terminal payload length overflow".to_string())
-        })?)
-        .ok_or_else(|| AppError::InvalidParam("transferred bytes overflow".to_string()))?;
+    transferred =
+        transferred
+            .checked_add(u64::try_from(terminal_bytes.len()).map_err(|_| {
+                AppError::InvalidParam("terminal payload length overflow".to_string())
+            })?)
+            .ok_or_else(|| AppError::InvalidParam("transferred bytes overflow".to_string()))?;
 
     Ok(transferred)
 }
@@ -473,15 +479,18 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         )));
     }
     let expected_projected_columns = if raw_points_included {
-        vec!["_row_id".to_string(), "region".to_string(), "cost".to_string()]
+        vec![
+            "_row_id".to_string(),
+            "region".to_string(),
+            "cost".to_string(),
+        ]
     } else {
         Vec::new()
     };
     if capture.projected_columns != expected_projected_columns {
         return Err(AppError::InvalidParam(format!(
             "graph projected columns mismatch: expected {:?}, got {:?}",
-            expected_projected_columns,
-            capture.projected_columns
+            expected_projected_columns, capture.projected_columns
         )));
     }
 
@@ -823,7 +832,10 @@ mod tests {
             assert_eq!(report.columns, 4);
             assert_eq!(report.operation, operation);
             assert_eq!(report.result_rows, 25);
-            assert_eq!(report.selected_columns, if operation == Operation::Graph { 3 } else { 0 });
+            assert_eq!(
+                report.selected_columns,
+                if operation == Operation::Graph { 3 } else { 0 }
+            );
 
             let json = serde_json::to_value(&report).unwrap();
             assert!(json.get("setupMs").is_some());
@@ -877,17 +889,34 @@ mod tests {
         .unwrap();
 
         let json = serde_json::to_value(report).unwrap();
-        assert_eq!(json.get("operation").and_then(|value| value.as_str()), Some("graph"));
-        assert!(json.get("queryMs").and_then(|value| value.as_u64()).is_some());
-        assert!(json.get("encodeMs").and_then(|value| value.as_u64()).is_some());
-        assert_eq!(json.get("decodeMs").and_then(|value| value.as_str()), Some("desktop_only"));
-        assert_eq!(json.get("drawMs").and_then(|value| value.as_str()), Some("desktop_only"));
-        assert_eq!(json.get("processedRows").and_then(|value| value.as_u64()), Some(10));
-        assert!(
-            json.get("transferredBytes")
-                .and_then(|value| value.as_u64())
-                .is_some_and(|value| value > 0)
+        assert_eq!(
+            json.get("operation").and_then(|value| value.as_str()),
+            Some("graph")
         );
+        assert!(json
+            .get("queryMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("encodeMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert_eq!(
+            json.get("decodeMs").and_then(|value| value.as_str()),
+            Some("desktop_only")
+        );
+        assert_eq!(
+            json.get("drawMs").and_then(|value| value.as_str()),
+            Some("desktop_only")
+        );
+        assert_eq!(
+            json.get("processedRows").and_then(|value| value.as_u64()),
+            Some(10)
+        );
+        assert!(json
+            .get("transferredBytes")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0));
     }
 
     #[test]
@@ -910,7 +939,11 @@ mod tests {
         assert_eq!(capture.selected_columns, 3);
         assert_eq!(
             capture.projected_columns,
-            vec!["_row_id".to_string(), "region".to_string(), "cost".to_string()]
+            vec![
+                "_row_id".to_string(),
+                "region".to_string(),
+                "cost".to_string()
+            ]
         );
         assert!(capture.query_ms > 0 || capture.encode_ms > 0);
     }

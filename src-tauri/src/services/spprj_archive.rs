@@ -151,6 +151,10 @@ pub struct ProjectManifest {
     #[serde(default)]
     pub fit_y_by_x_folders: HashMap<String, String>,
     #[serde(default)]
+    pub fit_models: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub fit_model_folders: HashMap<String, String>,
+    #[serde(default)]
     pub tabulates: Vec<serde_json::Value>,
     #[serde(default)]
     pub tabulate_folders: HashMap<String, String>,
@@ -241,7 +245,9 @@ impl DistributionArchiveRecordV1 {
     pub fn analysis_id(&self) -> &str {
         match self {
             Self::Parsed(envelope) => &envelope.body.analysis_id,
-            Self::UnknownVersion { analysis_id, .. } | Self::Corrupt { analysis_id, .. } => analysis_id,
+            Self::UnknownVersion { analysis_id, .. } | Self::Corrupt { analysis_id, .. } => {
+                analysis_id
+            }
         }
     }
 }
@@ -252,8 +258,9 @@ pub fn distribution_records_from_values(
     values
         .into_iter()
         .map(|value| {
-            let doc: DistributionDocV1 = serde_json::from_value(value)
-                .map_err(|error| AppError::InvalidParam(format!("invalid distribution document: {error}")))?;
+            let doc: DistributionDocV1 = serde_json::from_value(value).map_err(|error| {
+                AppError::InvalidParam(format!("invalid distribution document: {error}"))
+            })?;
             Ok(match doc.load_status {
                 DistributionLoadStatusV1::UnknownVersion => {
                     DistributionArchiveRecordV1::UnknownVersion {
@@ -287,8 +294,9 @@ pub fn derived_formula_envelopes_from_values(
     values
         .into_iter()
         .map(|value| {
-            let body: DerivedFormulaDocV1 = serde_json::from_value(value)
-                .map_err(|error| AppError::InvalidParam(format!("invalid derived formula document: {error}")))?;
+            let body: DerivedFormulaDocV1 = serde_json::from_value(value).map_err(|error| {
+                AppError::InvalidParam(format!("invalid derived formula document: {error}"))
+            })?;
             Ok(DerivedFormulaArchiveEnvelopeV1 {
                 schema_version: "1".to_string(),
                 body,
@@ -406,6 +414,7 @@ pub struct ProjectBundle {
     pub tables: Vec<TableDoc>,
     pub graphs: Vec<GraphDoc>,
     pub fit_y_by_x: Vec<Value>,
+    pub fit_models: Vec<Value>,
     pub tabulates: Vec<Value>,
     pub distributions: Vec<DistributionArchiveRecordV1>,
     pub derived_formulas: Vec<DerivedFormulaArchiveEnvelopeV1>,
@@ -439,6 +448,10 @@ struct LegacySpprj {
     fit_y_by_x: Option<Vec<Value>>,
     #[serde(default)]
     fit_y_by_x_folders: Option<HashMap<String, String>>,
+    #[serde(default)]
+    fit_models: Option<Vec<Value>>,
+    #[serde(default)]
+    fit_model_folders: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -680,6 +693,12 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         .map(|b| serde_json::from_slice::<Vec<Value>>(&b).unwrap_or_default())
         .unwrap_or_default();
     let fit_y_by_x = manifest.fit_y_by_x.clone();
+    let fit_models = manifest
+        .fit_models
+        .iter()
+        .cloned()
+        .map(strip_transient_fit_model_fields)
+        .collect();
     let tabulates = manifest.tabulates.clone();
     let mut distributions = Vec::with_capacity(manifest.distributions.len());
     for entry in &manifest.distributions {
@@ -724,7 +743,10 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
             AppError::FileIO(format!("Missing derived formula entry: {}", entry.file))
         })?;
         let envelope = serde_json::from_slice(&bytes).map_err(|error| {
-            AppError::FileIO(format!("Invalid derived formula file {}: {error}", entry.file))
+            AppError::FileIO(format!(
+                "Invalid derived formula file {}: {error}",
+                entry.file
+            ))
         })?;
         derived_formulas.push(envelope);
     }
@@ -734,6 +756,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         tables,
         graphs,
         fit_y_by_x,
+        fit_models,
         tabulates,
         distributions,
         derived_formulas,
@@ -797,6 +820,13 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
 
     let fit_y_by_x = legacy.fit_y_by_x.unwrap_or_default();
     let fit_y_by_x_folders = legacy.fit_y_by_x_folders.unwrap_or_default();
+    let fit_models = legacy
+        .fit_models
+        .unwrap_or_default()
+        .into_iter()
+        .map(strip_transient_fit_model_fields)
+        .collect::<Vec<_>>();
+    let fit_model_folders = legacy.fit_model_folders.unwrap_or_default();
 
     let manifest = ProjectManifest {
         name: legacy.name,
@@ -813,6 +843,8 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         graph_folders: None,
         fit_y_by_x: fit_y_by_x.clone(),
         fit_y_by_x_folders,
+        fit_models: fit_models.clone(),
+        fit_model_folders,
         tabulates: Vec::new(),
         tabulate_folders: HashMap::new(),
         distributions: Vec::new(),
@@ -826,6 +858,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         tables,
         graphs,
         fit_y_by_x,
+        fit_models,
         tabulates: Vec::new(),
         distributions: Vec::new(),
         derived_formulas: Vec::new(),
@@ -883,6 +916,7 @@ pub fn build_bundle(
     tables: Vec<TableDoc>,
     graphs: Vec<GraphDoc>,
     fit_y_by_x: Vec<Value>,
+    fit_models: Vec<Value>,
     tabulates: Vec<Value>,
     distributions: Vec<DistributionArchiveRecordV1>,
     derived_formulas: Vec<DerivedFormulaArchiveEnvelopeV1>,
@@ -891,6 +925,7 @@ pub fn build_bundle(
     table_folders: &HashMap<String, String>,
     graph_folders: &HashMap<String, String>,
     fit_y_by_x_folders: &HashMap<String, String>,
+    fit_model_folders: &HashMap<String, String>,
     tabulate_folders: &HashMap<String, String>,
     distribution_folders: &HashMap<String, String>,
     history: Vec<Value>,
@@ -899,6 +934,10 @@ pub fn build_bundle(
     let sanitized_fit_y_by_x: Vec<Value> = fit_y_by_x
         .into_iter()
         .map(strip_transient_fit_y_by_x_fields)
+        .collect();
+    let sanitized_fit_models: Vec<Value> = fit_models
+        .into_iter()
+        .map(strip_transient_fit_model_fields)
         .collect();
 
     let mut table_refs: Vec<TableEntryRef> = Vec::with_capacity(tables.len());
@@ -960,6 +999,8 @@ pub fn build_bundle(
             graph_folders: Some(graph_folders.clone()),
             fit_y_by_x: sanitized_fit_y_by_x.clone(),
             fit_y_by_x_folders: fit_y_by_x_folders.clone(),
+            fit_models: sanitized_fit_models.clone(),
+            fit_model_folders: fit_model_folders.clone(),
             tabulates: tabulates.clone(),
             tabulate_folders: tabulate_folders.clone(),
             distributions: distribution_refs,
@@ -970,6 +1011,7 @@ pub fn build_bundle(
         tables,
         graphs,
         fit_y_by_x: sanitized_fit_y_by_x,
+        fit_models: sanitized_fit_models,
         tabulates,
         distributions,
         derived_formulas,
@@ -982,6 +1024,18 @@ fn strip_transient_fit_y_by_x_fields(value: Value) -> Value {
     match value {
         Value::Object(mut map) => {
             map.remove("result");
+            map.remove("reportState");
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
+fn strip_transient_fit_model_fields(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            map.remove("result");
+            map.remove("plotRows");
             map.remove("reportState");
             Value::Object(map)
         }
@@ -1067,8 +1121,12 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
             if let Some(record) = distribution_by_id.get(entry.analysis_id.as_str()) {
                 let bytes = match record {
                     DistributionArchiveRecordV1::Parsed(envelope) => serde_json::to_vec(envelope),
-                    DistributionArchiveRecordV1::UnknownVersion { raw_envelope, .. } => serde_json::to_vec(raw_envelope),
-                    DistributionArchiveRecordV1::Corrupt { raw_text, .. } => Ok(raw_text.as_bytes().to_vec()),
+                    DistributionArchiveRecordV1::UnknownVersion { raw_envelope, .. } => {
+                        serde_json::to_vec(raw_envelope)
+                    }
+                    DistributionArchiveRecordV1::Corrupt { raw_text, .. } => {
+                        Ok(raw_text.as_bytes().to_vec())
+                    }
                 }
                 .map_err(|error| AppError::FileIO(error.to_string()))?;
                 write_zip_entry(&mut zip, &entry.file, &bytes, opts)?;
@@ -1220,6 +1278,75 @@ fn parse_graph_doc(bytes: &[u8], fallback_id: &str) -> Result<GraphDoc, String> 
 /// portable to any OS.
 const FORBIDDEN_NAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
 
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn is_windows_reserved_stem(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default();
+    WINDOWS_RESERVED_NAMES.contains(&stem.to_ascii_uppercase().as_str())
+}
+
+pub(crate) fn validate_portable_basename(name: &str, subject: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err(format!("{subject} cannot be empty"));
+    }
+    if name.starts_with(|c: char| c.is_whitespace() || c == '.')
+        || name.ends_with(|c: char| c.is_whitespace() || c == '.')
+    {
+        return Err(format!(
+            "{subject} has leading or trailing whitespace/dot: {}",
+            name
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(format!("{subject} contains control character: {}", name));
+    }
+    if name.chars().any(|ch| FORBIDDEN_NAME_CHARS.contains(&ch)) {
+        return Err(format!(
+            "{subject} contains invalid filesystem characters: {}",
+            name
+        ));
+    }
+    if is_windows_reserved_stem(name) {
+        return Err(format!(
+            "{subject} is a reserved Windows device name: {}",
+            name
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn normalize_unsafe_portable_basename(name: &str, fallback: &str) -> String {
+    let sanitize = |source: &str| -> String {
+        source
+            .chars()
+            .map(|ch| {
+                if ch.is_control() || FORBIDDEN_NAME_CHARS.contains(&ch) {
+                    '_'
+                } else {
+                    ch
+                }
+            })
+            .collect::<String>()
+            .trim_matches(|ch: char| ch.is_whitespace() || ch == '.')
+            .to_string()
+    };
+
+    let mut candidate = sanitize(name);
+    if candidate.is_empty() {
+        candidate = sanitize(fallback);
+    }
+    if candidate.is_empty() {
+        candidate = "untitled".to_string();
+    }
+    if is_windows_reserved_stem(&candidate) {
+        candidate = format!("_{candidate}");
+    }
+    candidate
+}
+
 /// Sanitize a user-visible name for use as an archive filename component.
 /// Replaces forbidden chars with `_`, trims leading/trailing whitespace and
 /// dots, and falls back to `fallback` (typically the entry id) if the result
@@ -1344,6 +1471,7 @@ mod tests {
             tables,
             graphs,
             fit_y_by_x,
+            Vec::new(),
             tabulates,
             Vec::new(),
             Vec::new(),
@@ -1352,6 +1480,7 @@ mod tests {
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
+            &HashMap::new(),
             tabulate_folders,
             &HashMap::new(),
             history,
@@ -1402,6 +1531,8 @@ mod tests {
             graph_folders: Some(HashMap::new()),
             fit_y_by_x: vec![],
             fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
             tabulates: vec![],
             tabulate_folders: HashMap::new(),
             distributions: vec![],
@@ -1504,6 +1635,67 @@ mod tests {
         assert_eq!(loaded.manifest.fit_y_by_x, vec![fit.clone()]);
         assert_eq!(loaded.manifest.fit_y_by_x_folders, folders);
         assert_eq!(loaded.fit_y_by_x, vec![fit]);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fit_model_round_trip_preserves_definition_and_strips_transient_results() {
+        let path = temp_project_path("fit-model-round-trip");
+        let fit_model = json!({
+            "id": "fit-model-1",
+            "name": "Fit Model 1",
+            "sourceDatasetId": "table-1",
+            "response": { "name": "yield", "type": "continuous" },
+            "terms": [{ "kind": "main", "columnNames": ["temperature"] }],
+            "centeringMethod": "none",
+            "createdAt": "2026-09-02T00:00:00Z",
+            "result": { "kind": "fitted" },
+            "plotRows": [{ "observed": 1.0 }],
+            "reportState": { "status": "success" }
+        });
+        let expected = json!({
+            "id": "fit-model-1",
+            "name": "Fit Model 1",
+            "sourceDatasetId": "table-1",
+            "response": { "name": "yield", "type": "continuous" },
+            "terms": [{ "kind": "main", "columnNames": ["temperature"] }],
+            "centeringMethod": "none",
+            "createdAt": "2026-09-02T00:00:00Z"
+        });
+        let fit_model_folders =
+            HashMap::from([("fit-model-1".to_string(), "Analyses".to_string())]);
+        let empty_folders = HashMap::new();
+
+        let bundle = super::build_bundle(
+            "Project".to_string(),
+            "3.0.0".to_string(),
+            "2026-09-02T00:00:00Z".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![fit_model],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec!["Analyses".to_string()],
+            &empty_folders,
+            &empty_folders,
+            &empty_folders,
+            &fit_model_folders,
+            &empty_folders,
+            &empty_folders,
+            Vec::new(),
+            Vec::new(),
+        );
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded.manifest.fit_models, vec![expected.clone()]);
+        assert_eq!(loaded.manifest.fit_model_folders, fit_model_folders);
+        assert_eq!(loaded.fit_models, vec![expected]);
 
         let _ = std::fs::remove_file(path);
     }

@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
-use duckdb::types::{TimeUnit, Value};
 use duckdb::params_from_iter;
+use duckdb::types::{TimeUnit, Value};
 
 use crate::engine::duckdb_engine::DuckDbEngine;
 use crate::error::AppError;
@@ -85,10 +85,7 @@ pub(crate) fn prepare_continuous_groups(
     let mut filter_params = Vec::new();
     let filter_sql = compile_filter(&request.filter_expr, &metadata, &mut filter_params)?;
 
-    let mut select_columns = vec![
-        "\"_row_id\"".to_string(),
-        quote_identifier(y_name),
-    ];
+    let mut select_columns = vec!["\"_row_id\"".to_string(), quote_identifier(y_name)];
     if let Some(column) = weight_name {
         select_columns.push(quote_identifier(column));
     }
@@ -167,7 +164,11 @@ pub(crate) fn prepare_continuous_groups(
             ));
         }
         group.source_rows += 1;
-        add_estimated_bytes(&mut estimated_bytes, 8, request.resource_budget.max_total_bytes)?;
+        add_estimated_bytes(
+            &mut estimated_bytes,
+            8,
+            request.resource_budget.max_total_bytes,
+        )?;
         let weight = optional_positive_f64(weight_value, 1.0)?;
         let frequency = optional_frequency(frequency_value, 1)?;
         let Some(y_number) = optional_f64(y_value)? else {
@@ -253,7 +254,9 @@ fn optional_f64(value: Value) -> Result<Option<f64>, AppError> {
 }
 
 fn optional_positive_f64(value: Option<Value>, default: f64) -> Result<Option<f64>, AppError> {
-    let Some(value) = value else { return Ok(Some(default)); };
+    let Some(value) = value else {
+        return Ok(Some(default));
+    };
     if matches!(value, Value::Null) {
         return Ok(None);
     }
@@ -267,7 +270,9 @@ fn optional_positive_f64(value: Option<Value>, default: f64) -> Result<Option<f6
 }
 
 fn optional_frequency(value: Option<Value>, default: u64) -> Result<Option<u64>, AppError> {
-    let Some(value) = value else { return Ok(Some(default)); };
+    let Some(value) = value else {
+        return Ok(Some(default));
+    };
     if matches!(value, Value::Null) {
         return Ok(None);
     }
@@ -294,7 +299,9 @@ fn value_to_group(value: Value) -> Result<DistributionGroupValueV1, AppError> {
         }),
         value => optional_f64(value)?
             .map(|value| DistributionGroupValueV1::Number { value })
-            .ok_or_else(|| AppError::InvalidParam("distribution.config.byValueInvalid".to_string())),
+            .ok_or_else(|| {
+                AppError::InvalidParam("distribution.config.byValueInvalid".to_string())
+            }),
     }
 }
 
@@ -340,15 +347,20 @@ fn estimated_group_bytes(key: &[DistributionGroupValueV1]) -> Result<u64, AppErr
     let fixed = std::mem::size_of::<PreparedGroupV1>()
         .checked_add(std::mem::size_of_val(key))
         .ok_or_else(|| AppError::InvalidParam("distribution.run.budgetExceeded".to_string()))?;
-    let text_bytes = key.iter().try_fold(0_usize, |total, value| {
-        total.checked_add(match value {
-            DistributionGroupValueV1::Text { value } => value.len(),
-            _ => 0,
+    let text_bytes = key
+        .iter()
+        .try_fold(0_usize, |total, value| {
+            total.checked_add(match value {
+                DistributionGroupValueV1::Text { value } => value.len(),
+                _ => 0,
+            })
         })
-    }).ok_or_else(|| AppError::InvalidParam("distribution.run.budgetExceeded".to_string()))?;
-    u64::try_from(fixed.checked_add(text_bytes).ok_or_else(|| {
-        AppError::InvalidParam("distribution.run.budgetExceeded".to_string())
-    })?)
+        .ok_or_else(|| AppError::InvalidParam("distribution.run.budgetExceeded".to_string()))?;
+    u64::try_from(
+        fixed
+            .checked_add(text_bytes)
+            .ok_or_else(|| AppError::InvalidParam("distribution.run.budgetExceeded".to_string()))?,
+    )
     .map_err(|_| AppError::InvalidParam("distribution.run.budgetExceeded".to_string()))
 }
 
@@ -358,7 +370,9 @@ fn compare_group_keys(
 ) -> Ordering {
     for (left_value, right_value) in left.iter().zip(right) {
         let ordering = match (left_value, right_value) {
-            (DistributionGroupValueV1::Missing, DistributionGroupValueV1::Missing) => Ordering::Equal,
+            (DistributionGroupValueV1::Missing, DistributionGroupValueV1::Missing) => {
+                Ordering::Equal
+            }
             (DistributionGroupValueV1::Missing, _) => Ordering::Greater,
             (_, DistributionGroupValueV1::Missing) => Ordering::Less,
             (
@@ -459,8 +473,10 @@ mod tests {
             filter_expr: FilterExprV1::And { exprs: Vec::new() },
             confidence_level: 0.95,
             histograms_only: false,
-            continuous_fit: crate::models::distribution::DistributionContinuousFitConfigV1::default(),
-            visual_diagnostics: crate::models::distribution::DistributionVisualDiagnosticsConfigV1::default(),
+            continuous_fit: crate::models::distribution::DistributionContinuousFitConfigV1::default(
+            ),
+            visual_diagnostics:
+                crate::models::distribution::DistributionVisualDiagnosticsConfigV1::default(),
             enabled_capability_ids: Vec::new(),
             capability_overrides: Vec::new(),
             observation_policy: ObservationContributionPolicyV1::strict_v1()
@@ -532,21 +548,30 @@ mod tests {
             )
             .expect("seed rows");
         let mut grouped_request = request(&engine);
-        grouped_request.by_column_ids = vec![column_id(&engine, "region"), column_id(&engine, "batch")];
+        grouped_request.by_column_ids =
+            vec![column_id(&engine, "region"), column_id(&engine, "batch")];
 
-        let groups = prepare_continuous_groups(&engine, &grouped_request, &y_column(&grouped_request))
-            .expect("prepare groups");
+        let groups =
+            prepare_continuous_groups(&engine, &grouped_request, &y_column(&grouped_request))
+                .expect("prepare groups");
 
         assert_eq!(groups.len(), 3);
         assert_eq!(
-            groups.iter().map(|group| group.key.clone()).collect::<Vec<_>>(),
+            groups
+                .iter()
+                .map(|group| group.key.clone())
+                .collect::<Vec<_>>(),
             vec![
                 vec![
-                    DistributionGroupValueV1::Text { value: "East".to_string() },
+                    DistributionGroupValueV1::Text {
+                        value: "East".to_string()
+                    },
                     DistributionGroupValueV1::Number { value: 1.0 },
                 ],
                 vec![
-                    DistributionGroupValueV1::Text { value: "East".to_string() },
+                    DistributionGroupValueV1::Text {
+                        value: "East".to_string()
+                    },
                     DistributionGroupValueV1::Number { value: 2.0 },
                 ],
                 vec![
@@ -603,8 +628,8 @@ mod tests {
             )
             .expect("seed rows");
         let request = request(&engine);
-        let groups = prepare_continuous_groups(&engine, &request, &y_column(&request))
-            .expect("groups");
+        let groups =
+            prepare_continuous_groups(&engine, &request, &y_column(&request)).expect("groups");
         assert_eq!(groups[0].excluded_rows, 2);
         assert_eq!(groups[0].observations.len(), 1);
 
@@ -699,7 +724,9 @@ mod tests {
         );
         assert_eq!(
             value_to_group(Value::Date32(2)).expect("date group"),
-            DistributionGroupValueV1::DateTime { utc_millis: 172_800_000 },
+            DistributionGroupValueV1::DateTime {
+                utc_millis: 172_800_000
+            },
         );
         assert_eq!(
             value_to_group(Value::Timestamp(TimeUnit::Microsecond, -1))
@@ -777,10 +804,15 @@ fn compile_filter(
     match filter {
         FilterExprV1::And { exprs } => compile_filter_list("AND", exprs, metadata, params, "TRUE"),
         FilterExprV1::Or { exprs } => compile_filter_list("OR", exprs, metadata, params, "FALSE"),
-        FilterExprV1::Not { expr } => Ok(format!("NOT ({})", compile_filter(expr, metadata, params)?)),
+        FilterExprV1::Not { expr } => {
+            Ok(format!("NOT ({})", compile_filter(expr, metadata, params)?))
+        }
         FilterExprV1::IsNull { field_id, negate } => {
             let column = quote_identifier(resolve_column(metadata, field_id)?);
-            Ok(format!("{column} IS {}NULL", if *negate { "NOT " } else { "" }))
+            Ok(format!(
+                "{column} IS {}NULL",
+                if *negate { "NOT " } else { "" }
+            ))
         }
         FilterExprV1::NumericRange {
             field_id,
@@ -798,7 +830,10 @@ fn compile_filter(
                     ));
                 }
                 params.push(Value::Double(*minimum));
-                clauses.push(format!("{column} {} ?", if *include_min { ">=" } else { ">" }));
+                clauses.push(format!(
+                    "{column} {} ?",
+                    if *include_min { ">=" } else { ">" }
+                ));
             }
             if let Some(maximum) = max {
                 if !maximum.is_finite() {
@@ -807,9 +842,16 @@ fn compile_filter(
                     ));
                 }
                 params.push(Value::Double(*maximum));
-                clauses.push(format!("{column} {} ?", if *include_max { "<=" } else { "<" }));
+                clauses.push(format!(
+                    "{column} {} ?",
+                    if *include_max { "<=" } else { "<" }
+                ));
             }
-            Ok(if clauses.is_empty() { "TRUE".to_string() } else { clauses.join(" AND ") })
+            Ok(if clauses.is_empty() {
+                "TRUE".to_string()
+            } else {
+                clauses.join(" AND ")
+            })
         }
         FilterExprV1::CategorySet {
             field_id,
@@ -844,13 +886,23 @@ fn compile_filter(
             let mut clauses = Vec::new();
             if let Some(start) = start {
                 params.push(Value::Text(start.clone()));
-                clauses.push(format!("{column} {} ?", if *include_start { ">=" } else { ">" }));
+                clauses.push(format!(
+                    "{column} {} ?",
+                    if *include_start { ">=" } else { ">" }
+                ));
             }
             if let Some(end) = end {
                 params.push(Value::Text(end.clone()));
-                clauses.push(format!("{column} {} ?", if *include_end { "<=" } else { "<" }));
+                clauses.push(format!(
+                    "{column} {} ?",
+                    if *include_end { "<=" } else { "<" }
+                ));
             }
-            Ok(if clauses.is_empty() { "TRUE".to_string() } else { clauses.join(" AND ") })
+            Ok(if clauses.is_empty() {
+                "TRUE".to_string()
+            } else {
+                clauses.join(" AND ")
+            })
         }
     }
 }

@@ -65,7 +65,8 @@
     "opConcatenate": "合併",
     "help": "說明",
     "about": "關於",
-    "license": "授權"
+    "license": "授權",
+    "fitModel": "配適模型"
   },
   "alert": {
     "selectDatasetFirst": "請先選擇一個資料表作為資料來源",
@@ -803,14 +804,48 @@
       "fiveNumberSummary": "五數概括",
       "widthProportion": "寬度比例",
       "auto": "自動",
-      "summary": { "none": "無", "mean": "均值", "median": "中位數", "sum": "總和" },
-      "interval": { "stdErr": "標準誤", "stdDev": "標準差", "ci95": "95% 置信區間" },
-      "style": { "errorBar": "誤差棒", "band": "色帶", "sphere": "球體" },
-      "jitterMode": { "stacked": "堆疊", "uniform": "均勻", "normal": "常態" },
-      "conn": { "line": "直線", "step": "階梯", "spline": "曲線" },
-      "fillMode": { "toZero": "到零填充", "between": "區間填充" },
-      "missing": { "skip": "跳過", "include": "包含", "connect": "跨越連接", "break": "斷開" },
-      "box": { "outlier": "離群", "quantile": "分位", "normal": "普通", "notched": "帶凹口" },
+      "summary": {
+        "none": "無",
+        "mean": "均值",
+        "median": "中位數",
+        "sum": "總和"
+      },
+      "interval": {
+        "stdErr": "標準誤",
+        "stdDev": "標準差",
+        "ci95": "95% 置信區間"
+      },
+      "style": {
+        "errorBar": "誤差棒",
+        "band": "色帶",
+        "sphere": "球體"
+      },
+      "jitterMode": {
+        "stacked": "堆疊",
+        "uniform": "均勻",
+        "normal": "常態"
+      },
+      "conn": {
+        "line": "直線",
+        "step": "階梯",
+        "spline": "曲線"
+      },
+      "fillMode": {
+        "toZero": "到零填充",
+        "between": "區間填充"
+      },
+      "missing": {
+        "skip": "跳過",
+        "include": "包含",
+        "connect": "跨越連接",
+        "break": "斷開"
+      },
+      "box": {
+        "outlier": "離群",
+        "quantile": "分位",
+        "normal": "普通",
+        "notched": "帶凹口"
+      },
       "histStyle": "直方圖樣式",
       "smoothness": "平滑度",
       "surfaceSmoothness": "平滑程度",
@@ -818,21 +853,50 @@
       "histHeight": "直方圖高度",
       "showCounts": "顯示頻數",
       "showPercents": "顯示百分比",
-      "histStyles": { "bar": "柱狀", "polygon": "折線", "kde": "核密度", "shadowgram": "疊影圖" },
+      "histStyles": {
+        "bar": "柱狀",
+        "polygon": "折線",
+        "kde": "核密度",
+        "shadowgram": "疊影圖"
+      },
       "smootherAlgo": "演算法",
-      "smootherAlgos": { "spline": "樣條", "kernel": "局部核", "savgol": "Savitzky-Golay", "movingAvg": "移動平均", "movingBox": "移動中位" },
+      "smootherAlgos": {
+        "spline": "樣條",
+        "kernel": "局部核",
+        "savgol": "Savitzky-Golay",
+        "movingAvg": "移動平均",
+        "movingBox": "移動中位"
+      },
       "smootherSplineSmoothness": "平滑度",
       "smootherKernelBandwidth": "頻寬",
       "smootherSavgolWindow": "視窗",
       "smootherSavgolPolyOrder": "多項式階數",
       "smootherWindow": "視窗",
       "fitType": "擬合",
-      "fitTypes": { "polynomial": "多項式", "robustCauchy": "穩健 Cauchy" },
+      "fitTypes": {
+        "polynomial": "多項式",
+        "robustCauchy": "穩健 Cauchy"
+      },
       "fitDegree": "階數",
-      "fitDegrees": { "1": "一次", "2": "二次", "3": "三次", "4": "四次", "5": "五次", "6": "六次" },
-      "fitConf": { "fit": "擬合置信區間", "prediction": "預測置信區間" },
+      "fitDegrees": {
+        "1": "一次",
+        "2": "二次",
+        "3": "三次",
+        "4": "四次",
+        "5": "五次",
+        "6": "六次"
+      },
+      "fitConf": {
+        "fit": "擬合置信區間",
+        "prediction": "預測置信區間"
+      },
       "fitStats": "統計量",
-      "fitStat": { "equation": "方程", "rmse": "RMSE", "r2": "R²", "fTest": "F 檢驗" }
+      "fitStat": {
+        "equation": "方程",
+        "rmse": "RMSE",
+        "r2": "R²",
+        "fTest": "F 檢驗"
+      }
     },
     "loading": "正在載入資料…",
     "loadingProgress": "{{loaded}} / {{total}} 列",

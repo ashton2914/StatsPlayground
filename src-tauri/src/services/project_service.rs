@@ -1,6 +1,6 @@
 use crate::error::AppError;
-use crate::models::project::{DatasetNameMigration, ProjectInfo};
 use crate::models::distribution::{DistributionIssueV1, DistributionLoadStatusV1};
+use crate::models::project::{DatasetNameMigration, DocumentNameMigration, ProjectInfo};
 use crate::models::save::{
     SaveProgressCallback, SaveProjectRequest, SaveSnapshot, SaveWriteResult,
 };
@@ -37,6 +37,8 @@ pub struct OpenProjectResult {
     #[serde(default)]
     pub fit_y_by_x: Vec<serde_json::Value>,
     #[serde(default)]
+    pub fit_models: Vec<serde_json::Value>,
+    #[serde(default)]
     pub tabulates: Vec<serde_json::Value>,
     #[serde(default)]
     pub distributions: Vec<DistributionDocV1>,
@@ -56,7 +58,13 @@ pub struct OpenProjectResult {
     #[serde(default)]
     pub fit_y_by_x_folders: std::collections::HashMap<String, String>,
     #[serde(default)]
+    pub fit_model_folders: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub document_name_migrations: Vec<DocumentNameMigration>,
+    #[serde(default)]
     pub dataset_name_migrations: Vec<DatasetNameMigration>,
+    #[serde(default)]
+    pub requires_migration: bool,
     /// `tabulateId -> folder path`.
     #[serde(default)]
     pub tabulate_folders: std::collections::HashMap<String, String>,
@@ -151,6 +159,8 @@ impl<'a> ProjectService<'a> {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            &empty_folders,
             &empty_folders,
             &empty_folders,
             &empty_folders,
@@ -213,6 +223,7 @@ impl<'a> ProjectService<'a> {
             None => derive_folders_from_entries(&bundle.manifest.graphs, "graphs"),
         };
         let fit_y_by_x_folders = bundle.manifest.fit_y_by_x_folders.clone();
+        let fit_model_folders = bundle.manifest.fit_model_folders.clone();
         let tabulate_folders = bundle.manifest.tabulate_folders.clone();
         let distribution_folders = bundle.manifest.distribution_folders.clone();
         let mut distribution_issues = bundle
@@ -247,13 +258,16 @@ impl<'a> ProjectService<'a> {
                     if !dataset_ids.contains(&doc.source_dataset_id) {
                         doc.load_status = DistributionLoadStatusV1::MissingSource;
                         doc.status = "unavailable".to_string();
-                        push_distribution_issue(&mut distribution_issues, DistributionIssueV1 {
+                        push_distribution_issue(
+                            &mut distribution_issues,
+                            DistributionIssueV1 {
                             analysis_id: doc.analysis_id.clone(),
                             kind: DistributionLoadStatusV1::MissingSource,
                             message_key: "distribution.issue.missingSource".to_string(),
                             schema_version: doc.schema_version.clone(),
                             source_dataset_id: Some(doc.source_dataset_id.clone()),
-                        });
+                            },
+                        );
                     }
                     doc
                 }
@@ -269,13 +283,17 @@ impl<'a> ProjectService<'a> {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    push_distribution_issue(&mut distribution_issues, DistributionIssueV1 {
+                    push_distribution_issue(
+                        &mut distribution_issues,
+                        DistributionIssueV1 {
                         analysis_id: analysis_id.clone(),
                         kind: DistributionLoadStatusV1::UnknownVersion,
                         message_key: "distribution.issue.unknownVersion".to_string(),
                         schema_version: schema_version.clone(),
-                        source_dataset_id: (!source_dataset_id.is_empty()).then(|| source_dataset_id.clone()),
-                    });
+                            source_dataset_id: (!source_dataset_id.is_empty())
+                                .then(|| source_dataset_id.clone()),
+                        },
+                    );
                     DistributionDocV1 {
                         schema_version: schema_version.clone(),
                         analysis_id: analysis_id.clone(),
@@ -283,21 +301,30 @@ impl<'a> ProjectService<'a> {
                         source_dataset_id,
                         status: "unavailable".to_string(),
                         config_revision: 1,
-                        current_config: body.get("currentConfig").cloned().unwrap_or_else(|| serde_json::json!({})),
+                        current_config: body
+                            .get("currentConfig")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({})),
                         load_status: DistributionLoadStatusV1::UnknownVersion,
                         raw_envelope: Some(raw_envelope.clone()),
                         raw_text: None,
                     }
                 }
-                spprj_archive::DistributionArchiveRecordV1::Corrupt { analysis_id, raw_text } => {
+                spprj_archive::DistributionArchiveRecordV1::Corrupt {
+                    analysis_id,
+                    raw_text,
+                } => {
                     let entry = distribution_entries.get(analysis_id.as_str());
-                    push_distribution_issue(&mut distribution_issues, DistributionIssueV1 {
+                    push_distribution_issue(
+                        &mut distribution_issues,
+                        DistributionIssueV1 {
                         analysis_id: analysis_id.clone(),
                         kind: DistributionLoadStatusV1::Corrupt,
                         message_key: "distribution.issue.corrupt".to_string(),
                         schema_version: "unknown".to_string(),
                         source_dataset_id: None,
-                    });
+                        },
+                    );
                     DistributionDocV1 {
                         schema_version: "unknown".to_string(),
                         analysis_id: analysis_id.clone(),
@@ -377,6 +404,7 @@ impl<'a> ProjectService<'a> {
             snapshots: bundle.snapshots,
             graph_builders,
             fit_y_by_x: bundle.fit_y_by_x,
+            fit_models: bundle.fit_models,
             tabulates: bundle.tabulates,
             distributions,
             derived_formulas,
@@ -385,7 +413,10 @@ impl<'a> ProjectService<'a> {
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
+            fit_model_folders,
+            document_name_migrations: Vec::new(),
             dataset_name_migrations,
+            requires_migration: false,
             tabulate_folders,
             distribution_folders,
         })
@@ -657,9 +688,9 @@ impl<'a> ProjectService<'a> {
 
         let mut row_ids = std::collections::HashSet::with_capacity(doc.rows.len());
         for row in &doc.rows {
-            let row_id = row[0].as_i64().ok_or_else(|| {
-                AppError::InvalidParam("table row IDs must be integers".into())
-            })?;
+            let row_id = row[0]
+                .as_i64()
+                .ok_or_else(|| AppError::InvalidParam("table row IDs must be integers".into()))?;
             if row_id <= 0 {
                 return Err(AppError::InvalidParam(
                     "table row IDs must be positive".into(),
@@ -1178,6 +1209,7 @@ mod tests {
             snapshots,
             graph_builders,
             fit_y_by_x,
+            fit_models: Vec::new(),
             tabulates,
             distributions: Vec::new(),
             derived_formulas: Vec::new(),
@@ -1186,6 +1218,7 @@ mod tests {
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
+            fit_model_folders: HashMap::new(),
             tabulate_folders,
             distribution_folders: HashMap::new(),
         }
@@ -1533,7 +1566,10 @@ mod tests {
 
         let bundle = spprj_archive::read_project_file(destination.to_str().unwrap()).unwrap();
         assert_eq!(bundle.manifest.name, "Quarterly");
-        assert_eq!(state.project.read().unwrap().as_ref().unwrap().name, "Quarterly");
+        assert_eq!(
+            state.project.read().unwrap().as_ref().unwrap().name,
+            "Quarterly"
+        );
 
         let _ = std::fs::remove_file(destination);
     }
@@ -1704,8 +1740,7 @@ mod tests {
         let table_folders =
             HashMap::from([("preserve-id".to_string(), "Analysis/Yearly".to_string())]);
         let graph_folders = HashMap::from([("graph-1".to_string(), "Analysis".to_string())]);
-        let fit_y_by_x_folders =
-            HashMap::from([("fit-1".to_string(), "Analysis".to_string())]);
+        let fit_y_by_x_folders = HashMap::from([("fit-1".to_string(), "Analysis".to_string())]);
         let tabulate_folders =
             HashMap::from([("tab-1".to_string(), "Analysis/Yearly".to_string())]);
 
@@ -1744,6 +1779,8 @@ mod tests {
         assert_eq!(reopened.graph_folders, graph_folders);
         assert_eq!(reopened.fit_y_by_x_folders, fit_y_by_x_folders);
         assert_eq!(reopened.tabulate_folders, tabulate_folders);
+        assert!(reopened.document_name_migrations.is_empty());
+        assert!(!reopened.requires_migration);
 
         let restored_display = reopened_state.column_display.lock().unwrap();
         let restored_props = restored_display.get("preserve-id").unwrap();
@@ -2161,6 +2198,8 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
+            &folders,
             &folders,
             &folders,
             &folders,

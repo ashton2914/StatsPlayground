@@ -357,6 +357,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             placeholder_tables,
             graph_docs,
             snapshot.request.fit_y_by_x.clone(),
+            snapshot.request.fit_models.clone(),
             snapshot.request.tabulates.clone(),
             distributions,
             derived_formulas,
@@ -365,6 +366,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             &snapshot.request.table_folders,
             &snapshot.request.graph_folders,
             &snapshot.request.fit_y_by_x_folders,
+            &snapshot.request.fit_model_folders,
             &snapshot.request.tabulate_folders,
             &snapshot.request.distribution_folders,
             snapshot.request.history.clone(),
@@ -384,8 +386,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 overall_progress: Some(0.0),
             });
 
-            let (temp_archive, temp_file) =
-                create_unique_temp_archive(&snapshot.destination_path)?;
+            let (temp_archive, temp_file) = create_unique_temp_archive(&snapshot.destination_path)?;
             let temp_path = temp_archive.path();
             if let Err(error) = self.write_temp_archive(
                 snapshot,
@@ -685,9 +686,10 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                     spprj_archive::DistributionArchiveRecordV1::Parsed(envelope) => {
                         serde_json::to_writer(&mut zip, envelope)
                     }
-                    spprj_archive::DistributionArchiveRecordV1::UnknownVersion { raw_envelope, .. } => {
-                        serde_json::to_writer(&mut zip, raw_envelope)
-                    }
+                    spprj_archive::DistributionArchiveRecordV1::UnknownVersion {
+                        raw_envelope,
+                        ..
+                    } => serde_json::to_writer(&mut zip, raw_envelope),
                     spprj_archive::DistributionArchiveRecordV1::Corrupt { raw_text, .. } => {
                         zip.write_all(raw_text.as_bytes())?;
                         continue;
@@ -1272,6 +1274,7 @@ mod tests {
                     "graphType": "line",
                 })],
                 fit_y_by_x: vec![serde_json::json!({"id": "fit-1"})],
+                fit_models: vec![serde_json::json!({"id": "fit-model-1"})],
                 tabulates: vec![serde_json::json!({"id": "tab-1"})],
                 distributions: Vec::new(),
                 derived_formulas: Vec::new(),
@@ -1280,6 +1283,7 @@ mod tests {
                 table_folders: HashMap::new(),
                 graph_folders: HashMap::new(),
                 fit_y_by_x_folders: HashMap::new(),
+                fit_model_folders: HashMap::new(),
                 tabulate_folders: HashMap::new(),
                 distribution_folders: HashMap::new(),
             },
@@ -1465,7 +1469,9 @@ mod tests {
 
         let events = events.lock().unwrap();
         assert!(events.len() >= 3);
-        assert!(events.iter().all(|event| event.phase == SavePhase::Metadata));
+        assert!(events
+            .iter()
+            .all(|event| event.phase == SavePhase::Metadata));
     }
 
     #[test]
