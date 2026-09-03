@@ -206,6 +206,10 @@ mod tests {
             ("commands::project_commands::export_graph", CommandClass::ReadOnly),
             ("commands::project_commands::import_graph", CommandClass::ReadOnly),
             ("commands::table_commands::get_columns", CommandClass::ReadOnly),
+            (
+                "commands::table_commands::get_column_descriptors",
+                CommandClass::ReadOnly,
+            ),
             ("commands::table_commands::sort_table", CommandClass::Mutation),
             ("commands::table_commands::subset_table", CommandClass::Mutation),
             (

@@ -19,7 +19,7 @@ export interface MultivariateColumnUpdateResult {
 export const MAX_MULTIVARIATE_COLUMNS = 20;
 
 function normalizeContinuousFields(fields: FieldRef[]): FieldRef[] {
-  return fields.map((field) => ({ name: field.name, type: "continuous" as const }));
+  return fields.map((field) => ({ ...field, type: "continuous" as const }));
 }
 
 function validateCandidateColumns(fields: FieldRef[]): MultivariateColumnUpdateError | undefined {

@@ -206,6 +206,7 @@ export function Workspace() {
   const resetWorkflows = useWorkflowStore((s) => s.reset);
   const addGraphBuilder = useGraphBuilderStore((s) => s.addItem);
   const renameGraphBuilder = useGraphBuilderStore((s) => s.renameItem);
+  const migrateLegacyGraphColumnName = useGraphBuilderStore((s) => s.migrateLegacyColumnName);
   const deleteGraphBuilder = useGraphBuilderStore((s) => s.deleteItem);
   const deleteGraphBuildersByDataset = useGraphBuilderStore((s) => s.deleteByDataset);
   const resetGraphBuilders = useGraphBuilderStore((s) => s.reset);
@@ -2466,7 +2467,14 @@ export function Workspace() {
               );
             })()
           ) : activeDatasetId ? (
-            <DataTableView key={tableKey} datasetId={activeDatasetId} onTableOp={setTableOp} />
+            <DataTableView
+              key={tableKey}
+              datasetId={activeDatasetId}
+              onColumnRenamed={(oldName, newName, sqlType) => {
+                migrateLegacyGraphColumnName(activeDatasetId, oldName, newName, sqlType);
+              }}
+              onTableOp={setTableOp}
+            />
           ) : (
             <div className="main-content">
               <div className="workspace-empty">

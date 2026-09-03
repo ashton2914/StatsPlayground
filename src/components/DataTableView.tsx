@@ -22,6 +22,7 @@ import type { FilterRuleItem } from "@/types/filter";
 
 interface DataTableViewProps {
   datasetId: string;
+  onColumnRenamed?: (oldName: string, newName: string, sqlType: string) => void;
   /**
    * Open one of the JMP-style table operations (Summary / Subset / Sort /
    * Stack / Split / Transpose / Join / Update / Concatenate). Wired by the
@@ -698,7 +699,7 @@ const FormulaBar = React.memo(function FormulaBar({
   );
 });
 
-export function DataTableView({ datasetId, onTableOp }: DataTableViewProps) {
+export function DataTableView({ datasetId, onColumnRenamed, onTableOp }: DataTableViewProps) {
   const { t } = useTranslation();
   const labelOf = useMemo(() => typeLabelOf(t), [t]);
   const [data, setData] = useState<TableQueryResult | null>(null);
@@ -2206,6 +2207,9 @@ export function DataTableView({ datasetId, onTableOp }: DataTableViewProps) {
           datasetId,
           changeSetId,
         });
+        if (nameChanged) {
+          onColumnRenamed?.(renameCol.oldName, renameValue.trim(), renameType);
+        }
         await load();
         await refreshAndMarkDirty();
       } else {

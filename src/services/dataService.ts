@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnDisplayProps,
+  ColumnDescriptor,
   CellPosition,
   CellUpdate,
   DatasetMeta,
@@ -251,6 +252,10 @@ export const dataService = {
   /** 获取列信息 */
   getColumns: (datasetId: string) =>
     invoke<[string, string][]>("get_columns", { datasetId }),
+
+  /** 获取带稳定 ID 的列描述符 */
+  getColumnDescriptors: (datasetId: string) =>
+    invoke<ColumnDescriptor[]>("get_column_descriptors", { datasetId }),
 
   /** 排序 */
   sortTable: (sourceId: string, sortCols: string[], sortOrders: string[], newName: string) =>

@@ -87,6 +87,7 @@ pub fn run() {
             commands::project_commands::export_graph,
             commands::project_commands::import_graph,
             commands::table_commands::get_columns,
+            commands::table_commands::get_column_descriptors,
             commands::table_commands::sort_table,
             commands::table_commands::subset_table,
             commands::table_commands::transpose_table,
