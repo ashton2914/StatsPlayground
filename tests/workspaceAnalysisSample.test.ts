@@ -30,9 +30,9 @@ for (const required of [
   "addAnalysis(analysis)",
   "await refreshDatasets()",
   "dataService.deleteDataset(createdDatasetId)",
-  "setActiveAnalysisId(analysis.id)",
+  'activateWorkspaceDocument("analysis", analysis.id)',
+  'getAnalysisCreationHistoryKey("sample")',
   "markDirty()",
-  "history.newAnalysis",
 ]) {
   assert.equal(handler.includes(required), true, `sample handler must include ${required}`);
 }
@@ -50,6 +50,10 @@ assert.match(workspace, /onClick=\{readOnly \? undefined : handleCreateAnalysisS
 assert.ok(
   handler.indexOf("await refreshDatasets()") < handler.indexOf("addAnalysis(analysis)"),
   "backend table registration must succeed before the analysis is added",
+);
+assert.ok(
+  handler.indexOf('activateWorkspaceDocument("analysis", analysis.id)') < handler.indexOf('getAnalysisCreationHistoryKey("sample")'),
+  "sample creation must activate the saved Analysis before recording sample history",
 );
 
 for (const locale of ["en", "vi", "zh-CN", "zh-TW"]) {

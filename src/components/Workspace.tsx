@@ -31,6 +31,16 @@ import {
   createAnalysisSample,
   createAnalysisSampleDocument,
 } from "./analysis/analysisSample";
+import {
+  buildAnalysisProjectPayload,
+  createEmptyWorkspaceDocumentSelection,
+  getAnalysisCreationHistoryKey,
+  getRetainedActiveAnalysisIdAfterDatasetDeletion,
+  hydrateAnalysisProjectPayload,
+  selectWorkspaceDocument,
+  type WorkspaceDocumentKind,
+  type WorkspaceDocumentSelection,
+} from "./analysis/analysisWorkspaceLifecycle";
 import "./graphBuilder/graphBuilder.css";
 import "./fitYByX/fitYByX.css";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
@@ -330,6 +340,24 @@ export function Workspace() {
     recordHistory(desc);
   }, [recordHistory]);
 
+  const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
+    setActiveDataset(selection.activeDatasetId);
+    setActiveGraphBuilderId(selection.activeGraphBuilderId);
+    setActiveFitYByXId(selection.activeFitYByXId);
+    setActiveReportId(selection.activeReportId);
+    setActiveAnalysisId(selection.activeAnalysisId);
+    setActiveDistributionId(selection.activeDistributionId);
+    setActiveTabulateId(selection.activeTabulateId);
+  }, [setActiveDataset]);
+
+  const activateWorkspaceDocument = useCallback((kind: WorkspaceDocumentKind, id: string) => {
+    applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
+  }, [applyWorkspaceDocumentSelection]);
+
+  const clearWorkspaceDocumentSelection = useCallback(() => {
+    applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
+  }, [applyWorkspaceDocumentSelection]);
+
   const flushPendingReportHistory = useCallback(() => {
     const pending = pendingReportHistoryRef.current;
     if (!pending) {
@@ -594,12 +622,7 @@ export function Workspace() {
     const meta = await dataService.createTable(name, [], []);
     await refreshDatasets();
     markDirty();
-    setActiveGraphBuilderId(null);
-    setActiveFitYByXId(null);
-    setActiveDistributionId(null);
-    setActiveAnalysisId(null);
-    setActiveTabulateId(null);
-    setActiveDataset(meta.id);
+    activateWorkspaceDocument("dataset", meta.id);
     recordAction(t("history.newTable", { name: meta.name }));
     // Enter rename mode
     setRenamingId(meta.id);
@@ -651,12 +674,7 @@ export function Workspace() {
       createdAt: new Date().toISOString(),
     };
     addGraphBuilder(item);
-    setActiveDataset(null);
-    setActiveGraphBuilderId(id);
-    setActiveFitYByXId(null);
-    setActiveAnalysisId(null);
-    setActiveDistributionId(null);
-    setActiveTabulateId(null);
+    activateWorkspaceDocument("graph", id);
     markDirty();
     recordAction(t("history.newGraph", { name, source: ds.name }));
     setRenamingId(id);
@@ -687,12 +705,7 @@ export function Workspace() {
       createdAt: new Date().toISOString(),
     };
     addTabulate(item);
-    setActiveDataset(null);
-    setActiveGraphBuilderId(null);
-    setActiveFitYByXId(null);
-    setActiveAnalysisId(null);
-    setActiveDistributionId(null);
-    setActiveTabulateId(id);
+    activateWorkspaceDocument("tabulate", id);
     markDirty();
     recordAction(t("history.newTabulate", { name: item.name, source: ds.name }));
     setRenamingId(id);
@@ -722,13 +735,7 @@ export function Workspace() {
     const created = { ...item, name: resolved.basename };
     const source = datasets.find((dataset) => dataset.id === created.sourceDatasetId)?.name ?? created.sourceDatasetId;
     addFitYByX(created);
-    setActiveDataset(null);
-    setActiveGraphBuilderId(null);
-    setActiveReportId(null);
-    setActiveAnalysisId(null);
-    setActiveTabulateId(null);
-    setActiveDistributionId(null);
-    setActiveFitYByXId(created.id);
+    activateWorkspaceDocument("fitYByX", created.id);
     setShowFitYByXDialog(false);
     markDirty();
     recordAction(t("history.newFitYByX", { name: created.name, source }));
@@ -752,13 +759,7 @@ export function Workspace() {
       updatedAt: timestamp,
     };
     addReport(item);
-    setActiveDataset(null);
-    setActiveGraphBuilderId(null);
-    setActiveFitYByXId(null);
-    setActiveAnalysisId(null);
-    setActiveTabulateId(null);
-    setActiveDistributionId(null);
-    setActiveReportId(id);
+    activateWorkspaceDocument("report", id);
     markDirty();
     recordAction(t("history.newReport", { name: item.name }));
     setRenamingId(id);
@@ -805,15 +806,9 @@ export function Workspace() {
 
       addAnalysis(analysis);
       addedAnalysisId = analysis.id;
-      setActiveDataset(null);
-      setActiveGraphBuilderId(null);
-      setActiveFitYByXId(null);
-      setActiveTabulateId(null);
-      setActiveReportId(null);
-      setActiveDistributionId(null);
-      setActiveAnalysisId(analysis.id);
+      activateWorkspaceDocument("analysis", analysis.id);
       markDirty();
-      recordAction(t("history.newAnalysis", { name: analysis.name }));
+      recordAction(t(getAnalysisCreationHistoryKey("sample"), { name: analysis.name }));
     } catch (error) {
       if (addedAnalysisId) deleteAnalysis(addedAnalysisId);
       if (createdDatasetId) {
@@ -1074,6 +1069,10 @@ export function Workspace() {
     const activeAnalysis = activeAnalysisId
       ? useAnalysisStore.getState().items.find((item) => item.id === activeAnalysisId)
       : null;
+    const retainedActiveAnalysisId = getRetainedActiveAnalysisIdAfterDatasetDeletion({
+      deletedDatasetId: id,
+      activeAnalysis,
+    });
     await dataService.deleteDataset(id);
     if (activeDatasetId === id) setActiveDataset(null);
     // 联动删除引用此数据表的图表
@@ -1088,7 +1087,7 @@ export function Workspace() {
     if (activeFitYByX?.sourceDatasetId === id) setActiveFitYByXId(null);
     deleteDistributionByDataset(id);
     if (activeDistribution?.sourceDatasetId === id) setActiveDistributionId(null);
-    if (activeAnalysis?.source.datasetId === id) setActiveAnalysisId(activeAnalysis.id);
+    if (retainedActiveAnalysisId) setActiveAnalysisId(retainedActiveAnalysisId);
     await refreshDatasets();
     markDirty();
     recordAction(t("history.deleteTable", { name }));
@@ -1306,7 +1305,7 @@ export function Workspace() {
       reportFolders,
       tabulateFolders,
       distributionFolders,
-      analysisFolders,
+      ...buildAnalysisProjectPayload({ analyses: analysisItems, analysisFolders }),
     };
     try {
       if (!project?.filePath) {
@@ -1324,7 +1323,7 @@ export function Workspace() {
           fitYByX: fitYByXItems,
           tabulates,
           distributions: distributionItems,
-          analyses: analysisItems,
+          analyses: folderPayload.analyses,
           folders: folderPayload.folders,
           tableFolders: folderPayload.tableFolders,
           graphFolders: folderPayload.graphFolders,
@@ -1346,7 +1345,7 @@ export function Workspace() {
           fitYByX: fitYByXItems,
           tabulates,
           distributions: distributionItems,
-          analyses: analysisItems,
+          analyses: folderPayload.analyses,
           folders: folderPayload.folders,
           tableFolders: folderPayload.tableFolders,
           graphFolders: folderPayload.graphFolders,
@@ -1381,13 +1380,7 @@ export function Workspace() {
 
   const handleCloseProject = async () => {
     flushPendingReportHistory();
-    setActiveDataset(null);
-    setActiveGraphBuilderId(null);
-    setActiveFitYByXId(null);
-    setActiveReportId(null);
-    setActiveAnalysisId(null);
-    setActiveDistributionId(null);
-    setActiveTabulateId(null);
+    clearWorkspaceDocumentSelection();
     resetHistory();
     resetGraphBuilders();
     resetFitYByX();
@@ -1410,13 +1403,7 @@ export function Workspace() {
     });
     if (selected) {
       flushPendingReportHistory();
-      setActiveDataset(null);
-      setActiveGraphBuilderId(null);
-      setActiveFitYByXId(null);
-      setActiveReportId(null);
-      setActiveAnalysisId(null);
-      setActiveDistributionId(null);
-      setActiveTabulateId(null);
+      clearWorkspaceDocumentSelection();
       resetHistory();
       resetGraphBuilders();
       resetFitYByX();
@@ -1441,13 +1428,8 @@ export function Workspace() {
       });
       try {
         const result = await openProject(selected as string);
-        setActiveDataset(null);
-        setActiveGraphBuilderId(null);
-        setActiveFitYByXId(null);
-        setActiveReportId(null);
-        setActiveAnalysisId(null);
-        setActiveDistributionId(null);
-        setActiveTabulateId(null);
+        const analysisProjectPayload = hydrateAnalysisProjectPayload(result);
+        clearWorkspaceDocumentSelection();
         resetHistory();
         resetGraphBuilders();
         resetFitYByX();
@@ -1472,7 +1454,7 @@ export function Workspace() {
         }
         loadFitYByXFromProject((result.fitYByX ?? []) as FitYByXItem[]);
         loadReportsFromProject((result.reports ?? []) as ReportItem[]);
-        loadAnalyses((result.analyses ?? []) as AnalysisDocument[]);
+        loadAnalyses(analysisProjectPayload.analyses as AnalysisDocument[]);
         loadTabulatesFromProject((result.tabulates ?? []) as TabulateItem[]);
         loadDistributionsFromProject(result.distributions ?? []);
         loadWorkflowsFromProject({
@@ -1497,7 +1479,7 @@ export function Workspace() {
           reportFolders: result.reportFolders ?? {},
           tabulateFolders: result.tabulateFolders ?? {},
           distributionFolders: result.distributionFolders ?? {},
-          analysisFolders: result.analysisFolders ?? {},
+          analysisFolders: analysisProjectPayload.analysisFolders,
         });
         if (result.documentNameMigrations.length > 0) {
           showToast(
@@ -2014,13 +1996,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(e) => handleDragStart(e, { kind: "table", id: ds.id })}
           onClick={() => {
-            setActiveGraphBuilderId(null);
-            setActiveFitYByXId(null);
-            setActiveReportId(null);
-            setActiveAnalysisId(null);
-            setActiveDistributionId(null);
-            setActiveTabulateId(null);
-            setActiveDataset(ds.id);
+            activateWorkspaceDocument("dataset", ds.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
@@ -2068,13 +2044,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(e) => handleDragStart(e, { kind: "graph", id: gb.id })}
           onClick={() => {
-            setActiveDataset(null);
-            setActiveTabulateId(null);
-            setActiveFitYByXId(null);
-            setActiveReportId(null);
-            setActiveAnalysisId(null);
-            setActiveDistributionId(null);
-            setActiveGraphBuilderId(gb.id);
+            activateWorkspaceDocument("graph", gb.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
@@ -2125,13 +2095,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(event) => handleDragStart(event, { kind: "fitYByX", id: item.id })}
           onClick={() => {
-            setActiveDataset(null);
-            setActiveGraphBuilderId(null);
-            setActiveReportId(null);
-            setActiveAnalysisId(null);
-            setActiveTabulateId(null);
-            setActiveDistributionId(null);
-            setActiveFitYByXId(item.id);
+            activateWorkspaceDocument("fitYByX", item.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
@@ -2181,13 +2145,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(e) => handleDragStart(e, { kind: "report", id: item.id })}
           onClick={() => {
-            setActiveDataset(null);
-            setActiveGraphBuilderId(null);
-            setActiveFitYByXId(null);
-            setActiveAnalysisId(null);
-            setActiveTabulateId(null);
-            setActiveDistributionId(null);
-            setActiveReportId(item.id);
+            activateWorkspaceDocument("report", item.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
@@ -2234,13 +2192,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(event) => handleDragStart(event, { kind: "analysis", id: item.id })}
           onClick={() => {
-            setActiveDataset(null);
-            setActiveGraphBuilderId(null);
-            setActiveFitYByXId(null);
-            setActiveReportId(null);
-            setActiveDistributionId(null);
-            setActiveTabulateId(null);
-            setActiveAnalysisId(item.id);
+            activateWorkspaceDocument("analysis", item.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
