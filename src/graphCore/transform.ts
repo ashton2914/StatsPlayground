@@ -3095,7 +3095,7 @@ function buildSingleOption(
           : xField.type === "continuous"
             ? "continuous" as const
             : "nominal" as const,
-        categories: frame?.dictionaries.x ?? valueOrders?.[xField.name],
+        categories: frame?.dictionaries.x,
       }
       : {
         vector: "constant" as const,
@@ -3246,8 +3246,8 @@ function buildSingleOption(
               ? "continuous"
               : "nominal",
           categories: resolvedFrameScatterCoordinates.y.vector === "x"
-            ? (frame?.dictionaries.x ?? valueOrders?.[yField?.name ?? ""])
-            : (frame?.dictionaries.y ?? valueOrders?.[yField?.name ?? ""]),
+            ? frame?.dictionaries.x
+            : frame?.dictionaries.y,
         }
         : { vector: "constant", type: "nominal", constant: "" },
       y: resolvedFrameScatterCoordinates.x.vector === "constant"
@@ -3300,7 +3300,10 @@ function buildSingleOption(
     const yExtent = yVector ? frame.extents[yVector] : undefined;
     if (xIsCategory) {
       if (resolvedFrameScatterCoordinates.x.categories?.length) {
-        frameRanges.xCats = [...resolvedFrameScatterCoordinates.x.categories];
+        const frameCategories = [...resolvedFrameScatterCoordinates.x.categories];
+        frameRanges.xCats = xField
+          ? applyValueOrder(frameCategories, valueOrders?.[xField.name])
+          : frameCategories;
       }
     } else if (!framePointsOnly && xIsTime && resolvedFrameScatterCoordinates.x.categories?.length) {
       const times = resolvedFrameScatterCoordinates.x.categories
