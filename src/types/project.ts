@@ -1,4 +1,6 @@
+import type { AnalysisDocument } from "./analysis";
 import type { DistributionItem } from "./distribution";
+import type { ReportItem } from "./report";
 import type {
   LogicalFolder,
   ProjectLineageGraph,
@@ -12,8 +14,6 @@ export interface ProjectInfo {
   filePath: string;
   createdAt: string;
 }
-
-import type { ReportItem } from "./report";
 
 export interface DatasetNameMigration {
   datasetId: string;
@@ -37,6 +37,7 @@ export interface OpenProjectResult {
   fitYByX: unknown[];
   tabulates: unknown[];
   distributions: DistributionItem[];
+  analyses: AnalysisDocument[];
   /** 项目内所有文件夹路径（含空文件夹），使用 "/" 分隔，根目录不出现在列表中。 */
   folders: string[];
   /** datasetId → folder path（根目录的表不在此映射中）。 */
@@ -45,6 +46,7 @@ export interface OpenProjectResult {
   graphFolders: Record<string, string>;
   fitYByXFolders: Record<string, string>;
   distributionFolders: Record<string, string>;
+  analysisFolders: Record<string, string>;
   documentNameMigrations: DocumentNameMigration[];
   datasetNameMigrations: DatasetNameMigration[];
   requiresMigration: boolean;

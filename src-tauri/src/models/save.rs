@@ -18,6 +18,8 @@ pub struct SaveProjectRequest {
     pub reports: Vec<serde_json::Value>,
     #[serde(default)]
     pub distributions: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub analyses: Vec<serde_json::Value>,
     pub tabulates: Vec<serde_json::Value>,
     pub folders: Vec<String>,
     pub table_folders: HashMap<String, String>,
@@ -28,6 +30,8 @@ pub struct SaveProjectRequest {
     pub report_folders: HashMap<String, String>,
     #[serde(default)]
     pub distribution_folders: HashMap<String, String>,
+    #[serde(default)]
+    pub analysis_folders: HashMap<String, String>,
     pub tabulate_folders: HashMap<String, String>,
     #[serde(default)]
     pub workflows: Vec<WorkflowDefinition>,

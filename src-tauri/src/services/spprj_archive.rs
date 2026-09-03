@@ -166,6 +166,10 @@ pub struct ProjectManifest {
     pub distributions: Vec<DocumentEntryRef>,
     #[serde(default)]
     pub distribution_folders: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analyses: Vec<DocumentEntryRef>,
+    #[serde(default)]
+    pub analysis_folders: HashMap<String, String>,
     #[serde(default)]
     pub tabulate_files: Vec<DocumentEntryRef>,
     #[serde(default)]
@@ -222,6 +226,7 @@ pub enum DocumentKind {
     FitYByX,
     Report,
     Distribution,
+    Analysis,
     Tabulate,
 }
 
@@ -353,6 +358,7 @@ pub struct ProjectBundle {
     pub fit_y_by_x: Vec<Value>,
     pub reports: Vec<Value>,
     pub distributions: Vec<Value>,
+    pub analyses: Vec<Value>,
     pub tabulates: Vec<Value>,
     pub history: Vec<Value>,
     pub snapshots: Vec<Value>,
@@ -586,6 +592,36 @@ pub fn validate_archive_manifest_and_entries(
             if body_name != entry.name {
                 return Err(AppError::FileIO(format!(
                     "Archive distribution name mismatch in {}: manifest={}, body={}",
+                    entry.file, entry.name, body_name
+                )));
+            }
+        }
+    }
+    for entry in &expected_manifest.analyses {
+        let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
+            AppError::FileIO(format!("Archive missing analysis entry {}: {e}", entry.file))
+        })?;
+        let value: Value = serde_json::from_reader(&mut doc_entry).map_err(|e| {
+            AppError::FileIO(format!(
+                "Archive analysis entry {} is not valid JSON: {e}",
+                entry.file
+            ))
+        })?;
+        validate_analysis_value(&value, &entry.file)?;
+        let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
+            AppError::FileIO(format!("Archive analysis entry {} missing id", entry.file))
+        })?;
+        if body_id != entry.id {
+            return Err(AppError::FileIO(format!(
+                "Archive analysis id mismatch in {}: manifest={}, body={}",
+                entry.file, entry.id, body_id
+            )));
+        }
+        if strict_v4_name_checks {
+            let body_name = value_required_name(&value, &entry.file, "analysis")?;
+            if body_name != entry.name {
+                return Err(AppError::FileIO(format!(
+                    "Archive analysis name mismatch in {}: manifest={}, body={}",
                     entry.file, entry.name, body_name
                 )));
             }
@@ -884,6 +920,12 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         DocumentKind::Distribution,
         strict_v4_name_checks,
     )?;
+    let analyses = read_indexed_values(
+        &mut zip,
+        &manifest.analyses,
+        DocumentKind::Analysis,
+        strict_v4_name_checks,
+    )?;
     let tabulates = if !manifest.tabulate_files.is_empty() {
         read_indexed_values(
             &mut zip,
@@ -921,6 +963,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         fit_y_by_x,
         reports,
         distributions,
+        analyses,
         tabulates,
         history,
         snapshots,
@@ -946,8 +989,10 @@ fn read_indexed_values<R: Read + Seek>(
             .ok_or_else(|| AppError::FileIO(format!("Missing indexed entry: {}", entry.file)))?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| AppError::FileIO(format!("Invalid indexed file {}: {}", entry.file, e)))?;
-        if expected_kind == DocumentKind::Report {
-            validate_report_value(&value, &entry.file)?;
+        match expected_kind {
+            DocumentKind::Report => validate_report_value(&value, &entry.file)?,
+            DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
+            _ => {}
         }
         let body_id = value
             .get("id")
@@ -1116,6 +1161,8 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         report_folders: HashMap::new(),
         distributions: Vec::new(),
         distribution_folders: HashMap::new(),
+        analyses: Vec::new(),
+        analysis_folders: HashMap::new(),
         tabulates: Vec::new(),
         tabulate_folders: HashMap::new(),
         report_files: Vec::new(),
@@ -1136,6 +1183,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         fit_y_by_x,
         reports: Vec::new(),
         distributions: Vec::new(),
+        analyses: Vec::new(),
         tabulates: Vec::new(),
         history: legacy.history.unwrap_or_default(),
         snapshots: legacy.snapshots.unwrap_or_default(),
@@ -1194,6 +1242,7 @@ pub fn build_bundle(
     fit_y_by_x: Vec<Value>,
     reports: Vec<Value>,
     distributions: Vec<Value>,
+    analyses: Vec<Value>,
     tabulates: Vec<Value>,
     folders: Vec<String>,
     table_folders: &HashMap<String, String>,
@@ -1201,6 +1250,7 @@ pub fn build_bundle(
     fit_y_by_x_folders: &HashMap<String, String>,
     report_folders: &HashMap<String, String>,
     distribution_folders: &HashMap<String, String>,
+    analysis_folders: &HashMap<String, String>,
     tabulate_folders: &HashMap<String, String>,
     history: Vec<Value>,
     snapshots: Vec<Value>,
@@ -1214,6 +1264,7 @@ pub fn build_bundle(
         fit_y_by_x,
         reports,
         distributions,
+        analyses,
         tabulates,
         folders,
         table_folders,
@@ -1221,6 +1272,7 @@ pub fn build_bundle(
         fit_y_by_x_folders,
         report_folders,
         distribution_folders,
+        analysis_folders,
         tabulate_folders,
         history,
         snapshots,
@@ -1239,6 +1291,7 @@ pub fn build_bundle_with_workflows(
     fit_y_by_x: Vec<Value>,
     reports: Vec<Value>,
     distributions: Vec<Value>,
+    analyses: Vec<Value>,
     tabulates: Vec<Value>,
     folders: Vec<String>,
     table_folders: &HashMap<String, String>,
@@ -1246,6 +1299,7 @@ pub fn build_bundle_with_workflows(
     fit_y_by_x_folders: &HashMap<String, String>,
     report_folders: &HashMap<String, String>,
     distribution_folders: &HashMap<String, String>,
+    analysis_folders: &HashMap<String, String>,
     tabulate_folders: &HashMap<String, String>,
     history: Vec<Value>,
     snapshots: Vec<Value>,
@@ -1264,6 +1318,10 @@ pub fn build_bundle_with_workflows(
         .into_iter()
         .map(strip_transient_distribution_fields)
         .collect();
+    let mut analyses: Vec<Value> = analyses
+        .into_iter()
+        .map(strip_transient_analysis_fields)
+        .collect();
     let mut tabulates = tabulates;
     let mut snapshots = snapshots;
     let workflows = workflows;
@@ -1281,6 +1339,7 @@ pub fn build_bundle_with_workflows(
         }
         let mut fit_ids = HashSet::new();
         let mut distribution_ids = HashSet::new();
+        let mut analysis_ids = HashSet::new();
         let mut tabulate_ids = HashSet::new();
         let mut active_document_ids = HashSet::new();
         for doc in &fit_y_by_x {
@@ -1293,6 +1352,12 @@ pub fn build_bundle_with_workflows(
             validate_report_value(doc, "build bundle report")?;
             let id = value_required_id(doc, "report")?;
             ensure_unique_bundle_id(&mut report_ids, &id, "report")?;
+        }
+        for doc in &analyses {
+            validate_analysis_value(doc, "build bundle analysis")?;
+            let id = value_required_id(doc, "analysis")?;
+            ensure_unique_bundle_id(&mut analysis_ids, &id, "analysis")?;
+            ensure_unique_bundle_id(&mut active_document_ids, &id, "active document")?;
         }
         for doc in &tabulates {
             let id = value_required_id(doc, "tabulate")?;
@@ -1318,6 +1383,7 @@ pub fn build_bundle_with_workflows(
     let mut used_data_spf_paths: HashSet<String> = HashSet::new();
     let mut used_report_paths: HashSet<String> = HashSet::new();
     let mut used_distribution_paths: HashSet<String> = HashSet::new();
+    let mut used_analysis_paths: HashSet<String> = HashSet::new();
     let mut used_snapshot_json_paths: HashSet<String> = HashSet::new();
 
     let mut table_refs: Vec<TableEntryRef> = Vec::with_capacity(tables.len());
@@ -1420,6 +1486,27 @@ pub fn build_bundle_with_workflows(
         });
     }
 
+    let mut analysis_refs: Vec<DocumentEntryRef> = Vec::with_capacity(analyses.len());
+    for analysis in &mut analyses {
+        validate_analysis_value(analysis, "build bundle analysis")?;
+        let analysis_id = value_required_id(analysis, "analysis")?;
+        let analysis_name = value_name_or_fallback(analysis, &analysis_id);
+        let (resolved_name, resolved_file) = allocate_archive_name(
+            &analysis_name,
+            &analysis_id,
+            ".span",
+            "analyses",
+            &mut used_analysis_paths,
+        )?;
+        set_value_name(analysis, &resolved_name, "analysis")?;
+        analysis_refs.push(DocumentEntryRef {
+            id: analysis_id,
+            name: resolved_name,
+            file: resolved_file,
+            kind: DocumentKind::Analysis,
+        });
+    }
+
     let mut snapshot_refs: Vec<SnapshotEntryRef> = Vec::with_capacity(snapshots.len());
     for snapshot in &mut snapshots {
         let snapshot_id = value_required_id(snapshot, "snapshot")?;
@@ -1513,6 +1600,8 @@ pub fn build_bundle_with_workflows(
             fit_y_by_x_files: fit_y_by_x_refs,
             distributions: distribution_refs,
             distribution_folders: distribution_folders.clone(),
+            analyses: analysis_refs,
+            analysis_folders: analysis_folders.clone(),
             tabulate_files: tabulate_refs,
             snapshot_files: snapshot_refs,
             workflow_files: workflow_refs,
@@ -1526,6 +1615,7 @@ pub fn build_bundle_with_workflows(
         fit_y_by_x,
         reports,
         distributions,
+        analyses,
         tabulates,
         history,
         snapshots,
@@ -1997,6 +2087,18 @@ fn strip_transient_distribution_fields(value: Value) -> Value {
     }
 }
 
+fn strip_transient_analysis_fields(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            for field in ["markdown", "reportBlocks", "graphFrames", "result"] {
+                map.remove(field);
+            }
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
 /// Write a `ProjectBundle` to disk as a zip archive at `path`.
 ///
 /// Strategy: write to `<path>.tmp` first, then rename over the original. Gives
@@ -2083,6 +2185,16 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
                     .map(|id| (id, value))
             })
             .collect();
+        let analysis_by_id: HashMap<&str, &Value> = bundle
+            .analyses
+            .iter()
+            .filter_map(|value| {
+                value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| (id, value))
+            })
+            .collect();
         let tabulate_by_id: HashMap<&str, &Value> = bundle
             .tabulates
             .iter()
@@ -2160,6 +2272,16 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
                 &entry.name,
                 "distribution",
             )?;
+            write_zip_json_entry(&mut zip, &entry.file, &synced, opts)?;
+        }
+        for entry in &bundle.manifest.analyses {
+            let doc = analysis_by_id.get(entry.id.as_str()).ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing analysis payload for manifest reference {}",
+                    entry.id
+                ))
+            })?;
+            let synced = indexed_payload_with_manifest_name(doc, &entry.id, &entry.name, "analysis")?;
             write_zip_json_entry(&mut zip, &entry.file, &synced, opts)?;
         }
         for entry in &bundle.manifest.tabulate_files {
@@ -2528,6 +2650,7 @@ fn validate_manifest_stable_ids(manifest: &ProjectManifest) -> Result<(), AppErr
 
     let mut fit_ids = HashSet::new();
     let mut distribution_ids = HashSet::new();
+    let mut analysis_ids = HashSet::new();
     let mut tabulate_ids = HashSet::new();
     let mut active_document_ids = HashSet::new();
     for entry in &manifest.fit_y_by_x_files {
@@ -2540,6 +2663,10 @@ fn validate_manifest_stable_ids(manifest: &ProjectManifest) -> Result<(), AppErr
     }
     for entry in &manifest.distributions {
         ensure_unique_manifest_id(&mut distribution_ids, &entry.id, "distribution")?;
+        ensure_unique_manifest_id(&mut active_document_ids, &entry.id, "active document")?;
+    }
+    for entry in &manifest.analyses {
+        ensure_unique_manifest_id(&mut analysis_ids, &entry.id, "analysis")?;
         ensure_unique_manifest_id(&mut active_document_ids, &entry.id, "active document")?;
     }
 
@@ -2655,6 +2782,7 @@ fn validate_bundle_payload_stable_ids(bundle: &ProjectBundle) -> Result<(), AppE
     let mut fit_ids = HashSet::new();
     let mut report_ids = HashSet::new();
     let mut distribution_ids = HashSet::new();
+    let mut analysis_ids = HashSet::new();
     let mut tabulate_ids = HashSet::new();
     let mut active_document_ids = HashSet::new();
     for doc in &bundle.fit_y_by_x {
@@ -2674,6 +2802,12 @@ fn validate_bundle_payload_stable_ids(bundle: &ProjectBundle) -> Result<(), AppE
     for doc in &bundle.distributions {
         let id = value_required_id(doc, "distribution")?;
         ensure_unique_bundle_id(&mut distribution_ids, &id, "distribution")?;
+        ensure_unique_bundle_id(&mut active_document_ids, &id, "active document")?;
+    }
+    for doc in &bundle.analyses {
+        validate_analysis_value(doc, "bundle analysis")?;
+        let id = value_required_id(doc, "analysis")?;
+        ensure_unique_bundle_id(&mut analysis_ids, &id, "analysis")?;
         ensure_unique_bundle_id(&mut active_document_ids, &id, "active document")?;
     }
 
@@ -2803,6 +2937,26 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
                 &entry.name,
                 ".spdist",
                 "distribution",
+            )?;
+        }
+        ensure_unique_file(&mut seen_files, &entry.file)?;
+    }
+
+    for entry in &manifest.analyses {
+        if entry.kind != DocumentKind::Analysis {
+            return Err(AppError::FileIO(format!(
+                "analysis entry has unexpected kind for {}",
+                entry.file
+            )));
+        }
+        validate_indexed_path(&entry.file, "analyses", ".span", "analysis")?;
+        validate_display_basename(&entry.name)?;
+        if strict_v4_name_checks {
+            validate_manifest_name_matches_file_basename(
+                &entry.file,
+                &entry.name,
+                ".span",
+                "analysis",
             )?;
         }
         ensure_unique_file(&mut seen_files, &entry.file)?;
@@ -3063,6 +3217,164 @@ fn validate_report_value(value: &Value, context: &str) -> Result<(), AppError> {
     }
 }
 
+fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is not a JSON object")))?;
+    if object.get("schemaVersion").and_then(Value::as_i64) != Some(1) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis is missing required schemaVersion"
+        )));
+    }
+    if object.get("documentType").and_then(Value::as_str) != Some("analysis") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis must use documentType analysis"
+        )));
+    }
+    if object.get("analysisKind").and_then(Value::as_str) != Some("distribution") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis must use supported analysisKind distribution"
+        )));
+    }
+    if object.get("configRevision").and_then(Value::as_u64).is_none() {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis is missing required configRevision"
+        )));
+    }
+    value_required_id(value, "analysis")?;
+    value_required_name(value, context, "analysis")?;
+
+    for forbidden_key in ["markdown", "reportBlocks", "graphFrames", "result"] {
+        if object.contains_key(forbidden_key) {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis must not persist runtime key {forbidden_key}"
+            )));
+        }
+    }
+
+    let source = object
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required source")))?;
+    require_non_empty_string(source.get("datasetId"), &format!("{context} analysis source.datasetId"))?;
+
+    let definition = object
+        .get("definition")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required definition")))?;
+    if definition.get("kind").and_then(Value::as_str) != Some("distribution") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition must use supported kind distribution"
+        )));
+    }
+    validate_field_ref_array(definition.get("responses"), &format!("{context} analysis definition.responses"))?;
+    validate_optional_field_ref(definition.get("weight"), &format!("{context} analysis definition.weight"))?;
+    validate_optional_field_ref(definition.get("frequency"), &format!("{context} analysis definition.frequency"))?;
+    validate_field_ref_array(definition.get("by"), &format!("{context} analysis definition.by"))?;
+
+    let analysis = definition
+        .get("analysis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.analysis is missing")))?;
+    if analysis.get("confidenceLevel").and_then(Value::as_f64).is_none() {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.analysis.confidenceLevel is missing"
+        )));
+    }
+    if analysis.get("specLimits").and_then(Value::as_object).is_none() {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.analysis.specLimits is missing"
+        )));
+    }
+    if analysis.get("fitDistributions").and_then(Value::as_array).is_none() {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.analysis.fitDistributions is missing"
+        )));
+    }
+
+    let graphs = definition
+        .get("graphs")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs is missing")))?;
+    for key in ["overview", "boxPlot", "ecdf", "normalQuantile"] {
+        let graph = graphs
+            .get(key)
+            .and_then(Value::as_object)
+            .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs.{key} is missing")))?;
+        require_non_empty_string(graph.get("mode"), &format!("{context} analysis definition.graphs.{key}.mode"))?;
+        let mode_states = graph
+            .get("modeStates")
+            .and_then(Value::as_object)
+            .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs.{key}.modeStates is missing")))?;
+        let two_d = mode_states
+            .get("twoD")
+            .and_then(Value::as_object)
+            .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs.{key}.modeStates.twoD is missing")))?;
+        if two_d.get("encoding").and_then(Value::as_object).is_none()
+            || two_d.get("multiX").and_then(Value::as_array).is_none()
+            || two_d.get("multiY").and_then(Value::as_array).is_none()
+            || two_d.get("elements").and_then(Value::as_array).is_none()
+        {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis definition.graphs.{key}.modeStates.twoD.elements is malformed"
+            )));
+        }
+    }
+
+    let presentation = object
+        .get("presentation")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required presentation")))?;
+    if presentation.get("schemaVersion").and_then(Value::as_i64) != Some(1) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis presentation must use schemaVersion 1"
+        )));
+    }
+    if presentation.get("layout").and_then(Value::as_str) != Some("distribution-v1") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis presentation must use layout distribution-v1"
+        )));
+    }
+    require_non_empty_string(object.get("createdAt"), &format!("{context} analysis createdAt"))?;
+    require_non_empty_string(object.get("updatedAt"), &format!("{context} analysis updatedAt"))?;
+    Ok(())
+}
+
+fn validate_field_ref_array(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    let items = value
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::FileIO(format!("{context} must be an array")))?;
+    for item in items {
+        let object = item
+            .as_object()
+            .ok_or_else(|| AppError::FileIO(format!("{context} must contain objects")))?;
+        require_non_empty_string(object.get("name"), &format!("{context}.name"))?;
+        require_non_empty_string(object.get("type"), &format!("{context}.type"))?;
+    }
+    Ok(())
+}
+
+fn validate_optional_field_ref(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    match value {
+        None | Some(Value::Null) => Ok(()),
+        Some(item) => {
+            let object = item
+                .as_object()
+                .ok_or_else(|| AppError::FileIO(format!("{context} must be an object")))?;
+            require_non_empty_string(object.get("name"), &format!("{context}.name"))?;
+            require_non_empty_string(object.get("type"), &format!("{context}.type"))?;
+            Ok(())
+        }
+    }
+}
+
+fn require_non_empty_string<'a>(value: Option<&'a Value>, context: &str) -> Result<&'a str, AppError> {
+    value
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| AppError::FileIO(format!("{context} is missing")))
+}
+
 fn validate_manifest_relationship_projection(manifest: &ProjectManifest) -> Result<(), AppError> {
     let expected_relationships = build_data_source_relationships(&manifest.lineage_graph)?;
     if manifest.relationships != expected_relationships {
@@ -3193,12 +3505,14 @@ mod tests {
             fit_y_by_x,
             reports,
             Vec::new(),
+            Vec::new(),
             tabulates,
             folders,
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
             report_folders,
+            &HashMap::new(),
             &HashMap::new(),
             tabulate_folders,
             history,
@@ -3261,6 +3575,158 @@ mod tests {
             },
             "graphs": {},
             "createdAt": "2026-09-02T00:00:00Z"
+        })
+    }
+
+    fn analysis_doc(id: &str, name: &str) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "documentType": "analysis",
+            "id": id,
+            "name": name,
+            "analysisKind": "distribution",
+            "configRevision": 1,
+            "source": {
+                "datasetId": "table-1"
+            },
+            "definition": {
+                "kind": "distribution",
+                "responses": [
+                    { "name": "DIM1", "type": "continuous" }
+                ],
+                "weight": null,
+                "frequency": null,
+                "by": [],
+                "analysis": {
+                    "confidenceLevel": 0.95,
+                    "specLimits": {},
+                    "fitDistributions": ["normal"]
+                },
+                "graphs": {
+                    "overview": {
+                        "mode": "2d",
+                        "modeStates": {
+                            "twoD": {
+                                "encoding": { "x": { "name": "DIM1", "type": "continuous" } },
+                                "multiX": [],
+                                "multiY": [],
+                                "elements": [
+                                    { "kind": "histogram", "enabled": true, "options": { "elementId": "distribution.overview.histogram" } },
+                                    { "kind": "line", "enabled": true, "options": { "elementId": "distribution.overview.fittedCurves" } }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "threeD": {
+                                "encoding": {},
+                                "elements": [
+                                    { "kind": "scatter3d", "enabled": true }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "multivariate": {
+                                "columns": [],
+                                "chartType": "correlationMatrix",
+                                "correlationMethod": "pearson"
+                            }
+                        },
+                        "filters": [],
+                        "sampling": { "mode": "full" }
+                    },
+                    "boxPlot": {
+                        "mode": "2d",
+                        "modeStates": {
+                            "twoD": {
+                                "encoding": { "x": { "name": "DIM1", "type": "continuous" } },
+                                "multiX": [],
+                                "multiY": [],
+                                "elements": [
+                                    { "kind": "boxplot", "enabled": true, "options": { "elementId": "distribution.boxPlot" } }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "threeD": {
+                                "encoding": {},
+                                "elements": [
+                                    { "kind": "scatter3d", "enabled": true }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "multivariate": {
+                                "columns": [],
+                                "chartType": "correlationMatrix",
+                                "correlationMethod": "pearson"
+                            }
+                        },
+                        "filters": [],
+                        "sampling": { "mode": "full" }
+                    },
+                    "ecdf": {
+                        "mode": "2d",
+                        "modeStates": {
+                            "twoD": {
+                                "encoding": { "x": { "name": "DIM1", "type": "continuous" } },
+                                "multiX": [],
+                                "multiY": [],
+                                "elements": [
+                                    { "kind": "line", "enabled": true, "options": { "elementId": "distribution.ecdf" } }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "threeD": {
+                                "encoding": {},
+                                "elements": [
+                                    { "kind": "scatter3d", "enabled": true }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "multivariate": {
+                                "columns": [],
+                                "chartType": "correlationMatrix",
+                                "correlationMethod": "pearson"
+                            }
+                        },
+                        "filters": [],
+                        "sampling": { "mode": "full" }
+                    },
+                    "normalQuantile": {
+                        "mode": "2d",
+                        "modeStates": {
+                            "twoD": {
+                                "encoding": { "x": { "name": "DIM1", "type": "continuous" } },
+                                "multiX": [],
+                                "multiY": [],
+                                "elements": [
+                                    { "kind": "points", "enabled": true, "options": { "elementId": "distribution.normalQuantile.points" } },
+                                    { "kind": "line", "enabled": true, "options": { "elementId": "distribution.normalQuantile.reference" } },
+                                    { "kind": "line", "enabled": true, "options": { "elementId": "distribution.normalQuantile.lower" } },
+                                    { "kind": "line", "enabled": true, "options": { "elementId": "distribution.normalQuantile.upper" } }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "threeD": {
+                                "encoding": {},
+                                "elements": [
+                                    { "kind": "scatter3d", "enabled": true }
+                                ],
+                                "smootherLambda": 0.4
+                            },
+                            "multivariate": {
+                                "columns": [],
+                                "chartType": "correlationMatrix",
+                                "correlationMethod": "pearson"
+                            }
+                        },
+                        "filters": [],
+                        "sampling": { "mode": "full" }
+                    }
+                }
+            },
+            "presentation": {
+                "schemaVersion": 1,
+                "layout": "distribution-v1"
+            },
+            "createdAt": "2026-09-03T00:00:00.000Z",
+            "updatedAt": "2026-09-03T00:00:00.000Z"
         })
     }
 
@@ -3493,6 +3959,8 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -3613,6 +4081,8 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -3644,6 +4114,8 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -4127,6 +4599,8 @@ mod tests {
             report_folders: HashMap::new(),
             distributions: vec![],
             distribution_folders: HashMap::new(),
+            analyses: vec![],
+            analysis_folders: HashMap::new(),
             tabulates: vec![],
             tabulate_folders: HashMap::new(),
             report_files: vec![],
@@ -4215,6 +4689,76 @@ mod tests {
         assert!(loaded.reports.is_empty());
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn analysis_document_round_trip_requires_v4_analysis_entries_and_definition_only_body() {
+        let path = temp_project_path("analysis-round-trip");
+        let mut analysis = analysis_doc("analysis-1", "DIM1 Analysis");
+        analysis["markdown"] = json!("# transient");
+        analysis["reportBlocks"] = json!([{"kind": "summary"}]);
+        analysis["graphFrames"] = json!({"overview": []});
+        analysis["result"] = json!({"status": "ready"});
+        let folders = HashMap::from([("analysis-1".to_string(), "Analyses/Sample".to_string())]);
+
+        let bundle = super::build_bundle_with_workflows(
+            "Project".to_string(),
+            "4.0.0".to_string(),
+            "2026-09-03T00:00:00.000Z".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![analysis.clone()],
+            Vec::new(),
+            vec!["Analyses".to_string(), "Analyses/Sample".to_string()],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &folders,
+            &HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded.manifest.analyses.len(), 1);
+        assert_eq!(loaded.manifest.analyses[0].file, "analyses/DIM1 Analysis.span");
+        assert_eq!(loaded.manifest.analyses[0].kind, DocumentKind::Analysis);
+        assert_eq!(loaded.manifest.analysis_folders, folders);
+        assert_eq!(loaded.analyses.len(), 1);
+        assert_eq!(loaded.analyses[0].get("markdown"), None);
+        assert_eq!(loaded.analyses[0].get("reportBlocks"), None);
+        assert_eq!(loaded.analyses[0].get("graphFrames"), None);
+        assert_eq!(loaded.analyses[0].get("result"), None);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn analysis_document_validation_rejects_persisted_runtime_keys_and_malformed_nested_definition() {
+        let mut persisted_runtime = analysis_doc("analysis-1", "DIM1 Analysis");
+        persisted_runtime["result"] = json!({ "status": "ready" });
+        assert!(matches!(
+            validate_analysis_value(&persisted_runtime, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("result")
+        ));
+
+        let mut malformed = analysis_doc("analysis-1", "DIM1 Analysis");
+        malformed["definition"]["graphs"]["overview"]["modeStates"]["twoD"]["elements"] = json!("bad");
+        assert!(matches!(
+            validate_analysis_value(&malformed, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("elements")
+        ));
     }
 
     use serde_json::json;
@@ -4683,12 +5227,14 @@ mod tests {
             Vec::new(),
             vec![first],
             Vec::new(),
+            Vec::new(),
             vec!["Analyses/One".to_string(), "Analyses/Two".to_string()],
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &folders,
+            &HashMap::new(),
             &HashMap::new(),
             Vec::new(),
             Vec::new(),

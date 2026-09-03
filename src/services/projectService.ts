@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { AnalysisDocument } from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
 import type { ProjectInfo, OpenProjectResult, ImportTableResult } from "@/types/project";
 import type { ReportItem } from "@/types/report";
@@ -30,6 +31,10 @@ export interface SaveProjectFolders {
   reports: ReportItem[];
   /** distributionId → folder path. Root analyses are simply absent. */
   distributionFolders: Record<string, string>;
+  /** Analysis documents persisted with the project. */
+  analyses: AnalysisDocument[];
+  /** analysisId → folder path. Root analyses are simply absent. */
+  analysisFolders: Record<string, string>;
 }
 
 export interface SaveProjectRequest {
@@ -40,6 +45,7 @@ export interface SaveProjectRequest {
   fitYByX: unknown[];
   tabulates: unknown[];
   distributions: DistributionItem[];
+  analyses: AnalysisDocument[];
   folders: string[];
   tableFolders: Record<string, string>;
   graphFolders: Record<string, string>;
@@ -48,6 +54,7 @@ export interface SaveProjectRequest {
   reportFolders: Record<string, string>;
   reports: ReportItem[];
   distributionFolders: Record<string, string>;
+  analysisFolders: Record<string, string>;
   workflows: WorkflowDefinition[];
   logicalFolders: LogicalFolder[];
   workflowRuns: WorkflowRun[];
