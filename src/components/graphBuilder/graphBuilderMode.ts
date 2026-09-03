@@ -107,7 +107,11 @@ function toFieldRefArray(value: unknown): FieldRef[] {
   for (const entry of value) {
     if (!isObject(entry)) continue;
     if (typeof entry.name !== "string" || typeof entry.type !== "string") continue;
-    out.push({ name: entry.name, type: entry.type as FieldRef["type"] });
+    out.push({
+      ...(typeof entry.columnId === "string" ? { columnId: entry.columnId } : {}),
+      name: entry.name,
+      type: entry.type as FieldRef["type"],
+    });
   }
   return out;
 }
@@ -120,7 +124,7 @@ function canonicalizeMultivariateColumns(value: unknown): FieldRef[] {
     if (field.type !== "continuous") continue;
     if (seen.has(field.name)) continue;
     seen.add(field.name);
-    out.push({ name: field.name, type: "continuous" });
+    out.push({ ...field, type: "continuous" });
     if (out.length >= MAX_MULTIVARIATE_COLUMNS) {
       break;
     }
@@ -143,7 +147,7 @@ function collapseSingleContinuousAxisField(
   return {
     encoding: {
       ...baseEncoding,
-      [axis]: { name: continuousFields[0].name, type: "continuous" },
+      [axis]: { ...continuousFields[0], type: "continuous" },
     },
     multiFields: [],
   };
@@ -194,7 +198,11 @@ function pickEncoding<Slot extends string>(
     const value = source[key];
     if (!isObject(value)) continue;
     if (typeof value.name !== "string" || typeof value.type !== "string") continue;
-    out[key] = { name: value.name, type: value.type as FieldRef["type"] };
+    out[key] = {
+      ...(typeof value.columnId === "string" ? { columnId: value.columnId } : {}),
+      name: value.name,
+      type: value.type as FieldRef["type"],
+    };
   }
   return out;
 }

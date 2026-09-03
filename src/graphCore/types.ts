@@ -17,6 +17,8 @@ export type FieldType =
 
 /** 数据字段引用 */
 export interface FieldRef {
+  /** Stable dataset-scoped identity. Missing only in legacy project files. */
+  columnId?: string;
   /** 列名，必须存在于数据源中 */
   name: string;
   /** 字段类型，用于决定坐标轴/编码方式 */

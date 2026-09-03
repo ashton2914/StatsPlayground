@@ -1596,6 +1596,14 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
                 onBrushSelect={isMultivariateMode ? undefined : ((picks) => {
                   pickCells(dataset.id, picks);
                 })}
+                onItemReconciled={(nextItem) => {
+                  updateItem(item.id, {
+                    modeStates: nextItem.modeStates,
+                    filters: nextItem.filters,
+                    groupThemeSlots: nextItem.groupThemeSlots,
+                  });
+                  markDirty();
+                }}
                 onStateChange={setRuntimeState}
               />
               {correlationNoticeText && (
