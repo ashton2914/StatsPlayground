@@ -25,6 +25,7 @@ import {
   type FitModelDiagnosticFilter,
 } from "./fitModelReportModel";
 import { FitModelDiagnosticChart } from "./FitModelDiagnosticChart";
+import { FitModelProfiler } from "./FitModelProfiler";
 import type { FitModelReportState } from "./useFitModelReport";
 import type { FitModelLoadIssue } from "@/types/fitModel";
 
@@ -39,6 +40,7 @@ interface FitModelDisclosureState {
   residualByPredicted: boolean;
   residualQq: boolean;
   rowDiagnostics: boolean;
+  predictionProfiler: boolean;
   warnings: boolean;
 }
 
@@ -53,6 +55,7 @@ const DEFAULT_DISCLOSURE_STATE: FitModelDisclosureState = {
   residualByPredicted: true,
   residualQq: true,
   rowDiagnostics: true,
+  predictionProfiler: true,
   warnings: true,
 };
 
@@ -609,6 +612,17 @@ export function FitModelReport({
                 </tbody>
               </table>
             </div>
+          </Section>
+
+          <Section
+            title={t("fitModel.report.section.predictionProfiler", { defaultValue: "Prediction Profiler" })}
+            open={disclosure.predictionProfiler}
+            onToggle={() => toggle("predictionProfiler")}
+          >
+            <FitModelProfiler
+              snapshot={fittedResult.snapshot}
+              responseName={fittedResult.responseColumn}
+            />
           </Section>
 
           <Section

@@ -1074,6 +1074,7 @@
         "residualByPredicted": "残差对预测值",
         "residualQq": "残差 Q-Q 图",
         "rowDiagnostics": "逐行诊断",
+        "predictionProfiler": "预测剖面图",
         "warnings": "警告"
       },
       "specification": {
@@ -1138,6 +1139,14 @@
         "all": "全部",
         "flagged": "已标记"
       },
+      "profiler": {
+        "currentValue": "当前值",
+        "predicted": "预测值",
+        "meanConfidenceInterval": "均值置信区间",
+        "predictionInterval": "预测区间",
+        "notEstimable": "无法估计",
+        "extrapolation": "超出训练范围：{{columns}}"
+      },
       "source": {
         "error": "误差",
         "pureError": "纯误差",
@@ -1165,7 +1174,9 @@
         "series": {
           "actual": "实际值",
           "residual": "残差",
-          "studentizedResidual": "学生化残差"
+          "studentizedResidual": "学生化残差",
+          "predicted": "预测值",
+          "meanConfidence": "均值置信区间"
         },
         "reference": {
           "identity": "y=x",

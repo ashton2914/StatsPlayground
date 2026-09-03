@@ -9,6 +9,18 @@ export {
 } from "./FitModelReport";
 
 export {
+  FitModelProfiler,
+  type FitModelProfilerProps,
+} from "./FitModelProfiler";
+
+export {
+  predictFitModelPoint,
+  scanFitModelPredictor,
+  type FitModelPointPrediction,
+  type FitModelProfilerPoint,
+} from "./fitModelPrediction";
+
+export {
   applyFitModelTermRemoval,
   applyFitModelTermUndo,
   buildEffectSummary,

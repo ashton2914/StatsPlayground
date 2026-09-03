@@ -57,6 +57,7 @@ function createTestI18n(): I18nInstance {
                   featureVif: "Feature VIF",
                   residualQq: "Residual Q-Q",
                   rowDiagnostics: "Row Diagnostics",
+                  predictionProfiler: "Prediction Profiler",
                   warnings: "Warnings",
                 },
                 chart: {
@@ -561,6 +562,7 @@ function testRenderFittedContracts(): void {
   assert.match(html, /auxiliaryRankDeficient|fitModel\.report\.reason\.auxiliaryRankDeficient/);
   assert.match(html, /Residual Q-Q/);
   assert.match(html, /Row Diagnostics/);
+  assert.match(html, /Prediction Profiler/);
   assert.match(html, /Sampled: 1 \/ 12 rows/);
   assert.match(html, /Residual warning|fitModel\.report\.flag\.residualWarning/);
   assert.match(html, /High leverage|fitModel\.report\.flag\.highLeverage/);
@@ -578,6 +580,7 @@ function testRenderFittedContracts(): void {
     "Residual by Predicted",
     "Residual Q-Q",
     "Row Diagnostics",
+    "Prediction Profiler",
     "Warnings",
   ];
   let previousIndex = -1;

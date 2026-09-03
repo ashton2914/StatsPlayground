@@ -1058,6 +1058,7 @@
         "residualByPredicted": "Phần dư theo dự đoán",
         "residualQq": "Q-Q phần dư",
         "rowDiagnostics": "Chẩn đoán theo hàng",
+        "predictionProfiler": "Biểu đồ dự báo",
         "warnings": "Cảnh báo"
       },
       "specification": {
@@ -1122,6 +1123,14 @@
         "all": "Tất cả",
         "flagged": "Có cờ"
       },
+      "profiler": {
+        "currentValue": "Giá trị hiện tại",
+        "predicted": "Dự đoán",
+        "meanConfidenceInterval": "Khoảng tin cậy trung bình",
+        "predictionInterval": "Khoảng dự đoán",
+        "notEstimable": "Không thể ước lượng",
+        "extrapolation": "Ngoài phạm vi huấn luyện: {{columns}}"
+      },
       "source": {
         "error": "Sai số",
         "pureError": "Sai số thuần",
@@ -1149,7 +1158,9 @@
         "series": {
           "actual": "Thực tế",
           "residual": "Phần dư",
-          "studentizedResidual": "Phần dư student hóa"
+          "studentizedResidual": "Phần dư student hóa",
+          "predicted": "Dự đoán",
+          "meanConfidence": "Khoảng tin cậy trung bình"
         },
         "reference": {
           "identity": "y=x",

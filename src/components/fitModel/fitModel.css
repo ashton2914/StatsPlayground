@@ -270,6 +270,99 @@
   font-size: 11px;
 }
 
+.sp-fit-model-profiler {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.sp-fit-model-profiler-column {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.sp-fit-model-profiler-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border-main);
+}
+
+.sp-fit-model-profiler-controls label {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--fg-secondary);
+  font-size: 11px;
+}
+
+.sp-fit-model-profiler-controls label span:first-child {
+  color: var(--fg-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sp-fit-model-profiler-controls input {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.sp-fit-model-profiler-controls input[type="range"] {
+  width: 100%;
+}
+
+.sp-fit-model-profiler-controls input[type="number"] {
+  width: 96px;
+}
+
+.sp-fit-model-profiler-result {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--border-main);
+}
+
+.sp-fit-model-profiler-result div {
+  min-width: 0;
+  padding: 9px 10px;
+  background: var(--bg-panel);
+}
+
+.sp-fit-model-profiler-result dt {
+  color: var(--fg-hint);
+  font-size: 11px;
+}
+
+.sp-fit-model-profiler-result dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sp-fit-model-profiler-warning {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--danger, #b42318);
+  color: var(--danger, #b42318);
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+
 .sp-fit-model-report-table-wrap {
   width: 100%;
   min-width: 0;
@@ -368,6 +461,10 @@
   }
 
   .sp-fit-model-specification {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-fit-model-profiler-result {
     grid-template-columns: 1fr;
   }
 }

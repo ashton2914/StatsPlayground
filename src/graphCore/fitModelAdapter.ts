@@ -1,5 +1,6 @@
 import type { EChartsOption } from "echarts";
 
+import type { FitModelProfilerPoint } from "@/components/fitModel/fitModelPrediction";
 import type { FitModelPlotRow, FitModelQqRow } from "@/types/fitModel";
 import { getGraphTheme } from "./theme";
 
@@ -347,6 +348,114 @@ export function buildResidualQqOption(input: FitModelQqChartInput): EChartsOptio
           [extent.min, extent.min],
           [extent.max, extent.max],
         ],
+      },
+    ],
+  };
+}
+
+export interface FitModelProfilerChartInput {
+  predictorName: string;
+  responseName: string;
+  currentValue: number;
+  currentPrediction: number;
+  points: FitModelProfilerPoint[];
+  labels: FitModelProfilerChartLabels;
+}
+
+export interface FitModelProfilerChartLabels {
+  predictedSeriesName: string;
+  meanConfidenceSeriesName: string;
+  currentValueName: string;
+  tooltipXLabel: string;
+  tooltipYLabel: string;
+}
+
+export function buildFitModelProfilerOption(input: FitModelProfilerChartInput): EChartsOption {
+  const theme = getGraphTheme();
+  const predicted = input.points.map((point, index) => [
+    ensureFinite(point.value, "value", index),
+    ensureFinite(point.predicted, "predicted", index),
+  ] as [number, number]);
+  const intervalPoints = input.points.filter(
+    (point) => point.meanConfidenceLower !== null && point.meanConfidenceUpper !== null,
+  );
+  const lower = intervalPoints.map((point, index) => [
+    ensureFinite(point.value, "value", index),
+    ensureFinite(point.meanConfidenceLower as number, "meanConfidenceLower", index),
+  ] as [number, number]);
+  const width = intervalPoints.map((point, index) => [
+    ensureFinite(point.value, "value", index),
+    ensureFinite((point.meanConfidenceUpper as number) - (point.meanConfidenceLower as number), "meanConfidenceWidth", index),
+  ] as [number, number]);
+
+  return {
+    ...baseOption(input.predictorName, undefined, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
+    xAxis: {
+      type: "value",
+      name: input.predictorName,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
+    },
+    yAxis: {
+      type: "value",
+      name: input.responseName,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
+    },
+    series: [
+      {
+        name: input.labels.meanConfidenceSeriesName,
+        type: "line",
+        clip: true,
+        stack: "mean-confidence",
+        showSymbol: false,
+        silent: true,
+        lineStyle: { opacity: 0 },
+        areaStyle: { opacity: 0 },
+        data: lower,
+      },
+      {
+        name: input.labels.meanConfidenceSeriesName,
+        type: "line",
+        clip: true,
+        stack: "mean-confidence",
+        showSymbol: false,
+        silent: true,
+        lineStyle: { opacity: 0 },
+        areaStyle: { color: theme.accent, opacity: 0.16 },
+        data: width,
+      },
+      {
+        name: input.labels.predictedSeriesName,
+        type: "line",
+        clip: true,
+        showSymbol: false,
+        lineStyle: { color: theme.accent, width: 2 },
+        data: predicted,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          label: { show: false },
+          lineStyle: { color: theme.fgDim, type: "dashed" },
+          data: [{ name: input.labels.currentValueName, xAxis: ensureFinite(input.currentValue, "currentValue", 0) }],
+        },
+        markPoint: {
+          symbol: "circle",
+          symbolSize: 8,
+          label: { show: false },
+          itemStyle: { color: theme.accent },
+          data: [{
+            name: input.labels.currentValueName,
+            coord: [
+              ensureFinite(input.currentValue, "currentValue", 0),
+              ensureFinite(input.currentPrediction, "currentPrediction", 0),
+            ],
+          }],
+        },
       },
     ],
   };

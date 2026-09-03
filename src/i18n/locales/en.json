@@ -1074,6 +1074,7 @@
         "residualByPredicted": "Residual by Predicted",
         "residualQq": "Residual Q-Q",
         "rowDiagnostics": "Row Diagnostics",
+        "predictionProfiler": "Prediction Profiler",
         "warnings": "Warnings"
       },
       "specification": {
@@ -1138,6 +1139,14 @@
         "all": "All",
         "flagged": "Flagged"
       },
+      "profiler": {
+        "currentValue": "Current value",
+        "predicted": "Predicted",
+        "meanConfidenceInterval": "Mean CI",
+        "predictionInterval": "Prediction interval",
+        "notEstimable": "Not estimable",
+        "extrapolation": "Outside training range: {{columns}}"
+      },
       "source": {
         "error": "Error",
         "pureError": "Pure Error",
@@ -1165,7 +1174,9 @@
         "series": {
           "actual": "Actual",
           "residual": "Residual",
-          "studentizedResidual": "Studentized residual"
+          "studentizedResidual": "Studentized residual",
+          "predicted": "Predicted",
+          "meanConfidence": "Mean CI"
         },
         "reference": {
           "identity": "y=x",

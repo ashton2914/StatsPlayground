@@ -5,7 +5,7 @@ import type { EChartsOption } from "echarts";
 interface FitModelDiagnosticChartProps {
   option: EChartsOption;
   title: string;
-  chartKind: "actualByPredicted" | "residualByPredicted" | "residualQq";
+  chartKind: "actualByPredicted" | "residualByPredicted" | "residualQq" | "predictionProfiler";
 }
 
 export function FitModelDiagnosticChart({ option, title, chartKind }: FitModelDiagnosticChartProps) {
