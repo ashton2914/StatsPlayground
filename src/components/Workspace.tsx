@@ -1071,7 +1071,7 @@ export function Workspace() {
       : null;
     const retainedActiveAnalysisId = getRetainedActiveAnalysisIdAfterDatasetDeletion({
       deletedDatasetId: id,
-      activeAnalysis,
+      activeAnalysis: activeAnalysis ?? null,
     });
     await dataService.deleteDataset(id);
     if (activeDatasetId === id) setActiveDataset(null);

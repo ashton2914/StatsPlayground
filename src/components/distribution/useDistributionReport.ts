@@ -70,6 +70,10 @@ function stableValue(value: unknown): unknown {
   return value;
 }
 
+export function stableDistributionReportValue(value: unknown): unknown {
+  return stableValue(value);
+}
+
 export function distributionRequestFingerprint(item: DistributionItem): string {
   return JSON.stringify(stableValue({
     sourceDatasetId: item.sourceDatasetId,
@@ -106,6 +110,10 @@ function normalizeError(error: unknown): string {
   }
   if (typeof error === "string" && error.trim()) return error;
   return "Failed to load Distribution report.";
+}
+
+export function normalizeDistributionReportError(error: unknown): string {
+  return normalizeError(error);
 }
 
 export function createDistributionReportController(

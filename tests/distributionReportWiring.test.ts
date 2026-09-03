@@ -17,6 +17,10 @@ const viewSource = readFileSync(
   new URL("../src/components/distribution/DistributionView.tsx", import.meta.url),
   "utf8",
 );
+const presentationSource = readFileSync(
+  new URL("../src/components/distribution/distributionPresentation.tsx", import.meta.url),
+  "utf8",
+);
 
 const assertTablesUseFitYByXStyle = (source: string): void => {
   const tableTags = source.match(/<table(?:\s[^>]*)?>/g) ?? [];
@@ -39,8 +43,11 @@ assert.doesNotMatch(reportSource, /DistributionChart|GraphRuntime|useDistributio
 assert.doesNotMatch(capabilitySource, /DistributionChart|ProcessCapabilityChart|echarts/);
 
 assert.match(viewSource, /useDistributionReport/);
-assert.match(viewSource, /<DistributionReport/);
-assert.match(viewSource, /reportState\.status === "error"/);
-assert.match(viewSource, /externalDataState=\{mapDistributionExternalDataState\(reportState, role\)\}/);
+assert.match(viewSource, /DistributionReportPanel/);
+assert.match(viewSource, /DistributionGraphGrid/);
+assert.match(presentationSource, /<DistributionReport/);
+assert.match(presentationSource, /reportState\.status === "error"/);
+assert.match(presentationSource, /externalDataState:\s*mapDistributionExternalDataState\(reportState, role\)/);
+assert.match(presentationSource, /renderGraph \? renderGraph\(graphProps\) : <GraphRuntime \{\.\.\.graphProps\} \/>/);
 
 console.log("distribution report wiring OK");
