@@ -50,6 +50,7 @@
     "exportSpgh": "Export Current Graph as .spgh",
     "importSpgh": "Import .spgh Graph File",
     "analyze": "Analyze",
+    "analysisSample": "Sample Analysis",
     "report": "Report",
     "newReport": "New Report",
     "tabulate": "Tabulate",
@@ -82,6 +83,7 @@
     "importGraphFailed": "Import graph failed: ",
     "exportFolderFailed": "Export folder failed: ",
     "openProjectFailed": "Failed to open project: ",
+    "analysisSampleFailed": "Failed to create sample analysis: {{message}}",
     "invalidName": {
       "empty": "Name cannot be empty.",
       "invalidChars": "Name contains invalid characters: / \\ : * ? \" < > |",
@@ -117,6 +119,7 @@
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "New Fit Y by X \"{{name}}\" (source: {{source}})",
     "newDistribution": "New Distribution \"{{name}}\" (source: {{source}})",
+    "analysisSample": "Create sample analysis \"{{name}}\"",
     "renameGraph": "Rename graph \"{{old}}\" → \"{{new}}\"",
     "renameReport": "Rename report \"{{old}}\" → \"{{new}}\"",
     "renameTable": "Rename table \"{{old}}\" → \"{{new}}\"",
@@ -150,6 +153,26 @@
     "autoFitColumn": "Auto-fit column",
     "sqlQueryTableCreated": "Create table \"{{name}}\" from SQL query",
     "tabulateTableCreated": "Create data table \"{{name}}\" from tabulate result"
+  },
+  "analysisSample": {
+    "report": {
+      "description": "This sample demonstrates the standard analysis layout.",
+      "quantiles": "Quantiles",
+      "summaryStatistics": "Summary Statistics",
+      "probability": "Probability",
+      "quantile": "Quantile",
+      "value": "Value",
+      "statistic": "Statistic",
+      "minimum": "Minimum",
+      "maximum": "Maximum",
+      "median": "Median",
+      "count": "N",
+      "mean": "Mean",
+      "stdDev": "Std Dev",
+      "stdError": "Std Error Mean",
+      "range": "Range",
+      "interquartileRange": "Interquartile Range"
+    }
   },
   "workflow": {
     "title": "Workflow",

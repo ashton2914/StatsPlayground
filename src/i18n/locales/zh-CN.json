@@ -50,6 +50,7 @@
     "exportSpgh": "导出当前图形为 .spgh",
     "importSpgh": "导入 .spgh 图形文件",
     "analyze": "Analyze",
+    "analysisSample": "示范分析",
     "report": "报告",
     "newReport": "新建报告",
     "tabulate": "Tabulate",
@@ -82,6 +83,7 @@
     "importGraphFailed": "导入图形失败: ",
     "exportFolderFailed": "导出文件夹失败: ",
     "openProjectFailed": "打开项目失败: ",
+    "analysisSampleFailed": "创建示范分析失败: {{message}}",
     "invalidName": {
       "empty": "名称不能为空。",
       "invalidChars": "名称包含非法字符: / \\ : * ? \" < > |",
@@ -117,6 +119,7 @@
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "新建拟合 Y by X \"{{name}}\" (数据源: {{source}})",
     "newDistribution": "新建分布分析 \"{{name}}\" (数据源: {{source}})",
+    "analysisSample": "创建示范分析 \"{{name}}\"",
     "renameGraph": "重命名图形 \"{{old}}\" → \"{{new}}\"",
     "renameReport": "重命名报告 \"{{old}}\" → \"{{new}}\"",
     "renameTable": "重命名数据表 \"{{old}}\" → \"{{new}}\"",
@@ -150,6 +153,26 @@
     "autoFitColumn": "自动调整列宽",
     "sqlQueryTableCreated": "从 SQL 查询创建数据表 \"{{name}}\"",
     "tabulateTableCreated": "从 Tabulate 结果创建数据表 \"{{name}}\""
+  },
+  "analysisSample": {
+    "report": {
+      "description": "此示例展示统一的分析排版。",
+      "quantiles": "分位数",
+      "summaryStatistics": "汇总统计",
+      "probability": "概率",
+      "quantile": "分位数",
+      "value": "值",
+      "statistic": "统计量",
+      "minimum": "最小值",
+      "maximum": "最大值",
+      "median": "中位数",
+      "count": "样本数",
+      "mean": "均值",
+      "stdDev": "标准差",
+      "stdError": "均值标准误",
+      "range": "极差",
+      "interquartileRange": "四分位距"
+    }
   },
   "workflow": {
     "title": "工作流",

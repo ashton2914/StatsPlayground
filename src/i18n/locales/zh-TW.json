@@ -50,6 +50,7 @@
     "exportSpgh": "匯出目前圖形為 .spgh",
     "importSpgh": "匯入 .spgh 圖形檔",
     "analyze": "Analyze",
+    "analysisSample": "示範分析",
     "report": "報告",
     "newReport": "新增報告",
     "tabulate": "Tabulate",
@@ -82,6 +83,7 @@
     "importGraphFailed": "匯入圖形失敗：",
     "exportFolderFailed": "匯出資料夾失敗：",
     "openProjectFailed": "開啟專案失敗：",
+    "analysisSampleFailed": "建立示範分析失敗：{{message}}",
     "invalidName": {
       "empty": "名稱不可為空。",
       "invalidChars": "名稱包含非法字元：/ \\ : * ? \" < > |",
@@ -117,6 +119,7 @@
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "新增配適 Y by X \"{{name}}\"（資料來源：{{source}}）",
     "newDistribution": "新增分佈分析 \"{{name}}\"（資料來源：{{source}}）",
+    "analysisSample": "建立示範分析 \"{{name}}\"",
     "renameGraph": "重新命名圖形 \"{{old}}\" → \"{{new}}\"",
     "renameReport": "重新命名報告 \"{{old}}\" → \"{{new}}\"",
     "renameTable": "重新命名資料表 \"{{old}}\" → \"{{new}}\"",
@@ -149,6 +152,26 @@
     "resizeColumn": "調整欄寬",
     "autoFitColumn": "自動調整欄寬",
     "sqlQueryTableCreated": "從 SQL 查詢建立資料表 \"{{name}}\""
+  },
+  "analysisSample": {
+    "report": {
+      "description": "此範例展示統一的分析排版。",
+      "quantiles": "分位數",
+      "summaryStatistics": "彙總統計",
+      "probability": "機率",
+      "quantile": "分位數",
+      "value": "值",
+      "statistic": "統計量",
+      "minimum": "最小值",
+      "maximum": "最大值",
+      "median": "中位數",
+      "count": "樣本數",
+      "mean": "平均值",
+      "stdDev": "標準差",
+      "stdError": "平均值標準誤",
+      "range": "全距",
+      "interquartileRange": "四分位距"
+    }
   },
   "workflow": {
     "title": "工作流程",

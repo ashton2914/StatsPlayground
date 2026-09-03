@@ -50,6 +50,7 @@
     "exportSpgh": "Xuất biểu đồ hiện tại sang .spgh",
     "importSpgh": "Nhập tệp biểu đồ .spgh",
     "analyze": "Analyze",
+    "analysisSample": "Phân tích mẫu",
     "report": "Báo cáo",
     "newReport": "Báo cáo mới",
     "tabulate": "Tabulate",
@@ -82,6 +83,7 @@
     "importGraphFailed": "Nhập biểu đồ thất bại: ",
     "exportFolderFailed": "Xuất thư mục thất bại: ",
     "openProjectFailed": "Mở dự án thất bại: ",
+    "analysisSampleFailed": "Không thể tạo phân tích mẫu: {{message}}",
     "invalidName": {
       "empty": "Tên không được để trống.",
       "invalidChars": "Tên chứa ký tự không hợp lệ: / \\ : * ? \" < > |",
@@ -117,6 +119,7 @@
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "Tạo Khớp Y theo X \"{{name}}\" (nguồn: {{source}})",
     "newDistribution": "Tạo phân tích phân phối \"{{name}}\" (nguồn: {{source}})",
+    "analysisSample": "Tạo phân tích mẫu \"{{name}}\"",
     "renameGraph": "Đổi tên biểu đồ \"{{old}}\" → \"{{new}}\"",
     "renameReport": "Đổi tên báo cáo \"{{old}}\" → \"{{new}}\"",
     "renameTable": "Đổi tên bảng \"{{old}}\" → \"{{new}}\"",
@@ -149,6 +152,26 @@
     "resizeColumn": "Đổi kích thước cột",
     "autoFitColumn": "Tự động chỉnh cột",
     "sqlQueryTableCreated": "Tạo bảng \"{{name}}\" từ truy vấn SQL"
+  },
+  "analysisSample": {
+    "report": {
+      "description": "Mẫu này minh họa bố cục phân tích tiêu chuẩn.",
+      "quantiles": "Phân vị",
+      "summaryStatistics": "Thống kê tóm tắt",
+      "probability": "Xác suất",
+      "quantile": "Phân vị",
+      "value": "Giá trị",
+      "statistic": "Thống kê",
+      "minimum": "Nhỏ nhất",
+      "maximum": "Lớn nhất",
+      "median": "Trung vị",
+      "count": "N",
+      "mean": "Trung bình",
+      "stdDev": "Độ lệch chuẩn",
+      "stdError": "Sai số chuẩn trung bình",
+      "range": "Khoảng biến thiên",
+      "interquartileRange": "Khoảng tứ phân vị"
+    }
   },
   "workflow": {
     "title": "Quy trình",

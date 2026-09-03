@@ -25,6 +25,12 @@ import { ReportView } from "./report";
 import { DistributionDialog, DistributionView, type DistributionFieldInfo } from "./distribution";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
+import {
+  ANALYSIS_SAMPLE_COLUMN,
+  createAnalysisSample,
+  createAnalysisSampleGraph,
+  createAnalysisSampleReport,
+} from "./analysis/analysisSample";
 import "./graphBuilder/graphBuilder.css";
 import "./fitYByX/fitYByX.css";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
@@ -737,6 +743,104 @@ export function Workspace() {
     recordAction(t("history.newReport", { name: item.name }));
     setRenamingId(id);
     setRenameValue(item.name);
+  };
+
+  const handleCreateAnalysisSample = async () => {
+    if (readOnly) return;
+    const timestamp = new Date().toISOString();
+    const createId = (prefix: string) => (
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    );
+    const tableName = allocateProjectBasename(
+      "DIM1 Sample",
+      ".sptb",
+      datasets.map((dataset) => dataset.name),
+    );
+    const graphName = allocateProjectBasename(
+      "DIM1 Distribution",
+      ".spgh",
+      graphBuilders.map((graph) => graph.name),
+    );
+    const reportName = allocateProjectBasename(
+      "DIM1 Analysis",
+      ".sprp",
+      reportItems.map((report) => report.name),
+    );
+
+    let createdDatasetId: string | null = null;
+    let addedGraphId: string | null = null;
+    let addedReportId: string | null = null;
+    try {
+      const sample = createAnalysisSample(Date.now(), 200);
+      const dataset = await dataService.createTableFromRows({
+        name: tableName,
+        columnNames: [ANALYSIS_SAMPLE_COLUMN],
+        columnTypes: ["DOUBLE"],
+        rows: sample.rows,
+      });
+      createdDatasetId = dataset.id;
+      await refreshDatasets();
+      const graph = createAnalysisSampleGraph({
+        datasetId: dataset.id,
+        graphId: createId("graph"),
+        graphName,
+        createdAt: timestamp,
+      });
+      const report = createAnalysisSampleReport({
+        reportId: createId("report"),
+        reportName,
+        graphId: graph.id,
+        sample,
+        createdAt: timestamp,
+        labels: {
+          description: t("analysisSample.report.description"),
+          quantiles: t("analysisSample.report.quantiles"),
+          summaryStatistics: t("analysisSample.report.summaryStatistics"),
+          probability: t("analysisSample.report.probability"),
+          quantile: t("analysisSample.report.quantile"),
+          value: t("analysisSample.report.value"),
+          statistic: t("analysisSample.report.statistic"),
+          minimum: t("analysisSample.report.minimum"),
+          maximum: t("analysisSample.report.maximum"),
+          median: t("analysisSample.report.median"),
+          count: t("analysisSample.report.count"),
+          mean: t("analysisSample.report.mean"),
+          stdDev: t("analysisSample.report.stdDev"),
+          stdError: t("analysisSample.report.stdError"),
+          range: t("analysisSample.report.range"),
+          interquartileRange: t("analysisSample.report.interquartileRange"),
+        },
+      });
+
+      addGraphBuilder(graph);
+      addedGraphId = graph.id;
+      addReport(report);
+      addedReportId = report.id;
+      setActiveDataset(null);
+      setActiveGraphBuilderId(null);
+      setActiveFitYByXId(null);
+      setActiveDistributionId(null);
+      setActiveTabulateId(null);
+      setActiveReportId(report.id);
+      markDirty();
+      recordAction(t("history.analysisSample", { name: report.name }));
+    } catch (error) {
+      if (addedReportId) deleteReport(addedReportId);
+      if (addedGraphId) deleteGraphBuilder(addedGraphId);
+      if (createdDatasetId) {
+        try {
+          await dataService.deleteDataset(createdDatasetId);
+          await refreshDatasets();
+        } catch {
+        }
+      }
+      alert(t("alert.analysisSampleFailed", {
+        defaultValue: "Failed to create sample analysis: {{message}}",
+        message: String(error),
+      }));
+    }
   };
 
   const handleCreateDistribution = async () => {
@@ -2226,6 +2330,13 @@ export function Workspace() {
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportGraphSpgh}>{t("menu.importSpgh")}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.analyze")}>
+              <div
+                className={`menu-item${readOnly ? " menu-item-disabled" : ""}`}
+                onClick={readOnly ? undefined : handleCreateAnalysisSample}
+              >
+                {t("menu.analysisSample")}
+              </div>
+              <div className="menu-sep" />
               <div
                 className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
                 onClick={activeDatasetId && !readOnly ? handleCreateTabulate : undefined}
