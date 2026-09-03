@@ -881,6 +881,7 @@
         "kendall": "Kendall"
       },
       "summaryStat": "汇总统计量",
+      "showSigmaBands": "显示 σ 参考阴影",
       "errorInterval": "误差区间",
       "intervalStyle": "区间样式",
       "jitter": "抖动",

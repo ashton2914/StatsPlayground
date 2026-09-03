@@ -2237,6 +2237,47 @@ for (const element of [
 {
   const spec: GraphSpec = {
     encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [{ kind: "normalCurve", enabled: true, options: { showSigmaBands: true } }],
+  };
+  const frame = baseFrame([{
+    kind: "summary",
+    yColumn: "measurement",
+    summaries: [{
+      count: 100,
+      mean: 10,
+      median: 10,
+      stddev: 2,
+      min: 2,
+      max: 18,
+    }],
+  }]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const bands = series.filter((entry) => String(entry.id ?? "").startsWith("__normal_sigma_band_"));
+  assert.equal(bands.length, 6, "sigma shading should emit one area for each interval inside +/-3 sigma");
+  assert.deepEqual(
+    bands.map((entry) => {
+      const points = entry.data as Array<[number, number]>;
+      return [points[0][0], points.at(-1)![0]];
+    }),
+    [[4, 6], [6, 8], [8, 10], [10, 12], [12, 14], [14, 16]],
+  );
+  for (const band of bands) {
+    assert.equal(band.type, "line");
+    assert.equal(band.silent, true);
+    assert.equal((band.lineStyle as Record<string, unknown>).opacity, 0);
+    assert.ok(Number((band.areaStyle as Record<string, unknown>).opacity) > 0);
+  }
+  const normalIndex = series.findIndex((entry) => String(entry.id ?? "").startsWith("__normal_curve_"));
+  const lastBandIndex = series.findLastIndex((entry) => String(entry.id ?? "").startsWith("__normal_sigma_band_"));
+  assert.ok(normalIndex > lastBandIndex, "the fitted curve must remain visible above its sigma shading");
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
     elements: [{ kind: "normalCurve", enabled: true }],
   };
   const frame = baseFrame([{
@@ -2268,7 +2309,7 @@ for (const element of [
       x: { name: "category", type: "nominal" },
       y: { name: "measurement", type: "continuous" },
     },
-    elements: [{ kind: "normalCurve", enabled: true }],
+    elements: [{ kind: "normalCurve", enabled: true, options: { showSigmaBands: true } }],
   };
   const frame: GraphDataFrame = {
     ...baseFrame([{
@@ -2296,6 +2337,23 @@ for (const element of [
   assert.equal(normalSeries.length, 1, "zero-variance categories must be skipped");
   assert.equal(normalSeries[0].type, "custom");
   assert.equal(normalSeries[0].clip, true);
+  const sigmaBands = panelSeries(option).filter((entry) =>
+    String(entry.id ?? "").startsWith("__normal_sigma_cat_")
+  );
+  assert.equal(sigmaBands.length, 6, "categorical Normal curves should retain all six sigma bands");
+  assert.ok(sigmaBands.every((entry) => entry.type === "custom" && entry.clip === true && entry.silent === true));
+  const bandShape = (sigmaBands[0].renderItem as (params: unknown, api: unknown) => {
+    type: string;
+    shape: { points: number[][] };
+  })(
+    { dataIndex: 0, seriesId: "__normal_sigma_cat___default___0" },
+    {
+      coord: ([, value]: [string, number]) => [50, 100 - value * 10],
+      size: () => [100, 100],
+    },
+  );
+  assert.equal(bandShape.type, "polygon");
+  assert.ok(bandShape.shape.points.length > 3);
   const yAxis = option.yAxis as Record<string, unknown>;
   assert.ok(Number(yAxis.min) <= -4);
   assert.ok(Number(yAxis.max) >= 4);
@@ -2374,15 +2432,24 @@ for (const element of [
   const transposed = transposeOption({
     xAxis: { type: "category" },
     yAxis: { type: "value" },
-    series: [{
-      id: "__normal_cat___default__",
-      type: "custom",
-      data: [["A", 0]],
-    }],
+    series: [
+      {
+        id: "__normal_cat___default__",
+        type: "custom",
+        data: [["A", 0]],
+      },
+      {
+        id: "__normal_sigma_cat___default___0",
+        type: "custom",
+        data: [["A", 0]],
+      },
+    ],
   });
-  const normal = (transposed.series as Array<Record<string, unknown>>)[0];
+  const [normal, sigmaBand] = transposed.series as Array<Record<string, unknown>>;
   assert.equal(normal.id, "__normal_cat___default____t");
   assert.deepEqual(normal.data, [[0, "A"]]);
+  assert.equal(sigmaBand.id, "__normal_sigma_cat___default___0__t");
+  assert.deepEqual(sigmaBand.data, [[0, "A"]]);
 }
 
 {

@@ -995,6 +995,7 @@
         "kendall": "Kendall"
       },
       "summaryStat": "Summary Statistic",
+      "showSigmaBands": "Show σ reference shading",
       "errorInterval": "Error Interval",
       "intervalStyle": "Interval Style",
       "jitter": "Jitter",
