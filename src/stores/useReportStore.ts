@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type { ReportItem } from "@/types/report";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
+import { createNamedDocumentHelpers, removeDocumentById, updateDocumentById } from "./documentStore";
 
 interface ReportStore {
   items: ReportItem[];
@@ -16,17 +17,7 @@ interface ReportStore {
   nextName: () => string;
 }
 
-const REPORT_NAME_RE = /^Report (\d+)$/;
-
-function maxReportSuffix(items: readonly ReportItem[]): number {
-  return items.reduce((maxValue, item) => {
-    const match = item.name.match(REPORT_NAME_RE);
-    if (!match) {
-      return maxValue;
-    }
-    return Math.max(maxValue, Number.parseInt(match[1], 10));
-  }, 0);
-}
+const REPORT_HELPERS = createNamedDocumentHelpers("Report");
 
 export const useReportStore = create<ReportStore>((set, get) => ({
   items: [],
@@ -35,36 +26,34 @@ export const useReportStore = create<ReportStore>((set, get) => ({
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((state) => ({
       items: [...state.items, item],
-      counter: Math.max(state.counter, maxReportSuffix([item])),
+      counter: Math.max(state.counter, REPORT_HELPERS.maxSuffix([item])),
     }));
   },
   updateMarkdown: (id, markdown, updatedAt) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((state) => ({
-      items: state.items.map((item) => (
-        item.id === id ? { ...item, markdown, updatedAt } : item
-      )),
+      items: updateDocumentById(state.items, id, (item) => ({ ...item, markdown, updatedAt })),
     }));
   },
   renameItem: (id, name) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((state) => {
-      const items = state.items.map((item) => (item.id === id ? { ...item, name } : item));
-      return { items, counter: Math.max(state.counter, maxReportSuffix(items)) };
+      const items = updateDocumentById(state.items, id, (item) => ({ ...item, name }));
+      return { items, counter: Math.max(state.counter, REPORT_HELPERS.maxSuffix(items)) };
     });
   },
   deleteItem: (id) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((state) => ({
-      items: state.items.filter((item) => item.id !== id),
+      items: removeDocumentById(state.items, id),
     }));
   },
-  loadFromProject: (items) => set({ items, counter: maxReportSuffix(items) }),
+  loadFromProject: (items) => set({ items, counter: REPORT_HELPERS.maxSuffix(items) }),
   reset: () => set({ items: [], counter: 0 }),
   nextName: () => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     const nextCounter = get().counter + 1;
     set({ counter: nextCounter });
-    return `Report ${nextCounter}`;
+    return REPORT_HELPERS.nextName(nextCounter - 1);
   },
 }));
