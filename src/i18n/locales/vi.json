@@ -1033,6 +1033,137 @@
       "termKindInteraction": "Tương tác",
       "termKindPower": "Lũy thừa",
       "removeTerm": "Xóa số hạng {{term}}"
+    },
+    "report": {
+      "title": "Báo cáo Khớp Mô hình",
+      "stale": "Kết quả cũ",
+      "loading": "Đang tải báo cáo...",
+      "error": "Không tải được báo cáo.",
+      "errorWithOldResult": "Làm mới thất bại. Đang hiển thị kết quả trước đó.",
+      "undo": "Hoàn tác",
+      "remove": "Xóa",
+      "notComputable": "Không thể tính toán",
+      "usedRows": "Số hàng đã dùng",
+      "excludedRows": "Số hàng bị loại",
+      "noWarnings": "Không có cảnh báo.",
+      "undefinedValue": "-",
+      "section": {
+        "modelSpecification": "Đặc tả mô hình",
+        "effectSummary": "Tóm tắt hiệu ứng",
+        "summaryOfFit": "Tóm tắt độ khớp",
+        "analysisOfVariance": "Phân tích phương sai",
+        "lackOfFit": "Kiểm định thiếu khớp",
+        "parameterEstimates": "Ước lượng tham số",
+        "actualByPredicted": "Thực tế theo dự đoán",
+        "residualByPredicted": "Phần dư theo dự đoán",
+        "residualQq": "Q-Q phần dư",
+        "rowDiagnostics": "Chẩn đoán theo hàng",
+        "warnings": "Cảnh báo"
+      },
+      "specification": {
+        "construct": "Cách xây dựng",
+        "response": "Đáp ứng",
+        "predictors": "Biến dự báo",
+        "terms": "Số hạng",
+        "usedRows": "Hàng đã dùng",
+        "termBudget": "Giới hạn số hạng"
+      },
+      "summaryOfFit": {
+        "rSquared": "R bình phương",
+        "adjustedRSquared": "R bình phương hiệu chỉnh",
+        "rootMeanSquareError": "Sai số RMS"
+      },
+      "column": {
+        "term": "Hạng",
+        "source": "Nguồn",
+        "estimate": "Ước lượng",
+        "standardError": "Sai số chuẩn",
+        "tRatio": "Tỷ số t",
+        "pValue": "Giá trị p",
+        "logWorth": "LogWorth",
+        "action": "Thao tác",
+        "degreesOfFreedom": "DF",
+        "sumOfSquares": "Tổng bình phương",
+        "meanSquare": "Bình phương trung bình",
+        "fRatio": "Tỷ số F",
+        "lowerConfidenceLimit": "Cận dưới 95%",
+        "upperConfidenceLimit": "Cận trên 95%",
+        "featureVif": "VIF đặc trưng",
+        "row": "Hàng",
+        "observed": "Quan sát",
+        "fitted": "Khớp",
+        "residual": "Phần dư",
+        "studentizedResidual": "Phần dư student hóa",
+        "leverage": "Đòn bẩy",
+        "cooksDistance": "Khoảng cách Cook",
+        "meanConfidenceInterval": "Khoảng tin cậy trung bình",
+        "predictionInterval": "Khoảng dự đoán",
+        "flags": "Cờ"
+      },
+      "reason": {
+        "insufficientRows": "Không còn đủ hàng hợp lệ sau khi loại giá trị thiếu.",
+        "rankDeficient": "Ma trận mô hình bị thiếu hạng với cấu hình hiện tại.",
+        "noReplicates": "Không có cấu hình biến dự báo lặp để kiểm định thiếu khớp.",
+        "lackOfFitDegreesOfFreedomZero": "Thiếu khớp không có bậc tự do.",
+        "pureErrorZero": "Bình phương trung bình sai số thuần bằng không.",
+        "inferenceNotEstimable": "Không thể ước lượng suy luận cho mô hình này.",
+        "constantFeature": "Đặc trưng khớp là hằng số.",
+        "auxiliaryRankDeficient": "Hồi quy phụ VIF bị thiếu hạng.",
+        "insufficientDiagnosticRows": "Cần ít nhất hai hàng chẩn đoán hữu hạn."
+      },
+      "flag": {
+        "residualWarning": "Cảnh báo phần dư",
+        "residualSevere": "Phần dư nghiêm trọng",
+        "highLeverage": "Đòn bẩy cao",
+        "influential": "Điểm ảnh hưởng"
+      },
+      "diagnostics": {
+        "filter": "Bộ lọc hàng chẩn đoán",
+        "all": "Tất cả",
+        "flagged": "Có cờ"
+      },
+      "source": {
+        "error": "Sai số",
+        "pureError": "Sai số thuần",
+        "lackOfFit": "Thiếu khớp"
+      },
+      "warning": {
+        "saturatedModel": "Mô hình bão hòa; không còn bậc tự do phần dư.",
+        "constantResponse": "Biến đáp ứng có rất ít hoặc không có biến thiên.",
+        "perfectFit": "Phát hiện khớp hoàn hảo; hãy kiểm tra overfitting.",
+        "illConditioned": "Ma trận thiết kế kém điều kiện; hệ số có thể không ổn định."
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "Không thể xóa hiệu ứng chính này khi còn số hạng tương tác hoặc lũy thừa liên quan.",
+        "lastMainEffect": "Không thể xóa hiệu ứng chính cuối cùng.",
+        "notFound": "Số hạng mô hình đã chọn không còn tồn tại."
+      },
+      "chart": {
+        "axis": {
+          "predicted": "Dự đoán",
+          "actual": "Thực tế",
+          "residual": "Phần dư",
+          "theoreticalQuantile": "Phân vị lý thuyết",
+          "studentizedResidual": "Phần dư student hóa"
+        },
+        "series": {
+          "actual": "Thực tế",
+          "residual": "Phần dư",
+          "studentizedResidual": "Phần dư student hóa"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0",
+          "qq": "Đường tham chiếu Q-Q"
+        },
+        "tooltip": {
+          "x": "Dự đoán",
+          "yActual": "Thực tế",
+          "yResidual": "Phần dư",
+          "xQq": "Phân vị lý thuyết",
+          "yQq": "Phần dư student hóa"
+        }
+      }
     }
   }
 }

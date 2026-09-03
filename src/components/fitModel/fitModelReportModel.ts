@@ -2,6 +2,7 @@ import { canonicalizeFitModelTerms } from "@/components/fitModel/fitModelConfig"
 import type {
   FitModelCenteringMethod,
   FitModelFittedResult,
+  FitModelRowDiagnostic,
   FitModelTerm,
 } from "@/types/fitModel";
 
@@ -15,6 +16,17 @@ export interface FitModelEffectRow {
   logWorth: number | null;
 }
 
+export type FitModelDiagnosticFilter = "all" | "flagged";
+
+export function filterFitModelDiagnostics(
+  rows: readonly FitModelRowDiagnostic[],
+  filter: FitModelDiagnosticFilter,
+): FitModelRowDiagnostic[] {
+  return filter === "flagged"
+    ? rows.filter((row) => row.flags.length > 0)
+    : [...rows];
+}
+
 export interface FitModelUndoSnapshot {
   definition: FitModelDefinitionConfig;
 }
@@ -25,7 +37,7 @@ export interface FitModelDefinitionConfig {
 }
 
 export type FitModelRemoveBlockedReason =
-  | "requiredByInteraction"
+  | "requiredByDerivedTerm"
   | "lastMainEffect"
   | "notFound";
 
@@ -254,14 +266,13 @@ export function removeFitModelTerm(
 
   const targetColumnName = target.columnNames[0];
   const requiredBy = canonicalTerms.filter((term) => (
-    term.kind === "interaction"
-    && term.columnNames.includes(targetColumnName)
+    term.kind !== "main" && term.columnNames.includes(targetColumnName)
   ));
 
   if (requiredBy.length > 0) {
     return {
       ok: false,
-      reason: "requiredByInteraction",
+      reason: "requiredByDerivedTerm",
       requiredByTermIds: requiredBy.map((term) => fitModelTermId(term)),
     };
   }

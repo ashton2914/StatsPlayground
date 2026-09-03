@@ -139,31 +139,36 @@
 }
 
 .sp-fit-model-report-panel {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 0;
   overflow: hidden;
 }
 
 .sp-fit-model-report-shell {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
 }
 
-.sp-fit-model-report-panel > p,
-.sp-fit-model-report-panel > button,
+.sp-fit-model-report-shell > p,
+.sp-fit-model-report-shell > button,
 .sp-fit-model-report-section {
   margin-left: 12px;
   margin-right: 12px;
 }
 
-.sp-fit-model-report-panel > p,
-.sp-fit-model-report-panel > button {
+.sp-fit-model-report-shell > p,
+.sp-fit-model-report-shell > button {
   margin-top: 10px;
   margin-bottom: 0;
 }
 
-.sp-fit-model-report-panel > button {
+.sp-fit-model-report-shell > button {
   width: fit-content;
 }
 
@@ -179,6 +184,8 @@
 }
 
 .sp-fit-model-report-section {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border-main);
   border-radius: 6px;
   overflow: hidden;
@@ -204,10 +211,69 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
   padding: 10px;
 }
 
+.sp-fit-model-specification {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.sp-fit-model-specification > div {
+  min-width: 0;
+}
+
+.sp-fit-model-specification dt {
+  color: var(--fg-hint);
+  font-size: 11px;
+}
+
+.sp-fit-model-specification dd {
+  margin: 3px 0 0;
+  color: var(--fg-primary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.sp-fit-model-diagnostic-toolbar {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(80px, 1fr));
+  width: fit-content;
+  padding: 2px;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-header);
+}
+
+.sp-fit-model-diagnostic-toolbar button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--fg-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.sp-fit-model-diagnostic-toolbar button[aria-pressed="true"] {
+  color: var(--fg-primary);
+  background: var(--bg-panel);
+  box-shadow: 0 0 0 1px var(--border-main);
+}
+
+.sp-fit-model-sampled-status {
+  margin: 0;
+  color: var(--fg-hint);
+  font-size: 11px;
+}
+
 .sp-fit-model-report-table-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
 }
 
@@ -217,6 +283,44 @@
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 12px;
+}
+
+.sp-fit-model-diagnostics-table th,
+.sp-fit-model-diagnostics-table td {
+  min-width: 104px;
+}
+
+.sp-fit-model-diagnostics-table th:first-child,
+.sp-fit-model-diagnostics-table td:first-child {
+  min-width: 64px;
+}
+
+.sp-fit-model-diagnostics-table th:last-child,
+.sp-fit-model-diagnostics-table td:last-child {
+  min-width: 180px;
+}
+
+.sp-fit-model-diagnostic-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sp-fit-model-diagnostic-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-main);
+  border-radius: 4px;
+  color: var(--fg-secondary);
+  background: var(--bg-panel);
+  white-space: nowrap;
+}
+
+.sp-fit-model-diagnostic-flag--residualSevere,
+.sp-fit-model-diagnostic-flag--influential {
+  color: var(--danger, #b42318);
 }
 
 .sp-fit-model-report-table th,
@@ -261,5 +365,9 @@
   .sp-fit-model-summary {
     border-right: none;
     border-bottom: 1px solid var(--border-main);
+  }
+
+  .sp-fit-model-specification {
+    grid-template-columns: 1fr;
   }
 }

@@ -1049,6 +1049,137 @@
       "termKindInteraction": "交互",
       "termKindPower": "幂项",
       "removeTerm": "移除模型项 {{term}}"
+    },
+    "report": {
+      "title": "拟合模型报告",
+      "stale": "结果已过期",
+      "loading": "正在加载报告...",
+      "error": "加载报告失败。",
+      "errorWithOldResult": "刷新失败，正在显示上一次结果。",
+      "undo": "撤销",
+      "remove": "移除",
+      "notComputable": "无法计算",
+      "usedRows": "使用行数",
+      "excludedRows": "排除行数",
+      "noWarnings": "无警告。",
+      "undefinedValue": "-",
+      "section": {
+        "modelSpecification": "模型设定",
+        "effectSummary": "效应摘要",
+        "summaryOfFit": "拟合摘要",
+        "analysisOfVariance": "方差分析",
+        "lackOfFit": "失拟检验",
+        "parameterEstimates": "参数估计",
+        "actualByPredicted": "实际值对预测值",
+        "residualByPredicted": "残差对预测值",
+        "residualQq": "残差 Q-Q 图",
+        "rowDiagnostics": "逐行诊断",
+        "warnings": "警告"
+      },
+      "specification": {
+        "construct": "构造方式",
+        "response": "响应",
+        "predictors": "预测变量",
+        "terms": "模型项",
+        "usedRows": "有效行数",
+        "termBudget": "模型项限额"
+      },
+      "summaryOfFit": {
+        "rSquared": "R 方",
+        "adjustedRSquared": "调整后 R 方",
+        "rootMeanSquareError": "均方根误差"
+      },
+      "column": {
+        "term": "项",
+        "source": "来源",
+        "estimate": "估计值",
+        "standardError": "标准误",
+        "tRatio": "t 比",
+        "pValue": "p 值",
+        "logWorth": "LogWorth",
+        "action": "操作",
+        "degreesOfFreedom": "自由度",
+        "sumOfSquares": "平方和",
+        "meanSquare": "均方",
+        "fRatio": "F 比",
+        "lowerConfidenceLimit": "95% 下限",
+        "upperConfidenceLimit": "95% 上限",
+        "featureVif": "特征 VIF",
+        "row": "行",
+        "observed": "观测值",
+        "fitted": "拟合值",
+        "residual": "残差",
+        "studentizedResidual": "学生化残差",
+        "leverage": "杠杆值",
+        "cooksDistance": "Cook 距离",
+        "meanConfidenceInterval": "均值置信区间",
+        "predictionInterval": "预测区间",
+        "flags": "标记"
+      },
+      "reason": {
+        "insufficientRows": "排除缺失值后有效行不足。",
+        "rankDeficient": "该模型设定下设计矩阵秩亏。",
+        "noReplicates": "没有重复的预测变量组合，无法检验失拟。",
+        "lackOfFitDegreesOfFreedomZero": "失拟自由度为零。",
+        "pureErrorZero": "纯误差均方为零。",
+        "inferenceNotEstimable": "该拟合无法估计推断统计量。",
+        "constantFeature": "拟合特征为常量。",
+        "auxiliaryRankDeficient": "VIF 辅助回归秩亏。",
+        "insufficientDiagnosticRows": "至少需要两行有限诊断数据。"
+      },
+      "flag": {
+        "residualWarning": "残差警告",
+        "residualSevere": "严重残差",
+        "highLeverage": "高杠杆值",
+        "influential": "强影响点"
+      },
+      "diagnostics": {
+        "filter": "诊断行筛选",
+        "all": "全部",
+        "flagged": "已标记"
+      },
+      "source": {
+        "error": "误差",
+        "pureError": "纯误差",
+        "lackOfFit": "失拟"
+      },
+      "warning": {
+        "saturatedModel": "模型已饱和，残差自由度为零。",
+        "constantResponse": "响应变量几乎无变化。",
+        "perfectFit": "检测到完美拟合，请检查是否过拟合。",
+        "illConditioned": "设计矩阵病态，系数可能不稳定。"
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "存在相关交互项或幂项时不能移除此主效应。",
+        "lastMainEffect": "不能移除最后一个主效应。",
+        "notFound": "所选模型项已不存在。"
+      },
+      "chart": {
+        "axis": {
+          "predicted": "预测值",
+          "actual": "实际值",
+          "residual": "残差",
+          "theoreticalQuantile": "理论分位数",
+          "studentizedResidual": "学生化残差"
+        },
+        "series": {
+          "actual": "实际值",
+          "residual": "残差",
+          "studentizedResidual": "学生化残差"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0",
+          "qq": "Q-Q 参考线"
+        },
+        "tooltip": {
+          "x": "预测值",
+          "yActual": "实际值",
+          "yResidual": "残差",
+          "xQq": "理论分位数",
+          "yQq": "学生化残差"
+        }
+      }
     }
   }
 }

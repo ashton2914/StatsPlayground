@@ -4,8 +4,14 @@ import { useTranslation } from "react-i18next";
 import {
   buildActualByPredictedOption,
   buildResidualByPredictedOption,
+  buildResidualQqOption,
 } from "@/graphCore/fitModelAdapter";
-import type { FitModelItem, FitModelFittedResult } from "@/types/fitModel";
+import type {
+  FitModelDiagnosticFlag,
+  FitModelFittedResult,
+  FitModelInferenceReason,
+  FitModelItem,
+} from "@/types/fitModel";
 
 import {
   buildNumericFitModelEquation,
@@ -13,30 +19,40 @@ import {
 } from "./fitModelEquation";
 import {
   buildEffectSummary,
+  filterFitModelDiagnostics,
   formatFitModelReportPValue,
   formatFitModelReportValue,
+  type FitModelDiagnosticFilter,
 } from "./fitModelReportModel";
 import { FitModelDiagnosticChart } from "./FitModelDiagnosticChart";
 import type { FitModelReportState } from "./useFitModelReport";
 import type { FitModelLoadIssue } from "@/types/fitModel";
 
 interface FitModelDisclosureState {
+  modelSpecification: boolean;
   effectSummary: boolean;
   summaryOfFit: boolean;
   analysisOfVariance: boolean;
+  lackOfFit: boolean;
   parameterEstimates: boolean;
   actualByPredicted: boolean;
   residualByPredicted: boolean;
+  residualQq: boolean;
+  rowDiagnostics: boolean;
   warnings: boolean;
 }
 
 const DEFAULT_DISCLOSURE_STATE: FitModelDisclosureState = {
+  modelSpecification: true,
   effectSummary: true,
   summaryOfFit: true,
   analysisOfVariance: true,
+  lackOfFit: true,
   parameterEstimates: true,
   actualByPredicted: true,
   residualByPredicted: true,
+  residualQq: true,
+  rowDiagnostics: true,
   warnings: true,
 };
 
@@ -67,6 +83,27 @@ function warningText(code: FitModelFittedResult["warnings"][number], t: (key: st
 function notComputableText(reason: "insufficientRows" | "rankDeficient", t: (key: string) => string): string {
   const localized = t(`fitModel.report.reason.${reason}`);
   return localized === `fitModel.report.reason.${reason}` ? reason : localized;
+}
+
+function inferenceReasonText(reason: FitModelInferenceReason, t: (key: string) => string): string {
+  const key = `fitModel.report.reason.${reason}`;
+  const localized = t(key);
+  return localized === key ? reason : localized;
+}
+
+function diagnosticFlagText(flag: FitModelDiagnosticFlag, t: (key: string) => string): string {
+  const key = `fitModel.report.flag.${flag}`;
+  const localized = t(key);
+  if (localized !== key) {
+    return localized;
+  }
+  const fallback: Record<FitModelDiagnosticFlag, string> = {
+    residualWarning: "Residual warning",
+    residualSevere: "Severe residual",
+    highLeverage: "High leverage",
+    influential: "Influential",
+  };
+  return fallback[flag];
 }
 
 function FittedEquation({ response, parts }: { response: string; parts: FitModelEquationPart[] }) {
@@ -129,6 +166,7 @@ export function FitModelReport({
   const { t } = useTranslation();
   const undefinedValue = resolveUndefinedValueLabel((key) => t(key));
   const [disclosure, setDisclosure] = useState<FitModelDisclosureState>(DEFAULT_DISCLOSURE_STATE);
+  const [diagnosticFilter, setDiagnosticFilter] = useState<FitModelDiagnosticFilter>("all");
 
   const toggle = (key: keyof FitModelDisclosureState) => {
     setDisclosure((current) => ({
@@ -147,6 +185,10 @@ export function FitModelReport({
   const equation = useMemo(
     () => (fittedResult ? buildNumericFitModelEquation(fittedResult) : null),
     [fittedResult],
+  );
+  const visibleDiagnosticRows = useMemo(
+    () => filterFitModelDiagnostics(fittedResult?.diagnostics.rows ?? [], diagnosticFilter),
+    [diagnosticFilter, fittedResult],
   );
 
   const sampledSubtitle = useMemo(() => {
@@ -211,6 +253,47 @@ export function FitModelReport({
     });
   }, [fittedResult, sampledSubtitle, t]);
 
+  const qqSampledSubtitle = useMemo(() => {
+    if (!fittedResult?.diagnostics.qqRowsSampled) {
+      return undefined;
+    }
+    return t("graph.rowStatus.sampled", {
+      defaultValue: "Sampled: {{processed}} / {{source}} rows",
+      processed: fittedResult.diagnostics.qqRows.length,
+      source: fittedResult.diagnostics.qqSourceRowCount,
+    });
+  }, [fittedResult, t]);
+
+  const residualQqOption = useMemo(() => {
+    if (!fittedResult || fittedResult.diagnostics.qqRows.length === 0) {
+      return null;
+    }
+    return buildResidualQqOption({
+      title: t("fitModel.report.section.residualQq", { defaultValue: "Residual Q-Q" }),
+      sampledSubtitle: qqSampledSubtitle,
+      rows: fittedResult.diagnostics.qqRows,
+      labels: {
+        theoreticalAxisName: t("fitModel.report.chart.axis.theoreticalQuantile", { defaultValue: "Theoretical quantile" }),
+        studentizedResidualAxisName: t("fitModel.report.chart.axis.studentizedResidual", { defaultValue: "Studentized residual" }),
+        residualSeriesName: t("fitModel.report.chart.series.studentizedResidual", { defaultValue: "Studentized residual" }),
+        referenceSeriesName: t("fitModel.report.chart.reference.qq", { defaultValue: "Q-Q reference" }),
+        tooltipXLabel: t("fitModel.report.chart.tooltip.xQq", { defaultValue: "Theoretical quantile" }),
+        tooltipYLabel: t("fitModel.report.chart.tooltip.yQq", { defaultValue: "Studentized residual" }),
+      },
+    });
+  }, [fittedResult, qqSampledSubtitle, t]);
+
+  const diagnosticSampledSubtitle = useMemo(() => {
+    if (!fittedResult?.diagnostics.rowsSampled) {
+      return null;
+    }
+    return t("graph.rowStatus.sampled", {
+      defaultValue: "Sampled: {{processed}} / {{source}} rows",
+      processed: fittedResult.diagnostics.rows.length,
+      source: fittedResult.diagnostics.sourceRowCount,
+    });
+  }, [fittedResult, t]);
+
   return (
     <section className="sp-fit-model-report-panel" aria-label={t("fitModel.report.title", { defaultValue: "Fit Model report" })}>
       <div className="sp-panel-header">
@@ -254,6 +337,21 @@ export function FitModelReport({
 
       {fittedResult ? (
         <>
+          <Section
+            title={t("fitModel.report.section.modelSpecification", { defaultValue: "Model Specification" })}
+            open={disclosure.modelSpecification}
+            onToggle={() => toggle("modelSpecification")}
+          >
+            <dl className="sp-fit-model-specification">
+              <div><dt>{t("fitModel.report.specification.construct", { defaultValue: "Construct" })}</dt><dd>{item.construct.kind}{item.construct.kind === "factorialToDegree" ? ` (${item.construct.degree})` : ""}</dd></div>
+              <div><dt>{t("fitModel.report.specification.response", { defaultValue: "Response" })}</dt><dd>{fittedResult.responseColumn}</dd></div>
+              <div><dt>{t("fitModel.report.specification.predictors", { defaultValue: "Predictors" })}</dt><dd>{fittedResult.predictorColumns.join(", ")}</dd></div>
+              <div><dt>{t("fitModel.report.specification.terms", { defaultValue: "Terms" })}</dt><dd>{fittedResult.terms.map((term) => term.label).join(", ")}</dd></div>
+              <div><dt>{t("fitModel.report.specification.usedRows", { defaultValue: "Used rows" })}</dt><dd>{fittedResult.usedRows}</dd></div>
+              <div><dt>{t("fitModel.report.specification.termBudget", { defaultValue: "Term budget" })}</dt><dd>{fittedResult.terms.length} / 256</dd></div>
+            </dl>
+          </Section>
+
           <Section
             title={t("fitModel.report.section.effectSummary", { defaultValue: "Effect Summary" })}
             open={disclosure.effectSummary}
@@ -352,6 +450,31 @@ export function FitModelReport({
           </Section>
 
           <Section
+            title={t("fitModel.report.section.lackOfFit", { defaultValue: "Lack of Fit" })}
+            open={disclosure.lackOfFit}
+            onToggle={() => toggle("lackOfFit")}
+          >
+            <div className="sp-fit-model-report-table-wrap">
+              <table className="sp-fit-model-report-table">
+                <thead><tr>
+                  <th>{t("fitModel.report.column.source", { defaultValue: "Source" })}</th>
+                  <th>{t("fitModel.report.column.degreesOfFreedom", { defaultValue: "DF" })}</th>
+                  <th>{t("fitModel.report.column.sumOfSquares", { defaultValue: "Sum of Squares" })}</th>
+                  <th>{t("fitModel.report.column.meanSquare", { defaultValue: "Mean Square" })}</th>
+                  <th>{t("fitModel.report.column.fRatio", { defaultValue: "F Ratio" })}</th>
+                  <th>{t("fitModel.report.column.pValue", { defaultValue: "p-Value" })}</th>
+                </tr></thead>
+                <tbody>
+                  <tr><td>{t("fitModel.report.source.error", { defaultValue: "Error" })}</td><td>{fittedResult.diagnostics.lackOfFit.errorDegreesOfFreedom}</td><td>{formatFitModelReportValue(fittedResult.diagnostics.lackOfFit.sumOfSquaresError, undefinedValue)}</td><td>{undefinedValue}</td><td>{undefinedValue}</td><td>{undefinedValue}</td></tr>
+                  <tr><td>{t("fitModel.report.source.pureError", { defaultValue: "Pure Error" })}</td><td>{fittedResult.diagnostics.lackOfFit.pureErrorDegreesOfFreedom}</td><td>{formatFitModelReportValue(fittedResult.diagnostics.lackOfFit.sumOfSquaresPureError, undefinedValue)}</td><td>{formatFitModelReportValue(fittedResult.diagnostics.lackOfFit.meanSquarePureError, undefinedValue)}</td><td>{undefinedValue}</td><td>{undefinedValue}</td></tr>
+                  <tr><td>{t("fitModel.report.source.lackOfFit", { defaultValue: "Lack of Fit" })}</td><td>{fittedResult.diagnostics.lackOfFit.lackOfFitDegreesOfFreedom}</td><td>{formatFitModelReportValue(fittedResult.diagnostics.lackOfFit.sumOfSquaresLackOfFit, undefinedValue)}</td><td>{formatFitModelReportValue(fittedResult.diagnostics.lackOfFit.meanSquareLackOfFit, undefinedValue)}</td><td>{formatFitModelReportValue(fittedResult.diagnostics.lackOfFit.fRatio, undefinedValue)}</td><td>{formatFitModelReportPValue(fittedResult.diagnostics.lackOfFit.pValue, undefinedValue)}</td></tr>
+                </tbody>
+              </table>
+            </div>
+            {fittedResult.diagnostics.lackOfFit.reason ? <p>{inferenceReasonText(fittedResult.diagnostics.lackOfFit.reason, (key) => t(key))}</p> : null}
+          </Section>
+
+          <Section
             title={t("fitModel.report.section.parameterEstimates", { defaultValue: "Parameter Estimates" })}
             open={disclosure.parameterEstimates}
             onToggle={() => toggle("parameterEstimates")}
@@ -365,6 +488,9 @@ export function FitModelReport({
                     <th>{t("fitModel.report.column.standardError", { defaultValue: "Std Error" })}</th>
                     <th>{t("fitModel.report.column.tRatio", { defaultValue: "t Ratio" })}</th>
                     <th>{t("fitModel.report.column.pValue", { defaultValue: "p-Value" })}</th>
+                    <th>{t("fitModel.report.column.lowerConfidenceLimit", { defaultValue: "Lower 95%" })}</th>
+                    <th>{t("fitModel.report.column.upperConfidenceLimit", { defaultValue: "Upper 95%" })}</th>
+                    <th>{t("fitModel.report.column.featureVif", { defaultValue: "Feature VIF" })}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -375,6 +501,15 @@ export function FitModelReport({
                       <td>{formatFitModelReportValue(row.standardError, undefinedValue)}</td>
                       <td>{formatFitModelReportValue(row.tRatio, undefinedValue)}</td>
                       <td>{formatFitModelReportPValue(row.pValue, undefinedValue)}</td>
+                      <td>{formatFitModelReportValue(row.lowerConfidenceLimit, undefinedValue)}</td>
+                      <td>{formatFitModelReportValue(row.upperConfidenceLimit, undefinedValue)}</td>
+                      <td>{(() => {
+                        const vif = fittedResult.diagnostics.featureVif.find((entry) => entry.termId === row.termId);
+                        if (!vif) return undefinedValue;
+                        return vif.reason
+                          ? inferenceReasonText(vif.reason, (key) => t(key))
+                          : formatFitModelReportValue(vif.value, undefinedValue);
+                      })()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -408,6 +543,72 @@ export function FitModelReport({
                 option={residualByPredictedOption}
               />
             ) : null}
+          </Section>
+
+          <Section
+            title={t("fitModel.report.section.residualQq", { defaultValue: "Residual Q-Q" })}
+            open={disclosure.residualQq}
+            onToggle={() => toggle("residualQq")}
+          >
+            {residualQqOption ? (
+              <FitModelDiagnosticChart
+                title={t("fitModel.report.section.residualQq", { defaultValue: "Residual Q-Q" })}
+                chartKind="residualQq"
+                option={residualQqOption}
+              />
+            ) : (
+              <p>{fittedResult.diagnostics.qqReason ? inferenceReasonText(fittedResult.diagnostics.qqReason, (key) => t(key)) : undefinedValue}</p>
+            )}
+          </Section>
+
+          <Section
+            title={t("fitModel.report.section.rowDiagnostics", { defaultValue: "Row Diagnostics" })}
+            open={disclosure.rowDiagnostics}
+            onToggle={() => toggle("rowDiagnostics")}
+          >
+            <div className="sp-fit-model-diagnostic-toolbar" role="group" aria-label={t("fitModel.report.diagnostics.filter", { defaultValue: "Diagnostic row filter" })}>
+              {(["all", "flagged"] as const).map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  aria-pressed={diagnosticFilter === filter}
+                  data-diagnostic-filter={filter}
+                  onClick={() => setDiagnosticFilter(filter)}
+                >
+                  {t(`fitModel.report.diagnostics.${filter}`, { defaultValue: filter === "all" ? "All" : "Flagged" })}
+                </button>
+              ))}
+            </div>
+            {diagnosticSampledSubtitle ? <p className="sp-fit-model-sampled-status">{diagnosticSampledSubtitle}</p> : null}
+            <div className="sp-fit-model-report-table-wrap">
+              <table className="sp-fit-model-report-table sp-fit-model-diagnostics-table">
+                <thead><tr>
+                  <th>{t("fitModel.report.column.row", { defaultValue: "Row" })}</th>
+                  <th>{t("fitModel.report.column.observed", { defaultValue: "Observed" })}</th>
+                  <th>{t("fitModel.report.column.fitted", { defaultValue: "Fitted" })}</th>
+                  <th>{t("fitModel.report.column.residual", { defaultValue: "Residual" })}</th>
+                  <th>{t("fitModel.report.column.studentizedResidual", { defaultValue: "Studentized Residual" })}</th>
+                  <th>{t("fitModel.report.column.leverage", { defaultValue: "Leverage" })}</th>
+                  <th>{t("fitModel.report.column.cooksDistance", { defaultValue: "Cook's D" })}</th>
+                  <th>{t("fitModel.report.column.meanConfidenceInterval", { defaultValue: "Mean CI" })}</th>
+                  <th>{t("fitModel.report.column.predictionInterval", { defaultValue: "Prediction Interval" })}</th>
+                  <th>{t("fitModel.report.column.flags", { defaultValue: "Flags" })}</th>
+                </tr></thead>
+                <tbody>
+                  {visibleDiagnosticRows.map((row) => (
+                    <tr key={`diagnostic:${row.rowIndex}`}>
+                      <td>{row.rowIndex}</td><td>{formatFitModelReportValue(row.observed, undefinedValue)}</td><td>{formatFitModelReportValue(row.fitted, undefinedValue)}</td><td>{formatFitModelReportValue(row.residual, undefinedValue)}</td><td>{formatFitModelReportValue(row.studentizedResidual, undefinedValue)}</td><td>{formatFitModelReportValue(row.leverage, undefinedValue)}</td><td>{formatFitModelReportValue(row.cooksDistance, undefinedValue)}</td>
+                      <td>{formatFitModelReportValue(row.meanConfidenceLower, undefinedValue)} - {formatFitModelReportValue(row.meanConfidenceUpper, undefinedValue)}</td>
+                      <td>{formatFitModelReportValue(row.predictionLower, undefinedValue)} - {formatFitModelReportValue(row.predictionUpper, undefinedValue)}</td>
+                      <td><div className="sp-fit-model-diagnostic-flags">{row.flags.map((flag) => {
+                        const label = diagnosticFlagText(flag, (key) => t(key));
+                        return <span key={flag} className={`sp-fit-model-diagnostic-flag sp-fit-model-diagnostic-flag--${flag}`} title={label}><i className="fa-solid fa-triangle-exclamation" aria-hidden="true" />{label}</span>;
+                      })}</div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </Section>
 
           <Section

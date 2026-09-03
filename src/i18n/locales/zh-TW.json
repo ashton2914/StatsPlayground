@@ -1034,6 +1034,137 @@
       "termKindInteraction": "交互",
       "termKindPower": "冪次項",
       "removeTerm": "移除模型項 {{term}}"
+    },
+    "report": {
+      "title": "配適模型報告",
+      "stale": "結果已過期",
+      "loading": "正在載入報告...",
+      "error": "載入報告失敗。",
+      "errorWithOldResult": "重新整理失敗，正在顯示先前結果。",
+      "undo": "還原",
+      "remove": "移除",
+      "notComputable": "無法計算",
+      "usedRows": "使用列數",
+      "excludedRows": "排除列數",
+      "noWarnings": "無警告。",
+      "undefinedValue": "-",
+      "section": {
+        "modelSpecification": "模型設定",
+        "effectSummary": "效應摘要",
+        "summaryOfFit": "配適摘要",
+        "analysisOfVariance": "變異數分析",
+        "lackOfFit": "失配檢定",
+        "parameterEstimates": "參數估計",
+        "actualByPredicted": "實際值對預測值",
+        "residualByPredicted": "殘差對預測值",
+        "residualQq": "殘差 Q-Q 圖",
+        "rowDiagnostics": "逐列診斷",
+        "warnings": "警告"
+      },
+      "specification": {
+        "construct": "建構方式",
+        "response": "反應",
+        "predictors": "預測變數",
+        "terms": "模型項",
+        "usedRows": "有效列數",
+        "termBudget": "模型項限額"
+      },
+      "summaryOfFit": {
+        "rSquared": "R 平方",
+        "adjustedRSquared": "調整後 R 平方",
+        "rootMeanSquareError": "均方根誤差"
+      },
+      "column": {
+        "term": "項目",
+        "source": "來源",
+        "estimate": "估計值",
+        "standardError": "標準誤",
+        "tRatio": "t 比",
+        "pValue": "p 值",
+        "logWorth": "LogWorth",
+        "action": "操作",
+        "degreesOfFreedom": "自由度",
+        "sumOfSquares": "平方和",
+        "meanSquare": "均方",
+        "fRatio": "F 比",
+        "lowerConfidenceLimit": "95% 下限",
+        "upperConfidenceLimit": "95% 上限",
+        "featureVif": "特徵 VIF",
+        "row": "列",
+        "observed": "觀測值",
+        "fitted": "配適值",
+        "residual": "殘差",
+        "studentizedResidual": "學生化殘差",
+        "leverage": "槓桿值",
+        "cooksDistance": "Cook 距離",
+        "meanConfidenceInterval": "平均值信賴區間",
+        "predictionInterval": "預測區間",
+        "flags": "標記"
+      },
+      "reason": {
+        "insufficientRows": "排除缺失值後有效列不足。",
+        "rankDeficient": "此模型設定下設計矩陣秩不足。",
+        "noReplicates": "沒有重複的預測變數組合，無法檢定失配。",
+        "lackOfFitDegreesOfFreedomZero": "失配自由度為零。",
+        "pureErrorZero": "純誤差均方為零。",
+        "inferenceNotEstimable": "此配適無法估計推論統計量。",
+        "constantFeature": "配適特徵為常數。",
+        "auxiliaryRankDeficient": "VIF 輔助迴歸秩不足。",
+        "insufficientDiagnosticRows": "至少需要兩列有限診斷資料。"
+      },
+      "flag": {
+        "residualWarning": "殘差警告",
+        "residualSevere": "嚴重殘差",
+        "highLeverage": "高槓桿值",
+        "influential": "強影響點"
+      },
+      "diagnostics": {
+        "filter": "診斷列篩選",
+        "all": "全部",
+        "flagged": "已標記"
+      },
+      "source": {
+        "error": "誤差",
+        "pureError": "純誤差",
+        "lackOfFit": "失配"
+      },
+      "warning": {
+        "saturatedModel": "模型飽和，殘差自由度為零。",
+        "constantResponse": "反應變數幾乎沒有變化。",
+        "perfectFit": "偵測到完美配適，請檢查是否過度配適。",
+        "illConditioned": "設計矩陣病態，係數可能不穩定。"
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "存在相關交互作用或冪次項時不能移除此主效應。",
+        "lastMainEffect": "不能移除最後一個主效應。",
+        "notFound": "所選模型項已不存在。"
+      },
+      "chart": {
+        "axis": {
+          "predicted": "預測值",
+          "actual": "實際值",
+          "residual": "殘差",
+          "theoreticalQuantile": "理論分位數",
+          "studentizedResidual": "學生化殘差"
+        },
+        "series": {
+          "actual": "實際值",
+          "residual": "殘差",
+          "studentizedResidual": "學生化殘差"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0",
+          "qq": "Q-Q 參考線"
+        },
+        "tooltip": {
+          "x": "預測值",
+          "yActual": "實際值",
+          "yResidual": "殘差",
+          "xQq": "理論分位數",
+          "yQq": "學生化殘差"
+        }
+      }
     }
   }
 }

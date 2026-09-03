@@ -1,6 +1,6 @@
 import type { EChartsOption } from "echarts";
 
-import type { FitModelPlotRow } from "@/types/fitModel";
+import type { FitModelPlotRow, FitModelQqRow } from "@/types/fitModel";
 import { getGraphTheme } from "./theme";
 
 const POINT_SYMBOL_SIZE = 6;
@@ -22,6 +22,22 @@ export interface FitModelChartLabels {
   residualSeriesName: string;
   identityReferenceName: string;
   zeroReferenceName: string;
+  tooltipXLabel: string;
+  tooltipYLabel: string;
+}
+
+export interface FitModelQqChartInput {
+  title: string;
+  sampledSubtitle?: string;
+  rows: FitModelQqRow[];
+  labels: FitModelQqChartLabels;
+}
+
+export interface FitModelQqChartLabels {
+  theoreticalAxisName: string;
+  studentizedResidualAxisName: string;
+  residualSeriesName: string;
+  referenceSeriesName: string;
   tooltipXLabel: string;
   tooltipYLabel: string;
 }
@@ -95,6 +111,22 @@ function resolveResidualExtent(rows: FitModelPlotRow[]): AxisExtent {
     max = Math.max(max, residual, 0);
   });
   return { min, max };
+}
+
+function resolveQqExtent(rows: FitModelQqRow[]): AxisExtent {
+  if (rows.length === 0) {
+    return { min: FALLBACK_MIN, max: FALLBACK_MAX };
+  }
+
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  rows.forEach((row, index) => {
+    const theoretical = ensureFinite(row.theoreticalQuantile, "theoreticalQuantile", index);
+    const residual = ensureFinite(row.studentizedResidual, "studentizedResidual", index);
+    min = Math.min(min, theoretical, residual);
+    max = Math.max(max, theoretical, residual);
+  });
+  return axisExtentFromRaw(min, max);
 }
 
 function tooltipValue(value: number): string {
@@ -257,6 +289,63 @@ export function buildResidualByPredictedOption(input: FitModelChartInput): EChar
         data: [
           [predictedAxisExtent.min, 0],
           [predictedAxisExtent.max, 0],
+        ],
+      },
+    ],
+  };
+}
+
+export function buildResidualQqOption(input: FitModelQqChartInput): EChartsOption {
+  const theme = getGraphTheme();
+  const points = input.rows.map((row, index) => [
+    ensureFinite(row.theoreticalQuantile, "theoreticalQuantile", index),
+    ensureFinite(row.studentizedResidual, "studentizedResidual", index),
+  ] as [number, number]);
+  const extent = resolveQqExtent(input.rows);
+
+  return {
+    ...baseOption(input.title, input.sampledSubtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
+    xAxis: {
+      type: "value",
+      min: extent.min,
+      max: extent.max,
+      name: input.labels.theoreticalAxisName,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
+    },
+    yAxis: {
+      type: "value",
+      min: extent.min,
+      max: extent.max,
+      name: input.labels.studentizedResidualAxisName,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
+    },
+    series: [
+      {
+        name: input.labels.residualSeriesName,
+        type: "scatter",
+        clip: true,
+        symbolSize: POINT_SYMBOL_SIZE,
+        progressive: 400,
+        progressiveThreshold: 3000,
+        itemStyle: { color: theme.accent },
+        data: points,
+      },
+      {
+        name: input.labels.referenceSeriesName,
+        type: "line",
+        clip: true,
+        showSymbol: false,
+        silent: true,
+        lineStyle: { color: theme.fgDim, width: 1.5, type: "dashed" },
+        data: [
+          [extent.min, extent.min],
+          [extent.max, extent.max],
         ],
       },
     ],

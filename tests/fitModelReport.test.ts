@@ -46,12 +46,17 @@ function createTestI18n(): I18nInstance {
                 stale: "Stale result",
                 errorWithOldResult: "Failed to refresh. Showing previous result.",
                 section: {
+                  modelSpecification: "Model Specification",
                   effectSummary: "Effect Summary",
                   summaryOfFit: "Summary of Fit",
                   analysisOfVariance: "Analysis of Variance",
+                  lackOfFit: "Lack of Fit",
                   parameterEstimates: "Parameter Estimates",
                   actualByPredicted: "Actual by Predicted",
                   residualByPredicted: "Residual by Predicted",
+                  featureVif: "Feature VIF",
+                  residualQq: "Residual Q-Q",
+                  rowDiagnostics: "Row Diagnostics",
                   warnings: "Warnings",
                 },
                 chart: {
@@ -59,6 +64,8 @@ function createTestI18n(): I18nInstance {
                     predicted: "Predicted",
                     actual: "Actual",
                     residual: "Residual",
+                    theoreticalQuantile: "Theoretical quantile",
+                    studentizedResidual: "Studentized residual",
                   },
                   series: {
                     actual: "Actual",
@@ -67,11 +74,14 @@ function createTestI18n(): I18nInstance {
                   reference: {
                     identity: "y=x",
                     zero: "y=0",
+                    qq: "Q-Q reference",
                   },
                   tooltip: {
                     x: "Predicted",
                     yActual: "Actual",
                     yResidual: "Residual",
+                    xQq: "Theoretical quantile",
+                    yQq: "Studentized residual",
                   },
                 },
                 remove: "Remove",
@@ -93,6 +103,7 @@ function createItem(overrides: Partial<FitModelItem> = {}): FitModelItem {
     name: "Fit Model 1",
     sourceDatasetId: "dataset-1",
     response: { name: "Y", type: "continuous" },
+    construct: { kind: "manual" },
     terms: [
       { kind: "main", columnNames: ["A"] },
       { kind: "main", columnNames: ["B"] },
@@ -113,8 +124,8 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
     responseColumn: "Y",
     predictorColumns: ["A", "B"],
     terms: [
-      { termId: "main:A", kind: "main", columnNames: ["A"], label: "A" },
-      { termId: "main:B", kind: "main", columnNames: ["B"], label: "B" },
+      { termId: "A", kind: "main", columnNames: ["A"], label: "A" },
+      { termId: "B", kind: "main", columnNames: ["B"], label: "B" },
       { termId: "interaction:A*B", kind: "interaction", columnNames: ["A", "B"], label: "A*B" },
     ],
     centering: {
@@ -123,6 +134,73 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
         { columnName: "A", mean: 10 },
         { columnName: "B", mean: 20 },
       ],
+    },
+    snapshot: {
+      coefficientTermIds: ["Intercept", "A", "B", "interaction:A*B"],
+      coefficients: [1, 2, 3, 4],
+      covariance: null,
+      meanSquareError: 3,
+      errorDegreesOfFreedom: 8,
+      confidenceLevel: 0.95,
+      terms: [
+        { termId: "A", kind: "main", columnNames: ["A"], label: "A" },
+        { termId: "B", kind: "main", columnNames: ["B"], label: "B" },
+        { termId: "interaction:A*B", kind: "interaction", columnNames: ["A", "B"], label: "A*B" },
+      ],
+      centering: {
+        method: "mean",
+        centers: [
+          { columnName: "A", mean: 10 },
+          { columnName: "B", mean: 20 },
+        ],
+      },
+      predictorRanges: [
+        { columnName: "A", minimum: 1, maximum: 12, mean: 6.5 },
+        { columnName: "B", minimum: 2, maximum: 24, mean: 13 },
+      ],
+    },
+    diagnostics: {
+      lackOfFit: {
+        sumOfSquaresError: 24,
+        sumOfSquaresPureError: 0,
+        sumOfSquaresLackOfFit: 24,
+        errorDegreesOfFreedom: 8,
+        pureErrorDegreesOfFreedom: 2,
+        lackOfFitDegreesOfFreedom: 6,
+        meanSquarePureError: 0,
+        meanSquareLackOfFit: 4,
+        fRatio: null,
+        pValue: null,
+        reason: "pureErrorZero",
+      },
+      featureVif: [
+        { termId: "A", termLabel: "A", value: 1, reason: null },
+        { termId: "interaction:A*B", termLabel: "A*B", value: null, reason: "auxiliaryRankDeficient" },
+      ],
+      rows: [
+        {
+          rowIndex: 7,
+          observed: 14,
+          fitted: 11.5,
+          residual: 2.5,
+          studentizedResidual: 2.4,
+          leverage: 0.6,
+          cooksDistance: 0.4,
+          meanConfidenceLower: 10,
+          meanConfidenceUpper: 13,
+          predictionLower: 7,
+          predictionUpper: 16,
+          flags: ["residualWarning", "highLeverage", "influential"],
+        },
+      ],
+      rowsSampled: true,
+      sourceRowCount: 12,
+      qqRows: [
+        { rowIndex: 7, theoreticalQuantile: 0, studentizedResidual: 2.4 },
+      ],
+      qqRowsSampled: true,
+      qqSourceRowCount: 12,
+      qqReason: null,
     },
     summaryOfFit: {
       rSquared: 0.9,
@@ -163,7 +241,7 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
         upperConfidenceLimit: 2,
       },
       {
-        termId: "main:A",
+        termId: "A",
         termLabel: "A",
         estimate: 2,
         standardError: 0.2,
@@ -173,7 +251,7 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
         upperConfidenceLimit: 3,
       },
       {
-        termId: "main:B",
+        termId: "B",
         termLabel: "B",
         estimate: 3,
         standardError: 0.3,
@@ -340,7 +418,21 @@ function testRemoveMainBlockedByInteraction(): void {
   const removal = removeFitModelTerm(terms, mainId);
   assert.equal(removal.ok, false);
   if (removal.ok) return;
-  assert.equal(removal.reason, "requiredByInteraction");
+  assert.equal(removal.reason, "requiredByDerivedTerm");
+}
+
+function testRemoveMainBlockedByPower(): void {
+  const terms = [
+    { kind: "main", columnNames: ["A"] },
+    { kind: "main", columnNames: ["B"] },
+    { kind: "power", columnNames: ["A"], exponent: 2 },
+  ] as const;
+  const removal = removeFitModelTerm(terms, fitModelTermId({ kind: "main", columnNames: ["A"] }));
+
+  assert.equal(removal.ok, false);
+  if (removal.ok) return;
+  assert.equal(removal.reason, "requiredByDerivedTerm");
+  assert.deepEqual(removal.requiredByTermIds, ["power:A^2"]);
 }
 
 function testRemoveLastMainBlocked(): void {
@@ -389,7 +481,7 @@ function testBlockedRemoveTransitionLeavesDefinitionUnchangedWithoutRefit(): voi
 
   assert.equal(result.ok, false);
   assert.equal(result.shouldRefit, false);
-  assert.equal(result.reason, "requiredByInteraction");
+  assert.equal(result.reason, "requiredByDerivedTerm");
   assert.strictEqual(result.nextDefinition, definition);
   assert.strictEqual(result.undoSnapshot, existingUndo);
 }
@@ -456,9 +548,44 @@ function testRenderFittedContracts(): void {
   const html = renderReport(state);
 
   assert.match(html, /Effect Summary/);
+  assert.match(html, /Model Specification/);
   assert.match(html, /Summary of Fit/);
   assert.match(html, /Analysis of Variance/);
   assert.match(html, /Parameter Estimates/);
+  assert.match(html, /Lower 95%/);
+  assert.match(html, /Upper 95%/);
+  assert.match(html, /Lack of Fit/);
+  assert.match(html, /pureErrorZero|fitModel\.report\.reason\.pureErrorZero/);
+  assert.match(html, /Feature VIF/);
+  assert.match(html, />A<\/td><td>2<\/td><td>0\.2<\/td><td>10<\/td><td>0\.0500<\/td><td>1<\/td><td>3<\/td><td>1<\/td>/);
+  assert.match(html, /auxiliaryRankDeficient|fitModel\.report\.reason\.auxiliaryRankDeficient/);
+  assert.match(html, /Residual Q-Q/);
+  assert.match(html, /Row Diagnostics/);
+  assert.match(html, /Sampled: 1 \/ 12 rows/);
+  assert.match(html, /Residual warning|fitModel\.report\.flag\.residualWarning/);
+  assert.match(html, /High leverage|fitModel\.report\.flag\.highLeverage/);
+  assert.match(html, /Influential|fitModel\.report\.flag\.influential/);
+  assert.match(html, /data-diagnostic-filter="all"/);
+  assert.match(html, /data-diagnostic-filter="flagged"/);
+  const orderedSections = [
+    "Model Specification",
+    "Effect Summary",
+    "Summary of Fit",
+    "Analysis of Variance",
+    "Lack of Fit",
+    "Parameter Estimates",
+    "Actual by Predicted",
+    "Residual by Predicted",
+    "Residual Q-Q",
+    "Row Diagnostics",
+    "Warnings",
+  ];
+  let previousIndex = -1;
+  orderedSections.forEach((section) => {
+    const sectionIndex = html.indexOf(section);
+    assert.ok(sectionIndex > previousIndex, `${section} must follow the previous report section`);
+    previousIndex = sectionIndex;
+  });
   assert.match(html, /fitted-equation-inputs/);
   assert.match(html, />1<.*\+ 2 A/);
   assert.match(html, /saturatedModel|fitModel\.report\.warning\.saturatedModel/);
@@ -612,6 +739,7 @@ testRemoveInteractionSucceeds();
 testResolvedTermIdsMatchRustForPowerAndHigherOrderInteraction();
 testRemovePowerAndHigherOrderInteractionSucceeds();
 testRemoveMainBlockedByInteraction();
+testRemoveMainBlockedByPower();
 testRemoveLastMainBlocked();
 testValidMainRemovalReturnsUndoSnapshot();
 testBlockedRemoveTransitionLeavesDefinitionUnchangedWithoutRefit();

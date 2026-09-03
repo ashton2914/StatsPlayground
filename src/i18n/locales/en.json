@@ -1049,6 +1049,137 @@
       "termKindInteraction": "Interaction",
       "termKindPower": "Power",
       "removeTerm": "Remove term {{term}}"
+    },
+    "report": {
+      "title": "Fit Model report",
+      "stale": "Stale result",
+      "loading": "Loading report...",
+      "error": "Failed to load report.",
+      "errorWithOldResult": "Failed to refresh. Showing previous result.",
+      "undo": "Undo",
+      "remove": "Remove",
+      "notComputable": "Not Computable",
+      "usedRows": "Used Rows",
+      "excludedRows": "Excluded Rows",
+      "noWarnings": "No warnings.",
+      "undefinedValue": "-",
+      "section": {
+        "modelSpecification": "Model Specification",
+        "effectSummary": "Effect Summary",
+        "summaryOfFit": "Summary of Fit",
+        "analysisOfVariance": "Analysis of Variance",
+        "lackOfFit": "Lack of Fit",
+        "parameterEstimates": "Parameter Estimates",
+        "actualByPredicted": "Actual by Predicted",
+        "residualByPredicted": "Residual by Predicted",
+        "residualQq": "Residual Q-Q",
+        "rowDiagnostics": "Row Diagnostics",
+        "warnings": "Warnings"
+      },
+      "specification": {
+        "construct": "Construct",
+        "response": "Response",
+        "predictors": "Predictors",
+        "terms": "Terms",
+        "usedRows": "Used rows",
+        "termBudget": "Term budget"
+      },
+      "summaryOfFit": {
+        "rSquared": "RSquare",
+        "adjustedRSquared": "RSquare Adj",
+        "rootMeanSquareError": "Root Mean Square Error"
+      },
+      "column": {
+        "term": "Term",
+        "source": "Source",
+        "estimate": "Estimate",
+        "standardError": "Std Error",
+        "tRatio": "t Ratio",
+        "pValue": "p-Value",
+        "logWorth": "LogWorth",
+        "action": "Action",
+        "degreesOfFreedom": "DF",
+        "sumOfSquares": "Sum of Squares",
+        "meanSquare": "Mean Square",
+        "fRatio": "F Ratio",
+        "lowerConfidenceLimit": "Lower 95%",
+        "upperConfidenceLimit": "Upper 95%",
+        "featureVif": "Feature VIF",
+        "row": "Row",
+        "observed": "Observed",
+        "fitted": "Fitted",
+        "residual": "Residual",
+        "studentizedResidual": "Studentized Residual",
+        "leverage": "Leverage",
+        "cooksDistance": "Cook's D",
+        "meanConfidenceInterval": "Mean CI",
+        "predictionInterval": "Prediction Interval",
+        "flags": "Flags"
+      },
+      "reason": {
+        "insufficientRows": "Not enough valid rows remain after excluding missing values.",
+        "rankDeficient": "The model matrix is rank deficient for this specification.",
+        "noReplicates": "Lack of fit cannot be tested because there are no replicate predictor settings.",
+        "lackOfFitDegreesOfFreedomZero": "Lack of fit has no degrees of freedom.",
+        "pureErrorZero": "The pure-error mean square is zero.",
+        "inferenceNotEstimable": "Inference is not estimable for this fit.",
+        "constantFeature": "The fitted feature is constant.",
+        "auxiliaryRankDeficient": "The auxiliary VIF regression is rank deficient.",
+        "insufficientDiagnosticRows": "At least two finite diagnostic rows are required."
+      },
+      "flag": {
+        "residualWarning": "Residual warning",
+        "residualSevere": "Severe residual",
+        "highLeverage": "High leverage",
+        "influential": "Influential"
+      },
+      "diagnostics": {
+        "filter": "Diagnostic row filter",
+        "all": "All",
+        "flagged": "Flagged"
+      },
+      "source": {
+        "error": "Error",
+        "pureError": "Pure Error",
+        "lackOfFit": "Lack of Fit"
+      },
+      "warning": {
+        "saturatedModel": "The model is saturated; no residual degrees of freedom remain.",
+        "constantResponse": "Response has little or no variation.",
+        "perfectFit": "Perfect fit detected; check for overfitting.",
+        "illConditioned": "The design matrix is ill-conditioned; coefficients may be unstable."
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "Cannot remove this main effect while related interaction or power terms are present.",
+        "lastMainEffect": "Cannot remove the last main effect.",
+        "notFound": "Selected model term is no longer available."
+      },
+      "chart": {
+        "axis": {
+          "predicted": "Predicted",
+          "actual": "Actual",
+          "residual": "Residual",
+          "theoreticalQuantile": "Theoretical quantile",
+          "studentizedResidual": "Studentized residual"
+        },
+        "series": {
+          "actual": "Actual",
+          "residual": "Residual",
+          "studentizedResidual": "Studentized residual"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0",
+          "qq": "Q-Q reference"
+        },
+        "tooltip": {
+          "x": "Predicted",
+          "yActual": "Actual",
+          "yResidual": "Residual",
+          "xQq": "Theoretical quantile",
+          "yQq": "Studentized residual"
+        }
+      }
     }
   }
 }

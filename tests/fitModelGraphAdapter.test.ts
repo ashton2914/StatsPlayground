@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildActualByPredictedOption,
   buildResidualByPredictedOption,
+  buildResidualQqOption,
 } from "../src/graphCore/fitModelAdapter.ts";
 import type { FitModelPlotRow } from "../src/types/fitModel.ts";
 
@@ -200,6 +201,59 @@ function testSinglePointReferenceLinesUseExpandedFiniteExtent(): void {
   assertAllFinite(zero.data, "single-point-zero");
 }
 
+function testResidualQqPointsAndReferenceLine(): void {
+  const option = buildResidualQqOption({
+    title: "Residual Q-Q",
+    rows: [
+      { rowIndex: 1, theoreticalQuantile: -0.67, studentizedResidual: -0.5 },
+      { rowIndex: 2, theoreticalQuantile: 0.67, studentizedResidual: 0.8 },
+    ],
+    labels: {
+      theoreticalAxisName: "Theoretical quantile",
+      studentizedResidualAxisName: "Studentized residual",
+      residualSeriesName: "Residual",
+      referenceSeriesName: "Reference",
+      tooltipXLabel: "Theoretical quantile",
+      tooltipYLabel: "Studentized residual",
+    },
+  }) as {
+    series: Array<{ clip?: boolean; data: Array<[number, number]> }>;
+  };
+
+  assert.equal(option.series.length, 2);
+  assert.deepEqual(option.series[0]?.data, [[-0.67, -0.5], [0.67, 0.8]]);
+  assert.ok(option.series.every((series) => series.clip === true));
+  assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
+}
+
+function testResidualQqBoundaryInputs(): void {
+  const labels = {
+    theoreticalAxisName: "Theoretical quantile",
+    studentizedResidualAxisName: "Studentized residual",
+    residualSeriesName: "Residual",
+    referenceSeriesName: "Reference",
+    tooltipXLabel: "Theoretical quantile",
+    tooltipYLabel: "Studentized residual",
+  };
+  const empty = buildResidualQqOption({ title: "Residual Q-Q", rows: [], labels });
+  const single = buildResidualQqOption({
+    title: "Residual Q-Q",
+    rows: [{ rowIndex: 1, theoreticalQuantile: 0, studentizedResidual: 0 }],
+    labels,
+  });
+
+  assert.doesNotMatch(JSON.stringify(empty), /NaN|Infinity/);
+  assert.doesNotMatch(JSON.stringify(single), /NaN|Infinity/);
+  assert.throws(
+    () => buildResidualQqOption({
+      title: "Residual Q-Q",
+      rows: [{ rowIndex: 1, theoreticalQuantile: Number.NaN, studentizedResidual: 0 }],
+      labels,
+    }),
+    /non-finite/i,
+  );
+}
+
 testActualAndResidualPointsAndAxes();
 testReferenceLinesFiniteAndCorrect();
 testTooltipValuesAreFinite();
@@ -207,5 +261,7 @@ testEmptyInputProducesNonblankOption();
 testSampledSubtitlePreservesPoints();
 testNonFiniteBoundaryValuesThrow();
 testSinglePointReferenceLinesUseExpandedFiniteExtent();
+testResidualQqPointsAndReferenceLine();
+testResidualQqBoundaryInputs();
 
 console.log("fitModel graph adapter contract passed");
