@@ -291,6 +291,7 @@ pub struct FitModelFittedResult {
     pub terms: Vec<FitModelResolvedTerm>,
     pub centering: FitModelCentering,
     pub snapshot: FitModelSnapshot,
+    pub available_saved_metrics: Vec<FitModelSavedMetric>,
     pub diagnostics: FitModelDiagnostics,
     pub summary_of_fit: FitModelSummaryOfFit,
     pub anova: Vec<FitModelAnovaRow>,
@@ -435,6 +436,10 @@ mod tests {
                 },
                 predictor_ranges: vec![],
             },
+            available_saved_metrics: vec![
+                FitModelSavedMetric::Predicted,
+                FitModelSavedMetric::Residual,
+            ],
             diagnostics: FitModelDiagnostics {
                 lack_of_fit: FitModelLackOfFitResult {
                     sum_of_squares_error: 0.0,
@@ -484,6 +489,10 @@ mod tests {
             serde_json::to_value(&not_computable).expect("serialization should succeed");
 
         assert_eq!(fitted_value["kind"], "fitted");
+        assert_eq!(
+            fitted_value["availableSavedMetrics"],
+            serde_json::json!(["predicted", "residual"])
+        );
         assert_eq!(not_value["kind"], "notComputable");
     }
 }

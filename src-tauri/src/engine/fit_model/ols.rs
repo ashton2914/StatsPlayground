@@ -7,8 +7,8 @@ use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
     FitModelParameterEstimate, FitModelPlotRow, FitModelPredictorRange, FitModelResolvedTerm,
-    FitModelResult, FitModelRowDiagnostic, FitModelSnapshot, FitModelSummaryOfFit,
-    FitModelWarningCode,
+    FitModelResult, FitModelRowDiagnostic, FitModelSavedMetric, FitModelSnapshot,
+    FitModelSummaryOfFit, FitModelWarningCode,
 };
 
 const CONDITION_WARNING_THRESHOLD: f64 = 1e10;
@@ -329,6 +329,7 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         snapshot.covariance.as_deref(),
     )?;
 
+    let available_saved_metrics = available_saved_metrics(&diagnostic_rows);
     Ok(FitModelComputation {
         result: FitModelResult::Fitted(Box::new(crate::models::fit_model::FitModelFittedResult {
             used_rows: n as u64,
@@ -339,6 +340,7 @@ pub(crate) fn fit_linear_model_with_diagnostics(
             terms: resolved,
             centering,
             snapshot,
+            available_saved_metrics,
             diagnostics,
             summary_of_fit: FitModelSummaryOfFit {
                 r_squared,
@@ -382,6 +384,40 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         })),
         diagnostic_rows,
     })
+}
+
+fn available_saved_metrics(rows: &[FitModelRowDiagnostic]) -> Vec<FitModelSavedMetric> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let candidates = [
+        FitModelSavedMetric::StudentizedResidual,
+        FitModelSavedMetric::Leverage,
+        FitModelSavedMetric::CooksDistance,
+        FitModelSavedMetric::MeanConfidenceLower,
+        FitModelSavedMetric::MeanConfidenceUpper,
+        FitModelSavedMetric::PredictionLower,
+        FitModelSavedMetric::PredictionUpper,
+    ];
+    let mut available = vec![
+        FitModelSavedMetric::Predicted,
+        FitModelSavedMetric::Residual,
+    ];
+    available.extend(
+        candidates.into_iter().filter(|metric| {
+            rows.iter().all(|row| match metric {
+                FitModelSavedMetric::StudentizedResidual => row.studentized_residual.is_some(),
+                FitModelSavedMetric::Leverage => row.leverage.is_some(),
+                FitModelSavedMetric::CooksDistance => row.cooks_distance.is_some(),
+                FitModelSavedMetric::MeanConfidenceLower => row.mean_confidence_lower.is_some(),
+                FitModelSavedMetric::MeanConfidenceUpper => row.mean_confidence_upper.is_some(),
+                FitModelSavedMetric::PredictionLower => row.prediction_lower.is_some(),
+                FitModelSavedMetric::PredictionUpper => row.prediction_upper.is_some(),
+                FitModelSavedMetric::Predicted | FitModelSavedMetric::Residual => true,
+            })
+        }),
+    );
+    available
 }
 
 fn matrix_to_finite_rows(matrix: DMatrix<f64>) -> Result<Vec<Vec<f64>>, FitModelEngineError> {

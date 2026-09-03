@@ -147,6 +147,45 @@
   overflow: hidden;
 }
 
+.sp-fit-model-save-columns-dialog {
+  width: min(92vw, 460px);
+  max-width: min(92vw, 460px);
+}
+
+.sp-fit-model-save-columns-body {
+  display: grid;
+  gap: 4px;
+}
+
+.sp-fit-model-save-metric {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 6px;
+  color: var(--fg-primary);
+}
+
+.sp-fit-model-save-metric.is-disabled,
+.sp-fit-model-save-unavailable {
+  color: var(--fg-hint);
+}
+
+.sp-fit-model-save-unavailable {
+  font-size: 11px;
+}
+
+.sp-fit-model-save-error {
+  margin: 8px 6px 0;
+  color: var(--danger, #b42318);
+}
+
+.sp-fit-model-save-notice {
+  margin: 8px 16px 0;
+  color: var(--warning, #8a4b08);
+}
+
 .sp-fit-model-report-shell {
   flex: 1 1 auto;
   min-width: 0;

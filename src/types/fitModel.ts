@@ -42,6 +42,39 @@ export interface FitModelRequest {
   confidenceLevel: 0.95;
 }
 
+export type FitModelSavedMetric =
+  | "predicted"
+  | "residual"
+  | "studentizedResidual"
+  | "leverage"
+  | "cooksDistance"
+  | "meanConfidenceLower"
+  | "meanConfidenceUpper"
+  | "predictionLower"
+  | "predictionUpper";
+
+export interface SaveFitModelColumnsRequest {
+  datasetId: string;
+  expectedGeneration: number;
+  modelName: string;
+  responseColumn: string;
+  terms: FitModelTerm[];
+  centeringMethod: FitModelCenteringMethod;
+  confidenceLevel: 0.95;
+  metrics: FitModelSavedMetric[];
+}
+
+export interface FitModelSavedColumn {
+  metric: FitModelSavedMetric;
+  columnName: string;
+}
+
+export interface SaveFitModelColumnsResult {
+  changeSetId: string;
+  generation: number;
+  columns: FitModelSavedColumn[];
+}
+
 export type FitModelNotComputableReason = "insufficientRows" | "rankDeficient";
 export type FitModelWarningCode =
   | "saturatedModel"
@@ -204,6 +237,7 @@ export interface FitModelFittedResult {
   kind: "fitted";
   usedRows: number;
   excludedRows: number;
+  availableSavedMetrics: FitModelSavedMetric[];
   confidenceLevel: number;
   responseColumn: string;
   predictorColumns: string[];

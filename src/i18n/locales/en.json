@@ -141,7 +141,11 @@
     "resizeColumn": "Resize column",
     "autoFitColumn": "Auto-fit column",
     "sqlQueryTableCreated": "Create table \"{{name}}\" from SQL query",
-    "tabulateTableCreated": "Create data table \"{{name}}\" from tabulate result"
+    "tabulateTableCreated": "Create data table \"{{name}}\" from tabulate result",
+    "newFitModel": "New Fit Model \"{{name}}\" (source: {{source}})",
+    "renameFitModel": "Rename Fit Model \"{{old}}\" -> \"{{new}}\"",
+    "deleteFitModel": "Delete Fit Model \"{{name}}\"",
+    "saveFitModelColumns": "Save Fit Model columns"
   },
   "workspace": {
     "directory": "Directory",
@@ -180,7 +184,9 @@
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "zoomReset": "Reset to 100%",
-    "zoomTooltip": "Table zoom"
+    "zoomTooltip": "Table zoom",
+    "fitModelMissing": "Fit Model analysis no longer exists",
+    "fitModelSourceMissing": "Source data table is unavailable"
   },
   "distribution": {
     "title": "Distribution",
@@ -1030,7 +1036,35 @@
     }
   },
   "fitModel": {
+    "title": "Fit Model",
+    "response": "Y, Response",
+    "modelTermCount": "Model terms",
+    "centeringMethod": "Centering",
+    "centering": {
+      "none": "None",
+      "mean": "Mean"
+    },
+    "sourceMissing": "Source dataset is unavailable.",
     "dialog": {
+      "title": "Fit Model",
+      "availableFields": "Available fields",
+      "searchFields": "Search fields",
+      "searchAvailableFields": "Search available fields",
+      "loadingFields": "Loading fields...",
+      "noFields": "No fields available for this source.",
+      "noMatch": "No fields match the current search.",
+      "assignResponseLabel": "Assign {{field}} as response",
+      "assignResponse": "Assign as Y",
+      "assignMainLabel": "Toggle {{field}} as main effect",
+      "assignMain": "Toggle Main",
+      "response": "Response",
+      "continuousOnly": "Continuous",
+      "responseEmpty": "Drop or assign one continuous response field.",
+      "responseHint": "Continuous",
+      "clearResponse": "Clear response {{field}}",
+      "mainEffects": "Main Effects",
+      "mainEffectsEmpty": "Select one or more continuous predictors.",
+      "removeMainEffect": "Remove main effect {{field}}",
       "construct": "Construct",
       "constructFullFactorial": "Full Factorial",
       "constructManual": "Manual",
@@ -1039,6 +1073,15 @@
       "degreeInputLabel": "Degree",
       "termCount": "{{count}} / 256 terms",
       "tooManyTermsFormula": "Construct has {{count}} terms, exceeding 256. {{formula}}",
+      "interactions": "Interactions",
+      "twoWayOnly": "Two-way",
+      "interactionsEmpty": "Add two-way interactions from selected main effects.",
+      "removeInteraction": "Remove interaction {{term}}",
+      "addInteraction": "Add interaction",
+      "toggleInteraction": "Toggle interaction {{term}}",
+      "macros": "Macros",
+      "degree1": "Degree 1",
+      "degree2": "Degree 2",
       "centerInteractions": "Center Interactions",
       "currentTerms": "Current Model Terms",
       "searchTerms": "Search terms",
@@ -1048,7 +1091,18 @@
       "termKindMain": "Main",
       "termKindInteraction": "Interaction",
       "termKindPower": "Power",
-      "removeTerm": "Remove term {{term}}"
+      "removeTerm": "Remove term {{term}}",
+      "create": "Create",
+      "cancel": "Cancel",
+      "createError": "Failed to create Fit Model: {{message}}",
+      "validation": {
+        "responseCollision": "{{field}} is already assigned to another role.",
+        "mainRequiredByInteraction": "{{field}} is used by {{interactions}}.",
+        "lastMainEffect": "At least one main effect is required.",
+        "nonContinuousField": "{{field}} must be continuous.",
+        "invalidInteraction": "Only valid two-way interactions can be added.",
+        "tooManyTerms": "Model has too many terms (max 256)."
+      }
     },
     "report": {
       "title": "Fit Model report",
@@ -1063,6 +1117,26 @@
       "excludedRows": "Excluded Rows",
       "noWarnings": "No warnings.",
       "undefinedValue": "-",
+      "saveColumns": {
+        "title": "Save Columns",
+        "open": "Save Columns",
+        "save": "Save",
+        "saving": "Saving...",
+        "cancel": "Cancel",
+        "unavailable": "Unavailable",
+        "refreshFailed": "Columns were saved, but the data view could not be refreshed. Reopen the table to see the new columns.",
+        "metric": {
+          "predicted": "Predicted",
+          "residual": "Residual",
+          "studentizedResidual": "Studentized Residual",
+          "leverage": "Leverage",
+          "cooksDistance": "Cook's D",
+          "meanConfidenceLower": "Mean CI Lower",
+          "meanConfidenceUpper": "Mean CI Upper",
+          "predictionLower": "Prediction Interval Lower",
+          "predictionUpper": "Prediction Interval Upper"
+        }
+      },
       "section": {
         "modelSpecification": "Model Specification",
         "effectSummary": "Effect Summary",

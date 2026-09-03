@@ -26,6 +26,23 @@ export const FIT_MODEL_IDLE_REPORT_STATE: FitModelReportState = {
   configurationKey: null,
 };
 
+export function resolveFitModelReportStateForSignal(
+  state: FitModelReportState,
+  stateSignal: FitModelReportGenerationSignal,
+  currentSignal: FitModelReportGenerationSignal,
+): FitModelReportState {
+  if (Object.is(stateSignal, currentSignal) || state.status !== "success") {
+    return state;
+  }
+
+  return {
+    status: "stale",
+    result: state.result,
+    error: null,
+    configurationKey: state.configurationKey,
+  };
+}
+
 interface FitModelReportControllerOptions extends FitModelReportDependencies {
   onStateChange?: (state: FitModelReportState) => void;
 }
@@ -316,13 +333,22 @@ export function useFitModelReport(
   generationSignal: FitModelReportGenerationSignal,
   dependencies?: Partial<FitModelReportDependencies>,
 ): FitModelReportState {
-  const [state, setState] = useState<FitModelReportState>(FIT_MODEL_IDLE_REPORT_STATE);
+  const [snapshot, setSnapshot] = useState<{
+    state: FitModelReportState;
+    generationSignal: FitModelReportGenerationSignal;
+  }>({
+    state: FIT_MODEL_IDLE_REPORT_STATE,
+    generationSignal,
+  });
   const getDatasetGeneration = dependencies?.getDatasetGeneration;
   const run = dependencies?.run;
 
   useEffect(() => {
     if (item == null) {
-      setState(FIT_MODEL_IDLE_REPORT_STATE);
+      setSnapshot({
+        state: FIT_MODEL_IDLE_REPORT_STATE,
+        generationSignal,
+      });
       return undefined;
     }
 
@@ -341,7 +367,7 @@ export function useFitModelReport(
 
         controller = createFitModelReportController({
           ...resolved,
-          onStateChange: setState,
+          onStateChange: (state) => setSnapshot({ state, generationSignal }),
         });
         await controller.load(item);
       } catch (error) {
@@ -349,11 +375,14 @@ export function useFitModelReport(
           return;
         }
 
-        setState({
-          status: "error",
-          result: null,
-          error: normalizeFitModelReportError(error),
-          configurationKey: null,
+        setSnapshot({
+          state: {
+            status: "error",
+            result: null,
+            error: normalizeFitModelReportError(error),
+            configurationKey: null,
+          },
+          generationSignal,
         });
       }
     })();
@@ -369,5 +398,9 @@ export function useFitModelReport(
     run,
   ]);
 
-  return state;
+  return resolveFitModelReportStateForSignal(
+    snapshot.state,
+    snapshot.generationSignal,
+    generationSignal,
+  );
 }

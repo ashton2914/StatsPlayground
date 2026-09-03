@@ -69,6 +69,8 @@ export interface FitModelReportProps {
   removeMessage: string | null;
   onRemoveTerm: (termId: string) => void;
   onUndoRemove: (() => void) | null;
+  onSaveColumns?: () => void;
+  saveColumnsDisabled?: boolean;
 }
 
 function resolveUndefinedValueLabel(t: (key: string) => string): string {
@@ -164,6 +166,8 @@ export function FitModelReport({
   removeMessage,
   onRemoveTerm,
   onUndoRemove,
+  onSaveColumns,
+  saveColumnsDisabled = false,
 }: FitModelReportProps) {
   void item;
   const { t } = useTranslation();
@@ -303,6 +307,11 @@ export function FitModelReport({
         <span className="sp-panel-header-title">{t("fitModel.report.title", { defaultValue: "Fit Model report" })}</span>
         {stale ? (
           <span className="sp-tabulate-header-hint">{t("fitModel.report.stale", { defaultValue: "Stale result" })}</span>
+        ) : null}
+        {onSaveColumns ? (
+          <button type="button" onClick={onSaveColumns} disabled={saveColumnsDisabled}>
+            {t("fitModel.report.saveColumns.open", { defaultValue: "Save Columns" })}
+          </button>
         ) : null}
       </div>
 

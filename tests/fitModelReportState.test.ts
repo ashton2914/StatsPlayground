@@ -10,6 +10,7 @@ import type {
 import {
   createFitModelReportController,
   fitModelConfigurationKey,
+  resolveFitModelReportStateForSignal,
   type FitModelReportState,
 } from "../src/components/fitModel/useFitModelReport.ts";
 
@@ -207,6 +208,24 @@ function testConfigurationKeyCanonicalization(): void {
       generation: 5,
     }),
     "changing generation should change key",
+  );
+}
+
+function testGenerationSignalChangeImmediatelyMarksSuccessStale(): void {
+  const result = makeFittedResult();
+  const success: FitModelReportState = {
+    status: "success",
+    result,
+    error: null,
+    configurationKey: "generation-1",
+  };
+
+  assert.equal(resolveFitModelReportStateForSignal(success, "updated-1", "updated-1").status, "success");
+  expectStale(
+    resolveFitModelReportStateForSignal(success, "updated-1", "updated-2"),
+    result,
+    "generation-1",
+    null,
   );
 }
 
@@ -623,6 +642,7 @@ async function testItemSwitchAndDisposeFenceOldResults(): Promise<void> {
 }
 
 testConfigurationKeyCanonicalization();
+testGenerationSignalChangeImmediatelyMarksSuccessStale();
 await testLatestTokenWinsEvenWhenConfigurationKeyMatches();
 await testDatasetGenerationChangeInvalidatesOlderRequestBeforeRun();
 await testConfigurationChangeShowsStaleUntilReplacementSucceeds();
