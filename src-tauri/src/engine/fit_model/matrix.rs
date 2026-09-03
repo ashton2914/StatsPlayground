@@ -42,11 +42,11 @@ impl ModelMatrixSpec {
         let centers = match centering_method {
             FitModelCenteringMethod::None => Vec::new(),
             FitModelCenteringMethod::Mean => {
-                let interaction_columns = interaction_columns(&terms);
-                if interaction_columns.is_empty() {
+                let centered_columns = centered_columns(&terms);
+                if centered_columns.is_empty() {
                     Vec::new()
                 } else {
-                    compute_interaction_centers(&interaction_columns, columns)?
+                    compute_centers(&centered_columns, columns)?
                 }
             }
         };
@@ -70,6 +70,26 @@ impl ModelMatrixSpec {
         &self.centers
     }
 
+    pub fn transform_point(&self, values: &BTreeMap<String, f64>) -> Result<Vec<f64>, MatrixError> {
+        validate_resolved_terms(&self.terms)?;
+        let centers = self
+            .centers
+            .iter()
+            .map(|center| (center.column_name.clone(), center.mean))
+            .collect::<BTreeMap<_, _>>();
+        let mut row = Vec::with_capacity(self.terms.len() + 1);
+        row.push(1.0);
+        for term in &self.terms {
+            row.push(evaluate_term(
+                term,
+                values,
+                &centers,
+                &self.centering_method,
+            )?);
+        }
+        Ok(row)
+    }
+
     pub fn transform_training_columns(
         &self,
         columns: &BTreeMap<String, Vec<f64>>,
@@ -83,57 +103,73 @@ impl ModelMatrixSpec {
 
         let mut center_by_name = BTreeMap::new();
         for center in &self.centers {
-            center_by_name.insert(center.column_name.as_str(), center.mean);
+            center_by_name.insert(center.column_name.clone(), center.mean);
         }
 
         let width = self.terms.len() + 1;
         let mut data = Vec::with_capacity(row_count * width);
         for row in 0..row_count {
+            let mut values = BTreeMap::new();
+            for column in &referenced {
+                values.insert(column.clone(), read_value(columns, column, row)?);
+            }
             data.push(1.0);
             for term in &self.terms {
-                let value = match term.kind() {
-                    FitModelTermKind::Main => {
-                        let column_name = term.main_column().ok_or_else(|| {
-                            MatrixError::InvalidResolvedTerm(format!(
-                                "main term '{}' does not have exactly one column",
-                                term.term_id()
-                            ))
-                        })?;
-                        read_value(columns, column_name, row)?
-                    }
-                    FitModelTermKind::Interaction => {
-                        let (left_name, right_name) =
-                            term.interaction_columns().ok_or_else(|| {
-                                MatrixError::InvalidResolvedTerm(format!(
-                                    "interaction term '{}' does not have exactly two columns",
-                                    term.term_id()
-                                ))
-                            })?;
-                        let left = read_value(columns, left_name, row)?;
-                        let right = read_value(columns, right_name, row)?;
-                        match self.centering_method {
-                            FitModelCenteringMethod::None => left * right,
-                            FitModelCenteringMethod::Mean => {
-                                let left_center = center_by_name
-                                    .get(left_name)
-                                    .copied()
-                                    .ok_or_else(|| MatrixError::MissingCenter(left_name.to_string()))?;
-                                let right_center = center_by_name
-                                    .get(right_name)
-                                    .copied()
-                                    .ok_or_else(|| {
-                                        MatrixError::MissingCenter(right_name.to_string())
-                                    })?;
-                                (left - left_center) * (right - right_center)
-                            }
-                        }
-                    }
-                };
-                data.push(value);
+                data.push(evaluate_term(
+                    term,
+                    &values,
+                    &center_by_name,
+                    &self.centering_method,
+                )?);
             }
         }
 
         Ok(DMatrix::from_row_slice(row_count, width, &data))
+    }
+}
+
+fn evaluate_term(
+    term: &ResolvedTerm,
+    values: &BTreeMap<String, f64>,
+    centers: &BTreeMap<String, f64>,
+    centering: &FitModelCenteringMethod,
+) -> Result<f64, MatrixError> {
+    let value_for = |name: &str| {
+        values
+            .get(name)
+            .copied()
+            .ok_or_else(|| MatrixError::MissingColumn(name.to_string()))
+    };
+    let centered_value = |name: &str| -> Result<f64, MatrixError> {
+        let value = value_for(name)?;
+        match centering {
+            FitModelCenteringMethod::None => Ok(value),
+            FitModelCenteringMethod::Mean => centers
+                .get(name)
+                .map(|center| value - center)
+                .ok_or_else(|| MatrixError::MissingCenter(name.to_string())),
+        }
+    };
+
+    match term.kind() {
+        FitModelTermKind::Main => term
+            .main_column()
+            .ok_or_else(|| MatrixError::InvalidResolvedTerm(term.term_id().to_string()))
+            .and_then(value_for),
+        FitModelTermKind::Interaction => {
+            let columns = term
+                .interaction_columns()
+                .ok_or_else(|| MatrixError::InvalidResolvedTerm(term.term_id().to_string()))?;
+            columns
+                .iter()
+                .try_fold(1.0, |product, column| Ok(product * centered_value(column)?))
+        }
+        FitModelTermKind::Power => {
+            let (column, exponent) = term
+                .power_column()
+                .ok_or_else(|| MatrixError::InvalidResolvedTerm(term.term_id().to_string()))?;
+            Ok(centered_value(column)?.powi(i32::from(exponent)))
+        }
     }
 }
 
@@ -147,13 +183,21 @@ fn referenced_columns(terms: &[ResolvedTerm]) -> BTreeSet<String> {
     referenced
 }
 
-fn interaction_columns(terms: &[ResolvedTerm]) -> Vec<String> {
+fn centered_columns(terms: &[ResolvedTerm]) -> Vec<String> {
     let mut names = BTreeSet::new();
     for term in terms {
-        if term.kind() == &FitModelTermKind::Interaction {
-            for name in term.column_names() {
-                names.insert(name.clone());
+        match term.kind() {
+            FitModelTermKind::Interaction => {
+                for name in term.column_names() {
+                    names.insert(name.clone());
+                }
             }
+            FitModelTermKind::Power => {
+                if let Some((name, _)) = term.power_column() {
+                    names.insert(name.to_string());
+                }
+            }
+            FitModelTermKind::Main => {}
         }
     }
     names.into_iter().collect()
@@ -186,12 +230,12 @@ fn validate_columns(
     Ok(expected_len.unwrap_or(0))
 }
 
-fn compute_interaction_centers(
-    interaction_columns: &[String],
+fn compute_centers(
+    centered_columns: &[String],
     columns: &BTreeMap<String, Vec<f64>>,
 ) -> Result<Vec<FitModelCenter>, MatrixError> {
     let mut expected_len: Option<usize> = None;
-    for name in interaction_columns {
+    for name in centered_columns {
         let column = columns
             .get(name)
             .ok_or_else(|| MatrixError::MissingColumn(name.clone()))?;
@@ -216,7 +260,7 @@ fn compute_interaction_centers(
     let mut complete_rows = Vec::new();
     for row in 0..row_count {
         let mut is_complete = true;
-        for name in interaction_columns {
+        for name in centered_columns {
             let value = read_value(columns, name, row)?;
             if !value.is_finite() {
                 is_complete = false;
@@ -232,8 +276,8 @@ fn compute_interaction_centers(
         return Err(MatrixError::EmptyTrainingData);
     }
 
-    let mut centers = Vec::with_capacity(interaction_columns.len());
-    for name in interaction_columns {
+    let mut centers = Vec::with_capacity(centered_columns.len());
+    for name in centered_columns {
         let mut sum = 0.0;
         for row in &complete_rows {
             sum += read_value(columns, name, *row)?;
@@ -283,6 +327,7 @@ mod tests {
                 FitModelTerm {
                     kind: mapped_kind,
                     column_names: columns.iter().map(|value| (*value).to_string()).collect(),
+                    exponent: None,
                 }
             })
             .collect::<Vec<_>>();
@@ -299,7 +344,11 @@ mod tests {
 
     #[test]
     fn raw_interaction_uses_uncentered_inputs() {
-        let terms = resolved_terms(&[("main", &["A"]), ("main", &["B"]), ("interaction", &["A", "B"])]);
+        let terms = resolved_terms(&[
+            ("main", &["A"]),
+            ("main", &["B"]),
+            ("interaction", &["A", "B"]),
+        ]);
         let spec = ModelMatrixSpec::from_columns(terms, FitModelCenteringMethod::None, &columns())
             .expect("spec should build");
 
@@ -314,7 +363,11 @@ mod tests {
 
     #[test]
     fn mean_centered_interaction_keeps_main_effect_columns_raw() {
-        let terms = resolved_terms(&[("main", &["A"]), ("main", &["B"]), ("interaction", &["A", "B"])]);
+        let terms = resolved_terms(&[
+            ("main", &["A"]),
+            ("main", &["B"]),
+            ("interaction", &["A", "B"]),
+        ]);
         let spec = ModelMatrixSpec::from_columns(terms, FitModelCenteringMethod::Mean, &columns())
             .expect("spec should build");
 
@@ -341,7 +394,11 @@ mod tests {
 
     #[test]
     fn read_only_accessors_expose_spec_state() {
-        let terms = resolved_terms(&[("main", &["A"]), ("main", &["B"]), ("interaction", &["A", "B"])]);
+        let terms = resolved_terms(&[
+            ("main", &["A"]),
+            ("main", &["B"]),
+            ("interaction", &["A", "B"]),
+        ]);
         let spec = ModelMatrixSpec::from_columns(terms, FitModelCenteringMethod::Mean, &columns())
             .expect("spec should build");
 
@@ -372,6 +429,69 @@ mod tests {
             ))
         );
     }
+
+    #[test]
+    fn centered_response_surface_matrix_matches_fixture() {
+        let wire_terms = vec![
+            FitModelTerm {
+                kind: FitModelTermKind::Main,
+                column_names: vec!["A".into()],
+                exponent: None,
+            },
+            FitModelTerm {
+                kind: FitModelTermKind::Main,
+                column_names: vec!["B".into()],
+                exponent: None,
+            },
+            FitModelTerm {
+                kind: FitModelTermKind::Interaction,
+                column_names: vec!["A".into(), "B".into()],
+                exponent: None,
+            },
+            FitModelTerm {
+                kind: FitModelTermKind::Power,
+                column_names: vec!["A".into()],
+                exponent: Some(2),
+            },
+            FitModelTerm {
+                kind: FitModelTermKind::Power,
+                column_names: vec!["B".into()],
+                exponent: Some(2),
+            },
+        ];
+        let columns = BTreeMap::from([
+            ("A".to_string(), vec![1.0, 2.0, 3.0]),
+            ("B".to_string(), vec![2.0, 4.0, 6.0]),
+        ]);
+        let spec = ModelMatrixSpec::from_columns(
+            resolve_terms(&wire_terms).expect("valid response surface terms"),
+            FitModelCenteringMethod::Mean,
+            &columns,
+        )
+        .expect("spec should build");
+
+        let matrix = spec
+            .transform_training_columns(&columns)
+            .expect("matrix should build");
+        assert_eq!(
+            matrix,
+            DMatrix::from_row_slice(
+                3,
+                6,
+                &[
+                    1.0, 1.0, 2.0, 2.0, 1.0, 4.0, 1.0, 2.0, 4.0, 0.0, 0.0, 0.0, 1.0, 3.0, 6.0, 2.0,
+                    1.0, 4.0,
+                ]
+            )
+        );
+        assert_eq!(
+            spec.transform_point(&BTreeMap::from([
+                ("A".to_string(), 3.0),
+                ("B".to_string(), 6.0),
+            ])),
+            Ok(vec![1.0, 3.0, 6.0, 2.0, 1.0, 4.0]),
+        );
+    }
 }
 
 fn validate_resolved_terms(terms: &[ResolvedTerm]) -> Result<(), MatrixError> {
@@ -388,7 +508,15 @@ fn validate_resolved_terms(terms: &[ResolvedTerm]) -> Result<(), MatrixError> {
             FitModelTermKind::Interaction => {
                 if term.interaction_columns().is_none() {
                     return Err(MatrixError::InvalidResolvedTerm(format!(
-                        "interaction term '{}' does not have exactly two columns",
+                        "interaction term '{}' does not have at least two columns",
+                        term.term_id()
+                    )));
+                }
+            }
+            FitModelTermKind::Power => {
+                if term.power_column().is_none() {
+                    return Err(MatrixError::InvalidResolvedTerm(format!(
+                        "power term '{}' is invalid",
                         term.term_id()
                     )));
                 }

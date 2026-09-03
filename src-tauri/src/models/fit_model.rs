@@ -12,6 +12,7 @@ pub enum FitModelCenteringMethod {
 pub enum FitModelTermKind {
     Main,
     Interaction,
+    Power,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -19,6 +20,8 @@ pub enum FitModelTermKind {
 pub struct FitModelTerm {
     pub kind: FitModelTermKind,
     pub column_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exponent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -162,6 +165,7 @@ mod tests {
             terms: vec![FitModelTerm {
                 kind: FitModelTermKind::Main,
                 column_names: vec!["A".into()],
+                exponent: None,
             }],
             centering_method: FitModelCenteringMethod::Mean,
             confidence_level: 0.95,
@@ -172,8 +176,18 @@ mod tests {
         assert_eq!(value["responseColumn"], "Y");
         assert!(value.get("columnNames").is_none());
         assert_eq!(value["terms"][0]["columnNames"], serde_json::json!(["A"]));
+        assert!(value["terms"][0].get("exponent").is_none());
         assert_eq!(value["centeringMethod"], "mean");
         assert_eq!(value["confidenceLevel"], 0.95);
+
+        let power: FitModelTerm = serde_json::from_value(serde_json::json!({
+            "kind": "power",
+            "columnNames": ["A"],
+            "exponent": 2
+        }))
+        .expect("power term should deserialize");
+        assert_eq!(power.kind, FitModelTermKind::Power);
+        assert_eq!(power.exponent, Some(2));
     }
 
     #[test]

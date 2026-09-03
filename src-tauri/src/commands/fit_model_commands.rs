@@ -64,6 +64,7 @@ mod tests {
             FitModelTerm {
                 kind: FitModelTermKind::Interaction,
                 column_names: vec!["A".into(), "B".into()],
+                exponent: None,
             }
         );
 

@@ -99,6 +99,9 @@ fn map_term_error(error: TermError) -> AppError {
         TermError::EmptyColumnName => {
             AppError::InvalidParam("fit model term contains an empty column name".into())
         }
+        TermError::TooManyTerms { actual, maximum } => AppError::InvalidParam(format!(
+            "fit model contains {actual} terms; maximum is {maximum}"
+        )),
         TermError::InvalidArity {
             kind,
             expected,
@@ -107,11 +110,21 @@ fn map_term_error(error: TermError) -> AppError {
             "fit model term {:?} requires {} columns but received {}",
             kind, expected, actual
         )),
+        TermError::InteractionRequiresAtLeastTwoColumns(actual) => AppError::InvalidParam(format!(
+            "fit model interaction requires at least 2 columns but received {actual}"
+        )),
+        TermError::InvalidExponent { kind, exponent } => AppError::InvalidParam(format!(
+            "fit model term {:?} has invalid exponent {:?}; only power exponent 2 is supported",
+            kind, exponent
+        )),
         TermError::DuplicateTerm(term_id) => {
             AppError::InvalidParam(format!("fit model term is duplicated: {term_id}"))
         }
         TermError::MissingMainEffect(column) => AppError::InvalidParam(format!(
             "fit model interaction requires missing main effect column: {column}"
+        )),
+        TermError::PowerRequiresMainEffect(column) => AppError::InvalidParam(format!(
+            "fit model power requires missing main effect column: {column}"
         )),
         TermError::InteractionRequiresDistinctColumns(column) => AppError::InvalidParam(format!(
             "fit model interaction requires distinct columns: {column}"
@@ -203,10 +216,12 @@ mod tests {
                 FitModelTerm {
                     kind: FitModelTermKind::Main,
                     column_names: vec!["A".into()],
+                    exponent: None,
                 },
                 FitModelTerm {
                     kind: FitModelTermKind::Main,
                     column_names: vec!["B".into()],
+                    exponent: None,
                 },
             ],
             centering_method: FitModelCenteringMethod::None,
@@ -235,10 +250,13 @@ mod tests {
         req.terms.push(FitModelTerm {
             kind: FitModelTermKind::Interaction,
             column_names: vec!["A".into(), "A".into()],
+            exponent: None,
         });
 
         let error = service.run(req).expect_err("invalid terms must fail");
-        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("interaction") || message.contains("term")));
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("interaction") || message.contains("term"))
+        );
     }
 
     #[test]

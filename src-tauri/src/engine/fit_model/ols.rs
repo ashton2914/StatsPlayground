@@ -712,6 +712,7 @@ mod tests {
         FitModelTerm {
             kind,
             column_names: columns.iter().map(|value| (*value).to_string()).collect(),
+            exponent: None,
         }
     }
 
