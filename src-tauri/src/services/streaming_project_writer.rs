@@ -1633,11 +1633,7 @@ mod tests {
                         "layout": "distribution-v1"
                     },
                     "createdAt": "2026-09-03T00:00:00.000Z",
-                    "updatedAt": "2026-09-03T00:00:00.000Z",
-                    "markdown": "# transient",
-                    "reportBlocks": [{ "kind": "summary" }],
-                    "graphFrames": { "transient": true },
-                    "result": { "status": "completed" }
+                    "updatedAt": "2026-09-03T00:00:00.000Z"
                 })],
                 tabulates: vec![serde_json::json!({
                     "id": "tab-1",
@@ -2013,6 +2009,7 @@ mod tests {
             "data/Report 1.sprp".to_string(),
             "data/data-2.spf".to_string(),
             "distributions/Distribution.spdist".to_string(),
+            "analyses/DIM1 Analysis.span".to_string(),
             "snapshots/data.json".to_string(),
             ".history.json".to_string(),
         ]);
