@@ -203,6 +203,7 @@
     "graphMissing": "Graph no longer exists",
     "reportMissing": "Report no longer exists",
     "analysisMissing": "Analysis no longer exists",
+    "analysisUnsupportedPresentation": "Unsupported analysis presentation.",
     "analysisSourceMissing": "Source data table is unavailable",
     "tabulateSourceMissing": "Source data table is unavailable",
     "tabulateMissing": "Tabulate analysis no longer exists",

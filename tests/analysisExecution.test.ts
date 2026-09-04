@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample.ts";
 import type { DatasetMeta } from "../src/types/data.ts";
@@ -256,5 +257,15 @@ async function testAnalysisAndDatasetFenceChecks(): Promise<void> {
 await testLoadingSuccessAndError();
 await testLatestRequestAndEchoFences();
 await testAnalysisAndDatasetFenceChecks();
+
+const hookSource = readFileSync(
+  new URL("../src/components/analysis/useAnalysisExecution.ts", import.meta.url),
+  "utf8",
+);
+assert.doesNotMatch(
+  hookSource,
+  /\buseDistributionReport\s*\(/,
+  "mounted Analysis execution must use the analysis-scoped controller rather than delegating to the Distribution hook",
+);
 
 console.log("analysis execution contract passed");

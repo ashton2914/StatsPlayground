@@ -14,6 +14,14 @@ import {
   type UseAnalysisExecutionRuntime,
 } from "./useAnalysisExecution";
 
+function isSupportedAnalysisDocument(item: AnalysisDocument): boolean {
+  return item.schemaVersion === 1
+    && item.analysisKind === "distribution"
+    && item.definition.kind === "distribution"
+    && item.presentation.schemaVersion === 1
+    && item.presentation.layout === "distribution-v1";
+}
+
 interface AnalysisViewProps {
   item: AnalysisDocument;
   dataset?: DatasetMeta | null;
@@ -26,15 +34,14 @@ export interface AnalysisViewRuntime extends UseAnalysisExecutionRuntime {
 
 export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
   const { t } = useTranslation();
+  const supportedItem = isSupportedAnalysisDocument(item) ? item : null;
   const executionState = useAnalysisExecution(
-    item.analysisKind === "distribution" && item.definition.kind === "distribution" && item.schemaVersion === 1
-      ? item
-      : null,
-    dataset ?? null,
+    supportedItem,
+    supportedItem == null ? null : (dataset ?? null),
     runtime,
   );
 
-  if (item.schemaVersion !== 1 || item.presentation.schemaVersion !== 1) {
+  if (item.schemaVersion !== 1) {
     return (
       <div className="main-content">
         <div className="workspace-empty">
@@ -51,6 +58,17 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
         <div className="workspace-empty">
           <h2>{item.name}</h2>
           <p role="alert">{t("workspace.analysisUnsupported", { defaultValue: "Unsupported analysis kind." })}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (item.presentation.schemaVersion !== 1 || item.presentation.layout !== "distribution-v1") {
+    return (
+      <div className="main-content">
+        <div className="workspace-empty">
+          <h2>{item.name}</h2>
+          <p role="alert">{t("workspace.analysisUnsupportedPresentation", { defaultValue: "Unsupported analysis presentation." })}</p>
         </div>
       </div>
     );

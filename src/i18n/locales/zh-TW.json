@@ -202,6 +202,7 @@
     "graphMissing": "圖形已不存在",
     "reportMissing": "報告已不存在",
     "analysisMissing": "分析已不存在",
+    "analysisUnsupportedPresentation": "不支援目前的分析呈現格式。",
     "analysisSourceMissing": "來源資料表無法使用",
     "tabulateSourceMissing": "Source data table is unavailable",
     "tabulateMissing": "Tabulate analysis no longer exists",

@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AnalysisView } from "../src/components/analysis/AnalysisView";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample";
+import type { AnalysisDocument } from "../src/types/analysis";
 import type { DatasetMeta } from "../src/types/data";
 import type { DistributionReportResponse } from "../src/types/distribution";
 
@@ -26,6 +27,16 @@ function createAnalysisDocument() {
     analysisName: "Strength Distribution",
     createdAt: "2026-09-03T00:00:00.000Z",
   });
+}
+
+function createUnsupportedPresentationDocument(): AnalysisDocument {
+  return {
+    ...createAnalysisDocument(),
+    presentation: {
+      schemaVersion: 2 as 1,
+      layout: "distribution-v2" as "distribution-v1",
+    },
+  };
 }
 
 function createResponse(quantile: number, generation: number): DistributionReportResponse {
@@ -99,38 +110,93 @@ function createResponse(quantile: number, generation: number): DistributionRepor
   };
 }
 
-export function AnalysisViewHarness() {
-  const [dataset, setDataset] = useState(createDataset());
-  const [item] = useState(createAnalysisDocument);
+interface AnalysisViewHarnessProps {
+  mode?: "default" | "unsupportedPresentation";
+}
+
+export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessProps) {
+  const [dataset] = useState(createDataset());
+  const [item, setItem] = useState(() => mode === "unsupportedPresentation"
+    ? createUnsupportedPresentationDocument()
+    : createAnalysisDocument());
   const [current, setCurrent] = useState(() => createResponse(101.044792, 4));
+  const [computeCalls, setComputeCalls] = useState(0);
+  const [generationCalls, setGenerationCalls] = useState(0);
+  const [deferNextResponse, setDeferNextResponse] = useState(false);
+  const currentResponseRef = useRef(current);
+  const currentDatasetRef = useRef(dataset);
+  const deferNextResponseRef = useRef(deferNextResponse);
+  const pendingResolverRef = useRef<((value: DistributionReportResponse) => void) | null>(null);
+  const runtimeRef = useRef<NonNullable<Parameters<typeof AnalysisView>[0]["runtime"]>>(null);
   const originalDefinition = JSON.stringify(item.definition);
+
+  useEffect(() => {
+    currentResponseRef.current = current;
+  }, [current]);
+
+  useEffect(() => {
+    currentDatasetRef.current = dataset;
+  }, [dataset]);
+
+  useEffect(() => {
+    deferNextResponseRef.current = deferNextResponse;
+  }, [deferNextResponse]);
+
+  if (runtimeRef.current == null) {
+    runtimeRef.current = {
+      getDatasetGeneration: async () => {
+        setGenerationCalls((count) => count + 1);
+        return currentDatasetRef.current.generation;
+      },
+      compute: async () => {
+        setComputeCalls((count) => count + 1);
+        if (deferNextResponseRef.current) {
+          deferNextResponseRef.current = false;
+          setDeferNextResponse(false);
+          return await new Promise<DistributionReportResponse>((resolve) => {
+            pendingResolverRef.current = resolve;
+          });
+        }
+        return currentResponseRef.current;
+      },
+      renderGraph: ({ role, externalDataState }) => (
+        <div>{`Distribution graph:${role}:${externalDataState.status}`}</div>
+      ),
+    };
+  }
 
   return (
     <>
       <button
         type="button"
         onClick={() => {
-          setCurrent(createResponse(88.5, 5));
-          setDataset((prev) => ({
+          setCurrent(createResponse(88.5, 4));
+          setDeferNextResponse(true);
+          setItem((prev) => ({
             ...prev,
-            generation: prev.generation + 1,
+            configRevision: prev.configRevision + 1,
             updatedAt: "2026-09-03T00:05:00.000Z",
           }));
         }}
       >
-        Change backend value
+        Bump config revision
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          pendingResolverRef.current?.(currentResponseRef.current);
+          pendingResolverRef.current = null;
+        }}
+      >
+        Resolve pending response
       </button>
       <div>{JSON.stringify(item.definition) === originalDefinition ? "definition:unchanged" : "definition:mutated"}</div>
+      <div>{`compute-calls:${computeCalls}`}</div>
+      <div>{`generation-calls:${generationCalls}`}</div>
       <AnalysisView
         item={item}
         dataset={dataset}
-        runtime={{
-          getDatasetGeneration: async () => dataset.generation,
-          compute: async () => current,
-          renderGraph: ({ role, externalDataState }) => (
-            <div>{`Distribution graph:${role}:${externalDataState.status}`}</div>
-          ),
-        }}
+        runtime={runtimeRef.current}
       />
     </>
   );

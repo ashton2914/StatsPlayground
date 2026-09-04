@@ -202,6 +202,7 @@
     "graphMissing": "Biểu đồ không còn tồn tại",
     "reportMissing": "Báo cáo không còn tồn tại",
     "analysisMissing": "Phân tích không còn tồn tại",
+    "analysisUnsupportedPresentation": "Kiểu trình bày phân tích này không được hỗ trợ.",
     "analysisSourceMissing": "Bảng dữ liệu nguồn không khả dụng",
     "tabulateSourceMissing": "Source data table is unavailable",
     "tabulateMissing": "Tabulate analysis no longer exists",

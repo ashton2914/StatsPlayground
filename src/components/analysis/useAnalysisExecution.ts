@@ -2,9 +2,9 @@ import {
   createDistributionRequest,
   normalizeDistributionReportError,
   stableDistributionReportValue,
-  useDistributionReport,
   type DistributionReportDependencies,
 } from "@/components/distribution/useDistributionReport";
+import { useEffect, useState } from "react";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type {
@@ -250,60 +250,95 @@ export function createAnalysisExecutionController(
 
 export interface UseAnalysisExecutionRuntime extends Partial<AnalysisExecutionDependencies> {}
 
+async function resolveDependencies(
+  overrides?: Partial<AnalysisExecutionDependencies>,
+): Promise<AnalysisExecutionDependencies> {
+  if (overrides?.getDatasetGeneration && overrides.compute) {
+    return overrides as AnalysisExecutionDependencies;
+  }
+
+  const [{ dataService }, { distributionService }] = await Promise.all([
+    import("../../services/dataService"),
+    import("../../services/distributionService"),
+  ]);
+
+  return {
+    getDatasetGeneration: overrides?.getDatasetGeneration ?? dataService.getDatasetGeneration,
+    compute: overrides?.compute ?? distributionService.compute,
+    getCurrentAnalysis: overrides?.getCurrentAnalysis,
+    getCurrentDataset: overrides?.getCurrentDataset,
+  };
+}
+
 export function useAnalysisExecution(
   item: AnalysisDocument | null | undefined,
   dataset: DatasetMeta | null | undefined,
   dependencies?: UseAnalysisExecutionRuntime,
 ): AnalysisExecutionState {
+  const [state, setState] = useState<AnalysisExecutionState>(ANALYSIS_EXECUTION_IDLE_STATE);
+  const compute = dependencies?.compute;
   const getCurrentAnalysis = dependencies?.getCurrentAnalysis;
-  const distributionItem = item == null ? null : toDistributionItem(item);
-  const distributionState = useDistributionReport(
-    item == null || dataset == null ? null : distributionItem,
-    dataset == null ? null : `${dataset.id}:${dataset.generation}:${dataset.updatedAt}`,
-    {
-      getDatasetGeneration: dependencies?.getDatasetGeneration,
-      compute: dependencies?.compute,
-      getCurrentItem: getCurrentAnalysis == null
-        ? undefined
-        : () => {
-            const current = getCurrentAnalysis();
-            return current == null ? null : toDistributionItem(current);
-          },
-    },
-  );
+  const getCurrentDataset = dependencies?.getCurrentDataset;
+  const getDatasetGeneration = dependencies?.getDatasetGeneration;
+  const fingerprint = item == null ? null : distributionAnalysisDefinitionFingerprint(item);
+  const datasetSignal = dataset == null ? null : `${dataset.id}:${dataset.generation}:${dataset.updatedAt}`;
+
+  useEffect(() => {
+    if (item == null || dataset == null) {
+      setState(ANALYSIS_EXECUTION_IDLE_STATE);
+      return undefined;
+    }
+
+    let mounted = true;
+    let controller: AnalysisExecutionController | null = null;
+
+    void (async () => {
+      try {
+        const resolved = await resolveDependencies({
+          compute,
+          getCurrentAnalysis,
+          getCurrentDataset,
+          getDatasetGeneration,
+        });
+        if (!mounted) return;
+
+        controller = createAnalysisExecutionController({
+          ...resolved,
+          onStateChange: setState,
+        });
+        await controller.load(item, dataset);
+      } catch (error) {
+        if (!mounted) return;
+        setState({
+          status: "error",
+          analysisId: item.id,
+          datasetId: dataset.id,
+          configRevision: item.configRevision,
+          request: null,
+          error: normalizeDistributionReportError(error),
+        });
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      controller?.dispose();
+    };
+  }, [
+    compute,
+    datasetSignal,
+    fingerprint,
+    getCurrentAnalysis,
+    getCurrentDataset,
+    getDatasetGeneration,
+    item?.configRevision,
+    item?.id,
+    item?.source.datasetId,
+  ]);
 
   if (item == null || dataset == null) {
-    return ANALYSIS_EXECUTION_IDLE_STATE;
+    return state.status === "idle" ? state : ANALYSIS_EXECUTION_IDLE_STATE;
   }
 
-  switch (distributionState.status) {
-    case "idle":
-      return ANALYSIS_EXECUTION_IDLE_STATE;
-    case "loading":
-      return {
-        status: "loading",
-        analysisId: item.id,
-        datasetId: item.source.datasetId,
-        configRevision: item.configRevision,
-        request: distributionState.request,
-      };
-    case "success":
-      return {
-        status: "success",
-        analysisId: item.id,
-        datasetId: item.source.datasetId,
-        configRevision: item.configRevision,
-        request: distributionState.request,
-        result: distributionState.result,
-      };
-    case "error":
-      return {
-        status: "error",
-        analysisId: item.id,
-        datasetId: item.source.datasetId,
-        configRevision: item.configRevision,
-        request: distributionState.request,
-        error: normalizeDistributionReportError(distributionState.error),
-      };
-  }
+  return state;
 }
