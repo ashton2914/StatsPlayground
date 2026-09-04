@@ -19,6 +19,10 @@ pub struct SaveProjectRequest {
     pub reports: Vec<serde_json::Value>,
     #[serde(default)]
     pub distributions: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub derived_formulas: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub distribution_issues: Vec<serde_json::Value>,
     pub tabulates: Vec<serde_json::Value>,
     pub folders: Vec<String>,
     pub table_folders: HashMap<String, String>,

@@ -557,7 +557,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             let column_write_modes = plan
                 .columns
                 .iter()
-                .map(|(_, column_type)| archive_cell_write_mode(column_type))
+                .map(|(_, _, column_type)| archive_cell_write_mode(column_type))
                 .collect::<Vec<_>>();
 
             let columns = table_columns_from_plan(&dataset.id, &plan, &snapshot.column_display);
@@ -903,7 +903,7 @@ fn table_columns_from_plan(
     plan.columns
         .iter()
         .enumerate()
-        .map(|(index, (name, column_type))| {
+        .map(|(index, (name, _, column_type))| {
             let props = display.and_then(|items| items.iter().find(|item| item.col_index == index));
             TableColumn {
                 name: name.clone(),
@@ -1375,6 +1375,8 @@ mod tests {
                 fit_models: vec![serde_json::json!({"id": "fit-model-1"})],
                 reports: Vec::new(),
                 distributions: Vec::new(),
+                derived_formulas: Vec::new(),
+                distribution_issues: Vec::new(),
                 tabulates: vec![serde_json::json!({"id": "tab-1"})],
                 folders: vec!["Bench".to_string(), "Bench/Sub".to_string()],
                 table_folders: HashMap::new(),
@@ -1475,6 +1477,8 @@ mod tests {
                     "graphFrames": { "transient": true },
                     "runState": { "status": "completed" }
                 })],
+                derived_formulas: Vec::new(),
+                distribution_issues: Vec::new(),
                 tabulates: vec![serde_json::json!({
                     "id": "tab-1",
                     "name": "data",

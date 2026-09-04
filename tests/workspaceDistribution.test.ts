@@ -13,10 +13,14 @@ function assertSourceIncludes(source: string, needle: string, message: string): 
 }
 
 const workspaceSource = readSource("../src/components/Workspace.tsx");
+const dataServiceSource = readSource("../src/services/dataService.ts");
 
 assertSourceIncludes(workspaceSource, "useDistributionStore", "Workspace must consume the Distribution store");
 assertSourceIncludes(workspaceSource, "DistributionDialog", "Workspace must render the Distribution dialog");
 assertSourceIncludes(workspaceSource, "DistributionView", "Workspace must render the Distribution main-pane view");
+assertSourceIncludes(workspaceSource, "dataService.getColumns", "Distribution creation must load columns through the registered table command");
+assertSourceIncludes(dataServiceSource, 'invoke<[string, string][]>("get_columns"', "The column service must invoke the registered Tauri command");
+assert.equal(/getDistributionColumns|get_distribution_columns/.test(workspaceSource + dataServiceSource), false, "Distribution creation must not invoke the removed column command");
 assertSourceIncludes(workspaceSource, "menu.distribution", "Analysis menu must include menu.distribution");
 assertSourceIncludes(workspaceSource, "handleCreateDistribution", "Distribution menu entry must open the creation flow");
 assertSourceIncludes(workspaceSource, "handleCreateDistributionItem", "Validated dialog output must enter the document store");

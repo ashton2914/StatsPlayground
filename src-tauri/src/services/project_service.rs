@@ -1301,6 +1301,8 @@ mod tests {
             fit_models: Vec::new(),
             reports,
             distributions: Vec::new(),
+            derived_formulas: Vec::new(),
+            distribution_issues: Vec::new(),
             tabulates,
             folders,
             table_folders,
