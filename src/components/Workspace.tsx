@@ -788,7 +788,7 @@ export function Workspace() {
     let createdDatasetId: string | null = null;
     let addedAnalysisId: string | null = null;
     try {
-      const sample = createAnalysisSample(Date.now(), 200);
+      const sample = createAnalysisSample(112, 200);
       const dataset = await dataService.createTableFromRows({
         name: tableName,
         columnNames: [ANALYSIS_SAMPLE_COLUMN],

@@ -157,26 +157,6 @@
     "sqlQueryTableCreated": "从 SQL 查询创建数据表 \"{{name}}\"",
     "tabulateTableCreated": "从 Tabulate 结果创建数据表 \"{{name}}\""
   },
-  "analysisSample": {
-    "report": {
-      "description": "此示例展示统一的分析排版。",
-      "quantiles": "分位数",
-      "summaryStatistics": "汇总统计",
-      "probability": "概率",
-      "quantile": "分位数",
-      "value": "值",
-      "statistic": "统计量",
-      "minimum": "最小值",
-      "maximum": "最大值",
-      "median": "中位数",
-      "count": "样本数",
-      "mean": "均值",
-      "stdDev": "标准差",
-      "stdError": "均值标准误",
-      "range": "极差",
-      "interquartileRange": "四分位距"
-    }
-  },
   "workflow": {
     "title": "工作流",
     "projectLineage": "项目谱系",

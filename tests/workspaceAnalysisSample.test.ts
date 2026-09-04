@@ -22,7 +22,7 @@ const handler = sourceBetween(
 );
 
 for (const required of [
-  "createAnalysisSample(",
+  "createAnalysisSample(112, 200)",
   "dataService.createTableFromRows({",
   "columnNames: [ANALYSIS_SAMPLE_COLUMN]",
   'columnTypes: ["DOUBLE"]',
@@ -52,6 +52,10 @@ assert.ok(
   "backend table registration must succeed before the analysis is added",
 );
 assert.ok(
+  handler.indexOf("if (addedAnalysisId) deleteAnalysis(addedAnalysisId)") < handler.indexOf("await dataService.deleteDataset(createdDatasetId)"),
+  "sample creation rollback must remove the Analysis before deleting the dataset",
+);
+assert.ok(
   handler.indexOf('activateWorkspaceDocument("analysis", analysis.id)') < handler.indexOf('getAnalysisCreationHistoryKey("sample")'),
   "sample creation must activate the saved Analysis before recording sample history",
 );
@@ -60,9 +64,11 @@ for (const locale of ["en", "vi", "zh-CN", "zh-TW"]) {
   const messages = JSON.parse(readSource(`src/i18n/locales/${locale}.json`)) as {
     menu?: Record<string, unknown>;
     history?: Record<string, unknown>;
+    alert?: Record<string, unknown>;
   };
   assert.equal(typeof messages.menu?.analysisSample, "string", `${locale} must localize menu.analysisSample`);
   assert.equal(typeof messages.history?.analysisSample, "string", `${locale} must localize history.analysisSample`);
+  assert.equal(typeof messages.alert?.analysisSampleFailed, "string", `${locale} must localize alert.analysisSampleFailed`);
 }
 
 console.log("Workspace analysis sample integration contract passed");

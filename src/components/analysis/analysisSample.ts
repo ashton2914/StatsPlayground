@@ -116,13 +116,4 @@ export function createAnalysisSampleDocument(input: {
   };
 }
 
-export function createAnalysisSampleDistribution(input: {
-  datasetId: string;
-  distributionId: string;
-  distributionName: string;
-  createdAt: string;
-}): DistributionItem {
-  return createSampleDistributionItem(input);
-}
-
 export const ANALYSIS_SAMPLE_COLUMN = SAMPLE_COLUMN;

@@ -157,26 +157,6 @@
     "sqlQueryTableCreated": "Create table \"{{name}}\" from SQL query",
     "tabulateTableCreated": "Create data table \"{{name}}\" from tabulate result"
   },
-  "analysisSample": {
-    "report": {
-      "description": "This sample demonstrates the standard analysis layout.",
-      "quantiles": "Quantiles",
-      "summaryStatistics": "Summary Statistics",
-      "probability": "Probability",
-      "quantile": "Quantile",
-      "value": "Value",
-      "statistic": "Statistic",
-      "minimum": "Minimum",
-      "maximum": "Maximum",
-      "median": "Median",
-      "count": "N",
-      "mean": "Mean",
-      "stdDev": "Std Dev",
-      "stdError": "Std Error Mean",
-      "range": "Range",
-      "interquartileRange": "Interquartile Range"
-    }
-  },
   "workflow": {
     "title": "Workflow",
     "projectLineage": "Project lineage",

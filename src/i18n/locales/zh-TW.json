@@ -156,26 +156,6 @@
     "autoFitColumn": "自動調整欄寬",
     "sqlQueryTableCreated": "從 SQL 查詢建立資料表 \"{{name}}\""
   },
-  "analysisSample": {
-    "report": {
-      "description": "此範例展示統一的分析排版。",
-      "quantiles": "分位數",
-      "summaryStatistics": "彙總統計",
-      "probability": "機率",
-      "quantile": "分位數",
-      "value": "值",
-      "statistic": "統計量",
-      "minimum": "最小值",
-      "maximum": "最大值",
-      "median": "中位數",
-      "count": "樣本數",
-      "mean": "平均值",
-      "stdDev": "標準差",
-      "stdError": "平均值標準誤",
-      "range": "全距",
-      "interquartileRange": "四分位距"
-    }
-  },
   "workflow": {
     "title": "工作流程",
     "projectLineage": "專案譜系",
