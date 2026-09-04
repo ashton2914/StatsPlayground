@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { StatisticalTableFrame, StatisticalTableList } from "@/components/statistical";
+import { AnalysisStack, AnalysisTable } from "@/components/analysis/presentation";
 import type {
   CapabilityTypedValueV1,
   ProcessCapabilityDataV1,
@@ -37,8 +37,8 @@ export function ProcessCapabilityReport({ data }: { data: ProcessCapabilityDataV
   ] as const;
 
   return (
-    <StatisticalTableList>
-      <StatisticalTableFrame
+    <AnalysisStack>
+      <AnalysisTable
         title={t("distribution.capability.specification")}
         width="compact"
         columns={metricValueColumns(t)}
@@ -47,7 +47,7 @@ export function ProcessCapabilityReport({ data }: { data: ProcessCapabilityDataV
           cells: [label.toUpperCase(), formatNumber(value)],
         }))}
       />
-      <StatisticalTableFrame
+      <AnalysisTable
         title={t("distribution.capability.processSummary")}
         width="compact"
         columns={metricValueColumns(t)}
@@ -71,7 +71,7 @@ export function ProcessCapabilityReport({ data }: { data: ProcessCapabilityDataV
       {data.warnings.map((warning) => (
         <p className="distribution-capability-warning" key={warning}>{t(warning)}</p>
       ))}
-    </StatisticalTableList>
+    </AnalysisStack>
   );
 }
 
@@ -90,7 +90,7 @@ function IndexTable({
     maximumFractionDigits: 2,
   }).format(intervals.confidenceLevel);
   return (
-    <StatisticalTableFrame
+    <AnalysisTable
       title={title}
       width="wide"
       columns={[
@@ -131,7 +131,7 @@ function NonconformanceTable({ data }: { data: ProcessCapabilityDataV1["nonconfo
     ["total", data.observed.total, data.expectedWithin.total, data.expectedOverall.total],
   ] as const;
   return (
-    <StatisticalTableFrame
+    <AnalysisTable
       title={t("distribution.capability.nonconformance")}
       width="wide"
       columns={[

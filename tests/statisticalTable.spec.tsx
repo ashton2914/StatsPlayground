@@ -29,11 +29,12 @@ test("statistical tables keep one integrated title per framed table", async ({ m
     </StatisticalSection>,
   );
 
-  await expect(component).toHaveClass("sp-stat-section");
-  await expect(component.locator(".sp-stat-table-frame")).toHaveCount(2);
-  await expect(component.locator(".sp-stat-table-frame table")).toHaveCount(2);
-  await expect(component.locator(".sp-stat-table-frame-title")).toHaveText(["Quantiles", "Location"]);
-  await expect(component.locator(".sp-stat-table-frame-standard")).toHaveCSS("width", "560px");
-  await expect(component.locator(".sp-stat-table-frame-compact")).toHaveCSS("width", "520px");
-  await expect(component.locator(".sp-stat-table-cell-numeric").first()).toHaveCSS("text-align", "right");
+  await expect(component).toHaveClass("analysis-ui-frame");
+  await expect(component.locator(".analysis-ui-table")).toHaveCount(2);
+  await expect(component.locator(".analysis-ui-table table")).toHaveCount(2);
+  await expect(component.getByRole("button", { name: "Quantiles" })).toHaveCount(1);
+  await expect(component.getByRole("button", { name: "Location" })).toHaveCount(1);
+  await expect(component.locator(".analysis-ui-table-standard")).toHaveCSS("width", "560px");
+  await expect(component.locator(".analysis-ui-table-compact")).toHaveCSS("width", "520px");
+  await expect(component.locator(".analysis-ui-table-numeric").first()).toHaveCSS("text-align", "right");
 });
