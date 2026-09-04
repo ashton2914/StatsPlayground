@@ -42,10 +42,12 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(component.locator(".analysis-table-frame", { hasText: "Quantiles" }).locator("table")).toHaveCount(1);
   await expect(component.locator(".analysis-table-frame", { hasText: "Location" }).locator("table")).toHaveCount(1);
   await expect(component.locator(".analysis-table-frame", { hasText: "Variation" }).locator("table")).toHaveCount(1);
+  await expect(component.locator(".analysis-frame", { hasText: "Summary Statistical" })).toHaveCount(1);
+  await expect(component.locator(".analysis-frame", { hasText: "Process Capabilities" })).toHaveCount(1);
   await expect(component.locator(".analysis-text-block")).toHaveCSS("border-style", "none");
   assert.deepEqual(
     await component.locator(".analysis-content-flow > *").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-analysis-block"))),
-    ["graph", "text", "tables"],
+    ["graph", "text", "tables", "process-capabilities"],
   );
   await expect(component.getByRole("heading", { name: "Quantiles" })).toBeVisible();
   await expect(firstValueCell).toBeVisible();

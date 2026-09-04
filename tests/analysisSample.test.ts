@@ -32,6 +32,11 @@ const analysis = createAnalysisSampleDocument({
 assert.equal(analysis.name, "DIM1 Analysis");
 assert.equal(analysis.source.datasetId, "dataset-112");
 assert.equal(analysis.definition.kind, "distribution");
+assert.deepEqual(analysis.definition.analysis.specLimits.DIM1, {
+  lsl: 55,
+  target: 100,
+  usl: 145,
+});
 assert.equal("markdown" in analysis, false);
 assert.equal("reportBlocks" in analysis, false);
 assert.equal("graphFrames" in analysis, false);

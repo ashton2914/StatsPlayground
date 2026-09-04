@@ -69,7 +69,13 @@ function createSampleDistributionItem(input: {
     }],
     analysis: {
       confidenceLevel: 0.95,
-      specLimits: {},
+      specLimits: {
+        [SAMPLE_COLUMN]: {
+          lsl: 55,
+          target: 100,
+          usl: 145,
+        },
+      },
       fitDistributions: ["normal"],
     },
     createdAt: input.createdAt,

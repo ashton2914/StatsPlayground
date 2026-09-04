@@ -113,6 +113,44 @@
 .analysis-summary-table td:last-child { text-align: right; }
 .analysis-unavailable { margin: 0; padding: 18px; color: var(--fg-hint); }
 
+.analysis-capability-tables .distribution-capability-report {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+}
+
+.analysis-capability-tables .distribution-capability-summary,
+.analysis-capability-tables .distribution-capability-indices {
+  display: contents;
+}
+
+.analysis-capability-tables table {
+  width: 620px;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.analysis-capability-tables caption {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border-main);
+  color: var(--fg-primary);
+  background: var(--bg-header);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.analysis-capability-tables .distribution-capability-warning {
+  margin: 0;
+  color: var(--fg-hint);
+  font-size: 12px;
+}
+
 @media (max-width: 900px) {
   .analysis-workspace { grid-template-columns: 1fr; }
   .analysis-info-panel { border-right: 0; border-bottom: 1px solid var(--border-main); }

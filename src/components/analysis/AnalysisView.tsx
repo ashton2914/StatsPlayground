@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
 import { GraphRuntime } from "@/components/graphBuilder/GraphRuntime";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
+import { ProcessCapabilityReport } from "@/components/distribution/ProcessCapabilityReport";
 import { mapDistributionExternalDataState, type DistributionGraphRole } from "@/graphCore/distributionAdapter";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
@@ -136,8 +137,13 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
             <AnalysisTextBlock state={executionState} />
 
             <section className="analysis-frame" data-analysis-block="tables">
-              <div className="analysis-frame-title">{t("distribution.report.tables", { defaultValue: "Tables" })}</div>
+              <div className="analysis-frame-title">Summary Statistical</div>
               <AnalysisTables state={executionState} datasetMissing={dataset == null} />
+            </section>
+
+            <section className="analysis-frame" data-analysis-block="process-capabilities">
+              <div className="analysis-frame-title">Process Capabilities</div>
+              <AnalysisProcessCapabilities state={executionState} datasetMissing={dataset == null} />
             </section>
           </div>
         </article>
@@ -261,4 +267,23 @@ function formatProbability(probability: number): string {
 
 function formatNumber(value: number): string {
   return value.toLocaleString(undefined, { maximumSignificantDigits: 10 });
+}
+
+function AnalysisProcessCapabilities({ state, datasetMissing }: {
+  state: ReturnType<typeof useAnalysisExecution>;
+  datasetMissing: boolean;
+}) {
+  const { t } = useTranslation();
+  if (datasetMissing) return <AnalysisUnavailable message={t("workspace.analysisSourceMissing")} />;
+  if (state.status === "idle" || state.status === "loading") return null;
+  if (state.status === "error") return <AnalysisUnavailable message={state.error} alert />;
+
+  const capabilityData = state.result.groups
+    .flatMap((group) => group.yResults)
+    .flatMap((result) => result.blocks)
+    .find((block) => block.capabilityData)?.capabilityData;
+
+  return capabilityData
+    ? <div className="analysis-capability-tables"><ProcessCapabilityReport data={capabilityData} /></div>
+    : <AnalysisUnavailable message={t("distribution.report.unavailable", { defaultValue: "Process capability requires specification limits." })} />;
 }
