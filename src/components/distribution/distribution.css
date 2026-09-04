@@ -542,56 +542,14 @@
   }
 }
 
-.distribution-capability-summary,
-.distribution-capability-indices {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 18px;
-  margin-top: 10px;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.distribution-capability-report,
 .distribution-fit-report {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
 }
 
-.distribution-capability-report table {
-  font-variant-numeric: tabular-nums;
-}
-
-.distribution-capability-report caption {
-  padding: 6px 8px;
-  text-align: left;
-  font-weight: 650;
-  background: var(--bg-secondary);
-}
-
-.distribution-capability-report th,
-.distribution-capability-report td {
-  text-align: right;
-}
-
-.distribution-capability-report th:first-child {
-  text-align: left;
-}
-
 .distribution-capability-warning {
   color: var(--text-secondary);
-}
-
-@media (max-width: 900px) {
-  .distribution-capability-summary,
-  .distribution-capability-indices {
-    grid-template-columns: 1fr;
-  }
-}
-
-.distribution-nonconformance-table {
-  margin-top: 18px;
 }
 
 .distribution-spec-editor {

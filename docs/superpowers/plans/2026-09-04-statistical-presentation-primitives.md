@@ -31,19 +31,19 @@
 **Interfaces:**
 - Produces: `StatisticalTableModel`, `StatisticalTableFrame`, `StatisticalSection`
 
-- [ ] **Step 1: Write the failing component test**
+- [x] **Step 1: Write the failing component test**
 
 Assert that each frame has one title and one table, numeric cells are marked, and compact/standard/wide widths resolve to stable CSS classes.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npx playwright test -c playwright-ct.config.ts tests/statisticalTable.spec.tsx`
 
-- [ ] **Step 3: Implement the shared primitives**
+- [x] **Step 3: Implement the shared primitives**
 
 Define semantic columns and rows, render one table per frame, and place all visual rules in `statisticalTable.css`.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run: `npx playwright test -c playwright-ct.config.ts tests/statisticalTable.spec.tsx`
 
@@ -57,19 +57,19 @@ Run: `npx playwright test -c playwright-ct.config.ts tests/statisticalTable.spec
 - Consumes: `StatisticalTableModel`, `StatisticalTableFrame`
 - Produces: process capability output rendered exclusively through shared frames
 
-- [ ] **Step 1: Add failing assertions**
+- [x] **Step 1: Add failing assertions**
 
 Assert that Specification, Process Summary, Within Capability, Overall Capability, and Nonconformance each use one shared table frame.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npx playwright test -c playwright-ct.config.ts tests/analysisView.spec.tsx --grep "configRevision-only changes"`
 
-- [ ] **Step 3: Convert capability output to shared table models**
+- [x] **Step 3: Convert capability output to shared table models**
 
 Keep existing backend values and formatting behavior; replace captions and raw tables with shared frame components.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run the same filtered command.
 
@@ -84,18 +84,18 @@ Run the same filtered command.
 - Consumes: shared statistical primitives
 - Produces: Quantiles, Location, and Variation with the same frame contract as capability tables
 
-- [ ] **Step 1: Assert all Analysis tables use shared frames**
+- [x] **Step 1: Assert all Analysis tables use shared frames**
 
 Require eight shared frames and forbid legacy `analysis-table-frame` markup.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run the filtered Analysis component test.
 
-- [ ] **Step 3: Replace Analysis-local table markup and CSS**
+- [x] **Step 3: Replace Analysis-local table markup and CSS**
 
 Map backend quantile and summary values to models and remove table-internal descendant overrides from `analysis.css`.
 
-- [ ] **Step 4: Run focused tests and build**
+- [x] **Step 4: Run focused tests and build**
 
 Run the shared primitive test, filtered Analysis test, and `npx vite build`.

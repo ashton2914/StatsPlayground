@@ -1,0 +1,111 @@
+.sp-stat-section {
+  border: 1px solid var(--border-main);
+  background: var(--bg-panel);
+}
+
+.sp-stat-section-title {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-main);
+  color: var(--fg-secondary);
+  background: var(--bg-header);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sp-stat-section-title::before {
+  content: "▾";
+  margin-right: 7px;
+}
+
+.sp-stat-section-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+}
+
+.sp-stat-table-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+
+.sp-stat-table-frame {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.sp-stat-table-frame-compact {
+  width: 520px;
+}
+
+.sp-stat-table-frame-standard {
+  width: 560px;
+}
+
+.sp-stat-table-frame-wide {
+  width: 720px;
+}
+
+.sp-stat-table-frame-title {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-main);
+  color: var(--fg-primary);
+  background: var(--bg-header);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sp-stat-table-scroll {
+  overflow-x: auto;
+}
+
+.sp-stat-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  color: var(--fg-primary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-stat-table th,
+.sp-stat-table td {
+  padding: 8px 10px;
+  border-right: 1px solid var(--border-main);
+  border-bottom: 1px solid var(--border-main);
+  text-align: left;
+  vertical-align: top;
+}
+
+.sp-stat-table th {
+  color: var(--fg-secondary);
+  background: color-mix(in srgb, var(--bg-header) 55%, transparent);
+  font-weight: 600;
+}
+
+.sp-stat-table th:last-child,
+.sp-stat-table td:last-child {
+  border-right: 0;
+}
+
+.sp-stat-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.sp-stat-table-cell-numeric {
+  text-align: right !important;
+}

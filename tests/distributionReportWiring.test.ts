@@ -38,7 +38,8 @@ assert.match(reportSource, /ContinuousFitComparisonReport/);
 assert.match(reportSource, /ProcessCapabilityReport/);
 assertTablesUseFitYByXStyle(reportSource);
 assertTablesUseFitYByXStyle(continuousFitSource);
-assertTablesUseFitYByXStyle(capabilitySource);
+assert.match(capabilitySource, /StatisticalTableFrame/);
+assert.doesNotMatch(capabilitySource, /<table|<caption/);
 assert.doesNotMatch(reportSource, /DistributionChart|GraphRuntime|useDistributionReport|useDistributionStore/);
 assert.doesNotMatch(capabilitySource, /DistributionChart|ProcessCapabilityChart|echarts/);
 

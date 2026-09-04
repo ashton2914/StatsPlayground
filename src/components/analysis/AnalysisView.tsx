@@ -6,6 +6,7 @@ import { GraphRuntime } from "@/components/graphBuilder/GraphRuntime";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
 import { ProcessCapabilityReport } from "@/components/distribution/ProcessCapabilityReport";
 import { mapDistributionExternalDataState, type DistributionGraphRole } from "@/graphCore/distributionAdapter";
+import { StatisticalSection, StatisticalTableFrame, StatisticalTableList } from "@/components/statistical";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { DistributionReportResponse } from "@/types/distribution";
@@ -15,7 +16,6 @@ import {
   type UseAnalysisExecutionRuntime,
 } from "./useAnalysisExecution";
 
-import "../reportTable.css";
 import "./analysis.css";
 
 function isSupportedAnalysisDocument(item: AnalysisDocument): boolean {
@@ -136,15 +136,13 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
 
             <AnalysisTextBlock state={executionState} />
 
-            <section className="analysis-frame" data-analysis-block="tables">
-              <div className="analysis-frame-title">Summary Statistical</div>
+            <StatisticalSection title="Summary Statistical" data-analysis-block="tables">
               <AnalysisTables state={executionState} datasetMissing={dataset == null} />
-            </section>
+            </StatisticalSection>
 
-            <section className="analysis-frame" data-analysis-block="process-capabilities">
-              <div className="analysis-frame-title">Process Capabilities</div>
+            <StatisticalSection title="Process Capabilities" data-analysis-block="process-capabilities">
               <AnalysisProcessCapabilities state={executionState} datasetMissing={dataset == null} />
-            </section>
+            </StatisticalSection>
           </div>
         </article>
       </main>
@@ -195,24 +193,24 @@ function AnalysisTables({ state, datasetMissing }: {
   if (!result) return <AnalysisUnavailable message={t("distribution.report.unavailable", { defaultValue: "No results available." })} />;
 
   return (
-    <div className="analysis-tables-grid">
-      <section className="analysis-table-frame analysis-table-frame-quantiles">
-        <h3 className="analysis-table-frame-title">{t("distribution.report.quantiles", { defaultValue: "Quantiles" })}</h3>
-        <div className="analysis-table-frame-body">
-          <table className="sp-fit-y-by-x-report-table analysis-quantile-table">
-            <thead><tr><th>{t("distribution.report.probability")}</th><th>{t("distribution.report.label")}</th><th>{t("distribution.report.value")}</th></tr></thead>
-            <tbody>
-              {result.quantiles.map((quantile) => (
-                <tr key={quantile.probability}>
-                  <th scope="row">{formatProbability(quantile.probability)}</th>
-                  <td>{quantileLabel(quantile.probability, t)}</td>
-                  <td>{formatNumber(quantile.value)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+    <StatisticalTableList>
+      <StatisticalTableFrame
+        title={t("distribution.report.quantiles", { defaultValue: "Quantiles" })}
+        width="standard"
+        columns={[
+          { key: "probability", label: t("distribution.report.probability") },
+          { key: "label", label: t("distribution.report.label") },
+          { key: "value", label: t("distribution.report.value"), numeric: true },
+        ]}
+        rows={result.quantiles.map((quantile) => ({
+          key: String(quantile.probability),
+          cells: [
+            formatProbability(quantile.probability),
+            quantileLabel(quantile.probability, t),
+            formatNumber(quantile.value),
+          ],
+        }))}
+      />
       {summary && (
         <>
           <SummaryTableFrame title={t("distribution.report.location")} rows={[
@@ -225,22 +223,25 @@ function AnalysisTables({ state, datasetMissing }: {
           ]} />
         </>
       )}
-    </div>
+    </StatisticalTableList>
   );
 }
 
 function SummaryTableFrame({ title, rows }: { title: string; rows: Array<[string, number]> }) {
   const { t } = useTranslation();
   return (
-    <section className="analysis-table-frame analysis-table-frame-summary">
-      <h3 className="analysis-table-frame-title">{title}</h3>
-      <div className="analysis-table-frame-body">
-        <table className="sp-fit-y-by-x-report-table analysis-summary-table">
-          <thead><tr><th>{t("distribution.report.metric", { defaultValue: "Metric" })}</th><th>{t("distribution.report.value")}</th></tr></thead>
-          <tbody>{rows.map(([label, value]) => <tr key={label}><th scope="row">{t(`distribution.statistics.${label}`)}</th><td>{formatNumber(value)}</td></tr>)}</tbody>
-        </table>
-      </div>
-    </section>
+    <StatisticalTableFrame
+      title={title}
+      width="compact"
+      columns={[
+        { key: "metric", label: t("distribution.report.metric", { defaultValue: "Metric" }) },
+        { key: "value", label: t("distribution.report.value"), numeric: true },
+      ]}
+      rows={rows.map(([label, value]) => ({
+        key: label,
+        cells: [t(`distribution.statistics.${label}`), formatNumber(value)],
+      }))}
+    />
   );
 }
 
@@ -284,6 +285,6 @@ function AnalysisProcessCapabilities({ state, datasetMissing }: {
     .find((block) => block.capabilityData)?.capabilityData;
 
   return capabilityData
-    ? <div className="analysis-capability-tables"><ProcessCapabilityReport data={capabilityData} /></div>
+    ? <ProcessCapabilityReport data={capabilityData} />
     : <AnalysisUnavailable message={t("distribution.report.unavailable", { defaultValue: "Process capability requires specification limits." })} />;
 }
