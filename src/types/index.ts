@@ -21,4 +21,22 @@ export type {
 	FitYByXResult,
 	FitYByXSummaryOfFit,
 } from "./fitYByX";
+export type {
+	FitModelAnovaRow,
+	FitModelCenter,
+	FitModelCenteringMethod,
+	FitModelFittedResult,
+	FitModelItem,
+	FitModelNotComputableReason,
+	FitModelNotComputableResult,
+	FitModelParameterEstimate,
+	FitModelPlotRow,
+	FitModelRequest,
+	FitModelResolvedTerm,
+	FitModelResult,
+	FitModelSummaryOfFit,
+	FitModelTerm,
+	FitModelTermKind,
+	FitModelWarningCode,
+} from "./fitModel";
 export type { TabulateRequest, TabulateResult, TabulateStatistic, TabulateStatisticKind } from "./tabulate";

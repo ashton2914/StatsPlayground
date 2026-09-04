@@ -10,9 +10,8 @@ import type {
 
 /** Optional folder payload accepted by the save_project command.
  *  Folder maps are manifest metadata now; they are not used to route archive
- *  payload filenames. In v4, payload docs are flat and name-derived under
- *  data/ and snapshots/ while folder maps preserve the UI tree separately.
- *  Legacy path-shaped archives are still readable. */
+ *  filenames. The backend persists them so UI folder layout stays separate
+ *  from the stable `tables/<id>.sptb` and `graphs/<id>.spgh` paths. */
 export interface SaveProjectFolders {
   /** All folder paths that exist in the project, including empty ones. */
   folders: string[];
@@ -22,6 +21,8 @@ export interface SaveProjectFolders {
   graphFolders: Record<string, string>;
   /** fitYByXId → folder path. Root analyses are simply absent. */
   fitYByXFolders: Record<string, string>;
+  /** fitModelId → folder path. Root analyses are simply absent. */
+  fitModelFolders?: Record<string, string>;
   /** tabulateId → folder path. Root tabulates are simply absent. */
   tabulateFolders: Record<string, string>;
   /** reportId → folder path. Root reports are simply absent. */
@@ -38,12 +39,14 @@ export interface SaveProjectRequest {
   snapshots: unknown[];
   graphBuilders: unknown[];
   fitYByX: unknown[];
+  fitModels?: unknown[];
   tabulates: unknown[];
   distributions: DistributionItem[];
   folders: string[];
   tableFolders: Record<string, string>;
   graphFolders: Record<string, string>;
   fitYByXFolders: Record<string, string>;
+  fitModelFolders?: Record<string, string>;
   tabulateFolders: Record<string, string>;
   reportFolders: Record<string, string>;
   reports: ReportItem[];

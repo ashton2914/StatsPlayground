@@ -345,13 +345,14 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             })
             .collect::<Vec<_>>();
 
-        let bundle = spprj_archive::build_bundle_with_workflows(
+        let bundle = spprj_archive::build_bundle_with_workflows_and_fit_models(
             snapshot.destination_name.clone(),
             STREAM_VERSION.to_string(),
             snapshot.current_project.created_at.clone(),
             placeholder_tables,
             graph_docs,
             snapshot.request.fit_y_by_x.clone(),
+            snapshot.request.fit_models.clone(),
             snapshot.request.reports.clone(),
             snapshot.request.distributions.clone(),
             snapshot.request.tabulates.clone(),
@@ -359,6 +360,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             &snapshot.request.table_folders,
             &snapshot.request.graph_folders,
             &snapshot.request.fit_y_by_x_folders,
+            &snapshot.request.fit_model_folders,
             &snapshot.request.report_folders,
             &snapshot.request.distribution_folders,
             &snapshot.request.tabulate_folders,
@@ -1370,6 +1372,7 @@ mod tests {
                     "graphType": "line",
                 })],
                 fit_y_by_x: vec![serde_json::json!({"id": "fit-1"})],
+                fit_models: vec![serde_json::json!({"id": "fit-model-1"})],
                 reports: Vec::new(),
                 distributions: Vec::new(),
                 tabulates: vec![serde_json::json!({"id": "tab-1"})],
@@ -1377,6 +1380,7 @@ mod tests {
                 table_folders: HashMap::new(),
                 graph_folders: HashMap::new(),
                 fit_y_by_x_folders: HashMap::new(),
+                fit_model_folders: HashMap::new(),
                 report_folders: HashMap::new(),
                 distribution_folders: HashMap::new(),
                 tabulate_folders: HashMap::new(),
@@ -1445,6 +1449,7 @@ mod tests {
                     "response": { "name": "y", "type": "continuous" },
                     "factor": { "name": "x", "type": "continuous" }
                 })],
+                fit_models: Vec::new(),
                 reports: vec![serde_json::json!({
                     "schemaVersion": 1,
                     "id": "report-1",
@@ -1492,6 +1497,7 @@ mod tests {
                     "fit-1".to_string(),
                     "Root/Nested/Leaf".to_string(),
                 )]),
+                fit_model_folders: HashMap::new(),
                 report_folders: HashMap::from([(
                     "report-1".to_string(),
                     "Root/Nested".to_string(),

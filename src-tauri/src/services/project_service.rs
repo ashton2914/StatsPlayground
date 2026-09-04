@@ -38,6 +38,8 @@ pub struct OpenProjectResult {
     #[serde(default)]
     pub fit_y_by_x: Vec<serde_json::Value>,
     #[serde(default)]
+    pub fit_models: Vec<serde_json::Value>,
+    #[serde(default)]
     pub reports: Vec<serde_json::Value>,
     #[serde(default)]
     pub distributions: Vec<serde_json::Value>,
@@ -54,6 +56,8 @@ pub struct OpenProjectResult {
     pub graph_folders: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub fit_y_by_x_folders: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub fit_model_folders: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub report_folders: std::collections::HashMap<String, String>,
     #[serde(default)]
@@ -241,6 +245,7 @@ impl<'a> ProjectService<'a> {
             None => derive_folders_from_entries(&bundle.manifest.graphs, "graphs"),
         };
         let fit_y_by_x_folders = bundle.manifest.fit_y_by_x_folders.clone();
+        let fit_model_folders = bundle.manifest.fit_model_folders.clone();
         let distribution_folders = bundle.manifest.distribution_folders.clone();
         let tabulate_folders = bundle.manifest.tabulate_folders.clone();
         let folders = bundle.manifest.folders.clone();
@@ -306,6 +311,7 @@ impl<'a> ProjectService<'a> {
             snapshots: bundle.snapshots,
             graph_builders,
             fit_y_by_x: bundle.fit_y_by_x,
+            fit_models: bundle.fit_models,
             reports: bundle.reports,
             distributions: bundle.distributions,
             tabulates: bundle.tabulates,
@@ -313,6 +319,7 @@ impl<'a> ProjectService<'a> {
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
+            fit_model_folders,
             report_folders: bundle.manifest.report_folders,
             distribution_folders,
             document_name_migrations,
@@ -1291,6 +1298,7 @@ mod tests {
             snapshots,
             graph_builders,
             fit_y_by_x,
+            fit_models: Vec::new(),
             reports,
             distributions: Vec::new(),
             tabulates,
@@ -1298,6 +1306,7 @@ mod tests {
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
+            fit_model_folders: HashMap::new(),
             report_folders,
             distribution_folders: HashMap::new(),
             tabulate_folders,
@@ -2328,6 +2337,8 @@ mod tests {
                 serde_json::json!({"id": "f3", "name": "A/B"}),
             ],
             fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
             report_folders: HashMap::new(),
             distributions: vec![],
             distribution_folders: HashMap::new(),
@@ -2546,6 +2557,8 @@ mod tests {
             graph_folders: Some(HashMap::new()),
             fit_y_by_x: vec![],
             fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
             report_folders: HashMap::new(),
             distributions: vec![],
             distribution_folders: HashMap::new(),
@@ -2671,6 +2684,8 @@ mod tests {
             graph_folders: Some(HashMap::new()),
             fit_y_by_x: vec![],
             fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
             report_folders: HashMap::new(),
             distributions: vec![],
             distribution_folders: HashMap::new(),

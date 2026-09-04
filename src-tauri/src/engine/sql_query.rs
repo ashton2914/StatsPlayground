@@ -31,10 +31,9 @@ pub fn validate_read_only_query(
         return invalid("exactly one query statement is required");
     }
 
-    let statement = statements
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::InvalidParam("exactly one query statement is required".to_string()))?;
+    let statement = statements.into_iter().next().ok_or_else(|| {
+        AppError::InvalidParam("exactly one query statement is required".to_string())
+    })?;
 
     match &statement {
         Statement::Query(query) => {
@@ -278,7 +277,10 @@ impl<'a> RelationValidator<'a> {
         Ok(())
     }
 
-    fn validate_table_with_joins(&mut self, table_with_joins: &TableWithJoins) -> Result<(), AppError> {
+    fn validate_table_with_joins(
+        &mut self,
+        table_with_joins: &TableWithJoins,
+    ) -> Result<(), AppError> {
         self.validate_table_factor(&table_with_joins.relation)?;
         for join in &table_with_joins.joins {
             self.validate_join(join)?;
@@ -547,7 +549,7 @@ impl<'a> RelationValidator<'a> {
                                     self.validate_expr(stride)?;
                                 }
                             }
-                        }
+                        },
                     }
                 }
                 Ok(())
@@ -780,7 +782,10 @@ impl<'a> RelationValidator<'a> {
         }
     }
 
-    fn validate_function_arguments(&mut self, arguments: &FunctionArguments) -> Result<(), AppError> {
+    fn validate_function_arguments(
+        &mut self,
+        arguments: &FunctionArguments,
+    ) -> Result<(), AppError> {
         match arguments {
             FunctionArguments::None => Ok(()),
             FunctionArguments::Subquery(query) => self.validate_query(query.as_ref()),
@@ -862,7 +867,10 @@ impl<'a> RelationValidator<'a> {
     }
 
     fn is_cte_visible(&self, name: &str) -> bool {
-        self.cte_scopes.iter().rev().any(|scope| scope.contains(name))
+        self.cte_scopes
+            .iter()
+            .rev()
+            .any(|scope| scope.contains(name))
     }
 
     fn current_scope_mut(&mut self) -> Result<&mut HashSet<String>, AppError> {

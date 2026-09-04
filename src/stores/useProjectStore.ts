@@ -82,15 +82,21 @@ export function createProjectStore(
       set({ loading: true });
       try {
         const result = await deps.projectService.openProject(filePath);
+        const normalizedResult: OpenProjectResult = {
+          ...result,
+          documentNameMigrations: result.documentNameMigrations ?? [],
+          datasetNameMigrations: result.datasetNameMigrations ?? [],
+          requiresMigration: result.requiresMigration ?? false,
+        };
         set({
-          project: result.project,
+          project: normalizedResult.project,
           dirty:
-            result.requiresMigration
-            || result.documentNameMigrations.length > 0
-            || result.datasetNameMigrations.length > 0,
+            normalizedResult.requiresMigration
+            || normalizedResult.documentNameMigrations.length > 0
+            || normalizedResult.datasetNameMigrations.length > 0,
           saveError: null,
         });
-        return result;
+        return normalizedResult;
       } finally {
         set({ loading: false });
       }

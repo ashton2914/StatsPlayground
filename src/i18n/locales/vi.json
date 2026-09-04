@@ -67,7 +67,8 @@
     "opConcatenate": "Nối",
     "help": "Trợ giúp",
     "about": "Giới thiệu",
-    "license": "Giấy phép"
+    "license": "Giấy phép",
+    "fitModel": "Khớp Mô hình"
   },
   "alert": {
     "selectDatasetFirst": "Vui lòng chọn một bảng dữ liệu làm nguồn trước.",
@@ -81,7 +82,8 @@
     "exportGraphFailed": "Xuất biểu đồ thất bại: ",
     "importGraphFailed": "Nhập biểu đồ thất bại: ",
     "exportFolderFailed": "Xuất thư mục thất bại: ",
-    "openProjectFailed": "Mở dự án thất bại: ",
+    "openProjectFailed": "Mở dự án thất bại: {{msg}}",
+    "openDistributionFailed": "Mở Distribution thất bại: ",
     "invalidName": {
       "empty": "Tên không được để trống.",
       "invalidChars": "Tên chứa ký tự không hợp lệ: / \\ : * ? \" < > |",
@@ -148,7 +150,11 @@
     "pasteData": "Dán dữ liệu",
     "resizeColumn": "Đổi kích thước cột",
     "autoFitColumn": "Tự động chỉnh cột",
-    "sqlQueryTableCreated": "Tạo bảng \"{{name}}\" từ truy vấn SQL"
+    "sqlQueryTableCreated": "Tạo bảng \"{{name}}\" từ truy vấn SQL",
+    "newFitModel": "Khớp Mô hình mới \"{{name}}\" (nguồn: {{source}})",
+    "renameFitModel": "Đổi tên Khớp Mô hình \"{{old}}\" -> \"{{new}}\"",
+    "deleteFitModel": "Xóa Khớp Mô hình \"{{name}}\"",
+    "saveFitModelColumns": "Lưu các cột Khớp Mô hình"
   },
   "workflow": {
     "title": "Quy trình",
@@ -192,8 +198,6 @@
     "creatingSnapshot": "Đang tạo ảnh chụp…",
     "restoringSnapshot": "Đang khôi phục ảnh chụp…",
     "importingSqlite": "Đang nhập cơ sở dữ liệu SQLite…",
-    "documentNameMigrations": "Đã đổi tên {{count}} tài liệu dự án khi mở dự án này. Hãy lưu dự án để ghi lại các tên đã cập nhật.",
-    "projectRequiresMigration": "Dự án đã được di trú trong bộ nhớ khi mở. Hãy lưu dự án để ghi lại định dạng đã nâng cấp.",
     "datasetNameMigrations": "Đã đổi tên {{count}} bảng có tên trùng khi mở dự án này. Hãy lưu dự án để ghi lại các tên đã cập nhật.",
     "importProgressTable": "Bảng {{i}}/{{total}}: {{name}}",
     "importProgressRows": "hàng",
@@ -210,7 +214,44 @@
     "zoomIn": "Phóng to bảng",
     "zoomOut": "Thu nhỏ bảng",
     "zoomReset": "Đặt lại về 100%",
-    "zoomTooltip": "Thu phóng bảng"
+    "zoomTooltip": "Thu phóng bảng",
+    "fitModelMissing": "Phân tích Khớp Mô hình không còn tồn tại",
+    "fitModelSourceMissing": "Bảng dữ liệu nguồn không khả dụng"
+  },
+  "distribution": {
+    "title": "Phân phối",
+    "recall": "Gọi lại",
+    "searchColumns": "Tìm cột",
+    "sourceDataset": "Bảng dữ liệu nguồn",
+    "openSource": "Mở dữ liệu nguồn",
+    "editInputs": "Sửa đầu vào",
+    "progress": "Tiến độ",
+    "renameLabel": "Đổi tên {{name}}",
+    "roleLabel": "Vai trò {{role}}",
+    "roleEmpty": "Kéo thả hoặc gán cột",
+    "assignToRole": "Gán {{column}} vào {{role}}",
+    "removeFromRole": "Xóa {{column}} khỏi {{role}}",
+    "confidenceLevel": "Mức tin cậy",
+    "frequencyShort": "Tần số",
+    "histogramsOnly": "Chỉ biểu đồ tần suất",
+    "invalidConfig": "Hãy gán ít nhất một cột Y hợp lệ.",
+    "runDisabledHint": "Phương pháp thống kê không khả dụng trong trạng thái hệ thống hiện tại.",
+    "saving": "Đang lưu...",
+    "run": "Chạy",
+    "roles": {
+      "y": "Y",
+      "weight": "Trọng số",
+      "frequency": "Tần số",
+      "by": "Phân nhóm"
+    },
+    "specification": {
+      "useOverride": "Dùng giới hạn kỹ thuật riêng cho phân tích",
+      "lsl": "Giới hạn kỹ thuật dưới",
+      "target": "Mục tiêu",
+      "usl": "Giới hạn kỹ thuật trên",
+      "allYHint": "Thiết lập ở cấp phân tích này áp dụng cho mọi cột Y.",
+      "overrideSource": "Chỉ lưu cùng phân tích này; thuộc tính cột của bảng không thay đổi."
+    }
   },
   "report": {
     "placeholder": "Chỉnh sửa báo cáo sẽ được làm ở Task 6; bề mặt này hiện chỉ là phần giữ chỗ tối thiểu.",
@@ -891,14 +932,48 @@
       "fiveNumberSummary": "Tóm tắt 5 số",
       "widthProportion": "Tỷ lệ độ rộng",
       "auto": "Tự động",
-      "summary": { "none": "Không", "mean": "Trung bình", "median": "Trung vị", "sum": "Tổng" },
-      "interval": { "stdErr": "Sai số chuẩn", "stdDev": "Độ lệch chuẩn", "ci95": "CI 95%" },
-      "style": { "errorBar": "Thanh sai số", "band": "Dải", "sphere": "Hình cầu" },
-      "jitterMode": { "stacked": "Xếp chồng", "uniform": "Đều", "normal": "Chuẩn" },
-      "conn": { "line": "Đường thẳng", "step": "Bậc", "spline": "Đường cong" },
-      "fillMode": { "toZero": "Về 0", "between": "Giữa" },
-      "missing": { "skip": "Bỏ qua", "include": "Bao gồm", "connect": "Nối qua", "break": "Ngắt" },
-      "box": { "outlier": "Ngoại lai", "quantile": "Phân vị", "normal": "Bình thường", "notched": "Có khe" },
+      "summary": {
+        "none": "Không",
+        "mean": "Trung bình",
+        "median": "Trung vị",
+        "sum": "Tổng"
+      },
+      "interval": {
+        "stdErr": "Sai số chuẩn",
+        "stdDev": "Độ lệch chuẩn",
+        "ci95": "CI 95%"
+      },
+      "style": {
+        "errorBar": "Thanh sai số",
+        "band": "Dải",
+        "sphere": "Hình cầu"
+      },
+      "jitterMode": {
+        "stacked": "Xếp chồng",
+        "uniform": "Đều",
+        "normal": "Chuẩn"
+      },
+      "conn": {
+        "line": "Đường thẳng",
+        "step": "Bậc",
+        "spline": "Đường cong"
+      },
+      "fillMode": {
+        "toZero": "Về 0",
+        "between": "Giữa"
+      },
+      "missing": {
+        "skip": "Bỏ qua",
+        "include": "Bao gồm",
+        "connect": "Nối qua",
+        "break": "Ngắt"
+      },
+      "box": {
+        "outlier": "Ngoại lai",
+        "quantile": "Phân vị",
+        "normal": "Bình thường",
+        "notched": "Có khe"
+      },
       "histStyle": "Kiểu biểu đồ",
       "smoothness": "Độ mịn",
       "surfaceSmoothness": "Độ mịn bề mặt",
@@ -906,21 +981,50 @@
       "histHeight": "Chiều cao biểu đồ",
       "showCounts": "Hiện số đếm",
       "showPercents": "Hiện phần trăm",
-      "histStyles": { "bar": "Cột", "polygon": "Đa giác", "kde": "Kernel Density", "shadowgram": "Shadowgram" },
+      "histStyles": {
+        "bar": "Cột",
+        "polygon": "Đa giác",
+        "kde": "Kernel Density",
+        "shadowgram": "Shadowgram"
+      },
       "smootherAlgo": "Thuật toán",
-      "smootherAlgos": { "spline": "Spline", "kernel": "Kernel cục bộ", "savgol": "Savitzky-Golay", "movingAvg": "Trung bình động", "movingBox": "Trung vị động" },
+      "smootherAlgos": {
+        "spline": "Spline",
+        "kernel": "Kernel cục bộ",
+        "savgol": "Savitzky-Golay",
+        "movingAvg": "Trung bình động",
+        "movingBox": "Trung vị động"
+      },
       "smootherSplineSmoothness": "Độ mịn",
       "smootherKernelBandwidth": "Băng thông",
       "smootherSavgolWindow": "Cửa sổ",
       "smootherSavgolPolyOrder": "Bậc đa thức",
       "smootherWindow": "Cửa sổ",
       "fitType": "Kiểu khớp",
-      "fitTypes": { "polynomial": "Đa thức", "robustCauchy": "Cauchy bền vững" },
+      "fitTypes": {
+        "polynomial": "Đa thức",
+        "robustCauchy": "Cauchy bền vững"
+      },
       "fitDegree": "Bậc",
-      "fitDegrees": { "1": "Bậc 1", "2": "Bậc 2", "3": "Bậc 3", "4": "Bậc 4", "5": "Bậc 5", "6": "Bậc 6" },
-      "fitConf": { "fit": "Khoảng tin cậy khớp", "prediction": "Khoảng tin cậy dự báo" },
+      "fitDegrees": {
+        "1": "Bậc 1",
+        "2": "Bậc 2",
+        "3": "Bậc 3",
+        "4": "Bậc 4",
+        "5": "Bậc 5",
+        "6": "Bậc 6"
+      },
+      "fitConf": {
+        "fit": "Khoảng tin cậy khớp",
+        "prediction": "Khoảng tin cậy dự báo"
+      },
       "fitStats": "Thống kê",
-      "fitStat": { "equation": "Phương trình", "rmse": "RMSE", "r2": "R²", "fTest": "Kiểm định F" }
+      "fitStat": {
+        "equation": "Phương trình",
+        "rmse": "RMSE",
+        "r2": "R²",
+        "fTest": "Kiểm định F"
+      }
     },
     "loading": "Đang tải dữ liệu…",
     "loadingProgress": "{{loaded}} / {{total}} hàng",
@@ -1057,7 +1161,8 @@
       "diamond": "Thoi (đặc)",
       "emptyDiamond": "Thoi (rỗng)",
       "triangle": "Tam giác (đặc)",
-      "emptyTriangle": "Tam giác (rỗng)"    },
+      "emptyTriangle": "Tam giác (rỗng)"
+    },
     "filter": {
       "toolbarBtn": "Lọc",
       "toggleTitle": "Hiện/Ẩn bộ lọc dữ liệu cục bộ",
@@ -1105,6 +1210,186 @@
       "metaLoading": "Đang tải cột...",
       "metaError": "Không tải được metadata cột",
       "progress": "Tiến độ tải dữ liệu đồ thị"
+    }
+  },
+  "fitModel": {
+    "title": "Khớp Mô hình",
+    "response": "Y, đáp ứng",
+    "modelTermCount": "Số hạng mô hình",
+    "centeringMethod": "Tâm hóa",
+    "centering": {
+      "none": "Không",
+      "mean": "Trung bình"
+    },
+    "sourceMissing": "Bảng dữ liệu nguồn không khả dụng.",
+    "dialog": {
+      "title": "Khớp Mô hình",
+      "availableFields": "Các trường có sẵn",
+      "searchFields": "Tìm trường",
+      "searchAvailableFields": "Tìm các trường có sẵn",
+      "loadingFields": "Đang tải trường...",
+      "noFields": "Không có trường khả dụng cho nguồn này.",
+      "noMatch": "Không có trường nào khớp tìm kiếm hiện tại.",
+      "assignResponseLabel": "Gán {{field}} làm đáp ứng",
+      "assignResponse": "Gán làm Y",
+      "assignMainLabel": "Bật/tắt {{field}} làm hiệu ứng chính",
+      "assignMain": "Bật/tắt Main",
+      "response": "Đáp ứng",
+      "continuousOnly": "Liên tục",
+      "responseEmpty": "Thả hoặc gán một trường đáp ứng liên tục.",
+      "responseHint": "Liên tục",
+      "clearResponse": "Xóa đáp ứng {{field}}",
+      "mainEffects": "Hiệu ứng chính",
+      "mainEffectsEmpty": "Chọn một hoặc nhiều biến dự báo liên tục.",
+      "removeMainEffect": "Xóa hiệu ứng chính {{field}}",
+      "construct": "Cấu trúc",
+      "constructFullFactorial": "Giai thừa đầy đủ",
+      "constructManual": "Thủ công",
+      "constructFactorial": "Giai thừa đến bậc",
+      "constructResponseSurface": "Bề mặt đáp ứng",
+      "degreeInputLabel": "Bậc",
+      "termCount": "{{count}} / 256 số hạng",
+      "tooManyTermsFormula": "Cấu trúc hiện có {{count}} số hạng, vượt quá 256. {{formula}}",
+      "interactions": "Tương tác",
+      "twoWayOnly": "Hai chiều",
+      "interactionsEmpty": "Thêm tương tác hai chiều từ các hiệu ứng chính đã chọn.",
+      "removeInteraction": "Xóa tương tác {{term}}",
+      "addInteraction": "Thêm tương tác",
+      "toggleInteraction": "Bật/tắt tương tác {{term}}",
+      "macros": "Macro",
+      "degree1": "Bậc 1",
+      "degree2": "Bậc 2",
+      "centerInteractions": "Tâm hóa tương tác",
+      "currentTerms": "Số hạng mô hình hiện tại",
+      "searchTerms": "Tìm số hạng",
+      "parameterCount": "{{count}} tham số",
+      "termsEmpty": "Chưa chọn số hạng mô hình.",
+      "noTermMatch": "Không có số hạng nào khớp với tìm kiếm hiện tại.",
+      "termKindMain": "Main",
+      "termKindInteraction": "Tương tác",
+      "termKindPower": "Lũy thừa",
+      "removeTerm": "Xóa số hạng {{term}}",
+      "create": "Tạo",
+      "cancel": "Hủy",
+      "createError": "Tạo Khớp Mô hình thất bại: {{message}}",
+      "validation": {
+        "responseCollision": "{{field}} đã được gán cho vai trò khác.",
+        "mainRequiredByInteraction": "{{field}} đang được dùng bởi {{interactions}}.",
+        "lastMainEffect": "Phải có ít nhất một hiệu ứng chính.",
+        "nonContinuousField": "{{field}} phải là trường liên tục.",
+        "invalidInteraction": "Chỉ thêm được tương tác hai chiều hợp lệ.",
+        "tooManyTerms": "Mô hình có quá nhiều số hạng (tối đa 256)."
+      }
+    },
+    "report": {
+      "title": "Báo cáo Khớp Mô hình",
+      "stale": "Kết quả cũ",
+      "loading": "Đang tải báo cáo...",
+      "error": "Không tải được báo cáo.",
+      "errorWithOldResult": "Làm mới thất bại. Đang hiển thị kết quả trước đó.",
+      "undo": "Hoàn tác",
+      "remove": "Xóa",
+      "notComputable": "Không thể tính toán",
+      "usedRows": "Số hàng đã dùng",
+      "excludedRows": "Số hàng bị loại",
+      "noWarnings": "Không có cảnh báo.",
+      "undefinedValue": "-",
+      "saveColumns": {
+        "title": "Lưu cột",
+        "open": "Lưu cột",
+        "save": "Lưu",
+        "saving": "Đang lưu...",
+        "cancel": "Hủy",
+        "unavailable": "Không khả dụng",
+        "refreshFailed": "Các cột đã được lưu nhưng không thể làm mới chế độ xem dữ liệu. Hãy mở lại bảng để xem các cột mới.",
+        "metric": {
+          "predicted": "Giá trị dự đoán",
+          "residual": "Phần dư",
+          "studentizedResidual": "Phần dư student hóa",
+          "leverage": "Đòn bẩy",
+          "cooksDistance": "Khoảng cách Cook",
+          "meanConfidenceLower": "Cận dưới khoảng tin cậy trung bình",
+          "meanConfidenceUpper": "Cận trên khoảng tin cậy trung bình",
+          "predictionLower": "Cận dưới khoảng dự đoán",
+          "predictionUpper": "Cận trên khoảng dự đoán"
+        }
+      },
+      "section": {
+        "modelSpecification": "Đặc tả mô hình",
+        "effectSummary": "Tóm tắt hiệu ứng",
+        "summaryOfFit": "Tóm tắt độ khớp",
+        "analysisOfVariance": "Phân tích phương sai",
+        "lackOfFit": "Kiểm định thiếu khớp",
+        "parameterEstimates": "Ước lượng tham số",
+        "actualByPredicted": "Thực tế theo dự đoán",
+        "residualByPredicted": "Phần dư theo dự đoán",
+        "residualQq": "Q-Q phần dư",
+        "rowDiagnostics": "Chẩn đoán theo hàng",
+        "predictionProfiler": "Biểu đồ dự báo",
+        "warnings": "Cảnh báo"
+      },
+      "specification": { "construct": "Cách xây dựng", "response": "Đáp ứng", "predictors": "Biến dự báo", "terms": "Số hạng", "usedRows": "Hàng đã dùng", "termBudget": "Giới hạn số hạng" },
+      "summaryOfFit": {
+        "rSquared": "R bình phương",
+        "adjustedRSquared": "R bình phương hiệu chỉnh",
+        "rootMeanSquareError": "Sai số RMS"
+      },
+      "column": {
+        "term": "Hạng",
+        "source": "Nguồn",
+        "estimate": "Ước lượng",
+        "standardError": "Sai số chuẩn",
+        "tRatio": "Tỷ số t",
+        "pValue": "Giá trị p",
+        "logWorth": "LogWorth",
+        "action": "Thao tác",
+        "degreesOfFreedom": "DF",
+        "sumOfSquares": "Tổng bình phương",
+        "meanSquare": "Bình phương trung bình",
+        "fRatio": "Tỷ số F",
+        "lowerConfidenceLimit": "Cận dưới 95%", "upperConfidenceLimit": "Cận trên 95%", "featureVif": "VIF đặc trưng",
+        "row": "Hàng", "observed": "Quan sát", "fitted": "Khớp", "residual": "Phần dư", "studentizedResidual": "Phần dư student hóa", "leverage": "Đòn bẩy", "cooksDistance": "Khoảng cách Cook", "meanConfidenceInterval": "Khoảng tin cậy trung bình", "predictionInterval": "Khoảng dự đoán", "flags": "Cờ"
+      },
+      "reason": {
+        "insufficientRows": "Không còn đủ hàng hợp lệ sau khi loại giá trị thiếu.",
+        "rankDeficient": "Ma trận mô hình bị thiếu hạng với cấu hình hiện tại.",
+        "noReplicates": "Không có cấu hình biến dự báo lặp để kiểm định thiếu khớp.", "lackOfFitDegreesOfFreedomZero": "Thiếu khớp không có bậc tự do.", "pureErrorZero": "Bình phương trung bình sai số thuần bằng không.", "inferenceNotEstimable": "Không thể ước lượng suy luận cho mô hình này.", "constantFeature": "Đặc trưng khớp là hằng số.", "auxiliaryRankDeficient": "Hồi quy phụ VIF bị thiếu hạng.", "insufficientDiagnosticRows": "Cần ít nhất hai hàng chẩn đoán hữu hạn."
+      },
+      "flag": { "residualWarning": "Cảnh báo phần dư", "residualSevere": "Phần dư nghiêm trọng", "highLeverage": "Đòn bẩy cao", "influential": "Điểm ảnh hưởng" },
+      "diagnostics": { "filter": "Bộ lọc hàng chẩn đoán", "all": "Tất cả", "flagged": "Có cờ" },
+      "profiler": { "currentValue": "Giá trị hiện tại", "predicted": "Dự đoán", "meanConfidenceInterval": "Khoảng tin cậy trung bình", "predictionInterval": "Khoảng dự đoán", "notEstimable": "Không thể ước lượng", "extrapolation": "Ngoài phạm vi huấn luyện: {{columns}}" },
+      "source": { "error": "Sai số", "pureError": "Sai số thuần", "lackOfFit": "Thiếu khớp" },
+      "warning": {
+        "saturatedModel": "Mô hình bão hòa; không còn bậc tự do phần dư.",
+        "constantResponse": "Biến đáp ứng có rất ít hoặc không có biến thiên.",
+        "perfectFit": "Phát hiện khớp hoàn hảo; hãy kiểm tra overfitting.",
+        "illConditioned": "Ma trận thiết kế kém điều kiện; hệ số có thể không ổn định."
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "Không thể xóa hiệu ứng chính này khi còn số hạng tương tác hoặc lũy thừa liên quan.",
+        "lastMainEffect": "Không thể xóa hiệu ứng chính cuối cùng.",
+        "notFound": "Số hạng mô hình đã chọn không còn tồn tại."
+      },
+      "chart": {
+        "axis": {
+          "predicted": "Dự đoán",
+          "actual": "Thực tế",
+          "residual": "Phần dư", "theoreticalQuantile": "Phân vị lý thuyết", "studentizedResidual": "Phần dư student hóa"
+        },
+        "series": {
+          "actual": "Thực tế",
+          "residual": "Phần dư", "studentizedResidual": "Phần dư student hóa", "predicted": "Dự đoán", "meanConfidence": "Khoảng tin cậy trung bình"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0", "qq": "Đường tham chiếu Q-Q"
+        },
+        "tooltip": {
+          "x": "Dự đoán",
+          "yActual": "Thực tế",
+          "yResidual": "Phần dư", "xQq": "Phân vị lý thuyết", "yQq": "Phần dư student hóa"
+        }
+      }
     }
   }
 }

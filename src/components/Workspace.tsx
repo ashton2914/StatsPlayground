@@ -21,14 +21,23 @@ import { HelpDialog } from "./HelpDialog";
 import { TableOpsDialog, type TableOpType } from "./TableOpsDialog";
 import { GraphBuilderView } from "./graphBuilder";
 import { FitYByXRoleDialog, FitYByXView } from "./fitYByX";
+import {
+  FitModelRoleDialog,
+  FitModelView,
+  createFitModelItem,
+  toFitModelFieldInfo,
+  type FitModelCreateDefinition,
+} from "./fitModel";
 import { ReportView } from "./report";
 import { DistributionDialog, DistributionView, type DistributionFieldInfo } from "./distribution";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
 import "./graphBuilder/graphBuilder.css";
 import "./fitYByX/fitYByX.css";
+import "./fitModel/fitModel.css";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
 import { useFitYByXStore } from "@/stores/useFitYByXStore";
+import { useFitModelStore } from "@/stores/useFitModelStore";
 import { useReportStore } from "@/stores/useReportStore";
 import { useDistributionStore } from "@/stores/useDistributionStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
@@ -40,6 +49,7 @@ import {
   createDefaultMultivariateGraphState,
 } from "@/components/graphBuilder/graphBuilderMode";
 import type { FitYByXItem } from "@/types/fitYByX";
+import type { FitModelItem, FitModelPrefill } from "@/types/fitModel";
 import type { ReportItem } from "@/types/report";
 import type { DistributionItem } from "@/types/distribution";
 import type { TabulateItem } from "@/types/tabulate";
@@ -189,6 +199,14 @@ export function Workspace() {
   const nextFitYByXName = useFitYByXStore((s) => s.nextName);
   const resetFitYByX = useFitYByXStore((s) => s.reset);
   const loadFitYByXFromProject = useFitYByXStore((s) => s.loadFromProject);
+  const fitModelItems = useFitModelStore((s) => s.items);
+  const addFitModel = useFitModelStore((s) => s.addItem);
+  const renameFitModel = useFitModelStore((s) => s.renameItem);
+  const deleteFitModel = useFitModelStore((s) => s.deleteItem);
+  const deleteFitModelByDataset = useFitModelStore((s) => s.deleteByDataset);
+  const nextFitModelName = useFitModelStore((s) => s.nextName);
+  const resetFitModels = useFitModelStore((s) => s.reset);
+  const loadFitModelFromProject = useFitModelStore((s) => s.loadFromProject);
   const distributionItems = useDistributionStore((s) => s.items);
   const addDistribution = useDistributionStore((s) => s.addItem);
   const renameDistribution = useDistributionStore((s) => s.renameItem);
@@ -230,6 +248,7 @@ export function Workspace() {
   /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
   const [activeGraphBuilderId, setActiveGraphBuilderId] = useState<string | null>(null);
   const [activeFitYByXId, setActiveFitYByXId] = useState<string | null>(null);
+  const [activeFitModelId, setActiveFitModelId] = useState<string | null>(null);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [activeDistributionId, setActiveDistributionId] = useState<string | null>(null);
   const [activeTabulateId, setActiveTabulateId] = useState<string | null>(null);
@@ -240,6 +259,8 @@ export function Workspace() {
   const [helpDialog, setHelpDialog] = useState<"about" | "license" | null>(null);
   const [tableOp, setTableOp] = useState<TableOpType | null>(null);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
+  const [showFitModelDialog, setShowFitModelDialog] = useState(false);
+  const [fitModelPrefill, setFitModelPrefill] = useState<FitModelPrefill | null>(null);
   const [showDistributionDialog, setShowDistributionDialog] = useState(false);
   const [distributionColumns, setDistributionColumns] = useState<DistributionFieldInfo[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -250,6 +271,7 @@ export function Workspace() {
   const tableFolders = useFolderStore((s) => s.tableFolders);
   const graphFolders = useFolderStore((s) => s.graphFolders);
   const fitYByXFolders = useFolderStore((s) => s.fitYByXFolders);
+  const fitModelFolders = useFolderStore((s) => s.fitModelFolders);
   const reportFolders = useFolderStore((s) => s.reportFolders);
   const distributionFolders = useFolderStore((s) => s.distributionFolders);
   const tabulateFolders = useFolderStore((s) => s.tabulateFolders);
@@ -261,6 +283,7 @@ export function Workspace() {
   const fsSetTableFolder = useFolderStore((s) => s.setTableFolder);
   const fsSetGraphFolder = useFolderStore((s) => s.setGraphFolder);
   const fsSetFitYByXFolder = useFolderStore((s) => s.setFitYByXFolder);
+  const fsSetFitModelFolder = useFolderStore((s) => s.setFitModelFolder);
   const fsSetReportFolder = useFolderStore((s) => s.setReportFolder);
   const fsSetDistributionFolder = useFolderStore((s) => s.setDistributionFolder);
   const fsSetTabulateFolder = useFolderStore((s) => s.setTabulateFolder);
@@ -284,6 +307,7 @@ export function Workspace() {
     | { kind: "table"; id: string; x: number; y: number }
     | { kind: "graph"; id: string; x: number; y: number }
     | { kind: "fitYByX"; id: string; x: number; y: number }
+    | { kind: "fitModel"; id: string; x: number; y: number }
     | { kind: "report"; id: string; x: number; y: number }
     | { kind: "distribution"; id: string; x: number; y: number }
     | { kind: "tabulate"; id: string; x: number; y: number }
@@ -307,6 +331,26 @@ export function Workspace() {
   const tableCounter = useRef(0);
   const reportHistoryTimerRef = useRef<number | null>(null);
   const pendingReportHistoryRef = useRef<{ id: string; name: string } | null>(null);
+
+  useEffect(() => {
+    if (
+      activeDatasetId
+      || activeGraphBuilderId
+      || activeFitYByXId
+      || activeReportId
+      || activeDistributionId
+      || activeTabulateId
+    ) {
+      setActiveFitModelId(null);
+    }
+  }, [
+    activeDatasetId,
+    activeDistributionId,
+    activeFitYByXId,
+    activeGraphBuilderId,
+    activeReportId,
+    activeTabulateId,
+  ]);
 
   /** Record an action to history (synchronous — no IPC) */
   const recordAction = useCallback((desc: string) => {
@@ -366,10 +410,11 @@ export function Workspace() {
   const analysisDocumentNames = useMemo(
     () => [
       ...fitYByXItems.map((item) => item.name),
+      ...fitModelItems.map((item) => item.name),
       ...distributionItems.map((item) => item.name),
       ...tabulates.map((item) => item.name),
     ],
-    [distributionItems, fitYByXItems, tabulates],
+    [distributionItems, fitModelItems, fitYByXItems, tabulates],
   );
 
   const withProjectExtension = useCallback((basename: string, kind: ProjectDocumentKind): string => {
@@ -440,6 +485,12 @@ export function Workspace() {
         setActiveFitYByXId(null);
       }
     }
+    if (activeFitModelId) {
+      const activeFitModel = useFitModelStore.getState().items.find((item) => item.id === activeFitModelId);
+      if (activeFitModel && !updatedDatasets.find((dataset) => dataset.id === activeFitModel.sourceDatasetId)) {
+        setActiveFitModelId(null);
+      }
+    }
     if (activeDistributionId) {
       const activeDistribution = useDistributionStore.getState().items.find((item) => item.id === activeDistributionId);
       if (activeDistribution && !updatedDatasets.find((dataset) => dataset.id === activeDistribution.sourceDatasetId)) {
@@ -449,7 +500,7 @@ export function Workspace() {
     // Force DataTableView to remount and reload data
     setTableKey((k) => k + 1);
     invalidateData();
-  }, [refreshDatasets, activeDatasetId, activeDistributionId, activeFitYByXId, setActiveDataset, invalidateData]);
+  }, [refreshDatasets, activeDatasetId, activeDistributionId, activeFitYByXId, activeFitModelId, setActiveDataset, invalidateData]);
 
   useEffect(() => {
     refreshDatasets();
@@ -499,10 +550,11 @@ export function Workspace() {
     const gbIds = new Set(graphBuilders.map((g) => g.id));
     const tabulateIds = new Set(tabulates.map((item) => item.id));
     const fitYByXIds = new Set(fitYByXItems.map((item) => item.id));
+    const fitModelIds = new Set(fitModelItems.map((item) => item.id));
     const reportIds = new Set(reportItems.map((item) => item.id));
     const distributionIds = new Set(distributionItems.map((item) => item.id));
-    fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds);
-  }, [datasets, distributionItems, graphBuilders, tabulates, fitYByXItems, reportItems, fsPrune]);
+    fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds);
+  }, [datasets, distributionItems, graphBuilders, tabulates, fitYByXItems, fitModelItems, reportItems, fsPrune]);
 
   // Cmd/Ctrl+,: open preferences
   useEffect(() => {
@@ -685,6 +737,61 @@ export function Workspace() {
     setShowFitYByXDialog(true);
   };
 
+  const openFitModel = (prefill?: FitModelPrefill) => {
+    if (readOnly) return;
+    const sourceDatasetId = prefill?.sourceDatasetId ?? activeDatasetId;
+    if (!sourceDatasetId || !datasets.some((dataset) => dataset.id === sourceDatasetId)) {
+      alert(t("alert.selectDatasetFirst"));
+      return;
+    }
+    setActiveDataset(sourceDatasetId);
+    setFitModelPrefill(prefill ?? null);
+    setShowFitModelDialog(true);
+  };
+
+  const handleCreateFitModel = () => openFitModel();
+
+  const handleCreateFitModelItem = async (definition: FitModelCreateDefinition) => {
+    if (!activeDatasetId) return;
+    const sourceDatasetId = activeDatasetId;
+    const [columns, displayProps] = await Promise.all([
+      dataService.getColumns(sourceDatasetId),
+      dataService.getColumnDisplayProps(sourceDatasetId).catch(() => []),
+    ]);
+    const displayPropsByIndex = new Map(displayProps.map((entry) => [entry.colIndex, entry]));
+    const fields = columns.map(([name, sqlType], index) => (
+      toFitModelFieldInfo(name, sqlType, displayPropsByIndex.get(index)).field
+    ));
+    const id = crypto.randomUUID();
+    const name = nextFitModelName();
+    const item = createFitModelItem({
+      id,
+      name,
+      sourceDatasetId,
+      response: definition.response,
+      construct: definition.construct,
+      terms: definition.terms,
+      centeringMethod: definition.centeringMethod,
+      createdAt: new Date().toISOString(),
+      fields,
+    });
+    const source = datasets.find((dataset) => dataset.id === sourceDatasetId)?.name ?? sourceDatasetId;
+    addFitModel(item);
+    setActiveDataset(null);
+    setActiveGraphBuilderId(null);
+    setActiveFitYByXId(null);
+    setActiveReportId(null);
+    setActiveDistributionId(null);
+    setActiveTabulateId(null);
+    setActiveFitModelId(id);
+    setShowFitModelDialog(false);
+    setFitModelPrefill(null);
+    markDirty();
+    recordAction(t("history.newFitModel", { name, source }));
+    setRenamingId(id);
+    setRenameValue(name);
+  };
+
   const handleCreateFitYByXItem = (item: FitYByXItem) => {
     const requestedName = item.name.trim();
     const resolved = resolveProjectBasename(
@@ -837,6 +944,16 @@ export function Workspace() {
         alert(resolved.error);
         return;
       }
+      const fitModel = useFitModelStore.getState().items.find((it) => it.id === id);
+      if (fitModel) {
+        if (trimmed !== fitModel.name) {
+          renameFitModel(id, trimmed);
+          markDirty();
+          recordAction(t("history.renameFitModel", { old: fitModel.name, new: trimmed }));
+        }
+        setRenamingId(null);
+        return;
+      }
       const basename = resolved.basename;
       if (basename !== fitYByX.name) {
         renameFitYByX(id, basename);
@@ -929,6 +1046,14 @@ export function Workspace() {
     if (item) recordAction(t("history.deleteFitYByX", { name: item.name }));
   };
 
+  const handleDeleteFitModel = (id: string) => {
+    const item = useFitModelStore.getState().items.find((entry) => entry.id === id);
+    deleteFitModel(id);
+    if (activeFitModelId === id) setActiveFitModelId(null);
+    markDirty();
+    if (item) recordAction(t("history.deleteFitModel", { name: item.name }));
+  };
+
   const handleDeleteReport = (id: string) => {
     const item = useReportStore.getState().items.find((entry) => entry.id === id);
     flushPendingReportHistory();
@@ -952,6 +1077,9 @@ export function Workspace() {
     const activeFitYByX = activeFitYByXId
       ? useFitYByXStore.getState().items.find((item) => item.id === activeFitYByXId)
       : null;
+    const activeFitModel = activeFitModelId
+      ? useFitModelStore.getState().items.find((item) => item.id === activeFitModelId)
+      : null;
     const activeDistribution = activeDistributionId
       ? useDistributionStore.getState().items.find((item) => item.id === activeDistributionId)
       : null;
@@ -967,6 +1095,8 @@ export function Workspace() {
     }
     deleteFitYByXByDataset(id);
     if (activeFitYByX?.sourceDatasetId === id) setActiveFitYByXId(null);
+    deleteFitModelByDataset(id);
+    if (activeFitModel?.sourceDatasetId === id) setActiveFitModelId(null);
     deleteDistributionByDataset(id);
     if (activeDistribution?.sourceDatasetId === id) setActiveDistributionId(null);
     await refreshDatasets();
@@ -1181,6 +1311,7 @@ export function Workspace() {
       tableFolders,
       graphFolders,
       fitYByXFolders,
+      fitModelFolders,
       reportFolders,
       tabulateFolders,
       distributionFolders,
@@ -1199,12 +1330,14 @@ export function Workspace() {
           snapshots,
           graphBuilders: gbItems,
           fitYByX: fitYByXItems,
+          fitModels: fitModelItems,
           tabulates,
           distributions: distributionItems,
           folders: folderPayload.folders,
           tableFolders: folderPayload.tableFolders,
           graphFolders: folderPayload.graphFolders,
           fitYByXFolders: folderPayload.fitYByXFolders,
+          fitModelFolders: folderPayload.fitModelFolders,
           reportFolders: folderPayload.reportFolders,
           tabulateFolders: folderPayload.tabulateFolders,
           reports: reportItems,
@@ -1219,12 +1352,14 @@ export function Workspace() {
           snapshots,
           graphBuilders: gbItems,
           fitYByX: fitYByXItems,
+          fitModels: fitModelItems,
           tabulates,
           distributions: distributionItems,
           folders: folderPayload.folders,
           tableFolders: folderPayload.tableFolders,
           graphFolders: folderPayload.graphFolders,
           fitYByXFolders: folderPayload.fitYByXFolders,
+          fitModelFolders: folderPayload.fitModelFolders,
           reportFolders: folderPayload.reportFolders,
           tabulateFolders: folderPayload.tabulateFolders,
           reports: reportItems,
@@ -1257,12 +1392,14 @@ export function Workspace() {
     setActiveDataset(null);
     setActiveGraphBuilderId(null);
     setActiveFitYByXId(null);
+    setActiveFitModelId(null);
     setActiveReportId(null);
     setActiveDistributionId(null);
     setActiveTabulateId(null);
     resetHistory();
     resetGraphBuilders();
     resetFitYByX();
+    resetFitModels();
     resetReports();
     resetDistributions();
     resetTabulates();
@@ -1284,12 +1421,14 @@ export function Workspace() {
       setActiveDataset(null);
       setActiveGraphBuilderId(null);
       setActiveFitYByXId(null);
+      setActiveFitModelId(null);
       setActiveReportId(null);
       setActiveDistributionId(null);
       setActiveTabulateId(null);
       resetHistory();
       resetGraphBuilders();
       resetFitYByX();
+      resetFitModels();
       resetReports();
       resetDistributions();
       resetTabulates();
@@ -1313,12 +1452,14 @@ export function Workspace() {
         setActiveDataset(null);
         setActiveGraphBuilderId(null);
         setActiveFitYByXId(null);
+        setActiveFitModelId(null);
         setActiveReportId(null);
         setActiveDistributionId(null);
         setActiveTabulateId(null);
         resetHistory();
         resetGraphBuilders();
         resetFitYByX();
+        resetFitModels();
         resetReports();
         resetDistributions();
         resetTabulates();
@@ -1338,6 +1479,7 @@ export function Workspace() {
           loadGraphBuildersFromProject(result.graphBuilders as GraphBuilderItem[]);
         }
         loadFitYByXFromProject((result.fitYByX ?? []) as FitYByXItem[]);
+        loadFitModelFromProject((result.fitModels ?? []) as FitModelItem[]);
         loadReportsFromProject((result.reports ?? []) as ReportItem[]);
         loadTabulatesFromProject((result.tabulates ?? []) as TabulateItem[]);
         loadDistributionsFromProject(result.distributions ?? []);
@@ -1360,6 +1502,7 @@ export function Workspace() {
           tableFolders: result.tableFolders ?? {},
           graphFolders: result.graphFolders ?? {},
           fitYByXFolders: result.fitYByXFolders ?? {},
+          fitModelFolders: result.fitModelFolders ?? {},
           reportFolders: result.reportFolders ?? {},
           tabulateFolders: result.tabulateFolders ?? {},
           distributionFolders: result.distributionFolders ?? {},
@@ -1664,6 +1807,7 @@ export function Workspace() {
     | { kind: "table"; id: string }
     | { kind: "graph"; id: string }
     | { kind: "fitYByX"; id: string }
+    | { kind: "fitModel"; id: string }
     | { kind: "report"; id: string }
     | { kind: "distribution"; id: string }
     | { kind: "tabulate"; id: string }
@@ -1701,6 +1845,7 @@ export function Workspace() {
     if (payload.kind === "table") fsSetTableFolder(payload.id, target);
     else if (payload.kind === "graph") fsSetGraphFolder(payload.id, target);
     else if (payload.kind === "fitYByX") fsSetFitYByXFolder(payload.id, target);
+    else if (payload.kind === "fitModel") fsSetFitModelFolder(payload.id, target);
     else if (payload.kind === "report") fsSetReportFolder(payload.id, target);
     else if (payload.kind === "distribution") fsSetDistributionFolder(payload.id, target);
     else if (payload.kind === "tabulate") fsSetTabulateFolder(payload.id, target);
@@ -1762,6 +1907,13 @@ export function Workspace() {
       arr.push(item);
       fitYByXByParent.set(p, arr);
     }
+    const fitModelByParent = new Map<string, FitModelItem[]>();
+    for (const item of fitModelItems) {
+      const p = fitModelFolders[item.id] ?? ROOT;
+      const arr = fitModelByParent.get(p) ?? [];
+      arr.push(item);
+      fitModelByParent.set(p, arr);
+    }
     const reportsByParent = new Map<string, ReportItem[]>();
     for (const item of reportItems) {
       const p = reportFolders[item.id] ?? ROOT;
@@ -1783,8 +1935,8 @@ export function Workspace() {
       arr.push(item);
       tabulatesByParent.set(p, arr);
     }
-    return { ROOT, childFolders, tablesByParent, graphsByParent, fitYByXByParent, reportsByParent, distributionByParent, tabulatesByParent };
-  }, [folders, tableFolders, graphFolders, fitYByXFolders, reportFolders, distributionFolders, tabulateFolders, datasets, graphBuilders, fitYByXItems, reportItems, distributionItems, tabulates]);
+    return { ROOT, childFolders, tablesByParent, graphsByParent, fitYByXByParent, fitModelByParent, reportsByParent, distributionByParent, tabulatesByParent };
+  }, [folders, tableFolders, graphFolders, fitYByXFolders, fitModelFolders, reportFolders, distributionFolders, tabulateFolders, datasets, graphBuilders, fitYByXItems, fitModelItems, reportItems, distributionItems, tabulates]);
 
   /** Recursively render one folder level. */
   const renderFolderLevel = (parent: string | null, depth: number): React.ReactNode[] => {
@@ -1795,6 +1947,7 @@ export function Workspace() {
     const tableChildren = tree.tablesByParent.get(key) ?? [];
     const graphChildren = tree.graphsByParent.get(key) ?? [];
     const fitYByXChildren = tree.fitYByXByParent.get(key) ?? [];
+    const fitModelChildren = tree.fitModelByParent.get(key) ?? [];
     const reportChildren = tree.reportsByParent.get(key) ?? [];
     const distributionChildren = tree.distributionByParent.get(key) ?? [];
     const tabulateChildren = tree.tabulatesByParent.get(key) ?? [];
@@ -2024,6 +2177,61 @@ export function Workspace() {
         </div>,
       );
     }
+    for (const item of fitModelChildren) {
+      const sourceDs = datasets.find((dataset) => dataset.id === item.sourceDatasetId);
+      const fitModelUnavailable = !sourceDs || Boolean(item.loadIssue);
+      out.push(
+        <div
+          key={`fitModel:${item.id}`}
+          className={`dataset-item ${activeFitModelId === item.id ? "active" : ""}`}
+          style={{ paddingLeft: 8 + depth * 12 + 12 }}
+          draggable={!readOnly}
+          onDragStart={(event) => handleDragStart(event, { kind: "fitModel", id: item.id })}
+          onClick={() => {
+            setActiveDataset(null);
+            setActiveGraphBuilderId(null);
+            setActiveFitYByXId(null);
+            setActiveReportId(null);
+            setActiveDistributionId(null);
+            setActiveTabulateId(null);
+            setActiveFitModelId(item.id);
+          }}
+          onDoubleClick={() => {
+            if (readOnly) return;
+            setRenamingId(item.id);
+            setRenameValue(item.name);
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setCtxMenu({ kind: "fitModel", id: item.id, x: event.clientX, y: event.clientY });
+          }}
+          title={fitModelUnavailable ? t("workspace.fitModelSourceMissing") : t("workspace.datasourceLabel", { name: sourceDs.name })}
+        >
+          <i className="ds-icon fa-solid fa-wave-square" aria-hidden="true" />
+          {renamingId === item.id ? (
+            <input
+              ref={renameInputRef}
+              className="ds-rename-input"
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              onBlur={() => handleRenameSubmit(item.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") handleRenameSubmit(item.id);
+                if (event.key === "Escape") setRenamingId(null);
+              }}
+              onClick={(event) => event.stopPropagation()}
+              autoFocus
+            />
+          ) : (
+            <span className="ds-name">{item.name}</span>
+          )}
+          <span className="ds-info gb-source-tag">
+            {fitModelUnavailable ? t("workspace.fitModelSourceMissing") : sourceDs.name}
+          </span>
+        </div>,
+      );
+    }
     for (const item of reportChildren) {
       out.push(
         <div
@@ -2241,6 +2449,12 @@ export function Workspace() {
               </div>
               <div
                 className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId && !readOnly ? handleCreateFitModel : undefined}
+              >
+                {t("menu.fitModel")}
+              </div>
+              <div
+                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
                 onClick={activeDatasetId && !readOnly ? handleCreateDistribution : undefined}
               >
                 {t("menu.distribution")}
@@ -2364,7 +2578,7 @@ export function Workspace() {
                   }
                 }}
               >
-                {datasets.length === 0 && graphBuilders.length === 0 && fitYByXItems.length === 0 && reportItems.length === 0 && distributionItems.length === 0 && tabulates.length === 0 && folders.length === 0 ? (
+                {datasets.length === 0 && graphBuilders.length === 0 && fitYByXItems.length === 0 && fitModelItems.length === 0 && reportItems.length === 0 && distributionItems.length === 0 && tabulates.length === 0 && folders.length === 0 ? (
                   <div className="empty-hint">{t("common.noContent")}</div>
                 ) : (
                   renderFolderLevel(null, 0)
@@ -2446,6 +2660,28 @@ export function Workspace() {
               }
               const ds = datasets.find((dataset) => dataset.id === item.sourceDatasetId);
               return <FitYByXView item={item} dataset={ds} />;
+            })()
+          ) : activeFitModelId ? (
+            (() => {
+              const item = fitModelItems.find((entry) => entry.id === activeFitModelId);
+              if (!item) {
+                return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.fitModelMissing")}</p></div></div>;
+              }
+              const ds = datasets.find((dataset) => dataset.id === item.sourceDatasetId);
+              if (!ds) {
+                return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.fitModelSourceMissing")}</p></div></div>;
+              }
+              return (
+                <FitModelView
+                  item={item}
+                  dataset={ds}
+                  readOnly={readOnly}
+                  onDatasetChanged={async () => {
+                    markDirty();
+                    await refreshDatasets();
+                  }}
+                />
+              );
             })()
           ) : activeReportId ? (
             (() => {
@@ -2588,6 +2824,18 @@ export function Workspace() {
         />
       )}
 
+      {showFitModelDialog && activeDatasetId && (
+        <FitModelRoleDialog
+          dataset={datasets.find((dataset) => dataset.id === activeDatasetId)!}
+          prefill={fitModelPrefill}
+          onCancel={() => {
+            setShowFitModelDialog(false);
+            setFitModelPrefill(null);
+          }}
+          onCreateDefinition={handleCreateFitModelItem}
+        />
+      )}
+
       {showDistributionDialog && activeDatasetId && (
         <DistributionDialog
           open={showDistributionDialog}
@@ -2723,6 +2971,29 @@ export function Workspace() {
                 })}>{t("common.rename")}</div>
                 <div className="sp-ctx-sep" />
                 <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteFitYByX(id); setCtxMenu(null); })}>{t("common.delete")}</div>
+              </>
+            );
+          })()}
+          {ctxMenu.kind === "fitModel" && (() => {
+            const id = ctxMenu.id;
+            const item = fitModelItems.find((entry) => entry.id === id);
+            if (!item) return null;
+            return (
+              <>
+                <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
+                  setRenamingId(id);
+                  setRenameValue(item.name);
+                  setActiveDataset(null);
+                  setActiveGraphBuilderId(null);
+                  setActiveFitYByXId(null);
+                  setActiveReportId(null);
+                  setActiveDistributionId(null);
+                  setActiveTabulateId(null);
+                  setActiveFitModelId(id);
+                  setCtxMenu(null);
+                })}>{t("common.rename")}</div>
+                <div className="sp-ctx-sep" />
+                <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteFitModel(id); setCtxMenu(null); })}>{t("common.delete")}</div>
               </>
             );
           })()}

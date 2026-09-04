@@ -153,6 +153,10 @@ pub struct ProjectManifest {
     #[serde(default)]
     pub fit_y_by_x_folders: HashMap<String, String>,
     #[serde(default)]
+    pub fit_models: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub fit_model_folders: HashMap<String, String>,
+    #[serde(default)]
     pub report_folders: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tabulates: Vec<serde_json::Value>,
@@ -351,6 +355,7 @@ pub struct ProjectBundle {
     pub tables: Vec<TableDoc>,
     pub graphs: Vec<GraphDoc>,
     pub fit_y_by_x: Vec<Value>,
+    pub fit_models: Vec<Value>,
     pub reports: Vec<Value>,
     pub distributions: Vec<Value>,
     pub tabulates: Vec<Value>,
@@ -385,6 +390,10 @@ struct LegacySpprj {
     fit_y_by_x: Option<Vec<Value>>,
     #[serde(default)]
     fit_y_by_x_folders: Option<HashMap<String, String>>,
+    #[serde(default)]
+    fit_models: Option<Vec<Value>>,
+    #[serde(default)]
+    fit_model_folders: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -868,6 +877,12 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
     } else {
         manifest.fit_y_by_x.clone()
     };
+    let fit_models = manifest
+        .fit_models
+        .iter()
+        .cloned()
+        .map(strip_transient_fit_model_fields)
+        .collect();
     let reports = if !manifest.report_files.is_empty() {
         read_indexed_values(
             &mut zip,
@@ -919,6 +934,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         tables,
         graphs,
         fit_y_by_x,
+        fit_models,
         reports,
         distributions,
         tabulates,
@@ -1097,6 +1113,13 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
 
     let fit_y_by_x = legacy.fit_y_by_x.unwrap_or_default();
     let fit_y_by_x_folders = legacy.fit_y_by_x_folders.unwrap_or_default();
+    let fit_models = legacy
+        .fit_models
+        .unwrap_or_default()
+        .into_iter()
+        .map(strip_transient_fit_model_fields)
+        .collect::<Vec<_>>();
+    let fit_model_folders = legacy.fit_model_folders.unwrap_or_default();
 
     let manifest = ProjectManifest {
         name: legacy.name,
@@ -1113,6 +1136,8 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         graph_folders: None,
         fit_y_by_x: fit_y_by_x.clone(),
         fit_y_by_x_folders,
+        fit_models: fit_models.clone(),
+        fit_model_folders,
         report_folders: HashMap::new(),
         distributions: Vec::new(),
         distribution_folders: HashMap::new(),
@@ -1134,6 +1159,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         tables,
         graphs,
         fit_y_by_x,
+        fit_models,
         reports: Vec::new(),
         distributions: Vec::new(),
         tabulates: Vec::new(),
@@ -1205,13 +1231,14 @@ pub fn build_bundle(
     history: Vec<Value>,
     snapshots: Vec<Value>,
 ) -> Result<ProjectBundle, AppError> {
-    build_bundle_with_workflows(
+    build_bundle_with_fit_models(
         name,
         version,
         created_at,
         tables,
         graphs,
         fit_y_by_x,
+        Vec::new(),
         reports,
         distributions,
         tabulates,
@@ -1219,6 +1246,53 @@ pub fn build_bundle(
         table_folders,
         graph_folders,
         fit_y_by_x_folders,
+        &HashMap::new(),
+        report_folders,
+        distribution_folders,
+        tabulate_folders,
+        history,
+        snapshots,
+    )
+}
+
+pub fn build_bundle_with_fit_models(
+    name: String,
+    version: String,
+    created_at: String,
+    tables: Vec<TableDoc>,
+    graphs: Vec<GraphDoc>,
+    fit_y_by_x: Vec<Value>,
+    fit_models: Vec<Value>,
+    reports: Vec<Value>,
+    distributions: Vec<Value>,
+    tabulates: Vec<Value>,
+    folders: Vec<String>,
+    table_folders: &HashMap<String, String>,
+    graph_folders: &HashMap<String, String>,
+    fit_y_by_x_folders: &HashMap<String, String>,
+    fit_model_folders: &HashMap<String, String>,
+    report_folders: &HashMap<String, String>,
+    distribution_folders: &HashMap<String, String>,
+    tabulate_folders: &HashMap<String, String>,
+    history: Vec<Value>,
+    snapshots: Vec<Value>,
+) -> Result<ProjectBundle, AppError> {
+    build_bundle_with_workflows_and_fit_models(
+        name,
+        version,
+        created_at,
+        tables,
+        graphs,
+        fit_y_by_x,
+        fit_models,
+        reports,
+        distributions,
+        tabulates,
+        folders,
+        table_folders,
+        graph_folders,
+        fit_y_by_x_folders,
+        fit_model_folders,
         report_folders,
         distribution_folders,
         tabulate_folders,
@@ -1253,11 +1327,67 @@ pub fn build_bundle_with_workflows(
     logical_folders: Vec<workflow_domain::LogicalFolder>,
     workflow_runs: Vec<workflow_domain::WorkflowRun>,
 ) -> Result<ProjectBundle, AppError> {
+    build_bundle_with_workflows_and_fit_models(
+        name,
+        version,
+        created_at,
+        tables,
+        graphs,
+        fit_y_by_x,
+        Vec::new(),
+        reports,
+        distributions,
+        tabulates,
+        folders,
+        table_folders,
+        graph_folders,
+        fit_y_by_x_folders,
+        &HashMap::new(),
+        report_folders,
+        distribution_folders,
+        tabulate_folders,
+        history,
+        snapshots,
+        workflows,
+        logical_folders,
+        workflow_runs,
+    )
+}
+
+pub fn build_bundle_with_workflows_and_fit_models(
+    name: String,
+    version: String,
+    created_at: String,
+    tables: Vec<TableDoc>,
+    graphs: Vec<GraphDoc>,
+    fit_y_by_x: Vec<Value>,
+    fit_models: Vec<Value>,
+    reports: Vec<Value>,
+    distributions: Vec<Value>,
+    tabulates: Vec<Value>,
+    folders: Vec<String>,
+    table_folders: &HashMap<String, String>,
+    graph_folders: &HashMap<String, String>,
+    fit_y_by_x_folders: &HashMap<String, String>,
+    fit_model_folders: &HashMap<String, String>,
+    report_folders: &HashMap<String, String>,
+    distribution_folders: &HashMap<String, String>,
+    tabulate_folders: &HashMap<String, String>,
+    history: Vec<Value>,
+    snapshots: Vec<Value>,
+    workflows: Vec<workflow_domain::WorkflowDefinition>,
+    logical_folders: Vec<workflow_domain::LogicalFolder>,
+    workflow_runs: Vec<workflow_domain::WorkflowRun>,
+) -> Result<ProjectBundle, AppError> {
     let mut tables = tables;
     let mut graphs = graphs;
     let mut fit_y_by_x: Vec<Value> = fit_y_by_x
         .into_iter()
         .map(strip_transient_fit_y_by_x_fields)
+        .collect();
+    let fit_models: Vec<Value> = fit_models
+        .into_iter()
+        .map(strip_transient_fit_model_fields)
         .collect();
     let mut reports = reports;
     let mut distributions: Vec<Value> = distributions
@@ -1506,6 +1636,8 @@ pub fn build_bundle_with_workflows(
             graph_folders: Some(graph_folders.clone()),
             fit_y_by_x: manifest_fit_y_by_x,
             fit_y_by_x_folders: fit_y_by_x_folders.clone(),
+            fit_models: fit_models.clone(),
+            fit_model_folders: fit_model_folders.clone(),
             report_folders: report_folders.clone(),
             tabulates: manifest_tabulates,
             tabulate_folders: tabulate_folders.clone(),
@@ -1524,6 +1656,7 @@ pub fn build_bundle_with_workflows(
         tables,
         graphs,
         fit_y_by_x,
+        fit_models,
         reports,
         distributions,
         tabulates,
@@ -1531,6 +1664,18 @@ pub fn build_bundle_with_workflows(
         snapshots,
         workflows,
     })
+}
+
+fn strip_transient_fit_model_fields(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            map.remove("result");
+            map.remove("plotRows");
+            map.remove("reportState");
+            Value::Object(map)
+        }
+        other => other,
+    }
 }
 
 fn collect_known_document_refs(
@@ -4124,6 +4269,8 @@ mod tests {
             graph_folders: Some(HashMap::new()),
             fit_y_by_x: vec![],
             fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
             report_folders: HashMap::new(),
             distributions: vec![],
             distribution_folders: HashMap::new(),
@@ -4514,6 +4661,68 @@ mod tests {
         assert_eq!(loaded.manifest.fit_y_by_x, vec![expected_fit.clone()]);
         assert_eq!(loaded.manifest.fit_y_by_x_folders, folders);
         assert_eq!(loaded.fit_y_by_x, vec![expected_fit]);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fit_model_round_trip_preserves_definition_and_strips_transient_results() {
+        let path = temp_project_path("fit-model-round-trip");
+        let fit_model = json!({
+            "id": "fit-model-1",
+            "name": "Fit Model 1",
+            "sourceDatasetId": "table-1",
+            "response": { "name": "yield", "type": "continuous" },
+            "terms": [{ "kind": "main", "columnNames": ["temperature"] }],
+            "centeringMethod": "none",
+            "createdAt": "2026-09-02T00:00:00Z",
+            "result": { "kind": "fitted" },
+            "plotRows": [{ "observed": 1.0 }],
+            "reportState": { "status": "success" }
+        });
+        let expected = json!({
+            "id": "fit-model-1",
+            "name": "Fit Model 1",
+            "sourceDatasetId": "table-1",
+            "response": { "name": "yield", "type": "continuous" },
+            "terms": [{ "kind": "main", "columnNames": ["temperature"] }],
+            "centeringMethod": "none",
+            "createdAt": "2026-09-02T00:00:00Z"
+        });
+        let fit_model_folders =
+            HashMap::from([("fit-model-1".to_string(), "Analyses".to_string())]);
+        let empty_folders = HashMap::new();
+
+        let bundle = super::build_bundle_with_fit_models(
+            "Project".to_string(),
+            "4.0.0".to_string(),
+            "2026-09-02T00:00:00Z".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![fit_model],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec!["Analyses".to_string()],
+            &empty_folders,
+            &empty_folders,
+            &empty_folders,
+            &fit_model_folders,
+            &empty_folders,
+            &empty_folders,
+            &empty_folders,
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded.manifest.fit_models, vec![expected.clone()]);
+        assert_eq!(loaded.manifest.fit_model_folders, fit_model_folders);
+        assert_eq!(loaded.fit_models, vec![expected]);
 
         let _ = std::fs::remove_file(path);
     }
