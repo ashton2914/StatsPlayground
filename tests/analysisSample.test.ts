@@ -3,12 +3,15 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { ANALYSIS_SAMPLE_COLUMN, createAnalysisSample, createAnalysisSampleDocument } from "../src/components/analysis/analysisSample.ts";
+import { createAnalysisSample as createAnalysisSampleContract } from "../src/components/analysis/analysisSample.ts";
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(process.cwd(), relativePath), "utf8").replace(/\r\n/g, "\n");
 }
 
 const sample = createAnalysisSample(112, 4);
+const repeated = createAnalysisSampleContract(112, 200);
+const different = createAnalysisSampleContract(113, 200);
 
 assert.equal(ANALYSIS_SAMPLE_COLUMN, "DIM1");
 assert.deepEqual(sample.rows, [
@@ -34,25 +37,21 @@ assert.equal("reportBlocks" in analysis, false);
 assert.equal("graphFrames" in analysis, false);
 assert.equal("result" in analysis, false);
 
-const source = readSource("src/components/analysis/analysisSample.ts");
-assert.equal(source.includes("createAnalysisSampleDistribution"), false, "sample helper must not expose the legacy distribution factory");
-
-console.log("analysis sample contract passed");import assert from "node:assert/strict";
-
-import { createAnalysisSample } from "../src/components/analysis/analysisSample.ts";
-
-const first = createAnalysisSample(112, 200);
-const repeated = createAnalysisSample(112, 200);
-const different = createAnalysisSample(113, 200);
-
-assert.deepEqual(first, repeated, "the bundled sample must be reproducible for a saved analysis");
-assert.notDeepEqual(first.values, different.values, "different seeds must produce different random samples");
-assert.equal(first.values.length, 200);
-assert.equal(first.values.every(Number.isFinite), true);
-assert.equal(first.rows.length, 200);
+assert.deepEqual(
+  createAnalysisSampleContract(112, 200),
+  repeated,
+  "the bundled sample must be reproducible for a saved analysis",
+);
+assert.notDeepEqual(repeated.values, different.values, "different seeds must produce different random samples");
+assert.equal(repeated.values.length, 200);
+assert.equal(repeated.values.every(Number.isFinite), true);
+assert.equal(repeated.rows.length, 200);
 assert.equal(
-  first.rows.every((row, index) => row.length === 1 && row[0] === first.values[index]),
+  repeated.rows.every((row, index) => row.length === 1 && row[0] === repeated.values[index]),
   true,
 );
 
-console.log("Analysis sample contract tests passed");
+const source = readSource("src/components/analysis/analysisSample.ts");
+assert.equal(source.includes("createAnalysisSampleDistribution"), false, "sample helper must not expose the legacy distribution factory");
+
+console.log("analysis sample contract passed");
