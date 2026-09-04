@@ -40,9 +40,6 @@ nalgebra = "0.35.0"
 [dev-dependencies]
 proptest = "1.7.0"
 
-[dev-dependencies]
-proptest = "1.7.0"
-
 [profile.dev]
 incremental = true
 
