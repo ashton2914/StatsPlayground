@@ -56,16 +56,20 @@ const viewSource = readFileSync(
   new URL("../src/components/distribution/DistributionView.tsx", import.meta.url),
   "utf8",
 );
+const presentationSource = readFileSync(
+  new URL("../src/components/distribution/distributionPresentation.tsx", import.meta.url),
+  "utf8",
+);
 
-assert.match(viewSource, /import \{ GraphRuntime \}/);
-assert.match(viewSource, /createEmbeddedGraphItem/);
-assert.match(viewSource, /externalDataState=/);
+assert.match(presentationSource, /import \{ GraphRuntime/);
+assert.match(presentationSource, /createEmbeddedGraphItem/);
+assert.match(presentationSource, /externalDataState:/);
 assert.match(viewSource, /useDistributionReport\(\s*dataset \? item : null/);
 assert.match(viewSource, /dataset\?\.generation \?\? null/, "report reloads must follow the authoritative dataset generation");
 assert.doesNotMatch(viewSource, /dataset\?\.updatedAt/, "metadata timestamps must not proxy dataset generation");
 assert.match(viewSource, /\{ getCurrentItem \}/, "view must fence reports against the latest stored item");
-assert.doesNotMatch(viewSource, /echarts|DistributionChart/);
-assert.equal((viewSource.match(/<GraphRuntime/g) ?? []).length, 1, "one mapped runtime expression renders all four roles");
-assert.match(viewSource, /DISTRIBUTION_GRAPH_ROLES\.map/);
+assert.doesNotMatch(presentationSource, /echarts|DistributionChart/);
+assert.equal((presentationSource.match(/<GraphRuntime/g) ?? []).length, 1, "one mapped runtime expression renders all four roles");
+assert.match(presentationSource, /DISTRIBUTION_GRAPH_ROLES\.map/);
 
 console.log("distribution graph embedding OK");

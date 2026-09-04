@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
-  DistributionGraphGrid,
+  DistributionGraphGrid as ReportDistributionGraphGrid,
   DistributionReportPanel,
 } from "@/components/distribution/distributionPresentation";
 import {
@@ -39,7 +39,7 @@ export function DistributionReportEmbed({
         <span className="sp-report-embed-meta">{t("workspace.datasourceLabel", { name: source.dataset.name })}</span>
       </div>
       <div className="sp-report-distribution-graphs">
-        <DistributionGraphGrid
+        <ReportDistributionGraphGrid
           item={source.item}
           dataset={source.dataset}
           reportState={reportState}

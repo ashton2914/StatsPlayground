@@ -10,10 +10,10 @@ import type { DatasetMeta } from "@/types/data";
 import type { DistributionItem } from "@/types/distribution";
 
 import {
-  DistributionGraphGrid,
+  DistributionGraphGrid as DistributionViewGraphGrid,
   DistributionReportPanel,
-  materializeDistributionGraphItems,
 } from "./distributionPresentation";
+import { materializeDistributionGraphItems } from "./distributionPresentation";
 import { createDistributionAxisRangeController } from "./distributionAxisInteractions";
 import { useDistributionReport } from "./useDistributionReport";
 import "./distribution.css";
@@ -65,7 +65,7 @@ export function DistributionView({ item, dataset }: DistributionViewProps) {
         {dataset == null ? (
           <div className="workspace-empty"><p>{t("workspace.datasourceDeleted")}</p></div>
         ) : (
-          <DistributionGraphGrid
+          <DistributionViewGraphGrid
             item={item}
             dataset={dataset}
             reportState={reportState}

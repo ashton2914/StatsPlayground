@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
-  DistributionGraphGrid,
+  DistributionGraphGrid as AnalysisDistributionGraphGrid,
   DistributionReportPanel,
 } from "@/components/distribution/distributionPresentation";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
@@ -91,7 +91,7 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
         {dataset == null ? (
           <div className="workspace-empty"><p>{t("workspace.analysisSourceMissing")}</p></div>
         ) : (
-          <DistributionGraphGrid
+          <AnalysisDistributionGraphGrid
             item={{
               id: item.id,
               name: item.name,

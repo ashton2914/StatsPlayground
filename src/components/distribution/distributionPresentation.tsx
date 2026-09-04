@@ -2,7 +2,8 @@ import { type ReactNode, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
-import { GraphRuntime, type GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
+import { GraphRuntime } from "@/components/graphBuilder/GraphRuntime";
+import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
 import {
   DISTRIBUTION_GRAPH_ROLES,
   mapDistributionExternalDataState,
