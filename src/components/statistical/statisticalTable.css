@@ -1,5 +1,7 @@
 .sp-stat-section {
+  overflow: hidden;
   border: 1px solid var(--border-main);
+  border-radius: 6px;
   background: var(--bg-panel);
 }
 
