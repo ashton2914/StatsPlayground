@@ -40,7 +40,12 @@
 
 .analysis-document-scroll { min-width: 0; overflow: auto; overflow-anchor: none; padding: 10px; }
 .analysis-document-frame,
-.analysis-frame { border: 1px solid var(--border-main); background: var(--bg-panel); }
+.analysis-frame {
+  overflow: hidden;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
 .analysis-document-title { min-height: 38px; color: var(--fg-primary); font-size: 13px; }
 .analysis-frame-title::before { content: "▾"; margin-right: 7px; }
 .analysis-content-flow { display: flex; flex-direction: column; gap: 10px; padding: 10px; }

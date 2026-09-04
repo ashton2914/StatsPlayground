@@ -29,7 +29,9 @@ test("configRevision-only changes fence stale results and force re-execution on 
 
   await expect(component.locator(".analysis-workspace")).toHaveCount(1);
   await expect(component.locator(".analysis-info-panel")).toContainText("Strength Distribution");
+  await expect(component.locator(".analysis-document-frame")).toHaveCSS("border-radius", "6px");
   await expect(component.locator(".analysis-frame", { hasText: "Graph" })).toHaveCount(1);
+  await expect(component.locator(".analysis-frame", { hasText: "Graph" })).toHaveCSS("border-radius", "6px");
   await expect(component.locator(".analysis-graph-composite [data-graph-role='overview']")).toHaveCount(1);
   await expect(component.locator(".analysis-graph-composite [data-graph-role='boxPlot']")).toHaveCount(1);
   await expect(component.locator(".analysis-graph-composite [data-graph-role='ecdf']")).toHaveCount(0);
