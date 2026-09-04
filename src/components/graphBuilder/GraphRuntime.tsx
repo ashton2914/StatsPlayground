@@ -32,6 +32,7 @@ export type { ExternalGraphDataState } from "./useGraphDataPipeline";
 export interface GraphRuntimeProps {
   item: GraphBuilderItem;
   dataset: DatasetMeta;
+  minPanelHeight?: number;
   externalDataState?: ExternalGraphDataState;
   showPointBudgetAction?: boolean;
   onRequestSampleMode?: () => void;
@@ -88,6 +89,7 @@ function snapshotChanged(previous: GraphRuntimeState | null, next: GraphRuntimeS
 export function GraphRuntime({
   item,
   dataset,
+  minPanelHeight,
   externalDataState,
   showPointBudgetAction = false,
   onRequestSampleMode,
@@ -310,6 +312,7 @@ export function GraphRuntime({
             spec={runtimeSpec}
             data={graphData}
             frame={frame}
+            minPanelHeight={minPanelHeight}
             valueOrders={valueOrders}
             onYAxisDblClick={item.mode === "multivariate" ? undefined : (axesTransposed ? onXAxisDblClick : onYAxisDblClick)}
             onXAxisDblClick={item.mode === "multivariate" ? undefined : (axesTransposed ? onYAxisDblClick : onXAxisDblClick)}

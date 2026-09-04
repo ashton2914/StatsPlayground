@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
@@ -37,6 +37,7 @@ export interface AnalysisViewRuntime extends UseAnalysisExecutionRuntime {
 
 export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
   const { t } = useTranslation();
+  const documentScrollRef = useRef<HTMLElement | null>(null);
   const supportedItem = isSupportedAnalysisDocument(item) ? item : null;
   const executionState = useAnalysisExecution(
     supportedItem,
@@ -60,6 +61,17 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
     }),
   }), [item]);
 
+  useEffect(() => {
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => documentScrollRef.current?.scrollTo({ top: 0, left: 0 }));
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [executionState.status, item.id]);
+
   if (item.schemaVersion !== 1) {
     return <UnsupportedAnalysis item={item} message={t("workspace.analysisUnsupported", { defaultValue: "Unsupported analysis schema." })} />;
   }
@@ -74,7 +86,7 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
   const fitName = item.definition.analysis.fitDistributions.join(", ") || "-";
 
   return (
-    <div className="analysis-workspace main-content">
+    <div className="analysis-workspace">
       <aside className="analysis-info-panel">
         <div className="analysis-panel-title">{t("workspace.analysis", { defaultValue: "Analysis" })}</div>
         <div className="analysis-info-body">
@@ -87,13 +99,13 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
           <dl className="analysis-metadata">
             <Metadata label={t("workspace.analysis", { defaultValue: "Analysis" })} value={t("distribution.title", { defaultValue: "Distribution" })} />
             <Metadata label={t("distribution.response", { defaultValue: "Response" })} value={responseName} />
-            <Metadata label={t("distribution.fit", { defaultValue: "Fit" })} value={fitName} />
+            <Metadata label="Fit" value={fitName} />
             <Metadata label={t("distribution.statistics.n", { defaultValue: "Rows" })} value={dataset?.rowCount.toLocaleString() ?? "-"} />
           </dl>
         </div>
       </aside>
 
-      <main className="analysis-document-scroll">
+      <main className="analysis-document-scroll" ref={documentScrollRef}>
         <article className="analysis-document-frame">
           <div className="analysis-frame-title analysis-document-title">{responseName || item.name}</div>
           <div className="analysis-content-flow">
@@ -107,6 +119,7 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
                     const graphProps = {
                       item: graphItems[role],
                       dataset,
+                      minPanelHeight: role === "boxPlot" ? 96 : 240,
                       externalDataState: mapDistributionExternalDataState(executionState, role),
                       role,
                     };
@@ -177,33 +190,37 @@ function AnalysisTables({ state, datasetMissing }: {
 
   return (
     <div className="analysis-tables-grid">
-      <section>
-        <h3>{t("distribution.report.quantiles", { defaultValue: "Quantiles" })}</h3>
-        <table className="sp-fit-y-by-x-report-table analysis-quantile-table">
-          <thead><tr><th>{t("distribution.report.probability")}</th><th>{t("distribution.report.label")}</th><th>{t("distribution.report.value")}</th></tr></thead>
-          <tbody>
-            {result.quantiles.map((quantile) => (
-              <tr key={quantile.probability}>
-                <th scope="row">{formatProbability(quantile.probability)}</th>
-                <td>{quantileLabel(quantile.probability, t)}</td>
-                <td>{formatNumber(quantile.value)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <section className="analysis-table-frame">
+        <h3 className="analysis-table-frame-title">{t("distribution.report.quantiles", { defaultValue: "Quantiles" })}</h3>
+        <div className="analysis-table-frame-body">
+          <table className="sp-fit-y-by-x-report-table analysis-quantile-table">
+            <thead><tr><th>{t("distribution.report.probability")}</th><th>{t("distribution.report.label")}</th><th>{t("distribution.report.value")}</th></tr></thead>
+            <tbody>
+              {result.quantiles.map((quantile) => (
+                <tr key={quantile.probability}>
+                  <th scope="row">{formatProbability(quantile.probability)}</th>
+                  <td>{quantileLabel(quantile.probability, t)}</td>
+                  <td>{formatNumber(quantile.value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
       {summary && (
-        <section>
-          <h3>{t("distribution.report.summary", { defaultValue: "Summary Statistics" })}</h3>
-          <div className="analysis-summary-grid">
-            <SummaryTable title={t("distribution.report.location")} rows={[
-              ["n", summary.n], ["mean", summary.mean], ["median", summary.median],
-              ["minimum", summary.minimum], ["maximum", summary.maximum],
-            ]} />
-            <SummaryTable title={t("distribution.report.variation")} rows={[
-              ["stdDev", summary.stdDev], ["stdError", summary.stdError],
-              ["range", summary.range], ["iqr", summary.iqr], ["mad", summary.mad],
-            ]} />
+        <section className="analysis-table-frame">
+          <h3 className="analysis-table-frame-title">{t("distribution.report.summary", { defaultValue: "Summary Statistics" })}</h3>
+          <div className="analysis-table-frame-body">
+            <div className="analysis-summary-grid">
+              <SummaryTable title={t("distribution.report.location")} rows={[
+                ["n", summary.n], ["mean", summary.mean], ["median", summary.median],
+                ["minimum", summary.minimum], ["maximum", summary.maximum],
+              ]} />
+              <SummaryTable title={t("distribution.report.variation")} rows={[
+                ["stdDev", summary.stdDev], ["stdError", summary.stdError],
+                ["range", summary.range], ["iqr", summary.iqr], ["mad", summary.mad],
+              ]} />
+            </div>
           </div>
         </section>
       )}

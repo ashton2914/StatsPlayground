@@ -36,6 +36,9 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(component.locator(".analysis-graph-composite [data-graph-role='normalQuantile']")).toHaveCount(0);
   await expect(component.locator(".analysis-tables-grid")).toContainText("Quantiles");
   await expect(component.locator(".analysis-tables-grid")).toContainText("Summary Statistics");
+  await expect(component.locator(".analysis-table-frame")).toHaveCount(2);
+  await expect(component.locator(".analysis-table-frame", { hasText: "Quantiles" }).locator("table")).toHaveCount(1);
+  await expect(component.locator(".analysis-table-frame", { hasText: "Summary Statistics" }).locator("table")).toHaveCount(2);
   await expect(component.locator(".analysis-text-block")).toHaveCSS("border-style", "none");
   assert.deepEqual(
     await component.locator(".analysis-content-flow > *").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-analysis-block"))),
