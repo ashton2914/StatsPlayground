@@ -1,266 +1,158 @@
 import assert from "node:assert/strict";
 
-import { useDistributionStore } from "../src/stores/useDistributionStore.ts";
-import type {
-  DistributionAnalysisConfigV1,
-  DistributionResultEnvelopeV1,
-  DistributionRunStateV1,
-  LoadedDistributionDocV1,
-  PreservedDistributionDocV1,
-} from "../src/types/distribution.ts";
+const [
+  { createDistributionItem },
+  { useProjectStore },
+  { useDistributionStore },
+] = await Promise.all([
+  import("../src/components/distribution/distributionConfig.ts"),
+  import("../src/stores/useProjectStore.ts"),
+  import("../src/stores/useDistributionStore.ts"),
+]);
 
-const config = (datasetId = "dataset-1"): DistributionAnalysisConfigV1 => ({
-  schemaVersion: "1",
-  sourceDatasetId: datasetId,
-  yColumns: [{ columnId: "col-y", modelingType: "continuous" }],
-  weightColumnId: null,
-  frequencyColumnId: null,
-  byColumnIds: [],
-  filterExpr: { kind: "isNull", fieldId: "col-y", negate: true },
-  confidenceLevel: 0.95,
-  histogramsOnly: false,
-  enabledCapabilityIds: [],
-  capabilityOverrides: [],
+const columns = [
+  { name: "height", sqlType: "DOUBLE", integerCompatible: false, field: { name: "height", type: "continuous" as const } },
+  { name: "site", sqlType: "VARCHAR", integerCompatible: false, field: { name: "site", type: "nominal" as const } },
+];
+
+function item(id: string, name: string, datasetId = "dataset-1") {
+  return createDistributionItem({
+    id,
+    name,
+    sourceDatasetId: datasetId,
+    responses: [columns[0]!.field],
+    weight: null,
+    frequency: null,
+    by: [columns[1]!.field],
+    columns,
+    createdAt: "2026-09-02T00:00:00.000Z",
+  });
+}
+
+function reset(): void {
+  useProjectStore.setState({ readOnly: false });
+  useDistributionStore.getState().reset();
+}
+
+reset();
+assert.equal(useDistributionStore.getState().nextName(), "Distribution 1");
+const created = useDistributionStore.getState().createItem({
+  id: "created",
+  sourceDatasetId: "dataset-1",
+  responses: [columns[0]!.field],
+  weight: null,
+  frequency: null,
+  by: [columns[1]!.field],
+  columns,
+  createdAt: "2026-09-02T00:00:00.000Z",
 });
+assert.equal(created.name, "Distribution 2");
+assert.deepEqual(useDistributionStore.getState().items, [created]);
 
-useDistributionStore.getState().reset();
-const first = useDistributionStore.getState().createItem(config());
-const second = useDistributionStore.getState().createItem(config());
-assert.equal(first.name, "Distribution 1");
-assert.equal(second.name, "Distribution 2");
-assert.equal(first.configRevision, 1);
-assert.notEqual(first.analysisId, second.analysisId);
-
-const copied = useDistributionStore.getState().copyItem(first.analysisId);
-assert.ok(copied);
-assert.equal(copied.name, "Distribution 3");
-assert.equal(copied.configRevision, 1);
-assert.deepEqual(copied.currentConfig, first.currentConfig);
-assert.notEqual(copied.analysisId, first.analysisId);
-
-useDistributionStore.getState().renameItem(first.analysisId, "Revenue Distribution");
-assert.equal(
-  useDistributionStore.getState().items.find((item) => item.analysisId === first.analysisId)?.name,
-  "Revenue Distribution",
-);
-
-const committed = useDistributionStore.getState().commitConfig(
-  first.analysisId,
-  1,
-  { ...config(), confidenceLevel: 0.99 },
-);
-assert.deepEqual(committed, { ok: true, configRevision: 2 });
-assert.deepEqual(
-  useDistributionStore.getState().commitConfig(first.analysisId, 1, config()),
-  { ok: false, code: "distribution.config.revisionConflict" },
-);
-
-const run: DistributionRunStateV1 = {
-  analysisId: first.analysisId,
-  configRevision: 2,
-  runId: "run-1",
-  status: "running",
-  progress: null,
-  snapshotId: "snapshot-1",
-  cancelToken: "cancel-1",
-};
-assert.equal(useDistributionStore.getState().beginRun(run), true);
-
-const result: DistributionResultEnvelopeV1 = {
-  analysisId: first.analysisId,
-  configRevision: 2,
-  runId: "run-1",
-  snapshotId: "snapshot-1",
-  completedAt: "2026-08-26T00:00:00Z",
-  reportBlocks: [],
-};
-assert.equal(useDistributionStore.getState().acceptResult(result), true);
-assert.deepEqual(useDistributionStore.getState().resultByAnalysisId[first.analysisId], result);
-assert.equal(
-  useDistributionStore.getState().runStateByAnalysisId[first.analysisId]?.status,
-  "completed",
-);
-
-useDistributionStore.getState().updateReportPreferences(first.analysisId, "col-y", {
-  overview: true,
-  quantiles: true,
-  summary: true,
-  ecdf: true,
-  processCapability: true,
-  capabilityHistogram: true,
-  capabilityProcessSummary: true,
-  capabilityWithin: true,
-  capabilityOverall: true,
-  capabilityNonconformance: true,
+useDistributionStore.getState().addItem(item("manual", "Distribution 7", "dataset-2"));
+assert.equal(useDistributionStore.getState().nextName(), "Distribution 8");
+useDistributionStore.getState().updateItem("created", {
+  analysis: {
+    confidenceLevel: 0.9,
+    specLimits: { height: { lsl: 1, target: 2, usl: 3 } },
+    fitDistributions: ["normal"],
+  },
 });
-const presentationUpdated = useDistributionStore.getState().items.find(
-  (item) => item.analysisId === first.analysisId,
-);
-assert.equal(presentationUpdated?.configRevision, 2);
-assert.equal(presentationUpdated?.currentConfig.reportPreferences?.["col-y"]?.ecdf, true);
-assert.deepEqual(useDistributionStore.getState().resultByAnalysisId[first.analysisId], result);
-assert.equal(
-  useDistributionStore.getState().runStateByAnalysisId[first.analysisId]?.status,
-  "completed",
-);
+assert.equal(useDistributionStore.getState().items[0]?.analysis.confidenceLevel, 0.9);
+useDistributionStore.getState().renameItem("created", "Distribution 12");
+assert.equal(useDistributionStore.getState().nextName(), "Distribution 13");
+useDistributionStore.getState().deleteByDataset("dataset-2");
+assert.equal(useDistributionStore.getState().items.some(({ id }) => id === "manual"), false);
+useDistributionStore.getState().deleteItem("created");
+assert.deepEqual(useDistributionStore.getState().items, []);
 
-const nextRun = { ...run, runId: "run-2", snapshotId: "snapshot-2", status: "running" as const };
-assert.equal(useDistributionStore.getState().beginRun(nextRun), true);
-assert.equal(useDistributionStore.getState().acceptResult(result), false);
-assert.equal(useDistributionStore.getState().acceptResult({
-  ...result,
-  runId: "run-2",
-  snapshotId: "snapshot-forged",
-}), false);
-assert.deepEqual(useDistributionStore.getState().resultByAnalysisId[first.analysisId], result);
-
+const valid = item("loaded", "Distribution 4");
+const customOverview = {
+  ...valid.graphs.overview,
+  modeStates: {
+    ...valid.graphs.overview.modeStates,
+    twoD: {
+      ...valid.graphs.overview.modeStates.twoD,
+      xAxis: { min: 1, max: 10 },
+    },
+  },
+};
+const malformed = {
+  ...item("malformed", "Malformed Distribution"),
+  analysis: { confidenceLevel: 2 },
+  graphs: { overview: { mode: "bogus" } },
+};
+const wrongGraphFamily = {
+  ...item("wrong-family", "Wrong graph family"),
+  graphs: {
+    ...valid.graphs,
+    overview: valid.graphs.boxPlot,
+  },
+};
+const partial = {
+  id: "partial",
+  name: "Distribution 9",
+  sourceDatasetId: "dataset-9",
+  responses: [{ name: "height", type: "continuous" }],
+  createdAt: "2026-09-02T00:00:00.000Z",
+};
+const invalidRoles = {
+  ...item("invalid", "Distribution 99"),
+  responses: [{ name: "site", type: "nominal" }],
+};
+useDistributionStore.getState().loadFromProject([
+  { ...valid, graphs: { ...valid.graphs, overview: customOverview } },
+  malformed,
+  wrongGraphFamily,
+  partial,
+  invalidRoles,
+]);
+const loaded = useDistributionStore.getState().items;
+assert.deepEqual(loaded.map(({ id }) => id), ["loaded", "malformed", "wrong-family", "partial"]);
+assert.equal(loaded[0]?.graphs.overview.modeStates.twoD.xAxis?.min, 1);
+assert.equal(loaded.find(({ id }) => id === "malformed")?.analysis.confidenceLevel, 0.95);
 assert.deepEqual(
-  useDistributionStore.getState().commitConfig(first.analysisId, 2, config()),
-  { ok: true, configRevision: 3 },
+  loaded.find(({ id }) => id === "malformed")?.graphs.overview.modeStates.twoD.elements,
+  valid.graphs.overview.modeStates.twoD.elements,
 );
-assert.equal(
-  useDistributionStore.getState().acceptResult({
-    ...result,
-    runId: "run-2",
-    snapshotId: "snapshot-2",
+assert.deepEqual(
+  loaded.find(({ id }) => id === "wrong-family")?.graphs.overview.modeStates.twoD.elements,
+  valid.graphs.overview.modeStates.twoD.elements,
+);
+assert.deepEqual(loaded.find(({ id }) => id === "partial")?.by, []);
+assert.equal(loaded.find(({ id }) => id === "partial")?.weight, null);
+assert.equal(useDistributionStore.getState().nextName(), "Distribution 10");
+
+const mutators = [
+  () => useDistributionStore.getState().createItem({
+    id: "blocked-create",
+    sourceDatasetId: "dataset-1",
+    responses: [columns[0]!.field],
+    weight: null,
+    frequency: null,
+    by: [],
+    columns,
+    createdAt: "2026-09-02T00:00:00.000Z",
   }),
-  false,
-);
+  () => useDistributionStore.getState().addItem(item("blocked-add", "Blocked")),
+  () => useDistributionStore.getState().updateItem("loaded", { name: "Blocked" }),
+  () => useDistributionStore.getState().renameItem("loaded", "Blocked"),
+  () => useDistributionStore.getState().deleteItem("loaded"),
+  () => useDistributionStore.getState().deleteByDataset("dataset-1"),
+  () => useDistributionStore.getState().loadFromProject([]),
+  () => useDistributionStore.getState().reset(),
+  () => useDistributionStore.getState().nextName(),
+];
+useProjectStore.setState({ readOnly: true });
+for (const mutate of mutators) {
+  assert.throws(mutate, /Project is read-only while save is in progress\./);
+}
 
-const failedRun = {
-  ...run,
-  configRevision: 3,
-  runId: "run-3",
-  snapshotId: "snapshot-3",
-  status: "running" as const,
-};
-assert.equal(useDistributionStore.getState().beginRun(failedRun), true);
-assert.equal(useDistributionStore.getState().failRun({
-  analysisId: first.analysisId,
-  configRevision: 3,
-  runId: "run-3",
-  snapshotId: "snapshot-3",
-  code: "distribution.run.syntheticFailure",
-  messageKey: "distribution.errors.syntheticFailure",
-}), true);
-assert.equal(useDistributionStore.getState().failureByAnalysisId[first.analysisId]?.code,
-  "distribution.run.syntheticFailure");
-assert.deepEqual(useDistributionStore.getState().resultByAnalysisId[first.analysisId], result);
-
-const cancellableRun = {
-  ...run,
-  configRevision: 3,
-  runId: "run-4",
-  snapshotId: "snapshot-4",
-  cancelToken: "cancel-4",
-  status: "running" as const,
-};
-const secondRun = {
-  ...run,
-  analysisId: second.analysisId,
-  configRevision: 1,
-  runId: "run-second",
-  snapshotId: "snapshot-second",
-  cancelToken: "cancel-second",
-  status: "running" as const,
-};
-assert.equal(useDistributionStore.getState().beginRun(cancellableRun), true);
-assert.equal(useDistributionStore.getState().beginRun(secondRun), true);
-useDistributionStore.getState().updateProgress({
-  analysisId: first.analysisId,
-  configRevision: 3,
-  runId: "run-4",
-  snapshotId: "snapshot-4",
-  phase: "prepare",
-  current: 1,
-  total: 2,
-  messageKey: "distribution.prepare",
-  percent: 50,
-});
-assert.equal(
-  useDistributionStore.getState().runStateByAnalysisId[first.analysisId]?.progress?.current,
-  1,
-);
-useDistributionStore.getState().updateProgress({
-  analysisId: first.analysisId,
-  configRevision: 3,
-  runId: "run-4",
-  snapshotId: "snapshot-forged",
-  phase: "prepare",
-  current: 2,
-  total: 2,
-  messageKey: "distribution.prepare",
-  percent: 100,
-});
-assert.equal(
-  useDistributionStore.getState().runStateByAnalysisId[first.analysisId]?.progress?.current,
-  1,
-);
-assert.equal(useDistributionStore.getState().runState?.runId, "run-second");
-useDistributionStore.getState().cancelRun("cancel-4");
-assert.equal(
-  useDistributionStore.getState().runStateByAnalysisId[first.analysisId]?.status,
-  "cancelled",
-);
-assert.equal(useDistributionStore.getState().runState?.runId, "run-second");
-assert.equal(useDistributionStore.getState().acceptResult({
-  ...result,
-  configRevision: 3,
-  runId: "run-4",
-  snapshotId: "snapshot-4",
-}), false);
-assert.deepEqual(useDistributionStore.getState().resultByAnalysisId[first.analysisId], result);
-
-useDistributionStore.getState().selectItem(first.analysisId);
-useDistributionStore.getState().deleteItem(first.analysisId);
-assert.equal(useDistributionStore.getState().selectedAnalysisId, null);
-assert.equal(useDistributionStore.getState().runStateByAnalysisId[first.analysisId], undefined);
-assert.equal(useDistributionStore.getState().resultByAnalysisId[first.analysisId], undefined);
-
-const loaded: LoadedDistributionDocV1 = {
-  schemaVersion: "1",
-  analysisId: "loaded-8",
-  name: "Distribution 8",
-  sourceDatasetId: "dataset-1",
-  status: "ready",
-  loadStatus: "ready",
-  configRevision: 4,
-  currentConfig: config(),
-};
-const preserved: PreservedDistributionDocV1 = {
-  schemaVersion: "99",
-  analysisId: "future-1",
-  name: "Future Distribution",
-  sourceDatasetId: "dataset-1",
-  status: "unavailable",
-  loadStatus: "unknownVersion",
-  currentConfig: {},
-  rawEnvelope: { schemaVersion: "99" },
-};
-useDistributionStore.getState().loadFromProject([loaded, preserved], [], []);
-assert.deepEqual(useDistributionStore.getState().runStateByAnalysisId, {});
-assert.deepEqual(useDistributionStore.getState().resultByAnalysisId, {});
-assert.equal(useDistributionStore.getState().copyItem(preserved.analysisId), null);
-const missing: LoadedDistributionDocV1 = {
-  ...loaded,
-  analysisId: "missing-1",
-  sourceDatasetId: "deleted-dataset",
-  loadStatus: "missingSource",
-  currentConfig: config("deleted-dataset"),
-};
-useDistributionStore.getState().loadFromProject([missing], [], []);
-assert.deepEqual(
-  useDistributionStore.getState().commitConfig(
-    missing.analysisId,
-    missing.configRevision,
-    config("replacement-dataset"),
-  ),
-  { ok: true, configRevision: 5 },
-);
-assert.equal(useDistributionStore.getState().items[0]?.loadStatus, "ready");
-assert.equal(useDistributionStore.getState().createItem(config(), "Custom Analysis").name,
-  "Custom Analysis");
-assert.equal(useDistributionStore.getState().createItem(config()).name, "Distribution 9");
-
+useProjectStore.setState({ readOnly: false });
 useDistributionStore.getState().reset();
-console.log("distribution lifecycle store OK");
+assert.deepEqual(useDistributionStore.getState().items, []);
+assert.equal(useDistributionStore.getState().counter, 0);
+assert.equal("resultByAnalysisId" in useDistributionStore.getState(), false);
+assert.equal("runState" in useDistributionStore.getState(), false);
+
+console.log("distribution store contract passed");

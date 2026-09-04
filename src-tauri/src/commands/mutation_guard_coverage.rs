@@ -240,9 +240,10 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
-                "commands::tabulate_commands::tabulate",
+                "commands::distribution_commands::compute_distribution_report",
                 CommandClass::ReadOnly,
             ),
+            ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
             (
                 "commands::io_commands::import_sqlite",
@@ -308,30 +309,16 @@ mod tests {
                 "commands::project_commands::export_tables_sptb_zip",
                 CommandClass::ReadOnly,
             ),
+            ("commands::project_commands::import_table", CommandClass::Mutation),
+            ("commands::project_commands::export_graph", CommandClass::ReadOnly),
+            ("commands::project_commands::import_graph", CommandClass::ReadOnly),
+            ("commands::table_commands::get_columns", CommandClass::ReadOnly),
             (
-                "commands::project_commands::import_table",
-                CommandClass::Mutation,
-            ),
-            (
-                "commands::project_commands::export_graph",
+                "commands::table_commands::get_column_descriptors",
                 CommandClass::ReadOnly,
             ),
-            (
-                "commands::project_commands::import_graph",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::table_commands::get_columns",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::table_commands::sort_table",
-                CommandClass::Mutation,
-            ),
-            (
-                "commands::table_commands::subset_table",
-                CommandClass::Mutation,
-            ),
+            ("commands::table_commands::sort_table", CommandClass::Mutation),
+            ("commands::table_commands::subset_table", CommandClass::Mutation),
             (
                 "commands::table_commands::transpose_table",
                 CommandClass::Mutation,

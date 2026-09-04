@@ -1,5 +1,4 @@
 use crate::error::AppError;
-use crate::models::distribution::{DistributionIssueV1, DistributionLoadStatusV1};
 use crate::models::project::{DatasetNameMigration, DocumentNameMigration, ProjectInfo};
 use crate::models::save::{
     SaveProgressCallback, SaveProjectRequest, SaveSnapshot, SaveWriteResult,
@@ -9,10 +8,12 @@ use crate::services::archive_cell::{
     archive_cell_to_json, archive_export_expression, is_archive_scalar_type,
 };
 use crate::services::spprj_archive::{
-    self, DerivedFormulaDocV1, DistributionDocV1, GraphDoc, ProjectBundle, TableColumn,
-    TableColumnFormat, TableDoc,
+    self, GraphDoc, ProjectBundle, TableColumn, TableColumnFormat, TableDoc,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
+use crate::services::workflow_domain::{
+    LogicalFolder, ProjectLineageGraph, WorkflowDefinition, WorkflowRun,
+};
 use crate::state::AppState;
 use duckdb::appender_params_from_iter;
 use duckdb::types::Value as DuckValue;
@@ -39,13 +40,11 @@ pub struct OpenProjectResult {
     #[serde(default)]
     pub fit_models: Vec<serde_json::Value>,
     #[serde(default)]
+    pub reports: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub distributions: Vec<serde_json::Value>,
+    #[serde(default)]
     pub tabulates: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub distributions: Vec<DistributionDocV1>,
-    #[serde(default)]
-    pub derived_formulas: Vec<DerivedFormulaDocV1>,
-    #[serde(default)]
-    pub distribution_issues: Vec<DistributionIssueV1>,
     /// All folder paths that exist in the project (including empty ones).
     #[serde(default)]
     pub folders: Vec<String>,
@@ -60,6 +59,10 @@ pub struct OpenProjectResult {
     #[serde(default)]
     pub fit_model_folders: std::collections::HashMap<String, String>,
     #[serde(default)]
+    pub report_folders: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub distribution_folders: std::collections::HashMap<String, String>,
+    #[serde(default)]
     pub document_name_migrations: Vec<DocumentNameMigration>,
     #[serde(default)]
     pub dataset_name_migrations: Vec<DatasetNameMigration>,
@@ -69,16 +72,17 @@ pub struct OpenProjectResult {
     #[serde(default)]
     pub tabulate_folders: std::collections::HashMap<String, String>,
     #[serde(default)]
-    pub distribution_folders: std::collections::HashMap<String, String>,
+    pub workflows: Vec<WorkflowDefinition>,
+    #[serde(default)]
+    pub logical_folders: Vec<LogicalFolder>,
+    #[serde(default)]
+    pub workflow_runs: Vec<WorkflowRun>,
+    #[serde(default)]
+    pub lineage_graph: ProjectLineageGraph,
 }
 
-const SPPRJ_VERSION: &str = "3.0.0";
-
-fn push_distribution_issue(issues: &mut Vec<DistributionIssueV1>, issue: DistributionIssueV1) {
-    if !issues.contains(&issue) {
-        issues.push(issue);
-    }
-}
+const SPPRJ_VERSION: &str = "4.0.0";
+const SPPRJ_MAJOR_VERSION: u32 = 4;
 
 #[cfg(any(test, feature = "perf-harness"))]
 pub(crate) fn seed_save_project(
@@ -158,8 +162,6 @@ impl<'a> ProjectService<'a> {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
-            Vec::new(),
             &empty_folders,
             &empty_folders,
             &empty_folders,
@@ -168,7 +170,7 @@ impl<'a> ProjectService<'a> {
             &empty_folders,
             Vec::new(),
             Vec::new(),
-        );
+        )?;
         spprj_archive::write_project_archive(&bundle, file_path)?;
 
         let mut proj = self
@@ -189,7 +191,27 @@ impl<'a> ProjectService<'a> {
         progress_cb: Option<&dyn Fn(usize, usize, &str, usize, usize)>,
     ) -> Result<OpenProjectResult, AppError> {
         let mut bundle = spprj_archive::read_project_file(file_path)?;
-        let dataset_name_migrations = normalize_duplicate_dataset_names(&mut bundle.tables);
+        if is_future_project_format(&bundle.manifest.version) {
+            return Err(AppError::InvalidParam(format!(
+                "Unsupported project format version: {}",
+                bundle.manifest.version
+            )));
+        }
+        let requires_migration = requires_archive_migration(&bundle.manifest.version);
+        let document_name_migrations = if requires_migration {
+            normalize_visible_document_names(&mut bundle)
+        } else {
+            Vec::new()
+        };
+        let dataset_name_migrations = document_name_migrations
+            .iter()
+            .filter(|migration| migration.kind == "table")
+            .map(|migration| DatasetNameMigration {
+                dataset_id: migration.id.clone(),
+                old_name: migration.old_name.clone(),
+                new_name: migration.new_name.clone(),
+            })
+            .collect();
 
         let staged_state = AppState::new()?;
         let total = bundle.tables.len();
@@ -224,128 +246,13 @@ impl<'a> ProjectService<'a> {
         };
         let fit_y_by_x_folders = bundle.manifest.fit_y_by_x_folders.clone();
         let fit_model_folders = bundle.manifest.fit_model_folders.clone();
-        let tabulate_folders = bundle.manifest.tabulate_folders.clone();
         let distribution_folders = bundle.manifest.distribution_folders.clone();
-        let mut distribution_issues = bundle
-            .manifest
-            .distribution_issues
-            .iter()
-            .filter_map(|issue| serde_json::from_value(issue.clone()).ok())
-            .collect::<Vec<DistributionIssueV1>>();
-        let dataset_ids = {
-            let db = staged_state
-                .db
-                .lock()
-                .map_err(|error| AppError::Database(error.to_string()))?;
-            db.list_datasets()?
-                .into_iter()
-                .map(|dataset| dataset.id)
-                .collect::<std::collections::HashSet<_>>()
-        };
-        let distribution_entries = bundle
-            .manifest
-            .distributions
-            .iter()
-            .map(|entry| (entry.analysis_id.as_str(), entry))
-            .collect::<std::collections::HashMap<_, _>>();
-        let distributions = bundle
-            .distributions
-            .iter()
-            .map(|record| match record {
-                spprj_archive::DistributionArchiveRecordV1::Parsed(envelope) => {
-                    let mut doc = envelope.body.clone();
-                    doc.load_status = DistributionLoadStatusV1::Ready;
-                    if !dataset_ids.contains(&doc.source_dataset_id) {
-                        doc.load_status = DistributionLoadStatusV1::MissingSource;
-                        doc.status = "unavailable".to_string();
-                        push_distribution_issue(
-                            &mut distribution_issues,
-                            DistributionIssueV1 {
-                            analysis_id: doc.analysis_id.clone(),
-                            kind: DistributionLoadStatusV1::MissingSource,
-                            message_key: "distribution.issue.missingSource".to_string(),
-                            schema_version: doc.schema_version.clone(),
-                            source_dataset_id: Some(doc.source_dataset_id.clone()),
-                            },
-                        );
-                    }
-                    doc
-                }
-                spprj_archive::DistributionArchiveRecordV1::UnknownVersion {
-                    analysis_id,
-                    schema_version,
-                    raw_envelope,
-                } => {
-                    let entry = distribution_entries.get(analysis_id.as_str());
-                    let body = raw_envelope.get("body").unwrap_or(raw_envelope);
-                    let source_dataset_id = body
-                        .get("sourceDatasetId")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    push_distribution_issue(
-                        &mut distribution_issues,
-                        DistributionIssueV1 {
-                        analysis_id: analysis_id.clone(),
-                        kind: DistributionLoadStatusV1::UnknownVersion,
-                        message_key: "distribution.issue.unknownVersion".to_string(),
-                        schema_version: schema_version.clone(),
-                            source_dataset_id: (!source_dataset_id.is_empty())
-                                .then(|| source_dataset_id.clone()),
-                        },
-                    );
-                    DistributionDocV1 {
-                        schema_version: schema_version.clone(),
-                        analysis_id: analysis_id.clone(),
-                        name: entry.map(|value| value.name.clone()).unwrap_or_default(),
-                        source_dataset_id,
-                        status: "unavailable".to_string(),
-                        config_revision: 1,
-                        current_config: body
-                            .get("currentConfig")
-                            .cloned()
-                            .unwrap_or_else(|| serde_json::json!({})),
-                        load_status: DistributionLoadStatusV1::UnknownVersion,
-                        raw_envelope: Some(raw_envelope.clone()),
-                        raw_text: None,
-                    }
-                }
-                spprj_archive::DistributionArchiveRecordV1::Corrupt {
-                    analysis_id,
-                    raw_text,
-                } => {
-                    let entry = distribution_entries.get(analysis_id.as_str());
-                    push_distribution_issue(
-                        &mut distribution_issues,
-                        DistributionIssueV1 {
-                        analysis_id: analysis_id.clone(),
-                        kind: DistributionLoadStatusV1::Corrupt,
-                        message_key: "distribution.issue.corrupt".to_string(),
-                        schema_version: "unknown".to_string(),
-                        source_dataset_id: None,
-                        },
-                    );
-                    DistributionDocV1 {
-                        schema_version: "unknown".to_string(),
-                        analysis_id: analysis_id.clone(),
-                        name: entry.map(|value| value.name.clone()).unwrap_or_default(),
-                        source_dataset_id: String::new(),
-                        status: "unavailable".to_string(),
-                        config_revision: 1,
-                        current_config: serde_json::json!({}),
-                        load_status: DistributionLoadStatusV1::Corrupt,
-                        raw_envelope: None,
-                        raw_text: Some(raw_text.clone()),
-                    }
-                }
-            })
-            .collect();
-        let derived_formulas = bundle
-            .derived_formulas
-            .iter()
-            .map(|envelope| envelope.body.clone())
-            .collect();
+        let tabulate_folders = bundle.manifest.tabulate_folders.clone();
         let folders = bundle.manifest.folders.clone();
+        let workflows = bundle.workflows.clone();
+        let logical_folders = bundle.manifest.logical_folders.clone();
+        let workflow_runs = bundle.manifest.workflow_runs.clone();
+        let lineage_graph = bundle.manifest.lineage_graph.clone();
 
         // Re-pack graph docs into the opaque JSON shape the frontend
         // understands. The body map stored on disk no longer carries named
@@ -405,20 +312,24 @@ impl<'a> ProjectService<'a> {
             graph_builders,
             fit_y_by_x: bundle.fit_y_by_x,
             fit_models: bundle.fit_models,
+            reports: bundle.reports,
+            distributions: bundle.distributions,
             tabulates: bundle.tabulates,
-            distributions,
-            derived_formulas,
-            distribution_issues,
             folders,
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
             fit_model_folders,
-            document_name_migrations: Vec::new(),
-            dataset_name_migrations,
-            requires_migration: false,
-            tabulate_folders,
+            report_folders: bundle.manifest.report_folders,
             distribution_folders,
+            document_name_migrations,
+            dataset_name_migrations,
+            requires_migration,
+            tabulate_folders,
+            workflows,
+            logical_folders,
+            workflow_runs,
+            lineage_graph,
         })
     }
 
@@ -583,15 +494,11 @@ impl<'a> ProjectService<'a> {
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
 
         let mut col_stmt = db.conn().prepare(
-            "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+            "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
         )?;
-        let base_columns: Vec<(String, String, String)> = col_stmt
+        let base_columns: Vec<(String, String)> = col_stmt
             .query_map(duckdb::params![dataset_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -599,10 +506,9 @@ impl<'a> ProjectService<'a> {
         let columns: Vec<TableColumn> = base_columns
             .iter()
             .enumerate()
-            .map(|(i, (column_id, name, col_type))| {
+            .map(|(i, (name, col_type))| {
                 let dp = ds_display.and_then(|v| v.iter().find(|p| p.col_index == i));
                 TableColumn {
-                    column_id: Some(column_id.clone()),
                     name: name.clone(),
                     col_type: col_type.clone(),
                     width: dp.and_then(|p| p.width),
@@ -654,7 +560,7 @@ impl<'a> ProjectService<'a> {
             id: dataset_id.to_string(),
             name: meta.name,
             source_type: meta.source_type,
-            version: "3".to_string(),
+            version: "2".to_string(),
             columns,
             rows,
         })
@@ -672,7 +578,7 @@ impl<'a> ProjectService<'a> {
         doc: &TableDoc,
         progress_cb: Option<&dyn Fn(usize, usize)>,
     ) -> Result<String, AppError> {
-        if doc.version != "1" && doc.version != "2" && doc.version != "3" {
+        if doc.version != "1" && doc.version != "2" {
             return Err(AppError::InvalidParam(format!(
                 "unsupported table document version: {}",
                 doc.version
@@ -714,14 +620,6 @@ impl<'a> ProjectService<'a> {
         db.conn().execute_batch("BEGIN TRANSACTION")?;
         let restore_result = (|| -> Result<(), AppError> {
             db.create_empty_table(&doc.id, &doc.name, &col_names, &col_types)?;
-            for (index, column) in doc.columns.iter().enumerate() {
-                if let Some(column_id) = &column.column_id {
-                    db.conn().execute(
-                        "UPDATE _meta_columns SET column_id = $1 WHERE dataset_id = $2 AND col_index = $3",
-                        duckdb::params![column_id, &doc.id, index as i32],
-                    )?;
-                }
-            }
             let canonical_columns = db.get_user_columns(&doc.id)?;
 
             if !doc.rows.is_empty() {
@@ -738,7 +636,7 @@ impl<'a> ProjectService<'a> {
                                 .checked_sub(1)
                                 .map(|column_index| canonical_columns[column_index].1.as_str());
                             let decode_v2_tag = index > 0
-                                && (doc.version == "2" || doc.version == "3")
+                                && doc.version == "2"
                                 && !is_archive_scalar_type(&canonical_columns[index - 1].1);
                             json_to_duckdb_param(value, decode_v2_tag, column_type)
                         })
@@ -1127,29 +1025,215 @@ fn dedupe_zip_path(base: &str, ext: &str, used: &mut std::collections::HashSet<S
     candidate
 }
 
+const FORBIDDEN_NAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn requires_archive_migration(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .map(|major| major < SPPRJ_MAJOR_VERSION)
+        .unwrap_or(true)
+}
+
+fn is_future_project_format(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .map(|major| major > SPPRJ_MAJOR_VERSION)
+        .unwrap_or(false)
+}
+
+fn sanitize_portable_basename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || FORBIDDEN_NAME_CHARS.contains(&ch) {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    cleaned
+        .trim_matches(|ch: char| ch.is_whitespace() || ch == '.')
+        .to_string()
+}
+
+fn normalize_legacy_basename(name: &str, fallback: &str) -> String {
+    let fallback_name = sanitize_portable_basename(fallback);
+    let mut base = sanitize_portable_basename(name);
+    if base.is_empty() {
+        base = if fallback_name.is_empty() {
+            "Untitled".to_string()
+        } else {
+            fallback_name
+        };
+    }
+
+    let stem_upper = base
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if WINDOWS_RESERVED_NAMES.contains(&stem_upper.as_str()) {
+        base.push('_');
+    }
+    base
+}
+
+fn allocate_case_insensitive_name(
+    requested_name: &str,
+    fallback_id: &str,
+    used_names: &mut std::collections::HashSet<String>,
+) -> String {
+    let base = normalize_legacy_basename(requested_name, fallback_id);
+    let mut suffix = 1usize;
+    loop {
+        let candidate = if suffix == 1 {
+            base.clone()
+        } else {
+            format!("{}-{}", base, suffix)
+        };
+        let key = candidate.to_ascii_lowercase();
+        if used_names.insert(key) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
+fn value_id(value: &serde_json::Value, fallback_prefix: &str, index: usize) -> String {
+    value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}-{}", fallback_prefix, index + 1))
+}
+
+fn value_name_or_id(value: &serde_json::Value, fallback_id: &str) -> String {
+    value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback_id.to_string())
+}
+
+fn set_object_name(value: &mut serde_json::Value, new_name: &str) {
+    if let Some(map) = value.as_object_mut() {
+        map.insert(
+            "name".to_string(),
+            serde_json::Value::String(new_name.to_string()),
+        );
+    }
+}
+
+fn normalize_visible_document_names(bundle: &mut ProjectBundle) -> Vec<DocumentNameMigration> {
+    let mut migrations = Vec::new();
+
+    let mut table_names = std::collections::HashSet::new();
+    for table in &mut bundle.tables {
+        let old_name = table.name.clone();
+        let new_name = allocate_case_insensitive_name(&old_name, &table.id, &mut table_names);
+        if new_name != old_name {
+            table.name = new_name.clone();
+            migrations.push(DocumentNameMigration {
+                id: table.id.clone(),
+                kind: "table".to_string(),
+                old_name,
+                new_name,
+            });
+        }
+    }
+
+    let mut graph_names = std::collections::HashSet::new();
+    for graph in &mut bundle.graphs {
+        let old_name = graph.name.clone();
+        let new_name = allocate_case_insensitive_name(&old_name, &graph.id, &mut graph_names);
+        if new_name != old_name {
+            graph.name = new_name.clone();
+            migrations.push(DocumentNameMigration {
+                id: graph.id.clone(),
+                kind: "graph".to_string(),
+                old_name,
+                new_name,
+            });
+        }
+    }
+
+    let mut active_spf_names = std::collections::HashSet::new();
+    for (index, fit) in bundle.fit_y_by_x.iter_mut().enumerate() {
+        let fit_id = value_id(fit, "fitYByX", index);
+        let old_name = value_name_or_id(fit, &fit_id);
+        let new_name = allocate_case_insensitive_name(&old_name, &fit_id, &mut active_spf_names);
+        if new_name != old_name {
+            set_object_name(fit, &new_name);
+            migrations.push(DocumentNameMigration {
+                id: fit_id,
+                kind: "fitYByX".to_string(),
+                old_name,
+                new_name,
+            });
+        }
+    }
+    for (index, tabulate) in bundle.tabulates.iter_mut().enumerate() {
+        let tabulate_id = value_id(tabulate, "tabulate", index);
+        let old_name = value_name_or_id(tabulate, &tabulate_id);
+        let new_name =
+            allocate_case_insensitive_name(&old_name, &tabulate_id, &mut active_spf_names);
+        if new_name != old_name {
+            set_object_name(tabulate, &new_name);
+            migrations.push(DocumentNameMigration {
+                id: tabulate_id,
+                kind: "tabulate".to_string(),
+                old_name,
+                new_name,
+            });
+        }
+    }
+
+    let mut snapshot_names = std::collections::HashSet::new();
+    for (index, snapshot) in bundle.snapshots.iter_mut().enumerate() {
+        let snapshot_id = value_id(snapshot, "snapshot", index);
+        let old_name = value_name_or_id(snapshot, &snapshot_id);
+        let new_name = allocate_case_insensitive_name(&old_name, &snapshot_id, &mut snapshot_names);
+        if new_name != old_name {
+            set_object_name(snapshot, &new_name);
+            migrations.push(DocumentNameMigration {
+                id: snapshot_id,
+                kind: "snapshot".to_string(),
+                old_name,
+                new_name,
+            });
+        }
+    }
+
+    migrations
+}
+
+#[cfg(test)]
 fn normalize_duplicate_dataset_names(docs: &mut [TableDoc]) -> Vec<DatasetNameMigration> {
     let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut migrations = Vec::new();
 
     for doc in docs.iter_mut() {
-        let original_name = doc.name.clone();
-        if used_names.insert(original_name.to_lowercase()) {
-            continue;
-        }
-
-        let mut suffix = 2;
-        loop {
-            let candidate = format!("{} ({})", original_name, suffix);
-            if used_names.insert(candidate.to_lowercase()) {
-                doc.name = candidate.clone();
-                migrations.push(DatasetNameMigration {
-                    dataset_id: doc.id.clone(),
-                    old_name: original_name.clone(),
-                    new_name: candidate,
-                });
-                break;
-            }
-            suffix += 1;
+        let old_name = doc.name.clone();
+        let new_name = allocate_case_insensitive_name(&old_name, &doc.id, &mut used_names);
+        if new_name != old_name {
+            doc.name = new_name.clone();
+            migrations.push(DatasetNameMigration {
+                dataset_id: doc.id.clone(),
+                old_name,
+                new_name,
+            });
         }
     }
 
@@ -1163,10 +1247,13 @@ mod tests {
     use crate::models::project::ProjectInfo;
     use crate::models::save::SaveProjectRequest;
     use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
-    use crate::services::spprj_archive::{self, TableColumn, TableDoc};
+    use crate::services::spprj_archive::{
+        self, GraphEntryRef, ProjectManifest, TableColumn, TableDoc, TableEntryRef,
+    };
     use crate::state::AppState;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, HashMap};
+    use std::io::Write;
 
     fn source_between(source: &str, start: &str, end: &str) -> String {
         let start_idx = source
@@ -1196,11 +1283,13 @@ mod tests {
         snapshots: Vec<serde_json::Value>,
         graph_builders: Vec<serde_json::Value>,
         fit_y_by_x: Vec<serde_json::Value>,
+        reports: Vec<serde_json::Value>,
         tabulates: Vec<serde_json::Value>,
         folders: Vec<String>,
         table_folders: HashMap<String, String>,
         graph_folders: HashMap<String, String>,
         fit_y_by_x_folders: HashMap<String, String>,
+        report_folders: HashMap<String, String>,
         tabulate_folders: HashMap<String, String>,
     ) -> SaveProjectRequest {
         SaveProjectRequest {
@@ -1210,17 +1299,20 @@ mod tests {
             graph_builders,
             fit_y_by_x,
             fit_models: Vec::new(),
-            tabulates,
+            reports,
             distributions: Vec::new(),
-            derived_formulas: Vec::new(),
-            distribution_issues: Vec::new(),
+            tabulates,
             folders,
             table_folders,
             graph_folders,
             fit_y_by_x_folders,
             fit_model_folders: HashMap::new(),
-            tabulate_folders,
+            report_folders,
             distribution_folders: HashMap::new(),
+            tabulate_folders,
+            workflows: Vec::new(),
+            logical_folders: Vec::new(),
+            workflow_runs: Vec::new(),
         }
     }
 
@@ -1233,11 +1325,20 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
         )
+    }
+
+    fn write_zip_entry(zip: &mut zip::ZipWriter<std::fs::File>, path: &str, bytes: &[u8]) {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file(path, options).unwrap();
+        zip.write_all(bytes).unwrap();
     }
 
     #[test]
@@ -1293,15 +1394,15 @@ mod tests {
         let migrations = normalize_duplicate_dataset_names(&mut docs);
 
         assert_eq!(docs[0].name, "Sales");
-        assert_eq!(docs[1].name, "sales (2)");
-        assert_eq!(docs[2].name, "Sales (3)");
+        assert_eq!(docs[1].name, "sales-2");
+        assert_eq!(docs[2].name, "Sales-3");
         assert_eq!(migrations.len(), 2);
         assert_eq!(migrations[0].dataset_id, "two");
         assert_eq!(migrations[0].old_name, "sales");
-        assert_eq!(migrations[0].new_name, "sales (2)");
+        assert_eq!(migrations[0].new_name, "sales-2");
         assert_eq!(migrations[1].dataset_id, "three");
         assert_eq!(migrations[1].old_name, "Sales");
-        assert_eq!(migrations[1].new_name, "Sales (3)");
+        assert_eq!(migrations[1].new_name, "Sales-3");
     }
 
     #[test]
@@ -1426,7 +1527,6 @@ mod tests {
             source_type: "manual".into(),
             version: "2".into(),
             columns: vec![TableColumn {
-                column_id: None,
                 name: "value".into(),
                 col_type: "BIGINT".into(),
                 width: None,
@@ -1478,42 +1578,6 @@ mod tests {
     }
 
     #[test]
-    fn restore_accepts_v3_table_docs_with_tagged_cells() {
-        let state = AppState::new().unwrap();
-        let doc = TableDoc {
-            id: "v3-table".into(),
-            name: "V3 Table".into(),
-            source_type: "manual".into(),
-            version: "3".into(),
-            columns: vec![TableColumn {
-                column_id: None,
-                name: "order_date".into(),
-                col_type: "DATE".into(),
-                width: None,
-                format: None,
-                extras: None,
-            }],
-            rows: vec![vec![
-                serde_json::json!(1),
-                serde_json::json!({ "$duckdbValue": "2025-05-10" }),
-            ]],
-        };
-
-        ProjectService::new(&state).restore_table_doc(&doc).unwrap();
-
-        let db = state.db.lock().unwrap();
-        let restored: String = db
-            .conn()
-            .query_row(
-                "SELECT CAST(order_date AS VARCHAR) FROM dataset_v3_table WHERE _row_id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(restored, "2025-05-10");
-    }
-
-    #[test]
     fn restore_rejects_non_positive_and_duplicate_row_ids() {
         for rows in [
             vec![vec![serde_json::json!(0), serde_json::json!(10)]],
@@ -1529,7 +1593,6 @@ mod tests {
                 source_type: "manual".into(),
                 version: "2".into(),
                 columns: vec![TableColumn {
-                    column_id: None,
                     name: "value".into(),
                     col_type: "BIGINT".into(),
                     width: None,
@@ -1584,7 +1647,6 @@ mod tests {
             source_type: "manual".into(),
             version: "1".into(),
             columns: vec![TableColumn {
-                column_id: None,
                 name: "payload".into(),
                 col_type: "STRUCT(\"$duckdbValue\" VARCHAR)".into(),
                 width: None,
@@ -1617,7 +1679,6 @@ mod tests {
         let service = ProjectService::new(&state);
         let mut doc = table_doc("malformed-id", "Malformed");
         doc.columns.push(TableColumn {
-            column_id: None,
             name: "value".into(),
             col_type: "INTEGER".into(),
             width: None,
@@ -1637,7 +1698,7 @@ mod tests {
         let state = AppState::new().unwrap();
         let service = ProjectService::new(&state);
         let mut doc = table_doc("future-id", "Future");
-        doc.version = "4".into();
+        doc.version = "3".into();
 
         assert!(matches!(
             service.restore_table_doc(&doc),
@@ -1728,6 +1789,12 @@ mod tests {
             "response": { "name": "amount", "type": "continuous" },
             "factor": { "name": "category", "type": "nominal" }
         })];
+        let reports = vec![serde_json::json!({
+            "schemaVersion": 1,
+            "id": "report-1",
+            "name": "Report 1",
+            "markdown": "# Report body"
+        })];
         let tabulates = vec![serde_json::json!({
             "id": "tab-1",
             "name": "Summary",
@@ -1736,32 +1803,56 @@ mod tests {
             "columnFields": [],
             "statistics": ["sum"]
         })];
+        let distributions = vec![serde_json::json!({
+            "id": "dist-1",
+            "name": "Revenue Distribution",
+            "sourceDatasetId": "preserve-id",
+            "responses": [{ "name": "amount", "type": "continuous" }],
+            "weight": null,
+            "frequency": null,
+            "by": [],
+            "analysis": {
+                "confidenceLevel": 0.95,
+                "specLimits": {},
+                "fitDistributions": ["normal"]
+            },
+            "graphs": {},
+            "createdAt": "2026-09-02T00:00:00Z",
+            "result": { "transient": true },
+            "graphFrames": { "transient": true },
+            "runState": { "status": "completed" }
+        })];
         let folders = vec!["Analysis".to_string(), "Analysis/Yearly".to_string()];
         let table_folders =
             HashMap::from([("preserve-id".to_string(), "Analysis/Yearly".to_string())]);
         let graph_folders = HashMap::from([("graph-1".to_string(), "Analysis".to_string())]);
         let fit_y_by_x_folders = HashMap::from([("fit-1".to_string(), "Analysis".to_string())]);
+        let report_folders = HashMap::from([("report-1".to_string(), "Analysis".to_string())]);
         let tabulate_folders =
             HashMap::from([("tab-1".to_string(), "Analysis/Yearly".to_string())]);
+        let distribution_folders =
+            HashMap::from([("dist-1".to_string(), "Analysis/Yearly".to_string())]);
 
         let service = ProjectService::new(&state);
+        let mut request = save_request(
+            None,
+            history.clone(),
+            snapshots.clone(),
+            graph_builders.clone(),
+            fit_y_by_x.clone(),
+            reports.clone(),
+            tabulates.clone(),
+            folders.clone(),
+            table_folders.clone(),
+            graph_folders.clone(),
+            fit_y_by_x_folders.clone(),
+            report_folders.clone(),
+            tabulate_folders.clone(),
+        );
+        request.distributions = distributions;
+        request.distribution_folders = distribution_folders.clone();
         service
-            .save_project(
-                save_request(
-                    None,
-                    history.clone(),
-                    snapshots.clone(),
-                    graph_builders.clone(),
-                    fit_y_by_x.clone(),
-                    tabulates.clone(),
-                    folders.clone(),
-                    table_folders.clone(),
-                    graph_folders.clone(),
-                    fit_y_by_x_folders.clone(),
-                    tabulate_folders.clone(),
-                ),
-                None,
-            )
+            .save_project(request, None)
             .unwrap();
 
         let reopened_state = AppState::new().unwrap();
@@ -1770,17 +1861,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(reopened.history, history);
-        assert_eq!(reopened.snapshots, snapshots);
+        assert_eq!(
+            reopened.snapshots,
+            vec![serde_json::json!({
+                "id": "snapshot-1",
+                "name": "snapshot-1",
+                "datasetId": "preserve-id",
+                "rows": [1, 2],
+            })]
+        );
         assert_eq!(reopened.graph_builders, graph_builders);
-        assert_eq!(reopened.fit_y_by_x, fit_y_by_x);
+        assert_eq!(
+            reopened.fit_y_by_x,
+            vec![serde_json::json!({
+                "id": "fit-1",
+                "name": "fit-1",
+                "sourceDatasetId": "preserve-id",
+                "response": { "name": "amount", "type": "continuous" },
+                "factor": { "name": "category", "type": "nominal" }
+            })]
+        );
+        assert_eq!(
+            reopened.reports,
+            vec![serde_json::json!({
+                "schemaVersion": 1,
+                "id": "report-1",
+                "name": "Report 1",
+                "markdown": "# Report body"
+            })]
+        );
         assert_eq!(reopened.tabulates, tabulates);
+        assert_eq!(reopened.distributions.len(), 1);
+        assert_eq!(reopened.distributions[0]["id"], "dist-1");
+        assert_eq!(reopened.distributions[0]["name"], "Revenue Distribution");
+        assert!(reopened.distributions[0].get("result").is_none());
+        assert!(reopened.distributions[0].get("graphFrames").is_none());
+        assert!(reopened.distributions[0].get("runState").is_none());
         assert_eq!(reopened.folders, folders);
         assert_eq!(reopened.table_folders, table_folders);
         assert_eq!(reopened.graph_folders, graph_folders);
         assert_eq!(reopened.fit_y_by_x_folders, fit_y_by_x_folders);
+        assert_eq!(reopened.report_folders, report_folders);
+        assert_eq!(reopened.distribution_folders, distribution_folders);
         assert_eq!(reopened.tabulate_folders, tabulate_folders);
-        assert!(reopened.document_name_migrations.is_empty());
-        assert!(!reopened.requires_migration);
 
         let restored_display = reopened_state.column_display.lock().unwrap();
         let restored_props = restored_display.get("preserve-id").unwrap();
@@ -2161,6 +2284,321 @@ mod tests {
     }
 
     #[test]
+    fn legacy_open_normalizes_all_visible_document_names_and_marks_requires_migration() {
+        let file_path = std::env::temp_dir().join(format!(
+            "sp_legacy_name_migration_{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+
+        let manifest = ProjectManifest {
+            name: "Legacy Incoming".into(),
+            version: "3.0.0".into(),
+            created_at: "after".into(),
+            tables: vec![
+                TableEntryRef {
+                    id: "t1".into(),
+                    name: "Sales".into(),
+                    file: "tables/t1.sptb".into(),
+                },
+                TableEntryRef {
+                    id: "t2".into(),
+                    name: "sales".into(),
+                    file: "tables/t2.sptb".into(),
+                },
+                TableEntryRef {
+                    id: "t3".into(),
+                    name: " CON ".into(),
+                    file: "tables/t3.sptb".into(),
+                },
+                TableEntryRef {
+                    id: "t4".into(),
+                    name: "LPT9.log".into(),
+                    file: "tables/t4.sptb".into(),
+                },
+            ],
+            graphs: vec![
+                GraphEntryRef {
+                    id: "g1".into(),
+                    name: "Plot".into(),
+                    file: "graphs/g1.spgh".into(),
+                },
+                GraphEntryRef {
+                    id: "g2".into(),
+                    name: "plot".into(),
+                    file: "graphs/g2.spgh".into(),
+                },
+            ],
+            folders: vec![],
+            table_folders: None,
+            graph_folders: None,
+            fit_y_by_x: vec![
+                serde_json::json!({"id": "f1", "name": "Model"}),
+                serde_json::json!({"id": "f2", "name": "model"}),
+                serde_json::json!({"id": "f3", "name": "A/B"}),
+            ],
+            fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
+            report_folders: HashMap::new(),
+            distributions: vec![],
+            distribution_folders: HashMap::new(),
+            tabulates: vec![
+                serde_json::json!({"id": "tb1", "name": "model"}),
+                serde_json::json!({"id": "tb2", "name": "A/B"}),
+            ],
+            tabulate_folders: HashMap::new(),
+            report_files: vec![],
+            fit_y_by_x_files: vec![],
+            tabulate_files: vec![],
+            snapshot_files: vec![],
+            workflow_files: vec![],
+            logical_folders: vec![],
+            workflow_runs: vec![],
+            lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
+            relationships: vec![],
+        };
+
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
+        write_zip_entry(
+            &mut zip,
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        write_zip_entry(
+            &mut zip,
+            "tables/t1.sptb",
+            &serde_json::to_vec_pretty(&table_doc("t1", "Sales")).unwrap(),
+        );
+        write_zip_entry(
+            &mut zip,
+            "tables/t2.sptb",
+            &serde_json::to_vec_pretty(&table_doc("t2", "sales")).unwrap(),
+        );
+        write_zip_entry(
+            &mut zip,
+            "tables/t3.sptb",
+            &serde_json::to_vec_pretty(&table_doc("t3", " CON ")).unwrap(),
+        );
+        write_zip_entry(
+            &mut zip,
+            "tables/t4.sptb",
+            &serde_json::to_vec_pretty(&table_doc("t4", "LPT9.log")).unwrap(),
+        );
+        write_zip_entry(
+            &mut zip,
+            "graphs/g1.spgh",
+            &serde_json::to_vec_pretty(&serde_json::json!({"id": "g1", "name": "Plot"})).unwrap(),
+        );
+        write_zip_entry(
+            &mut zip,
+            "graphs/g2.spgh",
+            &serde_json::to_vec_pretty(&serde_json::json!({"id": "g2", "name": "plot"})).unwrap(),
+        );
+        write_zip_entry(
+            &mut zip,
+            ".snapshots.json",
+            &serde_json::to_vec_pretty(&vec![
+                serde_json::json!({"id": "s1", "name": "Snap"}),
+                serde_json::json!({"id": "s2", "name": "snap"}),
+                serde_json::json!({"id": "s3", "name": "LPT1"}),
+            ])
+            .unwrap(),
+        );
+        zip.finish().unwrap();
+
+        let state = AppState::new().unwrap();
+        let result = ProjectService::new(&state)
+            .open_project(file_path.to_str().unwrap(), None)
+            .unwrap();
+
+        assert!(result.requires_migration);
+        assert_eq!(result.dataset_name_migrations.len(), 3);
+        assert_eq!(result.document_name_migrations.len(), 10);
+
+        let migration_keys = result
+            .document_name_migrations
+            .iter()
+            .map(|migration| {
+                (
+                    migration.id.clone(),
+                    migration.kind.clone(),
+                    migration.old_name.clone(),
+                    migration.new_name.clone(),
+                )
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert!(migration_keys.contains(&(
+            "t2".to_string(),
+            "table".to_string(),
+            "sales".to_string(),
+            "sales-2".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "t3".to_string(),
+            "table".to_string(),
+            " CON ".to_string(),
+            "CON_".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "t4".to_string(),
+            "table".to_string(),
+            "LPT9.log".to_string(),
+            "LPT9.log_".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "g2".to_string(),
+            "graph".to_string(),
+            "plot".to_string(),
+            "plot-2".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "f2".to_string(),
+            "fitYByX".to_string(),
+            "model".to_string(),
+            "model-2".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "f3".to_string(),
+            "fitYByX".to_string(),
+            "A/B".to_string(),
+            "A_B".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "tb1".to_string(),
+            "tabulate".to_string(),
+            "model".to_string(),
+            "model-3".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "tb2".to_string(),
+            "tabulate".to_string(),
+            "A/B".to_string(),
+            "A_B-2".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "s2".to_string(),
+            "snapshot".to_string(),
+            "snap".to_string(),
+            "snap-2".to_string()
+        )));
+        assert!(migration_keys.contains(&(
+            "s3".to_string(),
+            "snapshot".to_string(),
+            "LPT1".to_string(),
+            "LPT1_".to_string()
+        )));
+
+        let fit_names = result
+            .fit_y_by_x
+            .iter()
+            .map(|item| {
+                item.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(fit_names, vec!["Model", "model-2", "A_B"]);
+
+        let tabulate_names = result
+            .tabulates
+            .iter()
+            .map(|item| {
+                item.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tabulate_names, vec!["model-3", "A_B-2"]);
+
+        let snapshot_names = result
+            .snapshots
+            .iter()
+            .map(|item| {
+                item.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(snapshot_names, vec!["Snap", "snap-2", "LPT1_"]);
+
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
+    fn format_v4_missing_indexed_entry_fails_before_live_state_replacement() {
+        let state = AppState::new().unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.create_empty_table("existing-id", "Existing", &[], &[])
+                .unwrap();
+        }
+        *state.project.write().unwrap() = Some(ProjectInfo {
+            name: "Existing Project".into(),
+            file_path: "existing.spprj".into(),
+            created_at: "before".into(),
+        });
+
+        let file_path = std::env::temp_dir().join(format!(
+            "sp_v4_missing_indexed_{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let manifest = ProjectManifest {
+            name: "Incoming V4".into(),
+            version: "4.0.0".into(),
+            created_at: "after".into(),
+            tables: vec![TableEntryRef {
+                id: "incoming-id".into(),
+                name: "Incoming".into(),
+                file: "data/incoming.sptb".into(),
+            }],
+            graphs: vec![],
+            folders: vec![],
+            table_folders: Some(HashMap::new()),
+            graph_folders: Some(HashMap::new()),
+            fit_y_by_x: vec![],
+            fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
+            report_folders: HashMap::new(),
+            distributions: vec![],
+            distribution_folders: HashMap::new(),
+            tabulates: vec![],
+            tabulate_folders: HashMap::new(),
+            report_files: vec![],
+            fit_y_by_x_files: vec![],
+            tabulate_files: vec![],
+            snapshot_files: vec![],
+            workflow_files: vec![],
+            logical_folders: vec![],
+            workflow_runs: vec![],
+            lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
+            relationships: vec![],
+        };
+
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
+        write_zip_entry(
+            &mut zip,
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        zip.finish().unwrap();
+
+        let result = ProjectService::new(&state).open_project(file_path.to_str().unwrap(), None);
+        assert!(result.is_err());
+
+        let db = state.db.lock().unwrap();
+        assert!(db.get_dataset_meta("existing-id").is_ok());
+        assert!(db.get_dataset_meta("incoming-id").is_err());
+        drop(db);
+        assert_eq!(
+            state.project.read().unwrap().as_ref().unwrap().name,
+            "Existing Project"
+        );
+
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
     fn failed_project_open_preserves_existing_project_and_database() {
         let state = AppState::new().unwrap();
         {
@@ -2177,7 +2615,6 @@ mod tests {
         let valid = table_doc("valid-id", "Valid");
         let mut malformed = table_doc("bad-id", "Bad");
         malformed.columns.push(TableColumn {
-            column_id: None,
             name: "value".into(),
             col_type: "INTEGER".into(),
             width: None,
@@ -2195,9 +2632,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
-            vec![],
-            vec![],
-            vec![],
+            Vec::new(),
             vec![],
             &folders,
             &folders,
@@ -2207,7 +2642,8 @@ mod tests {
             &folders,
             vec![],
             vec![],
-        );
+        )
+        .unwrap();
         let file_path =
             std::env::temp_dir().join(format!("sp_failed_open_{}.spprj", uuid::Uuid::new_v4()));
         spprj_archive::write_project_archive(&bundle, file_path.to_str().unwrap()).unwrap();
@@ -2215,7 +2651,6 @@ mod tests {
         let service = ProjectService::new(&state);
         let result = service.open_project(file_path.to_str().unwrap(), None);
         let _ = std::fs::remove_file(file_path);
-
         assert!(result.is_err());
         let db = state.db.lock().unwrap();
         assert!(db.get_dataset_meta("original-id").is_ok());
@@ -2225,5 +2660,67 @@ mod tests {
             state.project.read().unwrap().as_ref().unwrap().name,
             "Original Project"
         );
+    }
+
+    #[test]
+    fn future_project_format_is_rejected_before_live_state_replacement() {
+        let state = AppState::new().unwrap();
+        *state.project.write().unwrap() = Some(ProjectInfo {
+            name: "Existing Project".into(),
+            file_path: "existing.spprj".into(),
+            created_at: "before".into(),
+        });
+
+        let file_path =
+            std::env::temp_dir().join(format!("sp_future_format_{}.spprj", uuid::Uuid::new_v4()));
+        let manifest = ProjectManifest {
+            name: "Future Project".into(),
+            version: "5.0.0".into(),
+            created_at: "after".into(),
+            tables: vec![],
+            graphs: vec![],
+            folders: vec![],
+            table_folders: Some(HashMap::new()),
+            graph_folders: Some(HashMap::new()),
+            fit_y_by_x: vec![],
+            fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
+            report_folders: HashMap::new(),
+            distributions: vec![],
+            distribution_folders: HashMap::new(),
+            tabulates: vec![],
+            tabulate_folders: HashMap::new(),
+            report_files: vec![],
+            fit_y_by_x_files: vec![],
+            tabulate_files: vec![],
+            snapshot_files: vec![],
+            workflow_files: vec![],
+            logical_folders: vec![],
+            workflow_runs: vec![],
+            lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
+            relationships: vec![],
+        };
+
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
+        write_zip_entry(
+            &mut zip,
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        zip.finish().unwrap();
+
+        let error =
+            match ProjectService::new(&state).open_project(file_path.to_str().unwrap(), None) {
+                Ok(_) => panic!("future project versions must be rejected"),
+                Err(error) => error,
+            };
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("5.0.0")));
+        assert_eq!(
+            state.project.read().unwrap().as_ref().unwrap().name,
+            "Existing Project"
+        );
+
+        let _ = std::fs::remove_file(file_path);
     }
 }

@@ -1,67 +1,76 @@
-.distribution-workspace {
+.distribution-view {
   height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
   box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 20px 24px;
   color: var(--text-primary);
   background: var(--bg-primary);
+  scrollbar-gutter: stable;
 }
 
-.distribution-header,
-.distribution-controls {
-  flex: 0 0 auto;
+.distribution-view-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
 
-.distribution-header h2 {
+.distribution-view-header h2,
+.distribution-report-section > h2 {
   margin: 0 0 6px;
   font-size: 18px;
 }
 
-.distribution-header p {
-  margin: 0;
+.distribution-view-header span {
   color: var(--text-secondary);
+  font-size: 12px;
 }
 
-.distribution-count {
-  min-width: 28px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.distribution-controls {
-  justify-content: flex-start;
-  margin-top: 20px;
-}
-
-.distribution-controls progress {
-  width: min(320px, 45vw);
-}
-
-.distribution-results {
-  min-height: 0;
-  flex: 1 1 auto;
-  min-height: 160px;
+.distribution-graph-section,
+.distribution-report-section {
   margin-top: 20px;
   border-top: 1px solid var(--border-color);
+  padding-top: 16px;
 }
 
-.distribution-report-scroll {
-  height: 100%;
+.distribution-graph-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.distribution-graph-region {
+  min-width: 0;
+}
+
+.distribution-graph-region h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.distribution-graph-runtime {
+  height: clamp(240px, 34vh, 420px);
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding-right: 16px;
-  scrollbar-gutter: stable;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+@media (max-width: 900px) {
+  .distribution-graph-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .distribution-report-group {
   border-bottom: 1px solid var(--border-color);
+}
+
+.distribution-report-group > summary,
+.distribution-y-section > summary {
+  cursor: pointer;
+  color: var(--text-primary);
 }
 
 .distribution-disclosure {
@@ -197,19 +206,17 @@
 }
 
 .distribution-quantile-table {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  border: 1px solid var(--border-color, #c4c9d3);
-  border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
 
-.distribution-quantile-table th,
-.distribution-quantile-table td {
-  padding: 4px 8px;
-  border: 1px solid var(--border-color, #c4c9d3);
-  text-align: right;
+.distribution-report-block .sp-fit-y-by-x-report-table th:last-child,
+.distribution-report-block .sp-fit-y-by-x-report-table td:last-child {
+  border-right: 1px solid var(--border-main);
+}
+
+.distribution-report-block .sp-fit-y-by-x-report-table tbody tr:last-child th,
+.distribution-report-block .sp-fit-y-by-x-report-table tbody tr:last-child td {
+  border-bottom: 1px solid var(--border-main);
 }
 
 .distribution-quantile-table th,
@@ -424,19 +431,6 @@
   }
 }
 
-.distribution-directory-menu {
-  position: absolute;
-  z-index: 20;
-  left: 24px;
-  top: 28px;
-}
-
-.distribution-directory-menu .sp-ctx-item {
-  width: 100%;
-  border: 0;
-  text-align: left;
-}
-
 .distribution-results > section,
 .distribution-report-block {
   padding: 14px 0;
@@ -456,8 +450,10 @@
 
 .distribution-summary-tables {
   display: grid;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, max-content);
   gap: 18px;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .distribution-table-pair {
@@ -475,11 +471,6 @@
 }
 
 .distribution-summary-table {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  border: 1px solid var(--border-color, #c4c9d3);
-  border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
 
@@ -489,16 +480,8 @@
   font-weight: 600;
 }
 
-.distribution-summary-table th,
-.distribution-summary-table td {
-  padding: 4px 8px;
-  border: 1px solid var(--border-color, #c4c9d3);
-}
-
 .distribution-summary-table th {
   text-align: left;
-  color: var(--text-secondary);
-  font-weight: 500;
 }
 
 .distribution-summary-table td {
@@ -507,18 +490,13 @@
 
 .distribution-fit-tables {
   display: grid;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, max-content);
   gap: 18px;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .distribution-fit-table {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  border-width: 1px;
-  border-style: solid;
-  border-color: var(--border-main, #c4c9d3);
-  border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
 
@@ -526,14 +504,6 @@
   padding: 6px 8px;
   text-align: left;
   font-weight: 650;
-}
-
-.distribution-fit-table th,
-.distribution-fit-table td {
-  padding: 5px 8px;
-  border-width: 1px;
-  border-style: solid;
-  border-color: var(--border-main, #c4c9d3);
 }
 
 .distribution-fit-table th {
@@ -572,27 +542,14 @@
   }
 }
 
-.distribution-chart {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  height: 260px;
-  min-height: 260px;
-}
-
-@media (max-width: 700px) {
-  .distribution-chart {
-    height: 220px;
-    min-height: 220px;
-  }
-}
-
 .distribution-capability-summary,
 .distribution-capability-indices {
   display: grid;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, max-content);
   gap: 18px;
   margin-top: 10px;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .distribution-capability-report,
@@ -603,11 +560,6 @@
 }
 
 .distribution-capability-report table {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  border: 1px solid var(--border-color, #c4c9d3);
-  border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
 
@@ -620,8 +572,6 @@
 
 .distribution-capability-report th,
 .distribution-capability-report td {
-  padding: 5px 8px;
-  border: 1px solid var(--border-color, #c4c9d3);
   text-align: right;
 }
 
@@ -638,12 +588,6 @@
   .distribution-capability-indices {
     grid-template-columns: 1fr;
   }
-}
-
-.distribution-capability-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .distribution-nonconformance-table {

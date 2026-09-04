@@ -1,13 +1,7 @@
-export { DistributionWorkspace } from "./DistributionWorkspace";
+export { DistributionView } from "./DistributionView";
 export { DistributionDialog } from "./DistributionDialog";
-export { DistributionDirectoryItem } from "./DistributionDirectoryItem";
+export type { DistributionFieldInfo } from "./distributionConfig";
 export { DistributionRoleZone } from "./DistributionRoleZone";
 export { DistributionReport } from "./DistributionReport";
-export {
-	DistributionChart,
-	DistributionFitDensityChart,
-	DistributionOverviewChart,
-	ProcessCapabilityChart,
-} from "./DistributionChart";
 export { ProcessCapabilityReport } from "./ProcessCapabilityReport";
 export { SpecificationLimitsEditor } from "./SpecificationLimitsEditor";

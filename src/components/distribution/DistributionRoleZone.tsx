@@ -1,22 +1,23 @@
 import { useTranslation } from "react-i18next";
 
-import type { DistributionColumnRefV1 } from "@/types/distribution";
+import type { FieldRef } from "@/graphCore";
+
+import type { DistributionRole } from "./distributionConfig";
 
 interface DistributionRoleZoneProps {
-  role: "Y" | "Weight" | "Frequency" | "By";
-  columns: DistributionColumnRefV1[];
-  displayNameById?: ReadonlyMap<string, string>;
-  onAssign: (columnId: string) => void;
-  onRemove: (columnId: string) => void;
+  role: DistributionRole;
+  fields: FieldRef[];
+  onAssign: (fieldName: string) => void;
+  onRemove: (fieldName: string) => void;
 }
 
-export function DistributionRoleZone({ role, columns, displayNameById, onAssign, onRemove }: DistributionRoleZoneProps) {
+export function DistributionRoleZone({ role, fields, onAssign, onRemove }: DistributionRoleZoneProps) {
   const { t } = useTranslation();
-  const roleLabel = t(`distribution.roles.${role.toLocaleLowerCase()}`);
+  const roleLabel = t(`distribution.roles.${role === "response" ? "y" : role}`);
   return (
     <section
       className="distribution-role-zone"
-      data-testid={`distribution-role-${role.toLocaleLowerCase()}`}
+      data-testid={`distribution-role-${role}`}
       aria-label={t("distribution.roleLabel", { role: roleLabel })}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -28,19 +29,19 @@ export function DistributionRoleZone({ role, columns, displayNameById, onAssign,
     >
       <h4>{roleLabel}</h4>
       <div className="distribution-role-items">
-        {columns.length === 0 ? (
+        {fields.length === 0 ? (
           <span className="distribution-role-empty">{t("distribution.roleEmpty")}</span>
-        ) : columns.map((column) => (
-          <span className="distribution-role-chip" key={column.columnId}>
-            <span className="distribution-role-chip-label" title={displayNameById?.get(column.columnId) ?? column.columnId}>
-              {displayNameById?.get(column.columnId) ?? column.columnId}
+        ) : fields.map((field) => (
+          <span className="distribution-role-chip" key={field.name}>
+            <span className="distribution-role-chip-label" title={field.name}>
+              {field.name}
             </span>
             <button
               type="button"
               className="btn-icon"
-              data-testid={`distribution-remove-${role.toLocaleLowerCase()}-${column.columnId}`}
-              aria-label={t("distribution.removeFromRole", { column: column.columnId, role: roleLabel })}
-              onClick={() => onRemove(column.columnId)}
+              data-testid={`distribution-remove-${role}-${field.name}`}
+              aria-label={t("distribution.removeFromRole", { column: field.name, role: roleLabel })}
+              onClick={() => onRemove(field.name)}
             >
               ×
             </button>

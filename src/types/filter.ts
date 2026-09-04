@@ -73,27 +73,3 @@ export interface FilterRuleItem {
    */
   height?: number;
 }
-
-export type FilterExprV1 =
-  | { kind: "and"; exprs: FilterExprV1[] }
-  | { kind: "or"; exprs: FilterExprV1[] }
-  | { kind: "not"; expr: FilterExprV1 }
-  | { kind: "isNull"; fieldId: string; negate: boolean }
-  | {
-      kind: "numericRange";
-      fieldId: string;
-      min: number | null;
-      max: number | null;
-      includeMin: boolean;
-      includeMax: boolean;
-    }
-  | { kind: "categorySet"; fieldId: string; values: string[]; negate: boolean }
-  | {
-      kind: "dateRange";
-      fieldId: string;
-      start: string | null;
-      end: string | null;
-      includeStart: boolean;
-      includeEnd: boolean;
-      timeZone: string;
-    };

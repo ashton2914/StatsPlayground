@@ -581,7 +581,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
             )?;
             (snapshot.rows.len(), 0)
         }
-        Operation::Graph => unreachable!("graph is handled before this branch"),
+        Operation::Graph => unreachable!("graph operation is handled by execute_graph"),
         Operation::Save => unreachable!("save is handled before this branch"),
     };
     let operation_ms = operation_started.elapsed().as_millis();
@@ -672,8 +672,9 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
                         graph_builders,
                         fit_y_by_x: Vec::new(),
                         fit_models: Vec::new(),
-                        tabulates,
+                        reports: Vec::new(),
                         distributions: Vec::new(),
+                        tabulates,
                         derived_formulas: Vec::new(),
                         distribution_issues: Vec::new(),
                         folders,
@@ -681,8 +682,12 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
                         graph_folders,
                         fit_y_by_x_folders: std::collections::HashMap::new(),
                         fit_model_folders: std::collections::HashMap::new(),
-                        tabulate_folders,
+                        report_folders: std::collections::HashMap::new(),
                         distribution_folders: std::collections::HashMap::new(),
+                        tabulate_folders,
+                        workflows: Vec::new(),
+                        logical_folders: Vec::new(),
+                        workflow_runs: Vec::new(),
                     },
                     None,
                 )
@@ -959,7 +964,11 @@ mod tests {
                 row_count: 1,
                 source_rows: 1,
                 processed_rows: 1,
-                projected_columns: vec!["_row_id".to_string(), "region".to_string(), "cost".to_string()],
+                projected_columns: vec![
+                    "_row_id".to_string(),
+                    "region".to_string(),
+                    "cost".to_string(),
+                ],
                 dictionaries: Default::default(),
                 validity_ranges: Default::default(),
                 x_values: crate::models::graph_data::GraphTypedSliceDescriptor::new(
@@ -1023,19 +1032,14 @@ mod tests {
             processed_rows: 1,
             chunks_sent: 1,
             cancelled: false,
-            raw_point_disposition:
-                crate::models::graph_data::GraphRawPointDisposition::Included {
-                    valid_rows: 1,
-                    budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
-                },
+            raw_point_disposition: crate::models::graph_data::GraphRawPointDisposition::Included {
+                valid_rows: 1,
+                budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            },
         };
 
-        let actual = measure_transferred_bytes(
-            &[chunk.clone()],
-            &[aggregate.clone()],
-            &completion,
-        )
-        .expect("transferred bytes");
+        let actual = measure_transferred_bytes(&[chunk.clone()], &[aggregate.clone()], &completion)
+            .expect("transferred bytes");
 
         let header_bytes = serde_json::to_vec(&GraphStreamHeaderMessage {
             message_type: "header",
@@ -1073,7 +1077,9 @@ mod tests {
             Ok(_) => panic!("expected graph to reject columns < 2"),
             Err(error) => {
                 assert!(matches!(error, AppError::InvalidParam(_)));
-                assert!(error.to_string().contains("graph requires at least 2 columns"));
+                assert!(error
+                    .to_string()
+                    .contains("graph requires at least 2 columns"));
             }
         }
     }

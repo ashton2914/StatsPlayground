@@ -5,6 +5,8 @@ export interface Typed3DPoint {
   y: number;
   z?: number;
   group?: string;
+  facetX?: string;
+  facetY?: string;
 }
 
 function bitIsSet(bitmap: Uint8Array | undefined, rowIndex: number): boolean {
@@ -18,6 +20,8 @@ function bitIsSet(bitmap: Uint8Array | undefined, rowIndex: number): boolean {
 export function collectFrame3DPoints(frame: GraphDataFrame): Typed3DPoint[] {
   const points: Typed3DPoint[] = [];
   const groupDict = frame.dictionaries.group ?? [];
+  const facetXDict = frame.dictionaries.facetX ?? [];
+  const facetYDict = frame.dictionaries.facetY ?? [];
   for (const chunk of frame.rawChunks) {
     const n = Math.min(
       chunk.rowCount,
@@ -25,6 +29,8 @@ export function collectFrame3DPoints(frame: GraphDataFrame): Typed3DPoint[] {
       chunk.yValues.length,
       chunk.zValues?.length ?? chunk.rowCount,
       chunk.groupCodes?.length ?? chunk.rowCount,
+      chunk.facetXCodes?.length ?? chunk.rowCount,
+      chunk.facetYCodes?.length ?? chunk.rowCount,
     );
     for (let row = 0; row < n; row += 1) {
       if (!bitIsSet(chunk.validity.x, row)) continue;
@@ -46,7 +52,17 @@ export function collectFrame3DPoints(frame: GraphDataFrame): Typed3DPoint[] {
         group = groupDict[chunk.groupCodes[row] >>> 0];
       }
 
-      points.push({ x, y, z, group });
+      let facetX: string | undefined;
+      if (chunk.facetXCodes && bitIsSet(chunk.validity.facetX, row)) {
+        facetX = facetXDict[chunk.facetXCodes[row] >>> 0];
+      }
+
+      let facetY: string | undefined;
+      if (chunk.facetYCodes && bitIsSet(chunk.validity.facetY, row)) {
+        facetY = facetYDict[chunk.facetYCodes[row] >>> 0];
+      }
+
+      points.push({ x, y, z, group, facetX, facetY });
     }
   }
   return points;

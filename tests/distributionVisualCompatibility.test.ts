@@ -434,4 +434,19 @@ assert.equal(tiePending.compatibilityStatus, "compatibilityPending");
 
 assert.ok(compatibilityPendingIds.length >= requiredPendingIds.length);
 
+const distributionCss = readFileSync(
+  new URL("../src/components/distribution/distribution.css", import.meta.url),
+  "utf8",
+);
+const viewSource = readFileSync(
+  new URL("../src/components/distribution/DistributionView.tsx", import.meta.url),
+  "utf8",
+);
+
+assert.match(distributionCss, /\.distribution-view\s*\{[^}]*overflow-y:\s*auto/s);
+assert.match(distributionCss, /\.distribution-graph-runtime\s*\{[^}]*height:\s*clamp\(/s);
+assert.doesNotMatch(distributionCss, /\.distribution-graph-(?:grid|region|runtime)\s*\{[^}]*overflow-y:\s*auto/s);
+assert.equal((viewSource.match(/className="distribution-view"/g) ?? []).length, 1);
+assert.doesNotMatch(viewSource, /distribution-workspace|distribution-chart/);
+
 console.log("distribution visual compatibility contracts OK");

@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const appCss = readFileSync(resolve(process.cwd(), "src/App.css"), "utf8").replace(/\r\n/g, "\n");
+const reportTableCss = readFileSync(
+  resolve(process.cwd(), "src/components/reportTable.css"),
+  "utf8",
+).replace(/\r\n/g, "\n");
 const reportSource = readFileSync(
   resolve(process.cwd(), "src/components/fitYByX/FitYByXReport.tsx"),
   "utf8",
@@ -21,19 +25,19 @@ assert.match(
 );
 
 assert.match(
-  appCss,
+  reportTableCss,
   /\.sp-fit-y-by-x-report-table th,\s*\.sp-fit-y-by-x-report-table td\s*\{[^}]*border-right:\s*1px solid var\(--border-main\);/s,
   "Fit Y by X report cells must have vertical separators",
 );
 
 assert.match(
-  appCss,
+  reportTableCss,
   /\.sp-fit-y-by-x-report-table th\s*\{[^}]*border-right-color:\s*var\(--border-header-h\);/s,
   "Fit Y by X report headers must use a distinct separator",
 );
 
 assert.match(
-  appCss,
+  reportTableCss,
   /\.sp-fit-y-by-x-report-table th:last-child,\s*\.sp-fit-y-by-x-report-table td:last-child\s*\{[^}]*border-right:\s*none;/s,
   "Fit Y by X report tables must not draw a duplicate trailing separator",
 );
@@ -45,7 +49,7 @@ assert.match(
 );
 
 assert.match(
-  appCss,
+  reportTableCss,
   /\.sp-fit-y-by-x-report-table\s*\{[^}]*width:\s*max-content;[^}]*table-layout:\s*fixed;/s,
   "Fit Y by X report tables must keep their fixed content width instead of filling the panel",
 );
@@ -63,19 +67,19 @@ assert.match(
 );
 
 assert.match(
-  appCss,
+  reportTableCss,
   /\.sp-fit-y-by-x-report-column-label\s*\{[^}]*width:\s*220px;/s,
   "Fit Y by X report label columns must use a consistent fixed width",
 );
 
 assert.match(
-  appCss,
+  reportTableCss,
   /\.sp-fit-y-by-x-report-column-value\s*\{[^}]*width:\s*150px;/s,
   "Fit Y by X report numeric columns must use a consistent fixed width",
 );
 
 assert.match(
-  appCss,
+  reportTableCss,
   /\.sp-fit-y-by-x-report-column-value-wide\s*\{[^}]*width:\s*360px;/s,
   "Fit Y by X summary value columns must leave room for fitted equations",
 );

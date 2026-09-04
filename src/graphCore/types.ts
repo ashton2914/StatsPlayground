@@ -17,6 +17,8 @@ export type FieldType =
 
 /** 数据字段引用 */
 export interface FieldRef {
+  /** Stable dataset-scoped identity. Missing only in legacy project files. */
+  columnId?: string;
   /** 列名，必须存在于数据源中 */
   name: string;
   /** 字段类型，用于决定坐标轴/编码方式 */
@@ -31,6 +33,7 @@ export type ElementKind =
   | "heatmap"      // 热力图
   | "correlationMatrix" // 相关矩阵热力图
   | "histogram"    // 直方图
+  | "normalCurve"  // 正态分布拟合曲线
   | "boxplot"      // 箱线
   | "smoother"     // 平滑曲线
   | "fitline"      // 拟合线（多项式 / 稳健 Cauchy + 置信区间 + 统计量）

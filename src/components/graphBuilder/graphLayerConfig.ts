@@ -14,6 +14,7 @@ export const GRAPH_LAYER_DEFS: GraphLayerDef[] = [
   { kind: "fitline", icon: "ƒ" },
   { kind: "boxplot", icon: "⊟" },
   { kind: "histogram", icon: "▥" },
+  { kind: "normalCurve", icon: "∩" },
   { kind: "scatter3d", icon: "●" },
   { kind: "surface", icon: "◪" },
   { kind: "contour3d", icon: "≋" },
@@ -26,6 +27,7 @@ export const LAYER_DIM: Record<ElementKind, LayerDim> = {
   heatmap: "2d",
   correlationMatrix: "multivariate",
   histogram: "2d",
+  normalCurve: "2d",
   boxplot: "2d",
   smoother: "2d",
   fitline: "2d",
@@ -46,6 +48,7 @@ export function defaultLayerOptions(
   if (kind === "fitline") return { fitType: "polynomial", degree: 1 };
   if (kind === "surface") return { stat: "mean", smoothness: 0 };
   if (kind === "contour3d") return { stat: "mean", smoothness: 0, levels: 10 };
+  if (kind === "normalCurve") return { showSigmaBands: false };
   if (kind === "scatter3d") {
     const points = existingElements.find((element) => element.kind === "points");
     return { ...(points?.options ?? {}) };

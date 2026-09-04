@@ -1,6 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { DistributionItem } from "@/types/distribution";
 import type { ProjectInfo, OpenProjectResult, ImportTableResult } from "@/types/project";
-import type { DerivedFormulaDocV1, DistributionDocV1, DistributionIssueV1 } from "@/types/distribution";
+import type { ReportItem } from "@/types/report";
+import type {
+  LogicalFolder,
+  WorkflowDefinition,
+  WorkflowRun,
+} from "@/types/workflow";
 
 /** Optional folder payload accepted by the save_project command.
  *  Folder maps are manifest metadata now; they are not used to route archive
@@ -19,7 +25,11 @@ export interface SaveProjectFolders {
   fitModelFolders?: Record<string, string>;
   /** tabulateId → folder path. Root tabulates are simply absent. */
   tabulateFolders: Record<string, string>;
-  /** analysisId → folder path. Root distributions are simply absent. */
+  /** reportId → folder path. Root reports are simply absent. */
+  reportFolders: Record<string, string>;
+  /** Reports persisted with the project. */
+  reports: ReportItem[];
+  /** distributionId → folder path. Root analyses are simply absent. */
   distributionFolders: Record<string, string>;
 }
 
@@ -31,16 +41,19 @@ export interface SaveProjectRequest {
   fitYByX: unknown[];
   fitModels?: unknown[];
   tabulates: unknown[];
-  distributions: DistributionDocV1[];
-  derivedFormulas: DerivedFormulaDocV1[];
-  distributionIssues: DistributionIssueV1[];
+  distributions: DistributionItem[];
   folders: string[];
   tableFolders: Record<string, string>;
   graphFolders: Record<string, string>;
   fitYByXFolders: Record<string, string>;
   fitModelFolders?: Record<string, string>;
   tabulateFolders: Record<string, string>;
+  reportFolders: Record<string, string>;
+  reports: ReportItem[];
   distributionFolders: Record<string, string>;
+  workflows: WorkflowDefinition[];
+  logicalFolders: LogicalFolder[];
+  workflowRuns: WorkflowRun[];
 }
 
 export type SavePhase = "preparing" | "table" | "metadata" | "compressing" | "finalizing";
@@ -69,12 +82,14 @@ export const projectService = {
     request: SaveProjectRequest,
     onProgress?: (progress: SaveProgress) => void,
   ) => {
-    if (!onProgress) {
-      return invoke<ProjectInfo>("save_project", { request });
-    }
     const progressChannel = new Channel<SaveProgress>();
-    progressChannel.onmessage = onProgress;
-    return invoke<ProjectInfo>("save_project", { request, onProgress: progressChannel });
+    if (onProgress) {
+      progressChannel.onmessage = onProgress;
+    }
+    return invoke<ProjectInfo>("save_project", {
+      request,
+      onProgress: progressChannel,
+    });
   },
 
   getCurrentProject: () => invoke<ProjectInfo | null>("get_current_project"),

@@ -55,7 +55,13 @@ import {
   resolveCanvasDropSlot,
 } from "./multivariateInteractions";
 import { GraphRuntime, type GraphRuntimeState } from "./GraphRuntime";
-import { buildGraphRuntimeModel, FILL_PALETTE, LINE_PALETTE, POINT_PALETTE, shade, SHADE_RATIO_FILL, SHADE_RATIO_LINE, SHADE_RATIO_POINT, STYLE_COLORS } from "./graphRuntimeModel";
+import { buildGraphRuntimeModel, FILL_PALETTE, LINE_PALETTE, POINT_PALETTE, STYLE_COLORS } from "./graphRuntimeModel";
+import { resolveThemeGroupKeySets } from "./graphGroupOrder";
+import {
+  buildEffectiveGroupStyles,
+  reconcileGroupThemeSlots,
+  resolveGroupThemeFieldName,
+} from "./graphThemeIdentity";
 
 interface GraphBuilderViewProps {
   item: GraphBuilderItem;
@@ -354,6 +360,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   }, [dataset.id]);
   const meltInfo = runtimeModel.meltInfo;
   const frame = runtimeState?.frame ?? null;
+  const valueOrders = runtimeState?.valueOrders;
   const pipelineStatus = runtimeState?.status ?? "idle";
   const progress = runtimeState?.progress ?? null;
   const rawPointNotice = runtimeState?.rawPointNotice ?? null;
@@ -382,9 +389,12 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   // walks these palettes first before falling back to STYLE_COLORS.
   const customPalettes = useGraphPaletteStore((s) => s.palettes);
 
-  const groupKeys = useMemo<string[]>(() => {
-    if (!encoding.overlay) return [DEFAULT_GROUP_KEY];
-    if (!frame) return [DEFAULT_GROUP_KEY];
+  const groupingFieldName = resolveGroupThemeFieldName(encoding);
+
+  const { slotCandidateKeys, legendGroupKeys } = useMemo(() => {
+    if (!groupingFieldName || !frame) {
+      return { slotCandidateKeys: [], legendGroupKeys: [] };
+    }
 
     const seen = new Set<string>();
     const out: string[] = [];
@@ -424,20 +434,43 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       }
     }
 
-    return out.length > 0 ? out : [DEFAULT_GROUP_KEY];
-  }, [encoding.overlay, frame]);
+    return resolveThemeGroupKeySets(
+      out,
+      frame.dictionaries.group ?? [],
+      valueOrders?.[groupingFieldName],
+    );
+  }, [groupingFieldName, frame, valueOrders]);
+
+  const groupKeys = useMemo(
+    () => (legendGroupKeys.length > 0 ? legendGroupKeys : [DEFAULT_GROUP_KEY]),
+    [legendGroupKeys],
+  );
+
+  const resolvedThemeSlots = useMemo(
+    () => reconcileGroupThemeSlots(item.groupThemeSlots, groupingFieldName, slotCandidateKeys),
+    [item.groupThemeSlots, groupingFieldName, slotCandidateKeys],
+  );
 
   const effectiveStyles = useMemo<GroupStyleMap>(
     () =>
-      buildEffectiveStyles(
+      buildEffectiveGroupStyles(
         groupKeys,
+        resolvedThemeSlots,
+        groupingFieldName,
         groupStyles,
         customPalettes,
-        !!encoding.overlay,
         elements.some((e) => e.kind === "boxplot" && e.enabled !== false),
       ),
-    [groupKeys, groupStyles, customPalettes, encoding.overlay, elements],
+    [groupKeys, resolvedThemeSlots, groupingFieldName, groupStyles, customPalettes, elements],
   );
+
+  useEffect(() => {
+    if (!groupingFieldName || !frame || slotCandidateKeys.length === 0 || readOnly || resolvedThemeSlots === item.groupThemeSlots) {
+      return;
+    }
+    updateItem(item.id, { groupThemeSlots: resolvedThemeSlots });
+    markDirty();
+  }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem, markDirty]);
 
   const setEncoding = useCallback(
     (
@@ -1563,6 +1596,14 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
                 onBrushSelect={isMultivariateMode ? undefined : ((picks) => {
                   pickCells(dataset.id, picks);
                 })}
+                onItemReconciled={(nextItem) => {
+                  updateItem(item.id, {
+                    modeStates: nextItem.modeStates,
+                    filters: nextItem.filters,
+                    groupThemeSlots: nextItem.groupThemeSlots,
+                  });
+                  markDirty();
+                }}
                 onStateChange={setRuntimeState}
               />
               {correlationNoticeText && (
@@ -2286,6 +2327,9 @@ function LayerCard({
         {kind === "histogram" && (
           <HistogramOptions options={options} onChange={onChangeOptions} t={t} />
         )}
+        {kind === "normalCurve" && (
+          <NormalCurveOptions options={options} onChange={onChangeOptions} t={t} />
+        )}
         {kind === "smoother" && (
           <SmootherOptions options={options} onChange={onChangeOptions} t={t} />
         )}
@@ -2640,6 +2684,19 @@ function HistogramOptions({ options, onChange, t }: OptionsEditorProps) {
         />
       </OptRow>
     </>
+  );
+}
+
+function NormalCurveOptions({ options, onChange, t }: OptionsEditorProps) {
+  const showSigmaBands = getOpt<boolean>(options, "showSigmaBands", false);
+  return (
+    <OptRow label={t("graph.opt.showSigmaBands")}>
+      <input
+        type="checkbox"
+        checked={showSigmaBands}
+        onChange={(event) => onChange({ showSigmaBands: event.target.checked })}
+      />
+    </OptRow>
   );
 }
 
@@ -3554,87 +3611,6 @@ function LegendStylePanel({ encoding, groupStyles, groupKeys, effectiveStyles, h
       )}
     </div>
   );
-}
-
-/** Build the fully-resolved per-group style map handed to the renderer
- *  (`spec.styles`) and to the legend swatches.
- *
- *  Resolution rules (in priority order):
- *    1. Any explicit per-mark override the user has set (Line/Fill/Point)
- *       wins for that mark.
- *    2. For unset marks, when grouped:
- *       a) Use the user's saved CustomPalettes for the first N groups
- *          (so users get THEIR favourite colors before falling back to
- *          the built-in palette). Palette.point/line/fill map straight
- *          onto the three sub-marks.
- *       b) Beyond that, derive shades from STYLE_COLORS — but offset
- *          the index by the palette count so the first un-palette group
- *          still gets the highest-contrast built-in color.
- *    3. When not grouped (single DEFAULT_GROUP_KEY), fill with the JMP
- *       look: black line/point, transparent fill — EXCEPT for boxplot
- *       layers where the box body IS the primary mark, so we substitute
- *       a neutral grey (matching transform.ts' `neutralBoxFill`).
- *
- *  The returned map is ALWAYS fully populated for every key in
- *  `groupKeys` — every entry has line/fill/point objects with all
- *  required sub-fields. The legend swatches and the STYLE editor depend
- *  on that contract; falling through to `undefined` crashes the
- *  editor's `selectedStyle.line.color` lookup. */
-function buildEffectiveStyles(
-  groupKeys: string[],
-  userStyles: GroupStyleMap,
-  customPalettes: CustomPalette[],
-  isGrouped: boolean,
-  hasBoxplot: boolean,
-): GroupStyleMap {
-  const out: GroupStyleMap = { ...userStyles };
-  groupKeys.forEach((key, idx) => {
-    let autoLine: MarkStyle;
-    let autoFill: MarkStyle;
-    let autoPoint: MarkStyle;
-    let autoGradient: MarkStyle;
-    if (!isGrouped) {
-      // Ungrouped: JMP look. baseColor='#000000' here mirrors
-      // resolveGroupStyle() in transform.ts so the chart and the
-      // editor swatches stay in lockstep.
-      autoLine = { color: "#000000", lineWidth: 1.5, opacity: 1 };
-      autoFill = {
-        color: hasBoxplot ? shade("#000000", SHADE_RATIO_FILL) : "transparent",
-        opacity: 1,
-      };
-      autoPoint = { color: "#000000", fillColor: "#000000", marker: "circle", markerSize: 4, opacity: 1 };
-      // Ungrouped single 3D surface: a default accent hue (not black,
-      // which would render an unreadable dark surface).
-      autoGradient = { color: STYLE_COLORS[0], opacity: 1 };
-    } else if (idx < customPalettes.length) {
-      const p = customPalettes[idx];
-      autoLine = { color: p.line, lineWidth: 1.5, opacity: 1 };
-      autoFill = { color: p.fill, opacity: 1 };
-      autoPoint = { color: p.point, fillColor: p.point, marker: "circle", markerSize: 4, opacity: 1 };
-      autoGradient = { color: p.line, opacity: 1 };
-    } else {
-      const fallbackIdx = (idx - customPalettes.length) % STYLE_COLORS.length;
-      const base = STYLE_COLORS[fallbackIdx];
-      autoLine = { color: shade(base, SHADE_RATIO_LINE), lineWidth: 1.5, opacity: 1 };
-      autoFill = { color: shade(base, SHADE_RATIO_FILL), opacity: 1 };
-      autoPoint = {
-        color: shade(base, SHADE_RATIO_POINT),
-        fillColor: shade(base, SHADE_RATIO_POINT),
-        marker: "circle",
-        markerSize: 4,
-        opacity: 1,
-      };
-      autoGradient = { color: base, opacity: 1 };
-    }
-    const user = userStyles[key];
-    out[key] = {
-      line: user?.line ?? autoLine,
-      fill: user?.fill ?? autoFill,
-      point: user?.point ?? autoPoint,
-      gradient: user?.gradient ?? autoGradient,
-    };
-  });
-  return out;
 }
 
 /** Composite swatch: combines line + fill rect + point so the user sees

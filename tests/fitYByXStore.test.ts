@@ -58,6 +58,7 @@ const mixedBivariate = bivariateFitItem("fit-mixed-bivariate", "Mixed bivariate"
 const persistedGraph = {
   ...loadedBase.graph,
   mode: "2d" as const,
+  groupThemeSlots: { site: { A: 0, B: 0, C: -1, D: 2 } },
   modeStates: {
     ...loadedBase.graph.modeStates,
     twoD: {
@@ -168,6 +169,7 @@ assert.deepEqual(loadedItem?.graph, {
   modeStates: expectedPersistedGraph.modeStates,
   filters: expectedPersistedGraph.filters,
   sampling: expectedPersistedGraph.sampling,
+  groupThemeSlots: { site: { A: 0, D: 2 } },
 });
 assert.deepEqual(loadedItem?.response, response);
 assert.deepEqual(loadedItem?.factor, factor);

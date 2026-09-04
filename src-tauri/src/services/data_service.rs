@@ -851,16 +851,25 @@ impl<'a> DataService<'a> {
         db.get_user_columns(dataset_id)
     }
 
-    pub fn get_distribution_columns(
+    pub fn get_column_descriptors(
         &self,
         dataset_id: &str,
-    ) -> Result<Vec<crate::models::distribution::DistributionColumnDescriptorV1>, AppError> {
+    ) -> Result<Vec<crate::models::table::ColumnDescriptor>, AppError> {
         let db = self
             .state
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        db.get_distribution_columns(dataset_id)
+        db.get_distribution_columns(dataset_id).map(|columns| {
+            columns
+                .into_iter()
+                .map(|column| crate::models::table::ColumnDescriptor {
+                    column_id: column.column_id,
+                    name: column.name,
+                    sql_type: column.sql_type,
+                })
+                .collect()
+        })
     }
 
     pub fn sort_table(

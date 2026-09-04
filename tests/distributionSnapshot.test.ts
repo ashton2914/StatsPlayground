@@ -1,66 +1,86 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { useDistributionStore } from "../src/stores/useDistributionStore.ts";
-import type { DistributionAnalysisConfigV1 } from "../src/types/distribution.ts";
+import {
+  createDistributionReportController,
+  type DistributionReportState,
+} from "../src/components/distribution/useDistributionReport.ts";
+import type {
+  DistributionItem,
+  DistributionReportResponse,
+} from "../src/types/distribution.ts";
 
-const typesSource = readFileSync(
+const graph = {
+  mode: "2d" as const,
+  modeStates: {
+    twoD: { encoding: {}, multiX: [], multiY: [], elements: [], smootherLambda: 0.5 },
+    threeD: { encoding: {}, elements: [], smootherLambda: 0.5 },
+    multivariate: {
+      columns: [],
+      chartType: "correlationMatrix" as const,
+      correlationMethod: "pearson" as const,
+    },
+  },
+  filters: [],
+  sampling: { mode: "full" as const },
+};
+
+const item: DistributionItem = {
+  id: "distribution-1",
+  name: "Distribution 1",
+  sourceDatasetId: "dataset-1",
+  responses: [{ name: "height", type: "continuous" }],
+  weight: null,
+  frequency: null,
+  by: [],
+  analysis: { confidenceLevel: 0.95, specLimits: {}, fitDistributions: [] },
+  graphs: { overview: graph, boxPlot: graph, ecdf: graph, normalQuantile: graph },
+  createdAt: "2026-09-02T00:00:00.000Z",
+};
+
+function response(): DistributionReportResponse {
+  const frame = { columns: [], rows: [], aggregatePackets: [], totalRows: 0 } as never;
+  return {
+    datasetId: item.sourceDatasetId,
+    generation: 3,
+    groups: [],
+    reportBlocks: [],
+    graphFrames: { overview: frame, boxPlot: frame, ecdf: frame, normalQuantile: frame },
+  };
+}
+
+const states: DistributionReportState[] = [];
+const controller = createDistributionReportController({
+  getDatasetGeneration: async () => 3,
+  compute: async () => response(),
+  onStateChange: (state) => states.push(state),
+});
+await controller.load(item);
+assert.equal(states[0]?.status, "loading");
+assert.equal(controller.getState().status, "success");
+
+controller.cancel();
+assert.deepEqual(controller.getState(), { status: "idle" });
+
+const storeSource = readFileSync(
+  new URL("../src/stores/useDistributionStore.ts", import.meta.url),
+  "utf8",
+);
+const projectTypesSource = readFileSync(
+  new URL("../src/types/project.ts", import.meta.url),
+  "utf8",
+);
+const distributionTypesSource = readFileSync(
   new URL("../src/types/distribution.ts", import.meta.url),
   "utf8",
 );
-assert.match(typesSource, /interface DistributionProgressV1/);
-assert.match(typesSource, /interface DistributionCancelTokenV1/);
-assert.match(typesSource, /interface DistributionRunStateV1/);
+for (const source of [storeSource, projectTypesSource]) {
+  assert.doesNotMatch(source, /runState|persistedResults|snapshotId|cancelToken/);
+}
+assert.doesNotMatch(storeSource, /startRun|updateProgress|cancelRun/);
+assert.doesNotMatch(
+  distributionTypesSource,
+  /AnalysisSnapshot|DistributionProgress|DistributionRun|snapshotId|cancelToken|runId/,
+);
 
-const config: DistributionAnalysisConfigV1 = {
-  schemaVersion: "1",
-  sourceDatasetId: "dataset-1",
-  yColumns: [{ columnId: "col-y", modelingType: "continuous" }],
-  weightColumnId: null,
-  frequencyColumnId: null,
-  byColumnIds: [],
-  filterExpr: { kind: "isNull", fieldId: "col-y", negate: true },
-  confidenceLevel: 0.95,
-  histogramsOnly: false,
-  enabledCapabilityIds: [],
-  capabilityOverrides: [],
-};
-const item = useDistributionStore.getState().createItem(config);
-
-useDistributionStore.getState().startRun({
-  analysisId: item.analysisId,
-  configRevision: 1,
-  runId: "run-1",
-  status: "running",
-  progress: null,
-  snapshotId: "snapshot-1",
-  cancelToken: "cancel-1",
-});
-useDistributionStore.getState().updateProgress({
-  analysisId: item.analysisId,
-  configRevision: 1,
-  runId: "run-1",
-  snapshotId: "snapshot-1",
-  phase: "prepare",
-  current: 4,
-  total: 10,
-  messageKey: "distribution.prepare",
-  percent: 40,
-});
-useDistributionStore.getState().updateProgress({
-  analysisId: item.analysisId,
-  configRevision: 1,
-  runId: "run-1",
-  snapshotId: "snapshot-1",
-  phase: "prepare",
-  current: 3,
-  total: 10,
-  messageKey: "distribution.prepare",
-  percent: 30,
-});
-assert.equal(useDistributionStore.getState().runState?.progress?.current, 4);
-useDistributionStore.getState().cancelRun("cancel-1");
-assert.equal(useDistributionStore.getState().runState?.status, "cancelled");
-useDistributionStore.getState().reset();
-
-console.log("distribution snapshot control plane OK");
+console.log("distribution transient report contracts OK");

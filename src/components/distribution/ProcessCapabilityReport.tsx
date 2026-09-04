@@ -1,47 +1,13 @@
-import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
   CapabilityTypedValueV1,
   ProcessCapabilityDataV1,
   ProcessCapabilityIntervalV1,
-  DistributionYReportPreferencesV1,
 } from "@/types/distribution";
 
-import { ProcessCapabilityChart } from "./DistributionChart";
-
-export function ProcessCapabilityReport({
-  data,
-  valueAxisName,
-  preferences,
-  onPreferencesChange,
-}: {
-  data: ProcessCapabilityDataV1;
-  valueAxisName: string;
-  preferences: DistributionYReportPreferencesV1;
-  onPreferencesChange?: (preferences: DistributionYReportPreferencesV1) => void;
-}) {
+export function ProcessCapabilityReport({ data }: { data: ProcessCapabilityDataV1 }) {
   const { t } = useTranslation();
-  const menuId = useId();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [localPreferences, setLocalPreferences] = useState(preferences);
-  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const effectivePreferences = onPreferencesChange ? preferences : localPreferences;
-  const visible = {
-    histogram: effectivePreferences.capabilityHistogram,
-    processSummary: effectivePreferences.capabilityProcessSummary,
-    within: effectivePreferences.capabilityWithin,
-    overall: effectivePreferences.capabilityOverall,
-    nonconformance: effectivePreferences.capabilityNonconformance,
-  };
-  const preferenceKey = {
-    histogram: "capabilityHistogram",
-    processSummary: "capabilityProcessSummary",
-    within: "capabilityWithin",
-    overall: "capabilityOverall",
-    nonconformance: "capabilityNonconformance",
-  } as const;
   const specificationRows = [
     ["lsl", data.specification.lsl],
     ["target", data.specification.target],
@@ -69,93 +35,10 @@ export function ProcessCapabilityReport({
     ["cpmOverall", data.indices.cpmOverall],
   ] as const;
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setMenuOpen(false);
-      menuButtonRef.current?.focus();
-    };
-    const onPointerDown = (event: MouseEvent) => {
-      if (!(event.target instanceof Node)) return;
-      if (menuRef.current?.contains(event.target)) return;
-      if (menuButtonRef.current?.contains(event.target)) return;
-      setMenuOpen(false);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("mousedown", onPointerDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("mousedown", onPointerDown);
-    };
-  }, [menuOpen]);
-
   return (
     <div className="distribution-capability-report">
-      <div className="distribution-capability-toolbar">
-        <span />
-        <div className="distribution-analysis-menu-wrap">
-          <button
-            ref={menuButtonRef}
-            type="button"
-            className="distribution-icon-button"
-            aria-label={t("distribution.capability.options")}
-            aria-expanded={menuOpen}
-            aria-controls={menuOpen ? menuId : undefined}
-            onClick={() => setMenuOpen((current) => !current)}
-          >
-            <i className="fa-solid fa-ellipsis" aria-hidden="true" />
-          </button>
-          {menuOpen && (
-            <div
-              ref={menuRef}
-              id={menuId}
-              className="distribution-analysis-menu"
-              role="region"
-              aria-label={t("distribution.capability.options")}
-            >
-              <fieldset className="distribution-menu-group">
-                <legend>{t("distribution.report.processCapability")}</legend>
-                {([
-                  ...(data.chartData ? ["histogram" as const] : []),
-                  "processSummary" as const,
-                  "within" as const,
-                  "overall" as const,
-                  "nonconformance" as const,
-                ]).map((key) => (
-                  <label className="distribution-menu-option" key={key}>
-                    <input
-                      type="checkbox"
-                      checked={visible[key]}
-                      onChange={() => {
-                        const next = {
-                          ...effectivePreferences,
-                          [preferenceKey[key]]: !visible[key],
-                        };
-                        if (onPreferencesChange) onPreferencesChange(next);
-                        else setLocalPreferences(next);
-                        setMenuOpen(false);
-                      }}
-                    />
-                    <span>{t(`distribution.capability.${key}`)}</span>
-                  </label>
-                ))}
-              </fieldset>
-            </div>
-          )}
-        </div>
-      </div>
-      {visible.histogram && data.chartData && (
-        <ProcessCapabilityChart
-          chart={data.chartData}
-          title={t("distribution.capability.histogram")}
-          valueAxisName={valueAxisName}
-          densityAxisName={t("distribution.report.probabilityDensity")}
-        />
-      )}
       <div className="distribution-capability-summary">
-        <table>
+        <table className="sp-fit-y-by-x-report-table">
           <caption>{t("distribution.capability.specification")}</caption>
           <tbody>
             {specificationRows.map(([label, value]) => (
@@ -166,7 +49,7 @@ export function ProcessCapabilityReport({
             ))}
           </tbody>
         </table>
-        {visible.processSummary && <table>
+        <table className="sp-fit-y-by-x-report-table">
           <caption>{t("distribution.capability.processSummary")}</caption>
           <tbody>
             {summaryRows.map(([label, value]) => (
@@ -180,21 +63,21 @@ export function ProcessCapabilityReport({
               <td>{formatCapabilityValue(data.processSummary.stabilityIndex.value, t)}</td>
             </tr>
           </tbody>
-        </table>}
+        </table>
       </div>
       <div className="distribution-capability-indices">
-        {visible.within && <IndexTable
+        <IndexTable
           title={t("distribution.capability.within")}
           rows={withinRows}
           intervals={data.intervals}
-        />}
-        {visible.overall && <IndexTable
+        />
+        <IndexTable
           title={t("distribution.capability.overall")}
           rows={overallRows}
           intervals={data.intervals}
-        />}
+        />
       </div>
-      {visible.nonconformance && <NonconformanceTable data={data.nonconformance} />}
+      <NonconformanceTable data={data.nonconformance} />
       {data.warnings.map((warning) => (
         <p className="distribution-capability-warning" key={warning}>{t(warning)}</p>
       ))}
@@ -217,7 +100,7 @@ function IndexTable({
     maximumFractionDigits: 2,
   }).format(intervals.confidenceLevel);
   return (
-    <table>
+    <table className="sp-fit-y-by-x-report-table">
       <caption>{title}</caption>
       <thead>
         <tr>
@@ -260,7 +143,7 @@ function NonconformanceTable({ data }: { data: ProcessCapabilityDataV1["nonconfo
     ["total", data.observed.total, data.expectedWithin.total, data.expectedOverall.total],
   ] as const;
   return (
-    <table className="distribution-nonconformance-table">
+    <table className="sp-fit-y-by-x-report-table distribution-nonconformance-table">
       <caption>{t("distribution.capability.nonconformance")}</caption>
       <thead>
         <tr>

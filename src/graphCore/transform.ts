@@ -10,7 +10,17 @@ import type { GraphSpec, GraphData, ChartElement, FieldRef, GroupStyle, MarkerSh
 import { DEFAULT_GROUP_KEY } from "./types.ts";
 import { buildAxisCommon, buildCorrelationDivergingPalette, type GraphTheme } from "./theme.ts";
 import { buildBandSeries, FIT_BAND_ID_PREFIX } from "./confidenceBand.ts";
-import type { BoxPlotPacket, CorrelationMatrixPacket, GraphDataFrame, GraphAggregatePacket, HeatmapPacket, HistogramPacket, SummaryPacket } from "../types/graphData.ts";
+import type {
+  BoxPlotPacket,
+  CorrelationMatrixPacket,
+  GraphDataFrame,
+  GraphAggregatePacket,
+  HeatmapPacket,
+  HistogramPacket,
+  PrecomputedCurvePacket,
+  PrecomputedPointPacket,
+  SummaryPacket,
+} from "../types/graphData.ts";
 import { buildFrameScatterItems, type FrameScatterItem } from "./frameScatter.ts";
 import {
   computeJitterOffsets as computeStableJitterOffsets,
@@ -1202,6 +1212,68 @@ function kdeCurve(
   return out;
 }
 
+function normalCurveDomain(
+  mean: number,
+  std: number,
+  min: number,
+  max: number,
+): [number, number] | null {
+  if (
+    !Number.isFinite(mean) || !Number.isFinite(std) || std <= 0 ||
+    !Number.isFinite(min) || !Number.isFinite(max)
+  ) return null;
+  const x0 = Math.min(min, mean - 4 * std);
+  const x1 = Math.max(max, mean + 4 * std);
+  return Number.isFinite(x0) && Number.isFinite(x1) && x1 > x0 ? [x0, x1] : null;
+}
+
+function normalCurve(
+  mean: number,
+  std: number,
+  count: number,
+  binWidth: number,
+  min: number,
+  max: number,
+  npoints = 201,
+): [number, number][] {
+  if (
+    !Number.isFinite(mean) || !Number.isFinite(std) || std <= 0 ||
+    !Number.isFinite(count) || count < 2 || !Number.isFinite(binWidth) || binWidth <= 0
+  ) return [];
+  const domain = normalCurveDomain(mean, std, min, max);
+  if (!domain || npoints < 2) return [];
+  const [x0, x1] = domain;
+  const step = (x1 - x0) / (npoints - 1);
+  const coefficient = count * binWidth / (std * Math.sqrt(2 * Math.PI));
+  return Array.from({ length: npoints }, (_, index) => {
+    const x = x0 + step * index;
+    const z = (x - mean) / std;
+    return [x, coefficient * Math.exp(-0.5 * z * z)];
+  });
+}
+
+function normalSigmaBands(
+  mean: number,
+  std: number,
+  count: number,
+  binWidth: number,
+  pointsPerBand = 25,
+): [number, number][][] {
+  if (
+    !Number.isFinite(mean) || !Number.isFinite(std) || std <= 0 ||
+    !Number.isFinite(count) || count < 2 || !Number.isFinite(binWidth) || binWidth <= 0 ||
+    pointsPerBand < 2
+  ) return [];
+  const coefficient = count * binWidth / (std * Math.sqrt(2 * Math.PI));
+  return Array.from({ length: 6 }, (_, bandIndex) => {
+    const startZ = bandIndex - 3;
+    return Array.from({ length: pointsPerBand }, (_, pointIndex) => {
+      const z = startZ + pointIndex / (pointsPerBand - 1);
+      return [mean + z * std, coefficient * Math.exp(-0.5 * z * z)];
+    });
+  });
+}
+
 /** 箱线图统计：min, Q1, median, Q3, max */
 function boxStats(values: number[]): [number, number, number, number, number] | null {
   const v = values.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
@@ -1509,6 +1581,70 @@ function findCorrelationMatrixPacket(
   const packet = aggregatePackets.find((candidate) => candidate.kind === "correlationMatrix");
   if (!packet || packet.kind !== "correlationMatrix") return null;
   return packet;
+}
+
+function findPrecomputedPointPackets(
+  aggregatePackets: readonly GraphAggregatePacket[] | undefined,
+  elementId: string,
+): PrecomputedPointPacket[] {
+  if (!aggregatePackets || aggregatePackets.length === 0) return [];
+  return aggregatePackets.filter((candidate): candidate is PrecomputedPointPacket =>
+    candidate.kind === "precomputedPoints" && candidate.elementId === elementId,
+  );
+}
+
+function findPrecomputedCurvePackets(
+  aggregatePackets: readonly GraphAggregatePacket[] | undefined,
+  elementId: string,
+): PrecomputedCurvePacket[] {
+  if (!aggregatePackets || aggregatePackets.length === 0) return [];
+  return aggregatePackets.filter((candidate): candidate is PrecomputedCurvePacket =>
+    candidate.kind === "precomputedCurve" && candidate.elementId === elementId,
+  );
+}
+
+function buildPrecomputedPointSeries(
+  packet: PrecomputedPointPacket,
+  seriesName: string,
+  style: ResolvedGroupStyle,
+): Record<string, unknown> {
+  const symbol = markerToSymbol(style.point.marker);
+  return {
+    id: packet.seriesId ?? packet.elementId,
+    type: "scatter",
+    name: packet.seriesName ?? seriesName,
+    clip: true,
+    symbol: symbol.symbol,
+    symbolSize: style.point.size,
+    itemStyle: pointItemStyle(style.point, symbol.hollow),
+    data: packet.points.map((point) => [point.x, point.y]),
+    progressive: 0,
+    z: 5,
+  };
+}
+
+function buildPrecomputedCurveSeries(
+  packet: PrecomputedCurvePacket,
+  seriesName: string,
+  style: ResolvedGroupStyle,
+): Record<string, unknown> {
+  return {
+    id: packet.seriesId ?? packet.elementId,
+    type: "line",
+    name: packet.seriesName ?? seriesName,
+    clip: true,
+    showSymbol: false,
+    symbol: "none",
+    smooth: false,
+    step: packet.interpolation === "stepEnd" ? "end" : undefined,
+    lineStyle: {
+      color: style.line.color,
+      width: style.line.width,
+      opacity: style.line.opacity,
+    },
+    data: packet.points.map((point) => [point.x, point.y]),
+    z: 3,
+  };
 }
 
 function formatCorrelationCoefficient(value: number): string {
@@ -2814,7 +2950,11 @@ function transposeSeriesData(s: any): any {
   if (
     seriesType === "custom" &&
     typeof s.id === "string" &&
-    s.id.startsWith("__hist_cat_") &&
+    (
+      s.id.startsWith("__hist_cat_") ||
+      s.id.startsWith("__normal_cat_") ||
+      s.id.startsWith("__normal_sigma_cat_")
+    ) &&
     !s.id.endsWith("__t") &&
     Array.isArray(s.data)
   ) {
@@ -2955,7 +3095,7 @@ function buildSingleOption(
           : xField.type === "continuous"
             ? "continuous" as const
             : "nominal" as const,
-        categories: frame?.dictionaries.x ?? valueOrders?.[xField.name],
+        categories: frame?.dictionaries.x,
       }
       : {
         vector: "constant" as const,
@@ -3001,8 +3141,14 @@ function buildSingleOption(
   const hasHistogramEl = elements.some(
     (e) => e.kind === "histogram" && e.enabled !== false,
   );
+  const normalCurveElement = elements.find(
+    (e) => e.kind === "normalCurve" && e.enabled !== false,
+  );
+  const hasNormalCurveEl = !!normalCurveElement;
+  const showNormalSigmaBands = normalCurveElement?.options?.showSigmaBands === true;
+  const hasDistributionEl = hasHistogramEl || hasNormalCurveEl;
   const yOnlyHistogram =
-    !xField && !!yField && yField.type === "continuous" && hasHistogramEl;
+    !xField && !!yField && yField.type === "continuous" && hasDistributionEl;
   // Case (a): single-variable-on-X. Fires regardless of X type so the
   // mirror of "drop one continuous column on Y" (which always
   // renders a strip) works for any X type the column might have.
@@ -3028,7 +3174,7 @@ function buildSingleOption(
   // case (MODE A) already handles X-only correctly.
   const isHorizontal =
     yOnlyHistogram ||
-    (xOnlyMirror && !hasHistogramEl) ||
+    (xOnlyMirror && !hasDistributionEl) ||
     orientationSwap;
   if (isHorizontal) {
     const swappedSpec: GraphSpec = {
@@ -3100,8 +3246,8 @@ function buildSingleOption(
               ? "continuous"
               : "nominal",
           categories: resolvedFrameScatterCoordinates.y.vector === "x"
-            ? (frame?.dictionaries.x ?? valueOrders?.[yField?.name ?? ""])
-            : (frame?.dictionaries.y ?? valueOrders?.[yField?.name ?? ""]),
+            ? frame?.dictionaries.x
+            : frame?.dictionaries.y,
         }
         : { vector: "constant", type: "nominal", constant: "" },
       y: resolvedFrameScatterCoordinates.x.vector === "constant"
@@ -3144,6 +3290,7 @@ function buildSingleOption(
     && enabledElements.length === 1
     && enabledElements[0].kind === "points"
     && getOpt<string>(enabledElements[0].options, "summaryStat", "none") === "none";
+  const summaryPacket = findSummaryPacket(aggregatePackets, panelFacet);
 
   if (frame) {
     const frameRanges: SharedAxisRanges = {};
@@ -3153,7 +3300,10 @@ function buildSingleOption(
     const yExtent = yVector ? frame.extents[yVector] : undefined;
     if (xIsCategory) {
       if (resolvedFrameScatterCoordinates.x.categories?.length) {
-        frameRanges.xCats = [...resolvedFrameScatterCoordinates.x.categories];
+        const frameCategories = [...resolvedFrameScatterCoordinates.x.categories];
+        frameRanges.xCats = xField
+          ? applyValueOrder(frameCategories, valueOrders?.[xField.name])
+          : frameCategories;
       }
     } else if (!framePointsOnly && xIsTime && resolvedFrameScatterCoordinates.x.categories?.length) {
       const times = resolvedFrameScatterCoordinates.x.categories
@@ -3177,6 +3327,28 @@ function buildSingleOption(
       frameRanges.yMin = yExtent.min;
       frameRanges.yMax = yExtent.max;
     }
+    if (xIsCategory && yField?.type === "continuous" && hasNormalCurveEl && summaryPacket) {
+      let curveMin = frameRanges.yMin ?? Infinity;
+      let curveMax = frameRanges.yMax ?? -Infinity;
+      for (const entry of summaryPacket.summaries) {
+        if (entry.count < 2) continue;
+        const domain = normalCurveDomain(entry.mean, entry.stddev, entry.min, entry.max);
+        if (!domain) continue;
+        curveMin = Math.min(curveMin, domain[0]);
+        curveMax = Math.max(curveMax, domain[1]);
+      }
+      const fit = computeNiceBounds(
+        Number.isFinite(curveMin) ? curveMin : undefined,
+        Number.isFinite(curveMax) ? curveMax : undefined,
+        collectRefLineYs(spec),
+        AUTO_TARGET_TICKS,
+      );
+      if (fit) {
+        frameRanges.yMin = fit.min;
+        frameRanges.yMax = fit.max;
+        frameRanges.yInterval = fit.interval;
+      }
+    }
     sharedRanges = { ...frameRanges, ...sharedRanges };
   }
 
@@ -3187,7 +3359,6 @@ function buildSingleOption(
     x?: { min: number; max: number };
     y?: { min: number; max: number };
   } | undefined;
-  const summaryPacket = findSummaryPacket(aggregatePackets, panelFacet);
   const boxPlotPacket = findBoxPlotPacket(aggregatePackets, panelFacet);
   const histogramPacket = findHistogramPacket(aggregatePackets, panelFacet);
   const heatmapPacket = findHeatmapPacket(aggregatePackets, panelFacet);
@@ -3198,18 +3369,21 @@ function buildSingleOption(
     enabledElements.length === 1 &&
     histogramElementCount === 1;
   const boxplotPacketMode = frameBackedAggregateMode && hasBoxplot && !!boxPlotPacket;
+  const normalSummaryPacketMode = frameBackedAggregateMode && hasNormalCurveEl && !!summaryPacket;
 
-  // 按 color/overlay 分组
-  const grouping = colorField || overlayField;
+  // 按 overlay/color 分组，Overlay 是 GraphBuilder 的主 group identity。
+  const grouping = overlayField ?? colorField;
   const groupingOrder = grouping ? valueOrders?.[grouping.name] : undefined;
   const packetGroupKeys = histogramPacket
     ? Array.from(new Set(histogramPacket.bins.map((bin) => String(bin.group ?? DEFAULT_GROUP_KEY))))
-    : [];
+    : summaryPacket
+      ? Array.from(new Set(summaryPacket.summaries.map((entry) => String(entry.group ?? DEFAULT_GROUP_KEY))))
+      : [];
   const boxplotPacketGroupKeys = boxPlotPacket
     ? Array.from(new Set(boxPlotPacket.entries.map((entry) => String(entry.group ?? DEFAULT_GROUP_KEY))))
     : [];
   let groups: Map<string, number[]>;
-  if (histogramOnlyPacketMode || boxplotPacketMode) {
+  if (histogramOnlyPacketMode || boxplotPacketMode || normalSummaryPacketMode) {
     groups = new Map<string, number[]>();
     if (grouping) {
       const ownedGroupKeys = boxplotPacketMode
@@ -3273,6 +3447,11 @@ function buildSingleOption(
     return Math.max(0, groupKeys.indexOf(gKey));
   };
 
+  const resolvedStyleFor = (groupKey: string): ResolvedGroupStyle => {
+    const fallbackColor = theme.categorical[colorIndexOf(groupKey) % theme.categorical.length];
+    return resolveGroupStyle(groupKey, fallbackColor, !!grouping, theme, spec.styles);
+  };
+
   /** Set of group values the user has hidden via the legend show/hide
    *  toggle. Only meaningful when there's a grouping field; ignored
    *  otherwise (a single ungrouped chart has nothing to hide against). */
@@ -3332,13 +3511,27 @@ function buildSingleOption(
         ),
       )
       : [];
+  const normalPacketCats =
+    normalSummaryPacketMode && xIsCategory
+      ? Array.from(
+        new Set(
+          summaryPacket.summaries
+            .map((entry) => (entry.category == null ? "" : String(entry.category)))
+            .filter((value) => value.length > 0),
+        ),
+      )
+      : [];
   const rawXCats =
     useRowIdxX
       ? [""]
       : xIsCategory
         ? boxplotPacketMode
           ? boxplotPacketCats
-          : (histogramOnlyPacketMode ? histogramPacketCats : collectCategories(data, xIdx, yIdx))
+          : histogramOnlyPacketMode
+            ? histogramPacketCats
+            : normalSummaryPacketMode
+              ? normalPacketCats
+              : collectCategories(data, xIdx, yIdx)
         : [];
   const localXCats = xField ? applyValueOrder(rawXCats, valueOrders?.[xField.name]) : rawXCats;
   let xCats: string[] = xIsCategory && sharedRanges?.xCats
@@ -3392,16 +3585,18 @@ function buildSingleOption(
       emitGroups.forEach((gKey) => {
         const cells = byGroup.get(gKey) ?? [];
         if (cells.length === 0) return;
-        const color = grouping
-          ? theme.categorical[colorIndexOf(gKey) % theme.categorical.length]
-          : theme.categorical[0];
+        const styleKey = grouping ? gKey : DEFAULT_GROUP_KEY;
+        const heatStyle = resolvedStyleFor(styleKey);
         series.push({
           type: "heatmap",
           name: grouping ? gKey : (yField?.name || "heatmap"),
           data: cells.map((cell) => [cell.x, cell.y, cell.count]),
           pointSize: [Math.max(1, heatmapPacket.xBinWidth), Math.max(1, heatmapPacket.yBinWidth)],
           blurSize: 0,
-          itemStyle: { color, opacity: grouping ? 0.55 : 0.7 },
+          itemStyle: {
+            color: grouping ? heatStyle.fill.color : theme.categorical[0],
+            opacity: grouping ? 0.55 : 0.7,
+          },
           progressive: 2000,
           animation: false,
           z: 1,
@@ -3449,16 +3644,20 @@ function buildSingleOption(
           },
           buildAxisOverrides(spec.yAxis, aggregateMode),
         ),
-        visualMap: {
-          min: 0,
-          max: Math.max(1, maxCount),
-          calculable: false,
-          orient: "horizontal",
-          left: "center",
-          bottom: 8,
-          inRange: { color: [theme.sequential[0], theme.sequential[1]] },
-          textStyle: { color: theme.fgSecondary },
-        },
+        ...(!grouping
+          ? {
+            visualMap: {
+              min: 0,
+              max: Math.max(1, maxCount),
+              calculable: false,
+              orient: "horizontal",
+              left: "center",
+              bottom: 8,
+              inRange: { color: [theme.sequential[0], theme.sequential[1]] },
+              textStyle: { color: theme.fgSecondary },
+            },
+          }
+          : {}),
         series,
       } as EChartsOption;
     }
@@ -3493,10 +3692,11 @@ function buildSingleOption(
   // is handled by the outer `yOnlyHistogram` swap, which recurses
   // into MODE A with the column on X then transposes the option.
   const hasRenderableHistogram = !frameBackedAggregateMode || !!histogramPacket;
-  if (enabledElements.some((e) => e.kind === "histogram") && hasRenderableHistogram) {
+  if ((hasHistogramEl && hasRenderableHistogram) || hasNormalCurveEl) {
     const histogramSeriesStart = series.length;
-    const histEl = enabledElements.find((e) => e.kind === "histogram")!;
-    const opts = histEl.options;
+    const hasNormalCurve = hasNormalCurveEl;
+    const histEl = enabledElements.find((e) => e.kind === "histogram");
+    const opts = histEl?.options;
     const histStyle = getOpt<string>(opts, "histStyle", "bar"); // bar|polygon|kde|shadowgram
     const smoothness = Math.max(0, Math.min(1, getOpt<number>(opts, "smoothness", 0.5)));
     const showCounts = getOpt<boolean>(opts, "showCounts", false);
@@ -3518,14 +3718,16 @@ function buildSingleOption(
     const histGroupSlots: HistGroupSlot[] = [];
     if (grouping) {
       const iterGroups = groupKeys.length > 0
-        ? groupKeys
-        : (frameBackedAggregateMode && histogramPacket
+      ? (frameBackedAggregateMode && (histogramPacket || summaryPacket)
+          ? groupKeys.filter((key) => packetGroupKeys.includes(key))
+          : groupKeys)
+        : (frameBackedAggregateMode && (histogramPacket || summaryPacket)
           ? packetGroupKeys
           : []);
       for (const gKey of iterGroups) {
         if (isHidden(gKey)) continue;
         const rowIdxs = frameBackedAggregateMode ? [] : (groups.get(gKey) ?? []);
-        if (rowIdxs.length === 0 && !(frameBackedAggregateMode && histogramPacket)) continue;
+        if (rowIdxs.length === 0 && !(frameBackedAggregateMode && (histogramPacket || summaryPacket))) continue;
         histGroupSlots.push({
           key: gKey,
           rowIdxs,
@@ -3610,6 +3812,12 @@ function buildSingleOption(
               if (bin.binEnd < lo) lo = bin.binEnd;
               if (bin.binEnd > hi) hi = bin.binEnd;
             }
+          }
+        }
+        if ((!Number.isFinite(lo) || !Number.isFinite(hi)) && frameBackedAggregateMode && summaryPacket && hasNormalCurve) {
+          for (const entry of summaryPacket.summaries) {
+            if (Number.isFinite(entry.min) && entry.min < lo) lo = entry.min;
+            if (Number.isFinite(entry.max) && entry.max > hi) hi = entry.max;
           }
         }
         if ((!Number.isFinite(lo) || !Number.isFinite(hi)) && frameBackedAggregateMode && histogramPacket) {
@@ -3899,13 +4107,7 @@ function buildSingleOption(
       // computed against the appropriate axis.
       histGroupSlots.forEach((slot) => {
         const styleKey = grouping ? slot.key : DEFAULT_GROUP_KEY;
-        const rs = resolveGroupStyle(
-          styleKey,
-          slot.baseColor,
-          !!grouping,
-          theme,
-          spec.styles,
-        );
+        const rs = resolvedStyleFor(styleKey);
         // Visible fill color: same fallback logic as the bar layer —
         // `resolveGroupStyle` defaults ungrouped fill to "transparent"
         // which would render the histogram invisible.
@@ -4322,6 +4524,164 @@ function buildSingleOption(
         });
       });
 
+      if (hasNormalCurve) {
+        type NormalCatInfo = {
+          cat: string;
+          points: [number, number][];
+          sigmaBands: [number, number][][];
+          maxWeight: number;
+        };
+        const byGroup = new Map<string, NormalCatInfo[]>();
+        const maxByCat = new Map<string, number>();
+        for (const slot of histGroupSlots) {
+          const infos: NormalCatInfo[] = [];
+          for (const cat of xCats) {
+            const packetEntry = summaryPacket?.summaries.find((entry) =>
+              String(entry.category ?? "") === cat &&
+              (!grouping || String(entry.group ?? DEFAULT_GROUP_KEY) === slot.key)
+            );
+            let values: number[] = [];
+            if (!packetEntry) {
+              values = slot.rowIdxs
+                .filter((index) => String(data.rows[index]?.[xIdx] ?? "") === cat)
+                .map((index) => toNum(data.rows[index]?.[yIdx]))
+                .filter(Number.isFinite);
+            }
+            const raw = meanStd(values);
+            const mean = packetEntry?.mean ?? raw.mean;
+            const std = packetEntry?.stddev ?? raw.std;
+            const count = packetEntry?.count ?? raw.n;
+            const points = normalCurve(
+              mean,
+              std,
+              count,
+              yWidth,
+              packetEntry?.min ?? dataLo,
+              packetEntry?.max ?? dataHi,
+            );
+            if (points.length === 0) continue;
+            const sigmaBands = showNormalSigmaBands
+              ? normalSigmaBands(mean, std, count, yWidth)
+              : [];
+            let maxWeight = 0;
+            for (const point of points) if (point[1] > maxWeight) maxWeight = point[1];
+            infos.push({ cat, points, sigmaBands, maxWeight });
+            maxByCat.set(cat, Math.max(maxByCat.get(cat) ?? 0, maxWeight));
+          }
+          byGroup.set(slot.key, infos);
+        }
+
+        for (const slot of histGroupSlots) {
+          const infos = byGroup.get(slot.key) ?? [];
+          if (infos.length === 0) continue;
+          const styleKey = grouping ? slot.key : DEFAULT_GROUP_KEY;
+          const resolved = resolveGroupStyle(styleKey, slot.baseColor, !!grouping, theme, spec.styles);
+          const strokeColor = resolved.line.color || slot.baseColor;
+          const safeMidY = (yLo + yHi) / 2;
+          const tuples = infos.map((info) => [info.cat, safeMidY]);
+          if (showNormalSigmaBands) {
+            const bandOpacity = [0.1, 0.16, 0.24, 0.24, 0.16, 0.1];
+            for (let bandIndex = 0; bandIndex < 6; bandIndex++) {
+              series.push({
+                id: `__normal_sigma_cat_${slot.key}_${bandIndex}`,
+                type: "custom",
+                name: slot.key,
+                coordinateSystem: "cartesian2d",
+                clip: true,
+                silent: true,
+                data: tuples,
+                renderItem: (params: any, api: any) => {
+                  const info = infos[params.dataIndex];
+                  const band = info?.sigmaBands[bandIndex];
+                  if (!info || !band) return null;
+                  const catIsX = !String(params.seriesId || "").endsWith("__t");
+                  const xy = (value: number): [string | number, string | number] =>
+                    catIsX ? [info.cat, value] : [value, info.cat];
+                  const center = api.coord(xy(safeMidY));
+                  if (!center) return null;
+                  const slotSize = catIsX ? api.size([1, 0])[0] : api.size([0, 1])[1];
+                  const maxExtent = Math.max(0, slotSize * 0.85 - 1) * histHeight;
+                  const maxWeight = hasHistogramEl
+                    ? (perCatMaxCount.get(info.cat) ?? 0)
+                    : (maxByCat.get(info.cat) ?? info.maxWeight);
+                  if (maxWeight <= 0) return null;
+                  const curvePoints: number[][] = [];
+                  for (const [value, weight] of band) {
+                    if (value < yLo || value > yHi) continue;
+                    const coordinate = api.coord(xy(value));
+                    if (!coordinate) continue;
+                    if (catIsX) {
+                      const baseline = center[0] - slotSize / 2 + 1;
+                      curvePoints.push([baseline + (weight / maxWeight) * maxExtent, coordinate[1]]);
+                    } else {
+                      const baseline = center[1] + slotSize / 2 - 1;
+                      curvePoints.push([coordinate[0], baseline - (weight / maxWeight) * maxExtent]);
+                    }
+                  }
+                  if (curvePoints.length < 2) return null;
+                  const baseline = catIsX
+                    ? center[0] - slotSize / 2 + 1
+                    : center[1] + slotSize / 2 - 1;
+                  const lastCurvePoint = curvePoints[curvePoints.length - 1];
+                  const polygonPoints = catIsX
+                    ? [[baseline, curvePoints[0][1]], ...curvePoints, [baseline, lastCurvePoint[1]]]
+                    : [[curvePoints[0][0], baseline], ...curvePoints, [lastCurvePoint[0], baseline]];
+                  return {
+                    type: "polygon",
+                    shape: { points: polygonPoints },
+                    style: { fill: strokeColor, stroke: null, opacity: bandOpacity[bandIndex] },
+                  };
+                },
+                z: 2,
+              });
+            }
+          }
+          series.push({
+            id: `__normal_cat_${slot.key}`,
+            type: "custom",
+            name: slot.key,
+            coordinateSystem: "cartesian2d",
+            clip: true,
+            data: tuples,
+            renderItem: (params: any, api: any) => {
+              const info = infos[params.dataIndex];
+              if (!info) return null;
+              const catIsX = !String(params.seriesId || "").endsWith("__t");
+              const xy = (value: number): [string | number, string | number] =>
+                catIsX ? [info.cat, value] : [value, info.cat];
+              const center = api.coord(xy(safeMidY));
+              if (!center) return null;
+              const slotSize = catIsX ? api.size([1, 0])[0] : api.size([0, 1])[1];
+              const maxExtent = Math.max(0, slotSize * 0.85 - 1) * histHeight;
+              const maxWeight = hasHistogramEl
+                ? (perCatMaxCount.get(info.cat) ?? 0)
+                : (maxByCat.get(info.cat) ?? info.maxWeight);
+              if (maxWeight <= 0) return null;
+              const shapePoints: number[][] = [];
+              for (const [value, weight] of info.points) {
+                if (value < yLo || value > yHi) continue;
+                const coordinate = api.coord(xy(value));
+                if (!coordinate) continue;
+                if (catIsX) {
+                  const baseline = center[0] - slotSize / 2 + 1;
+                  shapePoints.push([baseline + (weight / maxWeight) * maxExtent, coordinate[1]]);
+                } else {
+                  const baseline = center[1] + slotSize / 2 - 1;
+                  shapePoints.push([coordinate[0], baseline - (weight / maxWeight) * maxExtent]);
+                }
+              }
+              if (shapePoints.length < 2) return null;
+              return {
+                type: "polyline",
+                shape: { points: shapePoints },
+                style: { stroke: strokeColor, fill: null, lineWidth: 2 },
+              };
+            },
+            z: 3,
+          });
+        }
+      }
+
       // Category divider lines: JMP draws thin vertical guides at
       // each category boundary when a histogram is added, so the
       // left-anchored bars read against a clear visual edge. We use
@@ -4380,7 +4740,8 @@ function buildSingleOption(
       // range when faceted) so stacked / overlaid per-group series
       // share identical bin centers and widths.
       const packetModeA = frameBackedAggregateMode && !!histogramPacket;
-      const allXs = packetModeA ? [] : data.rows.map((r) => toNum(r[xIdx]));
+      const summaryModeA = frameBackedAggregateMode && !!summaryPacket && hasNormalCurve;
+      const allXs = packetModeA || summaryModeA ? [] : data.rows.map((r) => toNum(r[xIdx]));
       // Pick bin count so bar edges align with the X axis minor-tick
       // grid (one bar per minor segment). Mirror the EXACT same path
       // the X axis takes (`xFinalBounds` block + `mergeAxis`
@@ -4412,6 +4773,12 @@ function buildSingleOption(
             if (bin.binEnd < xDataLo) xDataLo = bin.binEnd;
             if (bin.binEnd > xDataHi) xDataHi = bin.binEnd;
           }
+        }
+      }
+      if ((!Number.isFinite(xDataLo) || !Number.isFinite(xDataHi)) && summaryModeA) {
+        for (const entry of summaryPacket.summaries) {
+          if (Number.isFinite(entry.min) && entry.min < xDataLo) xDataLo = entry.min;
+          if (Number.isFinite(entry.max) && entry.max > xDataHi) xDataHi = entry.max;
         }
       }
       if (!Number.isFinite(xDataLo) || !Number.isFinite(xDataHi)) {
@@ -4553,15 +4920,11 @@ function buildSingleOption(
       const stackId = "__hist_stack__";
       histGroupSlots.forEach((slot) => {
         const styleKey = grouping ? slot.key : DEFAULT_GROUP_KEY;
-        const rs = resolveGroupStyle(
-          styleKey,
-          slot.baseColor,
-          !!grouping,
-          theme,
-          spec.styles,
-        );
-        const gxs = packetModeA ? [] : slot.rowIdxs.map((i) => toNum(data.rows[i][xIdx]));
-        const groupCounts = binOntoGrid(gxs, slot.key);
+        const rs = resolvedStyleFor(styleKey);
+        const gxs = packetModeA || summaryModeA
+          ? []
+          : slot.rowIdxs.map((i) => toNum(data.rows[i][xIdx]));
+  const groupCounts = binOntoGrid(gxs, grouping ? slot.key : undefined);
 
         // Resolve the visible fill color for bars. `resolveGroupStyle`
         // defaults ungrouped fill to "transparent" (so JMP-style point
@@ -4582,7 +4945,7 @@ function buildSingleOption(
         const lineColor = rs.line.color || slot.baseColor;
         const areaColor = hasUserFill ? rs.fill.color : slot.baseColor;
 
-        if (histStyle === "shadowgram") {
+        if (hasHistogramEl && histStyle === "shadowgram") {
           // Multi-binCount overlay using this group's data only. Heavy
           // translucency means the union of bars reads as a "shadow"
           // density estimate — no single bin count is privileged.
@@ -4600,7 +4963,7 @@ function buildSingleOption(
               legendHoverLink: false,
             });
           }
-        } else if (histStyle === "polygon") {
+        } else if (hasHistogramEl && histStyle === "polygon") {
           // Frequency polygon: line through bin-top points. Phantom
           // zero anchors at each end close the polygon back to the
           // axis (matches JMP's polygon style).
@@ -4619,7 +4982,7 @@ function buildSingleOption(
             itemStyle: { color: lineColor },
             ...labelCfg,
           });
-        } else if (histStyle === "kde") {
+        } else if (hasHistogramEl && histStyle === "kde") {
           // Smoothed kernel density curve scaled to count-per-bin so it
           // shares the Y axis with a count histogram. Each group's
           // curve is scaled by its OWN count, so a small group's curve
@@ -4635,7 +4998,7 @@ function buildSingleOption(
             itemStyle: { color: lineColor },
             areaStyle: { color: areaColor, opacity: grouping ? 0.12 : 0.18 },
           });
-        } else {
+        } else if (hasHistogramEl) {
           // Default: filled bar histogram. Stacked when grouped so
           // each bin shows the per-group contribution as a segment.
           series.push({
@@ -4647,6 +5010,56 @@ function buildSingleOption(
             ...(grouping ? { stack: stackId } : {}),
             ...labelCfg,
           });
+        }
+
+        if (hasNormalCurve) {
+          const packetSummary = summaryPacket?.summaries.find((entry) =>
+            !grouping || String(entry.group ?? DEFAULT_GROUP_KEY) === slot.key
+          );
+          const rawSummary = meanStd(gxs);
+          const points = normalCurve(
+            packetSummary?.mean ?? rawSummary.mean,
+            packetSummary?.stddev ?? rawSummary.std,
+            packetSummary?.count ?? rawSummary.n,
+            width,
+            packetSummary?.min ?? xDataLo,
+            packetSummary?.max ?? xDataHi,
+          );
+          if (points.length > 0) {
+            if (showNormalSigmaBands) {
+              const bandOpacity = [0.1, 0.16, 0.24, 0.24, 0.16, 0.1];
+              normalSigmaBands(
+                packetSummary?.mean ?? rawSummary.mean,
+                packetSummary?.stddev ?? rawSummary.std,
+                packetSummary?.count ?? rawSummary.n,
+                width,
+              ).forEach((band, bandIndex) => {
+                series.push({
+                  id: `__normal_sigma_band_${slot.key}_${bandIndex}`,
+                  type: "line",
+                  name: slot.key,
+                  data: band,
+                  showSymbol: false,
+                  smooth: false,
+                  silent: true,
+                  lineStyle: { color: lineColor, opacity: 0 },
+                  areaStyle: { color: lineColor, opacity: bandOpacity[bandIndex] },
+                  z: 2,
+                });
+              });
+            }
+            series.push({
+              id: `__normal_curve_${slot.key}`,
+              type: "line",
+              name: slot.key,
+              data: points,
+              showSymbol: false,
+              smooth: true,
+              lineStyle: { color: lineColor, width: 2 },
+              itemStyle: { color: lineColor },
+              z: 3,
+            });
+          }
         }
       });
 
@@ -4821,12 +5234,12 @@ function buildSingleOption(
       const boxIterGroups: string[] = grouping ? groupKeys : [DEFAULT_GROUP_KEY];
       boxIterGroups.forEach((gKey) => {
         if (isHidden(gKey)) return;
+        const seriesName = grouping ? gKey : (yField?.name ?? "");
+        const styleKey = grouping ? gKey : DEFAULT_GROUP_KEY;
         const groupColor = grouping
           ? theme.categorical[colorIndexOf(gKey) % theme.categorical.length]
           : theme.categorical[0];
-        const seriesName = grouping ? gKey : (yField?.name ?? "");
-        const styleKey = grouping ? gKey : DEFAULT_GROUP_KEY;
-        const boxGroupStyle = resolveGroupStyle(styleKey, groupColor, !!grouping, theme, spec.styles);
+        const boxGroupStyle = resolvedStyleFor(styleKey);
         const userFill = spec.styles?.[styleKey]?.fill;
         const hasUserFill = !!(userFill?.color ?? userFill?.fillColor);
         const neutralBoxFill = shade("#000000", SHADE_RATIO_FILL);
@@ -5009,7 +5422,7 @@ function buildSingleOption(
       // median / whisker line use the `line` sub-mark. Outliers use the
       // group's `point` sub-mark.
       const styleKey = grouping ? gKey : DEFAULT_GROUP_KEY;
-      const boxGroupStyle = resolveGroupStyle(styleKey, groupColor, !!grouping, theme, spec.styles);
+      const boxGroupStyle = resolvedStyleFor(styleKey);
       // Box plots are special: the fill IS the primary mark, not an
       // overlay on top of a stroke layer (as with points / lines / bars).
       // `resolveGroupStyle` defaults ungrouped fill to "transparent" to
@@ -5140,6 +5553,7 @@ function buildSingleOption(
     );
   }
 
+  const emittedPrecomputedSeriesIds = new Set<string>();
   groupKeys.forEach((gKey) => {
     // Skip groups hidden via the legend show/hide toggle.
     if (isHidden(gKey)) return;
@@ -5151,9 +5565,36 @@ function buildSingleOption(
     // The per-element renderers below pull from this resolved style so
     // changing it in the UI affects every active layer simultaneously.
     const styleKey = grouping ? gKey : DEFAULT_GROUP_KEY;
-    const resolvedStyle = resolveGroupStyle(styleKey, color, !!grouping, theme, spec.styles);
+    const resolvedStyle = resolvedStyleFor(styleKey);
 
     enabledElements.forEach((el) => {
+      const elementId = getOpt<string>(el.options, "elementId", "");
+      if (frameBackedAggregateMode && elementId.length > 0) {
+        if (el.kind === "points") {
+          const pointPackets = findPrecomputedPointPackets(aggregatePackets, elementId);
+          if (pointPackets.length > 0) {
+            for (const pointPacket of pointPackets) {
+              const emittedSeriesId = pointPacket.seriesId ?? pointPacket.elementId;
+              if (emittedPrecomputedSeriesIds.has(emittedSeriesId)) continue;
+              series.push(buildPrecomputedPointSeries(pointPacket, seriesName, resolvedStyle));
+              emittedPrecomputedSeriesIds.add(emittedSeriesId);
+            }
+            return;
+          }
+        }
+        if (el.kind === "line") {
+          const curvePackets = findPrecomputedCurvePackets(aggregatePackets, elementId);
+          if (curvePackets.length > 0) {
+            for (const curvePacket of curvePackets) {
+              const emittedSeriesId = curvePacket.seriesId ?? curvePacket.elementId;
+              if (emittedPrecomputedSeriesIds.has(emittedSeriesId)) continue;
+              series.push(buildPrecomputedCurveSeries(curvePacket, seriesName, resolvedStyle));
+              emittedPrecomputedSeriesIds.add(emittedSeriesId);
+            }
+            return;
+          }
+        }
+      }
       if (
         frame &&
         el.kind === "points" &&
@@ -5216,7 +5657,7 @@ function buildSingleOption(
   // multiple lines — wrapped labels read better horizontally.
   const xRotated = xIsCategory && xMaxLines === 1 && needsRotation(xDecisionCats);
   const bottomGap = xIsCategory
-    ? (xRotated ? 56 : 16) + Math.max(0, xMaxLines - 1) * 14
+    ? (xRotated ? 56 : 28) + Math.max(0, xMaxLines - 1) * 14
     : 28;
 
   // Resolve final X-axis bounds + tick interval for the VALUE-type X
@@ -5486,6 +5927,11 @@ function buildSingleOption(
     if (framePointsOnly && framePointExtents?.y) {
       dataMin = framePointExtents.y.min;
       dataMax = framePointExtents.y.max;
+    } else if (normalSummaryPacketMode && summaryPacket) {
+      for (const entry of summaryPacket.summaries) {
+        if (Number.isFinite(entry.min) && entry.min < dataMin) dataMin = entry.min;
+        if (Number.isFinite(entry.max) && entry.max > dataMax) dataMax = entry.max;
+      }
     } else if (yIdx >= 0) {
       for (const r of data.rows) {
         if (isRowHidden(r)) continue;
@@ -6458,7 +6904,7 @@ function computeSharedRanges(
   // that belong to a hidden legend group. Hidden rows shouldn't drag the
   // shared axis bounds — otherwise hiding a noisy outlier group does
   // nothing visible because the axes still cover its range.
-  const grouping = encoding.color || encoding.overlay;
+  const grouping = encoding.overlay ?? encoding.color;
   const groupingIdx = grouping ? colIndex(data, grouping.name) : -1;
   const hiddenSet = new Set(hiddenGroups ?? []);
   const useHiddenFilter = !!grouping && groupingIdx >= 0 && hiddenSet.size > 0;
@@ -6679,7 +7125,7 @@ function buildFrameBackedScatterSeries(
     0,
     Math.min(1, getOpt<number>(pointsElement.options, "jitterLimit", 0.5)),
   );
-  const grouping = spec.encoding.color || spec.encoding.overlay;
+  const grouping = spec.encoding.overlay ?? spec.encoding.color;
   const groupOrder = grouping
     ? applyValueOrder(
       [...(frame.dictionaries.group ?? [])],
@@ -6724,12 +7170,13 @@ function buildFrameBackedScatterSeries(
       yMax: yMax === yMin ? yMin + 1 : yMax,
     },
   });
+  const visibleFrameGroups = frameGroups.filter((group) => group.items.length > 0);
 
   let xMin = Infinity;
   let xMax = -Infinity;
   let pointYMin = Infinity;
   let pointYMax = -Infinity;
-  for (const group of frameGroups) {
+  for (const group of visibleFrameGroups) {
     for (const item of group.items) {
       const x = Number(item.value[0]);
       const y = item.value[1];
@@ -6742,11 +7189,12 @@ function buildFrameBackedScatterSeries(
     }
   }
 
-  const scatterSeries = frameGroups.map((group) => {
+  const scatterSeries = visibleFrameGroups.map((group) => {
     const orderedIndex = grouping ? Math.max(0, groupOrder.indexOf(group.name)) : 0;
     const color = theme.categorical[orderedIndex % theme.categorical.length];
+    const styleKey = grouping ? group.name : DEFAULT_GROUP_KEY;
     const style = resolveGroupStyle(
-      grouping ? group.name : DEFAULT_GROUP_KEY,
+      styleKey,
       color,
       !!grouping,
       theme,
@@ -6821,7 +7269,7 @@ function materializeFrameRows(
     const index = columnIndexes.get(field.name);
     if (index !== undefined) row[index] = value;
   };
-  const grouping = spec.encoding.color || spec.encoding.overlay;
+  const grouping = spec.encoding.overlay ?? spec.encoding.color;
 
   for (const chunk of frame.rawChunks) {
     const groupCodes = chunk.groupCodes
@@ -6885,8 +7333,15 @@ function collectFacetKeysFromFrame(
 ): string[] | null {
   if (!frame) return null;
   const dict = frame.dictionaries[dictionaryKey];
-  if (!dict || dict.length === 0) return null;
-  return applyValueOrder([...dict], order);
+  if (dict && dict.length > 0) return applyValueOrder([...dict], order);
+  const summary = frame.aggregates.find((packet) => packet.kind === "summary");
+  if (!summary || summary.kind !== "summary") return null;
+  const keys = Array.from(new Set(
+    summary.summaries
+      .map((entry) => entry[dictionaryKey])
+      .filter((value): value is string => typeof value === "string"),
+  ));
+  return keys.length > 0 ? applyValueOrder(keys, order) : null;
 }
 
 function buildGraphBase(
@@ -6925,7 +7380,7 @@ function buildGraphBase(
   // dataset so each panel can map its local group(s) back to the same
   // color slot. Without this, every panel restarts its group index at 0
   // and the per-group themes set in the legend collapse to a single hue.
-  const grouping = encoding.color || encoding.overlay;
+  const grouping = encoding.overlay ?? encoding.color;
   const globalGroupKeys = grouping
     ? applyValueOrder(
       frameBacked && frame?.dictionaries.group

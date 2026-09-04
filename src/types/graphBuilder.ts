@@ -8,6 +8,8 @@ import type { ChartElement, FieldRef, GroupStyleMap, RefLineY, RefLineX, YAxisCo
 import type { FilterRuleItem } from "./filter";
 import type { GraphSampling } from "./graphData";
 
+export type GroupThemeSlots = Record<string, Record<string, number>>;
+
 export type GraphSlotKey =
   | "x"
   | "y"
@@ -95,6 +97,8 @@ export interface GraphBuilderItem {
   /** Raw-point sampling mode persisted on the graph item. Missing
    *  values from older project files are treated as full data. */
   sampling?: GraphSampling;
+  /** Persisted theme slot identity by grouping field and normalized group key. */
+  groupThemeSlots?: GroupThemeSlots;
   /** JMP-style Local Data Filter rules. Each rule narrows (AND) or
    *  expands (OR) the row set fed into the graph. Stored on the item so
    *  it persists with the project and survives reloads. */
@@ -109,7 +113,7 @@ export interface GraphBuilderItem {
 
 export type EmbeddedGraphConfig = Pick<
   GraphBuilderItem,
-  "mode" | "modeStates" | "filters" | "sampling"
+  "mode" | "modeStates" | "filters" | "sampling" | "groupThemeSlots"
 >;
 
 export function isCorrelationMatrixItem(item: GraphBuilderItem): boolean {

@@ -1,110 +1,27 @@
-import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
-  DistributionContinuousFitConfigV1,
-  ContinuousDistributionIdV1,
-  DistributionGroupResultV1,
+  DistributionGroupResult,
   DistributionGroupValueV1,
-  DistributionReportBlockV1,
-  DistributionYReportPreferencesV1,
-  DistributionYResultV1,
+  DistributionReportBlock,
 } from "@/types/distribution";
-import { DISTRIBUTION_FIT_CAPABILITY_REGISTRY } from "./distributionConfig";
 
-import {
-  DistributionChart,
-  DistributionFitDensityChart,
-  DistributionOverviewChart,
-} from "./DistributionChart";
+import "../reportTable.css";
+
 import { ContinuousFitComparisonReport, ContinuousFitReport } from "./ContinuousFitReport";
 import { ProcessCapabilityReport } from "./ProcessCapabilityReport";
 
 interface DistributionReportProps {
-  groups: DistributionGroupResultV1[];
-  histogramMethod?:
-    | "jmpAuto"
-    | "freedmanDiaconis"
-    | "scott"
-    | "sturges"
-    | "fixedCount"
-    | "fixedWidth";
-  preferences?: Record<string, DistributionYReportPreferencesV1>;
-  onPreferencesChange?: (
-    yColumnId: string,
-    preferences: DistributionYReportPreferencesV1,
-  ) => void;
-  onEditInputs?: () => void;
-  continuousFit?: DistributionContinuousFitConfigV1;
-  onContinuousFitChange?: (continuousFit: DistributionContinuousFitConfigV1) => void;
-  availableFitIds?: ContinuousDistributionIdV1[];
+  groups: DistributionGroupResult[];
+  reportBlocks: DistributionReportBlock[];
 }
 
-export const DEFAULT_DISTRIBUTION_REPORT_PREFERENCES: DistributionYReportPreferencesV1 = {
-  overview: true,
-  histogram: true,
-  outlierBoxPlot: true,
-  specificationLines: true,
-  quantiles: true,
-  summary: true,
-  horizontalTables: true,
-  normalQuantilePlot: false,
-  ecdf: false,
-  processCapability: true,
-  histogramScale: "density",
-  capabilityHistogram: true,
-  capabilityProcessSummary: true,
-  capabilityWithin: true,
-  capabilityOverall: true,
-  capabilityNonconformance: true,
-  fitOverlays: true,
-  fitDetails: true,
-};
+export function DistributionReport({ groups, reportBlocks }: DistributionReportProps) {
+  const nestedBlockIds = new Set(
+    groups.flatMap((group) => group.yResults.flatMap((result) => result.blocks.map((block) => block.blockId))),
+  );
+  const standaloneBlocks = reportBlocks.filter((block) => !nestedBlockIds.has(block.blockId));
 
-type DisplayToggleKey =
-  | "overview"
-  | "quantiles"
-  | "summary"
-  | "ecdf"
-  | "processCapability"
-  | "normalQuantilePlot";
-
-function normalizeReportPreferences(
-  preferences?: DistributionYReportPreferencesV1,
-): DistributionYReportPreferencesV1 {
-  const defaults = DEFAULT_DISTRIBUTION_REPORT_PREFERENCES;
-  return {
-    overview: preferences?.overview ?? defaults.overview,
-    histogram: preferences?.histogram ?? defaults.histogram,
-    outlierBoxPlot: preferences?.outlierBoxPlot ?? defaults.outlierBoxPlot,
-    specificationLines: preferences?.specificationLines ?? defaults.specificationLines,
-    quantiles: preferences?.quantiles ?? defaults.quantiles,
-    summary: preferences?.summary ?? defaults.summary,
-    horizontalTables: preferences?.horizontalTables ?? defaults.horizontalTables,
-    normalQuantilePlot: preferences?.normalQuantilePlot ?? defaults.normalQuantilePlot,
-    ecdf: preferences?.ecdf ?? defaults.ecdf,
-    processCapability: preferences?.processCapability ?? defaults.processCapability,
-    histogramScale: preferences?.histogramScale ?? defaults.histogramScale,
-    capabilityHistogram: preferences?.capabilityHistogram ?? defaults.capabilityHistogram,
-    capabilityProcessSummary: preferences?.capabilityProcessSummary ?? defaults.capabilityProcessSummary,
-    capabilityWithin: preferences?.capabilityWithin ?? defaults.capabilityWithin,
-    capabilityOverall: preferences?.capabilityOverall ?? defaults.capabilityOverall,
-    capabilityNonconformance: preferences?.capabilityNonconformance ?? defaults.capabilityNonconformance,
-    fitOverlays: preferences?.fitOverlays ?? defaults.fitOverlays,
-    fitDetails: preferences?.fitDetails ?? defaults.fitDetails,
-  };
-}
-
-export function DistributionReport({
-  groups,
-  histogramMethod,
-  preferences,
-  onPreferencesChange,
-  onEditInputs,
-  continuousFit,
-  onContinuousFitChange,
-  availableFitIds = [],
-}: DistributionReportProps) {
   return (
     <div className="distribution-report-tree">
       {groups.map((group, groupIndex) => (
@@ -113,15 +30,18 @@ export function DistributionReport({
           group={group}
           groupIndex={groupIndex}
           defaultOpen={groupIndex === 0}
-          histogramMethod={histogramMethod}
-          preferences={preferences}
-          onPreferencesChange={onPreferencesChange}
-          onEditInputs={onEditInputs}
-          continuousFit={continuousFit}
-          onContinuousFitChange={onContinuousFitChange}
-          availableFitIds={availableFitIds}
         />
       ))}
+      {standaloneBlocks.length > 0 && (
+        <details className="distribution-report-group">
+          <summary className="distribution-group-heading">Report</summary>
+          <div className="distribution-group-content">
+            {standaloneBlocks.filter(hasReportContent).map((block) => (
+              <ReportBlock key={block.blockId} block={block} />
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -130,27 +50,12 @@ function GroupSection({
   group,
   groupIndex,
   defaultOpen,
-  histogramMethod,
-  preferences,
-  onPreferencesChange,
-  onEditInputs,
-  continuousFit,
-  onContinuousFitChange,
-  availableFitIds,
 }: {
-  group: DistributionGroupResultV1;
+  group: DistributionGroupResult;
   groupIndex: number;
   defaultOpen: boolean;
-  histogramMethod?: DistributionReportProps["histogramMethod"];
-  preferences?: Record<string, DistributionYReportPreferencesV1>;
-  onPreferencesChange?: DistributionReportProps["onPreferencesChange"];
-  onEditInputs?: () => void;
-  continuousFit?: DistributionContinuousFitConfigV1;
-  onContinuousFitChange?: (continuousFit: DistributionContinuousFitConfigV1) => void;
-  availableFitIds: ContinuousDistributionIdV1[];
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(defaultOpen);
   const label = group.groupKey.length === 0
     ? t("distribution.report.overall")
     : group.groupKey.map((value, index) => {
@@ -160,522 +65,69 @@ function GroupSection({
       }).join(" / ");
 
   return (
-    <section className="distribution-report-group" data-testid={`distribution-group-${groupIndex}`}>
-      <button
-        type="button"
-        className="distribution-disclosure distribution-group-heading"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
-        <span>{label}</span>
-      </button>
-      {open && (
-        <div className="distribution-group-content">
-          {group.yResults.map((result, yIndex) => (
-            <YSection
-              key={result.yColumn.columnId}
-              result={result}
-              defaultOpen={yIndex === 0}
-              histogramMethod={histogramMethod}
-              preferences={preferences?.[result.yColumn.columnId]}
-              onPreferencesChange={onPreferencesChange}
-              onEditInputs={onEditInputs}
-              continuousFit={continuousFit}
-              onContinuousFitChange={onContinuousFitChange}
-              availableFitIds={availableFitIds}
-            />
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function YSection({
-  result,
-  defaultOpen,
-  histogramMethod,
-  preferences,
-  onPreferencesChange,
-  onEditInputs,
-  continuousFit,
-  onContinuousFitChange,
-  availableFitIds,
-}: {
-  result: DistributionYResultV1;
-  defaultOpen: boolean;
-  histogramMethod?: DistributionReportProps["histogramMethod"];
-  preferences?: DistributionYReportPreferencesV1;
-  onPreferencesChange?: DistributionReportProps["onPreferencesChange"];
-  onEditInputs?: () => void;
-  continuousFit?: DistributionContinuousFitConfigV1;
-  onContinuousFitChange?: (continuousFit: DistributionContinuousFitConfigV1) => void;
-  availableFitIds: ContinuousDistributionIdV1[];
-}) {
-  const { t } = useTranslation();
-  const menuId = useId();
-  const [open, setOpen] = useState(defaultOpen);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [localPreferences, setLocalPreferences] = useState(
-    normalizeReportPreferences(preferences),
-  );
-  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const visible = onPreferencesChange
-    ? normalizeReportPreferences(preferences)
-    : localPreferences;
-  const updatePreferences = (next: DistributionYReportPreferencesV1) => {
-    if (onPreferencesChange) {
-      onPreferencesChange(result.yColumn.columnId, next);
-    } else {
-      setLocalPreferences(next);
-    }
-  };
-  const options = [
-    ["overview", t("distribution.report.overview")],
-    ["quantiles", t("distribution.report.quantiles")],
-    ["summary", t("distribution.report.summary")],
-    ["ecdf", t("distribution.report.ecdf")],
-    ["processCapability", t("distribution.report.processCapability")],
-  ] as Array<[DisplayToggleKey, string]>;
-  const histogramBlock = result.blocks.find((block) => block.chartData?.kind === "histogramData");
-  const boxPlotBlock = result.blocks.find((block) => block.chartData?.kind === "boxPlotData");
-  const summaryBlock = result.blocks.find((block) => block.kind === "summary" && !!block.summaryData);
-  const capabilityBlock = result.blocks.find((block) => block.kind === "processCapability");
-  const histogram = histogramBlock?.chartData?.kind === "histogramData" ? histogramBlock.chartData : null;
-  const boxPlot = boxPlotBlock?.chartData?.kind === "boxPlotData" ? boxPlotBlock.chartData : null;
-  const fitCurves = result.blocks.flatMap((block) => {
-    const fit = block.distributionFitData;
-    return fit?.status === "available" && fit.fittedCurve && fit.fittedCurve.points.length > 0
-      ? [{ distributionId: fit.distributionId, points: fit.fittedCurve.points }]
-      : [];
-  });
-  const hasNormalQuantile = result.blocks.some((block) => block.chartData?.kind === "normalQuantileData");
-  const hasOverview = !!(histogram || boxPlot);
-  const hasQuantiles = true;
-  const hasSummary = result.blocks.some((block) => block.kind === "summary");
-  const hasHorizontalTables = hasQuantiles && hasSummary;
-  const hasSpecificationLines = !!capabilityBlock?.capabilityData?.specification;
-  const displayOptions = options.filter(([key]) => {
-    if (key === "overview") return hasOverview;
-    if (key === "quantiles") return hasQuantiles;
-    if (key === "summary") return hasSummary;
-    return false;
-  });
-  const diagnosticOptions: Array<[DisplayToggleKey, string]> = [];
-  if (hasNormalQuantile) {
-    diagnosticOptions.push(["normalQuantilePlot", t("distribution.report.normalQuantilePlot")]);
-  }
-  if (result.blocks.some((block) => block.kind === "ecdf")) {
-    diagnosticOptions.push(["ecdf", t("distribution.report.ecdf")]);
-  }
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setMenuOpen(false);
-      menuButtonRef.current?.focus();
-    };
-    const onPointerDown = (event: MouseEvent) => {
-      if (!(event.target instanceof Node)) return;
-      if (menuRef.current?.contains(event.target)) return;
-      if (menuButtonRef.current?.contains(event.target)) return;
-      setMenuOpen(false);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("mousedown", onPointerDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("mousedown", onPointerDown);
-    };
-  }, [menuOpen]);
-
-  const overviewSpecificationLines = visible.specificationLines
-    ? (capabilityBlock?.capabilityData?.chartData?.specificationLines
-      ?? capabilityBlock?.capabilityData?.specification)
-    : undefined;
-  const showCombinedOverview = visible.overview && visible.histogram && visible.outlierBoxPlot && !!histogram && !!boxPlot;
-  const showHistogramOnly = visible.overview && visible.histogram && !!histogram && (!boxPlot || !visible.outlierBoxPlot);
-  const showBoxOnly = visible.overview && visible.outlierBoxPlot && !!boxPlot && (!histogram || !visible.histogram);
-  const tablePairClassName = visible.horizontalTables
-    ? "distribution-report-block distribution-table-pair"
-    : "distribution-report-block distribution-table-pair distribution-table-pair-vertical";
-  const methodLabel = histogramMethod
-    ? t(`distribution.report.histogramMethod.${histogramMethod}`)
-    : t("distribution.report.histogramMethod.unknown");
-
-  return (
-    <section className="distribution-y-section">
-      <div className="distribution-y-header">
-        <button
-          type="button"
-          className="distribution-disclosure distribution-y-heading"
-          aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
-        >
-          <span aria-hidden="true">{open ? "▾" : "▸"}</span>
-          <span>{result.yName}</span>
-        </button>
-        <div className="distribution-analysis-menu-wrap">
-          <button
-            ref={menuButtonRef}
-            type="button"
-            className="distribution-icon-button"
-            aria-label={t("distribution.report.analysisOptions", { name: result.yName })}
-            aria-expanded={menuOpen}
-            aria-controls={menuOpen ? menuId : undefined}
-            onClick={() => setMenuOpen((current) => !current)}
-          >
-            <i className="fa-solid fa-ellipsis" aria-hidden="true" />
-          </button>
-          {menuOpen && (
-            <div
-              ref={menuRef}
-              id={menuId}
-              className="distribution-analysis-menu"
-              role="region"
-              aria-label={t("distribution.report.analysisOptions", { name: result.yName })}
-            >
-              {displayOptions.length > 0 && (
-                <fieldset className="distribution-menu-group">
-                  <legend>{t("distribution.report.displayGroup")}</legend>
-                  {displayOptions.map(([key, label]) => (
-                    <label className="distribution-menu-option" key={key}>
-                      <input
-                        type="checkbox"
-                        checked={visible[key]}
-                        onChange={() => {
-                          updatePreferences({
-                            ...visible,
-                            [key]: !visible[key],
-                          });
-                          setMenuOpen(false);
-                        }}
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
-                  {hasHorizontalTables && (
-                    <label className="distribution-menu-option">
-                      <input
-                        type="checkbox"
-                        checked={visible.horizontalTables}
-                        onChange={() => {
-                          updatePreferences({
-                            ...visible,
-                            horizontalTables: !visible.horizontalTables,
-                          });
-                          setMenuOpen(false);
-                        }}
-                      />
-                      <span>{t("distribution.report.horizontalTables")}</span>
-                    </label>
-                  )}
-                </fieldset>
-              )}
-
-              {(histogram || boxPlot) && (
-                <fieldset className="distribution-menu-group">
-                  <legend>{t("distribution.report.histogramGroup")}</legend>
-                  {histogram && (
-                    <label className="distribution-menu-option">
-                      <input
-                        type="checkbox"
-                        checked={visible.histogram}
-                        onChange={() => {
-                          updatePreferences({
-                            ...visible,
-                            histogram: !visible.histogram,
-                          });
-                          setMenuOpen(false);
-                        }}
-                      />
-                      <span>{t("distribution.report.histogram")}</span>
-                    </label>
-                  )}
-                  {boxPlot && (
-                    <label className="distribution-menu-option">
-                      <input
-                        type="checkbox"
-                        checked={visible.outlierBoxPlot}
-                        onChange={() => {
-                          updatePreferences({
-                            ...visible,
-                            outlierBoxPlot: !visible.outlierBoxPlot,
-                          });
-                          setMenuOpen(false);
-                        }}
-                      />
-                      <span>{t("distribution.report.outlierBoxPlot")}</span>
-                    </label>
-                  )}
-                  {hasSpecificationLines && (
-                    <label className="distribution-menu-option">
-                      <input
-                        type="checkbox"
-                        checked={visible.specificationLines}
-                        onChange={() => {
-                          updatePreferences({
-                            ...visible,
-                            specificationLines: !visible.specificationLines,
-                          });
-                          setMenuOpen(false);
-                        }}
-                      />
-                      <span>{t("distribution.report.specificationLines")}</span>
-                    </label>
-                  )}
-                  {histogram && (
-                    <>
-                      <div className="distribution-menu-inline-label">
-                        {t("distribution.report.scale")}: {t("distribution.report.probabilityDensity")}
-                      </div>
-                      <div className="distribution-menu-method">{t("distribution.report.currentMethod", { method: methodLabel })}</div>
-                      {onEditInputs && (
-                        <button
-                          type="button"
-                          className="distribution-menu-action"
-                          onClick={() => {
-                            onEditInputs();
-                            setMenuOpen(false);
-                          }}
-                        >
-                          {t("distribution.editInputs")}
-                        </button>
-                      )}
-                    </>
-                  )}
-                </fieldset>
-              )}
-
-              {diagnosticOptions.length > 0 && (
-                <fieldset className="distribution-menu-group">
-                  <legend>{t("distribution.report.diagnosticPlotsGroup")}</legend>
-                  {diagnosticOptions.map(([key, label]) => (
-                    <label className="distribution-menu-option" key={key}>
-                      <input
-                        type="checkbox"
-                        checked={visible[key]}
-                        onChange={() => {
-                          updatePreferences({
-                            ...visible,
-                            [key]: !visible[key],
-                          });
-                          setMenuOpen(false);
-                        }}
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
-                </fieldset>
-              )}
-
-              {capabilityBlock && (
-                <fieldset className="distribution-menu-group">
-                  <legend>{t("distribution.report.processCapability")}</legend>
-                  <label className="distribution-menu-option">
-                    <input
-                      type="checkbox"
-                      checked={visible.processCapability}
-                      onChange={() => {
-                        updatePreferences({
-                          ...visible,
-                          processCapability: !visible.processCapability,
-                        });
-                        setMenuOpen(false);
-                      }}
-                    />
-                    <span>{t("distribution.report.processCapability")}</span>
-                  </label>
-                </fieldset>
-              )}
-
-              {continuousFit && onContinuousFitChange && availableFitIds.length > 0 && (
-                <fieldset className="distribution-menu-group">
-                  <legend>{t("distribution.fit.continuousFit", { defaultValue: "Continuous Fit" })}</legend>
-                  {DISTRIBUTION_FIT_CAPABILITY_REGISTRY
-                    .filter((capability) => capability.implemented && availableFitIds.includes(capability.distributionId))
-                    .map((capability) => (
-                      <label className="distribution-menu-option" key={capability.distributionId}>
-                        <input
-                          type="checkbox"
-                          checked={!continuousFit.fitAll && continuousFit.enabledDistributionIds.includes(capability.distributionId)}
-                          onChange={() => {
-                            const selected = continuousFit.enabledDistributionIds.includes(capability.distributionId);
-                            onContinuousFitChange({
-                              ...continuousFit,
-                              fitAll: false,
-                              enabledDistributionIds: selected
-                                ? continuousFit.enabledDistributionIds.filter((id) => id !== capability.distributionId)
-                                : [...continuousFit.enabledDistributionIds, capability.distributionId],
-                            });
-                            setMenuOpen(false);
-                          }}
-                        />
-                        <span>{t(`distribution.fit.commands.${capability.distributionId}`, {
-                          defaultValue: `Fit ${capability.distributionId[0].toUpperCase()}${capability.distributionId.slice(1)}`,
-                        })}</span>
-                      </label>
-                    ))}
-                  <label className="distribution-menu-option">
-                    <input
-                      type="checkbox"
-                      checked={continuousFit.fitAll}
-                      onChange={() => {
-                        onContinuousFitChange({
-                          ...continuousFit,
-                          fitAll: !continuousFit.fitAll,
-                          enabledDistributionIds: [],
-                        });
-                        setMenuOpen(false);
-                      }}
-                    />
-                    <span>{t("distribution.fit.fitAll", { defaultValue: "Fit All" })}</span>
-                  </label>
-                </fieldset>
-              )}
-
-              {result.blocks.some((block) => !!block.distributionFitData) && (
-                <fieldset className="distribution-menu-group">
-                  <legend>{t("distribution.fit.display", { defaultValue: "Fit Display" })}</legend>
-                  <label className="distribution-menu-option">
-                    <input
-                      type="checkbox"
-                      checked={visible.fitOverlays !== false}
-                      onChange={() => {
-                        updatePreferences({ ...visible, fitOverlays: visible.fitOverlays === false });
-                        setMenuOpen(false);
-                      }}
-                    />
-                    <span>{t("distribution.fit.showOverlays", { defaultValue: "Show Fit Curves" })}</span>
-                  </label>
-                  <label className="distribution-menu-option">
-                    <input
-                      type="checkbox"
-                      checked={visible.fitDetails !== false}
-                      onChange={() => {
-                        updatePreferences({ ...visible, fitDetails: visible.fitDetails === false });
-                        setMenuOpen(false);
-                      }}
-                    />
-                    <span>{t("distribution.fit.showDetails", { defaultValue: "Show Fit Details" })}</span>
-                  </label>
-                </fieldset>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      {open && (
-        <div className="distribution-y-content">
-          {showCombinedOverview && (
-            <section className="distribution-report-block">
-              <DistributionOverviewChart
-                histogram={histogram}
-                boxPlot={boxPlot}
-                title={t("distribution.report.overview")}
-                valueAxisName={result.yName}
-                specificationLines={overviewSpecificationLines}
-              />
-            </section>
-          )}
-          {showHistogramOnly && histogram && (
-            <section className="distribution-report-block">
-              <DistributionOverviewChart
-                histogram={histogram}
-                boxPlot={null}
-                title={t("distribution.report.overview")}
-                valueAxisName={result.yName}
-                specificationLines={overviewSpecificationLines}
-              />
-            </section>
-          )}
-          {showBoxOnly && boxPlotBlock && <ReportBlock block={boxPlotBlock} />}
-          {histogram && fitCurves.length > 0 && visible.fitOverlays !== false && (
-            <section className="distribution-report-block">
-              <DistributionFitDensityChart
-                histogram={histogram}
-                curves={fitCurves}
-                title={t("distribution.report.fitDensity")}
-                valueAxisName={result.yName}
-                densityAxisName={t("distribution.report.probabilityDensity")}
-              />
-            </section>
-          )}
-          {(visible.quantiles || visible.summary) && (hasQuantiles || hasSummary) && (
-            <section className={tablePairClassName}>
-              {visible.quantiles && hasQuantiles && (
-                <div>
-                  <h3>{t("distribution.report.quantiles")}</h3>
-                  <table className="distribution-quantile-table">
-                    <thead>
-                      <tr>
-                        <th>{t("distribution.report.probability")}</th>
-                        <th>{t("distribution.report.label")}</th>
-                        <th>{t("distribution.report.value")}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.quantiles.map((quantile) => (
-                        <tr key={quantile.probability}>
-                          <th scope="row">{formatProbability(quantile.probability)}</th>
-                          <td>{quantileLabel(quantile.probability, t)}</td>
-                          <td>{formatNumber(quantile.value)}</td>
+    <details
+      className="distribution-report-group"
+      data-testid={`distribution-group-${groupIndex}`}
+      open={defaultOpen}
+    >
+      <summary className="distribution-group-heading">{label}</summary>
+      <div className="distribution-group-content">
+        {group.yResults.map((result, yIndex) => {
+          const summaryBlock = result.blocks.find((block) => block.summaryData);
+          return (
+            <details className="distribution-y-section" key={result.yColumn.columnId} open={yIndex === 0}>
+              <summary className="distribution-y-heading">{result.yName}</summary>
+              <div className="distribution-y-content">
+                <section className="distribution-report-block distribution-table-pair">
+                  <div>
+                    <h3>{t("distribution.report.quantiles")}</h3>
+                    <table className="sp-fit-y-by-x-report-table distribution-quantile-table">
+                      <thead>
+                        <tr>
+                          <th>{t("distribution.report.probability")}</th>
+                          <th>{t("distribution.report.label")}</th>
+                          <th>{t("distribution.report.value")}</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {visible.summary && summaryBlock?.summaryData && (
-                <div>
-                  <h3>{t("distribution.report.summary")}</h3>
-                  <SummaryDataTables summaryData={summaryBlock.summaryData} />
-                </div>
-              )}
-            </section>
-          )}
-          {result.blocks
-            .filter((block) => block !== histogramBlock && block !== boxPlotBlock && block !== summaryBlock)
-            .filter((block) => isBlockVisible(block.kind, visible))
-            .filter((block) => visible.fitDetails !== false ||
-              (!block.distributionFitData && !block.distributionFitComparisonData))
-            .map((block) => <ReportBlock
-              key={block.blockId}
-              block={block}
-              valueAxisName={result.yName}
-              preferences={visible}
-              onPreferencesChange={updatePreferences}
-            />)}
-        </div>
-      )}
-    </section>
+                      </thead>
+                      <tbody>
+                        {result.quantiles.map((quantile) => (
+                          <tr key={quantile.probability}>
+                            <th scope="row">{formatProbability(quantile.probability)}</th>
+                            <td>{quantileLabel(quantile.probability, t)}</td>
+                            <td>{formatNumber(quantile.value)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {summaryBlock?.summaryData && (
+                    <div>
+                      <h3>{t("distribution.report.summary")}</h3>
+                      <SummaryDataTables summaryData={summaryBlock.summaryData} />
+                    </div>
+                  )}
+                </section>
+                {result.blocks
+                  .filter((block) => block !== summaryBlock && hasReportContent(block))
+                  .map((block) => <ReportBlock key={block.blockId} block={block} />)}
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
-export function ReportBlock({
-  block,
-  valueAxisName,
-  preferences,
-  onPreferencesChange,
-}: {
-  block: DistributionReportBlockV1;
-  valueAxisName?: string;
-  preferences?: DistributionYReportPreferencesV1;
-  onPreferencesChange?: (preferences: DistributionYReportPreferencesV1) => void;
-}) {
+export function ReportBlock({ block }: { block: DistributionReportBlock }) {
   const { t } = useTranslation();
-  const unavailableReasonCode = getUnavailableReasonCode(block);
   const compatibilityStatus = getCompatibilityStatus(block);
-  const titleKey = block.titleKey;
   const blockTitle = block.distributionFitData
-    ? `${t(titleKey)} - ${t(`distribution.fit.distributions.${block.distributionFitData.distributionId}`, {
+    ? `${t(block.titleKey)} - ${t(`distribution.fit.distributions.${block.distributionFitData.distributionId}`, {
       defaultValue: block.distributionFitData.distributionId,
     })}`
-    : t(titleKey);
+    : t(block.titleKey);
+
   return (
     <section className="distribution-report-block" data-testid={`distribution-report-block-${block.blockId}`}>
       <h3>{blockTitle}</h3>
@@ -684,21 +136,17 @@ export function ReportBlock({
           {t(`distribution.compatibility.${compatibilityStatus}`)}
         </p>
       )}
-      {unavailableReasonCode && (
+      {block.status !== "available" && block.reasonCode && (
         <p className="distribution-report-unavailable" data-testid={`distribution-report-unavailable-${block.blockId}`}>
-          {t("distribution.report.unavailableReason", { reason: unavailableReasonCode })}
+          {t("distribution.report.unavailableReason", { reason: block.reasonCode })}
         </p>
       )}
       {block.summaryData && <SummaryDataTables summaryData={block.summaryData} />}
-      {block.chartData && <DistributionChart chart={block.chartData} title={t(titleKey)} />}
       {block.distributionFitData && <ContinuousFitReport data={block.distributionFitData} />}
-      {block.distributionFitComparisonData && <ContinuousFitComparisonReport data={block.distributionFitComparisonData} />}
-      {block.capabilityData && <ProcessCapabilityReport
-        data={block.capabilityData}
-        valueAxisName={valueAxisName ?? t("distribution.report.value")}
-        preferences={preferences ?? DEFAULT_DISTRIBUTION_REPORT_PREFERENCES}
-        onPreferencesChange={onPreferencesChange}
-      />}
+      {block.distributionFitComparisonData && (
+        <ContinuousFitComparisonReport data={block.distributionFitComparisonData} />
+      )}
+      {block.capabilityData && <ProcessCapabilityReport data={block.capabilityData} />}
     </section>
   );
 }
@@ -706,7 +154,7 @@ export function ReportBlock({
 function SummaryDataTables({
   summaryData,
 }: {
-  summaryData: NonNullable<DistributionReportBlockV1["summaryData"]>;
+  summaryData: NonNullable<DistributionReportBlock["summaryData"]>;
 }) {
   const { t } = useTranslation();
   return (
@@ -731,13 +179,13 @@ function SummaryDataTables({
 function SummaryTable({ title, rows }: { title: string; rows: Array<[string, number | string | null]> }) {
   const { t } = useTranslation();
   return (
-    <table className="distribution-summary-table">
+    <table className="sp-fit-y-by-x-report-table distribution-summary-table">
       <caption>{title}</caption>
       <tbody>
         {rows.map(([label, value]) => (
           <tr key={label}>
             <th scope="row">{t(`distribution.statistics.${label}`)}</th>
-            <td>{typeof value === "number" ? formatNumber(value) : value ?? "—"}</td>
+            <td>{typeof value === "number" ? formatNumber(value) : value ?? "-"}</td>
           </tr>
         ))}
       </tbody>
@@ -745,43 +193,21 @@ function SummaryTable({ title, rows }: { title: string; rows: Array<[string, num
   );
 }
 
-function isBlockVisible(
-  kind: string,
-  visible: Record<
-    | "overview"
-    | "quantiles"
-    | "summary"
-    | "ecdf"
-    | "processCapability"
-    | "normalQuantilePlot",
-    boolean
-  >,
-): boolean {
-  if (kind === "histogram" || kind === "boxPlot") return visible.overview;
-  if (kind === "summary") return visible.summary;
-  if (kind === "ecdf") return visible.ecdf;
-  if (kind === "processCapability") return visible.processCapability;
-  if (kind === "normalQuantile") return visible.normalQuantilePlot;
-  return true;
+function hasReportContent(block: DistributionReportBlock): boolean {
+  return block.status !== "available"
+    || !!block.summaryData
+    || !!block.capabilityData
+    || !!block.distributionFitData
+    || !!block.distributionFitComparisonData;
 }
 
 function getCompatibilityStatus(
-  block: DistributionReportBlockV1,
+  block: DistributionReportBlock,
 ): "intentionalDifference" | "compatibilityPending" | null {
   const status = block.chartData?.provenance.compatibilityStatus;
   return status === "intentionalDifference" || status === "compatibilityPending"
     ? status
     : null;
-}
-
-function getUnavailableReasonCode(block: DistributionReportBlockV1): string | null {
-  if (block.status !== "unavailable") {
-    return null;
-  }
-  if (block.chartData?.kind === "normalQuantileData") {
-    return block.chartData.payload.reasonCode;
-  }
-  return null;
 }
 
 function quantileLabel(probability: number, t: (key: string) => string): string {
@@ -793,7 +219,7 @@ function quantileLabel(probability: number, t: (key: string) => string): string 
   return "";
 }
 
-function groupIdentity(group: DistributionGroupResultV1): string {
+function groupIdentity(group: DistributionGroupResult): string {
   return group.groupKey.length === 0 ? "overall" : JSON.stringify(group.groupKey);
 }
 

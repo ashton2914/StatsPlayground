@@ -369,12 +369,45 @@ export interface Build3DResult {
   hint?: { key: string; def: string };
 }
 
+export interface Built3DPanel extends Build3DResult {
+  title: string;
+  groupXValue: string | null;
+  groupYValue: string | null;
+}
+
+export interface Built3DGraph {
+  panels: Built3DPanel[];
+  cols: number;
+  rows: number;
+}
+
+interface Shared3DRanges {
+  x?: { min: number; max: number };
+  y?: { min: number; max: number };
+  z?: { min: number; max: number };
+}
+
 /** 构建 3D option。当绑定不足时返回 hint。 */
 export function build3DOption(
   spec: GraphSpec,
   data: GraphData,
   theme: GraphTheme,
   frame?: GraphDataFrame,
+): Build3DResult {
+  return build3DOptionFromPoints(
+    spec,
+    data,
+    theme,
+    frame ? collectFrame3DPoints(frame) : undefined,
+  );
+}
+
+function build3DOptionFromPoints(
+  spec: GraphSpec,
+  data: GraphData,
+  theme: GraphTheme,
+  framePoints?: readonly Typed3DPoint[],
+  sharedRanges?: Shared3DRanges,
 ): Build3DResult {
   const xf = spec.encoding.x;
   const yf = spec.encoding.y;
@@ -408,11 +441,15 @@ export function build3DOption(
   // 分组：当绑定了 Overlay（图例）列时，按其值把数据切成多组，
   // 每组各自成一张 surface / 一簇 scatter3D，颜色取该组「渐变」标记的
   // 颜色（主题自动为每个图例分配不同色，用户可切换，跟点/线/面一致）。
-  const overlay = spec.encoding.overlay;
+  const grouping = spec.encoding.overlay ?? spec.encoding.color;
   const styles = spec.styles ?? {};
-  const colorOf = (key: string): string => {
+  const gradientColorOf = (key: string): string => {
     const s = styles[key];
     return s?.gradient?.color || s?.fill?.color || s?.point?.color || "#4a6cf7";
+  };
+  const lineColorOf = (key: string): string => {
+    const s = styles[key];
+    return s?.line?.color || s?.gradient?.color || s?.point?.color || s?.fill?.color || "#4a6cf7";
   };
 
   const series: Record<string, unknown>[] = [];
@@ -434,10 +471,16 @@ export function build3DOption(
   const errInterval = String(scOpts.errorInterval ?? "auto");
   const intStyle = String(scOpts.intervalStyle ?? "errorBar") === "band" ? "band" : "errorBar";
   const summarize = summaryStat !== "none" && !!zf;
-  const framePoints = frame ? collectFrame3DPoints(frame) : [];
-  const useFramePoints = framePoints.length > 0;
+  const useFramePoints = framePoints !== undefined;
+  const resolvedFramePoints = framePoints ?? [];
 
-  const addLayers = (gdata: GraphData | null, gpoints: readonly Typed3DPoint[] | null, name: string, color: string) => {
+  const addLayers = (
+    gdata: GraphData | null,
+    gpoints: readonly Typed3DPoint[] | null,
+    name: string,
+    gradientColor: string,
+    lineColor: string,
+  ) => {
     const indices: number[] = [];
     const buildGrid = (stat: SurfaceStat, smoothness: number): SurfaceGrid | null => (
       gpoints
@@ -454,7 +497,7 @@ export function build3DOption(
           data: surfaceGrid.verts,
           dataShape: surfaceGrid.dataShape,
           shading: "lambert",
-          itemStyle: { color },
+          itemStyle: { color: gradientColor },
           wireframe: { show: false },
         });
         hasSurfaceSeries = true;
@@ -478,7 +521,7 @@ export function build3DOption(
             coordinateSystem: "cartesian3D",
             name: `${name}__contour_${contour.level}_${contourIndex}`,
             data: contour.points.map(([x, y, z]) => [x, y, z + zOffset]),
-            lineStyle: { color, width: 2, opacity: 0.9 },
+            lineStyle: { color: lineColor, width: 2, opacity: 0.9 },
             silent: true,
           });
         }
@@ -498,7 +541,7 @@ export function build3DOption(
             name,
             data: sc.pts,
             symbolSize: 6,
-            itemStyle: { color, opacity: 0.9 },
+            itemStyle: { color: gradientColor, opacity: 0.9 },
           });
           indices.push(series.length - 1);
           if (sc.zmin < pmin) pmin = sc.zmin;
@@ -559,7 +602,7 @@ export function build3DOption(
               name: `${name}__err_${i}`,
               data: errSegs[i],
               lineStyle: {
-                color,
+                color: lineColor,
                 width: intStyle === "band" ? 8 : 2,
                 opacity: intStyle === "band" ? 0.28 : 0.9,
               },
@@ -572,19 +615,19 @@ export function build3DOption(
             name,
             data: pts,
             symbolSize: 8,
-            itemStyle: { color, opacity: 1, borderWidth: 0.5, borderColor: "rgba(0,0,0,0.3)" },
+            itemStyle: { color: gradientColor, opacity: 1, borderWidth: 0.5, borderColor: "rgba(0,0,0,0.3)" },
           });
         }
       }
     }
-    if (indices.length) groupSeries.push({ name, color, indices });
+    if (indices.length) groupSeries.push({ name, color: gradientColor, indices });
   };
 
   let grouped = false;
-  if (overlay && useFramePoints) {
+  if (grouping && useFramePoints) {
     const seen = new Set<string>();
     const groups: string[] = [];
-    for (const point of framePoints) {
+    for (const point of resolvedFramePoints) {
       const key = String(point.group ?? "");
       if (!key || seen.has(key)) continue;
       seen.add(key);
@@ -594,10 +637,16 @@ export function build3DOption(
     const hidden = new Set(spec.hiddenGroups ?? []);
     for (const gkey of groups) {
       if (hidden.has(gkey)) continue;
-      addLayers(null, framePoints.filter((point) => String(point.group ?? "") === gkey), gkey, colorOf(gkey));
+      addLayers(
+        null,
+        resolvedFramePoints.filter((point) => String(point.group ?? "") === gkey),
+        gkey,
+        gradientColorOf(gkey),
+        lineColorOf(gkey),
+      );
     }
-  } else if (overlay) {
-    const gi = data.columns.indexOf(overlay.name);
+  } else if (grouping) {
+    const gi = data.columns.indexOf(grouping.name);
     if (gi >= 0) {
       // 首次出现顺序去重分组。
       const seen = new Set<string>();
@@ -615,12 +664,24 @@ export function build3DOption(
       for (const gkey of groups) {
         if (hidden.has(gkey)) continue;
         const rows = data.rows.filter((r) => String(r[gi]) === gkey);
-        addLayers({ columns: data.columns, rows }, null, gkey, colorOf(gkey));
+        addLayers(
+          { columns: data.columns, rows },
+          null,
+          gkey,
+          gradientColorOf(gkey),
+          lineColorOf(gkey),
+        );
       }
     }
   }
   if (!grouped) {
-    addLayers(useFramePoints ? null : data, useFramePoints ? framePoints : null, zf?.name ?? "series", colorOf(DEFAULT_GROUP_KEY));
+    addLayers(
+      useFramePoints ? null : data,
+      useFramePoints ? resolvedFramePoints : null,
+      zf?.name ?? "series",
+      gradientColorOf(DEFAULT_GROUP_KEY),
+      lineColorOf(DEFAULT_GROUP_KEY),
+    );
   }
 
   if (series.length === 0) {
@@ -629,8 +690,8 @@ export function build3DOption(
 
   // 标尺：有曲面则用曲面网格极值（对比度更高），否则用散点 Z 范围。
   const hasSurfRange = smax > smin;
-  const rmin = hasSurfRange ? smin : pmin;
-  const rmax = hasSurfRange ? smax : pmax;
+  const rmin = sharedRanges?.z?.min ?? (hasSurfRange ? smin : pmin);
+  const rmax = sharedRanges?.z?.max ?? (hasSurfRange ? smax : pmax);
   const useDepth = hasZ && rmax > rmin;
 
   const visualSmoothness = hasSurfaceSeries ? surfaceSmoothness : 0;
@@ -647,9 +708,9 @@ export function build3DOption(
   const option: Record<string, unknown> = {
     backgroundColor: theme.bgCanvas,
     tooltip: {},
-    xAxis3D: { type: "value", name: xf.name, ...axisCommon },
-    yAxis3D: { type: "value", name: yf.name, ...axisCommon },
-    zAxis3D: { type: "value", name: zf?.name ?? "", ...axisCommon },
+    xAxis3D: { type: "value", name: xf.name, ...axisCommon, ...sharedRanges?.x },
+    yAxis3D: { type: "value", name: yf.name, ...axisCommon, ...sharedRanges?.y },
+    zAxis3D: { type: "value", name: zf?.name ?? "", ...axisCommon, ...sharedRanges?.z },
     grid3D: {
       boxWidth: 100,
       boxDepth: 100,
@@ -726,4 +787,171 @@ export function build3DOption(
   }
 
   return { option };
+}
+
+function orderedFacetKeys(
+  values: readonly (string | undefined)[],
+  dictionary: readonly string[],
+  valueOrder?: readonly string[],
+  includeDictionary = false,
+): string[] {
+  const present = new Set(values.filter((value): value is string => value !== undefined));
+  const allowed = includeDictionary ? new Set([...dictionary, ...present]) : present;
+  const natural = [
+    ...dictionary.filter((value) => allowed.has(value)),
+    ...values.filter((value): value is string => value !== undefined && !dictionary.includes(value)),
+  ];
+  const uniqueNatural = [...new Set(natural)];
+  if (!valueOrder) return uniqueNatural;
+  return [
+    ...valueOrder.filter((value) => allowed.has(value)),
+    ...uniqueNatural.filter((value) => !valueOrder.includes(value)),
+  ];
+}
+
+function finiteRange(values: readonly number[]): { min: number; max: number } | undefined {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const value of values) {
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  return max > min ? { min, max } : undefined;
+}
+
+function computeShared3DRanges(
+  spec: GraphSpec,
+  data: GraphData,
+  framePoints?: readonly Typed3DPoint[],
+): Shared3DRanges {
+  const xValues: number[] = [];
+  const yValues: number[] = [];
+  const zValues: number[] = [];
+  const hiddenGroups = new Set(spec.hiddenGroups ?? []);
+  if (framePoints) {
+    for (const point of framePoints) {
+      if (point.group !== undefined && hiddenGroups.has(point.group)) continue;
+      xValues.push(point.x);
+      yValues.push(point.y);
+      if (point.z !== undefined) zValues.push(point.z);
+    }
+  } else {
+    const xIndex = data.columns.indexOf(spec.encoding.x?.name ?? "");
+    const yIndex = data.columns.indexOf(spec.encoding.y?.name ?? "");
+    const zIndex = data.columns.indexOf(spec.encoding.z?.name ?? "");
+    const groupIndex = data.columns.indexOf(spec.encoding.overlay?.name ?? "");
+    for (const row of data.rows) {
+      if (groupIndex >= 0 && hiddenGroups.has(String(row[groupIndex]))) continue;
+      const x = Number(row[xIndex]);
+      const y = Number(row[yIndex]);
+      const z = zIndex >= 0 ? Number(row[zIndex]) : undefined;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (zIndex >= 0 && !Number.isFinite(z)) continue;
+      xValues.push(x);
+      yValues.push(y);
+      if (z !== undefined) zValues.push(z);
+    }
+  }
+  return {
+    x: finiteRange(xValues),
+    y: finiteRange(yValues),
+    z: finiteRange(zValues),
+  };
+}
+
+function buildFacetTitle(
+  spec: GraphSpec,
+  groupXValue: string | null,
+  groupYValue: string | null,
+): string {
+  const parts: string[] = [];
+  if (spec.encoding.groupX && groupXValue !== null) {
+    parts.push(`${spec.encoding.groupX.name}=${groupXValue}`);
+  }
+  if (spec.encoding.groupY && groupYValue !== null) {
+    parts.push(`${spec.encoding.groupY.name}=${groupYValue}`);
+  }
+  return parts.join(" | ");
+}
+
+export function build3DPanels(
+  spec: GraphSpec,
+  data: GraphData,
+  theme: GraphTheme,
+  frame?: GraphDataFrame,
+  valueOrders?: Record<string, string[]>,
+): Built3DGraph {
+  const groupX = spec.encoding.groupX;
+  const groupY = spec.encoding.groupY;
+  if (!groupX && !groupY) {
+    return {
+      panels: [{
+        title: "",
+        ...build3DOption(spec, data, theme, frame),
+        groupXValue: null,
+        groupYValue: null,
+      }],
+      cols: 1,
+      rows: 1,
+    };
+  }
+
+  const framePoints = frame ? collectFrame3DPoints(frame) : undefined;
+  const groupXIndex = groupX ? data.columns.indexOf(groupX.name) : -1;
+  const groupYIndex = groupY ? data.columns.indexOf(groupY.name) : -1;
+  const xIndex = data.columns.indexOf(spec.encoding.x?.name ?? "");
+  const yIndex = data.columns.indexOf(spec.encoding.y?.name ?? "");
+  const zIndex = data.columns.indexOf(spec.encoding.z?.name ?? "");
+  const plottableRows = framePoints ? [] : data.rows.filter((row) => {
+    if (!Number.isFinite(Number(row[xIndex])) || !Number.isFinite(Number(row[yIndex]))) return false;
+    return zIndex < 0 || Number.isFinite(Number(row[zIndex]));
+  });
+  const xValues = framePoints
+    ? framePoints.map((point) => point.facetX)
+    : plottableRows.map((row) => groupXIndex >= 0 && !isMissingValue(row[groupXIndex]) ? String(row[groupXIndex]) : undefined);
+  const yValues = framePoints
+    ? framePoints.map((point) => point.facetY)
+    : plottableRows.map((row) => groupYIndex >= 0 && !isMissingValue(row[groupYIndex]) ? String(row[groupYIndex]) : undefined);
+  const xKeys = groupX
+    ? orderedFacetKeys(xValues, frame?.dictionaries.facetX ?? [], valueOrders?.[groupX.name], !!frame)
+    : [null];
+  const yKeys = groupY
+    ? orderedFacetKeys(yValues, frame?.dictionaries.facetY ?? [], valueOrders?.[groupY.name], !!frame)
+    : [null];
+  const resolvedXKeys: Array<string | null> = xKeys.length > 0 ? xKeys : [null];
+  const resolvedYKeys: Array<string | null> = yKeys.length > 0 ? yKeys : [null];
+  const subSpec: GraphSpec = {
+    ...spec,
+    encoding: { ...spec.encoding, groupX: undefined, groupY: undefined },
+  };
+  const sharedRanges = computeShared3DRanges(spec, data, framePoints);
+  const panels: Built3DPanel[] = [];
+
+  for (const groupYValue of resolvedYKeys) {
+    for (const groupXValue of resolvedXKeys) {
+      const panelPoints = framePoints?.filter((point) => (
+        (groupXValue === null || point.facetX === groupXValue)
+        && (groupYValue === null || point.facetY === groupYValue)
+      ));
+      const panelRows = framePoints ? [] : data.rows.filter((row) => (
+        (groupXValue === null || String(row[groupXIndex]) === groupXValue)
+        && (groupYValue === null || String(row[groupYIndex]) === groupYValue)
+      ));
+      const panelData = framePoints
+        ? data
+        : { columns: data.columns, rows: panelRows };
+      panels.push({
+        title: buildFacetTitle(spec, groupXValue, groupYValue),
+        ...build3DOptionFromPoints(subSpec, panelData, theme, panelPoints, sharedRanges),
+        groupXValue,
+        groupYValue,
+      });
+    }
+  }
+
+  return {
+    panels,
+    cols: Math.max(1, resolvedXKeys.length),
+    rows: Math.max(1, resolvedYKeys.length),
+  };
 }

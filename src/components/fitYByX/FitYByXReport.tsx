@@ -12,6 +12,8 @@ import type {
   FitYByXSummaryOfFit,
 } from "@/types/fitYByX";
 
+import "../reportTable.css";
+
 import type { FitYByXReportState } from "./useFitYByXReport";
 
 type TranslateValues = Record<string, string | number | null | undefined>;

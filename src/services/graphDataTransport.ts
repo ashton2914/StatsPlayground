@@ -34,6 +34,28 @@ function toRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function toBinaryPayload(value: unknown): ArrayBuffer | null {
+  if (value instanceof ArrayBuffer) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice().buffer;
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const byte = value[index];
+      if (!Object.prototype.hasOwnProperty.call(value, index)
+        || !Number.isInteger(byte)
+        || byte < 0
+        || byte > 255) {
+        return null;
+      }
+    }
+    return Uint8Array.from(value).buffer;
+  }
+  return null;
+}
+
 function normalizeStructuredValue(value: unknown): unknown {
   if (value === null) {
     return undefined;
@@ -169,7 +191,8 @@ export function createGraphStreamTransport(
         return;
       }
 
-      if (message instanceof ArrayBuffer) {
+      const payload = toBinaryPayload(message);
+      if (payload) {
         if (!pendingHeader) {
           fail("graph payload arrived before header");
           return;
@@ -178,7 +201,7 @@ export function createGraphStreamTransport(
         const header = pendingHeader;
         pendingHeader = null;
         handlers.onHeader(header);
-        handlers.onPayload(message);
+        handlers.onPayload(payload);
         if (header.finalChunk) {
           sawFinalChunkPayload = true;
         }

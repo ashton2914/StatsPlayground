@@ -18,6 +18,16 @@ assert.match(
   /resolveProjectBasenameForKind\(\s*`Table\$\{tableCounter\.current\}`,\s*"table"/,
   "Workspace new-table creation must go through shared naming resolution utility",
 );
+assert.equal(
+  workspaceSource.includes('allocateProjectBasename(nextReportName(), ".sprp", reportItems.map((entry) => entry.name))'),
+  true,
+  "Workspace new-report creation must allocate report basenames through the shared .sprp naming utility",
+);
+assert.match(
+  workspaceSource,
+  /projectFileExtension\("report"\)/,
+  "Workspace report rows must show the immutable .sprp suffix via the shared project naming utility",
+);
 
 const historyPanelSource = read("../src/components/HistoryPanel.tsx");
 assert.match(

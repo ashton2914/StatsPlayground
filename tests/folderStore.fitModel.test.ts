@@ -102,9 +102,10 @@ assert.equal(
     validTabulateIds: Set<string>,
     validFitYByXIds: Set<string>,
     validDistributionIds: Set<string>,
+    validReportIds: Set<string>,
     validFitModelIds: Set<string>,
   ) => void;
-}).pruneAssignments(new Set(), new Set(), new Set(), new Set(), new Set(), new Set(["fit-model-1"]));
+}).pruneAssignments(new Set(), new Set(), new Set(), new Set(), new Set(), new Set(), new Set(["fit-model-1"]));
 
 assert.deepEqual(
   (useFolderStore.getState() as unknown as { fitModelFolders: Record<string, string> }).fitModelFolders,

@@ -1,0 +1,53 @@
+.sp-fit-y-by-x-report-table-wrap {
+  overflow-x: auto;
+}
+
+.sp-fit-y-by-x-report-table {
+  width: max-content;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.sp-fit-y-by-x-report-column-label {
+  width: 220px;
+}
+
+.sp-fit-y-by-x-report-column-value {
+  width: 150px;
+}
+
+.sp-fit-y-by-x-report-column-value-wide {
+  width: 360px;
+}
+
+.sp-fit-y-by-x-report-table th,
+.sp-fit-y-by-x-report-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-main);
+  border-right: 1px solid var(--border-main);
+  text-align: left;
+  vertical-align: top;
+}
+
+.sp-fit-y-by-x-report-table th {
+  color: var(--fg-secondary);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--bg-header) 55%, transparent);
+  border-right-color: var(--border-header-h);
+  white-space: nowrap;
+}
+
+.sp-fit-y-by-x-report-table th:last-child,
+.sp-fit-y-by-x-report-table td:last-child {
+  border-right: none;
+}
+
+.sp-fit-y-by-x-report-cell-numeric {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-fit-y-by-x-report-table tbody tr:last-child td {
+  border-bottom: none;
+}

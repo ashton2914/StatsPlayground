@@ -1,113 +1,119 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
-import type { OpenProjectResult } from "../src/types/project.ts";
+import { createDistributionReportController } from "../src/components/distribution/useDistributionReport.ts";
+import { useDistributionStore } from "../src/stores/useDistributionStore.ts";
+import type { DistributionItem, DistributionReportResponse } from "../src/types/distribution.ts";
 
-const distributionTypesSource = readFileSync(
-  new URL("../src/types/distribution.ts", import.meta.url),
-  "utf8",
-);
-assert.match(
-  distributionTypesSource,
-  /DistributionLoadStatusV1\s*=\s*"ready"\s*\|\s*"unknownVersion"\s*\|\s*"missingSource"\s*\|\s*"corrupt"/,
-);
-assert.match(distributionTypesSource, /rawEnvelope\?:\s*Record<string, unknown>/);
-assert.match(distributionTypesSource, /rawText\?:\s*string/);
-
-const result: OpenProjectResult = {
-  project: { name: "Isolation", filePath: "isolation.spprj", createdAt: "now" },
-  history: [],
-  snapshots: [],
-  graphBuilders: [],
-  tabulates: [],
-  folders: [],
-  tableFolders: {},
-  graphFolders: {},
-  tabulateFolders: {},
-  datasetNameMigrations: [],
-  distributionFolders: {},
-  derivedFormulas: [],
-  distributions: [
-    {
-      schemaVersion: "1",
-      analysisId: "dist-healthy",
-      name: "Healthy",
-      sourceDatasetId: "ds-1",
-      status: "ready",
-      loadStatus: "ready",
-      configRevision: 1,
-      currentConfig: {
-        schemaVersion: "1",
-        sourceDatasetId: "ds-1",
-        yColumns: [{ columnId: "col-y", modelingType: "continuous" }],
-        weightColumnId: null,
-        frequencyColumnId: null,
-        byColumnIds: [],
-        filterExpr: { kind: "isNull", fieldId: "col-y", negate: true },
-        confidenceLevel: 0.95,
-        histogramsOnly: false,
-        enabledCapabilityIds: [],
-        capabilityOverrides: [],
-      },
-    },
-    {
-      schemaVersion: "unknown",
-      analysisId: "dist-corrupt",
-      name: "Corrupt",
-      sourceDatasetId: "",
-      status: "unavailable",
-      loadStatus: "corrupt",
-      currentConfig: {},
-      rawText: "{broken",
-    },
-  ],
-  distributionIssues: [
-    {
-      analysisId: "dist-corrupt",
-      kind: "corrupt",
-      messageKey: "distribution.issue.corrupt",
-      schemaVersion: "unknown",
-    },
-  ],
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
 };
 
-const invokeCalls: string[] = [];
-Object.assign(globalThis, {
-  window: {
-    __TAURI_INTERNALS__: {
-      invoke: async (command: string) => {
-        invokeCalls.push(command);
-        return result;
-      },
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => { resolve = nextResolve; });
+  return { promise, resolve };
+}
+
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+const graph = {
+  mode: "2d" as const,
+  modeStates: {
+    twoD: { encoding: {}, multiX: [], multiY: [], elements: [], smootherLambda: 0.5 },
+    threeD: { encoding: {}, elements: [], smootherLambda: 0.5 },
+    multivariate: {
+      columns: [],
+      chartType: "correlationMatrix" as const,
+      correlationMethod: "pearson" as const,
     },
   },
-});
+  filters: [],
+  sampling: { mode: "full" as const },
+};
 
-const { projectService } = await import("../src/services/projectService.ts");
-const { useDistributionStore } = await import("../src/stores/useDistributionStore.ts");
-const reopened = await projectService.openProject("isolation.spprj");
-useDistributionStore.getState().loadFromProject(
-  reopened.distributions,
-  reopened.derivedFormulas,
-  reopened.distributionIssues,
-);
+function item(id: string, responseName: string): DistributionItem {
+  return {
+    id,
+    name: id,
+    sourceDatasetId: "dataset-1",
+    responses: [{ name: responseName, type: "continuous" }],
+    weight: null,
+    frequency: null,
+    by: [],
+    analysis: { confidenceLevel: 0.95, specLimits: {}, fitDistributions: [] },
+    graphs: { overview: graph, boxPlot: graph, ecdf: graph, normalQuantile: graph },
+    createdAt: "2026-09-02T00:00:00.000Z",
+  };
+}
 
-assert.deepEqual(invokeCalls, ["open_project"]);
-assert.equal(useDistributionStore.getState().items.length, 2);
-assert.equal(
-  useDistributionStore.getState().items.find(
-    (item) => item.analysisId === "dist-corrupt",
-  )?.loadStatus,
-  "corrupt",
+function response(generation = 4): DistributionReportResponse {
+  const frame = { columns: [], rows: [], aggregatePackets: [], totalRows: 0 } as never;
+  return {
+    datasetId: "dataset-1",
+    generation,
+    groups: [],
+    reportBlocks: [],
+    graphFrames: { overview: frame, boxPlot: frame, ecdf: frame, normalQuantile: frame },
+  };
+}
+
+const firstItem = item("distribution-1", "height");
+const secondItem = item("distribution-2", "width");
+useDistributionStore.getState().loadFromProject([firstItem, secondItem]);
+assert.deepEqual(
+  useDistributionStore.getState().items.map(({ id, responses }) => [id, responses[0]?.name]),
+  [["distribution-1", "height"], ["distribution-2", "width"]],
 );
-assert.deepEqual(useDistributionStore.getState().issues, [
-  {
-    analysisId: "dist-corrupt",
-    kind: "corrupt",
-    messageKey: "distribution.issue.corrupt",
-    schemaVersion: "unknown",
-  },
+assert.deepEqual(Object.keys(useDistributionStore.getState()).sort(), [
+  "addItem",
+  "counter",
+  "createItem",
+  "deleteByDataset",
+  "deleteItem",
+  "items",
+  "loadFromProject",
+  "nextName",
+  "renameItem",
+  "reset",
+  "updateItem",
 ]);
+
+const late = deferred<DistributionReportResponse>();
+const firstController = createDistributionReportController({
+  getDatasetGeneration: async () => 4,
+  compute: async () => late.promise,
+});
+const secondController = createDistributionReportController({
+  getDatasetGeneration: async () => 4,
+  compute: async () => response(),
+});
+const firstLoad = firstController.load(firstItem);
+await flush();
+await secondController.load(secondItem);
+firstController.dispose();
+late.resolve(response());
+await firstLoad;
+assert.equal(secondController.getState().status, "success");
+assert.notEqual(firstController.getState().status, "success");
+
+let recomputes = 0;
+for (let openCount = 0; openCount < 2; openCount += 1) {
+  const controller = createDistributionReportController({
+    getDatasetGeneration: async () => 4,
+    compute: async () => {
+      recomputes += 1;
+      return response();
+    },
+  });
+  await controller.load(firstItem);
+  assert.equal(controller.getState().status, "success");
+  controller.dispose();
+}
+assert.equal(recomputes, 2);
 
 useDistributionStore.getState().reset();
 console.log("distribution isolation contracts OK");

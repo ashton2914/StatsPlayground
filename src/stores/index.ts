@@ -9,5 +9,7 @@ export {
 } from "./useFolderStore";
 export { useFitYByXStore } from "./useFitYByXStore";
 export { useFitModelStore } from "./useFitModelStore";
-export { useTabulateStore } from "./useTabulateStore";
+export { useReportStore } from "./useReportStore";
 export { useDistributionStore } from "./useDistributionStore";
+export { useTabulateStore } from "./useTabulateStore";
+export { useWorkflowStore } from "./useWorkflowStore";

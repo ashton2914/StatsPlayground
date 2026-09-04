@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
 import { createEmbeddedGraphItem, normalizeGraphBuilderItem } from "../src/components/graphBuilder/graphBuilderMode.ts";
-import { buildGraphRuntimeModel } from "../src/components/graphBuilder/graphRuntimeModel.ts";
+import { buildEffectiveStyles, buildGraphRuntimeModel, deriveValueOrders } from "../src/components/graphBuilder/graphRuntimeModel.ts";
 import { deriveGraphRequestParts } from "../src/components/graphBuilder/useGraphDataPipeline.ts";
 import type { DatasetMeta } from "../src/types/data.ts";
 import type { GraphBuilderItem } from "../src/types/graphBuilder.ts";
@@ -16,6 +16,7 @@ const dataset: DatasetMeta = {
   sourceType: "manual",
   rowCount: 42,
   colCount: 4,
+  generation: 0,
   createdAt: "2026-08-30T00:00:00.000Z",
   updatedAt: "2026-08-30T00:00:00.000Z",
 };
@@ -105,6 +106,74 @@ const transposedRuntimeModel = buildGraphRuntimeModel(transposedInteractiveItem,
 assert.equal(transposedRuntimeModel.spec.transpose, true);
 assert.deepEqual(transposedRuntimeModel.spec.encoding, buildGraphRuntimeModel(interactiveItem, metadata).spec.encoding);
 
+const multiColumnItem: GraphBuilderItem = {
+  ...interactiveItem,
+  modeStates: {
+    ...interactiveItem.modeStates,
+    twoD: {
+      ...interactiveItem.modeStates.twoD,
+      encoding: {
+        overlay: { name: "batch", type: "ordinal" },
+      },
+      multiY: [
+        { name: "203-A6", type: "continuous" },
+        { name: "203-A8", type: "continuous" },
+        { name: "203-A9", type: "continuous" },
+        { name: "203-A7", type: "continuous" },
+      ],
+    },
+  },
+};
+const multiColumnModel = buildGraphRuntimeModel(multiColumnItem, metadata);
+assert.deepEqual(
+  deriveValueOrders(metadata, multiColumnModel.meltInfo).__sp_variable__,
+  ["203-A6", "203-A8", "203-A9", "203-A7"],
+  "synthetic melt categories must retain the user's multi-column order across frame rebuilds",
+);
+
+const colorOnlyItem: GraphBuilderItem = {
+  ...interactiveItem,
+  modeStates: {
+    ...interactiveItem.modeStates,
+    twoD: {
+      ...interactiveItem.modeStates.twoD,
+      encoding: {
+        x: { name: "site", type: "nominal" },
+        y: { name: "height", type: "continuous" },
+        color: { name: "batch", type: "ordinal" },
+      },
+    },
+  },
+};
+assert.deepEqual(
+  buildGraphRuntimeModel(colorOnlyItem, metadata).spec.encoding.color,
+  { name: "batch", type: "ordinal" },
+  "runtime model must preserve color-only grouping for the renderer",
+);
+
+const stableRuntimeStyles = buildEffectiveStyles(
+  ["Beta", "Alpha"],
+  { Build: { Alpha: 0, Beta: 1 } },
+  "Build",
+  {},
+  [],
+  false,
+);
+assert.equal(stableRuntimeStyles.Alpha.point?.color, "#3b56c6");
+assert.equal(stableRuntimeStyles.Beta.point?.color, "#bf6e2e");
+
+const reconciledRuntimeStyles = buildEffectiveStyles(
+  ["Beta", "Alpha"],
+  undefined,
+  "Build",
+  {},
+  [],
+  false,
+  ["Alpha", "Beta"],
+);
+assert.equal(reconciledRuntimeStyles.Alpha.point?.color, "#3b56c6");
+assert.equal(reconciledRuntimeStyles.Beta.point?.color, "#bf6e2e");
+
 const fitYByXItem = createFitYByXItem({
   id: "fit-1",
   name: "Fit Y by X 1",
@@ -185,6 +254,16 @@ assert.equal(
   graphRuntimeSource.includes("useGraphBuilderStore"),
   false,
   "GraphRuntime must not import or reference useGraphBuilderStore",
+);
+assert.equal(
+  graphRuntimeSource.includes("externalDataState?: ExternalGraphDataState"),
+  true,
+  "GraphRuntime must expose the shared external frame contract",
+);
+assert.equal(
+  graphRuntimeSource.includes("selectGraphRuntimeDataState(internalDataState, externalDataState)"),
+  true,
+  "GraphRuntime must select external state only after calling its internal pipeline hook",
 );
 
 const fitYByXViewSource = readFileSync(

@@ -105,7 +105,7 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
         {t(`distribution.compatibility.${data.provenance.compatibilityStatus}`)}
       </p>
       <div className="distribution-fit-tables">
-        <table className="distribution-fit-table" aria-label={`${distribution} ${t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}`}>
+        <table className="sp-fit-y-by-x-report-table distribution-fit-table" aria-label={`${distribution} ${t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}`}>
           <caption>{t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}</caption>
           <thead><tr>
             <th scope="col">{t("distribution.fit.parameter", { defaultValue: "Parameter" })}</th>
@@ -126,7 +126,7 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
             ))}
           </tbody>
         </table>
-        <table className="distribution-fit-table" aria-label={`${distribution} ${t("distribution.fit.measuresAria", { defaultValue: "measures" })}`}>
+        <table className="sp-fit-y-by-x-report-table distribution-fit-table" aria-label={`${distribution} ${t("distribution.fit.measuresAria", { defaultValue: "measures" })}`}>
           <caption>{t("distribution.fit.measures", { defaultValue: "Measures" })}</caption>
           <thead><tr><th scope="col">{t("distribution.fit.measure", { defaultValue: "Measure" })}</th><th scope="col">{t("distribution.report.value")}</th></tr></thead>
           <tbody>
@@ -157,7 +157,7 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
 export function ContinuousFitComparisonReport({ data }: { data: DistributionFitComparisonDataV1 }) {
   const { t } = useTranslation();
   return (
-    <table className="distribution-fit-table distribution-fit-comparison" aria-label={t("distribution.fit.comparison", { defaultValue: "Fit Comparison" })}>
+    <table className="sp-fit-y-by-x-report-table distribution-fit-table distribution-fit-comparison" aria-label={t("distribution.fit.comparison", { defaultValue: "Fit Comparison" })}>
       <caption>{t("distribution.fit.comparison", { defaultValue: "Fit Comparison" })}</caption>
       <thead>
         <tr>

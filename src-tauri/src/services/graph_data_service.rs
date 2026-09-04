@@ -531,7 +531,7 @@ impl<'a> GraphDataService<'a> {
                 return Ok(completion);
             }
 
-            if request_is_correlation_aggregate_only(request, &aggregate_packets) {
+            if request_is_aggregate_only(request, &aggregate_packets) {
                 for packet in &aggregate_packets {
                     let encode_started = if observed {
                         Some(begin_timing_observation())
@@ -908,7 +908,7 @@ impl<'a> GraphDataService<'a> {
     }
 }
 
-fn request_is_correlation_aggregate_only(
+fn request_is_aggregate_only(
     request: &GraphDataRequest,
     aggregate_packets: &[GraphAggregatePacket],
 ) -> bool {
@@ -916,18 +916,22 @@ fn request_is_correlation_aggregate_only(
         return false;
     }
 
-    if !request
+    let correlation_only = request
         .elements
         .iter()
         .all(|element| element.kind.eq_ignore_ascii_case("correlationMatrix"))
-    {
-        return false;
-    }
-
-    !aggregate_packets.is_empty()
         && aggregate_packets
             .iter()
-            .all(|packet| matches!(packet, GraphAggregatePacket::CorrelationMatrix(_)))
+            .all(|packet| matches!(packet, GraphAggregatePacket::CorrelationMatrix(_)));
+    let normal_curve_only = request
+        .elements
+        .iter()
+        .all(|element| element.kind.eq_ignore_ascii_case("normalCurve"))
+        && aggregate_packets
+            .iter()
+            .all(|packet| matches!(packet, GraphAggregatePacket::Summary(_)));
+
+    !aggregate_packets.is_empty() && (correlation_only || normal_curve_only)
 }
 
 fn is_renderable_xy(metadata: &ProjectionMetadata, values: &[Value]) -> Result<bool, AppError> {
@@ -4396,6 +4400,41 @@ mod tests {
         assert!(first_processed < first_source);
         assert!(sink.max_pending_chunks <= 1);
         assert!(sink.max_pending_payload_bytes <= INITIAL_PAYLOAD_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn stream_with_sink_normal_curve_only_omits_raw_chunks() {
+        let state = AppState::new().expect("state");
+        seed_dataset(&state, "normal-curve-only", 128);
+        let service = GraphDataService::new(&state);
+        let mut request = build_request("normal-curve-only", 0);
+        request.fields = vec![GraphFieldBinding {
+            role: "y".to_string(),
+            column: "cost".to_string(),
+        }];
+        request.elements = vec![GraphElementRequest {
+            kind: "normalCurve".to_string(),
+            summary_stat: "none".to_string(),
+            correlation_method: None,
+        }];
+        let mut sink = RecordingSink::default();
+
+        let completion = service
+            .stream_with_sink(&request, &mut sink)
+            .expect("normal curve stream completion");
+
+        assert_eq!(sink.header_count, 0);
+        assert_eq!(sink.payload_count, 0);
+        assert_eq!(sink.aggregate_packets.len(), 1);
+        assert!(matches!(
+            sink.aggregate_packets.first(),
+            Some(GraphAggregatePacket::Summary(_))
+        ));
+        assert_eq!(completion.chunks_sent, 0);
+        assert!(matches!(
+            completion.raw_point_disposition,
+            GraphRawPointDisposition::Empty { .. }
+        ));
     }
 
     #[test]

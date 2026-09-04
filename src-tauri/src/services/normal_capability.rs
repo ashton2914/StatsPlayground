@@ -218,7 +218,7 @@ pub struct CapabilityDensitySeriesV1 {
 pub struct CapabilityChartProvenanceV1 {
     pub capability_method: String,
     pub normal_density_method: String,
-    pub snapshot_id: String,
+    pub computation_id: String,
     pub spec_fingerprint: String,
 }
 
@@ -1116,7 +1116,7 @@ mod tests {
             chart.provenance.normal_density_method,
             "normal.pdf.closedForm.v1"
         );
-        assert_eq!(chart.provenance.snapshot_id, "snapshot-1");
+        assert_eq!(chart.provenance.computation_id, "snapshot-1");
         assert_eq!(chart.provenance.spec_fingerprint, "spec:sha256:test");
         assert_eq!(chart.overall_density.state, NumericStateV1::Available);
         assert!(chart.overall_density.coordinates.len() > histogram.len());
@@ -1407,7 +1407,7 @@ pub fn capability_chart_data(
     summary: &NormalProcessSummaryV1,
     observations_in_row_order: &[f64],
     histogram_bins: &[HistogramBinDataV1],
-    snapshot_id: &str,
+    computation_id: &str,
     spec_fingerprint: &str,
 ) -> NormalCapabilityChartDataV1 {
     let mut bins = histogram_bins
@@ -1462,7 +1462,7 @@ pub fn capability_chart_data(
         provenance: CapabilityChartProvenanceV1 {
             capability_method: "capability.normal.individuals".to_string(),
             normal_density_method: "normal.pdf.closedForm.v1".to_string(),
-            snapshot_id: snapshot_id.to_string(),
+            computation_id: computation_id.to_string(),
             spec_fingerprint: spec_fingerprint.to_string(),
         },
     }

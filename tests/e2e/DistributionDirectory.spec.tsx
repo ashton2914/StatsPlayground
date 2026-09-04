@@ -1,119 +1,43 @@
 import { expect, test } from "@playwright/experimental-ct-react";
 
-import { DistributionDirectoryItem } from "../../src/components/distribution";
-import type { LoadedDistributionDocV1 } from "../../src/types/distribution";
+import { createDistributionItem } from "../../src/components/distribution/distributionConfig";
+import { useDistributionStore } from "../../src/stores/useDistributionStore";
+import { useFolderStore } from "../../src/stores/useFolderStore";
+import { useProjectStore } from "../../src/stores/useProjectStore";
 
-const item: LoadedDistributionDocV1 = {
-  schemaVersion: "1",
-  analysisId: "analysis-stable-1",
-  name: "Distribution 1",
-  sourceDatasetId: "dataset-1",
-  status: "ready",
-  loadStatus: "ready",
-  configRevision: 1,
-  currentConfig: {
-    schemaVersion: "1",
-    sourceDatasetId: "dataset-1",
-    yColumns: [{ columnId: "value", modelingType: "continuous" }],
-    weightColumnId: null,
-    frequencyColumnId: null,
-    byColumnIds: [],
-    filterExpr: { kind: "and", exprs: [] },
-    confidenceLevel: 0.95,
-    histogramsOnly: false,
-    enabledCapabilityIds: [],
-    capabilityOverrides: [],
-  },
-};
-
-test("routes directory actions through the stable analysis ID", async ({ mount }) => {
-  const actions: Array<[string, string, string?]> = [];
-  const component = await mount(
-    <DistributionDirectoryItem
-      item={item}
-      sourceName="Dataset 1"
-      selected={false}
-      onSelect={(id) => actions.push(["select", id])}
-      onRename={(id, name) => actions.push(["rename", id, name])}
-      onCopy={(id) => actions.push(["copy", id])}
-      onDelete={(id) => actions.push(["delete", id])}
-      onOpenSource={(id) => actions.push(["openSource", id])}
-    />,
-  );
-
-  await component.click();
-  await component.dblclick();
-  await component.getByRole("textbox", { name: "Rename Distribution 1" }).fill("Revenue");
-  await component.getByRole("textbox", { name: "Rename Distribution 1" }).press("Enter");
-  await component.click({ button: "right" });
-  await component.getByRole("button", { name: "Copy" }).click();
-  await component.click({ button: "right" });
-  await component.getByRole("button", { name: "Delete" }).click();
-  await component.click({ button: "right" });
-  await component.getByTestId("distribution-open-source").click();
-
-  assertActionsUseStableId(actions);
-  expect(actions.filter(([action]) => action === "select").length).toBeGreaterThanOrEqual(1);
-  expect(actions.filter(([action]) => action !== "select")).toEqual([
-    ["rename", "analysis-stable-1", "Revenue"],
-    ["copy", "analysis-stable-1"],
-    ["delete", "analysis-stable-1"],
-    ["openSource", "analysis-stable-1"],
-  ]);
+const field = { name: "value", type: "continuous" as const };
+const currentItem = createDistributionItem({
+  id: "distribution-stable-1", name: "Distribution 1", sourceDatasetId: "dataset-1",
+  responses: [field], weight: null, frequency: null, by: [],
+  columns: [{ name: "value", sqlType: "DOUBLE", integerCompatible: false, field }],
+  createdAt: "2026-01-01T00:00:00.000Z",
 });
 
-test("does not copy preserved unknown documents", async ({ mount }) => {
-  const component = await mount(
-    <DistributionDirectoryItem
-      item={{
-        schemaVersion: "99",
-        analysisId: "future-1",
-        name: "Future Distribution",
-        sourceDatasetId: "dataset-1",
-        status: "unavailable",
-        loadStatus: "unknownVersion",
-        currentConfig: {},
-        rawEnvelope: {},
-      }}
-      sourceName="Dataset 1"
-      selected={false}
-      onSelect={() => {}}
-      onRename={() => {}}
-      onCopy={() => {}}
-      onDelete={() => {}}
-      onOpenSource={() => {}}
-    />,
-  );
-
-  await component.click({ button: "right" });
-  await expect(component.getByRole("button", { name: "Copy" })).toBeDisabled();
-  await component.unmount();
-
-  const corrupt = await mount(
-    <DistributionDirectoryItem
-      item={{
-        schemaVersion: "unknown",
-        analysisId: "corrupt-1",
-        name: "Corrupt Distribution",
-        sourceDatasetId: "dataset-1",
-        status: "unavailable",
-        loadStatus: "corrupt",
-        currentConfig: {},
-        rawText: "{broken",
-      }}
-      sourceName="Dataset 1"
-      selected={false}
-      onSelect={() => {}}
-      onRename={() => {}}
-      onCopy={() => {}}
-      onDelete={() => {}}
-      onOpenSource={() => {}}
-    />,
-  );
-  await corrupt.click({ button: "right" });
-  await expect(corrupt.getByRole("button", { name: "Copy" })).toBeDisabled();
+test.beforeEach(() => {
+  useProjectStore.setState({ readOnly: false });
+  useDistributionStore.setState({ items: [], counter: 0 });
+  useFolderStore.getState().reset();
 });
 
-function assertActionsUseStableId(actions: Array<[string, string, string?]>) {
-  expect(actions.every(([, analysisId]) => analysisId === "analysis-stable-1")).toBe(true);
-}
+test("keeps directory actions keyed by the stable Distribution ID", () => {
+  useDistributionStore.getState().addItem(currentItem);
+  useDistributionStore.getState().renameItem(currentItem.id, "Revenue");
+
+  expect(useDistributionStore.getState().items).toHaveLength(1);
+  expect(useDistributionStore.getState().items[0].id).toBe("distribution-stable-1");
+  expect(useDistributionStore.getState().items[0].name).toBe("Revenue");
+});
+
+test("moves a Distribution definition through the shared folder tree", () => {
+  useDistributionStore.getState().addItem(currentItem);
+  const folder = useFolderStore.getState().createFolder(null, "Analysis");
+  useFolderStore.getState().setDistributionFolder(currentItem.id, folder);
+
+  expect(useFolderStore.getState().distributionFolders).toEqual({
+    "distribution-stable-1": "Analysis",
+  });
+
+  useFolderStore.getState().deleteFolder("Analysis");
+  expect(useFolderStore.getState().distributionFolders).toEqual({});
+  expect(useDistributionStore.getState().items[0].id).toBe(currentItem.id);
+});

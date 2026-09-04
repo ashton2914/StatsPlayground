@@ -10,6 +10,7 @@ import {
   createStreamStartCancellationCoordinator,
   deriveElements,
   deriveFields,
+  deriveGraphRequestIdentity,
   deriveGraphRequestParts,
   reduceGraphStream,
   type GraphLoadProgress,
@@ -669,7 +670,46 @@ assert.equal(isGraphAggregatePacket({
       count: 1,
     },
   ],
-}), false);
+}), true);
+
+assert.equal(isGraphAggregatePacket({
+  kind: "boxPlot",
+  yColumn: "cost",
+  entries: [
+    {
+      count: 4,
+      min: 1,
+      q1: 2,
+      median: 3,
+      q3: 4,
+      max: 5,
+      whiskerLow: 1,
+      whiskerHigh: 5,
+      outliers: [],
+    },
+  ],
+}), true);
+
+assert.equal(isGraphAggregatePacket({
+  kind: "boxPlot",
+  yColumn: "cost",
+  entries: [
+    {
+      group: "DV",
+      category: "203-A6",
+      sourceColumn: "203-A6",
+      count: 4,
+      min: 4.3,
+      q1: 4.35,
+      median: 4.4,
+      q3: 4.45,
+      max: 4.5,
+      whiskerLow: 4.3,
+      whiskerHigh: 4.5,
+      outliers: [],
+    },
+  ],
+}), true);
 
 const validCorrelationPacket = {
   kind: "correlationMatrix" as const,
@@ -1063,6 +1103,87 @@ function makeLegacyGraphBuilderItem(overrides: Record<string, unknown> = {}): Gr
   };
 
   return makeGraphBuilderItem(raw);
+}
+
+{
+  const base = makeLegacyGraphBuilderItem({
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+      overlay: { name: "build", type: "nominal" },
+    },
+    elements: [{ kind: "boxplot", enabled: true }],
+    hiddenGroups: [],
+  });
+  const visualOnlyChange = makeLegacyGraphBuilderItem({
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+      overlay: { name: "build", type: "nominal" },
+    },
+    elements: [{ kind: "boxplot", enabled: true }],
+    hiddenGroups: ["EV2"],
+    groupStyles: {
+      "TC1.6": { fill: { color: "#ff0000" } },
+    },
+  });
+  const dataChange: GraphBuilderItem = {
+    ...base,
+    filters: [{
+      op: "AND",
+      rule: { kind: "categorical", field: "build", selected: ["EV2"] },
+    }],
+  };
+
+  assert.equal(
+    deriveGraphRequestIdentity(visualOnlyChange),
+    deriveGraphRequestIdentity(base),
+    "legend visibility and color edits must not restart the graph data stream",
+  );
+  assert.notEqual(
+    deriveGraphRequestIdentity(dataChange),
+    deriveGraphRequestIdentity(base),
+    "filter edits must still restart the graph data stream",
+  );
+}
+
+{
+  const normalCurveItem = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: { y: continuous("measurement") },
+        elements: [{ kind: "normalCurve", enabled: true }],
+      },
+    },
+    sampling: { mode: "full" },
+  });
+  const parts = deriveGraphRequestParts(normalCurveItem);
+
+  assert.deepEqual(parts.fields, [{ role: "y", column: "measurement" }]);
+  assert.deepEqual(parts.elements, [{ kind: "normalCurve", summaryStat: "none" }]);
+  assert.deepEqual(parts.sampling, { mode: "full" });
+  assert.equal(canExecuteGraphRequest(normalCurveItem, parts.fields, parts.elements), true);
+}
+
+{
+  const xOnlyNormalCurve = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: { x: continuous("measurement") },
+        elements: [{ kind: "normalCurve", enabled: true }],
+      },
+    },
+  });
+  const parts = deriveGraphRequestParts(xOnlyNormalCurve);
+
+  assert.deepEqual(parts.fields, [{ role: "y", column: "measurement" }]);
+  assert.equal(canExecuteGraphRequest(xOnlyNormalCurve, parts.fields, parts.elements), true);
 }
 
 function makeEquivalentEmbeddedGraphItem(item: GraphBuilderItem): GraphBuilderItem {
@@ -1622,6 +1743,70 @@ function makeProgressedChunk(
   assert.equal(transportError, null);
   assert.deepEqual(events, ["header", "payload", "complete"]);
   assert.equal(completionCalls, 1);
+}
+
+{
+  const events: string[] = [];
+  let transportError: string | null = null;
+  let payloadByteLength = 0;
+  let receivedBytes: number[] = [];
+  const request = makeRequest("req-transport-byte-array", 29);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {
+      events.push("header");
+    },
+    onPayload: (payload) => {
+      events.push("payload");
+      payloadByteLength = payload.byteLength;
+      receivedBytes = Array.from(new Uint8Array(payload));
+    },
+    onAggregate: () => {},
+    onComplete: () => {
+      events.push("complete");
+    },
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  const payload = makePayload(0);
+  transport.onChannelMessage({
+    messageType: "header",
+    ...makeHeader(request.requestId, request.generation, 0, true),
+  });
+  transport.onChannelMessage(Array.from(new Uint8Array(payload)));
+  transport.onChannelMessage({
+    messageType: "complete",
+    ...makeCompletion(request.requestId, request.generation),
+    chunksSent: 1,
+  });
+
+  assert.equal(transportError, null);
+  assert.equal(payloadByteLength, payload.byteLength);
+  assert.deepEqual(receivedBytes, Array.from(new Uint8Array(payload)));
+  assert.deepEqual(events, ["header", "payload", "complete"]);
+}
+
+{
+  let transportError: string | null = null;
+  const request = makeRequest("req-transport-sparse-byte-array", 30);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {},
+    onPayload: () => {},
+    onAggregate: () => {},
+    onComplete: () => {},
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({
+    messageType: "header",
+    ...makeHeader(request.requestId, request.generation, 0, true),
+  });
+  transport.onChannelMessage([1, , 3]);
+
+  assert.match(transportError ?? "", /unknown chunk/i);
 }
 
 {
@@ -2284,6 +2469,18 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(activeMultiY, "y"), ["y_stale"]);
   assert.deepEqual(roleColumns(activeMultiY, "multiY0"), ["my0"]);
   assert.deepEqual(roleColumns(activeMultiY, "multiY1"), ["my1"]);
+  const multiYOnlyItem = makeLegacyGraphBuilderItem({
+    encoding: {},
+    multiY: [
+      { name: "my0", type: "continuous" },
+      { name: "my1", type: "continuous" },
+    ],
+  });
+  const multiYOnlyParts = deriveGraphRequestParts(multiYOnlyItem);
+  assert.equal(
+    canExecuteGraphRequest(multiYOnlyItem, multiYOnlyParts.fields, multiYOnlyParts.elements),
+    true,
+  );
 
   const activeMultiBoth = deriveFields(
     makeLegacyGraphBuilderItem({

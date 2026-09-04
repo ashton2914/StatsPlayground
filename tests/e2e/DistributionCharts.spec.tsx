@@ -1,230 +1,120 @@
 import { expect, test } from "@playwright/experimental-ct-react";
 
-import {
-  DistributionChart,
-  DistributionFitDensityChart,
-  DistributionOverviewChart,
-  ProcessCapabilityChart,
-} from "../../src/components/distribution";
-import type { DistributionChartDataV1 } from "../../src/types/distribution";
+import { createDistributionItem } from "../../src/components/distribution/distributionConfig";
+import * as distributionViewModule from "../../src/components/distribution/DistributionView";
+import type { ChartElement } from "../../src/graphCore/types";
+import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "../../src/types/graphData";
 
-const provenance = {
-  methodId: "synthetic.chart",
-  methodVersion: "1.0.0",
-  compatibilityStatus: "compatibilityPending" as const,
-  snapshotId: "snapshot-1",
-};
-const charts: Array<{ title: string; chart: DistributionChartDataV1; minVisiblePixels?: number }> = [
-  {
-    title: "Histogram",
-    minVisiblePixels: 100,
-    chart: {
-      schemaVersion: "1",
-      kind: "histogramData",
-      provenance,
-      bins: [
-        { lower: 0, upper: 1, count: 3, probability: 0.375, density: 0.375 },
-        { lower: 1, upper: 2, count: 5, probability: 0.625, density: 0.625 },
-      ],
-    },
-  },
-  {
-    title: "Box Plot",
-    minVisiblePixels: 100,
-    chart: {
-      schemaVersion: "1",
-      kind: "boxPlotData",
-      provenance,
-      coordinates: {
-        lowerWhisker: 0,
-        lowerQuartile: 1,
-        median: 2,
-        upperQuartile: 3,
-        upperWhisker: 4,
-        outliers: [7],
-      },
-    },
-  },
-  {
-    title: "Empirical CDF",
-    minVisiblePixels: 100,
-    chart: {
-      schemaVersion: "1",
-      kind: "cdfData",
-      provenance,
-      points: [{ x: 0, y: 0 }, { x: 0, y: 0.5 }, { x: 2, y: 1 }],
-    },
-  },
-  {
-    title: "Normal Quantile",
-    minVisiblePixels: 1_500,
-    chart: {
-      schemaVersion: "1",
-      kind: "normalQuantileData",
-      provenance,
-      payload: {
-        points: [
-          { rank: 1, probability: 0.25, normalScore: -0.6744897501960817, observedValue: -2 },
-          { rank: 2, probability: 0.5, normalScore: 0, observedValue: 0 },
-          { rank: 3, probability: 0.75, normalScore: 0.6744897501960817, observedValue: 3 },
-        ],
-        referenceLine: [
-          { x: -0.6744897501960817, y: -2 },
-          { x: 0.6744897501960817, y: 3 },
-        ],
-        confidenceBand: [
-          { x: -0.6744897501960817, lower: -2.5, upper: -1.5 },
-          { x: 0.6744897501960817, lower: 2.5, upper: 3.5 },
-        ],
-        status: "available",
-        reasonCode: null,
-        provenance,
-        referenceLineProvenance: {
-          methodId: "normalQuantile.referenceLine.public.v1",
-          methodVersion: "1.0.0",
-          compatibilityStatus: "compatibilityPending",
-          snapshotId: "snapshot-1",
-        },
-        confidenceBandProvenance: {
-          methodId: "normalQuantile.pointwiseBand.public.v1",
-          methodVersion: "1.0.0",
-          compatibilityStatus: "compatibilityPending",
-          snapshotId: "snapshot-1",
-        },
-      },
-    },
-  },
-];
+import { DistributionViewStory } from "./DistributionViewStory";
 
-for (const { title, chart, minVisiblePixels = 100 } of charts) {
-  test(`renders nonblank ${title}`, async ({ mount }) => {
-    const component = await mount(<DistributionChart chart={chart} title={title} />);
-    await expect(component).toHaveAttribute("role", "img");
-    const canvas = component.locator("canvas");
-    await expect(canvas).toBeVisible();
-    const box = await canvas.boundingBox();
-    expect(box?.width).toBeGreaterThan(200);
-    expect(box?.height).toBeGreaterThan(180);
-    await expect.poll(async () => canvas.evaluate((element) => {
-      const context = (element as HTMLCanvasElement).getContext("2d");
-      if (!context) return 0;
-      const pixels = context.getImageData(0, 0, element.width, element.height).data;
-      let visible = 0;
-      for (let index = 3; index < pixels.length; index += 4) {
-        if (pixels[index] > 0) visible += 1;
-      }
-      return visible;
-    })).toBeGreaterThan(minVisiblePixels);
+const field = { name: "value", type: "continuous" as const };
+const currentItem = createDistributionItem({
+  id: "distribution-1", name: "Distribution 1", sourceDatasetId: "dataset-1",
+  responses: [field], weight: null, frequency: null, by: [],
+  columns: [{ name: "value", sqlType: "DOUBLE", integerCompatible: false, field }],
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+
+test("builds the four Distribution graphs as embedded GraphRuntime items", () => {
+  const graphs = distributionViewModule.materializeDistributionGraphItems(currentItem);
+
+  for (const graph of Object.values(graphs)) {
+    expect(graph.sourceDatasetId).toBe("dataset-1");
+    expect(graph.mode).toBe("2d");
+    expect(graph.modeStates.twoD.encoding.x).toEqual(field);
+    expect(graph.sampling).toEqual({ mode: "full" });
+  }
+});
+
+test("binds backend packet IDs to each graph role", () => {
+  const graphs = distributionViewModule.materializeDistributionGraphItems(currentItem);
+  const elementIds = (role: keyof typeof graphs) => {
+    const ids: Array<string | undefined> = [];
+    for (const element of graphs[role].modeStates.twoD.elements as ChartElement[]) {
+      ids.push(element.options?.elementId as string | undefined);
+    }
+    return ids;
+  };
+
+  expect(elementIds("overview")).toEqual([
+    DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram,
+    DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves,
+  ]);
+  expect(elementIds("boxPlot")).toEqual([DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot]);
+  expect(elementIds("ecdf")).toEqual([DISTRIBUTION_GRAPH_ELEMENT_IDS.ecdf]);
+  expect(elementIds("normalQuantile")).toEqual([
+    DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantilePoints,
+    DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantileReference,
+    DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantileLower,
+    DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantileUpper,
+  ]);
+});
+
+test("renders all four external frames without graph-data streaming", async ({ mount, page }) => {
+  await page.evaluate(() => {
+    const calls: string[] = [];
+    Object.assign(window, {
+      __distributionInvokeCalls: calls,
+      __TAURI_INTERNALS__: {
+        metadata: { currentWindow: { label: "main" } },
+        invoke: async (command: string, args: { request?: { datasetId: string; generation: number } } = {}) => {
+          calls.push(command);
+          if (command === "get_dataset_generation") return 7;
+          if (command === "get_columns") return [["value", "DOUBLE"]];
+          if (command === "get_column_display_props") return [];
+          if (command === "compute_distribution_report") {
+            const request = args.request ?? { datasetId: "dataset-1", generation: 7 };
+            const frame = (role: string) => ({
+              requestId: `distribution:${role}`,
+              datasetId: request.datasetId,
+              generation: request.generation,
+              sourceRows: 0,
+              processedRows: 0,
+              sampling: { mode: "full" },
+              dictionaries: {},
+              extents: {},
+              rawChunks: [],
+              aggregates: [],
+              rawPointDisposition: { status: "empty", validRows: 0, budget: 8_000 },
+            });
+            return {
+              datasetId: request.datasetId,
+              generation: request.generation,
+              groups: [],
+              reportBlocks: [],
+              graphFrames: {
+                overview: frame("overview"),
+                boxPlot: frame("boxPlot"),
+                ecdf: frame("ecdf"),
+                normalQuantile: frame("normalQuantile"),
+              },
+            };
+          }
+          throw new Error(`unexpected command: ${command}`);
+        },
+      },
+    });
   });
-}
-
-test("renders a nonblank combined Overview", async ({ mount }) => {
-  const histogram = charts[0].chart;
-  const boxPlot = charts[1].chart;
-  if (histogram.kind !== "histogramData" || boxPlot.kind !== "boxPlotData") {
-    throw new Error("invalid overview fixture");
-  }
-  const component = await mount(
-    <DistributionOverviewChart histogram={histogram} boxPlot={boxPlot} title="Overview" />,
-  );
-  await expect(component).toHaveAttribute("data-chart-kind", "overview");
-  await expect(component).toHaveAttribute("data-axis-layout", "horizontal-count");
-  const canvas = component.locator("canvas");
-  await expect(canvas).toBeVisible();
-  await expect.poll(async () => canvas.evaluate((element) => {
-    const context = (element as HTMLCanvasElement).getContext("2d");
-    if (!context) return 0;
-    const pixels = context.getImageData(0, 0, element.width, element.height).data;
-    let visible = 0;
-    for (let index = 3; index < pixels.length; index += 4) {
-      if (pixels[index] > 0) visible += 1;
-    }
-    return visible;
-  })).toBeGreaterThan(100);
-});
-
-test("renders a nonblank horizontal Count Overview with an empty bin", async ({ mount }) => {
-  const histogram = charts[0].chart;
-  const boxPlot = charts[1].chart;
-  if (histogram.kind !== "histogramData" || boxPlot.kind !== "boxPlotData") {
-    throw new Error("invalid overview fixture");
-  }
-  const component = await mount(
-    <DistributionOverviewChart
-      histogram={{
-        ...histogram,
-        bins: [
-          ...histogram.bins,
-          { lower: 2, upper: 3, count: 0, probability: 0, density: 0 },
-        ],
-      }}
-      boxPlot={boxPlot}
-      title="Overview Count"
-      valueAxisName="sales_amount"
-    />,
-  );
-  await expect(component).toHaveAttribute("data-chart-kind", "overview");
-  await expect(component).toHaveAttribute("data-axis-layout", "horizontal-count");
-  const canvas = component.locator("canvas");
-  await expect(canvas).toBeVisible();
-  await expect.poll(async () => canvas.evaluate((element) => {
-    const context = (element as HTMLCanvasElement).getContext("2d");
-    if (!context) return 0;
-    const pixels = context.getImageData(0, 0, element.width, element.height).data;
-    let visible = 0;
-    for (let index = 3; index < pixels.length; index += 4) {
-      if (pixels[index] > 0) visible += 1;
-    }
-    return visible;
-  })).toBeGreaterThan(100);
-});
-
-test("renders a nonblank Fit Density canvas with two backend curves", async ({ mount }) => {
-  const histogram = charts[0].chart;
-  if (histogram.kind !== "histogramData") throw new Error("invalid Fit Density fixture");
-  const component = await mount(<DistributionFitDensityChart
-    histogram={histogram}
-    curves={[
-      { distributionId: "gamma", points: [{ x: 0, y: 0.12 }, { x: 2, y: 0.2 }] },
-      { distributionId: "normal", points: [{ x: 0, y: 0.18 }, { x: 2, y: 0.15 }] },
-    ]}
-    title="Fit Density"
-    valueAxisName="sales_amount"
-    densityAxisName="Probability Density"
-  />);
-  await expect(component).toHaveAttribute("data-chart-kind", "fit-density");
-  const canvas = component.locator("canvas");
-  await expect(canvas).toBeVisible();
-  await expect.poll(async () => canvas.evaluate((element) => {
-    const context = (element as HTMLCanvasElement).getContext("2d");
-    if (!context) return 0;
-    const pixels = context.getImageData(0, 0, element.width, element.height).data;
-    let visible = 0;
-    for (let index = 3; index < pixels.length; index += 4) if (pixels[index] > 0) visible += 1;
-    return visible;
-  })).toBeGreaterThan(100);
-});
-
-test("renders a nonblank Process Capability Histogram", async ({ mount }) => {
-  const component = await mount(<ProcessCapabilityChart title="Capability Histogram" chart={{
-    bins: [{ lower: 0, upper: 1, count: 3, probability: 1, density: 0.5, belowCount: 1, aboveCount: 0 }],
-    specificationLines: { lsl: 0.2, target: 0.5, usl: 0.8, source: "columnProperty" },
-    overallDensity: { state: "available", reasonCode: null, coordinates: [{ x: 0, y: 0.1 }, { x: 1, y: 0.2 }] },
-    withinDensity: { state: "available", reasonCode: null, coordinates: [{ x: 0, y: 0.12 }, { x: 1, y: 0.18 }] },
-    provenance: {
-      capabilityMethod: "capability.normal.individuals", normalDensityMethod: "normal.pdf.closedForm.v1",
-      snapshotId: "snapshot-1", specFingerprint: "spec:sha256:test",
-    },
+  const component = await mount(<DistributionViewStory item={currentItem} dataset={{
+    id: "dataset-1",
+    name: "Dataset 1",
+    sourcePath: null,
+    sourceType: "manual",
+    rowCount: 0,
+    colCount: 1,
+    generation: 0,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
   }} />);
-  await expect(component).toHaveAttribute("data-chart-kind", "process-capability");
-  const canvas = component.locator("canvas");
-  await expect(canvas).toBeVisible();
-  await expect.poll(async () => canvas.evaluate((element) => {
-    const context = (element as HTMLCanvasElement).getContext("2d");
-    if (!context) return 0;
-    const pixels = context.getImageData(0, 0, element.width, element.height).data;
-    let visible = 0;
-    for (let index = 3; index < pixels.length; index += 4) if (pixels[index] > 0) visible += 1;
-    return visible;
-  })).toBeGreaterThan(100);
+
+  for (const role of ["overview", "boxPlot", "ecdf", "normalQuantile"]) {
+    await expect(component.locator(`[data-graph-role="${role}"] canvas`)).toHaveCount(1);
+  }
+  await expect.poll(() => page.evaluate(() => (
+    (window as Window & { __distributionInvokeCalls?: string[] }).__distributionInvokeCalls ?? []
+  ))).toContain("compute_distribution_report");
+  const calls = await page.evaluate(() => (
+    (window as Window & { __distributionInvokeCalls?: string[] }).__distributionInvokeCalls ?? []
+  ));
+  expect(calls).not.toContain("stream_graph_data");
 });

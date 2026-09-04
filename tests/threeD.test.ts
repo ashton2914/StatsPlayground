@@ -12,8 +12,9 @@ Object.defineProperty(globalThis, "localStorage", {
   },
 });
 
-const { build3DOption } = await import("../src/graphCore/threeD.ts");
+const { build3DOption, build3DPanels } = await import("../src/graphCore/threeD.ts");
 const { collectFrame3DPoints } = await import("../src/graphCore/threeDFrame.ts");
+const { buildGraph } = await import("../src/graphCore/transform.ts");
 
 const theme: GraphTheme = {
   fgPrimary: "#111111",
@@ -27,6 +28,178 @@ const theme: GraphTheme = {
   categorical: ["#0066cc"],
   sequential: ["#eeeeee", "#0066cc"],
 };
+
+const themed3DStyles: NonNullable<GraphSpec["styles"]> = {
+  EV: {
+    gradient: { color: "#9b1c31" },
+    line: { color: "#5a1020" },
+    point: { color: "#f28ca0", fillColor: "#f28ca0" },
+    fill: { color: "#f6c7d1" },
+  },
+  EV1: {
+    gradient: { color: "#227c5b" },
+    line: { color: "#124734" },
+    point: { color: "#7fdbb5", fillColor: "#7fdbb5" },
+    fill: { color: "#c7f2e1" },
+  },
+  EV2: {
+    gradient: { color: "#3659b8" },
+    line: { color: "#1c2e63" },
+    point: { color: "#9eb6ff", fillColor: "#9eb6ff" },
+    fill: { color: "#d5e0ff" },
+  },
+  "TC1.6": {
+    gradient: { color: "#f38b00" },
+    line: { color: "#0c7a6b" },
+    point: { color: "#7a1f8a", fillColor: "#7a1f8a" },
+    fill: { color: "#ffd9a3" },
+  },
+};
+
+const frameBackedGrouped3DData: GraphData = {
+  columns: ["x", "y", "z", "group"],
+  rows: new Proxy([] as unknown[][], {
+    get(_target, prop) {
+      if (prop === "length") return 0;
+      throw new Error("legacy rows access is forbidden for grouped frame-backed 3D");
+    },
+  }),
+};
+
+function buildGroupedIdentityFrame(dictionaryOrder: string[], chunkOrder: string[]): GraphDataFrame {
+  const codeByGroup = new Map(dictionaryOrder.map((group, index) => [group, index]));
+  const rawChunks = chunkOrder.map((group, chunkIndex) => {
+    const code = codeByGroup.get(group);
+    assert.notEqual(code, undefined);
+    const base = (chunkIndex + 1) * 100;
+    return {
+      chunkIndex,
+      rowOffset: chunkIndex * 8,
+      rowCount: 8,
+      xValues: new Float64Array([0, 0, 1, 1, 0, 0, 1, 1]),
+      yValues: new Float64Array([0, 0, 0, 0, 1, 1, 1, 1]),
+      zValues: new Float64Array([
+        base + 10,
+        base + 14,
+        base + 20,
+        base + 24,
+        base + 30,
+        base + 34,
+        base + 40,
+        base + 44,
+      ]),
+      groupCodes: new Uint32Array(new Array(8).fill(code)),
+      rowIds: new BigInt64Array([
+        BigInt(chunkIndex * 8 + 1),
+        BigInt(chunkIndex * 8 + 2),
+        BigInt(chunkIndex * 8 + 3),
+        BigInt(chunkIndex * 8 + 4),
+        BigInt(chunkIndex * 8 + 5),
+        BigInt(chunkIndex * 8 + 6),
+        BigInt(chunkIndex * 8 + 7),
+        BigInt(chunkIndex * 8 + 8),
+      ]),
+      validity: {
+        x: new Uint8Array([0xff]),
+        y: new Uint8Array([0xff]),
+        z: new Uint8Array([0xff]),
+        group: new Uint8Array([0xff]),
+      },
+    };
+  });
+  return {
+    requestId: `req-${dictionaryOrder.join("-")}`,
+    datasetId: `ds-${chunkOrder.join("-")}`,
+    generation: 1,
+    sourceRows: rawChunks.length * 8,
+    processedRows: rawChunks.length * 8,
+    sampling: { mode: "full" },
+    dictionaries: { group: dictionaryOrder },
+    extents: {},
+    aggregates: [],
+    rawChunks,
+  };
+}
+
+function buildGrouped3DSpec(
+  kinds: Array<"surface" | "scatter3d" | "contour3d">,
+  intervalStyle: "errorBar" | "band" = "errorBar",
+): GraphSpec {
+  return {
+    encoding: {
+      x: { name: "x", type: "quantitative" },
+      y: { name: "y", type: "quantitative" },
+      z: { name: "z", type: "quantitative" },
+      overlay: { name: "group", type: "nominal" },
+      color: { name: "colorShouldNotWin", type: "nominal" },
+    },
+    elements: kinds.map((kind) => {
+      if (kind === "scatter3d") {
+        return {
+          kind,
+          options: {
+            summaryStat: "mean",
+            errorInterval: "stdErr",
+            intervalStyle,
+          },
+        };
+      }
+      if (kind === "surface") {
+        return { kind, options: { stat: "mean", smoothness: 0 } };
+      }
+      return { kind, options: { stat: "mean", smoothness: 0, levels: 3 } };
+    }),
+    styles: themed3DStyles,
+  };
+}
+
+function collect3DColorMarks(option: Record<string, unknown>) {
+  const series = option.series as Array<Record<string, any>>;
+  const marks = {
+    surface: {} as Record<string, string>,
+    scatter3d: {} as Record<string, string>,
+    contour3d: {} as Record<string, string>,
+    error3d: {} as Record<string, string>,
+  };
+  for (const item of series) {
+    const name = String(item.name ?? "");
+    if (item.type === "surface") {
+      marks.surface[name] = String(item.itemStyle?.color ?? "");
+      continue;
+    }
+    if (item.type === "scatter3D") {
+      marks.scatter3d[name] = String(item.itemStyle?.color ?? "");
+      continue;
+    }
+    if (item.type !== "line3D") continue;
+    if (name.includes("__contour_")) {
+      marks.contour3d[name.split("__contour_")[0]] = String(item.lineStyle?.color ?? "");
+      continue;
+    }
+    if (name.includes("__err_")) {
+      marks.error3d[name.split("__err_")[0]] = String(item.lineStyle?.color ?? "");
+    }
+  }
+  return marks;
+}
+
+function collect2DGroupedPointColors(spec: GraphSpec, data: GraphData): Record<string, { fill: string; stroke: string }> {
+  const built = buildGraph(spec, data, theme);
+  const panel = built.panels[0];
+  assert.ok(panel);
+  const series = panel.option.series as Array<Record<string, any>>;
+  const out: Record<string, { fill: string; stroke: string }> = {};
+  for (const item of series) {
+    if (item.type !== "scatter") continue;
+    const name = String(item.name ?? "");
+    if (!name || name.includes("__")) continue;
+    out[name] = {
+      fill: String(item.itemStyle?.color ?? ""),
+      stroke: String(item.itemStyle?.borderColor ?? ""),
+    };
+  }
+  return out;
+}
 
 const spec: GraphSpec = {
   encoding: {
@@ -106,6 +279,140 @@ const frameResult = build3DOption(spec, frame3dData, theme, frame3d);
 assert.ok(frameResult.option);
 const frameSeries = frameResult.option.series as Array<Record<string, unknown>>;
 assert.equal(frameSeries.some((item) => item.type === "scatter3D"), true);
+
+const facetedSpec: GraphSpec = {
+  ...spec,
+  encoding: {
+    ...spec.encoding,
+    groupX: { name: "Column", type: "nominal" },
+    groupY: { name: "Row", type: "nominal" },
+  },
+};
+const facetedFrame: GraphDataFrame = {
+  ...frame3d,
+  requestId: "req-3d-facets",
+  sourceRows: 4,
+  processedRows: 4,
+  dictionaries: {
+    facetX: ["Left", "Right"],
+    facetY: ["Top", "Bottom"],
+  },
+  rawChunks: [{
+    chunkIndex: 0,
+    rowOffset: 0,
+    rowCount: 4,
+    xValues: new Float64Array([1, 2, 3, 4]),
+    yValues: new Float64Array([11, 12, 13, 14]),
+    zValues: new Float64Array([21, 22, 23, 24]),
+    facetXCodes: new Uint32Array([0, 1, 0, 1]),
+    facetYCodes: new Uint32Array([0, 0, 1, 1]),
+    rowIds: new BigInt64Array([1n, 2n, 3n, 4n]),
+    validity: {
+      x: new Uint8Array([0b00001111]),
+      y: new Uint8Array([0b00001111]),
+      z: new Uint8Array([0b00001111]),
+      facetX: new Uint8Array([0b00001111]),
+      facetY: new Uint8Array([0b00001111]),
+    },
+  }],
+};
+const facetedResult = build3DPanels(facetedSpec, frame3dData, theme, facetedFrame);
+assert.equal(facetedResult.cols, 2);
+assert.equal(facetedResult.rows, 2);
+assert.deepEqual(
+  facetedResult.panels.map((panel) => panel.title),
+  [
+    "Column=Left | Row=Top",
+    "Column=Right | Row=Top",
+    "Column=Left | Row=Bottom",
+    "Column=Right | Row=Bottom",
+  ],
+);
+assert.deepEqual(
+  facetedResult.panels.map((panel) => {
+    const scatter = (panel.option?.series as Array<Record<string, unknown>>)
+      .find((item) => item.type === "scatter3D");
+    return scatter?.data;
+  }),
+  [
+    [[1, 11, 21]],
+    [[2, 12, 22]],
+    [[3, 13, 23]],
+    [[4, 14, 24]],
+  ],
+);
+assert.ok(facetedResult.panels.every((panel) => {
+  const option = panel.option as Record<string, any>;
+  return option.xAxis3D.min === 1
+    && option.xAxis3D.max === 4
+    && option.yAxis3D.min === 11
+    && option.yAxis3D.max === 14
+    && option.zAxis3D.min === 21
+    && option.zAxis3D.max === 24;
+}));
+
+const dictionaryStableFrame: GraphDataFrame = {
+  ...facetedFrame,
+  dictionaries: {
+    facetX: ["Unused", "Right", "Left"],
+    facetY: ["Top", "Bottom"],
+  },
+  rawChunks: facetedFrame.rawChunks.map((chunk) => ({
+    ...chunk,
+    facetXCodes: new Uint32Array([2, 1, 2, 1]),
+  })),
+};
+const dictionaryStableResult = build3DPanels(
+  facetedSpec,
+  frame3dData,
+  theme,
+  dictionaryStableFrame,
+);
+assert.equal(dictionaryStableResult.cols, 3);
+assert.deepEqual(
+  dictionaryStableResult.panels.slice(0, 3).map((panel) => panel.groupXValue),
+  ["Unused", "Right", "Left"],
+);
+
+const rowFacetedData: GraphData = {
+  columns: ["x", "y", "z", "Column", "Row"],
+  rows: [
+    [1, 11, 21, "Left", "Top"],
+    [2, 12, 22, "Right", "Top"],
+    ["bad", 13, 23, "Invalid", "Bottom"],
+  ],
+};
+const rowFacetedResult = build3DPanels(facetedSpec, rowFacetedData, theme);
+assert.equal(rowFacetedResult.cols, 2);
+assert.equal(rowFacetedResult.rows, 1);
+assert.deepEqual(
+  rowFacetedResult.panels.map((panel) => panel.title),
+  ["Column=Left | Row=Top", "Column=Right | Row=Top"],
+);
+
+const hiddenOutlierSpec: GraphSpec = {
+  ...facetedSpec,
+  encoding: {
+    ...facetedSpec.encoding,
+    overlay: { name: "Group", type: "nominal" },
+  },
+  hiddenGroups: ["Outlier"],
+};
+const hiddenOutlierData: GraphData = {
+  columns: ["x", "y", "z", "Column", "Row", "Group"],
+  rows: [
+    [1, 11, 21, "Left", "Top", "Visible"],
+    [2, 12, 22, "Right", "Top", "Visible"],
+    [999, 999, 999, "Right", "Top", "Outlier"],
+  ],
+};
+const hiddenOutlierResult = build3DPanels(hiddenOutlierSpec, hiddenOutlierData, theme);
+assert.ok(hiddenOutlierResult.panels.every((panel) => {
+  const option = panel.option as Record<string, any>;
+  return option.xAxis3D.max === 2
+    && option.yAxis3D.max === 12
+    && option.zAxis3D.max === 22;
+}));
 
 const crossByteFrame: GraphDataFrame = {
   requestId: "req-3d-cross-byte",
@@ -396,5 +703,80 @@ assert.ok(frameContours.every((item) => (item.lineStyle as Record<string, unknow
 assert.ok(frameContours.every((item) =>
   (item.data as number[][]).length >= 2
     && (item.data as number[][]).every((point) => point.every(Number.isFinite))));
+
+const fullIdentityFrame = buildGroupedIdentityFrame(
+  ["EV", "EV1", "EV2", "TC1.6"],
+  ["EV", "EV1", "EV2", "TC1.6"],
+);
+const reorderedMissingIdentityFrame = buildGroupedIdentityFrame(
+  ["TC1.6", "EV1", "EV"],
+  ["TC1.6", "EV1", "EV"],
+);
+
+for (const config of [
+  ["scatter3d"],
+  ["surface"],
+  ["contour3d"],
+  ["surface", "scatter3d"],
+  ["scatter3d", "surface", "contour3d"],
+] as const) {
+  const spec3d = buildGrouped3DSpec([...config]);
+  const fullBuilt = build3DOption(spec3d, frameBackedGrouped3DData, theme, fullIdentityFrame);
+  const missingBuilt = build3DOption(spec3d, frameBackedGrouped3DData, theme, reorderedMissingIdentityFrame);
+  assert.ok(fullBuilt.option, `expected 3D option for ${config.join(",")}`);
+  assert.ok(missingBuilt.option, `expected reordered 3D option for ${config.join(",")}`);
+  const fullMarks = collect3DColorMarks(fullBuilt.option!);
+  const missingMarks = collect3DColorMarks(missingBuilt.option!);
+  if (config.includes("scatter3d")) {
+    assert.equal(fullMarks.scatter3d["TC1.6"], themed3DStyles["TC1.6"].gradient?.color);
+    assert.equal(missingMarks.scatter3d["TC1.6"], themed3DStyles["TC1.6"].gradient?.color);
+    assert.equal(fullMarks.error3d["TC1.6"], themed3DStyles["TC1.6"].line?.color);
+    assert.equal(missingMarks.error3d["TC1.6"], themed3DStyles["TC1.6"].line?.color);
+  }
+  if (config.includes("surface")) {
+    assert.equal(fullMarks.surface["TC1.6"], themed3DStyles["TC1.6"].gradient?.color);
+    assert.equal(missingMarks.surface["TC1.6"], themed3DStyles["TC1.6"].gradient?.color);
+  }
+  if (config.includes("contour3d")) {
+    assert.equal(fullMarks.contour3d["TC1.6"], themed3DStyles["TC1.6"].line?.color);
+    assert.equal(missingMarks.contour3d["TC1.6"], themed3DStyles["TC1.6"].line?.color);
+  }
+}
+
+const groupedBandSpec = buildGrouped3DSpec(["scatter3d"], "band");
+const groupedBandResult = build3DOption(groupedBandSpec, frameBackedGrouped3DData, theme, reorderedMissingIdentityFrame);
+assert.ok(groupedBandResult.option);
+const groupedBandMarks = collect3DColorMarks(groupedBandResult.option!);
+assert.equal(groupedBandMarks.scatter3d["TC1.6"], themed3DStyles["TC1.6"].gradient?.color);
+assert.equal(groupedBandMarks.error3d["TC1.6"], themed3DStyles["TC1.6"].line?.color);
+
+const sharedIdentityStyles: NonNullable<GraphSpec["styles"]> = structuredClone(themed3DStyles);
+const grouped2DSpec: GraphSpec = {
+  encoding: {
+    x: { name: "x", type: "quantitative" },
+    y: { name: "y", type: "quantitative" },
+    overlay: { name: "group", type: "nominal" },
+    color: { name: "colorShouldNotWin", type: "nominal" },
+  },
+  elements: [{ kind: "points" }],
+  styles: sharedIdentityStyles,
+};
+const grouped2DData: GraphData = {
+  columns: ["x", "y", "group"],
+  rows: [
+    [0, 1, "EV"],
+    [1, 2, "EV1"],
+    [2, 3, "TC1.6"],
+  ],
+};
+const colorsBefore3D = collect2DGroupedPointColors(grouped2DSpec, grouped2DData);
+assert.deepEqual(colorsBefore3D, {
+  EV: { fill: "#f28ca0", stroke: "#f28ca0" },
+  EV1: { fill: "#7fdbb5", stroke: "#7fdbb5" },
+  "TC1.6": { fill: "#7a1f8a", stroke: "#7a1f8a" },
+});
+build3DOption(buildGrouped3DSpec(["scatter3d", "surface", "contour3d"]), frameBackedGrouped3DData, theme, reorderedMissingIdentityFrame);
+const colorsAfter3D = collect2DGroupedPointColors(grouped2DSpec, grouped2DData);
+assert.deepEqual(colorsAfter3D, colorsBefore3D);
 
 console.log("threeD regressions passed");

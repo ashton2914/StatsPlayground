@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnDisplayProps,
+  ColumnDescriptor,
   CellPosition,
   CellUpdate,
   DatasetMeta,
@@ -11,11 +12,8 @@ import type {
   TableWindowRequest,
   TableWindowResult,
 } from "@/types/data";
-import type { DistributionColumnDescriptorV1 } from "@/types/distribution";
 
 export const dataService = {
-  getDistributionColumns: (datasetId: string) =>
-    invoke<DistributionColumnDescriptorV1[]>("get_distribution_columns", { datasetId }),
   /** 执行 SQL 查询（分页） */
   executeSqlQuery: (sql: string, page: number, pageSize = 200) =>
     invoke<SqlQueryResult>("execute_sql_query", { sql, page, pageSize }),
@@ -254,6 +252,10 @@ export const dataService = {
   /** 获取列信息 */
   getColumns: (datasetId: string) =>
     invoke<[string, string][]>("get_columns", { datasetId }),
+
+  /** 获取带稳定 ID 的列描述符 */
+  getColumnDescriptors: (datasetId: string) =>
+    invoke<ColumnDescriptor[]>("get_column_descriptors", { datasetId }),
 
   /** 排序 */
   sortTable: (sourceId: string, sortCols: string[], sortOrders: string[], newName: string) =>

@@ -1,254 +1,204 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type {
-  DistributionAnalysisConfigV1,
-  DistributionColumnInfoV1,
-  DistributionColumnRefV1,
-  DistributionWorkspaceBootstrapV1,
-} from "@/types/distribution";
+import type { DistributionItem } from "@/types/distribution";
 
 import {
-  createDefaultDistributionVisualDiagnosticsConfig,
-  createDefaultDistributionContinuousFitConfig,
-  DISTRIBUTION_CAPABILITY_OVERRIDE_REGISTRY,
-  NORMAL_CAPABILITY_ID,
-  normalizeDistributionAnalysisConfig,
-  validateDistributionConfig,
+  createDistributionItem,
+  type DistributionFieldInfo,
+  type DistributionRole,
 } from "./distributionConfig";
+import {
+  assignDistributionField,
+  canCreateDistribution,
+  clearDistributionField,
+  createDistributionDialogState,
+  filterDistributionFields,
+  type DistributionDialogState,
+} from "./distributionDialogState";
 import { DistributionRoleZone } from "./DistributionRoleZone";
 import { SpecificationLimitsEditor } from "./SpecificationLimitsEditor";
 
 interface DistributionDialogProps {
   open: boolean;
   datasetId: string;
-  columns: DistributionColumnInfoV1[];
-  bootstrap: DistributionWorkspaceBootstrapV1 | null;
-  initialConfig?: DistributionAnalysisConfigV1;
-  recallConfig?: DistributionAnalysisConfigV1;
-  datasets?: Array<{ id: string; name: string }>;
-  onDatasetChange?: (datasetId: string) => void | Promise<void>;
-  onSave: (config: DistributionAnalysisConfigV1) => void | Promise<void>;
-  onRun: (config: DistributionAnalysisConfigV1) => void | Promise<void>;
+  columns: DistributionFieldInfo[];
+  defaultName: string;
+  initialItem?: DistributionItem;
+  onSubmit: (item: DistributionItem) => void | Promise<void>;
   onCancel: () => void;
 }
 
-function createDefaultConfig(
-  datasetId: string,
-  bootstrap?: DistributionWorkspaceBootstrapV1 | null,
-): DistributionAnalysisConfigV1 {
+function stateFromItem(item: DistributionItem): DistributionDialogState {
   return {
-    schemaVersion: "1",
-    sourceDatasetId: datasetId,
-    yColumns: [],
-    weightColumnId: null,
-    frequencyColumnId: null,
-    byColumnIds: [],
-    filterExpr: { kind: "and", exprs: [] },
-    confidenceLevel: 0.95,
-    histogramsOnly: false,
-    continuousFit: createDefaultDistributionContinuousFitConfig(),
-    visualDiagnostics: createDefaultDistributionVisualDiagnosticsConfig(),
-    enabledCapabilityIds: bootstrap?.capabilities.some(
-      (capability) => capability.id === NORMAL_CAPABILITY_ID,
-    ) ? [NORMAL_CAPABILITY_ID] : [],
-    capabilityOverrides: [],
+    name: item.name,
+    sourceDatasetId: item.sourceDatasetId,
+    responses: structuredClone(item.responses),
+    weight: structuredClone(item.weight),
+    frequency: structuredClone(item.frequency),
+    by: structuredClone(item.by),
+    analysis: structuredClone(item.analysis),
+    validationError: null,
   };
-}
-
-function toColumnRef(column: DistributionColumnInfoV1): DistributionColumnRefV1 {
-  return { columnId: column.columnId, modelingType: column.modelingType };
-}
-
-function isNumericColumn(column: DistributionColumnInfoV1): boolean {
-  return column.modelingType === "continuous" || column.modelingType === "discreteNumeric";
-}
-
-function displayName(column: DistributionColumnInfoV1): string {
-  return column.name || column.columnId;
 }
 
 export function DistributionDialog({
   open,
   datasetId,
   columns,
-  bootstrap,
-  initialConfig,
-  recallConfig,
-  datasets = [],
-  onDatasetChange,
-  onSave,
-  onRun,
+  defaultName,
+  initialItem,
+  onSubmit,
   onCancel,
 }: DistributionDialogProps) {
   const { t } = useTranslation();
-  const [config, setConfig] = useState<DistributionAnalysisConfigV1>(() =>
-    normalizeDistributionAnalysisConfig(structuredClone(initialConfig ?? createDefaultConfig(datasetId, bootstrap))),
+  const [state, setState] = useState<DistributionDialogState>(() =>
+    initialItem ? stateFromItem(initialItem) : createDistributionDialogState(defaultName, datasetId),
   );
   const [search, setSearch] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (open) {
-      const next = normalizeDistributionAnalysisConfig(
-        structuredClone(initialConfig ?? createDefaultConfig(datasetId, bootstrap)),
-      );
-      if (bootstrap?.capabilities.some((capability) => capability.id === NORMAL_CAPABILITY_ID) &&
-          !next.enabledCapabilityIds.includes(NORMAL_CAPABILITY_ID)) {
-        next.enabledCapabilityIds.push(NORMAL_CAPABILITY_ID);
-      }
-      setConfig(next);
-      setSearch("");
-    }
-  }, [bootstrap, datasetId, initialConfig, open]);
+    if (!open) return;
+    setState(initialItem
+      ? stateFromItem(initialItem)
+      : createDistributionDialogState(defaultName, datasetId));
+    setSearch("");
+  }, [datasetId, defaultName, initialItem, open]);
 
   if (!open) return null;
 
-  const columnById = new Map(columns.map((column) => [column.columnId, column]));
-  const displayNameById = new Map(columns.map((column) => [column.columnId, displayName(column)]));
-  const refsFor = (columnIds: string[]) => columnIds.flatMap((columnId) => {
-    const column = columnById.get(columnId);
-    return column ? [toColumnRef(column)] : [];
-  });
-  const filteredColumns = columns.filter((column) =>
-    displayName(column).toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
-  );
-  const validationErrors = validateDistributionConfig(
-    config,
-    columns,
-    DISTRIBUTION_CAPABILITY_OVERRIDE_REGISTRY,
-  );
-  const valid = validationErrors.length === 0;
-  const canRun = valid && bootstrap?.canRun === true && bootstrap.capabilities.length > 0;
+  const fieldByName = new Map(columns.map((column) => [column.field.name, column]));
+  const filteredColumns = filterDistributionFields(columns, search);
+  const valid = canCreateDistribution(state, columns);
 
-  const addMultiRole = (role: "yColumns" | "byColumnIds", column: DistributionColumnInfoV1) => {
-    setConfig((current) => role === "yColumns"
-      ? current.yColumns.some((item) => item.columnId === column.columnId)
-        ? current
-        : { ...current, yColumns: [...current.yColumns, toColumnRef(column)] }
-      : current.byColumnIds.includes(column.columnId)
-        ? current
-        : { ...current, byColumnIds: [...current.byColumnIds, column.columnId] });
+  const assign = (role: DistributionRole, fieldName: string) => {
+    const field = fieldByName.get(fieldName);
+    if (!field) return;
+    setState((current) => assignDistributionField(current, role, field));
   };
 
-  const handleSave = async () => {
-    if (!valid || saving) return;
-    setSaving(true);
+  const submit = async () => {
+    if (!valid || submitting) return;
+    setSubmitting(true);
     try {
-      await onSave(structuredClone(config));
+      const item = createDistributionItem({
+        id: initialItem?.id ?? globalThis.crypto.randomUUID(),
+        name: state.name.trim(),
+        sourceDatasetId: state.sourceDatasetId,
+        responses: state.responses,
+        weight: state.weight,
+        frequency: state.frequency,
+        by: state.by,
+        columns,
+        analysis: state.analysis,
+        createdAt: initialItem?.createdAt ?? new Date().toISOString(),
+      });
+      await onSubmit(item);
     } finally {
-      setSaving(false);
+      setSubmitting(false);
     }
   };
 
   return (
     <div className="dialog-overlay" onClick={onCancel}>
-      <div className="dialog distribution-dialog" role="dialog" aria-label={t("distribution.title")} onClick={(event) => event.stopPropagation()}>
+      <div
+        className="dialog distribution-dialog"
+        role="dialog"
+        aria-label={t("distribution.title")}
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="distribution-dialog-header">
           <h3>{t("distribution.title")}</h3>
-          <button type="button" className="btn-text" data-testid="distribution-recall" onClick={() => setConfig(normalizeDistributionAnalysisConfig(structuredClone(recallConfig ?? initialConfig ?? createDefaultConfig(datasetId))))}>
-            {t("distribution.recall")}
-          </button>
+          <input
+            aria-label={t("common.name", { defaultValue: "Name" })}
+            value={state.name}
+            onChange={(event) => setState((current) => ({ ...current, name: event.target.value }))}
+          />
         </header>
 
         <div className="distribution-dialog-scroll">
           <div className="distribution-dialog-body">
-          <aside className="distribution-column-browser">
-            {datasets.length > 0 && (
-              <label className="distribution-dataset-field">
-                <span>{t("distribution.sourceDataset", { defaultValue: "Source dataset" })}</span>
-                <select
-                  value={datasetId}
-                  onChange={(event) => void onDatasetChange?.(event.target.value)}
-                >
-                  {datasets.map((dataset) => (
-                    <option key={dataset.id} value={dataset.id}>{dataset.name}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <label htmlFor="distribution-column-search">{t("distribution.searchColumns")}</label>
-            <input
-              id="distribution-column-search"
-              data-testid="distribution-column-search"
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            <div className="distribution-column-list">
-              {filteredColumns.map((column) => (
-                <div
-                  className="distribution-column-row"
-                  data-testid={`distribution-column-${column.columnId}`}
-                  draggable
-                  key={column.columnId}
-                  onDragStart={(event) => {
-                    event.dataTransfer.setData("application/x-statsplayground-distribution", column.columnId);
-                    event.dataTransfer.setData("text/plain", column.columnId);
-                  }}
-                >
-                  <span title={displayName(column)}>{displayName(column)}</span>
-                  <div className="distribution-column-actions">
-                    <button type="button" data-testid={`distribution-assign-y-${column.columnId}`} aria-label={t("distribution.assignToRole", { column: column.columnId, role: "Y" })} disabled={column.modelingType !== "continuous"} onClick={() => addMultiRole("yColumns", column)}>Y</button>
-                    <button type="button" data-testid={`distribution-assign-weight-${column.columnId}`} aria-label={t("distribution.assignToRole", { column: column.columnId, role: t("distribution.roles.weight") })} disabled={!isNumericColumn(column)} onClick={() => setConfig((current) => ({ ...current, weightColumnId: column.columnId }))}>{t("distribution.roles.weight")}</button>
-                    <button type="button" data-testid={`distribution-assign-frequency-${column.columnId}`} aria-label={t("distribution.assignToRole", { column: column.columnId, role: t("distribution.roles.frequency") })} disabled={!column.integerCompatible} onClick={() => setConfig((current) => ({ ...current, frequencyColumnId: column.columnId }))}>{t("distribution.frequencyShort")}</button>
-                    <button type="button" data-testid={`distribution-assign-by-${column.columnId}`} aria-label={t("distribution.assignToRole", { column: column.columnId, role: t("distribution.roles.by") })} onClick={() => addMultiRole("byColumnIds", column)}>By</button>
+            <aside className="distribution-column-browser">
+              <label htmlFor="distribution-column-search">{t("distribution.searchColumns")}</label>
+              <input
+                id="distribution-column-search"
+                data-testid="distribution-column-search"
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <div className="distribution-column-list">
+                {filteredColumns.map((column) => (
+                  <div
+                    className="distribution-column-row"
+                    data-testid={`distribution-column-${column.field.name}`}
+                    draggable
+                    key={column.field.name}
+                    title={`${column.name} (${column.sqlType})`}
+                    onDragStart={(event) => {
+                      event.dataTransfer.setData(
+                        "application/x-statsplayground-distribution",
+                        column.field.name,
+                      );
+                      event.dataTransfer.setData("text/plain", column.field.name);
+                    }}
+                  >
+                    <span>{column.name}</span>
+                    <div className="distribution-column-actions">
+                      <button type="button" disabled={column.field.type !== "continuous"} onClick={() => assign("response", column.field.name)}>Y</button>
+                      <button type="button" disabled={column.field.type !== "continuous"} onClick={() => assign("weight", column.field.name)}>{t("distribution.roles.weight")}</button>
+                      <button type="button" disabled={!column.integerCompatible} onClick={() => assign("frequency", column.field.name)}>{t("distribution.frequencyShort")}</button>
+                      <button type="button" disabled={column.field.type !== "nominal" && column.field.type !== "ordinal"} onClick={() => assign("by", column.field.name)}>By</button>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </aside>
+                ))}
+              </div>
+            </aside>
 
-          <main className="distribution-role-grid">
-            <DistributionRoleZone role="Y" columns={config.yColumns} displayNameById={displayNameById} onAssign={(columnId) => { const column = columnById.get(columnId); if (column?.modelingType === "continuous") addMultiRole("yColumns", column); }} onRemove={(columnId) => setConfig((current) => ({ ...current, yColumns: current.yColumns.filter((column) => column.columnId !== columnId) }))} />
-            <DistributionRoleZone role="Weight" columns={config.weightColumnId ? refsFor([config.weightColumnId]) : []} displayNameById={displayNameById} onAssign={(columnId) => { const column = columnById.get(columnId); if (column && isNumericColumn(column)) setConfig((current) => ({ ...current, weightColumnId: columnId })); }} onRemove={() => setConfig((current) => ({ ...current, weightColumnId: null }))} />
-            <DistributionRoleZone role="Frequency" columns={config.frequencyColumnId ? refsFor([config.frequencyColumnId]) : []} displayNameById={displayNameById} onAssign={(columnId) => { const column = columnById.get(columnId); if (column?.integerCompatible) setConfig((current) => ({ ...current, frequencyColumnId: columnId })); }} onRemove={() => setConfig((current) => ({ ...current, frequencyColumnId: null }))} />
-            <DistributionRoleZone role="By" columns={refsFor(config.byColumnIds)} displayNameById={displayNameById} onAssign={(columnId) => { const column = columnById.get(columnId); if (column) addMultiRole("byColumnIds", column); }} onRemove={(columnId) => setConfig((current) => ({ ...current, byColumnIds: current.byColumnIds.filter((id) => id !== columnId) }))} />
-          </main>
+            <main className="distribution-role-grid">
+              <DistributionRoleZone role="response" fields={state.responses} onAssign={(name) => assign("response", name)} onRemove={(name) => setState((current) => clearDistributionField(current, "response", name))} />
+              <DistributionRoleZone role="weight" fields={state.weight ? [state.weight] : []} onAssign={(name) => assign("weight", name)} onRemove={() => setState((current) => clearDistributionField(current, "weight"))} />
+              <DistributionRoleZone role="frequency" fields={state.frequency ? [state.frequency] : []} onAssign={(name) => assign("frequency", name)} onRemove={() => setState((current) => clearDistributionField(current, "frequency"))} />
+              <DistributionRoleZone role="by" fields={state.by} onAssign={(name) => assign("by", name)} onRemove={(name) => setState((current) => clearDistributionField(current, "by", name))} />
+            </main>
           </div>
 
-          <div className="distribution-options">
-            <label className="distribution-option">
-              <span>{t("distribution.confidenceLevel")}</span>
-              <input data-testid="distribution-confidence-level" type="number" min="0.01" max="0.99" step="0.01" value={config.confidenceLevel} onChange={(event) => setConfig((current) => ({ ...current, confidenceLevel: Number(event.target.value) }))} />
-            </label>
-            <label className="distribution-option distribution-option-checkbox">
-              <input type="checkbox" checked={config.histogramsOnly} onChange={(event) => setConfig((current) => ({ ...current, histogramsOnly: event.target.checked }))} />
-              <span>{t("distribution.histogramsOnly")}</span>
-            </label>
-          </div>
-
-          {bootstrap?.capabilities.some((capability) => capability.id === NORMAL_CAPABILITY_ID) && (
-            <SpecificationLimitsEditor
-              override={config.capabilityOverrides.find(
-                (override) => override.capabilityId === NORMAL_CAPABILITY_ID,
-              ) ?? null}
-              yCount={config.yColumns.length}
-              onChange={(nextOverride) => setConfig((current) => ({
+          <label className="distribution-option">
+            <span>{t("distribution.confidenceLevel")}</span>
+            <input
+              data-testid="distribution-confidence-level"
+              type="number"
+              min="0.01"
+              max="0.99"
+              step="0.01"
+              value={state.analysis.confidenceLevel}
+              onChange={(event) => setState((current) => ({
                 ...current,
-                enabledCapabilityIds: current.enabledCapabilityIds.includes(NORMAL_CAPABILITY_ID)
-                  ? current.enabledCapabilityIds
-                  : [...current.enabledCapabilityIds, NORMAL_CAPABILITY_ID],
-                capabilityOverrides: [
-                  ...current.capabilityOverrides.filter(
-                    (override) => override.capabilityId !== NORMAL_CAPABILITY_ID,
-                  ),
-                  ...(nextOverride ? [nextOverride] : []),
-                ],
+                analysis: { ...current.analysis, confidenceLevel: Number(event.target.value) },
               }))}
             />
-          )}
+          </label>
 
-          {!canRun && (
-            <p className="distribution-run-hint" data-testid="distribution-run-disabled-hint">
-              {!valid ? t("distribution.invalidConfig") : t("distribution.runDisabledHint")}
-            </p>
+          <SpecificationLimitsEditor
+            responses={state.responses}
+            specLimits={state.analysis.specLimits}
+            onChange={(specLimits) => setState((current) => ({
+              ...current,
+              analysis: { ...current.analysis, specLimits },
+            }))}
+          />
+
+          {state.validationError && (
+            <p className="distribution-run-hint" role="alert">{state.validationError}</p>
           )}
         </div>
+
         <div className="dialog-actions">
-          <button type="button" className="btn-primary" data-testid="distribution-save" disabled={!valid || saving} onClick={handleSave}>{saving ? t("distribution.saving") : t("common.save")}</button>
-          <button type="button" data-testid="distribution-run" disabled={!canRun} onClick={() => void onRun(structuredClone(config))}>{t("distribution.run")}</button>
-          <button type="button" className="btn-text" data-testid="distribution-cancel" onClick={onCancel}>{t("common.cancel")}</button>
+          <button type="button" className="btn-primary" disabled={!valid || submitting} onClick={() => void submit()}>
+            {submitting ? t("distribution.saving") : t("common.save")}
+          </button>
+          <button type="button" className="btn-text" onClick={onCancel}>{t("common.cancel")}</button>
         </div>
       </div>
     </div>

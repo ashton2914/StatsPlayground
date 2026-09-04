@@ -26,7 +26,7 @@ export function FitYByXView({ item, dataset }: FitYByXViewProps) {
   const readOnly = useProjectStore((state) => state.readOnly);
   const [axisDialog, setAxisDialog] = useState<"x" | "y" | null>(null);
   const [axisContextMenu, setAxisContextMenu] = useState<{ axis: "x" | "y"; x: number; y: number } | null>(null);
-  const reportState = useFitYByXReport(dataset ? item : null, dataset?.updatedAt ?? null);
+  const reportState = useFitYByXReport(dataset ? item : null, dataset?.generation ?? null);
   const twoD = item.graph.modeStates.twoD;
 
   useEffect(() => {

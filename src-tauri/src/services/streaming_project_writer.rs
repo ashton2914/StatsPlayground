@@ -18,9 +18,10 @@ use crate::services::save_coordinator::SaveGuard;
 use crate::services::spprj_archive::{
     self, GraphDoc, ProjectManifest, TableColumn, TableColumnFormat, TableDoc,
 };
+use crate::services::workflow_domain;
 use crate::state::AppState;
 
-const STREAM_VERSION: &str = "3.0.0";
+const STREAM_VERSION: &str = "4.0.0";
 const TABLE_DOC_VERSION: &str = "2";
 const TARGET_BATCH_BYTES: usize = 6 * 1024 * 1024;
 const HARD_BATCH_BYTES: usize = 8 * 1024 * 1024;
@@ -343,14 +344,8 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 rows: Vec::new(),
             })
             .collect::<Vec<_>>();
-        let distributions = spprj_archive::distribution_records_from_values(
-            snapshot.request.distributions.clone(),
-        )?;
-        let derived_formulas = spprj_archive::derived_formula_envelopes_from_values(
-            snapshot.request.derived_formulas.clone(),
-        )?;
 
-        let bundle = spprj_archive::build_bundle(
+        let bundle = spprj_archive::build_bundle_with_workflows_and_fit_models(
             snapshot.destination_name.clone(),
             STREAM_VERSION.to_string(),
             snapshot.current_project.created_at.clone(),
@@ -358,20 +353,23 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             graph_docs,
             snapshot.request.fit_y_by_x.clone(),
             snapshot.request.fit_models.clone(),
+            snapshot.request.reports.clone(),
+            snapshot.request.distributions.clone(),
             snapshot.request.tabulates.clone(),
-            distributions,
-            derived_formulas,
-            snapshot.request.distribution_issues.clone(),
             snapshot.request.folders.clone(),
             &snapshot.request.table_folders,
             &snapshot.request.graph_folders,
             &snapshot.request.fit_y_by_x_folders,
             &snapshot.request.fit_model_folders,
-            &snapshot.request.tabulate_folders,
+            &snapshot.request.report_folders,
             &snapshot.request.distribution_folders,
+            &snapshot.request.tabulate_folders,
             snapshot.request.history.clone(),
             snapshot.request.snapshots.clone(),
-        );
+            snapshot.request.workflows.clone(),
+            snapshot.request.logical_folders.clone(),
+            snapshot.request.workflow_runs.clone(),
+        )?;
 
         thread::scope(|scope| {
             let mut perf = SaveRunPerf::default();
@@ -392,8 +390,12 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 snapshot,
                 &bundle.manifest,
                 &bundle.graphs,
+                &bundle.fit_y_by_x,
+                &bundle.reports,
                 &bundle.distributions,
-                &bundle.derived_formulas,
+                &bundle.tabulates,
+                &bundle.snapshots,
+                &bundle.workflows,
                 &temp_path,
                 temp_file,
                 total_rows,
@@ -443,8 +445,12 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         snapshot: &SaveSnapshot,
         manifest: &ProjectManifest,
         graph_docs: &[GraphDoc],
-        distribution_docs: &[spprj_archive::DistributionArchiveRecordV1],
-        derived_formulas: &[spprj_archive::DerivedFormulaArchiveEnvelopeV1],
+        fit_docs: &[serde_json::Value],
+        report_docs: &[serde_json::Value],
+        distribution_docs: &[serde_json::Value],
+        tabulate_docs: &[serde_json::Value],
+        snapshot_docs: &[serde_json::Value],
+        workflow_docs: &[workflow_domain::WorkflowDefinition],
         temp_path: &Path,
         temp_file: std::fs::File,
         total_rows: usize,
@@ -455,8 +461,6 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         let file_opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .compression_level(Some(1));
-        let dir_opts = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
 
         let manifest_bytes = serde_json::to_vec_pretty(manifest)
             .map_err(|e| AppError::FileIO(format!("failed to serialize manifest: {e}")))?;
@@ -464,23 +468,59 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             .map_err(|e| AppError::FileIO(e.to_string()))?;
         zip.write_all(&manifest_bytes)?;
 
-        for folder in &manifest.folders {
-            zip.add_directory(format!("{folder}/"), dir_opts)
-                .map_err(|e| AppError::FileIO(e.to_string()))?;
-        }
-
         let graph_by_id: HashMap<&str, &GraphDoc> = graph_docs
             .iter()
             .map(|doc| (doc.id.as_str(), doc))
             .collect();
-        let distribution_by_id = distribution_docs
+        let fit_by_id: HashMap<&str, &serde_json::Value> = fit_docs
             .iter()
-            .map(|record| (record.analysis_id(), record))
-            .collect::<HashMap<_, _>>();
-        let formula_by_id = derived_formulas
+            .filter_map(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| (id, value))
+            })
+            .collect();
+        let report_by_id: HashMap<&str, &serde_json::Value> = report_docs
             .iter()
-            .map(|envelope| (envelope.body.formula_id.as_str(), envelope))
-            .collect::<HashMap<_, _>>();
+            .filter_map(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| (id, value))
+            })
+            .collect();
+        let distribution_by_id: HashMap<&str, &serde_json::Value> = distribution_docs
+            .iter()
+            .filter_map(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| (id, value))
+            })
+            .collect();
+        let tabulate_by_id: HashMap<&str, &serde_json::Value> = tabulate_docs
+            .iter()
+            .filter_map(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| (id, value))
+            })
+            .collect();
+        let snapshot_by_id: HashMap<&str, &serde_json::Value> = snapshot_docs
+            .iter()
+            .filter_map(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| (id, value))
+            })
+            .collect();
+        let workflow_by_id: HashMap<&str, &workflow_domain::WorkflowDefinition> = workflow_docs
+            .iter()
+            .map(|workflow| (workflow.id.as_str(), workflow))
+            .collect();
         let mut rows_written = 0usize;
 
         for (table_index, dataset) in snapshot.datasets.iter().enumerate() {
@@ -517,14 +557,14 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             let column_write_modes = plan
                 .columns
                 .iter()
-                .map(|(_, _, column_type)| archive_cell_write_mode(column_type))
+                .map(|(_, column_type)| archive_cell_write_mode(column_type))
                 .collect::<Vec<_>>();
 
             let columns = table_columns_from_plan(&dataset.id, &plan, &snapshot.column_display);
 
             zip.start_file(&table_ref.file, file_opts)
                 .map_err(|e| AppError::FileIO(e.to_string()))?;
-            write_table_header(&mut zip, dataset, &columns)?;
+            write_table_header(&mut zip, dataset, &table_ref.name, &columns)?;
             run_save_test_hook!(
                 SaveFailurePoint::AfterHeader,
                 Some(dataset.id.clone()),
@@ -670,41 +710,108 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         });
 
         for graph_ref in &manifest.graphs {
-            if let Some(graph_doc) = graph_by_id.get(graph_ref.id.as_str()) {
-                zip.start_file(&graph_ref.file, file_opts)
-                    .map_err(|e| AppError::FileIO(e.to_string()))?;
-                let bytes = serde_json::to_vec(graph_doc)
-                    .map_err(|e| AppError::FileIO(format!("failed to serialize graph doc: {e}")))?;
-                zip.write_all(&bytes)?;
-            }
+            let graph_doc = graph_by_id.get(graph_ref.id.as_str()).ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing graph payload for manifest reference {}",
+                    graph_ref.id
+                ))
+            })?;
+            zip.start_file(&graph_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            let bytes = serde_json::to_vec(graph_doc)
+                .map_err(|e| AppError::FileIO(format!("failed to serialize graph doc: {e}")))?;
+            zip.write_all(&bytes)?;
         }
-        for entry in &manifest.distributions {
-            if let Some(record) = distribution_by_id.get(entry.analysis_id.as_str()) {
-                zip.start_file(&entry.file, file_opts)
-                    .map_err(|error| AppError::FileIO(error.to_string()))?;
-                match record {
-                    spprj_archive::DistributionArchiveRecordV1::Parsed(envelope) => {
-                        serde_json::to_writer(&mut zip, envelope)
-                    }
-                    spprj_archive::DistributionArchiveRecordV1::UnknownVersion {
-                        raw_envelope,
-                        ..
-                    } => serde_json::to_writer(&mut zip, raw_envelope),
-                    spprj_archive::DistributionArchiveRecordV1::Corrupt { raw_text, .. } => {
-                        zip.write_all(raw_text.as_bytes())?;
-                        continue;
-                    }
-                }
-                .map_err(|error| AppError::FileIO(error.to_string()))?;
-            }
+
+        for fit_ref in &manifest.fit_y_by_x_files {
+            let fit_doc = fit_by_id.get(fit_ref.id.as_str()).ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing fit payload for manifest reference {}",
+                    fit_ref.id
+                ))
+            })?;
+            zip.start_file(&fit_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            serde_json::to_writer(&mut zip, fit_doc)
+                .map_err(|e| AppError::FileIO(format!("failed to serialize fit doc: {e}")))?;
         }
-        for entry in &manifest.derived_formulas {
-            if let Some(envelope) = formula_by_id.get(entry.formula_id.as_str()) {
-                zip.start_file(&entry.file, file_opts)
-                    .map_err(|error| AppError::FileIO(error.to_string()))?;
-                serde_json::to_writer(&mut zip, envelope)
-                    .map_err(|error| AppError::FileIO(error.to_string()))?;
-            }
+
+        for report_ref in &manifest.report_files {
+            let report_doc = report_by_id.get(report_ref.id.as_str()).ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing report payload for manifest reference {}",
+                    report_ref.id
+                ))
+            })?;
+            zip.start_file(&report_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            serde_json::to_writer(&mut zip, report_doc)
+                .map_err(|e| AppError::FileIO(format!("failed to serialize report doc: {e}")))?;
+        }
+
+        for distribution_ref in &manifest.distributions {
+            let distribution_doc = distribution_by_id
+                .get(distribution_ref.id.as_str())
+                .ok_or_else(|| {
+                    AppError::FileIO(format!(
+                        "missing distribution payload for manifest reference {}",
+                        distribution_ref.id
+                    ))
+                })?;
+            zip.start_file(&distribution_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            serde_json::to_writer(&mut zip, distribution_doc).map_err(|e| {
+                AppError::FileIO(format!("failed to serialize distribution doc: {e}"))
+            })?;
+        }
+
+        for tabulate_ref in &manifest.tabulate_files {
+            let tabulate_doc = tabulate_by_id
+                .get(tabulate_ref.id.as_str())
+                .ok_or_else(|| {
+                    AppError::FileIO(format!(
+                        "missing tabulate payload for manifest reference {}",
+                        tabulate_ref.id
+                    ))
+                })?;
+            zip.start_file(&tabulate_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            serde_json::to_writer(&mut zip, tabulate_doc)
+                .map_err(|e| AppError::FileIO(format!("failed to serialize tabulate doc: {e}")))?;
+        }
+
+        for snapshot_ref in &manifest.snapshot_files {
+            let snapshot_doc = snapshot_by_id
+                .get(snapshot_ref.id.as_str())
+                .ok_or_else(|| {
+                    AppError::FileIO(format!(
+                        "missing snapshot payload for manifest reference {}",
+                        snapshot_ref.id
+                    ))
+                })?;
+            zip.start_file(&snapshot_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            serde_json::to_writer(&mut zip, snapshot_doc)
+                .map_err(|e| AppError::FileIO(format!("failed to serialize snapshot doc: {e}")))?;
+        }
+
+        for workflow_ref in &manifest.workflow_files {
+            let workflow_doc = workflow_by_id
+                .get(workflow_ref.id.as_str())
+                .ok_or_else(|| {
+                    AppError::FileIO(format!(
+                        "missing workflow payload for manifest reference {}",
+                        workflow_ref.id
+                    ))
+                })?;
+            let mut synced = (*workflow_doc).clone();
+            synced.name = workflow_ref.name.clone();
+            synced.revision = workflow_ref.revision;
+            zip.start_file(&workflow_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            serde_json::to_writer(&mut zip, &synced).map_err(|e| {
+                AppError::FileIO(format!("failed to serialize workflow doc: {e}"))
+            })?;
         }
 
         if !snapshot.request.history.is_empty() {
@@ -713,13 +820,6 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             serde_json::to_writer(&mut zip, &snapshot.request.history)
                 .map_err(|e| AppError::FileIO(format!("failed to serialize history: {e}")))?;
         }
-        if !snapshot.request.snapshots.is_empty() {
-            zip.start_file(".snapshots.json", file_opts)
-                .map_err(|e| AppError::FileIO(e.to_string()))?;
-            serde_json::to_writer(&mut zip, &snapshot.request.snapshots)
-                .map_err(|e| AppError::FileIO(format!("failed to serialize snapshots: {e}")))?;
-        }
-
         dispatcher.emit(SaveProgress {
             phase: SavePhase::Compressing,
             table_index: snapshot.datasets.len(),
@@ -767,9 +867,6 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         if !snapshot.request.history.is_empty() {
             expected_entries.push(".history.json");
         }
-        if !snapshot.request.snapshots.is_empty() {
-            expected_entries.push(".snapshots.json");
-        }
         let validation_started = Instant::now();
         spprj_archive::validate_archive_manifest_and_entries(
             temp_path,
@@ -806,10 +903,9 @@ fn table_columns_from_plan(
     plan.columns
         .iter()
         .enumerate()
-        .map(|(index, (column_id, name, column_type))| {
+        .map(|(index, (name, column_type))| {
             let props = display.and_then(|items| items.iter().find(|item| item.col_index == index));
             TableColumn {
-                column_id: Some(column_id.clone()),
                 name: name.clone(),
                 col_type: column_type.clone(),
                 width: props.and_then(|item| item.width),
@@ -829,13 +925,14 @@ fn table_columns_from_plan(
 fn write_table_header<W: Write>(
     writer: &mut W,
     dataset: &crate::models::table::DatasetMeta,
+    resolved_name: &str,
     columns: &[TableColumn],
 ) -> Result<(), AppError> {
     writer.write_all(b"{\"id\":")?;
     serde_json::to_writer(&mut *writer, &dataset.id)
         .map_err(|e| AppError::FileIO(format!("failed to write table id: {e}")))?;
     writer.write_all(b",\"name\":")?;
-    serde_json::to_writer(&mut *writer, &dataset.name)
+    serde_json::to_writer(&mut *writer, resolved_name)
         .map_err(|e| AppError::FileIO(format!("failed to write table name: {e}")))?;
     writer.write_all(b",\"sourceType\":")?;
     serde_json::to_writer(&mut *writer, &dataset.source_type)
@@ -1056,7 +1153,7 @@ fn run_test_hook(point: SaveFailurePoint, context: SaveHookContext) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1071,6 +1168,7 @@ mod tests {
     use crate::models::project::ProjectInfo;
     use crate::models::save::{SavePhase, SaveProgress, SaveProjectRequest, SaveSnapshot};
     use crate::services::spprj_archive;
+    use crate::services::workflow_domain;
     use crate::state::AppState;
 
     use super::{
@@ -1275,19 +1373,298 @@ mod tests {
                 })],
                 fit_y_by_x: vec![serde_json::json!({"id": "fit-1"})],
                 fit_models: vec![serde_json::json!({"id": "fit-model-1"})],
-                tabulates: vec![serde_json::json!({"id": "tab-1"})],
+                reports: Vec::new(),
                 distributions: Vec::new(),
-                derived_formulas: Vec::new(),
-                distribution_issues: Vec::new(),
+                tabulates: vec![serde_json::json!({"id": "tab-1"})],
                 folders: vec!["Bench".to_string(), "Bench/Sub".to_string()],
                 table_folders: HashMap::new(),
                 graph_folders: HashMap::new(),
                 fit_y_by_x_folders: HashMap::new(),
                 fit_model_folders: HashMap::new(),
-                tabulate_folders: HashMap::new(),
+                report_folders: HashMap::new(),
                 distribution_folders: HashMap::new(),
+                tabulate_folders: HashMap::new(),
+                workflows: vec![],
+                logical_folders: vec![],
+                workflow_runs: vec![],
             },
         }
+    }
+
+    fn save_snapshot_with_named_docs_and_nested_folders(
+        destination_path: &std::path::Path,
+        datasets: Vec<crate::models::table::DatasetMeta>,
+    ) -> SaveSnapshot {
+        let source_dataset_id = datasets
+            .first()
+            .expect("named-document fixture requires a dataset")
+            .id
+            .clone();
+        let dataset_generations = datasets
+            .iter()
+            .map(|dataset| (dataset.id.clone(), 0_u64))
+            .collect();
+        SaveSnapshot {
+            current_project: ProjectInfo {
+                name: "Streaming Project".to_string(),
+                file_path: destination_path.to_string_lossy().to_string(),
+                created_at: "2026-08-21T00:00:00Z".to_string(),
+            },
+            destination_path: destination_path.to_path_buf(),
+            destination_name: "Streaming Project".to_string(),
+            datasets,
+            dataset_generations,
+            column_display: HashMap::new(),
+            request: SaveProjectRequest {
+                file_path: None,
+                history: vec![serde_json::json!({"event": "save"})],
+                snapshots: vec![serde_json::json!({
+                    "id": "snap-1",
+                    "name": "data",
+                    "createdAt": "2026-09-01T00:00:00Z",
+                    "request": {
+                        "name": "snapshot request",
+                        "datasets": [],
+                        "graphBuilders": [],
+                        "fitYByX": [],
+                        "tabulates": [],
+                        "history": [],
+                        "folders": [],
+                        "tableFolders": {},
+                        "graphFolders": {},
+                        "fitYByXFolders": {},
+                        "reportFolders": {},
+                        "tabulateFolders": {}
+                    }
+                })],
+                graph_builders: vec![serde_json::json!({
+                    "id": "graph-1",
+                    "name": "data",
+                    "graphType": "line",
+                })],
+                fit_y_by_x: vec![serde_json::json!({
+                    "id": "fit-1",
+                    "name": "data",
+                    "sourceDatasetId": source_dataset_id,
+                    "response": { "name": "y", "type": "continuous" },
+                    "factor": { "name": "x", "type": "continuous" }
+                })],
+                fit_models: Vec::new(),
+                reports: vec![serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "report-1",
+                    "name": "Report 1",
+                    "markdown": "# report body"
+                })],
+                distributions: vec![serde_json::json!({
+                    "id": "dist-1",
+                    "name": "Distribution",
+                    "sourceDatasetId": "table_1",
+                    "responses": [{ "name": "value", "type": "continuous" }],
+                    "weight": null,
+                    "frequency": null,
+                    "by": [],
+                    "analysis": {
+                        "confidenceLevel": 0.95,
+                        "specLimits": {},
+                        "fitDistributions": []
+                    },
+                    "graphs": {},
+                    "createdAt": "2026-09-02T00:00:00Z",
+                    "result": { "transient": true },
+                    "graphFrames": { "transient": true },
+                    "runState": { "status": "completed" }
+                })],
+                tabulates: vec![serde_json::json!({
+                    "id": "tab-1",
+                    "name": "data",
+                    "sourceDatasetId": source_dataset_id,
+                    "rowFields": [],
+                    "columnFields": [],
+                    "statistics": []
+                })],
+                folders: vec![
+                    "Root".to_string(),
+                    "Root/Nested".to_string(),
+                    "Root/Nested/Leaf".to_string(),
+                ],
+                table_folders: HashMap::from([(source_dataset_id, "Root/Nested".to_string())]),
+                graph_folders: HashMap::from([(
+                    "graph-1".to_string(),
+                    "Root/Nested/Leaf".to_string(),
+                )]),
+                fit_y_by_x_folders: HashMap::from([(
+                    "fit-1".to_string(),
+                    "Root/Nested/Leaf".to_string(),
+                )]),
+                fit_model_folders: HashMap::new(),
+                report_folders: HashMap::from([(
+                    "report-1".to_string(),
+                    "Root/Nested".to_string(),
+                )]),
+                distribution_folders: HashMap::from([(
+                    "dist-1".to_string(),
+                    "Root/Nested".to_string(),
+                )]),
+                tabulate_folders: HashMap::from([("tab-1".to_string(), "Root".to_string())]),
+                workflows: vec![],
+                logical_folders: vec![],
+                workflow_runs: vec![],
+            },
+        }
+    }
+
+    fn workflow_doc(id: &str, name: &str, revision: u64) -> workflow_domain::WorkflowDefinition {
+        workflow_domain::WorkflowDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            format_version: "1".to_string(),
+            revision,
+            input_slots: vec![workflow_domain::InputSlot {
+                id: "workflow-input-1".to_string(),
+                name: "Input".to_string(),
+                output_port: workflow_domain::WorkflowPort {
+                    id: "workflow-input-1-output".to_string(),
+                    name: "output".to_string(),
+                    payload_kind: workflow_domain::PortPayloadKind::Table,
+                },
+                schema_contract: workflow_domain::SchemaContract {
+                    schema_fingerprint: "schema-1".to_string(),
+                    columns: vec![],
+                },
+                source_document_ref: None,
+            }],
+            operations: vec![workflow_domain::WorkflowOperationNode {
+                id: "workflow-operation-1".to_string(),
+                kind: workflow_domain::OperationKind::GraphGeneration,
+                schema_version: "1".to_string(),
+                configuration: Some(serde_json::json!({ "sourceDatasetId": "workflow-input-1" })),
+                input_ports: vec![workflow_domain::WorkflowPort {
+                    id: "graph-input".to_string(),
+                    name: "input".to_string(),
+                    payload_kind: workflow_domain::PortPayloadKind::Table,
+                }],
+                output_ports: vec![workflow_domain::WorkflowPort {
+                    id: "graph-output".to_string(),
+                    name: "output".to_string(),
+                    payload_kind: workflow_domain::PortPayloadKind::Graph,
+                }],
+            }],
+            edges: vec![
+                workflow_domain::WorkflowEdge {
+                    id: "workflow-edge-1".to_string(),
+                    kind: workflow_domain::WorkflowEdgeKind::Consumes,
+                    source: workflow_domain::WorkflowEndpoint {
+                        node_id: "workflow-input-1".to_string(),
+                        port_id: "workflow-input-1-output".to_string(),
+                    },
+                    target: workflow_domain::WorkflowEndpoint {
+                        node_id: "workflow-operation-1".to_string(),
+                        port_id: "graph-input".to_string(),
+                    },
+                },
+                workflow_domain::WorkflowEdge {
+                    id: "workflow-edge-2".to_string(),
+                    kind: workflow_domain::WorkflowEdgeKind::Produces,
+                    source: workflow_domain::WorkflowEndpoint {
+                        node_id: "workflow-operation-1".to_string(),
+                        port_id: "graph-output".to_string(),
+                    },
+                    target: workflow_domain::WorkflowEndpoint {
+                        node_id: "workflow-output-1".to_string(),
+                        port_id: "workflow-output-1-input".to_string(),
+                    },
+                },
+            ],
+            output_declarations: vec![workflow_domain::OutputDeclaration {
+                id: "workflow-output-1".to_string(),
+                name: "Output".to_string(),
+                input_port: workflow_domain::WorkflowPort {
+                    id: "workflow-output-1-input".to_string(),
+                    name: "input".to_string(),
+                    payload_kind: workflow_domain::PortPayloadKind::Graph,
+                },
+                output_port: workflow_domain::WorkflowPort {
+                    id: "workflow-output-1-output".to_string(),
+                    name: "output".to_string(),
+                    payload_kind: workflow_domain::PortPayloadKind::Graph,
+                },
+                source_endpoint: workflow_domain::WorkflowEndpoint {
+                    node_id: "workflow-operation-1".to_string(),
+                    port_id: "graph-output".to_string(),
+                },
+                artifact_kind: workflow_domain::ArtifactKind::Graph,
+            }],
+            layout: None,
+        }
+    }
+
+    #[test]
+    fn stream_writer_emits_indexed_workflow_json_entries() {
+        let state = AppState::new().unwrap();
+        let dataset = seed_named_dataset(&state, "table_1", "data");
+        let destination = temp_path("workflow-indexed-save");
+        let mut snapshot = save_snapshot_with_named_docs_and_nested_folders(&destination, vec![dataset]);
+        snapshot.request.workflows = vec![workflow_doc("workflow-1", "Workflow 1", 2)];
+        snapshot.request.logical_folders = vec![workflow_domain::LogicalFolder {
+            id: "folder-run".to_string(),
+            name: "Run 1".to_string(),
+            kind: workflow_domain::LogicalFolderKind::WorkflowRun,
+            parent_folder_id: None,
+        }];
+        snapshot.request.workflow_runs = vec![workflow_domain::WorkflowRun {
+            id: "run-1".to_string(),
+            workflow_id: "workflow-1".to_string(),
+            workflow_revision: 2,
+            status: workflow_domain::WorkflowRunStatus::Pending,
+            started_at: Some("2026-09-02T00:00:00Z".to_string()),
+            completed_at: None,
+            input_bindings: vec![workflow_domain::WorkflowInputBinding {
+                slot_id: "workflow-input-1".to_string(),
+                table_document_id: "table_1".to_string(),
+            }],
+            schema_validation_report: None,
+            node_results: vec![],
+            output_bindings: vec![],
+            errors: vec![],
+            parent_folder_id: Some("folder-run".to_string()),
+        }];
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        writer.write(&snapshot, &destination, None).unwrap();
+
+        let reopened = spprj_archive::read_project_file(destination.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.manifest.workflow_files.len(), 1);
+        assert_eq!(reopened.manifest.workflow_files[0].file, "workflows/workflow-1.json");
+        assert_eq!(reopened.workflows.len(), 1);
+        assert_eq!(reopened.workflows[0].revision, 2);
+
+        let _ = std::fs::remove_file(destination);
+    }
+
+    fn seed_named_dataset(
+        state: &AppState,
+        id: &str,
+        name: &str,
+    ) -> crate::models::table::DatasetMeta {
+        let db = state.db.lock().unwrap();
+        db.create_empty_table(id, name, &["value".to_string()], &["BIGINT".to_string()])
+            .unwrap();
+        db.conn()
+            .execute(
+                &format!("INSERT INTO \"dataset_{id}\" (\"_row_id\", \"value\") VALUES ($1, $2)"),
+                params![1_i64, 10_i64],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 1 WHERE id = $1",
+                params![id],
+            )
+            .unwrap();
+        db.get_dataset_meta(id).unwrap()
     }
 
     fn truncate_archive_file(path: &std::path::Path) -> Result<(), AppError> {
@@ -1334,6 +1711,86 @@ mod tests {
         Ok(())
     }
 
+    fn remove_named_entry_from_archive(
+        source_path: &std::path::Path,
+        destination_path: &std::path::Path,
+        removed_entry: &str,
+    ) -> Result<(), AppError> {
+        let input = std::fs::File::open(source_path)?;
+        let mut input_zip = zip::ZipArchive::new(input)
+            .map_err(|e| AppError::FileIO(format!("failed to open archive for mutation: {e}")))?;
+        let output = std::fs::File::create(destination_path)?;
+        let mut output_zip = zip::ZipWriter::new(output);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        for index in 0..input_zip.len() {
+            let mut entry = input_zip
+                .by_index(index)
+                .map_err(|e| AppError::FileIO(format!("failed to read archive entry: {e}")))?;
+            if entry.name() == removed_entry {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .map_err(|e| AppError::FileIO(format!("failed to copy archive entry: {e}")))?;
+            output_zip
+                .start_file(entry.name(), opts)
+                .map_err(|e| AppError::FileIO(format!("failed to create archive entry: {e}")))?;
+            output_zip
+                .write_all(&bytes)
+                .map_err(|e| AppError::FileIO(format!("failed to write archive entry: {e}")))?;
+        }
+
+        output_zip
+            .finish()
+            .map_err(|e| AppError::FileIO(format!("failed to finish mutated archive: {e}")))?;
+        Ok(())
+    }
+
+    fn rewrite_named_entry_in_archive(
+        source_path: &std::path::Path,
+        destination_path: &std::path::Path,
+        target_entry: &str,
+        replacement_bytes: &[u8],
+    ) -> Result<(), AppError> {
+        let input = std::fs::File::open(source_path)?;
+        let mut input_zip = zip::ZipArchive::new(input)
+            .map_err(|e| AppError::FileIO(format!("failed to open archive for mutation: {e}")))?;
+        let output = std::fs::File::create(destination_path)?;
+        let mut output_zip = zip::ZipWriter::new(output);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        for index in 0..input_zip.len() {
+            let mut entry = input_zip
+                .by_index(index)
+                .map_err(|e| AppError::FileIO(format!("failed to read archive entry: {e}")))?;
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .map_err(|e| AppError::FileIO(format!("failed to copy archive entry: {e}")))?;
+            output_zip
+                .start_file(entry.name(), opts)
+                .map_err(|e| AppError::FileIO(format!("failed to create archive entry: {e}")))?;
+            if entry.name() == target_entry {
+                output_zip.write_all(replacement_bytes).map_err(|e| {
+                    AppError::FileIO(format!("failed to write replacement archive entry: {e}"))
+                })?;
+            } else {
+                output_zip
+                    .write_all(&bytes)
+                    .map_err(|e| AppError::FileIO(format!("failed to write archive entry: {e}")))?;
+            }
+        }
+
+        output_zip
+            .finish()
+            .map_err(|e| AppError::FileIO(format!("failed to finish mutated archive: {e}")))?;
+        Ok(())
+    }
+
     #[test]
     fn save_path_is_streaming() {
         let project_source = include_str!("project_service.rs");
@@ -1359,6 +1816,182 @@ mod tests {
             !write_archive_body.contains("serde_json::to_vec(doc)"),
             "write_project_archive must not duplicate full table/graph JSON buffers"
         );
+    }
+
+    #[test]
+    fn stream_writer_writes_flat_named_v4_entries_without_logical_folder_paths() {
+        let state = AppState::new().unwrap();
+        let dataset = seed_named_dataset(&state, "table_1", "data");
+        let destination = temp_path("flat-v4-layout");
+        let snapshot =
+            save_snapshot_with_named_docs_and_nested_folders(&destination, vec![dataset]);
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        writer.write(&snapshot, &destination, None).unwrap();
+
+        let file = std::fs::File::open(&destination).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut entries = HashSet::new();
+        for idx in 0..zip.len() {
+            let entry = zip.by_index(idx).unwrap();
+            entries.insert(entry.name().to_string());
+        }
+
+        let expected = HashSet::from([
+            "manifest.json".to_string(),
+            "data/data.sptb".to_string(),
+            "data/data.spgh".to_string(),
+            "data/data.spf".to_string(),
+            "data/Report 1.sprp".to_string(),
+            "data/data-2.spf".to_string(),
+            "distributions/Distribution.spdist".to_string(),
+            "snapshots/data.json".to_string(),
+            ".history.json".to_string(),
+        ]);
+
+        assert_eq!(entries, expected);
+        assert!(!entries.contains(".snapshots.json"));
+        assert!(!entries.contains("data/report-1.sprp"));
+        assert!(entries.iter().all(|entry| !entry.starts_with("tables/")));
+        assert!(entries.iter().all(|entry| !entry.starts_with("graphs/")));
+        assert!(entries.iter().all(|entry| !entry.contains("Root/")));
+        assert!(entries.iter().all(|entry| !entry.ends_with('/')));
+
+        let _ = std::fs::remove_file(destination);
+    }
+
+    #[test]
+    fn stream_writer_serializes_manifest_normalized_body_names_for_indexed_docs() {
+        let state = AppState::new().unwrap();
+        let dataset = seed_named_dataset(&state, "table_1", "data");
+        let destination = temp_path("v4-body-name-sync");
+        let snapshot =
+            save_snapshot_with_named_docs_and_nested_folders(&destination, vec![dataset]);
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        writer.write(&snapshot, &destination, None).unwrap();
+
+        let file = std::fs::File::open(&destination).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut manifest_entry = zip.by_name("manifest.json").unwrap();
+        let mut manifest_bytes = Vec::new();
+        manifest_entry.read_to_end(&mut manifest_bytes).unwrap();
+        drop(manifest_entry);
+        let manifest: crate::services::spprj_archive::ProjectManifest =
+            serde_json::from_slice(&manifest_bytes).unwrap();
+
+        assert_eq!(
+            manifest.distribution_folders.get("dist-1"),
+            Some(&"Root/Nested".to_string())
+        );
+
+        for fit_ref in &manifest.fit_y_by_x_files {
+            let mut entry = zip.by_name(&fit_ref.file).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value.get("id").and_then(serde_json::Value::as_str),
+                Some(fit_ref.id.as_str())
+            );
+            assert_eq!(
+                value.get("name").and_then(serde_json::Value::as_str),
+                Some(fit_ref.name.as_str())
+            );
+        }
+
+        for report_ref in &manifest.report_files {
+            let mut entry = zip.by_name(&report_ref.file).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value.get("id").and_then(serde_json::Value::as_str),
+                Some(report_ref.id.as_str())
+            );
+            assert_eq!(
+                value.get("name").and_then(serde_json::Value::as_str),
+                Some(report_ref.name.as_str())
+            );
+        }
+
+        for tabulate_ref in &manifest.tabulate_files {
+            let mut entry = zip.by_name(&tabulate_ref.file).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value.get("id").and_then(serde_json::Value::as_str),
+                Some(tabulate_ref.id.as_str())
+            );
+            assert_eq!(
+                value.get("name").and_then(serde_json::Value::as_str),
+                Some(tabulate_ref.name.as_str())
+            );
+        }
+
+        for distribution_ref in &manifest.distributions {
+            let mut entry = zip.by_name(&distribution_ref.file).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value.get("id").and_then(serde_json::Value::as_str),
+                Some(distribution_ref.id.as_str())
+            );
+            assert_eq!(
+                value.get("name").and_then(serde_json::Value::as_str),
+                Some(distribution_ref.name.as_str())
+            );
+            assert!(value.get("result").is_none());
+            assert!(value.get("graphFrames").is_none());
+            assert!(value.get("runState").is_none());
+        }
+
+        for snapshot_ref in &manifest.snapshot_files {
+            let mut entry = zip.by_name(&snapshot_ref.file).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value.get("id").and_then(serde_json::Value::as_str),
+                Some(snapshot_ref.id.as_str())
+            );
+            assert_eq!(
+                value.get("name").and_then(serde_json::Value::as_str),
+                Some(snapshot_ref.name.as_str())
+            );
+        }
+
+        let _ = std::fs::remove_file(destination);
+    }
+
+    #[test]
+    fn stream_writer_reopens_tables_after_manifest_name_collision_resolution() {
+        let state = AppState::new().unwrap();
+        let first = seed_named_dataset(&state, "table_1", "Data");
+        let mut second = seed_named_dataset(&state, "table_2", "Other");
+        second.name = "data".to_string();
+        let destination = temp_path("v4-table-name-sync");
+        let snapshot = save_snapshot(&destination, vec![first, second]);
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        writer.write(&snapshot, &destination, None).unwrap();
+
+        let reopened = spprj_archive::read_project_file(destination.to_str().unwrap()).unwrap();
+        assert_eq!(
+            reopened
+                .tables
+                .iter()
+                .map(|table| table.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Data", "data-2"]
+        );
+
+        let _ = std::fs::remove_file(destination);
     }
 
     #[test]
@@ -1573,6 +2206,154 @@ mod tests {
 
             let _ = std::fs::remove_file(&destination);
         }
+    }
+
+    #[test]
+    fn stream_writer_validation_failure_on_missing_indexed_spf_preserves_destination_bytes() {
+        let state = AppState::new().unwrap();
+        let dataset = seed_benchmark_dataset(&state, 128);
+        let destination = temp_path("validation-missing-spf");
+        std::fs::write(&destination, b"destination-before-save").unwrap();
+        let original_bytes = std::fs::read(&destination).unwrap();
+        let snapshot = save_snapshot(&destination, vec![dataset]);
+
+        let replacer_state = Arc::new(TestReplacerState::default());
+        let replacer: Arc<dyn ArchiveReplacer> = Arc::new(TestReplacer {
+            state: Arc::clone(&replacer_state),
+        });
+
+        install_save_test_hook(Some(Box::new(move |point, context| {
+            if point == SaveFailurePoint::Validation {
+                let temp_archive_path = context.temp_archive_path.ok_or_else(|| {
+                    AppError::FileIO(
+                        "validation hook missing temp archive path context".to_string(),
+                    )
+                })?;
+                let rewritten =
+                    PathBuf::from(format!("{}.mut", temp_archive_path.to_string_lossy()));
+                remove_named_entry_from_archive(&temp_archive_path, &rewritten, "data/fit-1.spf")?;
+                std::fs::remove_file(&temp_archive_path)?;
+                std::fs::rename(&rewritten, &temp_archive_path)?;
+            }
+            Ok(())
+        })));
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::with_clock_and_replacer(&state, &guard, replacer);
+        let error = writer.write(&snapshot, &destination, None).unwrap_err();
+        install_save_test_hook(None);
+
+        assert!(
+            matches!(error, AppError::FileIO(message) if message.contains("missing fit entry data/fit-1.spf"))
+        );
+        assert_eq!(replacer_state.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&destination).unwrap(), original_bytes);
+        assert!(!PathBuf::from(format!("{}.tmp", destination.to_string_lossy())).exists());
+
+        let _ = std::fs::remove_file(&destination);
+    }
+
+    #[test]
+    fn stream_writer_validation_failure_on_indexed_body_parity_preserves_destination_bytes() {
+        let state = AppState::new().unwrap();
+        let dataset = seed_benchmark_dataset(&state, 128);
+        let destination = temp_path("validation-body-parity");
+        std::fs::write(&destination, b"destination-before-save").unwrap();
+        let original_bytes = std::fs::read(&destination).unwrap();
+        let snapshot =
+            save_snapshot_with_named_docs_and_nested_folders(&destination, vec![dataset]);
+
+        let replacer_state = Arc::new(TestReplacerState::default());
+        let replacer: Arc<dyn ArchiveReplacer> = Arc::new(TestReplacer {
+            state: Arc::clone(&replacer_state),
+        });
+
+        install_save_test_hook(Some(Box::new(move |point, context| {
+            if point == SaveFailurePoint::Validation {
+                let temp_archive_path = context.temp_archive_path.ok_or_else(|| {
+                    AppError::FileIO(
+                        "validation hook missing temp archive path context".to_string(),
+                    )
+                })?;
+                let rewritten =
+                    PathBuf::from(format!("{}.mut", temp_archive_path.to_string_lossy()));
+                rewrite_named_entry_in_archive(
+                    &temp_archive_path,
+                    &rewritten,
+                    "data/data.spgh",
+                    br#"{"id":"graph-1","name":"wrong-name","version":"1"}"#,
+                )?;
+                std::fs::remove_file(&temp_archive_path)?;
+                std::fs::rename(&rewritten, &temp_archive_path)?;
+            }
+            Ok(())
+        })));
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::with_clock_and_replacer(&state, &guard, replacer);
+        let error = writer.write(&snapshot, &destination, None).unwrap_err();
+        install_save_test_hook(None);
+
+        assert!(
+            matches!(&error, AppError::FileIO(message) if message.contains("graph name")),
+            "unexpected validation error: {error:?}"
+        );
+        assert_eq!(replacer_state.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&destination).unwrap(), original_bytes);
+        assert!(!PathBuf::from(format!("{}.tmp", destination.to_string_lossy())).exists());
+
+        let _ = std::fs::remove_file(&destination);
+    }
+
+    #[test]
+    fn stream_writer_validation_failure_on_invalid_report_preserves_destination_bytes() {
+        let state = AppState::new().unwrap();
+        let dataset = seed_benchmark_dataset(&state, 128);
+        let destination = temp_path("validation-invalid-report");
+        std::fs::write(&destination, b"destination-before-save").unwrap();
+        let original_bytes = std::fs::read(&destination).unwrap();
+        let snapshot =
+            save_snapshot_with_named_docs_and_nested_folders(&destination, vec![dataset]);
+
+        let replacer_state = Arc::new(TestReplacerState::default());
+        let replacer: Arc<dyn ArchiveReplacer> = Arc::new(TestReplacer {
+            state: Arc::clone(&replacer_state),
+        });
+
+        install_save_test_hook(Some(Box::new(move |point, context| {
+            if point == SaveFailurePoint::Validation {
+                let temp_archive_path = context.temp_archive_path.ok_or_else(|| {
+                    AppError::FileIO(
+                        "validation hook missing temp archive path context".to_string(),
+                    )
+                })?;
+                let rewritten =
+                    PathBuf::from(format!("{}.mut", temp_archive_path.to_string_lossy()));
+                rewrite_named_entry_in_archive(
+                    &temp_archive_path,
+                    &rewritten,
+                    "data/Report 1.sprp",
+                    br#"{"schemaVersion":1,"id":"report-1","name":"Report 1"}"#,
+                )?;
+                std::fs::remove_file(&temp_archive_path)?;
+                std::fs::rename(&rewritten, &temp_archive_path)?;
+            }
+            Ok(())
+        })));
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::with_clock_and_replacer(&state, &guard, replacer);
+        let error = writer.write(&snapshot, &destination, None).unwrap_err();
+        install_save_test_hook(None);
+
+        assert!(
+            matches!(error, AppError::FileIO(message) if message.contains("data/Report 1.sprp report is missing required markdown"))
+        );
+        assert_eq!(replacer_state.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&destination).unwrap(), original_bytes);
+        assert!(!PathBuf::from(format!("{}.tmp", destination.to_string_lossy())).exists());
+
+        let _ = std::fs::remove_file(&destination);
     }
 
     #[test]

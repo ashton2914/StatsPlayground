@@ -1,34 +1,28 @@
 import { useTranslation } from "react-i18next";
 
-import type { CapabilityOverrideEnvelopeV1 } from "@/types/distribution";
-
-import { NORMAL_CAPABILITY_ID } from "./distributionConfig";
+import type { FieldRef } from "@/graphCore";
+import type { SpecLimitsOverride } from "@/types/distribution";
 
 interface SpecificationLimitsEditorProps {
-  override: CapabilityOverrideEnvelopeV1 | null;
-  yCount: number;
-  onChange: (override: CapabilityOverrideEnvelopeV1 | null) => void;
+  responses: FieldRef[];
+  specLimits: Record<string, SpecLimitsOverride>;
+  onChange: (specLimits: Record<string, SpecLimitsOverride>) => void;
 }
 
-const emptyOverride = (): CapabilityOverrideEnvelopeV1 => ({
-  schemaVersion: "1",
-  capabilityId: NORMAL_CAPABILITY_ID,
-  payloadSchemaVersion: "1",
-  payload: { lsl: null, target: null, usl: null },
-});
+const EMPTY_LIMITS: SpecLimitsOverride = { lsl: null, target: null, usl: null };
 
 export function SpecificationLimitsEditor({
-  override,
-  yCount,
+  responses,
+  specLimits,
   onChange,
 }: SpecificationLimitsEditorProps) {
   const { t } = useTranslation();
-  const setLimit = (key: "lsl" | "target" | "usl", raw: string) => {
-    if (!override) return;
+  const setLimit = (response: string, key: keyof SpecLimitsOverride, raw: string) => {
+    const limits = specLimits[response] ?? EMPTY_LIMITS;
     onChange({
-      ...override,
-      payload: {
-        ...override.payload,
+      ...specLimits,
+      [response]: {
+        ...limits,
         [key]: raw.trim() === "" ? null : Number(raw),
       },
     });
@@ -36,32 +30,26 @@ export function SpecificationLimitsEditor({
 
   return (
     <section className="distribution-spec-editor">
-      <label className="distribution-option distribution-option-checkbox">
-        <input
-          type="checkbox"
-          checked={override !== null}
-          onChange={(event) => onChange(event.target.checked ? emptyOverride() : null)}
-        />
-        <span>{t("distribution.specification.useOverride")}</span>
-      </label>
-      {override && (
-        <>
-          {yCount > 1 && <p>{t("distribution.specification.allYHint")}</p>}
+      {responses.map((response) => {
+        const limits = specLimits[response.name] ?? EMPTY_LIMITS;
+        return (
+          <fieldset key={response.name}>
+            <legend>{response.name}</legend>
           <div className="distribution-spec-fields">
             {(["lsl", "target", "usl"] as const).map((key) => (
               <label key={key}>
                 <span>{t(`distribution.specification.${key}`)}</span>
                 <input
                   type="number"
-                  value={typeof override.payload[key] === "number" ? override.payload[key] : ""}
-                  onChange={(event) => setLimit(key, event.target.value)}
+                  value={limits[key] ?? ""}
+                  onChange={(event) => setLimit(response.name, key, event.target.value)}
                 />
               </label>
             ))}
           </div>
-          <p className="distribution-spec-source">{t("distribution.specification.overrideSource")}</p>
-        </>
-      )}
+          </fieldset>
+        );
+      })}
     </section>
   );
 }

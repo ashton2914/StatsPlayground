@@ -1,40 +1,49 @@
 use crate::error::AppError;
 use sha2::{Digest, Sha256};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
-use crate::engine::distribution_executor::{prepare_continuous_groups, PreparedGroupV1};
+use crate::engine::distribution_executor::{
+    prepare_continuous_groups, resolve_distribution_requests, PreparedGroupV1,
+};
 use crate::models::distribution::{
-    AnalysisSnapshotV1, BlackBoxCaseV1, BoxPlotCoordinatesV1, CapabilityDescriptorV1,
-    CapabilityTypedCountV1, CapabilityTypedValueV1, DistributionCancelTokenV1,
-    DistributionChartDataV1, DistributionChartProvenanceV1, DistributionCoordinateV1,
-    DistributionFitComparisonDataV1, DistributionFitComparisonRowV1,
+    BlackBoxCaseV1, BoxPlotCoordinatesV1, CapabilityDescriptorV1, CapabilityTypedCountV1,
+    CapabilityTypedValueV1, DistributionChartDataV1, DistributionChartProvenanceV1,
+    DistributionCoordinateV1, DistributionFitComparisonDataV1, DistributionFitComparisonRowV1,
     DistributionFitConvergenceStatusV1, DistributionFitConvergenceV1, DistributionFitDataV1,
     DistributionFitProvenanceV1, DistributionFitStatusV1, DistributionFittedCurveDataV1,
-    DistributionGroupResultV1, DistributionModeV1, DistributionProgressV1,
-    DistributionQuantileValueV1, DistributionReportBlockV1, DistributionRequestV1,
-    DistributionResultEnvelopeV1, DistributionRunAcceptedV1, DistributionRunStateV1,
-    DistributionRunStatusV1, DistributionSummaryDataV1, DistributionWorkspaceBootstrapV1,
-    DistributionYResultV1, HistogramBinV1, Jmp19CompatibilityStatusV1,
-    ObservationContributionPolicyV1, ProcessCapabilityChartBinV1, ProcessCapabilityChartDataV1,
-    ProcessCapabilityChartProvenanceV1, ProcessCapabilityDataV1, ProcessCapabilityDensitySeriesV1,
-    ProcessCapabilityExpectedNonconformanceBySigmaV1, ProcessCapabilityExpectedTailV1,
-    ProcessCapabilityIndicesV1, ProcessCapabilityIntervalProvenanceV1, ProcessCapabilityIntervalV1,
+    DistributionGraphFrames, DistributionGroupResult, DistributionGroupResultV1,
+    DistributionQuantileValueV1, DistributionReportBlock,
+    DistributionReportBlockV1, DistributionReportResponse, DistributionRequest,
+    DistributionRequestV1, DistributionSummaryDataV1,
+    DistributionYResult, DistributionYResultV1, GraphDataFrameDto, HistogramBinV1,
+    Jmp19CompatibilityStatusV1, ProcessCapabilityChartBinV1,
+    ProcessCapabilityChartDataV1, ProcessCapabilityChartProvenanceV1, ProcessCapabilityDataV1,
+    ProcessCapabilityDensitySeriesV1, ProcessCapabilityExpectedNonconformanceBySigmaV1,
+    ProcessCapabilityExpectedTailV1, ProcessCapabilityIndicesV1,
+    ProcessCapabilityIntervalProvenanceV1, ProcessCapabilityIntervalV1,
     ProcessCapabilityIntervalsV1, ProcessCapabilityNonconformanceV1,
     ProcessCapabilityObservedNonconformanceV1, ProcessCapabilityObservedTailV1,
     ProcessCapabilityProportionIntervalV1, ProcessCapabilitySpecificationLinesV1,
     ProcessCapabilitySpecificationV1, ProcessCapabilityStabilityIndexV1,
-    ProcessCapabilitySummaryV1, ResourceBudgetV1,
+    ProcessCapabilitySummaryV1,
 };
-use crate::services::data_service::DataService;
+use crate::models::graph_data::{
+    BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, GraphAggregatePacket, GraphRawPointDisposition,
+    GraphSampling, HistogramBin, HistogramPacket, PrecomputedCurveInterpolation,
+    PrecomputedCurvePacket, PrecomputedCurvePoint, PrecomputedPoint, PrecomputedPointPacket,
+    DISTRIBUTION_BOX_PLOT_ELEMENT_ID, DISTRIBUTION_ECDF_ELEMENT_ID,
+    DISTRIBUTION_NORMAL_QUANTILE_LOWER_ELEMENT_ID, DISTRIBUTION_NORMAL_QUANTILE_POINTS_ELEMENT_ID,
+    DISTRIBUTION_NORMAL_QUANTILE_REFERENCE_ELEMENT_ID,
+    DISTRIBUTION_NORMAL_QUANTILE_UPPER_ELEMENT_ID, DISTRIBUTION_OVERVIEW_FITTED_CURVES_ELEMENT_ID,
+    DISTRIBUTION_OVERVIEW_HISTOGRAM_ELEMENT_ID, GRAPH_SCATTER_RENDER_BUDGET,
+};
+use crate::services::distribution_fit::{
+    attach_parameter_inference, build_pdf_curve, effective_n, fit_information_criteria,
+    objective_failure, FitFailureClassificationV1, FitFailureV1, FitMetricSetV1,
+    FitModelRegistrationV1, FitObservationV1, STAGE1_FIT_REGISTRY,
+};
 use crate::services::distribution_kernel::{
     continuous_summary, histogram, normal_quantile_plot, normal_quantile_plot_with_priorities,
     tukey_box, weighted_ecdf, weighted_type6, NormalQuantileKernelStatusV1,
-};
-use crate::services::distribution_fit::{
-    attach_parameter_inference, build_pdf_curve, effective_n, fit_information_criteria, objective_failure,
-    FitFailureClassificationV1, FitFailureV1, FitMetricSetV1, FitModelRegistrationV1,
-    FitObservationV1, STAGE1_FIT_REGISTRY,
 };
 use crate::services::normal_capability::{
     capability_chart_data, capability_indices, capability_intervals, nonconformance_metrics,
@@ -49,24 +58,19 @@ pub struct DistributionService<'a> {
     state: &'a AppState,
 }
 
+struct OneShotExecutionContext {
+    provenance_id: String,
+}
+
+#[derive(serde::Serialize)]
+struct OneShotExecutionResult {
+    groups: Vec<DistributionGroupResultV1>,
+    report_blocks: Vec<DistributionReportBlockV1>,
+}
+
 impl<'a> DistributionService<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self { state }
-    }
-
-    pub fn bootstrap_distribution_workspace(
-        &self,
-    ) -> Result<DistributionWorkspaceBootstrapV1, AppError> {
-        let dataset_count = DataService::new(self.state).list_datasets()?.len();
-        Ok(DistributionWorkspaceBootstrapV1 {
-            schema_version: "1".to_string(),
-            mode: DistributionModeV1::Continuous,
-            can_run: true,
-            dataset_count,
-            capabilities: self.list_distribution_capabilities()?,
-            observation_policy: ObservationContributionPolicyV1::strict_v1()?,
-            resource_budget: ResourceBudgetV1::default(),
-        })
     }
 
     pub fn list_distribution_capabilities(&self) -> Result<Vec<CapabilityDescriptorV1>, AppError> {
@@ -94,52 +98,93 @@ impl<'a> DistributionService<'a> {
         .collect())
     }
 
-    pub fn start_distribution_run(
+    pub fn compute_distribution_report(
         &self,
-        request: &DistributionRequestV1,
-    ) -> Result<DistributionRunAcceptedV1, AppError> {
-        validate_run_request(request)?;
-        if self.list_distribution_capabilities()?.is_empty() {
-            return Err(AppError::InvalidParam(
-                "distribution.run.noImplementedCapabilities".to_string(),
-            ));
+        request: &DistributionRequest,
+    ) -> Result<DistributionReportResponse, AppError> {
+        let resolved_requests = {
+            let engine = self
+                .state
+                .db
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            resolve_distribution_requests(&engine, request)?
+        };
+        let mut groups = Vec::<DistributionGroupResult>::new();
+        let mut report_blocks = Vec::<DistributionReportBlock>::new();
+
+        for resolved in resolved_requests {
+            let response_column = resolved.y_columns.first().ok_or_else(|| {
+                AppError::InvalidParam("distribution.config.yRequired".to_string())
+            })?;
+            let context = OneShotExecutionContext {
+                provenance_id: deterministic_provenance_id(
+                    &request.dataset_id,
+                    request.generation,
+                    &response_column.column_id,
+                ),
+            };
+            let result = self.execute_one_shot(&resolved, &context)?;
+            for legacy_group in result.groups {
+                let converted_results = legacy_group
+                    .y_results
+                    .into_iter()
+                    .map(|value| DistributionYResult {
+                        y_column: value.y_column,
+                        y_name: value.y_name,
+                        quantiles: value.quantiles,
+                        blocks: value.blocks.into_iter().map(wrap_report_block).collect(),
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(existing) = groups
+                    .iter_mut()
+                    .find(|value| value.group_key == legacy_group.group_key)
+                {
+                    existing.y_results.extend(converted_results);
+                } else {
+                    groups.push(DistributionGroupResult {
+                        group_key: legacy_group.group_key,
+                        group_names: legacy_group.group_names,
+                        y_results: converted_results,
+                    });
+                }
+            }
+            report_blocks.extend(result.report_blocks.into_iter().map(wrap_report_block));
         }
-
-        let dataset_id = request
-            .source_dataset_id
-            .as_deref()
-            .ok_or_else(|| AppError::InvalidParam("distribution.run.sourceRequired".to_string()))?;
-        let filter_fingerprint = filter_fingerprint(&request.filter_expr)?;
-        let snapshot =
-            self.take_analysis_snapshot(&request.analysis_id, dataset_id, &filter_fingerprint)?;
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let cancel_token = uuid::Uuid::new_v4().to_string();
-        self.state
-            .distribution_run_cancellations
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?
-            .insert(cancel_token.clone(), Arc::new(AtomicBool::new(false)));
-
-        Ok(DistributionRunAcceptedV1 {
-            analysis_id: request.analysis_id.clone(),
-            config_revision: request.config_revision,
-            run_id,
-            snapshot_id: snapshot.snapshot_id,
-            cancel_token,
+        let graph_frames = build_graph_frames(request, &groups)?;
+        Ok(DistributionReportResponse {
+            dataset_id: request.dataset_id.clone(),
+            generation: request.generation,
+            groups,
+            report_blocks,
+            graph_frames,
         })
     }
 
-    pub fn execute_distribution_run(
+    fn execute_one_shot(
         &self,
         request: &DistributionRequestV1,
-        accepted: &DistributionRunAcceptedV1,
-    ) -> Result<DistributionResultEnvelopeV1, AppError> {
+        context: &OneShotExecutionContext,
+    ) -> Result<OneShotExecutionResult, AppError> {
         let prepared_by_y = {
             let engine = self
                 .state
                 .db
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
+            if let Some(expected) = request.source_data_version.as_deref() {
+                let expected = expected.parse::<u64>().map_err(|_| {
+                    AppError::InvalidParam("distribution.run.staleGeneration".to_string())
+                })?;
+                let dataset_id = request.source_dataset_id.as_deref().ok_or_else(|| {
+                    AppError::InvalidParam("distribution.run.sourceRequired".to_string())
+                })?;
+                if engine.get_dataset_generation(dataset_id)? != expected {
+                    return Err(AppError::InvalidParam(
+                        "distribution.run.staleGeneration".to_string(),
+                    ));
+                }
+            }
             let descriptors = engine
                 .get_distribution_columns(request.source_dataset_id.as_deref().ok_or_else(
                     || AppError::InvalidParam("distribution.run.sourceRequired".to_string()),
@@ -183,23 +228,6 @@ impl<'a> DistributionService<'a> {
             .as_deref()
             .ok_or_else(|| AppError::InvalidParam("distribution.run.sourceRequired".to_string()))?;
         let capability_override = capability_override(request)?;
-        let cancellation = if fit_candidates(request).is_empty() || request.histograms_only {
-            None
-        } else {
-            Some(
-                self.state
-                    .distribution_run_cancellations
-                    .lock()
-                    .map_err(|error| AppError::Database(error.to_string()))?
-                    .get(&accepted.cancel_token)
-                    .cloned()
-                    .ok_or_else(|| {
-                        AppError::InvalidParam(
-                            "distribution.run.cancelTokenUnknown".to_string(),
-                        )
-                    })?,
-            )
-        };
         for (y, y_name, y_index, groups, group_names) in prepared_by_y {
             let specification = self.column_specification(dataset_id, y_index as usize)?;
             let specification =
@@ -303,7 +331,7 @@ impl<'a> DistributionService<'a> {
                         provenance: chart_provenance_with_status(
                             histogram_method_id,
                             histogram_compatibility,
-                            accepted,
+                            context,
                         ),
                         bins: histogram
                             .bins
@@ -366,7 +394,7 @@ impl<'a> DistributionService<'a> {
                             provenance: chart_provenance_with_status(
                                 "normalScore.documented.rankOverNPlus1",
                                 normal_quantile_points_status.clone(),
-                                accepted,
+                                context,
                             ),
                             payload: crate::models::distribution::NormalQuantileDataV1 {
                                 points: normal_quantile
@@ -413,17 +441,17 @@ impl<'a> DistributionService<'a> {
                                 provenance: chart_provenance_with_status(
                                     "normalScore.documented.rankOverNPlus1",
                                     normal_quantile_points_status,
-                                    accepted,
+                                    context,
                                 ),
                                 reference_line_provenance: chart_provenance_with_status(
                                     "normalQuantile.referenceLine.public.v1",
                                     Jmp19CompatibilityStatusV1::CompatibilityPending,
-                                    accepted,
+                                    context,
                                 ),
                                 confidence_band_provenance: chart_provenance_with_status(
                                     "normalQuantile.pointwiseBand.public.v1",
                                     Jmp19CompatibilityStatusV1::CompatibilityPending,
-                                    accepted,
+                                    context,
                                 ),
                             },
                         }),
@@ -441,24 +469,18 @@ impl<'a> DistributionService<'a> {
                             .iter()
                             .map(|registration| registration.distribution_id.clone())
                             .collect::<Vec<_>>();
-                        let cancellation = cancellation.as_ref().ok_or_else(|| {
-                            AppError::InvalidParam(
-                                "distribution.run.cancelTokenUnknown".to_string(),
-                            )
-                        })?;
-                        let mut fit_payloads = execute_fit_candidates(
-                            &candidate_registrations,
-                            cancellation,
-                            |registration| build_fit_payload(
-                                registration,
-                                &fit_observations,
-                                x_min,
-                                x_max,
-                                &prefix,
-                                &candidate_ids,
-                                accepted,
-                            ),
-                        )?;
+                        let mut fit_payloads =
+                            execute_fit_candidates(&candidate_registrations, |registration| {
+                                build_fit_payload(
+                                    registration,
+                                    &fit_observations,
+                                    x_min,
+                                    x_max,
+                                    &prefix,
+                                    &candidate_ids,
+                                    context,
+                                )
+                            })?;
                         fit_payloads.sort_by(|left, right| {
                             distribution_id(left.distribution_id.clone())
                                 .cmp(distribution_id(right.distribution_id.clone()))
@@ -521,7 +543,7 @@ impl<'a> DistributionService<'a> {
                         distribution_fit_comparison_data: None,
                         chart_data: Some(DistributionChartDataV1::BoxPlotData {
                             schema_version: "1".to_string(),
-                            provenance: chart_provenance("boxplot.tukey.weighted", accepted),
+                            provenance: chart_provenance("boxplot.tukey.weighted", context),
                             coordinates: BoxPlotCoordinatesV1 {
                                 lower_whisker: box_plot.lower_whisker,
                                 lower_quartile: box_plot.lower_quartile,
@@ -549,7 +571,7 @@ impl<'a> DistributionService<'a> {
                         distribution_fit_comparison_data: None,
                         chart_data: Some(DistributionChartDataV1::CdfData {
                             schema_version: "1".to_string(),
-                            provenance: chart_provenance("ecdf.weighted", accepted),
+                            provenance: chart_provenance("ecdf.weighted", context),
                             points: ecdf
                                 .points
                                 .into_iter()
@@ -592,7 +614,7 @@ impl<'a> DistributionService<'a> {
                                     &process_summary,
                                     &values,
                                     &histogram_bins_for_capability,
-                                    &accepted.snapshot_id,
+                                    &context.provenance_id,
                                     &specification_fingerprint(limits)?,
                                 );
                                 blocks.push(DistributionReportBlockV1 {
@@ -671,26 +693,10 @@ impl<'a> DistributionService<'a> {
                 }
             }
         }
-        let completed_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| AppError::InvalidParam(format!("invalid system clock: {error}")))?
-            .as_millis()
-            .to_string();
-        let result = DistributionResultEnvelopeV1 {
-            analysis_id: accepted.analysis_id.clone(),
-            config_revision: accepted.config_revision,
-            run_id: accepted.run_id.clone(),
-            snapshot_id: accepted.snapshot_id.clone(),
-            completed_at,
+        Ok(OneShotExecutionResult {
             groups: group_results,
             report_blocks,
-        };
-        self.state
-            .distribution_run_cancellations
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?
-            .remove(&accepted.cancel_token);
-        Ok(result)
+        })
     }
 
     fn column_specification(
@@ -713,124 +719,6 @@ impl<'a> DistributionService<'a> {
             .and_then(|column| column.extras.as_ref())
             .and_then(|extras| extras.get("spec"))
             .cloned())
-    }
-
-    pub fn cancel_distribution_run(
-        &self,
-        token: &DistributionCancelTokenV1,
-    ) -> Result<(), AppError> {
-        let cancellation = self
-            .state
-            .distribution_run_cancellations
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?
-            .remove(&token.cancel_token)
-            .ok_or_else(|| {
-                AppError::InvalidParam("distribution.run.cancelTokenUnknown".to_string())
-            })?;
-        cancellation.store(true, Ordering::SeqCst);
-        Ok(())
-    }
-
-    pub fn take_analysis_snapshot(
-        &self,
-        analysis_id: &str,
-        dataset_id: &str,
-        filter_fingerprint: &str,
-    ) -> Result<AnalysisSnapshotV1, AppError> {
-        let (generation, schema_fingerprint) = self.current_dataset_identity(dataset_id)?;
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| AppError::InvalidParam(format!("invalid system clock: {error}")))?
-            .as_millis()
-            .to_string();
-        Ok(AnalysisSnapshotV1 {
-            schema_version: "1".to_string(),
-            analysis_id: analysis_id.to_string(),
-            snapshot_id: uuid::Uuid::new_v4().to_string(),
-            dataset_id: dataset_id.to_string(),
-            source_data_version: generation.to_string(),
-            dataset_generation: generation,
-            schema_fingerprint,
-            filter_fingerprint: filter_fingerprint.to_string(),
-            created_at,
-        })
-    }
-
-    pub fn validate_snapshot_is_current(
-        &self,
-        snapshot: &AnalysisSnapshotV1,
-        filter_fingerprint: &str,
-    ) -> Result<(), AppError> {
-        let (generation, schema_fingerprint) =
-            self.current_dataset_identity(&snapshot.dataset_id)?;
-        if generation != snapshot.dataset_generation
-            || schema_fingerprint != snapshot.schema_fingerprint
-            || filter_fingerprint != snapshot.filter_fingerprint
-        {
-            return Err(AppError::InvalidParam(
-                "stale analysis snapshot".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn current_dataset_identity(&self, dataset_id: &str) -> Result<(u64, String), AppError> {
-        let db = self
-            .state
-            .db
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?;
-        let generation = db.get_dataset_generation(dataset_id)?;
-        let columns = db.get_user_columns(dataset_id)?;
-        Ok((generation, schema_fingerprint(&columns)?))
-    }
-
-    pub fn emit_progress(
-        state: &mut DistributionRunStateV1,
-        phase: &str,
-        current: u64,
-        total: u64,
-        message_key: &str,
-    ) -> Result<(), AppError> {
-        if total == 0 || current > total {
-            return Err(AppError::InvalidParam(
-                "invalid progress bounds".to_string(),
-            ));
-        }
-        let percent = current as f64 * 100.0 / total as f64;
-        if state
-            .progress
-            .as_ref()
-            .is_some_and(|previous| current < previous.current || percent < previous.percent)
-        {
-            return Err(AppError::InvalidParam(
-                "progress must be monotonic".to_string(),
-            ));
-        }
-        state.progress = Some(DistributionProgressV1 {
-            analysis_id: state.analysis_id.clone(),
-            config_revision: state.config_revision,
-            run_id: state.run_id.clone(),
-            snapshot_id: state.snapshot_id.clone(),
-            phase: phase.to_string(),
-            current,
-            total,
-            message_key: message_key.to_string(),
-            percent,
-        });
-        Ok(())
-    }
-
-    pub fn cancel_run(
-        state: &mut DistributionRunStateV1,
-        token: &DistributionCancelTokenV1,
-    ) -> Result<(), AppError> {
-        if token.cancel_token != state.cancel_token {
-            return Err(AppError::InvalidParam("cancel token mismatch".to_string()));
-        }
-        state.status = DistributionRunStatusV1::Cancelled;
-        Ok(())
     }
 
     pub fn validate_black_box_case(&self, case: &BlackBoxCaseV1) -> Result<(), AppError> {
@@ -879,6 +767,339 @@ impl<'a> DistributionService<'a> {
     }
 }
 
+fn wrap_report_block(block: DistributionReportBlockV1) -> DistributionReportBlock {
+    let reason_code = match &block.distribution_fit_data {
+        Some(payload) => payload.reason_code.clone(),
+        None => match &block.chart_data {
+            Some(DistributionChartDataV1::NormalQuantileData { payload, .. }) => {
+                payload.reason_code.clone()
+            }
+            _ => None,
+        },
+    }
+    .or_else(|| {
+        (block.status != "available")
+            .then(|| format!("distribution.{}.{}", block.kind, block.status))
+    });
+    DistributionReportBlock { block, reason_code }
+}
+
+fn build_graph_frames(
+    request: &DistributionRequest,
+    groups: &[DistributionGroupResult],
+) -> Result<DistributionGraphFrames, AppError> {
+    let mut overview = Vec::new();
+    let mut box_plot = Vec::new();
+    let mut ecdf = Vec::new();
+    let mut normal_quantile = Vec::new();
+    let mut histogram_bins = Vec::new();
+    let mut box_entries = Vec::new();
+    let mut source_rows = 0_u64;
+    let mut processed_rows = 0_u64;
+
+    for group in groups {
+        let group_name = graph_group_name(&group.group_names, &group.group_key);
+        for y_result in &group.y_results {
+            let series_name = graph_series_name(&y_result.y_name, &group_name);
+            let series_key = graph_series_key(&y_result.y_name, &group.group_key)?;
+            let mut result_count = 0_u64;
+            for item in &y_result.blocks {
+                let block = &item.block;
+                if let Some(summary) = &block.summary_data {
+                    source_rows = source_rows.max(summary.n.saturating_add(summary.n_missing));
+                    processed_rows = processed_rows.max(summary.n);
+                    result_count = summary.n;
+                }
+                match &block.chart_data {
+                    Some(DistributionChartDataV1::HistogramData { bins, .. }) => {
+                        for bin in bins {
+                            histogram_bins.push(HistogramBin {
+                                group: Some(series_name.clone()),
+                                category: Some(group_name.clone()),
+                                source_column: Some(y_result.y_name.clone()),
+                                facet_x: None,
+                                facet_y: None,
+                                facet_z: None,
+                                wrap: None,
+                                bin_start: bin.lower,
+                                bin_end: bin.upper,
+                                count: graph_count(bin.count)?,
+                            });
+                        }
+                    }
+                    Some(DistributionChartDataV1::BoxPlotData { coordinates, .. }) => {
+                        box_entries.push(BoxPlotEntry {
+                            group: Some(series_name.clone()),
+                            category: Some(group_name.clone()),
+                            source_column: Some(y_result.y_name.clone()),
+                            facet_x: None,
+                            facet_y: None,
+                            facet_z: None,
+                            wrap: None,
+                            count: result_count,
+                            min: coordinates.lower_whisker,
+                            q1: coordinates.lower_quartile,
+                            median: coordinates.median,
+                            q3: coordinates.upper_quartile,
+                            max: coordinates.upper_whisker,
+                            whisker_low: coordinates.lower_whisker,
+                            whisker_high: coordinates.upper_whisker,
+                            outliers: coordinates
+                                .outliers
+                                .iter()
+                                .map(|value| BoxPlotOutlier {
+                                    value: *value,
+                                    row_id: None,
+                                    source_column: Some(y_result.y_name.clone()),
+                                })
+                                .collect(),
+                        });
+                    }
+                    Some(DistributionChartDataV1::CdfData { points, .. }) => {
+                        ecdf.push(GraphAggregatePacket::PrecomputedCurve(
+                            PrecomputedCurvePacket {
+                                element_id: DISTRIBUTION_ECDF_ELEMENT_ID.to_string(),
+                                series_id: Some(format!("{series_key}:ecdf")),
+                                series_name: Some(series_name.clone()),
+                                interpolation: PrecomputedCurveInterpolation::StepEnd,
+                                points: points
+                                    .iter()
+                                    .map(|point| PrecomputedCurvePoint {
+                                        x: point.x,
+                                        y: point.y,
+                                    })
+                                    .collect(),
+                            },
+                        ));
+                    }
+                    Some(DistributionChartDataV1::NormalQuantileData { payload, .. }) => {
+                        normal_quantile.push(GraphAggregatePacket::PrecomputedPoints(
+                            PrecomputedPointPacket {
+                                element_id: DISTRIBUTION_NORMAL_QUANTILE_POINTS_ELEMENT_ID
+                                    .to_string(),
+                                series_id: Some(format!("{series_key}:normalQuantile:points")),
+                                series_name: Some(series_name.clone()),
+                                points: payload
+                                    .points
+                                    .iter()
+                                    .map(|point| PrecomputedPoint {
+                                        x: point.normal_score,
+                                        y: point.observed_value,
+                                        label: None,
+                                        group: Some(series_name.clone()),
+                                    })
+                                    .collect(),
+                            },
+                        ));
+                        for (element_id, role, points) in [
+                            (
+                                DISTRIBUTION_NORMAL_QUANTILE_REFERENCE_ELEMENT_ID,
+                                "reference",
+                                payload.reference_line.clone(),
+                            ),
+                            (
+                                DISTRIBUTION_NORMAL_QUANTILE_LOWER_ELEMENT_ID,
+                                "lower",
+                                payload
+                                    .confidence_band
+                                    .iter()
+                                    .map(|point| DistributionCoordinateV1 {
+                                        x: point.x,
+                                        y: point.lower,
+                                    })
+                                    .collect(),
+                            ),
+                            (
+                                DISTRIBUTION_NORMAL_QUANTILE_UPPER_ELEMENT_ID,
+                                "upper",
+                                payload
+                                    .confidence_band
+                                    .iter()
+                                    .map(|point| DistributionCoordinateV1 {
+                                        x: point.x,
+                                        y: point.upper,
+                                    })
+                                    .collect(),
+                            ),
+                        ] {
+                            normal_quantile.push(GraphAggregatePacket::PrecomputedCurve(
+                                PrecomputedCurvePacket {
+                                    element_id: element_id.to_string(),
+                                    series_id: Some(format!("{series_key}:normalQuantile:{role}")),
+                                    series_name: Some(series_name.clone()),
+                                    interpolation: PrecomputedCurveInterpolation::Linear,
+                                    points: points
+                                        .into_iter()
+                                        .map(|point| PrecomputedCurvePoint {
+                                            x: point.x,
+                                            y: point.y,
+                                        })
+                                        .collect(),
+                                },
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(fit) = &block.distribution_fit_data {
+                    if let Some(curve) = &fit.fitted_curve {
+                        let fit_name = format!(
+                            "{series_name} - {}",
+                            distribution_id(fit.distribution_id.clone())
+                        );
+                        overview.push(GraphAggregatePacket::PrecomputedCurve(
+                            PrecomputedCurvePacket {
+                                element_id: DISTRIBUTION_OVERVIEW_FITTED_CURVES_ELEMENT_ID
+                                    .to_string(),
+                                series_id: Some(format!(
+                                    "{series_key}:fit:{}",
+                                    distribution_id(fit.distribution_id.clone())
+                                )),
+                                series_name: Some(fit_name),
+                                interpolation: PrecomputedCurveInterpolation::Linear,
+                                points: curve
+                                    .points
+                                    .iter()
+                                    .map(|point| PrecomputedCurvePoint {
+                                        x: point.x,
+                                        y: point.y,
+                                    })
+                                    .collect(),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let total_count = histogram_bins.iter().try_fold(0_u64, |total, bin| {
+        total
+            .checked_add(bin.count)
+            .ok_or_else(|| AppError::Stats("distribution.graph.countOverflow".to_string()))
+    })?;
+    let min_value = histogram_bins
+        .iter()
+        .map(|bin| bin.bin_start)
+        .reduce(f64::min);
+    let max_value = histogram_bins
+        .iter()
+        .map(|bin| bin.bin_end)
+        .reduce(f64::max);
+    let bin_width = histogram_bins
+        .first()
+        .map_or(0.0, |bin| bin.bin_end - bin.bin_start);
+    overview.insert(
+        0,
+        GraphAggregatePacket::Histogram(HistogramPacket {
+            x_column: None,
+            y_column: DISTRIBUTION_OVERVIEW_HISTOGRAM_ELEMENT_ID.to_string(),
+            group_column: request.by_columns.first().cloned(),
+            source_column: Some("responseColumn".to_string()),
+            bin_count: u32::try_from(histogram_bins.len())
+                .map_err(|_| AppError::Stats("distribution.graph.binCountOverflow".to_string()))?,
+            min_value,
+            max_value,
+            missing_count: 0,
+            bin_width,
+            total_count,
+            bins: histogram_bins,
+        }),
+    );
+    box_plot.push(GraphAggregatePacket::BoxPlot(BoxPlotPacket {
+        x_column: request.by_columns.first().cloned(),
+        y_column: DISTRIBUTION_BOX_PLOT_ELEMENT_ID.to_string(),
+        group_column: request.by_columns.first().cloned(),
+        source_column: Some("responseColumn".to_string()),
+        entries: box_entries,
+    }));
+
+    let frame = |role: &str, aggregates| GraphDataFrameDto {
+        request_id: format!("distribution:{role}"),
+        dataset_id: request.dataset_id.clone(),
+        generation: request.generation,
+        source_rows,
+        processed_rows,
+        sampling: GraphSampling::Full,
+        dictionaries: std::collections::HashMap::new(),
+        extents: std::collections::HashMap::new(),
+        raw_chunks: Vec::new(),
+        aggregates,
+        raw_point_disposition: GraphRawPointDisposition::Empty {
+            valid_rows: 0,
+            budget: GRAPH_SCATTER_RENDER_BUDGET,
+        },
+    };
+    Ok(DistributionGraphFrames {
+        overview: frame("overview", overview),
+        box_plot: frame("boxPlot", box_plot),
+        ecdf: frame("ecdf", ecdf),
+        normal_quantile: frame("normalQuantile", normal_quantile),
+    })
+}
+
+fn deterministic_provenance_id(
+    dataset_id: &str,
+    generation: u64,
+    response_column_id: &str,
+) -> String {
+    let digest = Sha256::digest(format!("{dataset_id}\0{generation}\0{response_column_id}"));
+    format!("distribution:sha256:{digest:x}")
+}
+
+fn graph_group_name(
+    names: &[String],
+    values: &[crate::models::distribution::DistributionGroupValueV1],
+) -> String {
+    if values.is_empty() {
+        return "Overall".to_string();
+    }
+    names
+        .iter()
+        .zip(values)
+        .map(|(name, value)| format!("{name}={}", graph_group_value(value)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn graph_group_value(value: &crate::models::distribution::DistributionGroupValueV1) -> String {
+    use crate::models::distribution::DistributionGroupValueV1;
+    match value {
+        DistributionGroupValueV1::Missing => "Missing".to_string(),
+        DistributionGroupValueV1::Boolean { value } => value.to_string(),
+        DistributionGroupValueV1::Number { value } => value.to_string(),
+        DistributionGroupValueV1::Text { value } => value.clone(),
+        DistributionGroupValueV1::DateTime { utc_millis } => utc_millis.to_string(),
+    }
+}
+
+fn graph_series_name(response_name: &str, group_name: &str) -> String {
+    if group_name == "Overall" {
+        response_name.to_string()
+    } else {
+        format!("{response_name} | {group_name}")
+    }
+}
+
+fn graph_series_key(
+    response_name: &str,
+    group_key: &[crate::models::distribution::DistributionGroupValueV1],
+) -> Result<String, AppError> {
+    let canonical = serde_json::to_vec(&(response_name, group_key))
+        .map_err(|error| AppError::InvalidParam(error.to_string()))?;
+    let digest = Sha256::digest(canonical);
+    Ok(format!("distribution:series:{digest:x}"))
+}
+
+fn graph_count(value: f64) -> Result<u64, AppError> {
+    if !value.is_finite() || value < 0.0 || value > u64::MAX as f64 {
+        return Err(AppError::Stats(
+            "distribution.graph.countInvalid".to_string(),
+        ));
+    }
+    Ok(value.round() as u64)
+}
+
 fn overall_group(groups: &[PreparedGroupV1]) -> PreparedGroupV1 {
     let mut observations = groups
         .iter()
@@ -911,12 +1132,10 @@ fn fit_candidates(request: &DistributionRequestV1) -> Vec<&'static FitModelRegis
 
 fn execute_fit_candidates<T>(
     candidates: &[&'static FitModelRegistrationV1],
-    cancellation: &Arc<AtomicBool>,
     mut execute: impl FnMut(&'static FitModelRegistrationV1) -> Result<T, AppError>,
 ) -> Result<Vec<T>, AppError> {
     let mut results = Vec::with_capacity(candidates.len());
     for &candidate in candidates {
-        check_fit_cancellation(cancellation)?;
         results.push(execute(candidate)?);
     }
     Ok(results)
@@ -954,10 +1173,10 @@ fn build_fit_payload(
     x_max: f64,
     prefix: &str,
     candidate_ids: &[crate::models::distribution::ContinuousDistributionIdV1],
-    accepted: &DistributionRunAcceptedV1,
+    context: &OneShotExecutionContext,
 ) -> Result<DistributionFitDataV1, AppError> {
     let effective_n = effective_n(observations)?;
-    let provenance = fit_provenance(registration, candidate_ids, accepted);
+    let provenance = fit_provenance(registration, candidate_ids, context);
     let model = registration.model();
     let fit_id = format!(
         "{prefix}-fit-{}",
@@ -1087,7 +1306,7 @@ fn failed_fit_payload(
 fn fit_provenance(
     registration: &FitModelRegistrationV1,
     candidate_ids: &[crate::models::distribution::ContinuousDistributionIdV1],
-    accepted: &DistributionRunAcceptedV1,
+    context: &OneShotExecutionContext,
 ) -> DistributionFitProvenanceV1 {
     DistributionFitProvenanceV1 {
         method_id: registration.method_id.to_string(),
@@ -1102,8 +1321,7 @@ fn fit_provenance(
             ("statrs".to_string(), "0.18.0".to_string()),
             ("argmin".to_string(), "0.11.0".to_string()),
         ]),
-        snapshot_id: accepted.snapshot_id.clone(),
-        config_revision: accepted.config_revision,
+        computation_id: context.provenance_id.clone(),
         candidate_registry_ids: candidate_ids.to_vec(),
         compatibility_status: Jmp19CompatibilityStatusV1::CompatibilityPending,
     }
@@ -1125,9 +1343,8 @@ fn isolated_fit_metrics(
     parameter_count: usize,
     effective_n: f64,
 ) -> Result<FitMetricSetV1, FitFailureV1> {
-    fit_information_criteria(log_likelihood, parameter_count, effective_n).map_err(|_| {
-        objective_failure("distribution.fit.informationCriteriaInvalid.v1")
-    })
+    fit_information_criteria(log_likelihood, parameter_count, effective_n)
+        .map_err(|_| objective_failure("distribution.fit.informationCriteriaInvalid.v1"))
 }
 
 fn compare_fit_rows(
@@ -1141,7 +1358,10 @@ fn compare_fit_rows(
         ordering => return ordering,
     }
     if left_success {
-        match (finite_fit_metric(&left.aicc), finite_fit_metric(&right.aicc)) {
+        match (
+            finite_fit_metric(&left.aicc),
+            finite_fit_metric(&right.aicc),
+        ) {
             (Some(left_aicc), Some(right_aicc)) => {
                 if !fit_values_tied(left_aicc, right_aicc) {
                     return left_aicc.total_cmp(&right_aicc);
@@ -1228,15 +1448,6 @@ fn fit_status(status: DistributionFitStatusV1) -> &'static str {
         DistributionFitStatusV1::Unavailable => "unavailable",
         DistributionFitStatusV1::Failed => "failed",
     }
-}
-
-fn check_fit_cancellation(cancellation: &Arc<AtomicBool>) -> Result<(), AppError> {
-    if cancellation.load(Ordering::SeqCst) {
-        return Err(AppError::InvalidParam(
-            "distribution.run.cancelled".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 fn map_capability_indices(
@@ -1392,7 +1603,7 @@ fn map_capability_chart_data(value: NormalCapabilityChartDataV1) -> ProcessCapab
         provenance: ProcessCapabilityChartProvenanceV1 {
             capability_method: value.provenance.capability_method,
             normal_density_method: value.provenance.normal_density_method,
-            snapshot_id: value.provenance.snapshot_id,
+            computation_id: value.provenance.computation_id,
             spec_fingerprint: value.provenance.spec_fingerprint,
         },
     }
@@ -1467,39 +1678,34 @@ fn capability_override(
 
 fn chart_provenance(
     method_id: &str,
-    accepted: &DistributionRunAcceptedV1,
+    context: &OneShotExecutionContext,
 ) -> DistributionChartProvenanceV1 {
     chart_provenance_with_status(
         method_id,
         Jmp19CompatibilityStatusV1::CompatibilityPending,
-        accepted,
+        context,
     )
 }
 
 fn chart_provenance_with_status(
     method_id: &str,
     compatibility_status: Jmp19CompatibilityStatusV1,
-    accepted: &DistributionRunAcceptedV1,
+    context: &OneShotExecutionContext,
 ) -> DistributionChartProvenanceV1 {
-    chart_provenance_with_status_and_version(
-        method_id,
-        "1.0.0",
-        compatibility_status,
-        accepted,
-    )
+    chart_provenance_with_status_and_version(method_id, "1.0.0", compatibility_status, context)
 }
 
 fn chart_provenance_with_status_and_version(
     method_id: &str,
     method_version: &str,
     compatibility_status: Jmp19CompatibilityStatusV1,
-    accepted: &DistributionRunAcceptedV1,
+    context: &OneShotExecutionContext,
 ) -> DistributionChartProvenanceV1 {
     DistributionChartProvenanceV1 {
         method_id: method_id.to_string(),
         method_version: method_version.to_string(),
         compatibility_status,
-        snapshot_id: accepted.snapshot_id.clone(),
+        computation_id: context.provenance_id.clone(),
     }
 }
 
@@ -1578,8 +1784,7 @@ fn validate_run_request(request: &DistributionRequestV1) -> Result<(), AppError>
             "distribution.config.normalQuantileConfidenceOutOfRange".to_string(),
         ));
     }
-    if request.continuous_fit.fit_all
-        && !request.continuous_fit.enabled_distribution_ids.is_empty()
+    if request.continuous_fit.fit_all && !request.continuous_fit.enabled_distribution_ids.is_empty()
     {
         return Err(AppError::InvalidParam(
             "distribution.config.continuousFitSelectionConflict".to_string(),
@@ -1669,28 +1874,7 @@ fn validate_run_request(request: &DistributionRequestV1) -> Result<(), AppError>
             ));
         }
     }
-    if request.resource_budget.cancel_token.is_some() {
-        return Err(AppError::InvalidParam(
-            "distribution.run.clientCancelTokenNotAllowed".to_string(),
-        ));
-    }
     Ok(())
-}
-
-fn filter_fingerprint(
-    filter: &crate::models::distribution::FilterExprV1,
-) -> Result<String, AppError> {
-    let canonical = serde_json::to_vec(filter)
-        .map_err(|error| AppError::InvalidParam(format!("invalid filter: {error}")))?;
-    let digest = Sha256::digest(canonical);
-    Ok(format!("filter:sha256:{digest:x}"))
-}
-
-fn schema_fingerprint(columns: &[(String, String)]) -> Result<String, AppError> {
-    let canonical = serde_json::to_vec(columns)
-        .map_err(|error| AppError::InvalidParam(format!("invalid schema: {error}")))?;
-    let digest = Sha256::digest(canonical);
-    Ok(format!("schema:sha256:{digest:x}"))
 }
 
 fn is_machine_id(value: &str) -> bool {
@@ -1744,11 +1928,12 @@ mod tests {
     use super::*;
     use crate::models::distribution::{
         BlackBoxObservationV1, BlackBoxProvenanceV1, BlackBoxStatusV1, BlackBoxValueV1,
-        DistributionColumnRefV1, DistributionModelingTypeV1, DistributionRequestV1,
+        DistributionColumnRefV1, DistributionModeV1, DistributionModelingTypeV1,
+        DistributionRequest, DistributionRequestV1, ObservationContributionPolicyV1,
+        ResourceBudgetV1,
     };
     use crate::services::data_service::DataService;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::collections::HashMap;
 
     fn run_request() -> DistributionRequestV1 {
         DistributionRequestV1 {
@@ -1768,8 +1953,8 @@ mod tests {
             filter_expr: crate::models::distribution::FilterExprV1::And { exprs: Vec::new() },
             confidence_level: 0.95,
             histograms_only: false,
-            continuous_fit:
-                crate::models::distribution::DistributionContinuousFitConfigV1::default(),
+            continuous_fit: crate::models::distribution::DistributionContinuousFitConfigV1::default(
+            ),
             visual_diagnostics:
                 crate::models::distribution::DistributionVisualDiagnosticsConfigV1::default(),
             enabled_capability_ids: Vec::new(),
@@ -1778,6 +1963,12 @@ mod tests {
                 .expect("observation policy"),
             resource_budget: ResourceBudgetV1::default(),
             exact: true,
+        }
+    }
+
+    fn one_shot_context(config_revision: u64) -> OneShotExecutionContext {
+        OneShotExecutionContext {
+            provenance_id: format!("distribution:test:{config_revision}"),
         }
     }
 
@@ -1830,11 +2021,184 @@ mod tests {
         (dataset.id, value_id, freq_id, weight_id)
     }
 
+    #[test]
+    fn one_shot_report_echoes_generation_and_omits_lifecycle_fields() {
+        let state = AppState::new().expect("test state");
+        let (dataset_id, _, _, _) = create_value_freq_weight_dataset(
+            &state,
+            "One Shot Distribution",
+            &[(1.0, 1, 2.0), (4.0, 1, 1.0)],
+        );
+        let generation = state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let request = DistributionRequest {
+            dataset_id: dataset_id.clone(),
+            generation,
+            response_columns: vec!["value".to_string()],
+            weight_column: Some("weight".to_string()),
+            freq_column: None,
+            by_columns: Vec::new(),
+            confidence_level: 0.95,
+            spec_limits: HashMap::new(),
+            fit_distributions: Vec::new(),
+        };
+
+        let response = DistributionService::new(&state)
+            .compute_distribution_report(&request)
+            .expect("one-shot report");
+        assert_eq!(response.dataset_id, dataset_id);
+        assert_eq!(response.generation, generation);
+        for frame in [
+            &response.graph_frames.overview,
+            &response.graph_frames.box_plot,
+            &response.graph_frames.ecdf,
+            &response.graph_frames.normal_quantile,
+        ] {
+            assert_eq!(frame.dataset_id, response.dataset_id);
+            assert_eq!(frame.generation, generation);
+        }
+        let unavailable = response
+            .report_blocks
+            .iter()
+            .find(|block| block.block.kind == "normalQuantile")
+            .expect("normal quantile block");
+        assert_eq!(unavailable.block.status, "unavailable");
+        assert_eq!(
+            unavailable.reason_code.as_deref(),
+            Some("normalQuantile.weightUnsupported.v1")
+        );
+
+        let serialized = serde_json::to_value(&response).expect("serialize one-shot report");
+        let graph_frames = serialized["graphFrames"]
+            .as_object()
+            .expect("graph frames object");
+        let mut graph_roles = graph_frames.keys().map(String::as_str).collect::<Vec<_>>();
+        graph_roles.sort_unstable();
+        assert_eq!(
+            graph_roles,
+            vec!["boxPlot", "ecdf", "normalQuantile", "overview"]
+        );
+        fn assert_lifecycle_free(value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Array(values) => {
+                    values.iter().for_each(assert_lifecycle_free);
+                }
+                serde_json::Value::Object(values) => {
+                    for (key, child) in values {
+                        assert!(
+                            !["runId", "snapshotId", "cancelToken", "progress"]
+                                .contains(&key.as_str()),
+                            "unexpected lifecycle field {key}"
+                        );
+                        assert_lifecycle_free(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_lifecycle_free(&serialized);
+    }
+
+    #[test]
+    fn one_shot_compute_is_repeatable_and_aggregates_all_responses_and_groups() {
+        let state = AppState::new().expect("test state");
+        let data = DataService::new(&state);
+        let dataset = data
+            .create_table(
+                "Grouped Responses",
+                &["height".into(), "width".into(), "region".into()],
+                &["DOUBLE".into(), "DOUBLE".into(), "VARCHAR".into()],
+            )
+            .expect("create dataset");
+        for (height, width, region) in [
+            ("1", "10", "East"),
+            ("2", "20", "East"),
+            ("3", "30", "West"),
+            ("4", "40", "West"),
+        ] {
+            let row_id = data.add_row(&dataset.id).expect("add row");
+            data.update_cell(&dataset.id, row_id, "height", height)
+                .expect("height");
+            data.update_cell(&dataset.id, row_id, "width", width)
+                .expect("width");
+            data.update_cell(&dataset.id, row_id, "region", region)
+                .expect("region");
+        }
+        let generation = state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_generation(&dataset.id)
+            .expect("generation");
+        let request = DistributionRequest {
+            dataset_id: dataset.id,
+            generation,
+            response_columns: vec!["height".to_string(), "width".to_string()],
+            weight_column: None,
+            freq_column: None,
+            by_columns: vec!["region".to_string()],
+            confidence_level: 0.95,
+            spec_limits: HashMap::new(),
+            fit_distributions: vec![
+                crate::models::distribution::ContinuousDistributionIdV1::Normal,
+            ],
+        };
+        let service = DistributionService::new(&state);
+        let first = service
+            .compute_distribution_report(&request)
+            .expect("first compute");
+        let second = service
+            .compute_distribution_report(&request)
+            .expect("second compute");
+
+        assert_eq!(first.groups.len(), 3, "overall plus both By groups");
+        assert!(first.groups.iter().all(|group| group.y_results.len() == 2));
+        assert_eq!(first.graph_frames.overview.aggregates.len(), 7);
+        let histograms = first
+            .graph_frames
+            .overview
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::Histogram(packet) => Some(packet),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(histograms.len(), 1);
+        assert!(histograms[0].bins.iter().all(|bin| bin.group.is_some()
+            && bin.category.is_some()
+            && bin.source_column.is_some()));
+        let boxes = first
+            .graph_frames
+            .box_plot
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::BoxPlot(packet) => Some(packet),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].entries.len(), 6);
+        assert!(boxes[0].entries.iter().all(|entry| entry.group.is_some()
+            && entry.category.is_some()
+            && entry.source_column.is_some()));
+        assert_eq!(first.graph_frames.ecdf.aggregates.len(), 6);
+        assert_eq!(first.graph_frames.normal_quantile.aggregates.len(), 24);
+        assert_eq!(
+            serde_json::to_value(&first.graph_frames).expect("first frames"),
+            serde_json::to_value(&second.graph_frames).expect("second frames"),
+            "ordinary deterministic provenance must produce stable packet identities",
+        );
+    }
+
     mod continuous_fit {
         use super::*;
-        use crate::models::distribution::{
-            ContinuousDistributionIdV1, DistributionFitStatusV1,
-        };
+        use crate::models::distribution::{ContinuousDistributionIdV1, DistributionFitStatusV1};
         use serde::Deserialize;
         use std::fs;
 
@@ -1857,34 +2221,21 @@ mod tests {
             state: &AppState,
             rows: &[(f64, u64, f64)],
             configure: impl FnOnce(&mut DistributionRequestV1, &str, &str),
-        ) -> Result<DistributionResultEnvelopeV1, AppError> {
+        ) -> Result<OneShotExecutionResult, AppError> {
             let (dataset_id, value_id, frequency_id, weight_id) =
                 create_value_freq_weight_dataset(state, "Continuous Fit", rows);
             let mut request = run_request();
             request.source_dataset_id = Some(dataset_id);
             request.y_columns[0].column_id = value_id;
             configure(&mut request, &frequency_id, &weight_id);
-            let accepted = DistributionRunAcceptedV1 {
-                analysis_id: request.analysis_id.clone(),
-                config_revision: request.config_revision,
-                run_id: "run-continuous-fit".to_string(),
-                snapshot_id: "snapshot-continuous-fit".to_string(),
-                cancel_token: "cancel-continuous-fit".to_string(),
+            let context = OneShotExecutionContext {
+                provenance_id: "distribution:test:continuous-fit".to_string(),
             };
-            state
-                .distribution_run_cancellations
-                .lock()
-                .expect("cancellation registry")
-                .insert(
-                    accepted.cancel_token.clone(),
-                    Arc::new(AtomicBool::new(false)),
-                );
-
-            DistributionService::new(state).execute_distribution_run(&request, &accepted)
+            DistributionService::new(state).execute_one_shot(&request, &context)
         }
 
         fn fit_payloads(
-            result: &DistributionResultEnvelopeV1,
+            result: &OneShotExecutionResult,
         ) -> Vec<&crate::models::distribution::DistributionFitDataV1> {
             result
                 .report_blocks
@@ -1914,9 +2265,21 @@ mod tests {
                 .position(|block| block.kind == "normalQuantile")
                 .expect("normal quantile block");
             assert_eq!(blocks[normal_quantile_index + 1].kind, "continuousFit");
-            assert_eq!(blocks[normal_quantile_index + 1].block_id, format!("{}-0-fit-gamma", result.groups[0].y_results[0].y_column.column_id));
+            assert_eq!(
+                blocks[normal_quantile_index + 1].block_id,
+                format!(
+                    "{}-0-fit-gamma",
+                    result.groups[0].y_results[0].y_column.column_id
+                )
+            );
             assert_eq!(blocks[normal_quantile_index + 2].kind, "continuousFit");
-            assert_eq!(blocks[normal_quantile_index + 2].block_id, format!("{}-0-fit-normal", result.groups[0].y_results[0].y_column.column_id));
+            assert_eq!(
+                blocks[normal_quantile_index + 2].block_id,
+                format!(
+                    "{}-0-fit-normal",
+                    result.groups[0].y_results[0].y_column.column_id
+                )
+            );
             assert_eq!(blocks[normal_quantile_index + 3].kind, "boxPlot");
 
             let payloads = fit_payloads(&result);
@@ -1933,7 +2296,10 @@ mod tests {
                 .find(|payload| payload.distribution_id == ContinuousDistributionIdV1::Gamma)
                 .unwrap();
             assert_eq!(gamma.estimated_parameter_count, 2);
-            assert!(!gamma.parameters.iter().any(|parameter| parameter.parameter_id == "location"));
+            assert!(!gamma
+                .parameters
+                .iter()
+                .any(|parameter| parameter.parameter_id == "location"));
             assert!(gamma.parameters.iter().all(|parameter| {
                 parameter.standard_error.value.is_some_and(f64::is_finite)
                     && parameter.lower_confidence.value.is_some_and(f64::is_finite)
@@ -1965,10 +2331,22 @@ mod tests {
             assert_eq!(fit.status, DistributionFitStatusV1::Available);
             assert_eq!(fit.estimated_parameter_count, 1);
             assert_eq!(fit.parameters.len(), 1);
-            assert!(!fit.parameters.iter().any(|parameter| parameter.parameter_id == "location"));
-            assert!(fit.parameters[0].standard_error.value.is_some_and(f64::is_finite));
-            assert!(fit.parameters[0].lower_confidence.value.is_some_and(f64::is_finite));
-            assert!(fit.parameters[0].upper_confidence.value.is_some_and(f64::is_finite));
+            assert!(!fit
+                .parameters
+                .iter()
+                .any(|parameter| parameter.parameter_id == "location"));
+            assert!(fit.parameters[0]
+                .standard_error
+                .value
+                .is_some_and(f64::is_finite));
+            assert!(fit.parameters[0]
+                .lower_confidence
+                .value
+                .is_some_and(f64::is_finite));
+            assert!(fit.parameters[0]
+                .upper_confidence
+                .value
+                .is_some_and(f64::is_finite));
             assert_close(-2.0 * fit.log_likelihood.value.unwrap(), 740.6183972);
             assert_close(fit.aicc.value.unwrap(), 742.7000298);
             assert_close(fit.bic.value.unwrap(), 744.5502228);
@@ -1991,13 +2369,14 @@ mod tests {
                 .find(|payload| payload.distribution_id == ContinuousDistributionIdV1::Normal)
                 .expect("normal fit");
             assert_eq!(normal.status, DistributionFitStatusV1::Available);
-            assert!(payloads.iter().filter(|payload| {
-                payload.distribution_id != ContinuousDistributionIdV1::Normal
-            }).all(|payload| {
-                payload.status == DistributionFitStatusV1::Unavailable
-                    && payload.reason_code.is_some()
-                    && payload.fitted_curve.is_none()
-            }));
+            assert!(payloads
+                .iter()
+                .filter(|payload| { payload.distribution_id != ContinuousDistributionIdV1::Normal })
+                .all(|payload| {
+                    payload.status == DistributionFitStatusV1::Unavailable
+                        && payload.reason_code.is_some()
+                        && payload.fitted_curve.is_none()
+                }));
 
             let comparison_blocks = result
                 .report_blocks
@@ -2005,8 +2384,8 @@ mod tests {
                 .filter(|block| block.kind == "fitComparison")
                 .collect::<Vec<_>>();
             assert_eq!(comparison_blocks.len(), 1);
-            let comparison = serde_json::to_value(comparison_blocks[0])
-                .expect("serialize comparison block");
+            let comparison =
+                serde_json::to_value(comparison_blocks[0]).expect("serialize comparison block");
             let rows = comparison["distributionFitComparisonData"]["rows"]
                 .as_array()
                 .expect("typed comparison rows");
@@ -2022,7 +2401,13 @@ mod tests {
             let state = AppState::new().expect("test state");
             let result = execute_fit_request(
                 &state,
-                &[(0.5, 1, 1.0), (1.0, 1, 1.0), (2.0, 1, 1.0), (4.0, 1, 1.0), (8.0, 1, 1.0)],
+                &[
+                    (0.5, 1, 1.0),
+                    (1.0, 1, 1.0),
+                    (2.0, 1, 1.0),
+                    (4.0, 1, 1.0),
+                    (8.0, 1, 1.0),
+                ],
                 |request, _, _| request.continuous_fit.fit_all = true,
             )
             .expect("fit all positive data");
@@ -2058,9 +2443,8 @@ mod tests {
             ));
 
             let mut unknown = run_request();
-            unknown.continuous_fit.enabled_distribution_ids = vec![
-                ContinuousDistributionIdV1::Unknown,
-            ];
+            unknown.continuous_fit.enabled_distribution_ids =
+                vec![ContinuousDistributionIdV1::Unknown];
             assert!(matches!(
                 validate_run_request(&unknown),
                 Err(AppError::InvalidParam(code)) if code == "distribution.config.continuousFitUnknown"
@@ -2068,7 +2452,8 @@ mod tests {
 
             let mut conflict = run_request();
             conflict.continuous_fit.fit_all = true;
-            conflict.continuous_fit.enabled_distribution_ids = vec![ContinuousDistributionIdV1::Normal];
+            conflict.continuous_fit.enabled_distribution_ids =
+                vec![ContinuousDistributionIdV1::Normal];
             assert!(matches!(
                 validate_run_request(&conflict),
                 Err(AppError::InvalidParam(code)) if code == "distribution.config.continuousFitSelectionConflict"
@@ -2087,9 +2472,10 @@ mod tests {
                 },
             )
             .expect("histograms only");
-            assert!(result.report_blocks.iter().all(|block| {
-                block.kind != "continuousFit" && block.kind != "fitComparison"
-            }));
+            assert!(result
+                .report_blocks
+                .iter()
+                .all(|block| { block.kind != "continuousFit" && block.kind != "fitComparison" }));
         }
 
         #[test]
@@ -2157,7 +2543,12 @@ mod tests {
             aicc: Option<f64>,
         ) -> DistributionFitComparisonRowV1 {
             let metric = |value: Option<f64>| CapabilityTypedValueV1 {
-                state: if value.is_some() { "available" } else { "unavailable" }.to_string(),
+                state: if value.is_some() {
+                    "available"
+                } else {
+                    "unavailable"
+                }
+                .to_string(),
                 value,
                 reason_code: None,
             };
@@ -2199,7 +2590,10 @@ mod tests {
                 Some(10.0),
                 None,
             );
-            assert_eq!(compare_fit_rows(&gamma_without_aicc, &normal_without_aicc), std::cmp::Ordering::Less);
+            assert_eq!(
+                compare_fit_rows(&gamma_without_aicc, &normal_without_aicc),
+                std::cmp::Ordering::Less
+            );
 
             let failed_gamma = comparison_row(
                 ContinuousDistributionIdV1::Gamma,
@@ -2207,53 +2601,29 @@ mod tests {
                 None,
                 None,
             );
-            assert_eq!(compare_fit_rows(&normal_without_aicc, &failed_gamma), std::cmp::Ordering::Less);
+            assert_eq!(
+                compare_fit_rows(&normal_without_aicc, &failed_gamma),
+                std::cmp::Ordering::Less
+            );
         }
 
         #[test]
         fn non_finite_derived_fit_metrics_are_isolated_as_objective_failures() {
             let failure = isolated_fit_metrics(-f64::MAX, 2, 10.0)
                 .expect_err("overflowing information criteria must be isolated");
-            assert_eq!(failure.classification, FitFailureClassificationV1::Objective);
-            assert_eq!(failure.reason_code, "distribution.fit.informationCriteriaInvalid.v1");
-        }
-
-        #[test]
-        fn registered_cancellation_between_models_stops_later_models() {
-            let state = AppState::new().expect("test state");
-            let cancellation = Arc::new(AtomicBool::new(false));
-            state
-                .distribution_run_cancellations
-                .lock()
-                .expect("cancellation registry")
-                .insert("cancel-between-models".to_string(), Arc::clone(&cancellation));
-            let registered = state
-                .distribution_run_cancellations
-                .lock()
-                .expect("cancellation registry")
-                .get("cancel-between-models")
-                .cloned()
-                .expect("registered cancellation");
-            let candidates = STAGE1_FIT_REGISTRY.iter().collect::<Vec<_>>();
-            let mut execution_count = 0;
-
-            let error = execute_fit_candidates(&candidates, &registered, |_| {
-                execution_count += 1;
-                cancellation.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-            .expect_err("cancellation after the first model must stop the run");
-
-            assert!(matches!(
-                error,
-                AppError::InvalidParam(code) if code == "distribution.run.cancelled"
-            ));
-            assert_eq!(execution_count, 1);
+            assert_eq!(
+                failure.classification,
+                FitFailureClassificationV1::Objective
+            );
+            assert_eq!(
+                failure.reason_code,
+                "distribution.fit.informationCriteriaInvalid.v1"
+            );
         }
     }
 
     fn extract_normal_quantile_payload(
-        result: &DistributionResultEnvelopeV1,
+        result: &OneShotExecutionResult,
     ) -> &crate::models::distribution::NormalQuantileDataV1 {
         let block = result
             .report_blocks
@@ -2291,13 +2661,10 @@ mod tests {
 
     #[test]
     fn run_request_rejects_normal_quantile_confidence_outside_open_interval() {
-        let state = AppState::new().expect("test state");
-
         let mut low = run_request();
         low.visual_diagnostics.normal_quantile_confidence_level = 0.0;
-        let low_error = DistributionService::new(&state)
-            .start_distribution_run(&low)
-            .expect_err("normal quantile confidence 0 must reject");
+        let low_error =
+            validate_run_request(&low).expect_err("normal quantile confidence 0 must reject");
         assert!(matches!(
             low_error,
             AppError::InvalidParam(code)
@@ -2306,9 +2673,8 @@ mod tests {
 
         let mut high = run_request();
         high.visual_diagnostics.normal_quantile_confidence_level = 1.0;
-        let high_error = DistributionService::new(&state)
-            .start_distribution_run(&high)
-            .expect_err("normal quantile confidence 1 must reject");
+        let high_error =
+            validate_run_request(&high).expect_err("normal quantile confidence 1 must reject");
         assert!(matches!(
             high_error,
             AppError::InvalidParam(code)
@@ -2318,15 +2684,12 @@ mod tests {
 
     #[test]
     fn run_request_rejects_histogram_fixed_count_out_of_range() {
-        let state = AppState::new().expect("test state");
         let mut request = run_request();
         request.visual_diagnostics.histogram.method =
             crate::models::distribution::HistogramMethodV1::FixedCount;
         request.visual_diagnostics.histogram.fixed_count = Some(0);
 
-        let error = DistributionService::new(&state)
-            .start_distribution_run(&request)
-            .expect_err("fixedCount=0 must reject");
+        let error = validate_run_request(&request).expect_err("fixedCount=0 must reject");
         assert!(matches!(
             error,
             AppError::InvalidParam(code)
@@ -2334,9 +2697,7 @@ mod tests {
         ));
 
         request.visual_diagnostics.histogram.fixed_count = Some(1001);
-        let error = DistributionService::new(&state)
-            .start_distribution_run(&request)
-            .expect_err("fixedCount=1001 must reject");
+        let error = validate_run_request(&request).expect_err("fixedCount=1001 must reject");
         assert!(matches!(
             error,
             AppError::InvalidParam(code)
@@ -2346,15 +2707,12 @@ mod tests {
 
     #[test]
     fn run_request_rejects_histogram_fixed_width_non_positive_or_non_finite() {
-        let state = AppState::new().expect("test state");
         let mut request = run_request();
         request.visual_diagnostics.histogram.method =
             crate::models::distribution::HistogramMethodV1::FixedWidth;
         request.visual_diagnostics.histogram.fixed_width = Some(0.0);
 
-        let zero_error = DistributionService::new(&state)
-            .start_distribution_run(&request)
-            .expect_err("fixedWidth=0 must reject");
+        let zero_error = validate_run_request(&request).expect_err("fixedWidth=0 must reject");
         assert!(matches!(
             zero_error,
             AppError::InvalidParam(code)
@@ -2362,9 +2720,7 @@ mod tests {
         ));
 
         request.visual_diagnostics.histogram.fixed_width = Some(f64::NAN);
-        let nan_error = DistributionService::new(&state)
-            .start_distribution_run(&request)
-            .expect_err("fixedWidth=NaN must reject");
+        let nan_error = validate_run_request(&request).expect_err("fixedWidth=NaN must reject");
         assert!(matches!(
             nan_error,
             AppError::InvalidParam(code)
@@ -2373,180 +2729,15 @@ mod tests {
     }
 
     #[test]
-    fn invalid_source_is_rejected_before_acceptance() {
-        let state = AppState::new().expect("test state");
-        let error = DistributionService::new(&state)
-            .start_distribution_run(&run_request())
-            .expect_err("missing source must reject");
-
-        assert!(matches!(
-            error,
-            AppError::Database(_) | AppError::InvalidParam(_)
-        ));
-    }
-
-    #[test]
     fn run_request_rejects_conflicting_roles_before_registry_dispatch() {
-        let state = AppState::new().expect("test state");
         let mut request = run_request();
         request.by_column_ids.push("value".to_string());
 
-        let error = DistributionService::new(&state)
-            .start_distribution_run(&request)
-            .expect_err("role conflict must reject");
+        let error = validate_run_request(&request).expect_err("role conflict must reject");
         assert!(matches!(
             error,
             AppError::InvalidParam(code) if code == "distribution.config.roleConflict"
         ));
-    }
-
-    #[test]
-    fn cancel_distribution_run_uses_an_opaque_registered_token() {
-        let state = AppState::new().expect("test state");
-        let cancelled = Arc::new(AtomicBool::new(false));
-        state
-            .distribution_run_cancellations
-            .lock()
-            .expect("run registry")
-            .insert("opaque-token".to_string(), Arc::clone(&cancelled));
-
-        DistributionService::new(&state)
-            .cancel_distribution_run(&DistributionCancelTokenV1 {
-                cancel_token: "opaque-token".to_string(),
-            })
-            .expect("cancel registered run");
-        assert!(cancelled.load(Ordering::SeqCst));
-
-        let error = DistributionService::new(&state)
-            .cancel_distribution_run(&DistributionCancelTokenV1 {
-                cancel_token: "opaque-token".to_string(),
-            })
-            .expect_err("consumed token must not be accepted twice");
-        assert!(matches!(
-            error,
-            AppError::InvalidParam(code) if code == "distribution.run.cancelTokenUnknown"
-        ));
-    }
-
-    #[test]
-    fn bootstrap_distribution_workspace_returns_continuous_capabilities() {
-        let state = AppState::new().expect("test state");
-        let service = DistributionService::new(&state);
-        let bootstrap = service
-            .bootstrap_distribution_workspace()
-            .expect("bootstrap");
-
-        assert!(bootstrap.can_run);
-        assert_eq!(bootstrap.capabilities.len(), 11);
-        assert_eq!(
-            bootstrap.capabilities
-                .iter()
-                .filter_map(|capability| capability.id.strip_prefix("fit.continuous."))
-                .collect::<Vec<_>>(),
-            vec!["normal", "lognormal", "exponential", "gamma", "weibull"],
-        );
-        assert_eq!(bootstrap.mode, DistributionModeV1::Continuous);
-        assert_eq!(bootstrap.observation_policy.schema_version, "1");
-    }
-
-    #[test]
-    fn stale_snapshot_is_rejected_after_generation_change() {
-        let state = AppState::new().expect("test state");
-        let data = DataService::new(&state);
-        let dataset = data
-            .create_table("Snapshot", &["value".into()], &["DOUBLE".into()])
-            .expect("create dataset");
-        let service = DistributionService::new(&state);
-        let snapshot = service
-            .take_analysis_snapshot("dist-1", &dataset.id, "filter:v1")
-            .expect("snapshot");
-
-        data.add_row(&dataset.id).expect("mutate dataset");
-
-        assert!(service
-            .validate_snapshot_is_current(&snapshot, "filter:v1")
-            .is_err());
-    }
-
-    #[test]
-    fn concurrent_mutation_marks_previous_run_stale() {
-        let state = AppState::new().expect("test state");
-        let data = DataService::new(&state);
-        let dataset = data
-            .create_table("Concurrent", &["value".into()], &["DOUBLE".into()])
-            .expect("create dataset");
-        let service = DistributionService::new(&state);
-        let snapshot = service
-            .take_analysis_snapshot("dist-1", &dataset.id, "filter:v1")
-            .expect("snapshot");
-
-        std::thread::scope(|scope| {
-            scope.spawn(|| data.add_row(&dataset.id).expect("concurrent mutation"));
-        });
-
-        assert!(service
-            .validate_snapshot_is_current(&snapshot, "filter:v1")
-            .is_err());
-    }
-
-    #[test]
-    fn progress_is_monotonic_and_cancel_token_is_opaque() {
-        let mut state = DistributionRunStateV1::running(
-            "dist-1",
-            1,
-            "run-1",
-            "snapshot-1",
-            "opaque:/not-interpreted",
-        );
-        DistributionService::emit_progress(&mut state, "prepare", 2, 10, "distribution.prepare")
-            .expect("first progress");
-        DistributionService::emit_progress(&mut state, "prepare", 8, 10, "distribution.prepare")
-            .expect("second progress");
-        assert!(DistributionService::emit_progress(
-            &mut state,
-            "prepare",
-            7,
-            10,
-            "distribution.prepare"
-        )
-        .is_err());
-        assert_eq!(state.progress.as_ref().expect("progress").percent, 80.0);
-
-        let token = DistributionCancelTokenV1 {
-            cancel_token: "opaque:/not-interpreted".to_string(),
-        };
-        let wrong_token = DistributionCancelTokenV1 {
-            cancel_token: "different".to_string(),
-        };
-        assert!(DistributionService::cancel_run(&mut state, &wrong_token).is_err());
-        DistributionService::cancel_run(&mut state, &token).expect("cancel");
-        assert_eq!(state.status, DistributionRunStatusV1::Cancelled);
-    }
-
-    #[test]
-    fn changed_filter_fingerprint_rejects_snapshot() {
-        let state = AppState::new().expect("test state");
-        let data = DataService::new(&state);
-        let dataset = data
-            .create_table("Filter", &["value".into()], &["DOUBLE".into()])
-            .expect("create dataset");
-        let service = DistributionService::new(&state);
-        let snapshot = service
-            .take_analysis_snapshot("dist-1", &dataset.id, "filter:v1")
-            .expect("snapshot");
-
-        assert!(service
-            .validate_snapshot_is_current(&snapshot, "filter:v2")
-            .is_err());
-    }
-
-    #[test]
-    fn schema_fingerprint_is_canonical_sha256() {
-        let columns = vec![("value".to_string(), "DOUBLE".to_string())];
-        assert_eq!(
-            schema_fingerprint(&columns).expect("fingerprint"),
-            "schema:sha256:2f6ce0b14f1e3607f4c670257550863187ce940cc0d6c78254f9ec3ff7ecf193"
-        );
     }
 
     fn synthetic_black_box_case() -> BlackBoxCaseV1 {
@@ -2604,11 +2795,16 @@ mod tests {
                 "fit.continuous.weibull",
             ],
         );
-        assert!(!capabilities
-            .iter()
-            .any(|capability| ["cauchy", "studentT", "shash", "johnson", "mixture", "smoothCurve"]
-                .iter()
-                .any(|future| capability.id.contains(future))));
+        assert!(!capabilities.iter().any(|capability| [
+            "cauchy",
+            "studentT",
+            "shash",
+            "johnson",
+            "mixture",
+            "smoothCurve"
+        ]
+        .iter()
+        .any(|future| capability.id.contains(future))));
     }
 
     #[test]
@@ -2653,16 +2849,10 @@ mod tests {
             .into_iter()
             .map(|capability| capability.id)
             .collect();
-        let accepted = DistributionRunAcceptedV1 {
-            analysis_id: request.analysis_id.clone(),
-            config_revision: request.config_revision,
-            run_id: "run-test".to_string(),
-            snapshot_id: "snapshot-test".to_string(),
-            cancel_token: "cancel-test".to_string(),
-        };
+        let context = one_shot_context(request.config_revision);
 
         let result = DistributionService::new(&state)
-            .execute_distribution_run(&request, &accepted)
+            .execute_one_shot(&request, &context)
             .expect("execute distribution");
         assert_eq!(result.groups.len(), 1);
         assert_eq!(result.groups[0].y_results.len(), 1);
@@ -2737,8 +2927,8 @@ mod tests {
             "capability.normal.individuals"
         );
         assert_eq!(
-            capability_chart.provenance.snapshot_id,
-            accepted.snapshot_id
+            capability_chart.provenance.computation_id,
+            context.provenance_id
         );
         assert!(capability_chart.overall_density.coordinates.len() >= 2);
         assert!(capability_chart.within_density.is_some());
@@ -2803,7 +2993,7 @@ mod tests {
         }));
         request.enabled_capability_ids.clear();
         let disabled_result = DistributionService::new(&state)
-            .execute_distribution_run(&request, &accepted)
+            .execute_one_shot(&request, &context)
             .expect("execute without normal capability");
         assert!(!disabled_result
             .report_blocks
@@ -2815,13 +3005,7 @@ mod tests {
     fn normal_quantile_service_integration_sets_provenance_and_typed_statuses() {
         let state = AppState::new().expect("test state");
         let service = DistributionService::new(&state);
-        let accepted = DistributionRunAcceptedV1 {
-            analysis_id: "analysis-task4-normal".to_string(),
-            config_revision: 9,
-            run_id: "run-task4-normal".to_string(),
-            snapshot_id: "snapshot-task4-normal".to_string(),
-            cancel_token: "cancel-task4-normal".to_string(),
-        };
+        let context = one_shot_context(9);
 
         let (unique_dataset, unique_value_id, _unique_freq_id, _unique_weight_id) =
             create_value_freq_weight_dataset(
@@ -2833,7 +3017,7 @@ mod tests {
         unique_request.source_dataset_id = Some(unique_dataset);
         unique_request.y_columns[0].column_id = unique_value_id;
         let unique_result = service
-            .execute_distribution_run(&unique_request, &accepted)
+            .execute_one_shot(&unique_request, &context)
             .expect("unique normal quantile result");
         let unique_payload = extract_normal_quantile_payload(&unique_result);
         assert_eq!(
@@ -2868,7 +3052,7 @@ mod tests {
         ties_request.source_dataset_id = Some(ties_dataset);
         ties_request.y_columns[0].column_id = ties_value_id;
         let ties_result = service
-            .execute_distribution_run(&ties_request, &accepted)
+            .execute_one_shot(&ties_request, &context)
             .expect("ties normal quantile result");
         let ties_payload = extract_normal_quantile_payload(&ties_result);
         assert_eq!(
@@ -2891,7 +3075,7 @@ mod tests {
         freq_request.y_columns[0].column_id = freq_value_id;
         freq_request.frequency_column_id = Some(freq_column_id);
         let freq_result = service
-            .execute_distribution_run(&freq_request, &accepted)
+            .execute_one_shot(&freq_request, &context)
             .expect("freq normal quantile result");
         let freq_payload = extract_normal_quantile_payload(&freq_result);
         assert_eq!(
@@ -2914,7 +3098,7 @@ mod tests {
         weight_request.y_columns[0].column_id = weight_value_id;
         weight_request.weight_column_id = Some(weight_column_id);
         let weight_result = service
-            .execute_distribution_run(&weight_request, &accepted)
+            .execute_one_shot(&weight_request, &context)
             .expect("weighted normal quantile result");
         let weight_payload = extract_normal_quantile_payload(&weight_result);
         assert_eq!(
@@ -2942,13 +3126,7 @@ mod tests {
     fn normal_quantile_service_payloads_avoid_nan_serialization_for_small_and_constant_groups() {
         let state = AppState::new().expect("test state");
         let service = DistributionService::new(&state);
-        let accepted = DistributionRunAcceptedV1 {
-            analysis_id: "analysis-task4-finite".to_string(),
-            config_revision: 10,
-            run_id: "run-task4-finite".to_string(),
-            snapshot_id: "snapshot-task4-finite".to_string(),
-            cancel_token: "cancel-task4-finite".to_string(),
-        };
+        let context = one_shot_context(10);
 
         for (dataset_name, rows) in [
             ("Normal N1", vec![(7.0, 1_u64, 1.0)]),
@@ -2964,7 +3142,7 @@ mod tests {
             request.source_dataset_id = Some(dataset_id);
             request.y_columns[0].column_id = value_id;
             let result = service
-                .execute_distribution_run(&request, &accepted)
+                .execute_one_shot(&request, &context)
                 .expect("normal quantile finite result");
 
             let payload = extract_normal_quantile_payload(&result);
@@ -2988,13 +3166,7 @@ mod tests {
             "Histogram Only",
             &[(1.0, 1, 1.0), (2.0, 1, 1.0), (3.0, 1, 1.0)],
         );
-        let accepted = DistributionRunAcceptedV1 {
-            analysis_id: "analysis-task4-hist-only".to_string(),
-            config_revision: 11,
-            run_id: "run-task4-hist-only".to_string(),
-            snapshot_id: "snapshot-task4-hist-only".to_string(),
-            cancel_token: "cancel-task4-hist-only".to_string(),
-        };
+        let context = one_shot_context(11);
 
         let mut request = run_request();
         request.source_dataset_id = Some(dataset_id);
@@ -3002,7 +3174,7 @@ mod tests {
         request.histograms_only = true;
 
         let result = service
-            .execute_distribution_run(&request, &accepted)
+            .execute_one_shot(&request, &context)
             .expect("histograms only result");
         assert!(!result
             .report_blocks
@@ -3071,16 +3243,10 @@ mod tests {
                 payload_schema_version: "1".to_string(),
                 payload: serde_json::json!({ "lsl": 1.0, "target": null, "usl": 5.5 }),
             }];
-        let accepted = DistributionRunAcceptedV1 {
-            analysis_id: request.analysis_id.clone(),
-            config_revision: request.config_revision,
-            run_id: "run-override".to_string(),
-            snapshot_id: "snapshot-override".to_string(),
-            cancel_token: "cancel-override".to_string(),
-        };
+        let context = one_shot_context(request.config_revision);
 
         let result = DistributionService::new(&state)
-            .execute_distribution_run(&request, &accepted)
+            .execute_one_shot(&request, &context)
             .expect("execute distribution");
         let capability = result
             .report_blocks
@@ -3139,16 +3305,10 @@ mod tests {
         request.source_dataset_id = Some(dataset.id);
         request.y_columns[0].column_id = value_id;
         request.by_column_ids = vec![region_id];
-        let accepted = DistributionRunAcceptedV1 {
-            analysis_id: request.analysis_id.clone(),
-            config_revision: request.config_revision,
-            run_id: "run-grouped".to_string(),
-            snapshot_id: "snapshot-grouped".to_string(),
-            cancel_token: "cancel-grouped".to_string(),
-        };
+        let context = one_shot_context(request.config_revision);
 
         let result = DistributionService::new(&state)
-            .execute_distribution_run(&request, &accepted)
+            .execute_one_shot(&request, &context)
             .expect("execute grouped distribution");
 
         assert_eq!(result.groups.len(), 3);

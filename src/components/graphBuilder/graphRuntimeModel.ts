@@ -7,12 +7,14 @@ import {
   type GraphData,
   type GraphSpec,
   type GroupStyleMap,
-  type MarkStyle,
   type RefLineStyle,
 } from "@/graphCore/types";
+import type { CustomPalette } from "@/stores/useGraphPaletteStore";
 import type { ColumnDisplayProps, ColumnMeta } from "@/types/data";
 import type { GraphDataFrame } from "@/types/graphData";
-import type { GraphBuilderItem, GraphSlotKey } from "@/types/graphBuilder";
+import type { GraphBuilderItem, GraphSlotKey, GroupThemeSlots } from "@/types/graphBuilder";
+
+import { buildEffectiveGroupStyles, reconcileGroupThemeSlots } from "./graphThemeIdentity";
 
 export interface GraphRuntimeMeltInfo {
   slot: "x" | "y";
@@ -29,7 +31,7 @@ export interface GraphRuntimeMetadata {
 
 const MELT_VAR = "__sp_variable__";
 const MELT_VAL = "__sp_value__";
-const SKIP_SPEC_ENCODING_KEYS = new Set<GraphSlotKey>(["color", "size", "wrap"]);
+const SKIP_SPEC_ENCODING_KEYS = new Set<GraphSlotKey>(["size", "wrap"]);
 
 export const STYLE_COLORS = [
   "#4a6cf7", "#ef8a3a", "#2ca678", "#e74c3c",
@@ -121,7 +123,10 @@ function deriveSpecByColumn(metadata: GraphRuntimeMetadata): Record<string, { ls
   return specByColumn;
 }
 
-export function deriveValueOrders(metadata: GraphRuntimeMetadata): Record<string, string[]> {
+export function deriveValueOrders(
+  metadata: GraphRuntimeMetadata,
+  meltInfo?: GraphRuntimeMeltInfo | null,
+): Record<string, string[]> {
   const valueOrders: Record<string, string[]> = {};
   for (const displayProps of metadata.displayProps) {
     const columnName = metadata.columns[displayProps.colIndex]?.colName;
@@ -131,6 +136,9 @@ export function deriveValueOrders(metadata: GraphRuntimeMetadata): Record<string
     if (Array.isArray(values) && values.length > 0) {
       valueOrders[columnName] = values.map((value) => String(value));
     }
+  }
+  if (meltInfo) {
+    valueOrders[MELT_VAR] = meltInfo.cols.map((column) => column.name);
   }
   return valueOrders;
 }
@@ -199,55 +207,22 @@ export function deriveGraphGroupKeys(
 
 export function buildEffectiveStyles(
   groupKeys: string[],
+  slots: GroupThemeSlots | undefined,
+  fieldName: string | undefined,
   userStyles: GroupStyleMap,
-  customPalettes: Array<{ line: string; fill: string; point: string }>,
-  isGrouped: boolean,
+  customPalettes: readonly CustomPalette[],
   hasBoxplot: boolean,
+  slotCandidateKeys: readonly string[] = groupKeys,
 ): GroupStyleMap {
-  const out: GroupStyleMap = { ...userStyles };
-  const groupColors = LINE_PALETTE;
-  for (const [index, key] of groupKeys.entries()) {
-    let autoLine: MarkStyle;
-    let autoFill: MarkStyle;
-    let autoPoint: MarkStyle;
-    let autoGradient: MarkStyle;
-    if (!isGrouped) {
-      autoLine = { color: "#000000", lineWidth: 1.5, opacity: 1 };
-      autoFill = {
-        color: hasBoxplot ? shade("#000000", SHADE_RATIO_FILL) : "transparent",
-        opacity: 1,
-      };
-      autoPoint = { color: "#000000", fillColor: "#000000", marker: "circle", markerSize: 4, opacity: 1 };
-      autoGradient = { color: groupColors[0], opacity: 1 };
-    } else if (index < customPalettes.length) {
-      const palette = customPalettes[index];
-      autoLine = { color: palette.line, lineWidth: 1.5, opacity: 1 };
-      autoFill = { color: palette.fill, opacity: 1 };
-      autoPoint = { color: palette.point, fillColor: palette.point, marker: "circle", markerSize: 4, opacity: 1 };
-      autoGradient = { color: palette.line, opacity: 1 };
-    } else {
-      const fallbackIndex = (index - customPalettes.length) % groupColors.length;
-      const base = groupColors[fallbackIndex];
-      autoLine = { color: shade(base, SHADE_RATIO_LINE), lineWidth: 1.5, opacity: 1 };
-      autoFill = { color: shade(base, SHADE_RATIO_FILL), opacity: 1 };
-      autoPoint = {
-        color: shade(base, SHADE_RATIO_POINT),
-        fillColor: shade(base, SHADE_RATIO_POINT),
-        marker: "circle",
-        markerSize: 4,
-        opacity: 1,
-      };
-      autoGradient = { color: base, opacity: 1 };
-    }
-    const user = userStyles[key];
-    out[key] = {
-      line: user?.line ?? autoLine,
-      fill: user?.fill ?? autoFill,
-      point: user?.point ?? autoPoint,
-      gradient: user?.gradient ?? autoGradient,
-    };
-  }
-  return out;
+  const resolvedSlots = reconcileGroupThemeSlots(slots, fieldName, slotCandidateKeys);
+  return buildEffectiveGroupStyles(
+    groupKeys,
+    resolvedSlots,
+    fieldName,
+    userStyles,
+    customPalettes,
+    hasBoxplot,
+  );
 }
 
 export function buildGraphRuntimeModel(

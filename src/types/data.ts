@@ -6,6 +6,7 @@ export interface DatasetMeta {
   sourceType: "csv" | "excel" | "parquet" | "json" | "manual" | "query";
   rowCount: number;
   colCount: number;
+  generation: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -17,6 +18,12 @@ export interface ColumnMeta {
   colType: string;
   role: "continuous" | "nominal" | "ordinal" | "id";
   missingCount: number;
+}
+
+export interface ColumnDescriptor {
+  columnId: string;
+  name: string;
+  sqlType: string;
 }
 
 /** 表查询参数 */

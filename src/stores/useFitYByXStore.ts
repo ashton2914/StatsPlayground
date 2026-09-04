@@ -7,6 +7,7 @@ import {
   deriveFitYByXPersonality,
 } from "@/components/fitYByX/fitYByXConfig";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
+import { normalizeGroupThemeSlots } from "@/components/graphBuilder/graphThemeIdentity";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 import type { FitYByXItem, FitYByXPersonality } from "@/types/fitYByX";
@@ -51,11 +52,13 @@ function isLoadableEmbeddedGraphConfig(value: unknown): value is EmbeddedGraphCo
 }
 
 function extractEmbeddedGraphConfig(item: ReturnType<typeof createEmbeddedGraphItem>): EmbeddedGraphConfig {
+  const groupThemeSlots = normalizeGroupThemeSlots(item.groupThemeSlots);
   return {
     mode: item.mode,
     modeStates: item.modeStates,
     filters: item.filters,
     sampling: item.sampling,
+    ...(Object.keys(groupThemeSlots).length === 0 ? {} : { groupThemeSlots }),
   };
 }
 

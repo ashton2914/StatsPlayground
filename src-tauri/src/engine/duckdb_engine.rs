@@ -727,7 +727,7 @@ impl DuckDbEngine {
     /// Get metadata for a single dataset
     pub fn get_dataset_meta(&self, id: &str) -> Result<DatasetMeta, AppError> {
         let meta = self.conn.query_row(
-            "SELECT id, name, source_path, source_type, row_count, col_count, created_at, updated_at FROM _meta_datasets WHERE id = $1",
+            "SELECT id, name, source_path, source_type, row_count, col_count, generation, created_at, updated_at FROM _meta_datasets WHERE id = $1",
             params![id],
             |row| {
                 Ok(DatasetMeta {
@@ -737,8 +737,9 @@ impl DuckDbEngine {
                     source_type: row.get(3)?,
                     row_count: row.get(4)?,
                     col_count: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    generation: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             },
         ).map_err(|error| match error {
@@ -753,7 +754,7 @@ impl DuckDbEngine {
     /// List all datasets
     pub fn list_datasets(&self) -> Result<Vec<DatasetMeta>, AppError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, source_path, source_type, row_count, col_count, created_at, updated_at FROM _meta_datasets ORDER BY created_at DESC",
+            "SELECT id, name, source_path, source_type, row_count, col_count, generation, created_at, updated_at FROM _meta_datasets ORDER BY created_at DESC",
         )?;
 
         let datasets = stmt
@@ -765,8 +766,9 @@ impl DuckDbEngine {
                     source_type: row.get(3)?,
                     row_count: row.get(4)?,
                     col_count: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    generation: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1873,7 +1875,7 @@ impl DuckDbEngine {
                 "histogram" => want_histogram = true,
                 "heatmap" => want_heatmap = true,
                 "boxplot" => want_boxplot = true,
-                "summary" | "points" | "line" => want_summary = true,
+                "summary" | "points" | "line" | "normalcurve" => want_summary = true,
                 _ => {}
             }
         }
@@ -8366,6 +8368,61 @@ mod tests {
         assert_eq!(page.columns.len(), 21);
     }
 
+    #[test]
+    fn normal_curve_requests_summary_statistics() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "normal-curve-id",
+            "Normal Curve",
+            &["measurement".into()],
+            &["DOUBLE".into()],
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_normal_curve_id\" (_row_id, measurement)
+                 VALUES (1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0)",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                params![4i64, "normal-curve-id"],
+            )
+            .unwrap();
+
+        let request = GraphDataRequest {
+            request_id: "req-normal-curve".into(),
+            dataset_id: "normal-curve-id".into(),
+            generation: 0,
+            fields: vec![GraphFieldBinding {
+                role: "y".into(),
+                column: "measurement".into(),
+            }],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "normalCurve".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let packets = db.collect_graph_aggregate_packets(&request).unwrap();
+        let [GraphAggregatePacket::Summary(summary)] = packets.as_slice() else {
+            panic!("normal curve must request exactly one summary packet");
+        };
+        assert_eq!(summary.summaries.len(), 1);
+        assert_eq!(summary.summaries[0].count, 4);
+        assert!((summary.summaries[0].mean - 2.5).abs() < f64::EPSILON);
+    }
+
     fn benchmark_window_request(start: usize, count: usize) -> TableWindowRequest {
         TableWindowRequest {
             dataset_id: "benchmark-id".into(),
@@ -9330,9 +9387,11 @@ mod tests {
         db.seed_benchmark_table("benchmark-id", "Benchmark", 10, 2)
             .unwrap();
         assert_eq!(db.get_dataset_generation("benchmark-id").unwrap(), 0);
+        assert_eq!(db.get_dataset_meta("benchmark-id").unwrap().generation, 0);
 
         db.update_cell("benchmark-id", 1, "value_1", "99").unwrap();
         assert_eq!(db.get_dataset_generation("benchmark-id").unwrap(), 1);
+        assert_eq!(db.get_dataset_meta("benchmark-id").unwrap().generation, 1);
         assert!(matches!(
             db.get_dataset_generation("missing").unwrap_err(),
             AppError::InvalidParam(_)

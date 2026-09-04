@@ -3,10 +3,6 @@ export { Graph } from "./Graph";
 export { getGraphTheme, buildAxisCommon } from "./theme";
 export { buildGraph, isMissing, type BuiltGraph, type ScatterPointPick } from "./transform";
 export {
-  toGraphBuilderInput,
-  type DistributionGraphInputV1,
-} from "./distributionAdapter";
-export {
   inferFieldType,
   DEFAULT_GROUP_KEY,
   type FieldRef,

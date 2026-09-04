@@ -5,6 +5,10 @@ const typesSource = readFileSync(
   new URL("../src/types/distribution.ts", import.meta.url),
   "utf8",
 );
+const serviceSource = readFileSync(
+  new URL("../src/services/distributionService.ts", import.meta.url),
+  "utf8",
+);
 assert.match(typesSource, /sourceLedgerHash:\s*string/);
 assert.match(typesSource, /reviewArtifactHash:\s*string/);
 assert.match(typesSource, /seed:\s*string/);
@@ -14,6 +18,10 @@ assert.match(typesSource, /observed:\s*BlackBoxObservationV1\[\]/);
 assert.match(typesSource, /warnings:\s*string\[\]/);
 assert.doesNotMatch(typesSource, /legalReviewStatus:\s*string/);
 assert.doesNotMatch(typesSource, /productOutput|screenshotText|rawOutput/i);
+assert.match(serviceSource, /compute:\s*\(request:\s*DistributionRequest\)/);
+assert.match(serviceSource, /"compute_distribution_report"/);
+assert.match(serviceSource, /validateBlackBoxCase/);
+assert.doesNotMatch(serviceSource, /bootstrapWorkspace|startRun|executeRun|cancelRun/);
 
 const ledger = readFileSync(
   new URL(

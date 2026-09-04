@@ -13,6 +13,7 @@ import { getGraphTheme } from "./theme";
 import { buildGraph, type ScatterPointPick } from "./transform";
 import { withInterleavedGraphLayers } from "./layers";
 import { Chart3D } from "./Chart3D";
+import { build3DPanels } from "./threeD";
 import type { GraphDataFrame } from "@/types/graphData";
 import { useThemeStore } from "@/stores/useThemeStore";
 
@@ -110,18 +111,45 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
   const use3DScene = !!spec.threeD;
 
   const built = useMemo(() => {
-    // 3D 场景走独立的自绘渲染器，跳过昂贵的 2D 面板构建。
     if (use3DScene) return { cols: 1, rows: 1, panels: [] as ReturnType<typeof buildGraph>["panels"] };
     const theme = getGraphTheme();
     return buildGraph(spec, data, theme, valueOrders, frame ?? undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec, data, themeMode, valueOrders, frame]);
 
+  const built3D = useMemo(
+    () => use3DScene
+      ? build3DPanels(spec, data, getGraphTheme(), frame ?? undefined, valueOrders)
+      : null,
+    [spec, data, frame, themeMode, use3DScene, valueOrders],
+  );
+
   // 3D 场景：hooks 之后再分支返回，保证 hooks 调用顺序稳定。
   if (use3DScene) {
     return (
-      <div className={`gc-graph${className ? " " + className : ""}`} style={{ width: "100%", height: "100%" }}>
-        <Chart3D spec={spec} data={data} frame={frame ?? undefined} />
+      <div
+        className={`gc-graph${className ? " " + className : ""}`}
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${built3D?.cols ?? 1}, minmax(${minPanelWidth}px, 1fr))`,
+          gridTemplateRows: `repeat(${built3D?.rows ?? 1}, minmax(${minPanelHeight}px, 1fr))`,
+          gap: 8,
+          width: "100%",
+          height: "100%",
+          overflow: "auto",
+          padding: 4,
+        }}
+      >
+        {built3D?.panels.map((panel) => (
+          <Chart3D
+            key={JSON.stringify([panel.groupXValue, panel.groupYValue])}
+            spec={spec}
+            data={data}
+            built={panel}
+            title={panel.title}
+            minHeight={minPanelHeight}
+          />
+        ))}
       </div>
     );
   }

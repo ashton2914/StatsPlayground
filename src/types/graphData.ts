@@ -1,5 +1,16 @@
 import type { TableWindowFilter } from "./data";
 
+export const DISTRIBUTION_GRAPH_ELEMENT_IDS = {
+  overviewHistogram: "distribution.overview.histogram",
+  overviewFittedCurves: "distribution.overview.fittedCurves",
+  boxPlot: "distribution.boxPlot",
+  ecdf: "distribution.ecdf",
+  normalQuantilePoints: "distribution.normalQuantile.points",
+  normalQuantileReference: "distribution.normalQuantile.reference",
+  normalQuantileLower: "distribution.normalQuantile.lower",
+  normalQuantileUpper: "distribution.normalQuantile.upper",
+} as const;
+
 export interface GraphFieldBinding {
   role: string;
   column: string;
@@ -192,6 +203,37 @@ export interface BoxPlotPacket {
   entries: BoxPlotEntry[];
 }
 
+export interface PrecomputedPoint {
+  x: number;
+  y: number;
+  label?: string;
+  group?: string;
+}
+
+export interface PrecomputedPointPacket {
+  kind: "precomputedPoints";
+  elementId: string;
+  seriesId?: string;
+  seriesName?: string;
+  points: PrecomputedPoint[];
+}
+
+export type PrecomputedCurveInterpolation = "linear" | "stepEnd";
+
+export interface PrecomputedCurvePoint {
+  x: number;
+  y: number;
+}
+
+export interface PrecomputedCurvePacket {
+  kind: "precomputedCurve";
+  elementId: string;
+  seriesId?: string;
+  seriesName?: string;
+  interpolation: PrecomputedCurveInterpolation;
+  points: PrecomputedCurvePoint[];
+}
+
 export interface SummaryEntry {
   group?: string;
   category?: string;
@@ -243,7 +285,9 @@ export type GraphAggregatePacket =
   | HeatmapPacket
   | BoxPlotPacket
   | SummaryPacket
-  | CorrelationMatrixPacket;
+  | CorrelationMatrixPacket
+  | PrecomputedPointPacket
+  | PrecomputedCurvePacket;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
@@ -255,6 +299,10 @@ function isString(value: unknown): value is string {
 
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -273,15 +321,25 @@ function isCorrelationUnavailableReason(value: unknown): value is CorrelationUna
   return value === "insufficientData" || value === "zeroVariance";
 }
 
-function hasOwn(value: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+function isPrecomputedCurveInterpolation(value: unknown): value is PrecomputedCurveInterpolation {
+  return value === "linear" || value === "stepEnd";
+}
+
+function isPrecomputedPoint(value: unknown): value is PrecomputedPoint {
+  if (!isRecord(value)) return false;
+  return isFiniteNumber(value.x)
+    && isFiniteNumber(value.y)
+    && isOptionalString(value.label)
+    && isOptionalString(value.group);
+}
+
+function isPrecomputedCurvePoint(value: unknown): value is PrecomputedCurvePoint {
+  if (!isRecord(value)) return false;
+  return isFiniteNumber(value.x) && isFiniteNumber(value.y);
 }
 
 function isHistogramBin(value: unknown): value is HistogramBin {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -296,9 +354,6 @@ function isHistogramBin(value: unknown): value is HistogramBin {
 
 function isHeatmapCell(value: unknown): value is HeatmapCell {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -324,9 +379,6 @@ function isBoxPlotOutlier(value: unknown): value is BoxPlotOutlier {
 
 function isBoxPlotEntry(value: unknown): value is BoxPlotEntry {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -348,9 +400,6 @@ function isBoxPlotEntry(value: unknown): value is BoxPlotEntry {
 
 function isSummaryEntry(value: unknown): value is SummaryEntry {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -436,6 +485,21 @@ function isCorrelationMatrixPacket(value: unknown): value is CorrelationMatrixPa
 export function isGraphAggregatePacket(value: unknown): value is GraphAggregatePacket {
   if (!isRecord(value) || !isString(value.kind)) {
     return false;
+  }
+  if (value.kind === "precomputedPoints") {
+    return isNonEmptyString(value.elementId)
+      && (value.seriesId === undefined || isNonEmptyString(value.seriesId))
+      && (value.seriesName === undefined || isNonEmptyString(value.seriesName))
+      && Array.isArray(value.points)
+      && value.points.every(isPrecomputedPoint);
+  }
+  if (value.kind === "precomputedCurve") {
+    return isNonEmptyString(value.elementId)
+      && (value.seriesId === undefined || isNonEmptyString(value.seriesId))
+      && (value.seriesName === undefined || isNonEmptyString(value.seriesName))
+      && isPrecomputedCurveInterpolation(value.interpolation)
+      && Array.isArray(value.points)
+      && value.points.every(isPrecomputedCurvePoint);
   }
   if (value.kind === "histogram") {
     return isOptionalString(value.xColumn)

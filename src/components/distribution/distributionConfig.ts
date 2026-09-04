@@ -1,13 +1,208 @@
+import type { FieldRef } from "@/graphCore";
+
+import {
+  createDefaultGraph2DState,
+  createDefaultGraph3DState,
+  createDefaultMultivariateGraphState,
+} from "@/components/graphBuilder/graphBuilderMode";
 import type {
   CapabilityOverrideEnvelopeV1,
+  DistributionAnalysisConfig,
   DistributionAnalysisConfigV1,
   DistributionColumnInfoV1,
   DistributionConfigErrorV1,
   DistributionContinuousFitConfigV1,
   DistributionFitCapabilityV1,
+  DistributionItem,
   ContinuousDistributionIdV1,
   DistributionVisualDiagnosticsConfigV1,
 } from "@/types/distribution";
+import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "@/types/graphData";
+import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
+
+export type DistributionRole = "response" | "weight" | "frequency" | "by";
+export type DistributionRoleValidationError =
+  | "missingResponse"
+  | "invalidResponse"
+  | "invalidWeight"
+  | "invalidFrequency"
+  | "invalidBy"
+  | "duplicateRole";
+
+export interface DistributionFieldInfo {
+  name: string;
+  sqlType: string;
+  integerCompatible: boolean;
+  field: FieldRef;
+}
+
+export interface DistributionRoleBindings {
+  responses: FieldRef[];
+  weight: FieldRef | null;
+  frequency: FieldRef | null;
+  by: FieldRef[];
+}
+
+export type DistributionRoleValidationResult =
+  | { ok: true }
+  | { ok: false; error: DistributionRoleValidationError };
+
+export class DistributionRoleValidationErrorClass extends Error {
+  readonly code: DistributionRoleValidationError;
+
+  constructor(code: DistributionRoleValidationError) {
+    super(`Invalid Distribution roles: ${code}`);
+    this.name = "DistributionRoleValidationError";
+    this.code = code;
+  }
+}
+
+function clone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+function sameField(left: FieldRef, right: FieldRef): boolean {
+  return left.name === right.name;
+}
+
+function isNumericField(field: DistributionFieldInfo): boolean {
+  return field.field.type === "continuous"
+    || /(?:tiny|small|big)?int|decimal|numeric|real|double|float/i.test(field.sqlType);
+}
+
+function isCategoricalField(field: DistributionFieldInfo): boolean {
+  return field.field.type === "nominal" || field.field.type === "ordinal";
+}
+
+export function canAssignDistributionRole(
+  role: DistributionRole,
+  field: DistributionFieldInfo,
+  occupied: readonly FieldRef[],
+): true | DistributionRoleValidationError {
+  if (occupied.some((candidate) => sameField(candidate, field.field))) {
+    return "duplicateRole";
+  }
+  if (role === "response" && field.field.type !== "continuous") return "invalidResponse";
+  if (role === "weight" && !isNumericField(field)) return "invalidWeight";
+  if (role === "frequency" && (!isNumericField(field) || !field.integerCompatible)) {
+    return "invalidFrequency";
+  }
+  if (role === "by" && !isCategoricalField(field)) return "invalidBy";
+  return true;
+}
+
+export function validateDistributionRoles(
+  roles: DistributionRoleBindings,
+  fields: readonly DistributionFieldInfo[],
+): DistributionRoleValidationResult {
+  if (roles.responses.length === 0) return { ok: false, error: "missingResponse" };
+  const byName = new Map(fields.map((field) => [field.field.name, field]));
+  const occupied: FieldRef[] = [];
+  const assignments: Array<[DistributionRole, FieldRef]> = [
+    ...roles.responses.map((field): [DistributionRole, FieldRef] => ["response", field]),
+    ...(roles.weight ? [["weight", roles.weight] as [DistributionRole, FieldRef]] : []),
+    ...(roles.frequency ? [["frequency", roles.frequency] as [DistributionRole, FieldRef]] : []),
+    ...roles.by.map((field): [DistributionRole, FieldRef] => ["by", field]),
+  ];
+  for (const [role, field] of assignments) {
+    const metadata = byName.get(field.name) ?? {
+      name: field.name,
+      sqlType: "",
+      integerCompatible: false,
+      field,
+    };
+    const result = canAssignDistributionRole(role, metadata, occupied);
+    if (result !== true) return { ok: false, error: result };
+    occupied.push(field);
+  }
+  return { ok: true };
+}
+
+export function createDefaultDistributionAnalysisConfig(): DistributionAnalysisConfig {
+  return {
+    confidenceLevel: 0.95,
+    specLimits: {},
+    fitDistributions: [],
+  };
+}
+
+function createDistributionGraph(
+  response: FieldRef,
+  elements: EmbeddedGraphConfig["modeStates"]["twoD"]["elements"],
+): EmbeddedGraphConfig {
+  const twoD = createDefaultGraph2DState();
+  return {
+    mode: "2d",
+    modeStates: {
+      twoD: {
+        ...twoD,
+        encoding: { x: clone(response) },
+        multiX: [],
+        multiY: [],
+        elements,
+      },
+      threeD: createDefaultGraph3DState(),
+      multivariate: createDefaultMultivariateGraphState(),
+    },
+    filters: [],
+    sampling: { mode: "full" },
+  };
+}
+
+export function createDefaultDistributionGraphs(response: FieldRef): DistributionItem["graphs"] {
+  return {
+    overview: createDistributionGraph(response, [
+      { kind: "histogram", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram } },
+      { kind: "line", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves } },
+    ]),
+    boxPlot: createDistributionGraph(response, [
+      { kind: "boxplot", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot } },
+    ]),
+    ecdf: createDistributionGraph(response, [
+      { kind: "line", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.ecdf } },
+    ]),
+    normalQuantile: createDistributionGraph(response, [
+      { kind: "points", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantilePoints } },
+      { kind: "line", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantileReference } },
+      { kind: "line", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantileLower } },
+      { kind: "line", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.normalQuantileUpper } },
+    ]),
+  };
+}
+
+export function createDistributionItem(input: {
+  id: string;
+  name: string;
+  sourceDatasetId: string;
+  responses: FieldRef[];
+  weight: FieldRef | null;
+  frequency: FieldRef | null;
+  by: FieldRef[];
+  columns: readonly DistributionFieldInfo[];
+  analysis?: DistributionAnalysisConfig;
+  createdAt: string;
+}): DistributionItem {
+  const roles = {
+    responses: input.responses,
+    weight: input.weight,
+    frequency: input.frequency,
+    by: input.by,
+  };
+  const validation = validateDistributionRoles(roles, input.columns);
+  if (!validation.ok) throw new DistributionRoleValidationErrorClass(validation.error);
+  return {
+    id: input.id,
+    name: input.name,
+    sourceDatasetId: input.sourceDatasetId,
+    responses: clone(input.responses),
+    weight: clone(input.weight),
+    frequency: clone(input.frequency),
+    by: clone(input.by),
+    analysis: clone(input.analysis ?? createDefaultDistributionAnalysisConfig()),
+    graphs: createDefaultDistributionGraphs(input.responses[0]!),
+    createdAt: input.createdAt,
+  };
+}
 
 export interface CapabilityOverrideValidatorV1 {
   capabilityId: string;

@@ -10,6 +10,7 @@ pub mod io_service;
 pub mod normal_capability;
 pub mod project_service;
 pub mod save_coordinator;
+pub mod workflow_domain;
 pub mod spprj_archive;
 pub mod stats_service;
 pub mod streaming_project_writer;

@@ -5,6 +5,17 @@ use serde::{Deserialize, Serialize};
 use super::table::TableWindowFilter;
 
 pub const GRAPH_SCATTER_RENDER_BUDGET: usize = 8_000;
+pub const DISTRIBUTION_OVERVIEW_HISTOGRAM_ELEMENT_ID: &str = "distribution.overview.histogram";
+pub const DISTRIBUTION_OVERVIEW_FITTED_CURVES_ELEMENT_ID: &str =
+    "distribution.overview.fittedCurves";
+pub const DISTRIBUTION_BOX_PLOT_ELEMENT_ID: &str = "distribution.boxPlot";
+pub const DISTRIBUTION_ECDF_ELEMENT_ID: &str = "distribution.ecdf";
+pub const DISTRIBUTION_NORMAL_QUANTILE_POINTS_ELEMENT_ID: &str =
+    "distribution.normalQuantile.points";
+pub const DISTRIBUTION_NORMAL_QUANTILE_REFERENCE_ELEMENT_ID: &str =
+    "distribution.normalQuantile.reference";
+pub const DISTRIBUTION_NORMAL_QUANTILE_LOWER_ELEMENT_ID: &str = "distribution.normalQuantile.lower";
+pub const DISTRIBUTION_NORMAL_QUANTILE_UPPER_ELEMENT_ID: &str = "distribution.normalQuantile.upper";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -416,6 +427,8 @@ pub enum GraphAggregatePacket {
     BoxPlot(BoxPlotPacket),
     Summary(SummaryPacket),
     CorrelationMatrix(CorrelationMatrixPacket),
+    PrecomputedPoints(PrecomputedPointPacket),
+    PrecomputedCurve(PrecomputedCurvePacket),
 }
 
 pub const GRAPH_VIRTUAL_VALUE_COLUMN: &str = "__sp_value__";
@@ -434,9 +447,12 @@ impl GraphAggregatePacket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistogramPacket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_column: Option<String>,
     pub y_column: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
     pub bin_count: u32,
     pub min_value: Option<f64>,
@@ -450,12 +466,19 @@ pub struct HistogramPacket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistogramBin {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_x: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_y: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_z: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<String>,
     pub bin_start: f64,
     pub bin_end: f64,
@@ -504,9 +527,12 @@ pub struct HeatmapCell {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BoxPlotPacket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_column: Option<String>,
     pub y_column: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
     pub entries: Vec<BoxPlotEntry>,
 }
@@ -514,12 +540,19 @@ pub struct BoxPlotPacket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BoxPlotEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_x: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_y: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_z: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<String>,
     pub count: u64,
     pub min: f64,
@@ -536,8 +569,58 @@ pub struct BoxPlotEntry {
 #[serde(rename_all = "camelCase")]
 pub struct BoxPlotOutlier {
     pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedPointPacket {
+    pub element_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_name: Option<String>,
+    pub points: Vec<PrecomputedPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedPoint {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PrecomputedCurveInterpolation {
+    Linear,
+    StepEnd,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedCurvePacket {
+    pub element_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_name: Option<String>,
+    pub interpolation: PrecomputedCurveInterpolation,
+    pub points: Vec<PrecomputedCurvePoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedCurvePoint {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

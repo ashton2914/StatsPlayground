@@ -2,7 +2,8 @@ import { defineConfig, devices } from "@playwright/experimental-ct-react";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
-  testDir: "./tests/e2e",
+  testDir: "./tests",
+  testMatch: /.*\.spec\.tsx$/,
   timeout: 30_000,
   fullyParallel: false,
   use: {

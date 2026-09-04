@@ -1,8 +1,10 @@
+import type { DistributionItem } from "./distribution";
 import type {
-  DerivedFormulaDocV1,
-  DistributionDocV1,
-  DistributionIssueV1,
-} from "./distribution";
+  LogicalFolder,
+  ProjectLineageGraph,
+  WorkflowDefinition,
+  WorkflowRun,
+} from "./workflow";
 
 /** 项目元数据 */
 export interface ProjectInfo {
@@ -10,6 +12,8 @@ export interface ProjectInfo {
   filePath: string;
   createdAt: string;
 }
+
+import type { ReportItem } from "./report";
 
 export interface DatasetNameMigration {
   datasetId: string;
@@ -33,6 +37,7 @@ export interface OpenProjectResult {
   fitYByX: unknown[];
   fitModels?: unknown[];
   tabulates: unknown[];
+  distributions: DistributionItem[];
   /** 项目内所有文件夹路径（含空文件夹），使用 "/" 分隔，根目录不出现在列表中。 */
   folders: string[];
   /** datasetId → folder path（根目录的表不在此映射中）。 */
@@ -41,15 +46,20 @@ export interface OpenProjectResult {
   graphFolders: Record<string, string>;
   fitYByXFolders: Record<string, string>;
   fitModelFolders?: Record<string, string>;
+  distributionFolders: Record<string, string>;
   documentNameMigrations: DocumentNameMigration[];
   datasetNameMigrations: DatasetNameMigration[];
   requiresMigration: boolean;
   /** tabulateId → folder path。 */
   tabulateFolders: Record<string, string>;
-  distributions: DistributionDocV1[];
-  distributionFolders: Record<string, string>;
-  derivedFormulas: DerivedFormulaDocV1[];
-  distributionIssues: DistributionIssueV1[];
+  /** reportId → folder path。 */
+  reportFolders: Record<string, string>;
+  /** 项目中的报告。 */
+  reports: ReportItem[];
+  workflows: WorkflowDefinition[];
+  logicalFolders: LogicalFolder[];
+  workflowRuns: WorkflowRun[];
+  lineageGraph: ProjectLineageGraph;
 }
 
 /** 导入 .sptb 的返回值。

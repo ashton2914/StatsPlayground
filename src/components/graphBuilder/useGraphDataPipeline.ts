@@ -67,6 +67,27 @@ export interface GraphDataPipelineResult {
   pendingRequest: GraphDataRequest | null;
 }
 
+export type ExternalGraphDataState =
+  | { status: "loading"; frame: null; error: null }
+  | { status: "ready"; frame: GraphDataFrame; error: null }
+  | { status: "error"; frame: null; error: string };
+
+type GraphRuntimeDataState = Pick<GraphDataPipelineResult, "frame" | "status" | "error" | "progress">;
+
+export function selectGraphRuntimeDataState(
+  internalState: GraphRuntimeDataState,
+  externalState: ExternalGraphDataState | undefined,
+): GraphRuntimeDataState {
+  if (!externalState) return internalState;
+  if (externalState.status === "ready") {
+    return { frame: externalState.frame, status: "ready", error: null, progress: null };
+  }
+  if (externalState.status === "error") {
+    return { frame: null, status: "error", error: externalState.error, progress: null };
+  }
+  return { frame: null, status: "pending", error: null, progress: null };
+}
+
 function sanitizeCount(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
@@ -628,8 +649,39 @@ export function canExecuteGraphRequest(
 
   const hasX = fields.some((field) => field.role === "x");
   const hasY = fields.some((field) => field.role === "y");
+  const activeState = item.mode === "3d" ? item.modeStates.threeD : item.modeStates.twoD;
+  const hasNormalCurve = elements.some((element) => element.kind === "normalCurve");
+  if (hasNormalCurve) {
+    const continuousField = activeState.encoding.y?.type === "continuous"
+      ? activeState.encoding.y
+      : activeState.encoding.x?.type === "continuous"
+        ? activeState.encoding.x
+        : undefined;
+    if (continuousField && fields.some((field) => field.column === continuousField.name)) return true;
+  }
   const multiXCount = fields.filter((field) => /^multiX\d+$/.test(field.role)).length;
-  return (hasX && hasY) || multiXCount >= 2;
+  const multiYCount = fields.filter((field) => /^multiY\d+$/.test(field.role)).length;
+  return (hasX && hasY) || multiXCount >= 2 || multiYCount >= 2;
+}
+
+interface GraphRequestPlan {
+  fields: GraphFieldBinding[];
+  filters: TableWindowFilter[];
+  elements: GraphElementRequest[];
+  sampling: GraphSampling;
+  executable: boolean;
+}
+
+function deriveGraphRequestPlan(item: GraphBuilderItem): GraphRequestPlan {
+  const parts = deriveGraphRequestParts(item);
+  return {
+    ...parts,
+    executable: canExecuteGraphRequest(item, parts.fields, parts.elements),
+  };
+}
+
+export function deriveGraphRequestIdentity(item: GraphBuilderItem): string {
+  return JSON.stringify(deriveGraphRequestPlan(item));
 }
 
 function hasEnabledElementKinds(elements: readonly GraphElementRequest[]): Set<string> {
@@ -721,8 +773,16 @@ export function deriveFields(item: GraphBuilderItem): GraphFieldBinding[] {
     fields.push({ role, column });
   };
 
-  addField("x", encoding.x?.name);
-  addField("y", encoding.y?.name);
+  const normalCurveXOnly =
+    enabledKinds.has("normalcurve") &&
+    encoding.x?.type === "continuous" &&
+    !encoding.y;
+  if (normalCurveXOnly) {
+    addField("y", encoding.x?.name);
+  } else {
+    addField("x", encoding.x?.name);
+    addField("y", encoding.y?.name);
+  }
   const has3DElement = enabledKinds.has("surface") || enabledKinds.has("contour3d") || enabledKinds.has("scatter3d");
   if (activeMode === "3d" && has3DElement) {
     addField("z", item.modeStates.threeD.encoding.z?.name);
@@ -854,6 +914,7 @@ export function useGraphDataPipeline(
   item: GraphBuilderItem,
   dataset: DatasetMeta,
   viewport: GraphViewport,
+  enabled = true,
 ): GraphDataPipelineResult {
   const [state, setState] = useState<GraphStreamState>(() => createInitialGraphStreamState());
   const [debouncedViewport, setDebouncedViewport] = useState<GraphViewport>(viewport);
@@ -867,21 +928,27 @@ export function useGraphDataPipeline(
     };
   }, [viewport.height, viewport.width]);
 
+  const requestIdentity = deriveGraphRequestIdentity(item);
+  const requestPlan = useMemo(
+    () => JSON.parse(requestIdentity) as GraphRequestPlan,
+    [requestIdentity],
+  );
   const requestSkeleton = useMemo(() => {
-    const { fields, filters, elements, sampling } = deriveGraphRequestParts(item);
+    if (!enabled) return null;
 
     return {
       datasetId: dataset.id,
-      fields,
-      filters,
-      elements,
-      sampling,
+      ...requestPlan,
       viewport: debouncedViewport,
     };
-  }, [dataset.id, item, debouncedViewport]);
+  }, [dataset.generation, dataset.id, requestPlan, debouncedViewport, enabled]);
 
   useEffect(() => {
-    if (!canExecuteGraphRequest(item, requestSkeleton.fields, requestSkeleton.elements)) {
+    if (!enabled || !requestSkeleton) {
+      setState(createInitialGraphStreamState());
+      return;
+    }
+    if (!requestSkeleton.executable) {
       setState((previous) => ({
         ...previous,
         pending: null,
@@ -979,7 +1046,7 @@ export function useGraphDataPipeline(
       disposed = true;
       cancellationCoordinator.cancelActive();
     };
-  }, [dataset.id, requestSkeleton]);
+  }, [dataset.id, enabled, requestSkeleton]);
 
   return {
     frame: state.committed,
