@@ -2,7 +2,25 @@ import assert from "node:assert/strict";
 
 import { expect, test } from "@playwright/experimental-ct-react";
 
+import { AnalysisExecutionHarness } from "./AnalysisExecutionHarness";
 import { AnalysisViewHarness } from "./AnalysisViewHarness";
+
+test("useAnalysisExecution masks stale success synchronously when configRevision changes", async ({ mount }) => {
+  const component = await mount(<AnalysisExecutionHarness />);
+
+  await expect(component.getByTestId("visible-state")).toContainText("1:success:101.044792");
+
+  await component.getByRole("button", { name: "Bump config revision" }).click();
+
+  await expect(component.getByTestId("visible-state")).toContainText("2:loading:");
+  await expect(component.getByTestId("state-history")).not.toContainText("2:success:101.044792");
+  await expect(component.getByText("compute-calls:2")).toBeVisible();
+
+  await component.getByRole("button", { name: "Resolve pending response" }).click();
+
+  await expect(component.getByTestId("visible-state")).toContainText("2:success:88.5");
+  await expect(component.getByText("compute-calls:2")).toBeVisible();
+});
 
 test("configRevision-only changes fence stale results and force re-execution on the mounted AnalysisView path", async ({ mount }) => {
   const component = await mount(<AnalysisViewHarness />);
