@@ -29,9 +29,10 @@ test("configRevision-only changes fence stale results and force re-execution on 
 
   await expect(component.locator(".analysis-workspace")).toHaveCount(1);
   await expect(component.locator(".analysis-info-panel")).toContainText("Strength Distribution");
-  await expect(component.locator(".analysis-document-frame")).toHaveCSS("border-radius", "6px");
-  await expect(component.locator(".analysis-frame", { hasText: "Graph" })).toHaveCount(1);
-  await expect(component.locator(".analysis-frame", { hasText: "Graph" })).toHaveCSS("border-radius", "6px");
+  await expect(component.locator("[data-analysis-document]")).toHaveClass("analysis-ui-frame");
+  await expect(component.locator("[data-analysis-block='graph']")).toHaveClass("analysis-ui-frame");
+  await expect(component.locator("[data-analysis-block='tables']")).toHaveClass("analysis-ui-frame");
+  await expect(component.locator("[data-analysis-block='process-capabilities']")).toHaveClass("analysis-ui-frame");
   await expect(component.locator(".analysis-graph-composite [data-graph-role='overview']")).toHaveCount(1);
   await expect(component.locator(".analysis-graph-composite [data-graph-role='boxPlot']")).toHaveCount(1);
   await expect(component.locator(".analysis-graph-composite [data-graph-role='ecdf']")).toHaveCount(0);
@@ -41,20 +42,18 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(summarySection).toContainText("Location");
   await expect(summarySection).toContainText("Variation");
   await expect(summarySection).not.toContainText("Summary Statistics");
-  await expect(component.locator(".sp-stat-table-frame", { hasText: "Quantiles" }).locator("table")).toHaveCount(1);
-  await expect(component.locator(".sp-stat-table-frame", { hasText: "Location" }).locator("table")).toHaveCount(1);
-  await expect(component.locator(".sp-stat-table-frame", { hasText: "Variation" }).locator("table")).toHaveCount(1);
-  await expect(component.locator(".sp-stat-section", { hasText: "Summary Statistical" })).toHaveCount(1);
-  await expect(component.locator(".sp-stat-section", { hasText: "Process Capabilities" })).toHaveCount(1);
-  await expect(component.locator(".sp-stat-section")).toHaveCount(2);
-  await expect(component.locator(".sp-stat-table-frame")).toHaveCount(3);
+  await expect(summarySection.locator(".analysis-ui-table", { hasText: "Quantiles" }).locator("table")).toHaveCount(1);
+  await expect(summarySection.locator(".analysis-ui-table", { hasText: "Location" }).locator("table")).toHaveCount(1);
+  await expect(summarySection.locator(".analysis-ui-table", { hasText: "Variation" }).locator("table")).toHaveCount(1);
+  await expect(summarySection.locator(".analysis-ui-table")).toHaveCount(3);
   await expect(component.locator(".analysis-table-frame")).toHaveCount(0);
-  await expect(component.locator(".analysis-text-block")).toHaveCSS("border-style", "none");
+  await expect(component.locator(".analysis-ui-text")).toHaveCSS("border-style", "none");
   assert.deepEqual(
-    await component.locator(".analysis-content-flow > *").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-analysis-block"))),
+    await component.locator("[data-analysis-document] > .analysis-ui-frame-body > .analysis-ui-stack > *")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-analysis-block"))),
     ["graph", "text", "tables", "process-capabilities"],
   );
-  await expect(component.getByRole("heading", { name: "Quantiles" })).toBeVisible();
+  await expect(component.getByRole("button", { name: "Quantiles" })).toBeVisible();
   await expect(firstValueCell).toBeVisible();
   await expect(originalMedianRow).toBeVisible();
   await expect(component.locator(".report-editor")).toHaveCount(0);
@@ -62,6 +61,13 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(component.getByText("definition:unchanged")).toBeVisible();
   await expect(component.getByText("compute-calls:1")).toBeVisible();
   await expect(component.getByText(/generation-calls:[1-9]\d*/)).toBeVisible();
+
+  await component.getByRole("button", { name: "Summary Statistical" }).click();
+  await expect(component.getByRole("button", { name: "Summary Statistical" })).toHaveAttribute("aria-expanded", "false");
+  await expect(component.getByRole("button", { name: "Quantiles" })).toHaveCount(0);
+  await expect(component.locator("[data-graph-role='overview']")).toHaveCount(1);
+  await expect(component.getByRole("button", { name: "Process Capabilities" })).toHaveAttribute("aria-expanded", "true");
+  await component.getByRole("button", { name: "Summary Statistical" }).click();
 
   await component.getByRole("button", { name: "Bump config revision" }).click();
 

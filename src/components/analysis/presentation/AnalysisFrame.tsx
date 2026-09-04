@@ -4,12 +4,14 @@ interface AnalysisFrameProps extends Omit<ComponentPropsWithoutRef<"section">, "
   title: ReactNode;
   children: ReactNode;
   defaultExpanded?: boolean;
+  contentPadding?: "none" | "compact" | "standard";
 }
 
 export function AnalysisFrame({
   title,
   children,
   defaultExpanded = true,
+  contentPadding = "standard",
   ...sectionProps
 }: AnalysisFrameProps) {
   const bodyId = useId();
@@ -27,7 +29,11 @@ export function AnalysisFrame({
         <span aria-hidden="true" className="analysis-ui-disclosure">{expanded ? "▾" : "▸"}</span>
         <span>{title}</span>
       </button>
-      {expanded && <div className="analysis-ui-frame-body" id={bodyId}>{children}</div>}
+      {expanded && (
+        <div className={`analysis-ui-frame-body analysis-ui-frame-body-${contentPadding}`} id={bodyId}>
+          {children}
+        </div>
+      )}
     </section>
   );
 }

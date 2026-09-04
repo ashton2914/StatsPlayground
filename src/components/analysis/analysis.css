@@ -17,8 +17,7 @@
   background: var(--bg-panel);
 }
 
-.analysis-panel-title,
-.analysis-frame-title {
+.analysis-panel-title {
   min-height: 34px;
   display: flex;
   align-items: center;
@@ -39,16 +38,6 @@
 .analysis-metadata dd { margin: 4px 0 0; color: var(--fg-primary); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 
 .analysis-document-scroll { min-width: 0; overflow: auto; overflow-anchor: none; padding: 10px; }
-.analysis-document-frame,
-.analysis-frame {
-  overflow: hidden;
-  border: 1px solid var(--border-main);
-  border-radius: 6px;
-  background: var(--bg-panel);
-}
-.analysis-document-title { min-height: 38px; color: var(--fg-primary); font-size: 13px; }
-.analysis-frame-title::before { content: "▾"; margin-right: 7px; }
-.analysis-content-flow { display: flex; flex-direction: column; gap: 10px; padding: 10px; }
 
 .analysis-graph-composite {
   display: grid;
@@ -58,18 +47,8 @@
   padding: 12px;
 }
 
-.analysis-graph-runtime { min-width: 0; min-height: 0; }
-.analysis-graph-runtime > * { width: 100%; height: 100%; }
-.analysis-graph-boxPlot { border-top: 1px solid var(--border-main); }
-
-.analysis-text-block {
-  margin: 0;
-  padding: 6px 8px;
-  border: none;
-  color: var(--fg-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-}
+.analysis-graph-composite > [data-graph-role] { width: 100%; height: 100%; }
+.analysis-graph-composite > [data-graph-role="boxPlot"] { border-top: 1px solid var(--border-main); }
 
 .analysis-unavailable { margin: 0; padding: 18px; color: var(--fg-hint); }
 

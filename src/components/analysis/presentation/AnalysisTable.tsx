@@ -32,7 +32,7 @@ export function AnalysisTable({
 }: AnalysisTableProps) {
   return (
     <div className={`analysis-ui-table analysis-ui-table-${width}`}>
-      <AnalysisFrame title={title}>
+      <AnalysisFrame title={title} contentPadding="none">
         <div className="analysis-ui-table-scroll">
           <table aria-label={ariaLabel}>
             <thead>

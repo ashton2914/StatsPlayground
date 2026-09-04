@@ -2,11 +2,16 @@ import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
-import { GraphRuntime } from "@/components/graphBuilder/GraphRuntime";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
+import {
+  AnalysisFrame,
+  AnalysisGraph,
+  AnalysisStack,
+  AnalysisTable,
+  AnalysisText,
+} from "@/components/analysis/presentation";
 import { ProcessCapabilityReport } from "@/components/distribution/ProcessCapabilityReport";
 import { mapDistributionExternalDataState, type DistributionGraphRole } from "@/graphCore/distributionAdapter";
-import { StatisticalSection, StatisticalTableFrame, StatisticalTableList } from "@/components/statistical";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { DistributionReportResponse } from "@/types/distribution";
@@ -107,44 +112,47 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
       </aside>
 
       <main className="analysis-document-scroll" ref={documentScrollRef}>
-        <article className="analysis-document-frame">
-          <div className="analysis-frame-title analysis-document-title">{responseName || item.name}</div>
-          <div className="analysis-content-flow">
-            <section className="analysis-frame" data-analysis-block="graph">
-              <div className="analysis-frame-title">{t("fitYByX.graph", { defaultValue: "Graph" })}</div>
-              {dataset == null ? (
+        <AnalysisFrame
+          title={responseName || item.name}
+          contentPadding="compact"
+          data-analysis-document
+        >
+          <AnalysisStack>
+            {dataset == null ? (
+              <AnalysisFrame title={t("fitYByX.graph", { defaultValue: "Graph" })} data-analysis-block="graph">
                 <AnalysisUnavailable message={t("workspace.analysisSourceMissing")} />
-              ) : (
-                <div className="analysis-graph-composite">
-                  {(["overview", "boxPlot"] as const).map((role) => {
-                    const graphProps = {
+              </AnalysisFrame>
+            ) : (
+              <AnalysisGraph
+                title={t("fitYByX.graph", { defaultValue: "Graph" })}
+                data-analysis-block="graph"
+                contentClassName="analysis-graph-composite"
+                runtimeSlots={(["overview", "boxPlot"] as const).map((role) => ({
+                  key: role,
+                  runtimeProps: {
                       item: graphItems[role],
                       dataset,
                       minPanelHeight: role === "boxPlot" ? 96 : 240,
                       externalDataState: mapDistributionExternalDataState(executionState, role),
-                      role,
-                    };
-                    return (
-                      <div className={`analysis-graph-runtime analysis-graph-${role}`} data-graph-role={role} key={role}>
-                        {runtime?.renderGraph ? runtime.renderGraph(graphProps) : <GraphRuntime {...graphProps} />}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
+                  },
+                }))}
+                renderGraph={runtime?.renderGraph
+                  ? (props, role) => runtime.renderGraph?.({ ...props, role: role as DistributionGraphRole })
+                  : undefined}
+              />
+            )}
 
             <AnalysisTextBlock state={executionState} />
 
-            <StatisticalSection title="Summary Statistical" data-analysis-block="tables">
+            <AnalysisFrame title="Summary Statistical" data-analysis-block="tables">
               <AnalysisTables state={executionState} datasetMissing={dataset == null} />
-            </StatisticalSection>
+            </AnalysisFrame>
 
-            <StatisticalSection title="Process Capabilities" data-analysis-block="process-capabilities">
+            <AnalysisFrame title="Process Capabilities" data-analysis-block="process-capabilities">
               <AnalysisProcessCapabilities state={executionState} datasetMissing={dataset == null} />
-            </StatisticalSection>
-          </div>
-        </article>
+            </AnalysisFrame>
+          </AnalysisStack>
+        </AnalysisFrame>
       </main>
     </div>
   );
@@ -171,9 +179,9 @@ function AnalysisTextBlock({ state }: { state: ReturnType<typeof useAnalysisExec
   if (!result || !summary) return null;
 
   return (
-    <p className="analysis-text-block" data-analysis-block="text">
+    <AnalysisText data-analysis-block="text">
       {result.yName}: n = {formatNumber(summary.n)}, mean = {formatNumber(summary.mean)}, standard deviation = {formatNumber(summary.stdDev)}.
-    </p>
+    </AnalysisText>
   );
 }
 
@@ -193,8 +201,8 @@ function AnalysisTables({ state, datasetMissing }: {
   if (!result) return <AnalysisUnavailable message={t("distribution.report.unavailable", { defaultValue: "No results available." })} />;
 
   return (
-    <StatisticalTableList>
-      <StatisticalTableFrame
+    <AnalysisStack>
+      <AnalysisTable
         title={t("distribution.report.quantiles", { defaultValue: "Quantiles" })}
         width="standard"
         columns={[
@@ -223,14 +231,14 @@ function AnalysisTables({ state, datasetMissing }: {
           ]} />
         </>
       )}
-    </StatisticalTableList>
+    </AnalysisStack>
   );
 }
 
 function SummaryTableFrame({ title, rows }: { title: string; rows: Array<[string, number]> }) {
   const { t } = useTranslation();
   return (
-    <StatisticalTableFrame
+    <AnalysisTable
       title={title}
       width="compact"
       columns={[
