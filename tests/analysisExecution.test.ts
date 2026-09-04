@@ -84,7 +84,13 @@ assert.deepEqual(request, {
   freqColumn: null,
   byColumns: [],
   confidenceLevel: 0.95,
-  specLimits: {},
+  specLimits: {
+    DIM1: {
+      lsl: 55,
+      target: 100,
+      usl: 145,
+    },
+  },
   fitDistributions: ["normal"],
 });
 

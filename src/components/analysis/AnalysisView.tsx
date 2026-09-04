@@ -235,7 +235,7 @@ function AnalysisTables({ state, datasetMissing }: {
   );
 }
 
-function SummaryTableFrame({ title, rows }: { title: string; rows: Array<[string, number]> }) {
+function SummaryTableFrame({ title, rows }: { title: string; rows: Array<[string, number | null]> }) {
   const { t } = useTranslation();
   return (
     <AnalysisTable
@@ -274,8 +274,8 @@ function formatProbability(probability: number): string {
   return `${Number.parseFloat((probability * 100).toFixed(3))}%`;
 }
 
-function formatNumber(value: number): string {
-  return value.toLocaleString(undefined, { maximumSignificantDigits: 10 });
+function formatNumber(value: number | null): string {
+  return value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 10 });
 }
 
 function AnalysisProcessCapabilities({ state, datasetMissing }: {

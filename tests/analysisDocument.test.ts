@@ -20,7 +20,13 @@ assert.equal(analysis.definition.frequency, null);
 assert.deepEqual(analysis.definition.by, []);
 assert.deepEqual(analysis.definition.analysis, {
   confidenceLevel: 0.95,
-  specLimits: {},
+  specLimits: {
+    DIM1: {
+      lsl: 55,
+      target: 100,
+      usl: 145,
+    },
+  },
   fitDistributions: ["normal"],
 });
 assert.deepEqual(
