@@ -190,7 +190,7 @@ function AnalysisTables({ state, datasetMissing }: {
 
   return (
     <div className="analysis-tables-grid">
-      <section className="analysis-table-frame">
+      <section className="analysis-table-frame analysis-table-frame-quantiles">
         <h3 className="analysis-table-frame-title">{t("distribution.report.quantiles", { defaultValue: "Quantiles" })}</h3>
         <div className="analysis-table-frame-body">
           <table className="sp-fit-y-by-x-report-table analysis-quantile-table">
@@ -226,7 +226,7 @@ function AnalysisTables({ state, datasetMissing }: {
 function SummaryTableFrame({ title, rows }: { title: string; rows: Array<[string, number]> }) {
   const { t } = useTranslation();
   return (
-    <section className="analysis-table-frame">
+    <section className="analysis-table-frame analysis-table-frame-summary">
       <h3 className="analysis-table-frame-title">{title}</h3>
       <div className="analysis-table-frame-body">
         <table className="sp-fit-y-by-x-report-table analysis-summary-table">

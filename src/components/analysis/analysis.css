@@ -82,6 +82,14 @@
   background: var(--bg-panel);
 }
 
+.analysis-table-frame-quantiles {
+  width: 560px;
+}
+
+.analysis-table-frame-summary {
+  width: 520px;
+}
+
 .analysis-table-frame-title {
   min-height: 38px;
   display: flex;
