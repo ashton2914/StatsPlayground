@@ -99,7 +99,6 @@
   overflow-x: auto;
 }
 
-.analysis-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .analysis-quantile-table,
 .analysis-summary-table { width: 100%; font-variant-numeric: tabular-nums; }
 .analysis-quantile-table td:last-child,
@@ -109,8 +108,4 @@
 @media (max-width: 900px) {
   .analysis-workspace { grid-template-columns: 1fr; }
   .analysis-info-panel { border-right: 0; border-bottom: 1px solid var(--border-main); }
-}
-
-@media (max-width: 620px) {
-  .analysis-summary-grid { grid-template-columns: 1fr; }
 }

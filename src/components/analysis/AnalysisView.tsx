@@ -208,33 +208,33 @@ function AnalysisTables({ state, datasetMissing }: {
         </div>
       </section>
       {summary && (
-        <section className="analysis-table-frame">
-          <h3 className="analysis-table-frame-title">{t("distribution.report.summary", { defaultValue: "Summary Statistics" })}</h3>
-          <div className="analysis-table-frame-body">
-            <div className="analysis-summary-grid">
-              <SummaryTable title={t("distribution.report.location")} rows={[
-                ["n", summary.n], ["mean", summary.mean], ["median", summary.median],
-                ["minimum", summary.minimum], ["maximum", summary.maximum],
-              ]} />
-              <SummaryTable title={t("distribution.report.variation")} rows={[
-                ["stdDev", summary.stdDev], ["stdError", summary.stdError],
-                ["range", summary.range], ["iqr", summary.iqr], ["mad", summary.mad],
-              ]} />
-            </div>
-          </div>
-        </section>
+        <>
+          <SummaryTableFrame title={t("distribution.report.location")} rows={[
+            ["n", summary.n], ["mean", summary.mean], ["median", summary.median],
+            ["minimum", summary.minimum], ["maximum", summary.maximum],
+          ]} />
+          <SummaryTableFrame title={t("distribution.report.variation")} rows={[
+            ["stdDev", summary.stdDev], ["stdError", summary.stdError],
+            ["range", summary.range], ["iqr", summary.iqr], ["mad", summary.mad],
+          ]} />
+        </>
       )}
     </div>
   );
 }
 
-function SummaryTable({ title, rows }: { title: string; rows: Array<[string, number]> }) {
+function SummaryTableFrame({ title, rows }: { title: string; rows: Array<[string, number]> }) {
   const { t } = useTranslation();
   return (
-    <table className="sp-fit-y-by-x-report-table analysis-summary-table">
-      <thead><tr><th>{title}</th><th>{t("distribution.report.value")}</th></tr></thead>
-      <tbody>{rows.map(([label, value]) => <tr key={label}><th scope="row">{t(`distribution.statistics.${label}`)}</th><td>{formatNumber(value)}</td></tr>)}</tbody>
-    </table>
+    <section className="analysis-table-frame">
+      <h3 className="analysis-table-frame-title">{title}</h3>
+      <div className="analysis-table-frame-body">
+        <table className="sp-fit-y-by-x-report-table analysis-summary-table">
+          <thead><tr><th>{t("distribution.report.metric", { defaultValue: "Metric" })}</th><th>{t("distribution.report.value")}</th></tr></thead>
+          <tbody>{rows.map(([label, value]) => <tr key={label}><th scope="row">{t(`distribution.statistics.${label}`)}</th><td>{formatNumber(value)}</td></tr>)}</tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
