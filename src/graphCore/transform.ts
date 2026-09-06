@@ -3147,6 +3147,83 @@ function buildSingleOption(
   const hasNormalCurveEl = !!normalCurveElement;
   const showNormalSigmaBands = normalCurveElement?.options?.showSigmaBands === true;
   const hasDistributionEl = hasHistogramEl || hasNormalCurveEl;
+  const compositeBoxPlotElement = elements.find(
+    (element) => element.kind === "boxplot" && element.enabled !== false,
+  );
+  const compositeBoxPlotPacket = findBoxPlotPacket(aggregatePackets, panelFacet);
+  if (
+    frameBackedAggregateMode
+    && hasDistributionEl
+    && compositeBoxPlotElement
+    && compositeBoxPlotPacket
+    && xField?.type === "continuous"
+    && !yField
+  ) {
+    const distributionOption = buildSingleOption(
+      {
+        ...spec,
+        elements: elements.filter((element) => element !== compositeBoxPlotElement),
+      },
+      data,
+      theme,
+      globalGroupKeys,
+      valueOrders,
+      sharedRanges,
+      aggregatePackets,
+      panelFacet,
+      frame,
+      frameScatterCoordinates,
+    ) as Record<string, unknown>;
+    const upperXAxis = distributionOption.xAxis as Record<string, unknown>;
+    const upperYAxis = distributionOption.yAxis as Record<string, unknown>;
+    const boxValues = compositeBoxPlotPacket.entries.map((entry) => [
+      entry.whiskerLow,
+      entry.q1,
+      entry.median,
+      entry.q3,
+      entry.whiskerHigh,
+    ]);
+
+    distributionOption.grid = [
+      { left: 72, right: 28, top: 20, bottom: 92 },
+      { left: 72, right: 28, height: 42, bottom: 32 },
+    ];
+    distributionOption.xAxis = [
+      { ...upperXAxis, gridIndex: 0, axisLabel: { ...(upperXAxis.axisLabel as object), show: false } },
+      { ...upperXAxis, gridIndex: 1 },
+    ];
+    distributionOption.yAxis = [
+      { ...upperYAxis, gridIndex: 0 },
+      {
+        type: "category",
+        gridIndex: 1,
+        data: compositeBoxPlotPacket.entries.map((entry) => entry.category ?? ""),
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { show: false },
+        splitLine: { show: false },
+      },
+    ];
+    distributionOption.series = [
+      ...((distributionOption.series as Array<Record<string, unknown>> | undefined) ?? []),
+      {
+        id: "__distribution_composite_boxplot",
+        type: "boxplot",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: boxValues,
+        boxWidth: [12, 28],
+        clip: true,
+        itemStyle: {
+          color: withAlpha(theme.categorical[0], 0.18),
+          borderColor: theme.categorical[0],
+          borderWidth: 1.5,
+        },
+        z: 4,
+      },
+    ];
+    return distributionOption as EChartsOption;
+  }
   const yOnlyHistogram =
     !xField && !!yField && yField.type === "continuous" && hasDistributionEl;
   // Case (a): single-variable-on-X. Fires regardless of X type so the
@@ -5062,6 +5139,16 @@ function buildSingleOption(
           }
         }
       });
+
+      for (const element of enabledElements) {
+        if (element.kind !== "line") continue;
+        const elementId = getOpt<string>(element.options, "elementId", "");
+        if (!elementId) continue;
+        const resolvedStyle = resolvedStyleFor(DEFAULT_GROUP_KEY);
+        for (const packet of findPrecomputedCurvePackets(aggregatePackets, elementId)) {
+          series.push(buildPrecomputedCurveSeries(packet, packet.seriesName ?? "", resolvedStyle));
+        }
+      }
 
       const refCarrierY = buildRefLinesCarrier(normalizeRefLinesY(spec.refLinesY), spec.autoSpecY, theme, "y");
       if (refCarrierY) series.push(refCarrierY);

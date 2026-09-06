@@ -355,6 +355,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             snapshot.request.fit_models.clone(),
             snapshot.request.reports.clone(),
             snapshot.request.distributions.clone(),
+            snapshot.request.analyses.clone(),
             snapshot.request.tabulates.clone(),
             snapshot.request.folders.clone(),
             &snapshot.request.table_folders,
@@ -363,6 +364,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             &snapshot.request.fit_model_folders,
             &snapshot.request.report_folders,
             &snapshot.request.distribution_folders,
+            &snapshot.request.analysis_folders,
             &snapshot.request.tabulate_folders,
             snapshot.request.history.clone(),
             snapshot.request.snapshots.clone(),
@@ -393,6 +395,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 &bundle.fit_y_by_x,
                 &bundle.reports,
                 &bundle.distributions,
+                &bundle.analyses,
                 &bundle.tabulates,
                 &bundle.snapshots,
                 &bundle.workflows,
@@ -448,6 +451,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         fit_docs: &[serde_json::Value],
         report_docs: &[serde_json::Value],
         distribution_docs: &[serde_json::Value],
+        analysis_docs: &[serde_json::Value],
         tabulate_docs: &[serde_json::Value],
         snapshot_docs: &[serde_json::Value],
         workflow_docs: &[workflow_domain::WorkflowDefinition],
@@ -491,6 +495,15 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             })
             .collect();
         let distribution_by_id: HashMap<&str, &serde_json::Value> = distribution_docs
+            .iter()
+            .filter_map(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| (id, value))
+            })
+            .collect();
+        let analysis_by_id: HashMap<&str, &serde_json::Value> = analysis_docs
             .iter()
             .filter_map(|value| {
                 value
@@ -557,7 +570,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             let column_write_modes = plan
                 .columns
                 .iter()
-                .map(|(_, column_type)| archive_cell_write_mode(column_type))
+                .map(|(_, _, column_type)| archive_cell_write_mode(column_type))
                 .collect::<Vec<_>>();
 
             let columns = table_columns_from_plan(&dataset.id, &plan, &snapshot.column_display);
@@ -765,6 +778,19 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             })?;
         }
 
+        for analysis_ref in &manifest.analyses {
+            let analysis_doc = analysis_by_id.get(analysis_ref.id.as_str()).ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing analysis payload for manifest reference {}",
+                    analysis_ref.id
+                ))
+            })?;
+            zip.start_file(&analysis_ref.file, file_opts)
+                .map_err(|e| AppError::FileIO(e.to_string()))?;
+            serde_json::to_writer(&mut zip, analysis_doc)
+                .map_err(|e| AppError::FileIO(format!("failed to serialize analysis doc: {e}")))?;
+        }
+
         for tabulate_ref in &manifest.tabulate_files {
             let tabulate_doc = tabulate_by_id
                 .get(tabulate_ref.id.as_str())
@@ -903,7 +929,7 @@ fn table_columns_from_plan(
     plan.columns
         .iter()
         .enumerate()
-        .map(|(index, (name, column_type))| {
+        .map(|(index, (_, name, column_type))| {
             let props = display.and_then(|items| items.iter().find(|item| item.col_index == index));
             TableColumn {
                 name: name.clone(),
@@ -1375,6 +1401,7 @@ mod tests {
                 fit_models: vec![serde_json::json!({"id": "fit-model-1"})],
                 reports: Vec::new(),
                 distributions: Vec::new(),
+                analyses: Vec::new(),
                 tabulates: vec![serde_json::json!({"id": "tab-1"})],
                 folders: vec!["Bench".to_string(), "Bench/Sub".to_string()],
                 table_folders: HashMap::new(),
@@ -1383,6 +1410,7 @@ mod tests {
                 fit_model_folders: HashMap::new(),
                 report_folders: HashMap::new(),
                 distribution_folders: HashMap::new(),
+                analysis_folders: HashMap::new(),
                 tabulate_folders: HashMap::new(),
                 workflows: vec![],
                 logical_folders: vec![],
@@ -1475,6 +1503,143 @@ mod tests {
                     "graphFrames": { "transient": true },
                     "runState": { "status": "completed" }
                 })],
+                analyses: vec![serde_json::json!({
+                    "schemaVersion": 1,
+                    "documentType": "analysis",
+                    "id": "analysis-1",
+                    "name": "DIM1 Analysis",
+                    "analysisKind": "distribution",
+                    "configRevision": 1,
+                    "source": { "datasetId": source_dataset_id },
+                    "definition": {
+                        "kind": "distribution",
+                        "responses": [{ "name": "value", "type": "continuous" }],
+                        "weight": null,
+                        "frequency": null,
+                        "by": [],
+                        "analysis": {
+                            "confidenceLevel": 0.95,
+                            "specLimits": {},
+                            "fitDistributions": ["normal"]
+                        },
+                        "graphs": {
+                            "overview": {
+                                "mode": "2d",
+                                "modeStates": {
+                                    "twoD": {
+                                        "encoding": { "x": { "name": "value", "type": "continuous" } },
+                                        "multiX": [],
+                                        "multiY": [],
+                                        "elements": [
+                                            { "kind": "histogram", "enabled": true, "options": { "elementId": "distribution.overview.histogram" } },
+                                            { "kind": "line", "enabled": true, "options": { "elementId": "distribution.overview.fittedCurves" } }
+                                        ],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "threeD": {
+                                        "encoding": {},
+                                        "elements": [{ "kind": "scatter3d", "enabled": true }],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "multivariate": {
+                                        "columns": [],
+                                        "chartType": "correlationMatrix",
+                                        "correlationMethod": "pearson"
+                                    }
+                                },
+                                "filters": [],
+                                "sampling": { "mode": "full" }
+                            },
+                            "boxPlot": {
+                                "mode": "2d",
+                                "modeStates": {
+                                    "twoD": {
+                                        "encoding": { "x": { "name": "value", "type": "continuous" } },
+                                        "multiX": [],
+                                        "multiY": [],
+                                        "elements": [
+                                            { "kind": "boxplot", "enabled": true, "options": { "elementId": "distribution.boxPlot" } }
+                                        ],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "threeD": {
+                                        "encoding": {},
+                                        "elements": [{ "kind": "scatter3d", "enabled": true }],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "multivariate": {
+                                        "columns": [],
+                                        "chartType": "correlationMatrix",
+                                        "correlationMethod": "pearson"
+                                    }
+                                },
+                                "filters": [],
+                                "sampling": { "mode": "full" }
+                            },
+                            "ecdf": {
+                                "mode": "2d",
+                                "modeStates": {
+                                    "twoD": {
+                                        "encoding": { "x": { "name": "value", "type": "continuous" } },
+                                        "multiX": [],
+                                        "multiY": [],
+                                        "elements": [
+                                            { "kind": "line", "enabled": true, "options": { "elementId": "distribution.ecdf" } }
+                                        ],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "threeD": {
+                                        "encoding": {},
+                                        "elements": [{ "kind": "scatter3d", "enabled": true }],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "multivariate": {
+                                        "columns": [],
+                                        "chartType": "correlationMatrix",
+                                        "correlationMethod": "pearson"
+                                    }
+                                },
+                                "filters": [],
+                                "sampling": { "mode": "full" }
+                            },
+                            "normalQuantile": {
+                                "mode": "2d",
+                                "modeStates": {
+                                    "twoD": {
+                                        "encoding": { "x": { "name": "value", "type": "continuous" } },
+                                        "multiX": [],
+                                        "multiY": [],
+                                        "elements": [
+                                            { "kind": "points", "enabled": true, "options": { "elementId": "distribution.normalQuantile.points" } },
+                                            { "kind": "line", "enabled": true, "options": { "elementId": "distribution.normalQuantile.reference" } },
+                                            { "kind": "line", "enabled": true, "options": { "elementId": "distribution.normalQuantile.lower" } },
+                                            { "kind": "line", "enabled": true, "options": { "elementId": "distribution.normalQuantile.upper" } }
+                                        ],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "threeD": {
+                                        "encoding": {},
+                                        "elements": [{ "kind": "scatter3d", "enabled": true }],
+                                        "smootherLambda": 0.4
+                                    },
+                                    "multivariate": {
+                                        "columns": [],
+                                        "chartType": "correlationMatrix",
+                                        "correlationMethod": "pearson"
+                                    }
+                                },
+                                "filters": [],
+                                "sampling": { "mode": "full" }
+                            }
+                        }
+                    },
+                    "presentation": {
+                        "schemaVersion": 1,
+                        "layout": "distribution-v1"
+                    },
+                    "createdAt": "2026-09-03T00:00:00.000Z",
+                    "updatedAt": "2026-09-03T00:00:00.000Z"
+                })],
                 tabulates: vec![serde_json::json!({
                     "id": "tab-1",
                     "name": "data",
@@ -1505,6 +1670,10 @@ mod tests {
                 distribution_folders: HashMap::from([(
                     "dist-1".to_string(),
                     "Root/Nested".to_string(),
+                )]),
+                analysis_folders: HashMap::from([(
+                    "analysis-1".to_string(),
+                    "Root/Nested/Leaf".to_string(),
                 )]),
                 tabulate_folders: HashMap::from([("tab-1".to_string(), "Root".to_string())]),
                 workflows: vec![],
@@ -1846,6 +2015,7 @@ mod tests {
             "data/Report 1.sprp".to_string(),
             "data/data-2.spf".to_string(),
             "distributions/Distribution.spdist".to_string(),
+            "analyses/DIM1 Analysis.span".to_string(),
             "snapshots/data.json".to_string(),
             ".history.json".to_string(),
         ]);
@@ -1886,6 +2056,10 @@ mod tests {
             manifest.distribution_folders.get("dist-1"),
             Some(&"Root/Nested".to_string())
         );
+        assert_eq!(
+            manifest.analysis_folders.get("analysis-1"),
+            Some(&"Root/Nested/Leaf".to_string())
+        );
 
         for fit_ref in &manifest.fit_y_by_x_files {
             let mut entry = zip.by_name(&fit_ref.file).unwrap();
@@ -1915,6 +2089,25 @@ mod tests {
                 value.get("name").and_then(serde_json::Value::as_str),
                 Some(report_ref.name.as_str())
             );
+        }
+
+        for analysis_ref in &manifest.analyses {
+            let mut entry = zip.by_name(&analysis_ref.file).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value.get("id").and_then(serde_json::Value::as_str),
+                Some(analysis_ref.id.as_str())
+            );
+            assert_eq!(
+                value.get("name").and_then(serde_json::Value::as_str),
+                Some(analysis_ref.name.as_str())
+            );
+            assert!(value.get("markdown").is_none());
+            assert!(value.get("reportBlocks").is_none());
+            assert!(value.get("graphFrames").is_none());
+            assert!(value.get("result").is_none());
         }
 
         for tabulate_ref in &manifest.tabulate_files {

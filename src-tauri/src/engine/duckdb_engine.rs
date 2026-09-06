@@ -1424,10 +1424,7 @@ impl DuckDbEngine {
             })
             .collect::<std::collections::HashMap<_, _>>();
 
-        let y_column = role_to_column
-            .get("y")
-            .ok_or_else(|| AppError::InvalidParam("graph request is missing role y".into()))?
-            .clone();
+        let y_column = role_to_column.get("y").cloned();
 
         let x_column = role_to_column.get("x").cloned();
         let group_column = role_to_column.get("group").cloned();
@@ -1438,6 +1435,15 @@ impl DuckDbEngine {
         let group_z_column = role_to_column.get("groupz").cloned();
         let wrap_column = role_to_column.get("wrap").cloned();
 
+        let mut multi_x_columns = request
+            .fields
+            .iter()
+            .filter(|field| field.role.to_ascii_lowercase().starts_with("multix"))
+            .map(|field| field.column.trim().to_string())
+            .collect::<Vec<_>>();
+        multi_x_columns.sort();
+        multi_x_columns.dedup();
+
         let mut multi_y_columns = request
             .fields
             .iter()
@@ -1446,6 +1452,12 @@ impl DuckDbEngine {
             .collect::<Vec<_>>();
         multi_y_columns.sort();
         multi_y_columns.dedup();
+
+        if y_column.is_none() && multi_x_columns.len() < 2 {
+            return Err(AppError::InvalidParam(
+                "graph request is missing role y".into(),
+            ));
+        }
 
         let validate_column = |column_name: &str| -> Result<(), AppError> {
             if column_name.is_empty() {
@@ -1461,7 +1473,9 @@ impl DuckDbEngine {
             Ok(())
         };
 
-        validate_column(&y_column)?;
+        if let Some(column) = &y_column {
+            validate_column(column)?;
+        }
         if let Some(column) = &x_column {
             validate_column(column)?;
         }
@@ -1484,6 +1498,9 @@ impl DuckDbEngine {
             validate_column(column)?;
         }
         if let Some(column) = &wrap_column {
+            validate_column(column)?;
+        }
+        for column in &multi_x_columns {
             validate_column(column)?;
         }
         for column in &multi_y_columns {
@@ -1583,7 +1600,33 @@ impl DuckDbEngine {
             format!(", {}", sampling_strata_select_sql.join(", "))
         };
 
-        let (source_sql, source_values, source_column_type) = if multi_y_columns.len() >= 2 {
+        let (source_sql, source_values, source_column_type) = if multi_x_columns.len() >= 2 {
+            let mut branches = Vec::with_capacity(multi_x_columns.len());
+            let mut values = Vec::new();
+            for column in &multi_x_columns {
+                if let Some(bound_y) = &y_column {
+                    branches.push(format!(
+                        "SELECT \"_row_id\", CAST({x_col} AS DOUBLE) AS __sp_x, CAST({y_col} AS DOUBLE) AS __sp_y, {group_expr} AS __sp_group, {size_expr} AS __sp_size, CAST({z_expr} AS DOUBLE) AS __sp_z, {group_x_expr} AS __sp_groupx, {group_y_expr} AS __sp_groupy, {group_z_expr} AS __sp_groupz, {wrap_expr} AS __sp_wrap{strata_select}, ? AS {source_col} FROM {table_name} {where_clause}",
+                        x_col = Self::quote_identifier(column),
+                        y_col = Self::quote_identifier(bound_y),
+                        source_col = Self::quote_identifier(GRAPH_VIRTUAL_SOURCE_COLUMN),
+                        strata_select = strata_select_sql,
+                    ));
+                    values.push(Value::Text(column.clone()));
+                } else {
+                    branches.push(format!(
+                        "SELECT \"_row_id\", ? AS __sp_x, CAST({y_col} AS DOUBLE) AS __sp_y, {group_expr} AS __sp_group, {size_expr} AS __sp_size, CAST({z_expr} AS DOUBLE) AS __sp_z, {group_x_expr} AS __sp_groupx, {group_y_expr} AS __sp_groupy, {group_z_expr} AS __sp_groupz, {wrap_expr} AS __sp_wrap{strata_select}, ? AS {source_col} FROM {table_name} {where_clause}",
+                        y_col = Self::quote_identifier(column),
+                        source_col = Self::quote_identifier(GRAPH_VIRTUAL_SOURCE_COLUMN),
+                        strata_select = strata_select_sql,
+                    ));
+                    values.push(Value::Text(column.clone()));
+                    values.push(Value::Text(column.clone()));
+                }
+                values.extend(filter_values.iter().cloned());
+            }
+            (branches.join(" UNION ALL "), values, "VARCHAR".to_string())
+        } else if multi_y_columns.len() >= 2 {
             let mut branches = Vec::with_capacity(multi_y_columns.len());
             let mut values = Vec::with_capacity(
                 filter_values.len() * multi_y_columns.len() + multi_y_columns.len(),
@@ -1604,7 +1647,9 @@ impl DuckDbEngine {
             let source_col = if multi_y_columns.len() == 1 {
                 multi_y_columns[0].clone()
             } else {
-                y_column.clone()
+                y_column.clone().ok_or_else(|| {
+                    AppError::InvalidParam("graph request is missing role y".into())
+                })?
             };
             let sql = format!(
                 "SELECT \"_row_id\", {x_expr} AS __sp_x, CAST({y_col} AS DOUBLE) AS __sp_y, {group_expr} AS __sp_group, {size_expr} AS __sp_size, CAST({z_expr} AS DOUBLE) AS __sp_z, {group_x_expr} AS __sp_groupx, {group_y_expr} AS __sp_groupy, {group_z_expr} AS __sp_groupz, {wrap_expr} AS __sp_wrap{strata_select}, ? AS {source_col} FROM {table_name} {where_clause}",
@@ -1660,7 +1705,11 @@ impl DuckDbEngine {
 
         let projection_values = source_values.clone();
 
-        let melt_active = multi_y_columns.len() >= 2;
+        let multi_x_active = multi_x_columns.len() >= 2;
+        let multi_x_axis_mode = multi_x_active && y_column.is_none();
+        let multi_x_merge_mode = multi_x_active && y_column.is_some();
+        let multi_y_active = multi_y_columns.len() >= 2;
+        let melt_active = multi_x_active || multi_y_active;
         let mut projection_select_items = Vec::new();
         let mut projected_columns = Vec::new();
         let mut projected_column_types = Vec::new();
@@ -1674,21 +1723,35 @@ impl DuckDbEngine {
             projected_column_types.push(column_type);
         };
 
-        let x_public = x_column.clone().unwrap_or_else(|| "__sp_x".to_string());
+        let x_public = if multi_x_axis_mode {
+            GRAPH_VIRTUAL_SOURCE_COLUMN.to_string()
+        } else if multi_x_merge_mode {
+            GRAPH_VIRTUAL_VALUE_COLUMN.to_string()
+        } else {
+            x_column.clone().unwrap_or_else(|| "__sp_x".to_string())
+        };
         push_projected(
             format!("__sp_x AS {}", Self::quote_identifier(&x_public)),
             x_public,
-            x_column
-                .as_ref()
-                .and_then(|column| allowed_columns.get(column.as_str()).copied())
-                .unwrap_or("VARCHAR")
-                .to_string(),
+            if multi_x_axis_mode {
+                "VARCHAR".to_string()
+            } else if multi_x_merge_mode {
+                "DOUBLE".to_string()
+            } else {
+                x_column
+                    .as_ref()
+                    .and_then(|column| allowed_columns.get(column.as_str()).copied())
+                    .unwrap_or("VARCHAR")
+                    .to_string()
+            },
         );
 
-        let y_public = if melt_active {
+        let y_public = if multi_x_axis_mode || multi_y_active {
             GRAPH_VIRTUAL_VALUE_COLUMN.to_string()
         } else {
-            y_column.clone()
+            y_column
+                .clone()
+                .ok_or_else(|| AppError::InvalidParam("graph request is missing role y".into()))?
         };
         push_projected(
             format!("__sp_y AS {}", Self::quote_identifier(&y_public)),

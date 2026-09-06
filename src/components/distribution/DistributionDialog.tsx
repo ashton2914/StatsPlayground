@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { DistributionItem } from "@/types/distribution";
+import { Button, Field, NumberField, TextField } from "@/components/ui";
 
 import {
   createDistributionItem,
@@ -82,7 +83,7 @@ export function DistributionDialog({
     if (!valid || submitting) return;
     setSubmitting(true);
     try {
-      const item = createDistributionItem({
+      const createdItem = createDistributionItem({
         id: initialItem?.id ?? globalThis.crypto.randomUUID(),
         name: state.name.trim(),
         sourceDatasetId: state.sourceDatasetId,
@@ -94,6 +95,9 @@ export function DistributionDialog({
         analysis: state.analysis,
         createdAt: initialItem?.createdAt ?? new Date().toISOString(),
       });
+      const item = initialItem
+        ? { ...createdItem, graphs: structuredClone(initialItem.graphs) }
+        : createdItem;
       await onSubmit(item);
     } finally {
       setSubmitting(false);
@@ -110,7 +114,8 @@ export function DistributionDialog({
       >
         <header className="distribution-dialog-header">
           <h3>{t("distribution.title")}</h3>
-          <input
+          <TextField
+            className="distribution-name-input"
             aria-label={t("common.name", { defaultValue: "Name" })}
             value={state.name}
             onChange={(event) => setState((current) => ({ ...current, name: event.target.value }))}
@@ -120,14 +125,14 @@ export function DistributionDialog({
         <div className="distribution-dialog-scroll">
           <div className="distribution-dialog-body">
             <aside className="distribution-column-browser">
-              <label htmlFor="distribution-column-search">{t("distribution.searchColumns")}</label>
-              <input
-                id="distribution-column-search"
-                data-testid="distribution-column-search"
-                type="search"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
+              <Field label={t("distribution.searchColumns")}>
+                <TextField
+                  data-testid="distribution-column-search"
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </Field>
               <div className="distribution-column-list">
                 {filteredColumns.map((column) => (
                   <div
@@ -146,10 +151,10 @@ export function DistributionDialog({
                   >
                     <span>{column.name}</span>
                     <div className="distribution-column-actions">
-                      <button type="button" disabled={column.field.type !== "continuous"} onClick={() => assign("response", column.field.name)}>Y</button>
-                      <button type="button" disabled={column.field.type !== "continuous"} onClick={() => assign("weight", column.field.name)}>{t("distribution.roles.weight")}</button>
-                      <button type="button" disabled={!column.integerCompatible} onClick={() => assign("frequency", column.field.name)}>{t("distribution.frequencyShort")}</button>
-                      <button type="button" disabled={column.field.type !== "nominal" && column.field.type !== "ordinal"} onClick={() => assign("by", column.field.name)}>By</button>
+                      <Button size="small" disabled={column.field.type !== "continuous"} onClick={() => assign("response", column.field.name)}>Y</Button>
+                      <Button size="small" disabled={column.field.type !== "continuous"} onClick={() => assign("weight", column.field.name)}>{t("distribution.roles.weight")}</Button>
+                      <Button size="small" disabled={!column.integerCompatible} onClick={() => assign("frequency", column.field.name)}>{t("distribution.frequencyShort")}</Button>
+                      <Button size="small" disabled={column.field.type !== "nominal" && column.field.type !== "ordinal"} onClick={() => assign("by", column.field.name)}>By</Button>
                     </div>
                   </div>
                 ))}
@@ -164,21 +169,19 @@ export function DistributionDialog({
             </main>
           </div>
 
-          <label className="distribution-option">
-            <span>{t("distribution.confidenceLevel")}</span>
-            <input
+          <NumberField
+              fieldClassName="distribution-option"
+              label={t("distribution.confidenceLevel")}
               data-testid="distribution-confidence-level"
-              type="number"
               min="0.01"
               max="0.99"
               step="0.01"
               value={state.analysis.confidenceLevel}
-              onChange={(event) => setState((current) => ({
+              onValueChange={(value) => setState((current) => ({
                 ...current,
-                analysis: { ...current.analysis, confidenceLevel: Number(event.target.value) },
+                analysis: { ...current.analysis, confidenceLevel: value ?? 0 },
               }))}
-            />
-          </label>
+          />
 
           <SpecificationLimitsEditor
             responses={state.responses}
@@ -195,10 +198,10 @@ export function DistributionDialog({
         </div>
 
         <div className="dialog-actions">
-          <button type="button" className="btn-primary" disabled={!valid || submitting} onClick={() => void submit()}>
+          <Button variant="primary" disabled={!valid || submitting} onClick={() => void submit()}>
             {submitting ? t("distribution.saving") : t("common.save")}
-          </button>
-          <button type="button" className="btn-text" onClick={onCancel}>{t("common.cancel")}</button>
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>{t("common.cancel")}</Button>
         </div>
       </div>
     </div>

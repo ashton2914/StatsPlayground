@@ -70,30 +70,6 @@ mod tests {
                 CommandClass::Mutation,
             ),
             (
-                "commands::distribution_commands::bootstrap_distribution_workspace",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::distribution_commands::list_distribution_capabilities",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::distribution_commands::validate_black_box_case",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::distribution_commands::start_distribution_run",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::distribution_commands::execute_distribution_run",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::distribution_commands::cancel_distribution_run",
-                CommandClass::ReadOnly,
-            ),
-            (
                 "commands::data_commands::locate_table_row",
                 CommandClass::ReadOnly,
             ),

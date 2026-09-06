@@ -151,8 +151,25 @@
 .sp-report-markdown-flow h2,
 .sp-report-markdown-flow h3,
 .sp-report-markdown-flow h4 {
-  margin: 0 0 12px;
+  margin: 0 0 10px;
+  border: 1px solid var(--border-main);
+  padding: 6px 10px;
+  background: var(--bg-header);
   color: var(--fg-primary);
+  letter-spacing: 0;
+}
+
+.sp-report-markdown-flow h1 {
+  font-size: 17px;
+}
+
+.sp-report-markdown-flow h2 {
+  font-size: 15px;
+}
+
+.sp-report-markdown-flow h3,
+.sp-report-markdown-flow h4 {
+  font-size: 13px;
 }
 
 .sp-report-markdown-flow p,

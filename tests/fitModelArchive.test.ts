@@ -56,8 +56,9 @@ const invokeCalls: Array<{ command: string; args: Record<string, unknown> }> = [
 Object.assign(globalThis, {
   window: {
     __TAURI_INTERNALS__: {
+      transformCallback: () => 1,
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
-        invokeCalls.push({ command, args });
+        invokeCalls.push({ command, args: JSON.parse(JSON.stringify(args)) as Record<string, unknown> });
         if (command === "open_project") return openResult;
         return openResult.project;
       },
@@ -108,6 +109,7 @@ assert.deepEqual(invokeCalls[0], {
       tabulateFolders: {},
       distributionFolders: {},
     },
+    onProgress: "__CHANNEL__:1",
   },
 });
 

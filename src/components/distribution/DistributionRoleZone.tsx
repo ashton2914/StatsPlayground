@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import type { FieldRef } from "@/graphCore";
+import { Button } from "@/components/ui";
 
 import type { DistributionRole } from "./distributionConfig";
 
@@ -36,15 +37,15 @@ export function DistributionRoleZone({ role, fields, onAssign, onRemove }: Distr
             <span className="distribution-role-chip-label" title={field.name}>
               {field.name}
             </span>
-            <button
-              type="button"
-              className="btn-icon"
+            <Button
+              variant="icon"
+              size="small"
               data-testid={`distribution-remove-${role}-${field.name}`}
               aria-label={t("distribution.removeFromRole", { column: field.name, role: roleLabel })}
               onClick={() => onRemove(field.name)}
             >
               ×
-            </button>
+            </Button>
           </span>
         ))}
       </div>

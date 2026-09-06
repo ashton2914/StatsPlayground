@@ -1,7 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Graph, inferFieldType, type FieldRef, type ScatterPointPick } from "@/graphCore";
+import {
+  Graph,
+  inferFieldType,
+  type FieldRef,
+  type GraphPanelOptionFactory,
+  type ScatterPointPick,
+} from "@/graphCore";
 import { dataService } from "@/services/dataService";
 import { useGraphPaletteStore } from "@/stores/useGraphPaletteStore";
 import type { ColumnMeta, DatasetMeta } from "@/types/data";
@@ -33,12 +39,14 @@ export type { ExternalGraphDataState } from "./useGraphDataPipeline";
 export interface GraphRuntimeProps {
   item: GraphBuilderItem;
   dataset: DatasetMeta;
+  minPanelHeight?: number;
   externalDataState?: ExternalGraphDataState;
   showPointBudgetAction?: boolean;
   onRequestSampleMode?: () => void;
   onPointPick?: (pick: ScatterPointPick) => void;
   brushMode?: boolean;
   onBrushSelect?: (picks: ScatterPointPick[]) => void;
+  optionFactory?: GraphPanelOptionFactory;
   onYAxisDblClick?: () => void;
   onXAxisDblClick?: () => void;
   onAxisRangeChange?: (axis: "x" | "y", min: number, max: number) => void;
@@ -90,12 +98,14 @@ function snapshotChanged(previous: GraphRuntimeState | null, next: GraphRuntimeS
 export function GraphRuntime({
   item,
   dataset,
+  minPanelHeight,
   externalDataState,
   showPointBudgetAction = false,
   onRequestSampleMode,
   onPointPick,
   brushMode,
   onBrushSelect,
+  optionFactory,
   onYAxisDblClick,
   onXAxisDblClick,
   onAxisRangeChange,
@@ -330,6 +340,7 @@ export function GraphRuntime({
             spec={runtimeSpec}
             data={graphData}
             frame={frame}
+            minPanelHeight={minPanelHeight}
             valueOrders={valueOrders}
             onYAxisDblClick={effectiveItem.mode === "multivariate" ? undefined : (axesTransposed ? onXAxisDblClick : onYAxisDblClick)}
             onXAxisDblClick={effectiveItem.mode === "multivariate" ? undefined : (axesTransposed ? onYAxisDblClick : onXAxisDblClick)}
@@ -342,6 +353,7 @@ export function GraphRuntime({
             onPointClick={effectiveItem.mode === "multivariate" ? undefined : onPointPick}
             brushMode={effectiveItem.mode !== "multivariate" && !!brushMode}
             onBrushSelect={effectiveItem.mode === "multivariate" ? undefined : onBrushSelect}
+            optionFactory={optionFactory}
           />
           {status === "error" && error && (
             <div className="gb-canvas-overlay gb-canvas-overlay-error">{error}</div>

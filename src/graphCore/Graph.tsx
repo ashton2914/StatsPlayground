@@ -14,8 +14,19 @@ import { buildGraph, type ScatterPointPick } from "./transform";
 import { withInterleavedGraphLayers } from "./layers";
 import { Chart3D } from "./Chart3D";
 import { build3DPanels } from "./threeD";
+import { buildLinkedAxisRangePatch, type LinkedAxisRangePatch } from "./linkedAxisRange";
 import type { GraphDataFrame } from "@/types/graphData";
 import { useThemeStore } from "@/stores/useThemeStore";
+
+export interface GraphPanelSeriesContext {
+  panelIndex: number;
+  title: string;
+  option: Readonly<Record<string, unknown>>;
+}
+
+export type GraphPanelOptionFactory = (
+  context: GraphPanelSeriesContext,
+) => Record<string, unknown>;
 
 interface GraphProps {
   spec: GraphSpec;
@@ -99,9 +110,10 @@ interface GraphProps {
    * treated as "clear"). Only fired when `brushMode` is true.
    */
   onBrushSelect?: (picks: ScatterPointPick[]) => void;
+  optionFactory?: GraphPanelOptionFactory;
 }
 
-export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPanelHeight = 240, valueOrders, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect }: GraphProps) {
+export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPanelHeight = 240, valueOrders, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect, optionFactory }: GraphProps) {
   // 订阅主题变化以触发重渲染
   const themeMode = useThemeStore((s) => s.mode);
 
@@ -113,9 +125,21 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
   const built = useMemo(() => {
     if (use3DScene) return { cols: 1, rows: 1, panels: [] as ReturnType<typeof buildGraph>["panels"] };
     const theme = getGraphTheme();
-    return buildGraph(spec, data, theme, valueOrders, frame ?? undefined);
+    const graph = buildGraph(spec, data, theme, valueOrders, frame ?? undefined);
+    if (!optionFactory) return graph;
+    return {
+      ...graph,
+      panels: graph.panels.map((panel, panelIndex) => ({
+        ...panel,
+        option: optionFactory({
+          panelIndex,
+          title: panel.title,
+          option: panel.option,
+        }),
+      })),
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec, data, themeMode, valueOrders, frame]);
+  }, [spec, data, themeMode, valueOrders, frame, optionFactory]);
 
   const built3D = useMemo(
     () => use3DScene
@@ -612,7 +636,7 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
     // bounds. `lazyUpdate` + `silent` skip the dispatch/render work
     // ECharts does for tooltip events we don't care about during a
     // drag.
-    let pendingPatch: { xAxis?: Record<string, unknown>; yAxis?: Record<string, unknown> } | null = null;
+    let pendingPatch: { xAxis?: LinkedAxisRangePatch; yAxis?: LinkedAxisRangePatch } | null = null;
     let scheduledFrame = 0;
     const flushPatch = () => {
       scheduledFrame = 0;
@@ -635,7 +659,7 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
         { lazyUpdate: true, silent: true },
       );
     };
-    const schedulePatch = (p: { xAxis?: Record<string, unknown>; yAxis?: Record<string, unknown> }) => {
+    const schedulePatch = (p: { xAxis?: LinkedAxisRangePatch; yAxis?: LinkedAxisRangePatch }) => {
       pendingPatch = p;
       if (!scheduledFrame) scheduledFrame = requestAnimationFrame(flushPatch);
     };
@@ -753,7 +777,7 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
       // OPPOSITE end stays anchored. This is what makes outward drag
       // feel like "拉大 / stretch the graph outward" → fewer units
       // visible → zoom in.
-      const patch: { xAxis?: Record<string, unknown>; yAxis?: Record<string, unknown> } = {};
+      const patch: { xAxis?: LinkedAxisRangePatch; yAxis?: LinkedAxisRangePatch } = {};
       const isYMode = st.mode === "y-min" || st.mode === "y-max" || st.mode === "y-pan" || st.mode === "xy-pan";
       const isXMode = st.mode === "x-min" || st.mode === "x-max" || st.mode === "x-pan" || st.mode === "xy-pan";
       if (isYMode && st.startYMin !== undefined && st.startYMax !== undefined && st.yPxRange) {
@@ -779,11 +803,7 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
         // within [min, max] regardless of whether min lands on a
         // round grid line. This removes the snap-to-grid stepped feel
         // and gives smooth cursor-following motion.
-        patch.yAxis = {
-          min: newYMin,
-          max: newYMax,
-          scale: false,
-        };
+        patch.yAxis = buildLinkedAxisRangePatch(option, "y", newYMin, newYMax, { scale: false });
       }
       if (isXMode && st.startXMin !== undefined && st.startXMax !== undefined && st.xPxRange) {
         const xSpan = st.startXMax - st.startXMin;
@@ -801,11 +821,7 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
         }
         st.lastXMin = newXMin;
         st.lastXMax = newXMax;
-        patch.xAxis = {
-          min: newXMin,
-          max: newXMax,
-          scale: false,
-        };
+        patch.xAxis = buildLinkedAxisRangePatch(option, "x", newXMin, newXMax, { scale: false });
       }
       if (patch.xAxis || patch.yAxis) schedulePatch(patch);
     };
@@ -946,10 +962,10 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
       // Apply live (rAF-coalesced), and remember the latest bounds so
       // the debounced commit can fire onAxisRangeChange once idle.
       if (which === "y") {
-        schedulePatch({ yAxis: { min: newMin, max: newMax } });
+        schedulePatch({ yAxis: buildLinkedAxisRangePatch(option, "y", newMin, newMax) });
         wheelLastBounds.y = { min: newMin, max: newMax };
       } else {
-        schedulePatch({ xAxis: { min: newMin, max: newMax } });
+        schedulePatch({ xAxis: buildLinkedAxisRangePatch(option, "x", newMin, newMax) });
         wheelLastBounds.x = { min: newMin, max: newMax };
       }
       if (wheelCommitTimer) window.clearTimeout(wheelCommitTimer);

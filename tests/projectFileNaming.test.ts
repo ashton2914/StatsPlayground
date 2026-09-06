@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   allocateProjectBasename,
+  ensureProjectFileName,
   formatSnapshotTimestamp,
   normalizeProjectBasenameInput,
   projectFileExtension,
@@ -15,7 +16,10 @@ assert.equal(projectFileExtension("fitYByX"), ".spf");
 assert.equal(projectFileExtension("tabulate"), ".spf");
 assert.equal(projectFileExtension("report"), ".sprp");
 assert.equal(projectFileExtension("distribution"), ".spdist");
+assert.equal(projectFileExtension("analysis"), ".span");
 assert.equal(projectFileExtension("snapshot"), ".json");
+assert.equal(ensureProjectFileName("DIM1 Analysis", "analysis"), "DIM1 Analysis.span");
+assert.equal(ensureProjectFileName("DIM1 Analysis.span", "analysis"), "DIM1 Analysis.span");
 assert.equal(
   formatSnapshotTimestamp(new Date(2026, 8, 1, 13, 34, 5)),
   "20260901133405",
@@ -37,6 +41,10 @@ assert.equal(
 assert.equal(
   allocateProjectBasename("data", ".spdist", ["data"]),
   "data-2",
+);
+assert.equal(
+  allocateProjectBasename("analysis", ".span", ["analysis"]),
+  "analysis-2",
 );
 
 // Fit Y by X and Tabulate share the same .spf namespace.
@@ -84,6 +92,11 @@ assert.deepEqual(normalizeProjectBasenameInput("summary.sprp", ".sprp"), {
 });
 assert.deepEqual(normalizeProjectBasenameInput("Distribution.SPDIST", ".spdist"), {
   basename: "Distribution",
+  strippedExtension: true,
+  wrongExtension: null,
+});
+assert.deepEqual(normalizeProjectBasenameInput("DIM1 Analysis.span", ".span"), {
+  basename: "DIM1 Analysis",
   strippedExtension: true,
   wrongExtension: null,
 });

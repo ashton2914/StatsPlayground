@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 
+import { AnalysisStack, AnalysisTable } from "@/components/analysis/presentation";
 import type {
   CapabilityTypedValueV1,
   ProcessCapabilityDataV1,
@@ -36,52 +37,41 @@ export function ProcessCapabilityReport({ data }: { data: ProcessCapabilityDataV
   ] as const;
 
   return (
-    <div className="distribution-capability-report">
-      <div className="distribution-capability-summary">
-        <table className="sp-fit-y-by-x-report-table">
-          <caption>{t("distribution.capability.specification")}</caption>
-          <tbody>
-            {specificationRows.map(([label, value]) => (
-              <tr key={label}>
-                <th scope="row">{label.toUpperCase()}</th>
-                <td>{formatNumber(value)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <table className="sp-fit-y-by-x-report-table">
-          <caption>{t("distribution.capability.processSummary")}</caption>
-          <tbody>
-            {summaryRows.map(([label, value]) => (
-              <tr key={label}>
-                <th scope="row">{t(`distribution.capability.${label}`)}</th>
-                <td>{formatNumber(value)}</td>
-              </tr>
-            ))}
-            <tr>
-              <th scope="row">{t("distribution.capability.stabilityIndex")}</th>
-              <td>{formatCapabilityValue(data.processSummary.stabilityIndex.value, t)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div className="distribution-capability-indices">
-        <IndexTable
-          title={t("distribution.capability.within")}
-          rows={withinRows}
-          intervals={data.intervals}
-        />
-        <IndexTable
-          title={t("distribution.capability.overall")}
-          rows={overallRows}
-          intervals={data.intervals}
-        />
-      </div>
+    <AnalysisStack>
+      <AnalysisTable
+        title={t("distribution.capability.specification")}
+        width="compact"
+        columns={metricValueColumns(t)}
+        rows={specificationRows.map(([label, value]) => ({
+          key: label,
+          cells: [label.toUpperCase(), formatNumber(value)],
+        }))}
+      />
+      <AnalysisTable
+        title={t("distribution.capability.processSummary")}
+        width="compact"
+        columns={metricValueColumns(t)}
+        rows={[
+          ...summaryRows.map(([label, value]) => ({
+            key: label,
+            cells: [t(`distribution.capability.${label}`), formatNumber(value)],
+          })),
+          {
+            key: "stabilityIndex",
+            cells: [
+              t("distribution.capability.stabilityIndex"),
+              formatCapabilityValue(data.processSummary.stabilityIndex.value, t),
+            ],
+          },
+        ]}
+      />
+      <IndexTable title={t("distribution.capability.within")} rows={withinRows} intervals={data.intervals} />
+      <IndexTable title={t("distribution.capability.overall")} rows={overallRows} intervals={data.intervals} />
       <NonconformanceTable data={data.nonconformance} />
       {data.warnings.map((warning) => (
         <p className="distribution-capability-warning" key={warning}>{t(warning)}</p>
       ))}
-    </div>
+    </AnalysisStack>
   );
 }
 
@@ -100,30 +90,28 @@ function IndexTable({
     maximumFractionDigits: 2,
   }).format(intervals.confidenceLevel);
   return (
-    <table className="sp-fit-y-by-x-report-table">
-      <caption>{title}</caption>
-      <thead>
-        <tr>
-          <th scope="col">{t("distribution.capability.index")}</th>
-          <th scope="col">{t("distribution.capability.estimate")}</th>
-          <th scope="col">{t("distribution.capability.lowerConfidence", { confidencePercent })}</th>
-          <th scope="col">{t("distribution.capability.upperConfidence", { confidencePercent })}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(([label, value]) => {
-          const interval = intervalFor(label, intervals);
-          return (
-          <tr key={label}>
-            <th scope="row">{label.startsWith("cpm") ? "cpm" : label}</th>
-            <td>{formatCapabilityValue(value, t)}</td>
-            <td>{formatCapabilityValue(interval.lower, t)}</td>
-            <td>{formatCapabilityValue(interval.upper, t)}</td>
-          </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <AnalysisTable
+      title={title}
+      width="wide"
+      columns={[
+        { key: "index", label: t("distribution.capability.index") },
+        { key: "estimate", label: t("distribution.capability.estimate"), numeric: true },
+        { key: "lower", label: t("distribution.capability.lowerConfidence", { confidencePercent }), numeric: true },
+        { key: "upper", label: t("distribution.capability.upperConfidence", { confidencePercent }), numeric: true },
+      ]}
+      rows={rows.map(([label, value]) => {
+        const interval = intervalFor(label, intervals);
+        return {
+          key: label,
+          cells: [
+            label.startsWith("cpm") ? "cpm" : label,
+            formatCapabilityValue(value, t),
+            formatCapabilityValue(interval.lower, t),
+            formatCapabilityValue(interval.upper, t),
+          ],
+        };
+      })}
+    />
   );
 }
 
@@ -143,28 +131,33 @@ function NonconformanceTable({ data }: { data: ProcessCapabilityDataV1["nonconfo
     ["total", data.observed.total, data.expectedWithin.total, data.expectedOverall.total],
   ] as const;
   return (
-    <table className="sp-fit-y-by-x-report-table distribution-nonconformance-table">
-      <caption>{t("distribution.capability.nonconformance")}</caption>
-      <thead>
-        <tr>
-          <th scope="col">{t("distribution.capability.portion")}</th>
-          <th scope="col">{t("distribution.capability.observedPercent")}</th>
-          <th scope="col">{t("distribution.capability.expectedWithinPercent")}</th>
-          <th scope="col">{t("distribution.capability.expectedOverallPercent")}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(([tail, observed, expectedWithin, expectedOverall]) => (
-          <tr key={tail}>
-            <th scope="row">{t(`distribution.capability.${tail}`)}</th>
-            <td>{formatPercentage(observed.proportion, t)}</td>
-            <td>{formatPercentage(expectedWithin.proportion, t)}</td>
-            <td>{formatPercentage(expectedOverall.proportion, t)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <AnalysisTable
+      title={t("distribution.capability.nonconformance")}
+      width="wide"
+      columns={[
+        { key: "portion", label: t("distribution.capability.portion") },
+        { key: "observed", label: t("distribution.capability.observedPercent"), numeric: true },
+        { key: "within", label: t("distribution.capability.expectedWithinPercent"), numeric: true },
+        { key: "overall", label: t("distribution.capability.expectedOverallPercent"), numeric: true },
+      ]}
+      rows={rows.map(([tail, observed, expectedWithin, expectedOverall]) => ({
+        key: tail,
+        cells: [
+          t(`distribution.capability.${tail}`),
+          formatPercentage(observed.proportion, t),
+          formatPercentage(expectedWithin.proportion, t),
+          formatPercentage(expectedOverall.proportion, t),
+        ],
+      }))}
+    />
   );
+}
+
+function metricValueColumns(t: (key: string, values?: Record<string, unknown>) => string) {
+  return [
+    { key: "metric", label: t("distribution.report.metric", { defaultValue: "Metric" }) },
+    { key: "value", label: t("distribution.report.value"), numeric: true },
+  ];
 }
 
 function formatCapabilityValue(

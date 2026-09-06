@@ -1,3 +1,13 @@
+.distribution-view,
+.distribution-dialog,
+.distribution-menu {
+  --text-primary: var(--fg-primary);
+  --text-secondary: var(--fg-muted);
+  --bg-primary: var(--bg-dialog);
+  --bg-secondary: var(--bg-header);
+  --border-color: var(--border-main);
+}
+
 .distribution-view {
   height: 100%;
   min-height: 0;
@@ -236,6 +246,7 @@
 
 .distribution-dialog {
   width: min(980px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   max-height: min(720px, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
@@ -287,7 +298,6 @@
   min-width: 0;
 }
 
-.distribution-column-browser > label,
 .distribution-role-zone h4 {
   display: block;
   margin: 0 0 6px;
@@ -295,9 +305,8 @@
   color: var(--text-secondary);
 }
 
-.distribution-column-browser > input {
-  width: 100%;
-  box-sizing: border-box;
+.distribution-dialog-header .distribution-name-input {
+  width: min(280px, 45%);
 }
 
 .distribution-column-list {
@@ -325,13 +334,6 @@
 .distribution-column-actions {
   flex: 0 0 auto;
   gap: 3px;
-}
-
-.distribution-column-actions button {
-  min-width: 34px;
-  height: 26px;
-  padding: 0 8px;
-  white-space: nowrap;
 }
 
 .distribution-role-grid {
@@ -387,17 +389,20 @@
 }
 
 .distribution-option {
-  min-width: 0;
-  justify-content: space-between;
-  gap: 12px;
+  grid-template-columns: minmax(160px, 1fr) 96px;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
 }
 
-.distribution-option input[type="number"] {
-  width: 88px;
+.distribution-option .ui-field-label {
+  grid-column: 1;
+  grid-row: 1;
 }
 
-.distribution-option-checkbox {
-  justify-content: flex-start;
+.distribution-option .ui-input {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .distribution-run-hint {
@@ -542,56 +547,14 @@
   }
 }
 
-.distribution-capability-summary,
-.distribution-capability-indices {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 18px;
-  margin-top: 10px;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.distribution-capability-report,
 .distribution-fit-report {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
 }
 
-.distribution-capability-report table {
-  font-variant-numeric: tabular-nums;
-}
-
-.distribution-capability-report caption {
-  padding: 6px 8px;
-  text-align: left;
-  font-weight: 650;
-  background: var(--bg-secondary);
-}
-
-.distribution-capability-report th,
-.distribution-capability-report td {
-  text-align: right;
-}
-
-.distribution-capability-report th:first-child {
-  text-align: left;
-}
-
 .distribution-capability-warning {
   color: var(--text-secondary);
-}
-
-@media (max-width: 900px) {
-  .distribution-capability-summary,
-  .distribution-capability-indices {
-    grid-template-columns: 1fr;
-  }
-}
-
-.distribution-nonconformance-table {
-  margin-top: 18px;
 }
 
 .distribution-spec-editor {

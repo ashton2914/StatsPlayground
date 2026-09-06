@@ -67,7 +67,7 @@ assertSourceIncludes(workspaceSource, "history.newFitModel", "Creation must reco
 assertSourceIncludes(workspaceSource, "history.renameFitModel", "Rename must record Fit Model history");
 assertSourceIncludes(workspaceSource, "history.deleteFitModel", "Delete must record Fit Model history");
 assertSourceIncludes(workspaceSource, "<FitModelView", "Main pane must dispatch to FitModelView");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, fitModelIds)", "Folder prune must pass Fit Model IDs as the sixth argument");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Folder prune must preserve Fit Model IDs alongside Analysis IDs");
 
 const fitModelCssSource = readSource("../src/components/fitModel/fitModel.css");
 assertSourceIncludes(fitModelCssSource, ".sp-fit-model-dialog", "Fit Model CSS must style dialog sizing");

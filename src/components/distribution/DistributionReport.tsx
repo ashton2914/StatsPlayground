@@ -238,5 +238,5 @@ function formatProbability(probability: number): string {
 }
 
 function formatNumber(value: number): string {
-  return value.toLocaleString(undefined, { maximumSignificantDigits: 8 });
+  return value.toLocaleString(undefined, { maximumSignificantDigits: 10 });
 }
