@@ -1,7 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Graph, inferFieldType, type FieldRef, type ScatterPointPick } from "@/graphCore";
+import {
+  Graph,
+  inferFieldType,
+  type FieldRef,
+  type GraphPanelOptionFactory,
+  type ScatterPointPick,
+} from "@/graphCore";
 import { dataService } from "@/services/dataService";
 import { useGraphPaletteStore } from "@/stores/useGraphPaletteStore";
 import type { ColumnMeta, DatasetMeta } from "@/types/data";
@@ -39,6 +45,7 @@ export interface GraphRuntimeProps {
   onPointPick?: (pick: ScatterPointPick) => void;
   brushMode?: boolean;
   onBrushSelect?: (picks: ScatterPointPick[]) => void;
+  optionFactory?: GraphPanelOptionFactory;
   onYAxisDblClick?: () => void;
   onXAxisDblClick?: () => void;
   onAxisRangeChange?: (axis: "x" | "y", min: number, max: number) => void;
@@ -96,6 +103,7 @@ export function GraphRuntime({
   onPointPick,
   brushMode,
   onBrushSelect,
+  optionFactory,
   onYAxisDblClick,
   onXAxisDblClick,
   onAxisRangeChange,
@@ -325,6 +333,7 @@ export function GraphRuntime({
             onPointClick={item.mode === "multivariate" ? undefined : onPointPick}
             brushMode={item.mode !== "multivariate" && !!brushMode}
             onBrushSelect={item.mode === "multivariate" ? undefined : onBrushSelect}
+            optionFactory={optionFactory}
           />
           {status === "error" && error && (
             <div className="gb-canvas-overlay gb-canvas-overlay-error">{error}</div>

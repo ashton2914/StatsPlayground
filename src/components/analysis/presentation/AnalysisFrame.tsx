@@ -1,6 +1,6 @@
 import { useId, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 
-interface AnalysisFrameProps extends Omit<ComponentPropsWithoutRef<"section">, "children" | "className" | "style" | "title"> {
+interface AnalysisFrameProps extends Omit<ComponentPropsWithoutRef<"section">, "children" | "style" | "title"> {
   title: ReactNode;
   children: ReactNode;
   defaultExpanded?: boolean;
@@ -12,13 +12,14 @@ export function AnalysisFrame({
   children,
   defaultExpanded = true,
   contentPadding = "standard",
+  className,
   ...sectionProps
 }: AnalysisFrameProps) {
   const bodyId = useId();
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
-    <section className="analysis-ui-frame" {...sectionProps}>
+    <section className={className ? `analysis-ui-frame ${className}` : "analysis-ui-frame"} {...sectionProps}>
       <button
         aria-controls={bodyId}
         aria-expanded={expanded}

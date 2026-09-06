@@ -84,3 +84,37 @@ test("cancel closes without producing a definition", async ({ mount }) => {
   expect(cancelCalls).toBe(1);
   expect(submitCalls).toBe(0);
 });
+
+test("uses shared controls without collapsing the desktop dialog", async ({ mount }) => {
+  const component = await mount(
+    <DistributionDialog open datasetId="dataset-1" columns={columns} defaultName="Distribution 1"
+      onSubmit={() => {}} onCancel={() => {}} />,
+  );
+
+  const dialog = component.getByRole("dialog", { name: "Distribution" });
+  const bounds = await dialog.boundingBox();
+  expect(bounds?.width).toBeGreaterThanOrEqual(850);
+  await expect(dialog.locator(".ui-input")).toHaveCount(3);
+  await expect(dialog.locator(".ui-button")).toHaveCount(14);
+  await expect(component.getByRole("spinbutton", { name: "Confidence level" })).toBeVisible();
+
+  const responseZone = await component.getByTestId("distribution-role-response").boundingBox();
+  const weightZone = await component.getByTestId("distribution-role-weight").boundingBox();
+  const frequencyZone = await component.getByTestId("distribution-role-frequency").boundingBox();
+  expect(responseZone?.width).toBeGreaterThan(180);
+  expect(Math.abs((responseZone?.y ?? 0) - (weightZone?.y ?? 0))).toBeLessThan(2);
+  expect((frequencyZone?.y ?? 0)).toBeGreaterThan((responseZone?.y ?? 0));
+  await expect(component.getByTestId("distribution-role-response")).toHaveCSS("border-top-width", "1px");
+  await expect(component.getByTestId("distribution-role-response")).toHaveCSS("border-top-style", "solid");
+
+  await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+  const specificationInputs = dialog.locator(".distribution-spec-fields .ui-input");
+  await expect(specificationInputs).toHaveCount(3);
+  const specificationBounds = await specificationInputs.evaluateAll((inputs) => inputs.map((input) => {
+    const bounds = input.getBoundingClientRect();
+    return { x: bounds.x, y: bounds.y, width: bounds.width };
+  }));
+  expect(new Set(specificationBounds.map(({ y }) => Math.round(y))).size).toBe(1);
+  expect(specificationBounds.every(({ width }) => width >= 120)).toBe(true);
+  await dialog.screenshot({ path: "test-results/distribution-dialog-shared-controls.png" });
+});

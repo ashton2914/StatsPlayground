@@ -52,6 +52,12 @@ assertSourceIncludes(workspaceSource, "activeAnalysisId === item.id", "DIRECTORY
 assertSourceIncludes(workspaceSource, "workspace.analysisMissing", "Missing Analysis documents must have a workspace state");
 assertSourceIncludes(workspaceSource, "workspace.analysisSourceMissing", "Analysis view must report when the source dataset is unavailable");
 assertSourceIncludes(workspaceSource, "<AnalysisView item={item} dataset={ds}", "AnalysisView must receive the document and optional dataset");
+assertSourceIncludes(workspaceSource, "editingAnalysisId", "Workspace must own the active Analysis editor session");
+assertSourceIncludes(workspaceSource, "toDistributionEditorItem", "Workspace must initialize the Analysis selector through its adapter");
+assertSourceIncludes(workspaceSource, "createDistributionAnalysisPatch", "Workspace must apply submitted inputs through a revisioned adapter patch");
+assertSourceIncludes(workspaceSource, "initialItem={toDistributionEditorItem(editingAnalysis)}", "The Distribution selector must open with committed Analysis inputs");
+assertSourceIncludes(workspaceSource, "setEditingAnalysisId(null)", "Cancel and Save must close the Analysis editor session");
+assertSourceIncludes(workspaceSource, "onEditInputs={() =>", "AnalysisView must expose the shared Shell edit command to Workspace");
 assert.equal(workspaceSource.includes("deleteAnalysisByDataset"), false, "Deleting a source table must not cascade-delete saved Analysis documents");
 assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, analysisIds)", "Prune must include live Analysis ids");
 assertSourceIncludes(workspaceSource, "selectWorkspaceDocument", "Workspace must use the shared lifecycle helper for active-document exclusivity");
@@ -79,6 +85,10 @@ const requiredLocalePaths = [
   "history.deleteAnalysis",
   "workspace.analysisMissing",
   "workspace.analysisSourceMissing",
+  "workspace.editInputs",
+  "workspace.analysisSummary.specificationLimits",
+  "workspace.analysisSummary.rows",
+  "history.updateAnalysisInputs",
 ];
 
 for (const [localeName, messages] of locales) {

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { useTranslation } from "react-i18next";
 
 export interface AnalysisSummaryEntry {
@@ -13,6 +13,7 @@ export interface AnalysisShellProps {
   summary: AnalysisSummaryEntry[];
   canEditInputs: boolean;
   onEditInputs?: () => void;
+  resultsRef?: Ref<HTMLElement>;
   children: ReactNode;
 }
 
@@ -22,6 +23,7 @@ export function AnalysisShell({
   summary,
   canEditInputs,
   onEditInputs,
+  resultsRef,
   children,
 }: AnalysisShellProps) {
   const { t } = useTranslation();
@@ -53,7 +55,7 @@ export function AnalysisShell({
           </button>
         </div>
       </aside>
-      <main className="analysis-shell-results">{children}</main>
+      <main className="analysis-shell-results" ref={resultsRef}>{children}</main>
     </div>
   );
 }

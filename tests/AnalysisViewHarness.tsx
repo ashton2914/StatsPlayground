@@ -5,6 +5,8 @@ import { createAnalysisSampleDocument } from "../src/components/analysis/analysi
 import type { AnalysisDocument } from "../src/types/analysis";
 import type { DatasetMeta } from "../src/types/data";
 import type { DistributionReportResponse } from "../src/types/distribution";
+import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "../src/types/graphData";
+import type { GraphAggregatePacket } from "../src/types/graphData";
 
 function createDataset(): DatasetMeta {
   return {
@@ -21,12 +23,14 @@ function createDataset(): DatasetMeta {
 }
 
 function createAnalysisDocument() {
-  return createAnalysisSampleDocument({
+  const document = createAnalysisSampleDocument({
     datasetId: "dataset-1",
     analysisId: "analysis-1",
     analysisName: "Strength Distribution",
     createdAt: "2026-09-03T00:00:00.000Z",
   });
+  document.definition.graphs.overview.modeStates.twoD.elements = [];
+  return document;
 }
 
 function createUnsupportedPresentationDocument(): AnalysisDocument {
@@ -40,7 +44,7 @@ function createUnsupportedPresentationDocument(): AnalysisDocument {
 }
 
 function createResponse(quantile: number, generation: number): DistributionReportResponse {
-  const frame = (role: string) => ({
+  const frame = (role: string, aggregates: GraphAggregatePacket[]) => ({
     requestId: `analysis:${role}`,
     datasetId: "dataset-1",
     generation,
@@ -50,7 +54,7 @@ function createResponse(quantile: number, generation: number): DistributionRepor
     dictionaries: {},
     extents: {},
     rawChunks: [],
-    aggregates: [],
+    aggregates,
     rawPointDisposition: { status: "included" as const, validRows: 32, budget: 8000 },
   });
 
@@ -102,10 +106,66 @@ function createResponse(quantile: number, generation: number): DistributionRepor
     }],
     reportBlocks: [],
     graphFrames: {
-      overview: frame("overview"),
-      boxPlot: frame("boxPlot"),
-      ecdf: frame("ecdf"),
-      normalQuantile: frame("normalQuantile"),
+      overview: frame("overview", [
+        {
+          kind: "histogram",
+          yColumn: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram,
+          binCount: 6,
+          minValue: 85,
+          maxValue: 121,
+          missingCount: 0,
+          binWidth: 6,
+          totalCount: 32,
+          bins: [4, 7, 9, 6, 4, 2].map((count, index) => ({
+            binStart: 85 + index * 6,
+            binEnd: 91 + index * 6,
+            count,
+          })),
+        },
+        {
+          kind: "precomputedCurve",
+          elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves,
+          seriesName: "DIM1 - Normal",
+          interpolation: "linear",
+          points: [
+            { x: 85, y: 0.4 },
+            { x: 91, y: 3.2 },
+            { x: 97, y: 7.3 },
+            { x: 103, y: 8.1 },
+            { x: 109, y: 4.7 },
+            { x: 115, y: 1.2 },
+            { x: 121, y: 0.2 },
+          ],
+        },
+      ]),
+      boxPlot: frame("boxPlot", [{
+        kind: "boxPlot",
+        yColumn: DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot,
+        entries: [{
+          count: 32,
+          min: 87.4,
+          q1: 96.1,
+          median: quantile,
+          q3: 108.9,
+          max: 121.3,
+          whiskerLow: 87.4,
+          whiskerHigh: 121.3,
+          outliers: [],
+        }],
+      }]),
+      ecdf: frame("ecdf", [{
+        kind: "precomputedCurve",
+        elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.ecdf,
+        interpolation: "stepEnd",
+        points: [
+          { x: 87.4, y: 0 },
+          { x: 96.1, y: 0.25 },
+          { x: quantile, y: 0.5 },
+          { x: 108.9, y: 0.75 },
+          { x: 121.3, y: 1 },
+        ],
+      }]),
+      normalQuantile: frame("normalQuantile", []),
     },
   };
 }
@@ -122,6 +182,7 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
   const [current, setCurrent] = useState(() => createResponse(101.044792, 4));
   const [computeCalls, setComputeCalls] = useState(0);
   const [generationCalls, setGenerationCalls] = useState(0);
+  const [editInputsCalls, setEditInputsCalls] = useState(0);
   const [deferNextResponse, setDeferNextResponse] = useState(false);
   const currentResponseRef = useRef(current);
   const currentDatasetRef = useRef(dataset);
@@ -159,8 +220,17 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
         }
         return currentResponseRef.current;
       },
-      renderGraph: ({ role, externalDataState }) => (
-        <div>{`Distribution graph:${role}:${externalDataState.status}`}</div>
+      renderGraph: ({ role, externalDataState, optionFactory, item: graphItem, onXAxisDblClick, onYAxisDblClick }) => (
+        <div>
+          {`Distribution graph:${role}:${externalDataState?.status ?? "pipeline"}:${optionFactory ? "custom-option" : "native"}`}
+          <button type="button" onClick={onXAxisDblClick}>{`Open ${role} X axis`}</button>
+          <button type="button" onClick={onYAxisDblClick}>{`Open ${role} Y axis`}</button>
+          {role === "overview" && (
+            <output data-testid="composite-element-kinds">
+              {graphItem.modeStates.twoD.elements.map((element) => element.kind).join(",")}
+            </output>
+          )}
+        </div>
       ),
     };
   }
@@ -193,10 +263,22 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
       <div>{JSON.stringify(item.definition) === originalDefinition ? "definition:unchanged" : "definition:mutated"}</div>
       <div>{`compute-calls:${computeCalls}`}</div>
       <div>{`generation-calls:${generationCalls}`}</div>
+      <output data-testid="overview-x-min">{item.definition.graphs.overview.modeStates.twoD.xAxis?.min ?? "auto"}</output>
+      <output data-testid="ecdf-y-min">{item.definition.graphs.ecdf.modeStates.twoD.yAxis?.min ?? "auto"}</output>
+      <output data-testid="edit-inputs-calls">{editInputsCalls}</output>
       <AnalysisView
         item={item}
         dataset={dataset}
         runtime={runtimeRef.current}
+        canEditInputs
+        onEditInputs={() => setEditInputsCalls((count) => count + 1)}
+        onGraphConfigChange={(role, graph) => setItem((previous) => ({
+          ...previous,
+          definition: {
+            ...previous.definition,
+            graphs: { ...previous.definition.graphs, [role]: graph },
+          },
+        }))}
       />
     </>
   );

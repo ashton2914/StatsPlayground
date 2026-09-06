@@ -1,6 +1,6 @@
 export { AnalysisFrame } from "./AnalysisFrame";
 export { AnalysisGraph } from "./AnalysisGraph";
-export type { AnalysisGraphRuntimeSlot } from "./AnalysisGraph";
+export type { AnalysisGraphStrategy } from "./AnalysisGraph";
 export { AnalysisShell } from "./AnalysisShell";
 export type { AnalysisShellProps, AnalysisSummaryEntry } from "./AnalysisShell";
 export { AnalysisStack } from "./AnalysisStack";

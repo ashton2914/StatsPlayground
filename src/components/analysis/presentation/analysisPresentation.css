@@ -135,6 +135,7 @@
 
 .analysis-ui-graph-content,
 .analysis-ui-graph-runtime { min-width: 0; min-height: 0; }
+.analysis-ui-graph { width: 100%; }
 
 .analysis-ui-text {
   margin: 0;

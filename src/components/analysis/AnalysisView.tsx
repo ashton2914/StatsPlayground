@@ -1,25 +1,35 @@
-import { type ReactNode, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AxisSettingsDialog } from "@/components/graphBuilder/AxisSettingsDialog";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
 import {
   AnalysisFrame,
   AnalysisGraph,
+  AnalysisShell,
   AnalysisStack,
   AnalysisTable,
   AnalysisText,
 } from "@/components/analysis/presentation";
+import { describeDistributionAnalysis } from "@/components/analysis/adapters";
 import { ProcessCapabilityReport } from "@/components/distribution/ProcessCapabilityReport";
 import { mapDistributionExternalDataState, type DistributionGraphRole } from "@/graphCore/distributionAdapter";
+import type { RefLineX, RefLineY, YAxisConfig } from "@/graphCore";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { DistributionReportResponse } from "@/types/distribution";
+import { DISTRIBUTION_GRAPH_ELEMENT_IDS, type GraphDataFrame } from "@/types/graphData";
+import type { EmbeddedGraphConfig, Graph2DState } from "@/types/graphBuilder";
 
 import {
   useAnalysisExecution,
   type UseAnalysisExecutionRuntime,
 } from "./useAnalysisExecution";
+import {
+  createSampleEcdfOption,
+  SampleFiveNumberRange,
+} from "./SampleAnalysisGraphExamples";
 
 import "./analysis.css";
 
@@ -35,37 +45,96 @@ interface AnalysisViewProps {
   item: AnalysisDocument;
   dataset?: DatasetMeta | null;
   runtime?: AnalysisViewRuntime;
+  canEditInputs?: boolean;
+  onEditInputs?: () => void;
+  onGraphConfigChange?: (role: AnalysisBuilderGraphRole, graph: EmbeddedGraphConfig) => void;
 }
+
+type AnalysisBuilderGraphRole = "overview" | "ecdf";
 
 export interface AnalysisViewRuntime extends UseAnalysisExecutionRuntime {
   renderGraph?: (props: GraphRuntimeProps & { role: DistributionGraphRole }) => ReactNode;
 }
 
-export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
+export function AnalysisView({
+  item,
+  dataset,
+  runtime,
+  canEditInputs = false,
+  onEditInputs,
+  onGraphConfigChange,
+}: AnalysisViewProps) {
   const { t } = useTranslation();
   const documentScrollRef = useRef<HTMLElement | null>(null);
+  const [axisDialog, setAxisDialog] = useState<{ role: AnalysisBuilderGraphRole; axis: "x" | "y" } | null>(null);
   const supportedItem = isSupportedAnalysisDocument(item) ? item : null;
   const executionState = useAnalysisExecution(
     supportedItem,
     supportedItem == null ? null : (dataset ?? null),
     runtime,
   );
-  const graphItems = useMemo(() => ({
-    overview: createEmbeddedGraphItem({
-      id: `analysis-graph:${item.id}:overview`,
+  const graphItems = useMemo(() => {
+    if (!supportedItem) return null;
+    const overview = supportedItem.definition.graphs.overview;
+    return {
+      distributionComposite: createEmbeddedGraphItem({
+      id: `analysis-graph:${item.id}:distributionComposite`,
       name: item.name,
       sourceDatasetId: item.source.datasetId,
-      config: item.definition.graphs.overview,
+      config: {
+        ...overview,
+        modeStates: {
+          ...overview.modeStates,
+          twoD: {
+            ...overview.modeStates.twoD,
+            elements: [
+              { kind: "histogram", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram } },
+              { kind: "line", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves } },
+              { kind: "boxplot", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot } },
+            ],
+          },
+        },
+      },
       createdAt: item.createdAt,
     }),
-    boxPlot: createEmbeddedGraphItem({
-      id: `analysis-graph:${item.id}:boxPlot`,
+    ecdf: createEmbeddedGraphItem({
+      id: `analysis-graph:${item.id}:ecdf`,
       name: item.name,
       sourceDatasetId: item.source.datasetId,
-      config: item.definition.graphs.boxPlot,
+      config: item.definition.graphs.ecdf,
       createdAt: item.createdAt,
     }),
-  }), [item]);
+    };
+  }, [item, supportedItem]);
+  const responseName = supportedItem?.definition.responses.map((response) => response.name).join(", ") ?? item.name;
+  const ecdfOptionFactory = useMemo(() => createSampleEcdfOption(responseName), [responseName]);
+  const compositeDataState = useMemo(() => {
+    if (executionState.status !== "success") {
+      return executionState.status === "error"
+        ? { status: "error" as const, frame: null, error: executionState.error }
+        : { status: "loading" as const, frame: null, error: null };
+    }
+    const overview = executionState.result.graphFrames.overview;
+    const boxPlot = executionState.result.graphFrames.boxPlot;
+    const frame: GraphDataFrame = {
+      ...overview,
+      requestId: `${overview.requestId}:composite`,
+      aggregates: [...overview.aggregates, ...boxPlot.aggregates],
+    };
+    return { status: "ready" as const, frame, error: null };
+  }, [executionState]);
+
+  const updateGraph2D = (role: AnalysisBuilderGraphRole, patch: Partial<Graph2DState>) => {
+    if (!onGraphConfigChange) return;
+    const graph = item.definition.graphs[role];
+    onGraphConfigChange(role, {
+      ...graph,
+      modeStates: {
+        ...graph.modeStates,
+        twoD: { ...graph.modeStates.twoD, ...patch },
+      },
+    });
+  };
 
   useEffect(() => {
     let secondFrame = 0;
@@ -87,31 +156,25 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
   if (item.presentation.schemaVersion !== 1 || item.presentation.layout !== "distribution-v1") {
     return <UnsupportedAnalysis item={item} message={t("workspace.analysisUnsupportedPresentation", { defaultValue: "Unsupported analysis presentation." })} />;
   }
+  if (!graphItems) {
+    return <UnsupportedAnalysis item={item} message={t("workspace.analysisUnsupported", { defaultValue: "Unsupported analysis kind." })} />;
+  }
 
-  const responseName = item.definition.responses.map((response) => response.name).join(", ");
-  const fitName = item.definition.analysis.fitDistributions.join(", ") || "-";
+  const summary = describeDistributionAnalysis(item, dataset ?? null, t);
+  const rangeResult = executionState.status === "success" ? firstResult(executionState.result) : null;
+  const rangeSummary = rangeResult?.blocks.find((block) => block.summaryData)?.summaryData;
+  const q1 = rangeResult?.quantiles.find((quantile) => quantile.probability === 0.25)?.value;
+  const q3 = rangeResult?.quantiles.find((quantile) => quantile.probability === 0.75)?.value;
 
   return (
-    <div className="analysis-workspace">
-      <aside className="analysis-info-panel">
-        <div className="analysis-panel-title">{t("workspace.analysis", { defaultValue: "Analysis" })}</div>
-        <div className="analysis-info-body">
-          <h2>{item.name}</h2>
-          <span className="analysis-source" title={dataset?.name ?? t("workspace.analysisSourceMissing")}>
-            {dataset
-              ? t("workspace.datasourceLabel", { defaultValue: "Source: {{name}}", name: dataset.name })
-              : t("workspace.analysisSourceMissing")}
-          </span>
-          <dl className="analysis-metadata">
-            <Metadata label={t("workspace.analysis", { defaultValue: "Analysis" })} value={t("distribution.title", { defaultValue: "Distribution" })} />
-            <Metadata label={t("distribution.response", { defaultValue: "Response" })} value={responseName} />
-            <Metadata label="Fit" value={fitName} />
-            <Metadata label={t("distribution.statistics.n", { defaultValue: "Rows" })} value={dataset?.rowCount.toLocaleString() ?? "-"} />
-          </dl>
-        </div>
-      </aside>
-
-      <main className="analysis-document-scroll" ref={documentScrollRef}>
+    <AnalysisShell
+      title={item.name}
+      sourceName={dataset?.name ?? t("workspace.analysisSourceMissing")}
+      summary={summary}
+      canEditInputs={canEditInputs && dataset != null}
+      onEditInputs={onEditInputs}
+      resultsRef={documentScrollRef}
+    >
         <AnalysisFrame
           title={responseName || item.name}
           contentPadding="compact"
@@ -123,23 +186,71 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
                 <AnalysisUnavailable message={t("workspace.analysisSourceMissing")} />
               </AnalysisFrame>
             ) : (
-              <AnalysisGraph
-                title={t("fitYByX.graph", { defaultValue: "Graph" })}
-                data-analysis-block="graph"
-                contentClassName="analysis-graph-composite"
-                runtimeSlots={(["overview", "boxPlot"] as const).map((role) => ({
-                  key: role,
-                  runtimeProps: {
-                      item: graphItems[role],
+              <>
+                <AnalysisGraph
+                  title={t("distribution.graph.overview", { defaultValue: "Distribution" })}
+                  graphRole="distributionComposite"
+                  data-analysis-block="graph"
+                  contentClassName="analysis-graph-distribution"
+                  strategy={{
+                    mode: "builder",
+                    runtimeProps: {
+                      item: graphItems.distributionComposite,
                       dataset,
-                      minPanelHeight: role === "boxPlot" ? 96 : 240,
-                      externalDataState: mapDistributionExternalDataState(executionState, role),
-                  },
-                }))}
-                renderGraph={runtime?.renderGraph
-                  ? (props, role) => runtime.renderGraph?.({ ...props, role: role as DistributionGraphRole })
-                  : undefined}
-              />
+                      minPanelHeight: 360,
+                      externalDataState: compositeDataState,
+                      onXAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "overview", axis: "x" }) : undefined,
+                      onYAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "overview", axis: "y" }) : undefined,
+                    },
+                  }}
+                  renderGraph={runtime?.renderGraph
+                    ? (props) => runtime.renderGraph?.({ ...props, role: "overview" })
+                    : undefined}
+                />
+                <AnalysisGraph
+                  title={t("distribution.graph.ecdf", { defaultValue: "Empirical cumulative distribution" })}
+                  graphRole="ecdf"
+                  data-analysis-block="graph"
+                  contentClassName="analysis-graph-ecdf"
+                  strategy={{
+                    mode: "builder-custom",
+                    runtimeProps: {
+                      item: graphItems.ecdf,
+                      dataset,
+                      minPanelHeight: 220,
+                      externalDataState: mapDistributionExternalDataState(executionState, "ecdf"),
+                      onXAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "ecdf", axis: "x" }) : undefined,
+                      onYAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "ecdf", axis: "y" }) : undefined,
+                    },
+                    optionFactory: ecdfOptionFactory,
+                  }}
+                  renderGraph={runtime?.renderGraph
+                    ? (props) => runtime.renderGraph?.({ ...props, role: "ecdf" })
+                    : undefined}
+                />
+                <AnalysisGraph
+                  title={t("distribution.graph.fiveNumberRange", { defaultValue: "Five-number range" })}
+                  graphRole="summaryRange"
+                  data-analysis-block="graph"
+                  contentClassName="analysis-graph-summary-range"
+                  strategy={{
+                    mode: "custom",
+                    render: () => rangeResult && rangeSummary && q1 != null && q3 != null
+                      ? (
+                          <SampleFiveNumberRange
+                            responseName={rangeResult.yName}
+                            minimum={rangeSummary.minimum}
+                            q1={q1}
+                            median={rangeSummary.median}
+                            q3={q3}
+                            maximum={rangeSummary.maximum}
+                            mean={rangeSummary.mean}
+                          />
+                        )
+                      : null,
+                  }}
+                />
+              </>
             )}
 
             <AnalysisTextBlock state={executionState} />
@@ -153,8 +264,30 @@ export function AnalysisView({ item, dataset, runtime }: AnalysisViewProps) {
             </AnalysisFrame>
           </AnalysisStack>
         </AnalysisFrame>
-      </main>
-    </div>
+        {axisDialog && (() => {
+          const twoD = item.definition.graphs[axisDialog.role].modeStates.twoD;
+          return (
+            <AxisSettingsDialog
+              axis={axisDialog.axis}
+              refLines={axisDialog.axis === "x" ? twoD.refLinesX ?? [] : twoD.refLinesY ?? []}
+              setRefLines={axisDialog.axis === "x"
+                ? (lines: RefLineX[]) => updateGraph2D(axisDialog.role, { refLinesX: lines })
+                : (lines: RefLineY[]) => updateGraph2D(axisDialog.role, { refLinesY: lines })}
+              autoSpecLines={axisDialog.axis === "x" ? !!twoD.autoSpecLinesX : !!(twoD.autoSpecLinesY ?? twoD.autoSpecLines)}
+              setAutoSpecLines={(enabled) => updateGraph2D(
+                axisDialog.role,
+                axisDialog.axis === "x" ? { autoSpecLinesX: enabled } : { autoSpecLinesY: enabled },
+              )}
+              axisConfig={axisDialog.axis === "x" ? twoD.xAxis : twoD.yAxis}
+              setAxisConfig={(config: YAxisConfig | undefined) => updateGraph2D(
+                axisDialog.role,
+                axisDialog.axis === "x" ? { xAxis: config } : { yAxis: config },
+              )}
+              onClose={() => setAxisDialog(null)}
+            />
+          );
+        })()}
+    </AnalysisShell>
   );
 }
 
@@ -167,10 +300,6 @@ function UnsupportedAnalysis({ item, message }: { item: AnalysisDocument; messag
       </div>
     </div>
   );
-}
-
-function Metadata({ label, value }: { label: string; value: string }) {
-  return <div><dt>{label}</dt><dd>{value}</dd></div>;
 }
 
 function AnalysisTextBlock({ state }: { state: ReturnType<typeof useAnalysisExecution> }) {

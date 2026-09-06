@@ -131,6 +131,7 @@
     "deleteGraph": "Delete graph \"{{name}}\"",
     "deleteReport": "Delete report \"{{name}}\"",
     "deleteAnalysis": "Delete analysis \"{{name}}\"",
+    "updateAnalysisInputs": "Update analysis inputs \"{{name}}\"",
     "deleteTable": "Delete table \"{{name}}\"",
     "deleteTabulate": "Delete tabulate \"{{name}}\"",
     "deleteFitYByX": "Delete Fit Y by X \"{{name}}\"",
@@ -185,6 +186,12 @@
     "analysisMissing": "Analysis no longer exists",
     "analysisUnsupportedPresentation": "Unsupported analysis presentation.",
     "analysisSourceMissing": "Source data table is unavailable",
+    "editInputs": "Edit Inputs",
+    "analysisSummary": {
+      "fit": "Fit",
+      "specificationLimits": "Specification Limits",
+      "rows": "Rows"
+    },
     "tabulateSourceMissing": "Source data table is unavailable",
     "tabulateMissing": "Tabulate analysis no longer exists",
     "fitYByXSourceMissing": "Source data table is unavailable",

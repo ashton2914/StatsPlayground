@@ -23,6 +23,10 @@ import { GraphBuilderView } from "./graphBuilder";
 import { FitYByXRoleDialog, FitYByXView } from "./fitYByX";
 import { ReportView } from "./report";
 import { AnalysisView } from "./analysis/AnalysisView";
+import {
+  createDistributionAnalysisPatch,
+  toDistributionEditorItem,
+} from "./analysis/adapters";
 import { DistributionDialog, DistributionView, type DistributionFieldInfo } from "./distribution";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
@@ -266,6 +270,8 @@ export function Workspace() {
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
   const [showDistributionDialog, setShowDistributionDialog] = useState(false);
   const [distributionColumns, setDistributionColumns] = useState<DistributionFieldInfo[]>([]);
+  const [editingAnalysisId, setEditingAnalysisId] = useState<string | null>(null);
+  const [analysisEditorColumns, setAnalysisEditorColumns] = useState<DistributionFieldInfo[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
@@ -407,6 +413,14 @@ export function Workspace() {
   useEffect(() => () => {
     flushPendingReportHistory();
   }, [flushPendingReportHistory]);
+
+  useEffect(() => {
+    if (!editingAnalysisId) return;
+    const editing = analysisItems.find((item) => item.id === editingAnalysisId);
+    if (!editing || !datasets.some((dataset) => dataset.id === editing.source.datasetId)) {
+      setEditingAnalysisId(null);
+    }
+  }, [analysisItems, datasets, editingAnalysisId]);
 
   const analysisDocumentNames = useMemo(
     () => [
@@ -846,6 +860,41 @@ export function Workspace() {
         message: String(error),
       }));
     }
+  };
+
+  const handleEditAnalysisInputs = async (id: string) => {
+    if (readOnly) return;
+    const analysis = analysisItems.find((item) => item.id === id);
+    if (!analysis) return;
+    const dataset = datasets.find((item) => item.id === analysis.source.datasetId);
+    if (!dataset) return;
+    try {
+      const columns = await dataService.getColumns(dataset.id);
+      setAnalysisEditorColumns(columns.map(([name, sqlType]) => ({
+        name,
+        sqlType,
+        integerCompatible: /^(?:U?(?:TINY|SMALL|BIG|HUGE)?INT(?:EGER)?)$/i.test(sqlType),
+        field: { name, type: inferFieldType(sqlType) },
+      })));
+      setEditingAnalysisId(id);
+    } catch (error) {
+      alert(t("distribution.loadFieldsFailed", {
+        defaultValue: "Failed to load fields: {{message}}",
+        message: String(error),
+      }));
+    }
+  };
+
+  const handleUpdateAnalysisInputs = (editing: AnalysisDocument, submitted: DistributionItem) => {
+    if (readOnly) return;
+    updateAnalysis(editing.id, createDistributionAnalysisPatch(
+      editing,
+      submitted,
+      new Date().toISOString(),
+    ));
+    setEditingAnalysisId(null);
+    markDirty();
+    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
   };
 
   const handleCreateDistributionItem = (item: DistributionItem) => {
@@ -2570,7 +2619,23 @@ export function Workspace() {
                 return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.analysisMissing")}</p></div></div>;
               }
               const ds = datasets.find((dataset) => dataset.id === item.source.datasetId);
-              return <AnalysisView item={item} dataset={ds} />;
+              return (
+                <AnalysisView item={item} dataset={ds}
+                  canEditInputs={!readOnly && ds != null}
+                  onEditInputs={() => void handleEditAnalysisInputs(item.id)}
+                  onGraphConfigChange={readOnly ? undefined : (role, graph) => {
+                    const current = useAnalysisStore.getState().items.find((entry) => entry.id === item.id) ?? item;
+                    updateAnalysis(item.id, {
+                      definition: {
+                        ...current.definition,
+                        graphs: { ...current.definition.graphs, [role]: graph },
+                      },
+                      updatedAt: new Date().toISOString(),
+                    });
+                    markDirty();
+                  }}
+                />
+              );
             })()
           ) : activeDistributionId ? (
             (() => {
@@ -2770,6 +2835,22 @@ export function Workspace() {
           onSubmit={handleCreateDistributionItem}
         />
       )}
+
+      {editingAnalysisId && (() => {
+        const editingAnalysis = analysisItems.find((item) => item.id === editingAnalysisId);
+        if (!editingAnalysis || !datasets.some((dataset) => dataset.id === editingAnalysis.source.datasetId)) return null;
+        return (
+          <DistributionDialog
+            open
+            datasetId={editingAnalysis.source.datasetId}
+            columns={analysisEditorColumns}
+            defaultName={editingAnalysis.name}
+            initialItem={toDistributionEditorItem(editingAnalysis)}
+            onCancel={() => setEditingAnalysisId(null)}
+            onSubmit={(submitted) => handleUpdateAnalysisInputs(editingAnalysis, submitted)}
+          />
+        );
+      })()}
 
       {importProgress && (
         <div className="sp-dialog-overlay">

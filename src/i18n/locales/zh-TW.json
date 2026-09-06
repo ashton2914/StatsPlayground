@@ -131,6 +131,7 @@
     "deleteGraph": "刪除圖形 \"{{name}}\"",
     "deleteReport": "刪除報告 \"{{name}}\"",
     "deleteAnalysis": "刪除分析 \"{{name}}\"",
+    "updateAnalysisInputs": "更新分析輸入 \"{{name}}\"",
     "deleteTable": "刪除資料表 \"{{name}}\"",
     "deleteTabulate": "Delete tabulate \"{{name}}\"",
     "deleteFitYByX": "刪除配適 Y by X \"{{name}}\"",
@@ -184,6 +185,12 @@
     "analysisMissing": "分析已不存在",
     "analysisUnsupportedPresentation": "不支援目前的分析呈現格式。",
     "analysisSourceMissing": "來源資料表無法使用",
+    "editInputs": "編輯輸入",
+    "analysisSummary": {
+      "fit": "配適",
+      "specificationLimits": "規格限",
+      "rows": "列數"
+    },
     "tabulateSourceMissing": "Source data table is unavailable",
     "tabulateMissing": "Tabulate analysis no longer exists",
     "fitYByXSourceMissing": "來源資料表無法使用",

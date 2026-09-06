@@ -131,6 +131,7 @@
     "deleteGraph": "删除图形 \"{{name}}\"",
     "deleteReport": "删除报告 \"{{name}}\"",
     "deleteAnalysis": "删除分析 \"{{name}}\"",
+    "updateAnalysisInputs": "更新分析输入 \"{{name}}\"",
     "deleteTable": "删除数据表 \"{{name}}\"",
     "deleteTabulate": "Delete tabulate \"{{name}}\"",
     "deleteFitYByX": "删除拟合 Y by X \"{{name}}\"",
@@ -185,6 +186,12 @@
     "analysisMissing": "分析已不存在",
     "analysisUnsupportedPresentation": "不支持当前分析展示格式。",
     "analysisSourceMissing": "源数据表不可用",
+    "editInputs": "编辑输入",
+    "analysisSummary": {
+      "fit": "拟合",
+      "specificationLimits": "规格限",
+      "rows": "行数"
+    },
     "tabulateSourceMissing": "Source data table is unavailable",
     "tabulateMissing": "Tabulate analysis no longer exists",
     "fitYByXSourceMissing": "源数据表不可用",

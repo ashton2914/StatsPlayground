@@ -2278,6 +2278,63 @@ for (const element of [
 {
   const spec: GraphSpec = {
     encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true, options: { histStyle: "bar" } },
+      { kind: "line", enabled: true, options: { elementId: "rust-normal-fit" } },
+      { kind: "boxplot", enabled: true },
+    ],
+  };
+  const frame = baseFrame([
+    {
+      kind: "histogram",
+      xColumn: "measurement",
+      totalCount: 10,
+      bins: [
+        { binStart: 0, binEnd: 1, count: 3 },
+        { binStart: 1, binEnd: 2, count: 7 },
+      ],
+    },
+    {
+      kind: "precomputedCurve",
+      elementId: "rust-normal-fit",
+      interpolation: "linear",
+      points: [{ x: 0, y: 0.2 }, { x: 1, y: 7 }, { x: 2, y: 0.2 }],
+    },
+    {
+      kind: "boxPlot",
+      yColumn: "measurement",
+      entries: [{
+        count: 10,
+        min: 0,
+        q1: 0.8,
+        median: 1.3,
+        q3: 1.6,
+        max: 2,
+        whiskerLow: 0,
+        whiskerHigh: 2,
+        outliers: [],
+      }],
+    },
+  ]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const xAxes = option.xAxis as Array<Record<string, unknown>>;
+
+  assert.equal(xAxes.length, 2, "the fixed composition must expose one aligned X axis per grid");
+  assert.ok(xAxes.every((axis) => axis.type === "value"), "the shared distribution axes must remain continuous");
+  assert.ok(series.some((entry) => entry.type === "bar"), "the composite must include histogram bars");
+  assert.ok(
+    series.some((entry) => entry.id === "rust-normal-fit" && entry.type === "line"),
+    "the composite must include the Rust-computed fitted curve",
+  );
+  assert.ok(series.some((entry) => entry.type === "boxplot"), "the composite must include a box plot");
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
     elements: [{ kind: "normalCurve", enabled: true }],
   };
   const frame = baseFrame([{

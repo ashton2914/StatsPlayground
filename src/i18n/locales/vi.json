@@ -131,6 +131,7 @@
     "deleteGraph": "Xóa biểu đồ \"{{name}}\"",
     "deleteReport": "Xóa báo cáo \"{{name}}\"",
     "deleteAnalysis": "Xóa phân tích \"{{name}}\"",
+    "updateAnalysisInputs": "Cập nhật đầu vào phân tích \"{{name}}\"",
     "deleteTable": "Xóa bảng \"{{name}}\"",
     "deleteTabulate": "Delete tabulate \"{{name}}\"",
     "deleteFitYByX": "Xóa Khớp Y theo X \"{{name}}\"",
@@ -184,6 +185,12 @@
     "analysisMissing": "Phân tích không còn tồn tại",
     "analysisUnsupportedPresentation": "Kiểu trình bày phân tích này không được hỗ trợ.",
     "analysisSourceMissing": "Bảng dữ liệu nguồn không khả dụng",
+    "editInputs": "Chỉnh sửa đầu vào",
+    "analysisSummary": {
+      "fit": "Độ khớp",
+      "specificationLimits": "Giới hạn kỹ thuật",
+      "rows": "Số hàng"
+    },
     "tabulateSourceMissing": "Source data table is unavailable",
     "tabulateMissing": "Tabulate analysis no longer exists",
     "fitYByXSourceMissing": "Bảng dữ liệu nguồn không khả dụng",

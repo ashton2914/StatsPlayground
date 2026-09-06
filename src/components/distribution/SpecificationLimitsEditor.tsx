@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import type { FieldRef } from "@/graphCore";
 import type { SpecLimitsOverride } from "@/types/distribution";
+import { NumberField } from "@/components/ui";
 
 interface SpecificationLimitsEditorProps {
   responses: FieldRef[];
@@ -37,14 +38,12 @@ export function SpecificationLimitsEditor({
             <legend>{response.name}</legend>
           <div className="distribution-spec-fields">
             {(["lsl", "target", "usl"] as const).map((key) => (
-              <label key={key}>
-                <span>{t(`distribution.specification.${key}`)}</span>
-                <input
-                  type="number"
+              <NumberField
+                  key={key}
+                  label={t(`distribution.specification.${key}`)}
                   value={limits[key] ?? ""}
-                  onChange={(event) => setLimit(response.name, key, event.target.value)}
-                />
-              </label>
+                  onValueChange={(value) => setLimit(response.name, key, value?.toString() ?? "")}
+              />
             ))}
           </div>
           </fieldset>
