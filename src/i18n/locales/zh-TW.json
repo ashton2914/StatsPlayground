@@ -68,7 +68,8 @@
     "opConcatenate": "合併",
     "help": "說明",
     "about": "關於",
-    "license": "授權"
+    "license": "授權",
+    "fitModel": "配適模型"
   },
   "alert": {
     "selectDatasetFirst": "請先選擇一個資料表作為資料來源",
@@ -82,8 +83,9 @@
     "exportGraphFailed": "匯出圖形失敗：",
     "importGraphFailed": "匯入圖形失敗：",
     "exportFolderFailed": "匯出資料夾失敗：",
-    "openProjectFailed": "開啟專案失敗：",
+  "openProjectFailed": "開啟專案失敗：{{msg}}",
     "analysisSampleFailed": "建立示範分析失敗：{{message}}",
+    "openDistributionFailed": "開啟 Distribution 失敗：",
     "invalidName": {
       "empty": "名稱不可為空。",
       "invalidChars": "名稱包含非法字元：/ \\ : * ? \" < > |",
@@ -155,7 +157,11 @@
     "pasteData": "貼上資料",
     "resizeColumn": "調整欄寬",
     "autoFitColumn": "自動調整欄寬",
-    "sqlQueryTableCreated": "從 SQL 查詢建立資料表 \"{{name}}\""
+    "sqlQueryTableCreated": "從 SQL 查詢建立資料表 \"{{name}}\"",
+    "newFitModel": "新增配適模型 \"{{name}}\" (資料來源: {{source}})",
+    "renameFitModel": "重新命名配適模型 \"{{old}}\" -> \"{{new}}\"",
+    "deleteFitModel": "刪除配適模型 \"{{name}}\"",
+    "saveFitModelColumns": "儲存配適模型欄"
   },
   "workflow": {
     "title": "工作流程",
@@ -208,8 +214,6 @@
     "creatingSnapshot": "正在建立快照…",
     "restoringSnapshot": "正在還原快照…",
     "importingSqlite": "正在匯入 SQLite 資料庫…",
-    "documentNameMigrations": "開啟專案時已重新命名 {{count}} 個專案文件名稱。請儲存專案以保留這些更新後的名稱。",
-    "projectRequiresMigration": "開啟專案時已在記憶體中完成遷移。請儲存專案以保留升級後的格式。",
     "datasetNameMigrations": "開啟專案時已重新命名 {{count}} 個重複的資料表名稱。請儲存專案以保留這些更新後的名稱。",
     "importProgressTable": "資料表 {{i}}/{{total}}：{{name}}",
     "importProgressRows": "列",
@@ -226,7 +230,44 @@
     "zoomIn": "放大表格",
     "zoomOut": "縮小表格",
     "zoomReset": "重設為 100%",
-    "zoomTooltip": "表格縮放"
+    "zoomTooltip": "表格縮放",
+    "fitModelMissing": "配適模型分析已不存在",
+    "fitModelSourceMissing": "來源資料表無法使用"
+  },
+  "distribution": {
+    "title": "分佈",
+    "recall": "重新叫用",
+    "searchColumns": "搜尋欄位",
+    "sourceDataset": "來源資料表",
+    "openSource": "開啟來源資料",
+    "editInputs": "編輯輸入",
+    "progress": "進度",
+    "renameLabel": "重新命名 {{name}}",
+    "roleLabel": "{{role}} 角色",
+    "roleEmpty": "拖放或指派欄位",
+    "assignToRole": "將 {{column}} 指派到 {{role}}",
+    "removeFromRole": "從 {{role}} 移除 {{column}}",
+    "confidenceLevel": "信賴水準",
+    "frequencyShort": "頻數",
+    "histogramsOnly": "僅直方圖",
+    "invalidConfig": "請至少指派一個有效的 Y 欄位。",
+    "runDisabledHint": "目前系統狀態下統計方法無法使用。",
+    "saving": "正在儲存...",
+    "run": "執行",
+    "roles": {
+      "y": "Y",
+      "weight": "權重",
+      "frequency": "頻數",
+      "by": "分組"
+    },
+    "specification": {
+      "useOverride": "使用分析規格限覆寫",
+      "lsl": "規格下限",
+      "target": "目標值",
+      "usl": "規格上限",
+      "allYHint": "此分析層級覆寫適用於所有 Y 欄位。",
+      "overrideSource": "僅隨此分析儲存，不會變更資料表欄位屬性。"
+    }
   },
   "report": {
     "placeholder": "報告編輯會在 Task 6 完成；目前這個介面依需求只保留最小文件佔位。",
@@ -901,14 +942,48 @@
       "fiveNumberSummary": "五數概括",
       "widthProportion": "寬度比例",
       "auto": "自動",
-      "summary": { "none": "無", "mean": "均值", "median": "中位數", "sum": "總和" },
-      "interval": { "stdErr": "標準誤", "stdDev": "標準差", "ci95": "95% 置信區間" },
-      "style": { "errorBar": "誤差棒", "band": "色帶", "sphere": "球體" },
-      "jitterMode": { "stacked": "堆疊", "uniform": "均勻", "normal": "常態" },
-      "conn": { "line": "直線", "step": "階梯", "spline": "曲線" },
-      "fillMode": { "toZero": "到零填充", "between": "區間填充" },
-      "missing": { "skip": "跳過", "include": "包含", "connect": "跨越連接", "break": "斷開" },
-      "box": { "outlier": "離群", "quantile": "分位", "normal": "普通", "notched": "帶凹口" },
+      "summary": {
+        "none": "無",
+        "mean": "均值",
+        "median": "中位數",
+        "sum": "總和"
+      },
+      "interval": {
+        "stdErr": "標準誤",
+        "stdDev": "標準差",
+        "ci95": "95% 置信區間"
+      },
+      "style": {
+        "errorBar": "誤差棒",
+        "band": "色帶",
+        "sphere": "球體"
+      },
+      "jitterMode": {
+        "stacked": "堆疊",
+        "uniform": "均勻",
+        "normal": "常態"
+      },
+      "conn": {
+        "line": "直線",
+        "step": "階梯",
+        "spline": "曲線"
+      },
+      "fillMode": {
+        "toZero": "到零填充",
+        "between": "區間填充"
+      },
+      "missing": {
+        "skip": "跳過",
+        "include": "包含",
+        "connect": "跨越連接",
+        "break": "斷開"
+      },
+      "box": {
+        "outlier": "離群",
+        "quantile": "分位",
+        "normal": "普通",
+        "notched": "帶凹口"
+      },
       "histStyle": "直方圖樣式",
       "smoothness": "平滑度",
       "surfaceSmoothness": "平滑程度",
@@ -916,21 +991,50 @@
       "histHeight": "直方圖高度",
       "showCounts": "顯示頻數",
       "showPercents": "顯示百分比",
-      "histStyles": { "bar": "柱狀", "polygon": "折線", "kde": "核密度", "shadowgram": "疊影圖" },
+      "histStyles": {
+        "bar": "柱狀",
+        "polygon": "折線",
+        "kde": "核密度",
+        "shadowgram": "疊影圖"
+      },
       "smootherAlgo": "演算法",
-      "smootherAlgos": { "spline": "樣條", "kernel": "局部核", "savgol": "Savitzky-Golay", "movingAvg": "移動平均", "movingBox": "移動中位" },
+      "smootherAlgos": {
+        "spline": "樣條",
+        "kernel": "局部核",
+        "savgol": "Savitzky-Golay",
+        "movingAvg": "移動平均",
+        "movingBox": "移動中位"
+      },
       "smootherSplineSmoothness": "平滑度",
       "smootherKernelBandwidth": "頻寬",
       "smootherSavgolWindow": "視窗",
       "smootherSavgolPolyOrder": "多項式階數",
       "smootherWindow": "視窗",
       "fitType": "擬合",
-      "fitTypes": { "polynomial": "多項式", "robustCauchy": "穩健 Cauchy" },
+      "fitTypes": {
+        "polynomial": "多項式",
+        "robustCauchy": "穩健 Cauchy"
+      },
       "fitDegree": "階數",
-      "fitDegrees": { "1": "一次", "2": "二次", "3": "三次", "4": "四次", "5": "五次", "6": "六次" },
-      "fitConf": { "fit": "擬合置信區間", "prediction": "預測置信區間" },
+      "fitDegrees": {
+        "1": "一次",
+        "2": "二次",
+        "3": "三次",
+        "4": "四次",
+        "5": "五次",
+        "6": "六次"
+      },
+      "fitConf": {
+        "fit": "擬合置信區間",
+        "prediction": "預測置信區間"
+      },
       "fitStats": "統計量",
-      "fitStat": { "equation": "方程", "rmse": "RMSE", "r2": "R²", "fTest": "F 檢驗" }
+      "fitStat": {
+        "equation": "方程",
+        "rmse": "RMSE",
+        "r2": "R²",
+        "fTest": "F 檢驗"
+      }
     },
     "loading": "正在載入資料…",
     "loadingProgress": "{{loaded}} / {{total}} 列",
@@ -1116,6 +1220,186 @@
       "metaLoading": "正在載入欄位資訊...",
       "metaError": "欄位中繼資料不可用",
       "progress": "圖形資料載入進度"
+    }
+  },
+  "fitModel": {
+    "title": "配適模型",
+    "response": "Y，反應",
+    "modelTermCount": "模型項數",
+    "centeringMethod": "中心化",
+    "centering": {
+      "none": "無",
+      "mean": "平均數"
+    },
+    "sourceMissing": "來源資料表無法使用。",
+    "dialog": {
+      "title": "配適模型",
+      "availableFields": "可用欄位",
+      "searchFields": "搜尋欄位",
+      "searchAvailableFields": "搜尋可用欄位",
+      "loadingFields": "正在載入欄位...",
+      "noFields": "此資料來源沒有可用欄位。",
+      "noMatch": "沒有欄位符合目前搜尋。",
+      "assignResponseLabel": "將 {{field}} 指派為反應",
+      "assignResponse": "指派為 Y",
+      "assignMainLabel": "切換 {{field}} 為主效應",
+      "assignMain": "切換主效應",
+      "response": "反應",
+      "continuousOnly": "連續",
+      "responseEmpty": "拖放或指派一個連續反應欄位。",
+      "responseHint": "連續",
+      "clearResponse": "清除反應 {{field}}",
+      "mainEffects": "主效應",
+      "mainEffectsEmpty": "選擇一個或多個連續預測欄位。",
+      "removeMainEffect": "移除主效應 {{field}}",
+      "construct": "建構方式",
+      "constructFullFactorial": "全因子",
+      "constructManual": "手動",
+      "constructFactorial": "階乘到階數",
+      "constructResponseSurface": "反應曲面",
+      "degreeInputLabel": "階數",
+      "termCount": "{{count}} / 256 項",
+      "tooManyTermsFormula": "目前建構有 {{count}} 項，超過 256。{{formula}}",
+      "interactions": "交互作用",
+      "twoWayOnly": "二因子",
+      "interactionsEmpty": "從已選主效應加入二因子交互作用。",
+      "removeInteraction": "移除交互作用 {{term}}",
+      "addInteraction": "新增交互作用",
+      "toggleInteraction": "切換交互作用 {{term}}",
+      "macros": "巨集",
+      "degree1": "一階",
+      "degree2": "二階",
+      "centerInteractions": "中心化交互作用",
+      "currentTerms": "目前模型項",
+      "searchTerms": "搜尋模型項",
+      "parameterCount": "{{count}} 個參數",
+      "termsEmpty": "尚未選擇模型項。",
+      "noTermMatch": "沒有模型項符合目前搜尋。",
+      "termKindMain": "主效應",
+      "termKindInteraction": "交互作用",
+      "termKindPower": "冪次項",
+      "removeTerm": "移除模型項 {{term}}",
+      "create": "建立",
+      "cancel": "取消",
+      "createError": "建立配適模型失敗: {{message}}",
+      "validation": {
+        "responseCollision": "{{field}} 已被指派到其他角色。",
+        "mainRequiredByInteraction": "{{field}} 被 {{interactions}} 使用。",
+        "lastMainEffect": "至少需要一個主效應。",
+        "nonContinuousField": "{{field}} 必須是連續欄位。",
+        "invalidInteraction": "只能加入有效的二因子交互作用。",
+        "tooManyTerms": "模型項過多（最多 256 項）。"
+      }
+    },
+    "report": {
+      "title": "配適模型報告",
+      "stale": "結果已過期",
+      "loading": "正在載入報告...",
+      "error": "載入報告失敗。",
+      "errorWithOldResult": "重新整理失敗，正在顯示先前結果。",
+      "undo": "還原",
+      "remove": "移除",
+      "notComputable": "無法計算",
+      "usedRows": "使用列數",
+      "excludedRows": "排除列數",
+      "noWarnings": "無警告。",
+      "undefinedValue": "-",
+      "saveColumns": {
+        "title": "儲存欄",
+        "open": "儲存欄",
+        "save": "儲存",
+        "saving": "正在儲存...",
+        "cancel": "取消",
+        "unavailable": "無法使用",
+        "refreshFailed": "欄已儲存，但資料檢視無法重新整理。請重新開啟資料表以查看新欄。",
+        "metric": {
+          "predicted": "預測值",
+          "residual": "殘差",
+          "studentizedResidual": "學生化殘差",
+          "leverage": "槓桿值",
+          "cooksDistance": "Cook's D",
+          "meanConfidenceLower": "平均信賴區間下限",
+          "meanConfidenceUpper": "平均信賴區間上限",
+          "predictionLower": "預測區間下限",
+          "predictionUpper": "預測區間上限"
+        }
+      },
+      "section": {
+        "modelSpecification": "模型設定",
+        "effectSummary": "效應摘要",
+        "summaryOfFit": "配適摘要",
+        "analysisOfVariance": "變異數分析",
+        "lackOfFit": "失配檢定",
+        "parameterEstimates": "參數估計",
+        "actualByPredicted": "實際值對預測值",
+        "residualByPredicted": "殘差對預測值",
+        "residualQq": "殘差 Q-Q 圖",
+        "rowDiagnostics": "逐列診斷",
+        "predictionProfiler": "預測剖面圖",
+        "warnings": "警告"
+      },
+      "specification": { "construct": "建構方式", "response": "反應", "predictors": "預測變數", "terms": "模型項", "usedRows": "有效列數", "termBudget": "模型項限額" },
+      "summaryOfFit": {
+        "rSquared": "R 平方",
+        "adjustedRSquared": "調整後 R 平方",
+        "rootMeanSquareError": "均方根誤差"
+      },
+      "column": {
+        "term": "項目",
+        "source": "來源",
+        "estimate": "估計值",
+        "standardError": "標準誤",
+        "tRatio": "t 比",
+        "pValue": "p 值",
+        "logWorth": "LogWorth",
+        "action": "操作",
+        "degreesOfFreedom": "自由度",
+        "sumOfSquares": "平方和",
+        "meanSquare": "均方",
+        "fRatio": "F 比",
+        "lowerConfidenceLimit": "95% 下限", "upperConfidenceLimit": "95% 上限", "featureVif": "特徵 VIF",
+        "row": "列", "observed": "觀測值", "fitted": "配適值", "residual": "殘差", "studentizedResidual": "學生化殘差", "leverage": "槓桿值", "cooksDistance": "Cook 距離", "meanConfidenceInterval": "平均值信賴區間", "predictionInterval": "預測區間", "flags": "標記"
+      },
+      "reason": {
+        "insufficientRows": "排除缺失值後有效列不足。",
+        "rankDeficient": "此模型設定下設計矩陣秩不足。",
+        "noReplicates": "沒有重複的預測變數組合，無法檢定失配。", "lackOfFitDegreesOfFreedomZero": "失配自由度為零。", "pureErrorZero": "純誤差均方為零。", "inferenceNotEstimable": "此配適無法估計推論統計量。", "constantFeature": "配適特徵為常數。", "auxiliaryRankDeficient": "VIF 輔助迴歸秩不足。", "insufficientDiagnosticRows": "至少需要兩列有限診斷資料。"
+      },
+      "flag": { "residualWarning": "殘差警告", "residualSevere": "嚴重殘差", "highLeverage": "高槓桿值", "influential": "強影響點" },
+      "diagnostics": { "filter": "診斷列篩選", "all": "全部", "flagged": "已標記" },
+      "profiler": { "currentValue": "目前值", "predicted": "預測值", "meanConfidenceInterval": "平均值信賴區間", "predictionInterval": "預測區間", "notEstimable": "無法估計", "extrapolation": "超出訓練範圍：{{columns}}" },
+      "source": { "error": "誤差", "pureError": "純誤差", "lackOfFit": "失配" },
+      "warning": {
+        "saturatedModel": "模型飽和，殘差自由度為零。",
+        "constantResponse": "反應變數幾乎沒有變化。",
+        "perfectFit": "偵測到完美配適，請檢查是否過度配適。",
+        "illConditioned": "設計矩陣病態，係數可能不穩定。"
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "存在相關交互作用或冪次項時不能移除此主效應。",
+        "lastMainEffect": "不能移除最後一個主效應。",
+        "notFound": "所選模型項已不存在。"
+      },
+      "chart": {
+        "axis": {
+          "predicted": "預測值",
+          "actual": "實際值",
+          "residual": "殘差", "theoreticalQuantile": "理論分位數", "studentizedResidual": "學生化殘差"
+        },
+        "series": {
+          "actual": "實際值",
+          "residual": "殘差", "studentizedResidual": "學生化殘差", "predicted": "預測值", "meanConfidence": "平均值信賴區間"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0", "qq": "Q-Q 參考線"
+        },
+        "tooltip": {
+          "x": "預測值",
+          "yActual": "實際值",
+          "yResidual": "殘差", "xQq": "理論分位數", "yQq": "學生化殘差"
+        }
+      }
     }
   }
 }

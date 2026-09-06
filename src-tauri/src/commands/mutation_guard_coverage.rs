@@ -37,10 +37,22 @@ mod tests {
 
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
-            ("commands::data_commands::import_file", CommandClass::Mutation),
-            ("commands::data_commands::list_datasets", CommandClass::ReadOnly),
-            ("commands::data_commands::delete_dataset", CommandClass::Mutation),
-            ("commands::data_commands::query_table", CommandClass::ReadOnly),
+            (
+                "commands::data_commands::import_file",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::list_datasets",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::delete_dataset",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::query_table",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::data_commands::query_table_window",
                 CommandClass::ReadOnly,
@@ -49,7 +61,18 @@ mod tests {
                 "commands::data_commands::get_dataset_generation",
                 CommandClass::ReadOnly,
             ),
-            ("commands::data_commands::locate_table_row", CommandClass::ReadOnly),
+            (
+                "commands::fit_model_commands::fit_model",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::fit_model_commands::save_fit_model_columns",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::locate_table_row",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::data_commands::query_table_filter_values",
                 CommandClass::ReadOnly,
@@ -66,18 +89,36 @@ mod tests {
                 "commands::data_commands::create_table_from_rows",
                 CommandClass::Mutation,
             ),
-            ("commands::data_commands::create_table", CommandClass::Mutation),
+            (
+                "commands::data_commands::create_table",
+                CommandClass::Mutation,
+            ),
             ("commands::data_commands::add_row", CommandClass::Mutation),
             ("commands::data_commands::add_rows", CommandClass::Mutation),
             (
                 "commands::data_commands::apply_added_rows",
                 CommandClass::Mutation,
             ),
-            ("commands::data_commands::update_cell", CommandClass::Mutation),
-            ("commands::data_commands::clear_cells", CommandClass::Mutation),
-            ("commands::data_commands::update_cells", CommandClass::Mutation),
-            ("commands::data_commands::delete_row", CommandClass::Mutation),
-            ("commands::data_commands::delete_rows", CommandClass::Mutation),
+            (
+                "commands::data_commands::update_cell",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::clear_cells",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::update_cells",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::delete_row",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::delete_rows",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::data_commands::delete_rows_with_change_set",
                 CommandClass::Mutation,
@@ -94,8 +135,14 @@ mod tests {
                 "commands::data_commands::alter_columns_type_with_change_set",
                 CommandClass::Mutation,
             ),
-            ("commands::data_commands::rename_dataset", CommandClass::Mutation),
-            ("commands::data_commands::add_column", CommandClass::Mutation),
+            (
+                "commands::data_commands::rename_dataset",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::add_column",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::data_commands::add_column_with_change_set",
                 CommandClass::Mutation,
@@ -108,13 +155,22 @@ mod tests {
                 "commands::data_commands::insert_column_at",
                 CommandClass::Mutation,
             ),
-            ("commands::data_commands::reorder_column", CommandClass::Mutation),
+            (
+                "commands::data_commands::reorder_column",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::data_commands::reorder_column_if_generation",
                 CommandClass::Mutation,
             ),
-            ("commands::data_commands::delete_column", CommandClass::Mutation),
-            ("commands::data_commands::rename_column", CommandClass::Mutation),
+            (
+                "commands::data_commands::delete_column",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::rename_column",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::data_commands::change_column_type",
                 CommandClass::Mutation,
@@ -135,7 +191,10 @@ mod tests {
                 "commands::data_commands::drop_table_change_set",
                 CommandClass::Mutation,
             ),
-            ("commands::data_commands::restore_snapshot", CommandClass::Mutation),
+            (
+                "commands::data_commands::restore_snapshot",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::data_commands::get_column_display_props",
                 CommandClass::ReadOnly,
@@ -144,7 +203,10 @@ mod tests {
                 "commands::data_commands::set_column_display_props",
                 CommandClass::Mutation,
             ),
-            ("commands::stats_commands::get_column_stats", CommandClass::ReadOnly),
+            (
+                "commands::stats_commands::get_column_stats",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::stats_commands::get_descriptive_stats",
                 CommandClass::ReadOnly,
@@ -159,9 +221,18 @@ mod tests {
             ),
             ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
-            ("commands::io_commands::import_sqlite", CommandClass::Mutation),
-            ("commands::io_commands::export_sqlite", CommandClass::ReadOnly),
-            ("commands::io_commands::export_csv_zip", CommandClass::ReadOnly),
+            (
+                "commands::io_commands::import_sqlite",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::io_commands::export_sqlite",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::io_commands::export_csv_zip",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::io_commands::export_csv_zip_subset",
                 CommandClass::ReadOnly,
@@ -186,18 +257,30 @@ mod tests {
                 "commands::graph_data_commands::cancel_graph_data",
                 CommandClass::ReadOnly,
             ),
-            ("commands::project_commands::init_project", CommandClass::Mutation),
+            (
+                "commands::project_commands::init_project",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::project_commands::create_project",
                 CommandClass::Mutation,
             ),
-            ("commands::project_commands::open_project", CommandClass::Mutation),
-            ("commands::project_commands::save_project", CommandClass::SaveFlow),
+            (
+                "commands::project_commands::open_project",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::save_project",
+                CommandClass::SaveFlow,
+            ),
             (
                 "commands::project_commands::get_current_project",
                 CommandClass::ReadOnly,
             ),
-            ("commands::project_commands::export_table", CommandClass::ReadOnly),
+            (
+                "commands::project_commands::export_table",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::project_commands::export_tables_sptb_zip",
                 CommandClass::ReadOnly,
@@ -206,17 +289,36 @@ mod tests {
             ("commands::project_commands::export_graph", CommandClass::ReadOnly),
             ("commands::project_commands::import_graph", CommandClass::ReadOnly),
             ("commands::table_commands::get_columns", CommandClass::ReadOnly),
+            (
+                "commands::table_commands::get_column_descriptors",
+                CommandClass::ReadOnly,
+            ),
             ("commands::table_commands::sort_table", CommandClass::Mutation),
             ("commands::table_commands::subset_table", CommandClass::Mutation),
             (
                 "commands::table_commands::transpose_table",
                 CommandClass::Mutation,
             ),
-            ("commands::table_commands::stack_table", CommandClass::Mutation),
-            ("commands::table_commands::split_table", CommandClass::Mutation),
-            ("commands::table_commands::summary_table", CommandClass::Mutation),
-            ("commands::table_commands::join_tables", CommandClass::Mutation),
-            ("commands::table_commands::update_table", CommandClass::Mutation),
+            (
+                "commands::table_commands::stack_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::table_commands::split_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::table_commands::summary_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::table_commands::join_tables",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::table_commands::update_table",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::table_commands::concatenate_tables",
                 CommandClass::Mutation,
@@ -224,7 +326,7 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 48] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 49] {
         [
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
@@ -270,6 +372,7 @@ mod tests {
             ("table_commands.rs", "concatenate_tables"),
             ("io_commands.rs", "import_sqlite"),
             ("history_commands.rs", "restore_project_snapshot"),
+            ("fit_model_commands.rs", "save_fit_model_columns"),
             ("project_commands.rs", "init_project"),
             ("project_commands.rs", "create_project"),
             ("project_commands.rs", "open_project"),
@@ -332,7 +435,8 @@ mod tests {
             .next()
             .unwrap_or("");
 
-        let has_direct_permit = first_statement.starts_with("let _permit = acquire_mutation_permit(");
+        let has_direct_permit =
+            first_statement.starts_with("let _permit = acquire_mutation_permit(");
         let delegated_permit = if has_direct_permit {
             true
         } else {
@@ -421,12 +525,14 @@ mod tests {
         let table_source = include_str!("table_commands.rs");
         let io_source = include_str!("io_commands.rs");
         let history_source = include_str!("history_commands.rs");
+        let fit_model_source = include_str!("fit_model_commands.rs");
         let project_source = include_str!("project_commands.rs");
 
         assert_module_helper_routes_to_save_coordinator(data_source, "data_commands.rs");
         assert_module_helper_routes_to_save_coordinator(table_source, "table_commands.rs");
         assert_module_helper_routes_to_save_coordinator(io_source, "io_commands.rs");
         assert_module_helper_routes_to_save_coordinator(history_source, "history_commands.rs");
+        assert_module_helper_routes_to_save_coordinator(fit_model_source, "fit_model_commands.rs");
         assert_module_helper_routes_to_save_coordinator(project_source, "project_commands.rs");
 
         for (file_name, function_name) in functions_requiring_mutation_permit() {
@@ -435,6 +541,7 @@ mod tests {
                 "table_commands.rs" => table_source,
                 "io_commands.rs" => io_source,
                 "history_commands.rs" => history_source,
+                "fit_model_commands.rs" => fit_model_source,
                 "project_commands.rs" => project_source,
                 _ => panic!("unexpected file in permit coverage list: {file_name}"),
             };
@@ -450,7 +557,9 @@ mod tests {
             .find("pub async fn save_project(")
             .expect("save_project command must exist");
         let save_body = &source[save_start..];
-        let save_end = save_body.find("\n#[tauri::command").unwrap_or(save_body.len());
+        let save_end = save_body
+            .find("\n#[tauri::command")
+            .unwrap_or(save_body.len());
         let save_slice = &save_body[..save_end];
 
         assert!(

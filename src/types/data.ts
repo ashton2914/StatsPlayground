@@ -20,6 +20,12 @@ export interface ColumnMeta {
   missingCount: number;
 }
 
+export interface ColumnDescriptor {
+  columnId: string;
+  name: string;
+  sqlType: string;
+}
+
 /** 表查询参数 */
 export interface TableQueryParams {
   datasetId: string;

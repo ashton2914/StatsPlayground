@@ -291,14 +291,18 @@ pub fn restore_project_snapshot(
     app: AppHandle,
     snapshot: ProjectDataSnapshot,
 ) -> Result<(), AppError> {
-    restore_project_snapshot_entry(state.inner(), &snapshot, |dataset_index, dataset_total, dataset_name| {
-        let _ = app.emit(
-            "restore-progress",
-            serde_json::json!({
-                "datasetIndex": dataset_index,
-                "datasetTotal": dataset_total,
-                "datasetName": dataset_name,
-            }),
-        );
-    })
+    restore_project_snapshot_entry(
+        state.inner(),
+        &snapshot,
+        |dataset_index, dataset_total, dataset_name| {
+            let _ = app.emit(
+                "restore-progress",
+                serde_json::json!({
+                    "datasetIndex": dataset_index,
+                    "datasetTotal": dataset_total,
+                    "datasetName": dataset_name,
+                }),
+            );
+        },
+    )
 }

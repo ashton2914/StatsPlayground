@@ -33,6 +33,14 @@ pub struct ColumnDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ColumnDescriptor {
+    pub column_id: String,
+    pub name: String,
+    pub sql_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateTableFromRowsRequest {
     pub name: String,
     pub column_names: Vec<String>,

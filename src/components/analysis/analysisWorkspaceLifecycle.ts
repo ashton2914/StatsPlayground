@@ -6,6 +6,7 @@ export interface WorkspaceDocumentSelection {
   activeDatasetId: string | null;
   activeGraphBuilderId: string | null;
   activeFitYByXId: string | null;
+  activeFitModelId: string | null;
   activeReportId: string | null;
   activeAnalysisId: string | null;
   activeDistributionId: string | null;
@@ -16,6 +17,7 @@ export type WorkspaceDocumentKind =
   | "dataset"
   | "graph"
   | "fitYByX"
+  | "fitModel"
   | "report"
   | "analysis"
   | "distribution"
@@ -26,6 +28,7 @@ export function createEmptyWorkspaceDocumentSelection(): WorkspaceDocumentSelect
     activeDatasetId: null,
     activeGraphBuilderId: null,
     activeFitYByXId: null,
+    activeFitModelId: null,
     activeReportId: null,
     activeAnalysisId: null,
     activeDistributionId: null,
@@ -38,6 +41,7 @@ export function selectWorkspaceDocument(kind: WorkspaceDocumentKind, id: string)
   if (kind === "dataset") next.activeDatasetId = id;
   if (kind === "graph") next.activeGraphBuilderId = id;
   if (kind === "fitYByX") next.activeFitYByXId = id;
+  if (kind === "fitModel") next.activeFitModelId = id;
   if (kind === "report") next.activeReportId = id;
   if (kind === "analysis") next.activeAnalysisId = id;
   if (kind === "distribution") next.activeDistributionId = id;

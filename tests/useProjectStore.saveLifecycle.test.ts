@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { ProjectInfo } from "../src/types/project";
 import type { SaveProgress, SaveProjectFolders, SaveProjectRequest } from "../src/services/projectService";
 import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
+import { createFitModelItem } from "../src/components/fitModel/fitModelConfig.ts";
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
 import { createProjectStore } from "../src/stores/useProjectStore.ts";
 import { useGraphBuilderStore } from "../src/stores/useGraphBuilderStore.ts";
@@ -33,8 +34,28 @@ const saveFolders: SaveProjectFolders = {
   tableFolders: {},
   graphFolders: {},
   fitYByXFolders: { "fit-1": "Analyses" },
+  fitModelFolders: { "fit-model-1": "Analyses/Fit Models" },
   tabulateFolders: {},
   distributionFolders: { "distribution-1": "Analyses" },
+};
+
+const fitModelDefinition = createFitModelItem({
+  id: "fit-model-1",
+  name: "Fit Model 1",
+  sourceDatasetId: "table-1",
+  response: continuous("height"),
+  terms: [{ kind: "main", columnNames: ["age"] }],
+  centeringMethod: "none",
+  createdAt: new Date(0).toISOString(),
+  fields: [continuous("height"), continuous("age")],
+});
+
+const fitModelWithLoadIssue = {
+  ...fitModelDefinition,
+  loadIssue: {
+    code: "invalidPersistedDefinition",
+    detail: "nonContinuousResponse:height",
+  },
 };
 
 const distribution = createDistributionItem({
@@ -59,6 +80,7 @@ const request: SaveProjectRequest = {
   snapshots: [],
   graphBuilders: [],
   fitYByX: [{ id: "fit-1", sourceDatasetId: "table-1" }],
+  fitModels: [fitModelWithLoadIssue],
   tabulates: [],
   distributions: [distribution],
   ...saveFolders,
@@ -175,6 +197,22 @@ function resetGraphBuilderStore() {
   });
   assert.deepEqual(capturedSaveRequest?.fitYByX, request.fitYByX);
   assert.deepEqual(capturedSaveRequest?.fitYByXFolders, request.fitYByXFolders);
+  assert.deepEqual(capturedSaveRequest?.fitModels, request.fitModels);
+  assert.deepEqual(capturedSaveRequest?.fitModelFolders, request.fitModelFolders);
+
+  const savedFitModel = capturedSaveRequest?.fitModels[0] as Record<string, unknown>;
+  assert.equal(savedFitModel.response?.name, "height");
+  assert.equal(savedFitModel.response?.type, "continuous");
+  assert.deepEqual(savedFitModel.terms, [
+    { kind: "main", columnNames: ["age"] },
+  ]);
+  assert.deepEqual(savedFitModel.loadIssue, {
+    code: "invalidPersistedDefinition",
+    detail: "nonContinuousResponse:height",
+  });
+  assert.equal(Object.hasOwn(savedFitModel, "result"), false);
+  assert.equal(Object.hasOwn(savedFitModel, "plotRows"), false);
+  assert.equal(Object.hasOwn(savedFitModel, "reportState"), false);
   assert.deepEqual(capturedSaveRequest?.distributions, request.distributions);
   assert.deepEqual(capturedSaveRequest?.distributionFolders, request.distributionFolders);
 

@@ -59,7 +59,7 @@ assertSourceIncludes(workspaceSource, "initialItem={toDistributionEditorItem(edi
 assertSourceIncludes(workspaceSource, "setEditingAnalysisId(null)", "Cancel and Save must close the Analysis editor session");
 assertSourceIncludes(workspaceSource, "onEditInputs={() =>", "AnalysisView must expose the shared Shell edit command to Workspace");
 assert.equal(workspaceSource.includes("deleteAnalysisByDataset"), false, "Deleting a source table must not cascade-delete saved Analysis documents");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, analysisIds)", "Prune must include live Analysis ids");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Prune must include live Analysis ids without dropping Fit Model ids");
 assertSourceIncludes(workspaceSource, "selectWorkspaceDocument", "Workspace must use the shared lifecycle helper for active-document exclusivity");
 assertSourceIncludes(workspaceSource, "getRetainedActiveAnalysisIdAfterDatasetDeletion", "Workspace must use the shared lifecycle helper for source deletion retention");
 

@@ -35,6 +35,7 @@ export interface OpenProjectResult {
   snapshots: unknown[];
   graphBuilders: unknown[];
   fitYByX: unknown[];
+  fitModels?: unknown[];
   tabulates: unknown[];
   distributions: DistributionItem[];
   analyses: AnalysisDocument[];
@@ -45,6 +46,7 @@ export interface OpenProjectResult {
   /** graphId → folder path（根目录的图不在此映射中）。 */
   graphFolders: Record<string, string>;
   fitYByXFolders: Record<string, string>;
+  fitModelFolders?: Record<string, string>;
   distributionFolders: Record<string, string>;
   analysisFolders: Record<string, string>;
   documentNameMigrations: DocumentNameMigration[];

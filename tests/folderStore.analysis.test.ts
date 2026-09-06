@@ -102,7 +102,7 @@ assert.deepEqual(folderStore().analysisFolders["analysis-1"], "archive/saved");
 assert.deepEqual(folderStore().analysisFolders["analysis-3"], "archive/saved/archive");
 
 folderStore().setAnalysisFolder("analysis-4", "archive/saved/temp");
-folderStore().pruneAssignments(new Set(), new Set(), new Set(), new Set(), new Set(), new Set(), new Set(["analysis-1", "analysis-4"]));
+folderStore().pruneAssignments(new Set(), new Set(), new Set(), new Set(), new Set(), new Set(), new Set(), new Set(["analysis-1", "analysis-4"]));
 assert.deepEqual(folderStore().analysisFolders, {
   "analysis-1": "archive/saved",
   "analysis-4": "archive/saved/temp",

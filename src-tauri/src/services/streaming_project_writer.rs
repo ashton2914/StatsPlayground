@@ -345,13 +345,14 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             })
             .collect::<Vec<_>>();
 
-        let bundle = spprj_archive::build_bundle_with_workflows(
+        let bundle = spprj_archive::build_bundle_with_workflows_and_fit_models(
             snapshot.destination_name.clone(),
             STREAM_VERSION.to_string(),
             snapshot.current_project.created_at.clone(),
             placeholder_tables,
             graph_docs,
             snapshot.request.fit_y_by_x.clone(),
+            snapshot.request.fit_models.clone(),
             snapshot.request.reports.clone(),
             snapshot.request.distributions.clone(),
             snapshot.request.analyses.clone(),
@@ -360,6 +361,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             &snapshot.request.table_folders,
             &snapshot.request.graph_folders,
             &snapshot.request.fit_y_by_x_folders,
+            &snapshot.request.fit_model_folders,
             &snapshot.request.report_folders,
             &snapshot.request.distribution_folders,
             &snapshot.request.analysis_folders,
@@ -568,7 +570,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             let column_write_modes = plan
                 .columns
                 .iter()
-                .map(|(_, column_type)| archive_cell_write_mode(column_type))
+                .map(|(_, _, column_type)| archive_cell_write_mode(column_type))
                 .collect::<Vec<_>>();
 
             let columns = table_columns_from_plan(&dataset.id, &plan, &snapshot.column_display);
@@ -927,7 +929,7 @@ fn table_columns_from_plan(
     plan.columns
         .iter()
         .enumerate()
-        .map(|(index, (name, column_type))| {
+        .map(|(index, (_, name, column_type))| {
             let props = display.and_then(|items| items.iter().find(|item| item.col_index == index));
             TableColumn {
                 name: name.clone(),
@@ -1396,6 +1398,7 @@ mod tests {
                     "graphType": "line",
                 })],
                 fit_y_by_x: vec![serde_json::json!({"id": "fit-1"})],
+                fit_models: vec![serde_json::json!({"id": "fit-model-1"})],
                 reports: Vec::new(),
                 distributions: Vec::new(),
                 analyses: Vec::new(),
@@ -1404,6 +1407,7 @@ mod tests {
                 table_folders: HashMap::new(),
                 graph_folders: HashMap::new(),
                 fit_y_by_x_folders: HashMap::new(),
+                fit_model_folders: HashMap::new(),
                 report_folders: HashMap::new(),
                 distribution_folders: HashMap::new(),
                 analysis_folders: HashMap::new(),
@@ -1473,6 +1477,7 @@ mod tests {
                     "response": { "name": "y", "type": "continuous" },
                     "factor": { "name": "x", "type": "continuous" }
                 })],
+                fit_models: Vec::new(),
                 reports: vec![serde_json::json!({
                     "schemaVersion": 1,
                     "id": "report-1",
@@ -1657,6 +1662,7 @@ mod tests {
                     "fit-1".to_string(),
                     "Root/Nested/Leaf".to_string(),
                 )]),
+                fit_model_folders: HashMap::new(),
                 report_folders: HashMap::from([(
                     "report-1".to_string(),
                     "Root/Nested".to_string(),

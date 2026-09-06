@@ -68,7 +68,8 @@
     "opConcatenate": "Concatenate",
     "help": "Help",
     "about": "About",
-    "license": "License"
+    "license": "License",
+    "fitModel": "Fit Model"
   },
   "alert": {
     "selectDatasetFirst": "Please select a data table as the source first.",
@@ -82,8 +83,9 @@
     "exportGraphFailed": "Export graph failed: ",
     "importGraphFailed": "Import graph failed: ",
     "exportFolderFailed": "Export folder failed: ",
-    "openProjectFailed": "Failed to open project: ",
+  "openProjectFailed": "Failed to open project: {{msg}}",
     "analysisSampleFailed": "Failed to create sample analysis: {{message}}",
+    "openDistributionFailed": "Failed to open Distribution: ",
     "invalidName": {
       "empty": "Name cannot be empty.",
       "invalidChars": "Name contains invalid characters: / \\ : * ? \" < > |",
@@ -156,7 +158,11 @@
     "resizeColumn": "Resize column",
     "autoFitColumn": "Auto-fit column",
     "sqlQueryTableCreated": "Create table \"{{name}}\" from SQL query",
-    "tabulateTableCreated": "Create data table \"{{name}}\" from tabulate result"
+    "tabulateTableCreated": "Create data table \"{{name}}\" from tabulate result",
+    "newFitModel": "New Fit Model \"{{name}}\" (source: {{source}})",
+    "renameFitModel": "Rename Fit Model \"{{old}}\" -> \"{{new}}\"",
+    "deleteFitModel": "Delete Fit Model \"{{name}}\"",
+    "saveFitModelColumns": "Save Fit Model columns"
   },
   "workflow": {
     "title": "Workflow",
@@ -209,8 +215,6 @@
     "creatingSnapshot": "Creating snapshot…",
     "restoringSnapshot": "Restoring snapshot…",
     "importingSqlite": "Importing SQLite database…",
-    "documentNameMigrations": "Renamed {{count}} project document name(s) while opening this project. Save to persist the updated names.",
-    "projectRequiresMigration": "This project was migrated in memory while opening. Save to persist the upgraded format.",
     "datasetNameMigrations": "Renamed {{count}} duplicate dataset name(s) while opening this project. Save to persist the updated names.",
     "importProgressTable": "Table {{i}}/{{total}}: {{name}}",
     "importProgressRows": "rows",
@@ -227,7 +231,55 @@
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "zoomReset": "Reset to 100%",
-    "zoomTooltip": "Table zoom"
+    "zoomTooltip": "Table zoom",
+    "fitModelMissing": "Fit Model analysis no longer exists",
+    "fitModelSourceMissing": "Source data table is unavailable"
+  },
+  "distribution": {
+    "title": "Distribution",
+    "recall": "Recall",
+    "searchColumns": "Search columns",
+    "sourceDataset": "Source dataset",
+    "openSource": "Open Source",
+    "editInputs": "Edit Inputs",
+    "progress": "Progress",
+    "bootstrapUnavailable": "Distribution is unavailable because initialization failed.",
+    "renameLabel": "Rename {{name}}",
+    "fitStandardError": "Std Error",
+    "fitLower95": "Lower 95%",
+    "fitUpper95": "Upper 95%",
+    "states": { "empty": "empty", "ready": "ready", "running": "running", "updating": "updating", "cancelled": "cancelled", "stale": "stale", "failed": "failed", "missing": "missing", "unknown": "unknown", "corrupt": "corrupt" },
+    "report": { "summary": "Summary Statistics", "histogram": "Histogram", "boxPlot": "Box Plot", "outlierBoxPlot": "Outlier Box Plot", "specificationLines": "Specification Lines", "displayGroup": "Display", "histogramGroup": "Histogram", "diagnosticPlotsGroup": "Diagnostic Plots", "horizontalTables": "Horizontal Tables", "overview": "Overview", "fitDensity": "Fit Density", "ecdf": "Empirical CDF", "quantiles": "Quantiles", "normalQuantilePlot": "Normal Quantile Plot", "continuousFit": "Continuous Fit", "fitComparison": "Fit Comparison", "overall": "Overall", "allRows": "All rows", "missing": "Missing", "processCapability": "Process Capability", "analysisOptions": "Analysis options for {{name}}", "probability": "Probability", "probabilityDensity": "Probability Density", "countScale": "Count", "densityScale": "Density", "label": "Label", "value": "Value", "location": "Location", "variation": "Variation", "scale": "Scale", "currentMethod": "Current method: {{method}}", "histogramMethod": { "jmpAuto": "JMP Auto", "freedmanDiaconis": "Freedman-Diaconis", "scott": "Scott", "sturges": "Sturges", "fixedCount": "Fixed Count", "fixedWidth": "Fixed Width", "unknown": "Unknown" }, "unavailableReason": "Unavailable: {{reason}}" },
+    "capability": { "specification": "Specification Limits", "histogram": "Capability Histogram", "processSummary": "Process Summary", "within": "Within Sigma Capability", "overall": "Overall Sigma Capability", "nonconformance": "Nonconformance", "options": "Process Capability options", "index": "Index", "estimate": "Estimate", "lowerConfidence": "Lower {{confidencePercent}}", "upperConfidence": "Upper {{confidencePercent}}", "source": "Source", "tail": "Tail", "count": "Count", "proportion": "Proportion", "region": "Region", "portion": "Portion", "observedCount": "Observed Count", "observedPpm": "Observed PPM", "expectedWithinPpm": "Expected Within PPM", "expectedOverallPpm": "Expected Overall PPM", "observedPercent": "Observed %", "expectedWithinPercent": "Expected Within %", "expectedOverallPercent": "Expected Overall %", "observed": "Observed", "expectedWithin": "Expected Within", "expectedOverall": "Expected Overall", "below": "Below LSL", "above": "Above USL", "total": "Total Outside", "n": "N", "mean": "Mean", "movingRangeAverage": "Average Moving Range", "withinSigma": "Within Sigma", "overallSigma": "Overall Sigma", "stabilityIndex": "Stability Index", "states": { "available": "Available", "notApplicable": "Not applicable", "unavailable": "Unavailable", "unbounded": "Unbounded" } },
+    "fit": { "continuousFit": "Continuous Fit", "fitAll": "Fit All", "display": "Fit Display", "showOverlays": "Show Fit Curves", "showDetails": "Show Fit Details", "parameters": "Parameter Estimates", "parameter": "Parameter", "estimate": "Estimate", "fixed": "Fixed", "measures": "Measures", "measuresAria": "measures", "measure": "Measure", "lognormalNaturalLogNote": "Parameters use the natural logarithm of the response.", "convergence": "Convergence", "comparison": "Fit Comparison", "distribution": "Distribution", "status": "Status", "unavailable": "Fit unavailable: {{reason}}", "states": { "available": "Available", "unavailable": "Unavailable", "failed": "Failed", "converged": "Converged", "notConverged": "Not converged" }, "commands": { "normal": "Fit Normal", "lognormal": "Fit Lognormal", "exponential": "Fit Exponential", "gamma": "Fit Gamma", "weibull": "Fit Weibull" }, "distributions": { "normal": "Normal", "lognormal": "Lognormal", "exponential": "Exponential", "gamma": "Gamma", "weibull": "Weibull" }, "parametersById": { "location": "Location", "scale": "Scale", "dispersion": "Dispersion", "shape": "Shape" }, "metrics": { "negativeTwoLogLikelihood": "-2*LogLikelihood", "aic": "AIC", "aicc": "AICc", "bic": "BIC" } },
+    "fitReasons": { "domainInvalid": "Data are outside this distribution's domain", "constantSample": "A constant sample cannot be fitted", "observationsEmpty": "No valid observations", "optimizationFailed": "Optimization failed", "curveInvalid": "The fitted curve could not be generated", "metricInvalid": "Fit statistics could not be calculated", "estimateInvalid": "The fitted parameters are invalid", "inputInvalid": "Fit inputs are invalid", "parameterInferenceUnavailable": "Parameter inference is unavailable" },
+    "compatibility": { "intentionalDifference": "Public method; differs from JMP 19", "compatibilityPending": "JMP 19 compatibility pending" },
+    "statistics": { "n": "N", "nMissing": "N Missing", "mean": "Mean", "stdDev": "Std Dev", "stdError": "Std Error Mean", "meanCiLower": "Lower Mean CI", "meanCiUpper": "Upper Mean CI", "minimum": "Minimum", "maximum": "Maximum", "median": "Median", "mode": "Mode", "noUniqueMode": "No unique mode", "range": "Range", "iqr": "IQR", "mad": "MAD" },
+    "roleLabel": "{{role}} role",
+    "roleEmpty": "Drop or assign columns",
+    "assignToRole": "Assign {{column}} to {{role}}",
+    "removeFromRole": "Remove {{column}} from {{role}}",
+    "confidenceLevel": "Confidence level",
+    "frequencyShort": "Freq",
+    "histogramsOnly": "Histograms only",
+    "invalidConfig": "Assign at least one valid Y column.",
+    "runDisabledHint": "Statistical methods are not available in this system state.",
+    "saving": "Saving...",
+    "run": "Run",
+    "roles": {
+      "y": "Y",
+      "weight": "Weight",
+      "frequency": "Frequency",
+      "by": "By"
+    },
+    "specification": {
+      "useOverride": "Use analysis specification override",
+      "lsl": "Lower specification limit",
+      "target": "Target",
+      "usl": "Upper specification limit",
+      "allYHint": "This analysis-level override applies to every Y column.",
+      "overrideSource": "Saved with this analysis only; table column properties are not changed."
+    }
   },
   "report": {
     "placeholder": "Report editing arrives in Task 6. This surface is intentionally minimal for now.",
@@ -1027,14 +1079,48 @@
       "fiveNumberSummary": "5 Number Summary",
       "widthProportion": "Width Proportion",
       "auto": "Auto",
-      "summary": { "none": "None", "mean": "Mean", "median": "Median", "sum": "Sum" },
-      "interval": { "stdErr": "Std Err", "stdDev": "Std Dev", "ci95": "95% CI" },
-      "style": { "errorBar": "Error Bar", "band": "Band", "sphere": "Sphere" },
-      "jitterMode": { "stacked": "Stacked", "uniform": "Uniform", "normal": "Normal" },
-      "conn": { "line": "Line", "step": "Step", "spline": "Spline" },
-      "fillMode": { "toZero": "To Zero", "between": "Between" },
-      "missing": { "skip": "Skip", "include": "Include", "connect": "Connect Through", "break": "Break" },
-      "box": { "outlier": "Outlier", "quantile": "Quantile", "normal": "Normal", "notched": "Notched" },
+      "summary": {
+        "none": "None",
+        "mean": "Mean",
+        "median": "Median",
+        "sum": "Sum"
+      },
+      "interval": {
+        "stdErr": "Std Err",
+        "stdDev": "Std Dev",
+        "ci95": "95% CI"
+      },
+      "style": {
+        "errorBar": "Error Bar",
+        "band": "Band",
+        "sphere": "Sphere"
+      },
+      "jitterMode": {
+        "stacked": "Stacked",
+        "uniform": "Uniform",
+        "normal": "Normal"
+      },
+      "conn": {
+        "line": "Line",
+        "step": "Step",
+        "spline": "Spline"
+      },
+      "fillMode": {
+        "toZero": "To Zero",
+        "between": "Between"
+      },
+      "missing": {
+        "skip": "Skip",
+        "include": "Include",
+        "connect": "Connect Through",
+        "break": "Break"
+      },
+      "box": {
+        "outlier": "Outlier",
+        "quantile": "Quantile",
+        "normal": "Normal",
+        "notched": "Notched"
+      },
       "histStyle": "Histogram Style",
       "smoothness": "Smoothness",
       "surfaceSmoothness": "Smoothness",
@@ -1042,21 +1128,50 @@
       "histHeight": "Histogram Height",
       "showCounts": "Show Counts",
       "showPercents": "Show Percents",
-      "histStyles": { "bar": "Bar", "polygon": "Polygon", "kde": "Kernel Density", "shadowgram": "Shadowgram" },
+      "histStyles": {
+        "bar": "Bar",
+        "polygon": "Polygon",
+        "kde": "Kernel Density",
+        "shadowgram": "Shadowgram"
+      },
       "smootherAlgo": "Algorithm",
-      "smootherAlgos": { "spline": "Spline", "kernel": "Local Kernel", "savgol": "Savitzky-Golay", "movingAvg": "Moving Average", "movingBox": "Moving Box" },
+      "smootherAlgos": {
+        "spline": "Spline",
+        "kernel": "Local Kernel",
+        "savgol": "Savitzky-Golay",
+        "movingAvg": "Moving Average",
+        "movingBox": "Moving Box"
+      },
       "smootherSplineSmoothness": "Smoothness",
       "smootherKernelBandwidth": "Bandwidth",
       "smootherSavgolWindow": "Window",
       "smootherSavgolPolyOrder": "Poly Order",
       "smootherWindow": "Window",
       "fitType": "Fit",
-      "fitTypes": { "polynomial": "Polynomial", "robustCauchy": "Robust Cauchy" },
+      "fitTypes": {
+        "polynomial": "Polynomial",
+        "robustCauchy": "Robust Cauchy"
+      },
       "fitDegree": "Degree",
-      "fitDegrees": { "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6" },
-      "fitConf": { "fit": "Fit Confidence", "prediction": "Prediction Confidence" },
+      "fitDegrees": {
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4",
+        "5": "5",
+        "6": "6"
+      },
+      "fitConf": {
+        "fit": "Fit Confidence",
+        "prediction": "Prediction Confidence"
+      },
       "fitStats": "Statistics",
-      "fitStat": { "equation": "Equation", "rmse": "RMSE", "r2": "R²", "fTest": "F Test" }
+      "fitStat": {
+        "equation": "Equation",
+        "rmse": "RMSE",
+        "r2": "R²",
+        "fTest": "F Test"
+      }
     },
     "loading": "Loading data…",
     "loadingProgress": "{{loaded}} / {{total}} rows",
@@ -1242,6 +1357,238 @@
       "metaLoading": "Loading columns...",
       "metaError": "Column metadata unavailable",
       "progress": "Graph data loading progress"
+    }
+  },
+  "fitModel": {
+    "title": "Fit Model",
+    "response": "Y, Response",
+    "modelTermCount": "Model terms",
+    "centeringMethod": "Centering",
+    "centering": {
+      "none": "None",
+      "mean": "Mean"
+    },
+    "sourceMissing": "Source dataset is unavailable.",
+    "dialog": {
+      "title": "Fit Model",
+      "availableFields": "Available fields",
+      "searchFields": "Search fields",
+      "searchAvailableFields": "Search available fields",
+      "loadingFields": "Loading fields...",
+      "noFields": "No fields available for this source.",
+      "noMatch": "No fields match the current search.",
+      "assignResponseLabel": "Assign {{field}} as response",
+      "assignResponse": "Assign as Y",
+      "assignMainLabel": "Toggle {{field}} as main effect",
+      "assignMain": "Toggle Main",
+      "response": "Response",
+      "continuousOnly": "Continuous",
+      "responseEmpty": "Drop or assign one continuous response field.",
+      "responseHint": "Continuous",
+      "clearResponse": "Clear response {{field}}",
+      "mainEffects": "Main Effects",
+      "mainEffectsEmpty": "Select one or more continuous predictors.",
+      "removeMainEffect": "Remove main effect {{field}}",
+      "construct": "Construct",
+      "constructFullFactorial": "Full Factorial",
+      "constructManual": "Manual",
+      "constructFactorial": "Factorial to Degree",
+      "constructResponseSurface": "Response Surface",
+      "degreeInputLabel": "Degree",
+      "termCount": "{{count}} / 256 terms",
+      "tooManyTermsFormula": "Construct has {{count}} terms, exceeding 256. {{formula}}",
+      "interactions": "Interactions",
+      "twoWayOnly": "Two-way",
+      "interactionsEmpty": "Add two-way interactions from selected main effects.",
+      "removeInteraction": "Remove interaction {{term}}",
+      "addInteraction": "Add interaction",
+      "toggleInteraction": "Toggle interaction {{term}}",
+      "macros": "Macros",
+      "degree1": "Degree 1",
+      "degree2": "Degree 2",
+      "centerInteractions": "Center Interactions",
+      "currentTerms": "Current Model Terms",
+      "searchTerms": "Search terms",
+      "parameterCount": "{{count}} parameters",
+      "termsEmpty": "No model terms selected.",
+      "noTermMatch": "No terms match the current search.",
+      "termKindMain": "Main",
+      "termKindInteraction": "Interaction",
+      "termKindPower": "Power",
+      "removeTerm": "Remove term {{term}}",
+      "create": "Create",
+      "cancel": "Cancel",
+      "createError": "Failed to create Fit Model: {{message}}",
+      "validation": {
+        "responseCollision": "{{field}} is already assigned to another role.",
+        "mainRequiredByInteraction": "{{field}} is used by {{interactions}}.",
+        "lastMainEffect": "At least one main effect is required.",
+        "nonContinuousField": "{{field}} must be continuous.",
+        "invalidInteraction": "Only valid two-way interactions can be added.",
+        "tooManyTerms": "Model has too many terms (max 256)."
+      }
+    },
+    "report": {
+      "title": "Fit Model report",
+      "stale": "Stale result",
+      "loading": "Loading report...",
+      "error": "Failed to load report.",
+      "errorWithOldResult": "Failed to refresh. Showing previous result.",
+      "undo": "Undo",
+      "remove": "Remove",
+      "notComputable": "Not Computable",
+      "usedRows": "Used Rows",
+      "excludedRows": "Excluded Rows",
+      "noWarnings": "No warnings.",
+      "undefinedValue": "-",
+      "saveColumns": {
+        "title": "Save Columns",
+        "open": "Save Columns",
+        "save": "Save",
+        "saving": "Saving...",
+        "cancel": "Cancel",
+        "unavailable": "Unavailable",
+        "refreshFailed": "Columns were saved, but the data view could not be refreshed. Reopen the table to see the new columns.",
+        "metric": {
+          "predicted": "Predicted",
+          "residual": "Residual",
+          "studentizedResidual": "Studentized Residual",
+          "leverage": "Leverage",
+          "cooksDistance": "Cook's D",
+          "meanConfidenceLower": "Mean CI Lower",
+          "meanConfidenceUpper": "Mean CI Upper",
+          "predictionLower": "Prediction Interval Lower",
+          "predictionUpper": "Prediction Interval Upper"
+        }
+      },
+      "section": {
+        "modelSpecification": "Model Specification",
+        "effectSummary": "Effect Summary",
+        "summaryOfFit": "Summary of Fit",
+        "analysisOfVariance": "Analysis of Variance",
+        "lackOfFit": "Lack of Fit",
+        "parameterEstimates": "Parameter Estimates",
+        "actualByPredicted": "Actual by Predicted",
+        "residualByPredicted": "Residual by Predicted",
+        "residualQq": "Residual Q-Q",
+        "rowDiagnostics": "Row Diagnostics",
+        "predictionProfiler": "Prediction Profiler",
+        "warnings": "Warnings"
+      },
+      "specification": {
+        "construct": "Construct",
+        "response": "Response",
+        "predictors": "Predictors",
+        "terms": "Terms",
+        "usedRows": "Used rows",
+        "termBudget": "Term budget"
+      },
+      "summaryOfFit": {
+        "rSquared": "RSquare",
+        "adjustedRSquared": "RSquare Adj",
+        "rootMeanSquareError": "Root Mean Square Error"
+      },
+      "column": {
+        "term": "Term",
+        "source": "Source",
+        "estimate": "Estimate",
+        "standardError": "Std Error",
+        "tRatio": "t Ratio",
+        "pValue": "p-Value",
+        "logWorth": "LogWorth",
+        "action": "Action",
+        "degreesOfFreedom": "DF",
+        "sumOfSquares": "Sum of Squares",
+        "meanSquare": "Mean Square",
+        "fRatio": "F Ratio",
+        "lowerConfidenceLimit": "Lower 95%",
+        "upperConfidenceLimit": "Upper 95%",
+        "featureVif": "Feature VIF",
+        "row": "Row",
+        "observed": "Observed",
+        "fitted": "Fitted",
+        "residual": "Residual",
+        "studentizedResidual": "Studentized Residual",
+        "leverage": "Leverage",
+        "cooksDistance": "Cook's D",
+        "meanConfidenceInterval": "Mean CI",
+        "predictionInterval": "Prediction Interval",
+        "flags": "Flags"
+      },
+      "reason": {
+        "insufficientRows": "Not enough valid rows remain after excluding missing values.",
+        "rankDeficient": "The model matrix is rank deficient for this specification.",
+        "noReplicates": "Lack of fit cannot be tested because there are no replicate predictor settings.",
+        "lackOfFitDegreesOfFreedomZero": "Lack of fit has no degrees of freedom.",
+        "pureErrorZero": "The pure-error mean square is zero.",
+        "inferenceNotEstimable": "Inference is not estimable for this fit.",
+        "constantFeature": "The fitted feature is constant.",
+        "auxiliaryRankDeficient": "The auxiliary VIF regression is rank deficient.",
+        "insufficientDiagnosticRows": "At least two finite diagnostic rows are required."
+      },
+      "flag": {
+        "residualWarning": "Residual warning",
+        "residualSevere": "Severe residual",
+        "highLeverage": "High leverage",
+        "influential": "Influential"
+      },
+      "diagnostics": {
+        "filter": "Diagnostic row filter",
+        "all": "All",
+        "flagged": "Flagged"
+      },
+      "profiler": {
+        "currentValue": "Current value",
+        "predicted": "Predicted",
+        "meanConfidenceInterval": "Mean CI",
+        "predictionInterval": "Prediction interval",
+        "notEstimable": "Not estimable",
+        "extrapolation": "Outside training range: {{columns}}"
+      },
+      "source": {
+        "error": "Error",
+        "pureError": "Pure Error",
+        "lackOfFit": "Lack of Fit"
+      },
+      "warning": {
+        "saturatedModel": "The model is saturated; no residual degrees of freedom remain.",
+        "constantResponse": "Response has little or no variation.",
+        "perfectFit": "Perfect fit detected; check for overfitting.",
+        "illConditioned": "The design matrix is ill-conditioned; coefficients may be unstable."
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "Cannot remove this main effect while related interaction or power terms are present.",
+        "lastMainEffect": "Cannot remove the last main effect.",
+        "notFound": "Selected model term is no longer available."
+      },
+      "chart": {
+        "axis": {
+          "predicted": "Predicted",
+          "actual": "Actual",
+          "residual": "Residual",
+          "theoreticalQuantile": "Theoretical quantile",
+          "studentizedResidual": "Studentized residual"
+        },
+        "series": {
+          "actual": "Actual",
+          "residual": "Residual",
+          "studentizedResidual": "Studentized residual",
+          "predicted": "Predicted",
+          "meanConfidence": "Mean CI"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0",
+          "qq": "Q-Q reference"
+        },
+        "tooltip": {
+          "x": "Predicted",
+          "yActual": "Actual",
+          "yResidual": "Residual",
+          "xQq": "Theoretical quantile",
+          "yQq": "Studentized residual"
+        }
+      }
     }
   }
 }

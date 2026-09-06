@@ -35,6 +35,7 @@ sqlparser = "0.62.0"
 statrs = "0.19.1"
 argmin = "0.11.0"
 sha2 = "0.10.9"
+nalgebra = "0.35.0"
 
 [dev-dependencies]
 proptest = "1.7.0"

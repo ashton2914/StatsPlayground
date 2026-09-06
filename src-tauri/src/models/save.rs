@@ -15,6 +15,7 @@ pub struct SaveProjectRequest {
     #[serde(default)]
     pub fit_y_by_x: Vec<serde_json::Value>,
     #[serde(default)]
+    pub fit_models: Vec<serde_json::Value>,
     pub reports: Vec<serde_json::Value>,
     #[serde(default)]
     pub distributions: Vec<serde_json::Value>,
@@ -27,6 +28,7 @@ pub struct SaveProjectRequest {
     #[serde(default)]
     pub fit_y_by_x_folders: HashMap<String, String>,
     #[serde(default)]
+    pub fit_model_folders: HashMap<String, String>,
     pub report_folders: HashMap<String, String>,
     #[serde(default)]
     pub distribution_folders: HashMap<String, String>,

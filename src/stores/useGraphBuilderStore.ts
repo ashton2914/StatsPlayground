@@ -8,6 +8,7 @@ import { create } from "zustand";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import type { GraphSampling } from "@/types/graphData";
 import { normalizeGraphBuilderItem } from "@/components/graphBuilder/graphBuilderMode";
+import { migrateLegacyGraphColumnName } from "@/components/graphBuilder/graphColumnIdentity";
 import { normalizeGroupThemeSlots } from "@/components/graphBuilder/graphThemeIdentity";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
@@ -41,6 +42,7 @@ interface GraphBuilderStore {
   addItem: (item: GraphBuilderItem) => void;
   updateItem: (id: string, patch: Partial<GraphBuilderItem>) => void;
   renameItem: (id: string, name: string) => void;
+  migrateLegacyColumnName: (datasetId: string, oldName: string, newName: string, sqlType: string) => void;
   deleteItem: (id: string) => void;
   /** 删除某数据表时联动删除其所有图表 */
   deleteByDataset: (datasetId: string) => void;
@@ -72,6 +74,17 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set) => ({
       assertProjectMutable(useProjectStore.getState().readOnly);
       set((s) => ({
         items: s.items.map((it) => (it.id === id ? { ...it, name } : it)),
+      }));
+    },
+  migrateLegacyColumnName: (datasetId, oldName, newName, sqlType) =>
+    {
+      assertProjectMutable(useProjectStore.getState().readOnly);
+      set((s) => ({
+        items: s.items.map((item) => (
+          item.sourceDatasetId === datasetId
+            ? migrateLegacyGraphColumnName(item, oldName, newName, sqlType)
+            : item
+        )),
       }));
     },
   deleteItem: (id) =>

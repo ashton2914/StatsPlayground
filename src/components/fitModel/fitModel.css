@@ -1,0 +1,509 @@
+.sp-fit-model-dialog {
+  width: min(94vw, 1120px);
+  max-width: min(94vw, 1120px);
+  min-height: 620px;
+  max-height: 92vh;
+}
+
+.sp-fit-model-dialog-body {
+  min-height: 0;
+}
+
+.sp-fit-model-dialog-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(320px, 420px);
+  gap: 12px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.sp-fit-model-fields-panel,
+.sp-fit-model-zone {
+  min-height: 0;
+  border: 1px solid var(--border-main);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.sp-fit-model-fields-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.sp-fit-model-roles-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.sp-fit-model-field {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sp-fit-model-field-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sp-fit-model-field-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.sp-fit-model-interaction-builder,
+.sp-fit-model-macro-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border-main);
+}
+
+.sp-fit-model-construct-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border-main);
+}
+
+.sp-fit-model-degree-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--border-main);
+}
+
+.sp-fit-model-degree-input-label {
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+
+.sp-fit-model-degree-input-row input[type="number"] {
+  width: 110px;
+}
+
+.sp-fit-model-view {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-main);
+}
+
+.sp-fit-model-summary,
+.sp-fit-model-report-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+
+.sp-fit-model-summary {
+  border-right: 1px solid var(--border-main);
+}
+
+.sp-fit-model-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.sp-fit-model-summary-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sp-fit-model-summary-label {
+  color: var(--fg-hint);
+  font-size: 12px;
+}
+
+.sp-fit-model-summary-value {
+  color: var(--fg-primary);
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.sp-fit-model-report-panel {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
+}
+
+.sp-fit-model-save-columns-dialog {
+  width: min(92vw, 460px);
+  max-width: min(92vw, 460px);
+}
+
+.sp-fit-model-save-columns-body {
+  display: grid;
+  gap: 4px;
+}
+
+.sp-fit-model-save-metric {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 6px;
+  color: var(--fg-primary);
+}
+
+.sp-fit-model-save-metric.is-disabled,
+.sp-fit-model-save-unavailable {
+  color: var(--fg-hint);
+}
+
+.sp-fit-model-save-unavailable {
+  font-size: 11px;
+}
+
+.sp-fit-model-save-error {
+  margin: 8px 6px 0;
+  color: var(--danger, #b42318);
+}
+
+.sp-fit-model-save-notice {
+  margin: 8px 16px 0;
+  color: var(--warning, #8a4b08);
+}
+
+.sp-fit-model-report-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sp-fit-model-report-shell > p,
+.sp-fit-model-report-shell > button,
+.sp-fit-model-report-section {
+  margin-left: 12px;
+  margin-right: 12px;
+}
+
+.sp-fit-model-report-shell > p,
+.sp-fit-model-report-shell > button {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.sp-fit-model-report-shell > button {
+  width: fit-content;
+}
+
+.sp-fit-model-report-equation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-main);
+}
+
+.sp-fit-model-report-section {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-main);
+}
+
+.sp-fit-model-report-section-toggle {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border-main);
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-secondary);
+  background: var(--bg-header);
+  cursor: pointer;
+}
+
+.sp-fit-model-report-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.sp-fit-model-specification {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.sp-fit-model-specification > div {
+  min-width: 0;
+}
+
+.sp-fit-model-specification dt {
+  color: var(--fg-hint);
+  font-size: 11px;
+}
+
+.sp-fit-model-specification dd {
+  margin: 3px 0 0;
+  color: var(--fg-primary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.sp-fit-model-diagnostic-toolbar {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(80px, 1fr));
+  width: fit-content;
+  padding: 2px;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-header);
+}
+
+.sp-fit-model-diagnostic-toolbar button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--fg-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.sp-fit-model-diagnostic-toolbar button[aria-pressed="true"] {
+  color: var(--fg-primary);
+  background: var(--bg-panel);
+  box-shadow: 0 0 0 1px var(--border-main);
+}
+
+.sp-fit-model-sampled-status {
+  margin: 0;
+  color: var(--fg-hint);
+  font-size: 11px;
+}
+
+.sp-fit-model-profiler {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.sp-fit-model-profiler-column {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.sp-fit-model-profiler-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border-main);
+}
+
+.sp-fit-model-profiler-controls label {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--fg-secondary);
+  font-size: 11px;
+}
+
+.sp-fit-model-profiler-controls label span:first-child {
+  color: var(--fg-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sp-fit-model-profiler-controls input {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.sp-fit-model-profiler-controls input[type="range"] {
+  width: 100%;
+}
+
+.sp-fit-model-profiler-controls input[type="number"] {
+  width: 96px;
+}
+
+.sp-fit-model-profiler-result {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--border-main);
+}
+
+.sp-fit-model-profiler-result div {
+  min-width: 0;
+  padding: 9px 10px;
+  background: var(--bg-panel);
+}
+
+.sp-fit-model-profiler-result dt {
+  color: var(--fg-hint);
+  font-size: 11px;
+}
+
+.sp-fit-model-profiler-result dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sp-fit-model-profiler-warning {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--danger, #b42318);
+  color: var(--danger, #b42318);
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+
+.sp-fit-model-report-table-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.sp-fit-model-report-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.sp-fit-model-diagnostics-table th,
+.sp-fit-model-diagnostics-table td {
+  min-width: 104px;
+}
+
+.sp-fit-model-diagnostics-table th:first-child,
+.sp-fit-model-diagnostics-table td:first-child {
+  min-width: 64px;
+}
+
+.sp-fit-model-diagnostics-table th:last-child,
+.sp-fit-model-diagnostics-table td:last-child {
+  min-width: 180px;
+}
+
+.sp-fit-model-diagnostic-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sp-fit-model-diagnostic-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-main);
+  border-radius: 4px;
+  color: var(--fg-secondary);
+  background: var(--bg-panel);
+  white-space: nowrap;
+}
+
+.sp-fit-model-diagnostic-flag--residualSevere,
+.sp-fit-model-diagnostic-flag--influential {
+  color: var(--danger, #b42318);
+}
+
+.sp-fit-model-report-table th,
+.sp-fit-model-report-table td {
+  border-bottom: 1px solid var(--border-main);
+  border-right: 1px solid var(--border-main);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.sp-fit-model-report-table th {
+  white-space: nowrap;
+  color: var(--fg-secondary);
+  background: color-mix(in srgb, var(--bg-header) 55%, transparent);
+}
+
+.sp-fit-model-report-table th:last-child,
+.sp-fit-model-report-table td:last-child {
+  border-right: none;
+}
+
+.sp-fit-model-report-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.sp-fit-model-chart-shell,
+.sp-fit-model-report-panel [data-chart-kind] {
+  width: 100%;
+  min-width: 0;
+  height: 280px !important;
+  min-height: 280px !important;
+  max-height: 280px !important;
+}
+
+@media (max-width: 900px) {
+  .sp-fit-model-dialog-grid,
+  .sp-fit-model-view {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-fit-model-summary {
+    border-right: none;
+    border-bottom: 1px solid var(--border-main);
+  }
+
+  .sp-fit-model-specification {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-fit-model-profiler-result {
+    grid-template-columns: 1fr;
+  }
+}

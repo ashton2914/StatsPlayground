@@ -14,6 +14,7 @@ import type { ColumnMeta, DatasetMeta } from "@/types/data";
 import type { GraphDataFrame } from "@/types/graphData";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 
+import { reconcileGraphColumnIdentities, type GraphColumnDescriptor } from "./graphColumnIdentity";
 import { getRawPointNotice } from "./graphSamplingPolicy";
 import {
   buildEffectiveStyles,
@@ -50,6 +51,7 @@ export interface GraphRuntimeProps {
   onXAxisDblClick?: () => void;
   onAxisRangeChange?: (axis: "x" | "y", min: number, max: number) => void;
   onAxisContextMenu?: (axis: "x" | "y", x: number, y: number) => void;
+  onItemReconciled?: (item: GraphBuilderItem) => void;
   onStateChange?: (state: GraphRuntimeState) => void;
 }
 
@@ -108,10 +110,13 @@ export function GraphRuntime({
   onXAxisDblClick,
   onAxisRangeChange,
   onAxisContextMenu,
+  onItemReconciled,
   onStateChange,
 }: GraphRuntimeProps) {
   const { t } = useTranslation();
   const [metadata, setMetadata] = useState<GraphRuntimeMetadata>(EMPTY_METADATA);
+  const [columnDescriptors, setColumnDescriptors] = useState<GraphColumnDescriptor[]>([]);
+  const [descriptorGeneration, setDescriptorGeneration] = useState<number | null>(null);
   const [columns, setColumns] = useState<FieldRef[]>([]);
   const [colSqlTypes, setColSqlTypes] = useState<string[]>([]);
   const [metaLoading, setMetaLoading] = useState(true);
@@ -127,7 +132,7 @@ export function GraphRuntime({
     setMetaError(null);
     void (async () => {
       try {
-        const columnTuples = await dataService.getColumns(dataset.id);
+        const descriptors = await dataService.getColumnDescriptors(dataset.id);
         let displayProps: GraphRuntimeMetadata["displayProps"] = [];
         try {
           displayProps = await dataService.getColumnDisplayProps(dataset.id);
@@ -135,10 +140,12 @@ export function GraphRuntime({
           displayProps = [];
         }
         if (cancelled) return;
-        setColumns(columnTuples.map(([name, type]) => ({ name, type: inferFieldType(type) })));
-        setColSqlTypes(columnTuples.map(([, type]) => type));
+        setColumnDescriptors(descriptors);
+        setDescriptorGeneration(dataset.generation);
+        setColumns(descriptors.map(({ columnId, name, sqlType }) => ({ columnId, name, type: inferFieldType(sqlType) })));
+        setColSqlTypes(descriptors.map(({ sqlType }) => sqlType));
         setMetadata({
-          columns: columnTuples.map(([colName, colType], colIndex) => ({
+          columns: descriptors.map(({ name: colName, sqlType: colType }, colIndex) => ({
             colIndex,
             colName,
             colType,
@@ -152,6 +159,8 @@ export function GraphRuntime({
           setMetaError(String(error));
           setColumns([]);
           setColSqlTypes([]);
+          setColumnDescriptors([]);
+          setDescriptorGeneration(null);
           setMetadata(EMPTY_METADATA);
         }
       } finally {
@@ -163,7 +172,7 @@ export function GraphRuntime({
     return () => {
       cancelled = true;
     };
-  }, [dataset.id]);
+  }, [dataset.generation, dataset.id]);
 
   useLayoutEffect(() => {
     const host = canvasRef.current;
@@ -188,9 +197,18 @@ export function GraphRuntime({
     };
   }, []);
 
+  const effectiveItem = useMemo(
+    () => reconcileGraphColumnIdentities(item, columnDescriptors),
+    [columnDescriptors, item],
+  );
+
+  useEffect(() => {
+    if (effectiveItem !== item) onItemReconciled?.(effectiveItem);
+  }, [effectiveItem, item, onItemReconciled]);
+
   const model = useMemo(
-    () => buildGraphRuntimeModel(item, metadata),
-    [item, metadata],
+    () => buildGraphRuntimeModel(effectiveItem, metadata),
+    [effectiveItem, metadata],
   );
   const graphData = useMemo(
     () => createGraphRuntimeData(metadata.columns, model.meltInfo),
@@ -202,10 +220,12 @@ export function GraphRuntime({
   );
 
   const internalDataState = useGraphDataPipeline(
-    item,
+    effectiveItem,
     dataset,
     viewport,
-    externalDataState === undefined,
+    !metaLoading
+      && descriptorGeneration === dataset.generation
+      && externalDataState === undefined,
   );
   const {
     frame,
@@ -236,14 +256,14 @@ export function GraphRuntime({
   const effectiveStyles = useMemo(
     () => buildEffectiveStyles(
       groupKeys,
-      item.groupThemeSlots,
+      effectiveItem.groupThemeSlots,
       groupingFieldName,
       model.spec.styles ?? {},
       customPalettes,
       model.spec.elements.some((element) => element.kind === "boxplot" && element.enabled !== false),
       slotCandidateKeys,
     ),
-    [customPalettes, groupKeys, groupingFieldName, item.groupThemeSlots, model.spec.elements, model.spec.styles, slotCandidateKeys],
+    [customPalettes, effectiveItem.groupThemeSlots, groupKeys, groupingFieldName, model.spec.elements, model.spec.styles, slotCandidateKeys],
   );
   const runtimeSpec = useMemo(
     () => ({ ...model.spec, datasetName: dataset.name, styles: effectiveStyles }),
@@ -251,16 +271,16 @@ export function GraphRuntime({
   );
 
   const correlationColumnCount = useMemo(() => {
-    if (item.mode === "multivariate") {
-      return item.modeStates.multivariate.columns.length;
+    if (effectiveItem.mode === "multivariate") {
+      return effectiveItem.modeStates.multivariate.columns.length;
     }
-    const twoDMultiX = item.modeStates.twoD.multiX ?? [];
-    const twoDMultiY = item.modeStates.twoD.multiY ?? [];
+    const twoDMultiX = effectiveItem.modeStates.twoD.multiX ?? [];
+    const twoDMultiY = effectiveItem.modeStates.twoD.multiY ?? [];
     if (twoDMultiX.length > 0) return twoDMultiX.length;
     if (twoDMultiY.length > 0) return twoDMultiY.length;
-    if (item.modeStates.twoD.encoding.x || item.modeStates.twoD.encoding.y) return 1;
+    if (effectiveItem.modeStates.twoD.encoding.x || effectiveItem.modeStates.twoD.encoding.y) return 1;
     return 0;
-  }, [item]);
+  }, [effectiveItem]);
   const correlationColumnsReady = correlationColumnCount >= 2 && correlationColumnCount <= 20;
   const activeKinds = useMemo(
     () => new Set(runtimeSpec.elements.filter((element) => element.enabled !== false).map((element) => element.kind)),
@@ -289,22 +309,22 @@ export function GraphRuntime({
     onStateChange(runtimeState);
   }, [onStateChange, runtimeState]);
 
-  const emptyAxes = item.mode !== "multivariate"
-    && !item.modeStates.threeD.encoding.x
-    && !item.modeStates.threeD.encoding.y
-    && !item.modeStates.twoD.encoding.x
-    && !item.modeStates.twoD.encoding.y
-    && (item.modeStates.twoD.multiX?.length ?? 0) === 0
-    && (item.modeStates.twoD.multiY?.length ?? 0) === 0
+  const emptyAxes = effectiveItem.mode !== "multivariate"
+    && !effectiveItem.modeStates.threeD.encoding.x
+    && !effectiveItem.modeStates.threeD.encoding.y
+    && !effectiveItem.modeStates.twoD.encoding.x
+    && !effectiveItem.modeStates.twoD.encoding.y
+    && (effectiveItem.modeStates.twoD.multiX?.length ?? 0) === 0
+    && (effectiveItem.modeStates.twoD.multiY?.length ?? 0) === 0
     && !activeKinds.has("histogram");
-  const axesTransposed = item.mode === "2d" && item.modeStates.twoD.transposed === true;
+  const axesTransposed = effectiveItem.mode === "2d" && effectiveItem.modeStates.twoD.transposed === true;
   const screenAxis = (axis: "x" | "y"): "x" | "y" => (
     axesTransposed ? (axis === "x" ? "y" : "x") : axis
   );
 
   return (
     <div ref={canvasRef} style={{ width: "100%", height: "100%", position: "relative" }}>
-      {item.mode === "multivariate" && !correlationColumnsReady ? (
+      {effectiveItem.mode === "multivariate" && !correlationColumnsReady ? (
         <div className="gb-empty">
           {t("graph.correlation.requiresColumns", {
             min: 2,
@@ -322,23 +342,23 @@ export function GraphRuntime({
             frame={frame}
             minPanelHeight={minPanelHeight}
             valueOrders={valueOrders}
-            onYAxisDblClick={item.mode === "multivariate" ? undefined : (axesTransposed ? onXAxisDblClick : onYAxisDblClick)}
-            onXAxisDblClick={item.mode === "multivariate" ? undefined : (axesTransposed ? onYAxisDblClick : onXAxisDblClick)}
-            onAxisRangeChange={item.mode === "multivariate" || !onAxisRangeChange
+            onYAxisDblClick={effectiveItem.mode === "multivariate" ? undefined : (axesTransposed ? onXAxisDblClick : onYAxisDblClick)}
+            onXAxisDblClick={effectiveItem.mode === "multivariate" ? undefined : (axesTransposed ? onYAxisDblClick : onXAxisDblClick)}
+            onAxisRangeChange={effectiveItem.mode === "multivariate" || !onAxisRangeChange
               ? undefined
               : (axis, min, max) => onAxisRangeChange(screenAxis(axis), min, max)}
-            onAxisContextMenu={item.mode === "multivariate" || !onAxisContextMenu
+            onAxisContextMenu={effectiveItem.mode === "multivariate" || !onAxisContextMenu
               ? undefined
               : (axis, x, y) => onAxisContextMenu(screenAxis(axis), x, y)}
-            onPointClick={item.mode === "multivariate" ? undefined : onPointPick}
-            brushMode={item.mode !== "multivariate" && !!brushMode}
-            onBrushSelect={item.mode === "multivariate" ? undefined : onBrushSelect}
+            onPointClick={effectiveItem.mode === "multivariate" ? undefined : onPointPick}
+            brushMode={effectiveItem.mode !== "multivariate" && !!brushMode}
+            onBrushSelect={effectiveItem.mode === "multivariate" ? undefined : onBrushSelect}
             optionFactory={optionFactory}
           />
           {status === "error" && error && (
             <div className="gb-canvas-overlay gb-canvas-overlay-error">{error}</div>
           )}
-          {item.mode !== "multivariate" && status === "ready" && rawPointNotice && (
+          {effectiveItem.mode !== "multivariate" && status === "ready" && rawPointNotice && (
             <div className="gb-point-budget-notice" role="status">
               <i className="fa-solid fa-circle-info" aria-hidden="true" />
               <span className="gb-point-budget-copy">

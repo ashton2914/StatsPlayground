@@ -68,7 +68,8 @@
     "opConcatenate": "合并",
     "help": "帮助",
     "about": "关于",
-    "license": "许可证"
+    "license": "许可证",
+    "fitModel": "拟合模型"
   },
   "alert": {
     "selectDatasetFirst": "请先选择一个数据表作为数据源",
@@ -82,8 +83,9 @@
     "exportGraphFailed": "导出图形失败: ",
     "importGraphFailed": "导入图形失败: ",
     "exportFolderFailed": "导出文件夹失败: ",
-    "openProjectFailed": "打开项目失败: ",
+  "openProjectFailed": "打开项目失败: {{msg}}",
     "analysisSampleFailed": "创建示范分析失败: {{message}}",
+    "openDistributionFailed": "打开 Distribution 失败: ",
     "invalidName": {
       "empty": "名称不能为空。",
       "invalidChars": "名称包含非法字符: / \\ : * ? \" < > |",
@@ -156,7 +158,11 @@
     "resizeColumn": "调整列宽",
     "autoFitColumn": "自动调整列宽",
     "sqlQueryTableCreated": "从 SQL 查询创建数据表 \"{{name}}\"",
-    "tabulateTableCreated": "从 Tabulate 结果创建数据表 \"{{name}}\""
+    "tabulateTableCreated": "从 Tabulate 结果创建数据表 \"{{name}}\"",
+    "newFitModel": "新建拟合模型 \"{{name}}\" (数据源: {{source}})",
+    "renameFitModel": "重命名拟合模型 \"{{old}}\" -> \"{{new}}\"",
+    "deleteFitModel": "删除拟合模型 \"{{name}}\"",
+    "saveFitModelColumns": "保存拟合模型列"
   },
   "workflow": {
     "title": "工作流",
@@ -209,8 +215,6 @@
     "creatingSnapshot": "正在创建快照…",
     "restoringSnapshot": "正在恢复快照…",
     "importingSqlite": "正在导入 SQLite 数据库…",
-    "documentNameMigrations": "打开项目时已重命名 {{count}} 个项目文档名称。保存项目以持久化这些更新后的名称。",
-    "projectRequiresMigration": "打开项目时已在内存中完成迁移。请保存项目以持久化升级后的格式。",
     "datasetNameMigrations": "打开项目时已重命名 {{count}} 个重复的数据表名称。保存项目以持久化这些更新后的名称。",
     "importProgressTable": "表 {{i}}/{{total}}: {{name}}",
     "importProgressRows": "行",
@@ -227,7 +231,44 @@
     "zoomIn": "放大表格",
     "zoomOut": "缩小表格",
     "zoomReset": "重置为 100%",
-    "zoomTooltip": "表格缩放"
+    "zoomTooltip": "表格缩放",
+    "fitModelMissing": "拟合模型分析已不存在",
+    "fitModelSourceMissing": "源数据表不可用"
+  },
+  "distribution": {
+    "title": "分布",
+    "recall": "重新调用",
+    "searchColumns": "搜索列",
+    "sourceDataset": "源数据表",
+    "openSource": "打开源数据",
+    "editInputs": "编辑输入",
+    "progress": "进度",
+    "renameLabel": "重命名 {{name}}",
+    "roleLabel": "{{role}} 角色",
+    "roleEmpty": "拖放或分配列",
+    "assignToRole": "将 {{column}} 分配到 {{role}}",
+    "removeFromRole": "从 {{role}} 移除 {{column}}",
+    "confidenceLevel": "置信水平",
+    "frequencyShort": "频数",
+    "histogramsOnly": "仅直方图",
+    "invalidConfig": "请至少分配一个有效的 Y 列。",
+    "runDisabledHint": "当前系统状态下统计方法不可用。",
+    "saving": "正在保存...",
+    "run": "运行",
+    "roles": {
+      "y": "Y",
+      "weight": "权重",
+      "frequency": "频数",
+      "by": "分组"
+    },
+    "specification": {
+      "useOverride": "使用分析规格限覆盖",
+      "lsl": "规格下限",
+      "target": "目标值",
+      "usl": "规格上限",
+      "allYHint": "此分析级覆盖适用于所有 Y 列。",
+      "overrideSource": "仅随此分析保存，不会更改数据表列属性。"
+    }
   },
   "report": {
     "placeholder": "报告编辑会在 Task 6 完成；当前界面按要求仅保留最小文档占位。",
@@ -913,14 +954,48 @@
       "fiveNumberSummary": "五数概括",
       "widthProportion": "宽度比例",
       "auto": "自动",
-      "summary": { "none": "无", "mean": "均值", "median": "中位数", "sum": "总和" },
-      "interval": { "stdErr": "标准误", "stdDev": "标准差", "ci95": "95% 置信区间" },
-      "style": { "errorBar": "误差棒", "band": "色带", "sphere": "球体" },
-      "jitterMode": { "stacked": "堆叠", "uniform": "均匀", "normal": "正态" },
-      "conn": { "line": "直线", "step": "阶梯", "spline": "曲线" },
-      "fillMode": { "toZero": "到零填充", "between": "区间填充" },
-      "missing": { "skip": "跳过", "include": "包含", "connect": "跨越连接", "break": "断开" },
-      "box": { "outlier": "离群", "quantile": "分位", "normal": "普通", "notched": "带凹口" },
+      "summary": {
+        "none": "无",
+        "mean": "均值",
+        "median": "中位数",
+        "sum": "总和"
+      },
+      "interval": {
+        "stdErr": "标准误",
+        "stdDev": "标准差",
+        "ci95": "95% 置信区间"
+      },
+      "style": {
+        "errorBar": "误差棒",
+        "band": "色带",
+        "sphere": "球体"
+      },
+      "jitterMode": {
+        "stacked": "堆叠",
+        "uniform": "均匀",
+        "normal": "正态"
+      },
+      "conn": {
+        "line": "直线",
+        "step": "阶梯",
+        "spline": "曲线"
+      },
+      "fillMode": {
+        "toZero": "到零填充",
+        "between": "区间填充"
+      },
+      "missing": {
+        "skip": "跳过",
+        "include": "包含",
+        "connect": "跨越连接",
+        "break": "断开"
+      },
+      "box": {
+        "outlier": "离群",
+        "quantile": "分位",
+        "normal": "普通",
+        "notched": "带凹口"
+      },
       "histStyle": "直方图样式",
       "smoothness": "平滑度",
       "surfaceSmoothness": "平滑程度",
@@ -928,21 +1003,50 @@
       "histHeight": "直方图高度",
       "showCounts": "显示频数",
       "showPercents": "显示百分比",
-      "histStyles": { "bar": "柱状", "polygon": "折线", "kde": "核密度", "shadowgram": "叠影图" },
+      "histStyles": {
+        "bar": "柱状",
+        "polygon": "折线",
+        "kde": "核密度",
+        "shadowgram": "叠影图"
+      },
       "smootherAlgo": "算法",
-      "smootherAlgos": { "spline": "样条", "kernel": "局部核", "savgol": "Savitzky-Golay", "movingAvg": "移动平均", "movingBox": "移动中位" },
+      "smootherAlgos": {
+        "spline": "样条",
+        "kernel": "局部核",
+        "savgol": "Savitzky-Golay",
+        "movingAvg": "移动平均",
+        "movingBox": "移动中位"
+      },
       "smootherSplineSmoothness": "平滑度",
       "smootherKernelBandwidth": "带宽",
       "smootherSavgolWindow": "窗口",
       "smootherSavgolPolyOrder": "多项式阶数",
       "smootherWindow": "窗口",
       "fitType": "拟合",
-      "fitTypes": { "polynomial": "多项式", "robustCauchy": "稳健 Cauchy" },
+      "fitTypes": {
+        "polynomial": "多项式",
+        "robustCauchy": "稳健 Cauchy"
+      },
       "fitDegree": "阶数",
-      "fitDegrees": { "1": "一次", "2": "二次", "3": "三次", "4": "四次", "5": "五次", "6": "六次" },
-      "fitConf": { "fit": "拟合置信区间", "prediction": "预测置信区间" },
+      "fitDegrees": {
+        "1": "一次",
+        "2": "二次",
+        "3": "三次",
+        "4": "四次",
+        "5": "五次",
+        "6": "六次"
+      },
+      "fitConf": {
+        "fit": "拟合置信区间",
+        "prediction": "预测置信区间"
+      },
       "fitStats": "统计量",
-      "fitStat": { "equation": "方程", "rmse": "RMSE", "r2": "R²", "fTest": "F 检验" }
+      "fitStat": {
+        "equation": "方程",
+        "rmse": "RMSE",
+        "r2": "R²",
+        "fTest": "F 检验"
+      }
     },
     "loading": "正在加载数据…",
     "loadingProgress": "{{loaded}} / {{total}} 行",
@@ -1139,6 +1243,186 @@
       "metaLoading": "正在加载列信息...",
       "metaError": "列元数据不可用",
       "progress": "图形数据加载进度"
+    }
+  },
+  "fitModel": {
+    "title": "拟合模型",
+    "response": "Y，响应",
+    "modelTermCount": "模型项数",
+    "centeringMethod": "中心化",
+    "centering": {
+      "none": "无",
+      "mean": "均值"
+    },
+    "sourceMissing": "源数据表不可用。",
+    "dialog": {
+      "title": "拟合模型",
+      "availableFields": "可用字段",
+      "searchFields": "搜索字段",
+      "searchAvailableFields": "搜索可用字段",
+      "loadingFields": "正在加载字段...",
+      "noFields": "该数据源没有可用字段。",
+      "noMatch": "没有字段匹配当前搜索。",
+      "assignResponseLabel": "将 {{field}} 分配为响应",
+      "assignResponse": "分配为 Y",
+      "assignMainLabel": "切换 {{field}} 为主效应",
+      "assignMain": "切换主效应",
+      "response": "响应",
+      "continuousOnly": "连续",
+      "responseEmpty": "拖放或分配一个连续响应字段。",
+      "responseHint": "连续",
+      "clearResponse": "清除响应 {{field}}",
+      "mainEffects": "主效应",
+      "mainEffectsEmpty": "选择一个或多个连续预测变量。",
+      "removeMainEffect": "移除主效应 {{field}}",
+      "construct": "构建方式",
+      "constructFullFactorial": "全因子",
+      "constructManual": "手工",
+      "constructFactorial": "阶乘到阶数",
+      "constructResponseSurface": "响应曲面",
+      "degreeInputLabel": "阶数",
+      "termCount": "{{count}} / 256 项",
+      "tooManyTermsFormula": "当前构建有 {{count}} 项，超过 256。{{formula}}",
+      "interactions": "交互项",
+      "twoWayOnly": "二阶",
+      "interactionsEmpty": "从已选主效应添加二阶交互。",
+      "removeInteraction": "移除交互 {{term}}",
+      "addInteraction": "添加交互",
+      "toggleInteraction": "切换交互 {{term}}",
+      "macros": "宏",
+      "degree1": "1 阶",
+      "degree2": "2 阶",
+      "centerInteractions": "中心化交互项",
+      "currentTerms": "当前模型项",
+      "searchTerms": "搜索模型项",
+      "parameterCount": "{{count}} 个参数",
+      "termsEmpty": "尚未选择模型项。",
+      "noTermMatch": "没有模型项匹配当前搜索。",
+      "termKindMain": "主效应",
+      "termKindInteraction": "交互",
+      "termKindPower": "幂项",
+      "removeTerm": "移除模型项 {{term}}",
+      "create": "创建",
+      "cancel": "取消",
+      "createError": "创建拟合模型失败: {{message}}",
+      "validation": {
+        "responseCollision": "{{field}} 已分配到其他角色。",
+        "mainRequiredByInteraction": "{{field}} 被 {{interactions}} 使用。",
+        "lastMainEffect": "至少需要一个主效应。",
+        "nonContinuousField": "{{field}} 必须是连续字段。",
+        "invalidInteraction": "只能添加有效的二阶交互项。",
+        "tooManyTerms": "模型项过多（最多 256 项）。"
+      }
+    },
+    "report": {
+      "title": "拟合模型报告",
+      "stale": "结果已过期",
+      "loading": "正在加载报告...",
+      "error": "加载报告失败。",
+      "errorWithOldResult": "刷新失败，正在显示上一次结果。",
+      "undo": "撤销",
+      "remove": "移除",
+      "notComputable": "无法计算",
+      "usedRows": "使用行数",
+      "excludedRows": "排除行数",
+      "noWarnings": "无警告。",
+      "undefinedValue": "-",
+      "saveColumns": {
+        "title": "保存列",
+        "open": "保存列",
+        "save": "保存",
+        "saving": "正在保存...",
+        "cancel": "取消",
+        "unavailable": "不可用",
+        "refreshFailed": "列已保存，但数据视图无法刷新。请重新打开数据表以查看新列。",
+        "metric": {
+          "predicted": "预测值",
+          "residual": "残差",
+          "studentizedResidual": "学生化残差",
+          "leverage": "杠杆值",
+          "cooksDistance": "Cook's D",
+          "meanConfidenceLower": "均值置信区间下限",
+          "meanConfidenceUpper": "均值置信区间上限",
+          "predictionLower": "预测区间下限",
+          "predictionUpper": "预测区间上限"
+        }
+      },
+      "section": {
+        "modelSpecification": "模型设定",
+        "effectSummary": "效应摘要",
+        "summaryOfFit": "拟合摘要",
+        "analysisOfVariance": "方差分析",
+        "lackOfFit": "失拟检验",
+        "parameterEstimates": "参数估计",
+        "actualByPredicted": "实际值对预测值",
+        "residualByPredicted": "残差对预测值",
+        "residualQq": "残差 Q-Q 图",
+        "rowDiagnostics": "逐行诊断",
+        "predictionProfiler": "预测剖面图",
+        "warnings": "警告"
+      },
+      "specification": { "construct": "构造方式", "response": "响应", "predictors": "预测变量", "terms": "模型项", "usedRows": "有效行数", "termBudget": "模型项限额" },
+      "summaryOfFit": {
+        "rSquared": "R 方",
+        "adjustedRSquared": "调整后 R 方",
+        "rootMeanSquareError": "均方根误差"
+      },
+      "column": {
+        "term": "项",
+        "source": "来源",
+        "estimate": "估计值",
+        "standardError": "标准误",
+        "tRatio": "t 比",
+        "pValue": "p 值",
+        "logWorth": "LogWorth",
+        "action": "操作",
+        "degreesOfFreedom": "自由度",
+        "sumOfSquares": "平方和",
+        "meanSquare": "均方",
+        "fRatio": "F 比",
+        "lowerConfidenceLimit": "95% 下限", "upperConfidenceLimit": "95% 上限", "featureVif": "特征 VIF",
+        "row": "行", "observed": "观测值", "fitted": "拟合值", "residual": "残差", "studentizedResidual": "学生化残差", "leverage": "杠杆值", "cooksDistance": "Cook 距离", "meanConfidenceInterval": "均值置信区间", "predictionInterval": "预测区间", "flags": "标记"
+      },
+      "reason": {
+        "insufficientRows": "排除缺失值后有效行不足。",
+        "rankDeficient": "该模型设定下设计矩阵秩亏。",
+        "noReplicates": "没有重复的预测变量组合，无法检验失拟。", "lackOfFitDegreesOfFreedomZero": "失拟自由度为零。", "pureErrorZero": "纯误差均方为零。", "inferenceNotEstimable": "该拟合无法估计推断统计量。", "constantFeature": "拟合特征为常量。", "auxiliaryRankDeficient": "VIF 辅助回归秩亏。", "insufficientDiagnosticRows": "至少需要两行有限诊断数据。"
+      },
+      "flag": { "residualWarning": "残差警告", "residualSevere": "严重残差", "highLeverage": "高杠杆值", "influential": "强影响点" },
+      "diagnostics": { "filter": "诊断行筛选", "all": "全部", "flagged": "已标记" },
+      "profiler": { "currentValue": "当前值", "predicted": "预测值", "meanConfidenceInterval": "均值置信区间", "predictionInterval": "预测区间", "notEstimable": "无法估计", "extrapolation": "超出训练范围：{{columns}}" },
+      "source": { "error": "误差", "pureError": "纯误差", "lackOfFit": "失拟" },
+      "warning": {
+        "saturatedModel": "模型已饱和，残差自由度为零。",
+        "constantResponse": "响应变量几乎无变化。",
+        "perfectFit": "检测到完美拟合，请检查是否过拟合。",
+        "illConditioned": "设计矩阵病态，系数可能不稳定。"
+      },
+      "removeBlocked": {
+        "requiredByDerivedTerm": "存在相关交互项或幂项时不能移除此主效应。",
+        "lastMainEffect": "不能移除最后一个主效应。",
+        "notFound": "所选模型项已不存在。"
+      },
+      "chart": {
+        "axis": {
+          "predicted": "预测值",
+          "actual": "实际值",
+          "residual": "残差", "theoreticalQuantile": "理论分位数", "studentizedResidual": "学生化残差"
+        },
+        "series": {
+          "actual": "实际值",
+          "residual": "残差", "studentizedResidual": "学生化残差", "predicted": "预测值", "meanConfidence": "均值置信区间"
+        },
+        "reference": {
+          "identity": "y=x",
+          "zero": "y=0", "qq": "Q-Q 参考线"
+        },
+        "tooltip": {
+          "x": "预测值",
+          "yActual": "实际值",
+          "yResidual": "残差", "xQq": "理论分位数", "yQq": "学生化残差"
+        }
+      }
     }
   }
 }
