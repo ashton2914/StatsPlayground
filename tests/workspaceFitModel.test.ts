@@ -44,7 +44,8 @@ assertSourceIncludes(workspaceSource, "handleCreateFitModel", "Fit Model menu en
 
 assertSourceIncludes(workspaceSource, "fitModels: fitModelItems", "Project save payload must include Fit Model analyses");
 assertSourceIncludes(workspaceSource, "fitModelFolders", "Project save/open payloads must include Fit Model folder assignments");
-assertSourceIncludes(workspaceSource, "loadFitModelFromProject((result.fitModels ?? [])", "Project open must load saved Fit Model analyses");
+assertSourceIncludes(workspaceSource, "dataService.getColumnDescriptors(datasetId)", "Project open must resolve current Fit Model column identities");
+assertSourceIncludes(workspaceSource, "loadFitModelFromProject(persistedFitModels, fitModelColumnDescriptors)", "Project open must load saved Fit Model analyses with resolved column identities");
 assertSourceIncludes(workspaceSource, "resetFitModels()", "Project close/open reset must clear the Fit Model store");
 
 assertSourceIncludes(workspaceSource, "activeFitModelId", "Workspace must track the active Fit Model analysis");
@@ -67,7 +68,7 @@ assertSourceIncludes(workspaceSource, "history.newFitModel", "Creation must reco
 assertSourceIncludes(workspaceSource, "history.renameFitModel", "Rename must record Fit Model history");
 assertSourceIncludes(workspaceSource, "history.deleteFitModel", "Delete must record Fit Model history");
 assertSourceIncludes(workspaceSource, "<FitModelView", "Main pane must dispatch to FitModelView");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, fitModelIds)", "Folder prune must pass Fit Model IDs as the sixth argument");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds)", "Folder prune must pass Fit Model IDs");
 
 const fitModelCssSource = readSource("../src/components/fitModel/fitModel.css");
 assertSourceIncludes(fitModelCssSource, ".sp-fit-model-dialog", "Fit Model CSS must style dialog sizing");

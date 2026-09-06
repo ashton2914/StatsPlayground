@@ -126,6 +126,20 @@ export function createValidatedFitModelDraft(
     return createFitModelDraft();
   }
 
+  const availableByName = new Map(fields.map((field) => [field.name, field]));
+  const availableById = new Map(
+    fields.flatMap((field) => field.field.columnId ? [[field.field.columnId, field] as const] : []),
+  );
+  const resolveField = (field: FieldRef) => (
+    (field.columnId ? availableById.get(field.columnId) : undefined)
+    ?? availableByName.get(field.name)
+    ?? availableById.get(field.name)
+  );
+  const resolvedResponse = resolveField(prefill.response);
+  const resolvedPredictors = prefill.predictors.map(resolveField);
+  const availablePredictors = resolvedPredictors.filter(
+    (field): field is FitModelFieldInfo => field !== undefined,
+  );
   const referencedFields = [prefill.response, ...prefill.predictors];
   if (referencedFields.some((field) => field.type !== "continuous")) {
     return {
@@ -134,14 +148,15 @@ export function createValidatedFitModelDraft(
     };
   }
 
-  const predictorNames = prefill.predictors.map((field) => field.name);
-  const hasFieldCollision = predictorNames.includes(prefill.response.name)
+  const predictorNames = availablePredictors.map((field) => field.name);
+  const hasFieldCollision = predictorNames.includes(resolvedResponse?.name ?? "")
     || new Set(predictorNames).size !== predictorNames.length;
-  const availableByName = new Map(fields.map((field) => [field.name, field]));
   const mismatch = hasFieldCollision
     || prefill.sourceDatasetId !== datasetId
-    || referencedFields.some((field) => {
-      const available = availableByName.get(field.name);
+    || !resolvedResponse
+    || availablePredictors.length !== prefill.predictors.length
+    || referencedFields.some((field, index) => {
+      const available = index === 0 ? resolvedResponse : availablePredictors[index - 1];
       return !available
         || available.modelingRole !== "Continuous"
         || available.field.type !== field.type;
@@ -156,7 +171,11 @@ export function createValidatedFitModelDraft(
     };
   }
 
-  return createFitModelDraft(prefill);
+  return createFitModelDraft({
+    ...prefill,
+    response: { ...resolvedResponse.field },
+    predictors: availablePredictors.map((field) => ({ ...field.field })),
+  });
 }
 
 export function createFitModelFieldLoadSnapshot(): FitModelFieldLoadSnapshot {
@@ -351,6 +370,7 @@ export function toFitModelFieldInfo(
   name: string,
   sqlType: string,
   displayProps?: ColumnDisplayProps,
+  columnId?: string,
 ): FitModelFieldInfo {
   const role = inferFitModelFieldType(name, sqlType, displayProps);
   return {
@@ -358,6 +378,7 @@ export function toFitModelFieldInfo(
     sqlType,
     modelingRole: toModelingRoleLabel(role),
     field: {
+      ...(columnId ? { columnId } : {}),
       name,
       type: role,
     },

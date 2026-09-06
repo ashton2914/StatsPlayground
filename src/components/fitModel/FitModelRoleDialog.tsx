@@ -85,14 +85,14 @@ export function FitModelRoleDialog({ dataset, prefill, onCreateDefinition, onCan
     });
 
     Promise.all([
-      dataService.getColumns(dataset.id),
+      dataService.getColumnDescriptors(dataset.id),
       dataService.getColumnDisplayProps(dataset.id).catch(() => []),
     ])
-      .then(([columns, displayProps]) => {
+      .then(([descriptors, displayProps]) => {
         if (!active) {
           return;
         }
-        const nextFields = buildFitModelFieldInfoList(columns, displayProps);
+        const nextFields = buildFitModelFieldInfoList(descriptors, displayProps);
         setLoadSnapshot((current) => resolveFitModelFieldLoadSuccess(
           current,
           generation,
@@ -592,11 +592,13 @@ export function FitModelRoleDialog({ dataset, prefill, onCreateDefinition, onCan
 }
 
 function buildFitModelFieldInfoList(
-  columns: ReadonlyArray<readonly [string, string]>,
+  columns: ReadonlyArray<{ columnId: string; name: string; sqlType: string }>,
   displayProps: readonly ColumnDisplayProps[],
 ): FitModelFieldInfo[] {
   const propsByIndex = new Map(displayProps.map((entry) => [entry.colIndex, entry]));
-  return columns.map(([name, sqlType], index) => toFitModelFieldInfo(name, sqlType, propsByIndex.get(index)));
+  return columns.map(({ columnId, name, sqlType }, index) => (
+    toFitModelFieldInfo(name, sqlType, propsByIndex.get(index), columnId)
+  ));
 }
 
 function toValidationText(

@@ -68,6 +68,44 @@ const validated = createValidatedFitModelDraft(prefill, "doe-table", fields);
 assert.equal(validated.validationMessage, null);
 assert.deepEqual(validated.terms, draft.terms);
 
+const identityFields: FitModelFieldInfo[] = [
+  {
+    name: "Yield",
+    sqlType: "DOUBLE",
+    modelingRole: "Continuous",
+    field: { columnId: "response-id", name: "Yield", type: "continuous" },
+  },
+  {
+    name: "Temperature",
+    sqlType: "DOUBLE",
+    modelingRole: "Continuous",
+    field: { columnId: "temperature-id", name: "Temperature", type: "continuous" },
+  },
+  {
+    name: "Pressure",
+    sqlType: "DOUBLE",
+    modelingRole: "Continuous",
+    field: { columnId: "pressure-id", name: "Pressure", type: "continuous" },
+  },
+];
+const stableIdPrefill: FitModelPrefill = {
+  sourceDatasetId: "doe-table",
+  response: { name: "response-id", type: "continuous" },
+  predictors: [
+    { name: "temperature-id", type: "continuous" },
+    { name: "pressure-id", type: "continuous" },
+  ],
+  construct: { kind: "fullFactorial" },
+};
+const identityValidated = createValidatedFitModelDraft(stableIdPrefill, "doe-table", identityFields);
+assert.equal(identityValidated.validationMessage, null);
+assert.deepEqual(identityValidated.response, identityFields[0]?.field);
+assert.deepEqual(identityValidated.terms, [
+  { kind: "main", columnNames: ["Temperature"] },
+  { kind: "main", columnNames: ["Pressure"] },
+  { kind: "interaction", columnNames: ["Pressure", "Temperature"] },
+]);
+
 const roleDialogSource = readFileSync(
   path.resolve(process.cwd(), "src/components/fitModel/FitModelRoleDialog.tsx"),
   "utf8",

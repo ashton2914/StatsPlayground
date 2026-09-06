@@ -137,6 +137,39 @@ assert.equal(Object.hasOwn(useFitModelStore.getState().items[0]!, "disclosureSta
 assert.equal(useFitModelStore.getState().migrationWarnings.length, 1);
 assert.match(useFitModelStore.getState().migrationWarnings[0] ?? "", /duplicate/i);
 
+const stableIdPersisted = {
+  id: "fit-stable-id",
+  name: "Stable ID Model",
+  sourceDatasetId: "dataset-loaded",
+  response: { name: "response-id", type: "continuous" },
+  construct: { kind: "fullFactorial" },
+  terms: [
+    { kind: "main", columnNames: ["temperature-id"] },
+    { kind: "main", columnNames: ["pressure-id"] },
+    { kind: "interaction", columnNames: ["temperature-id", "pressure-id"] },
+  ],
+  centeringMethod: "mean",
+  createdAt: "2026-09-05T00:00:00.000Z",
+};
+useFitModelStore.getState().loadFromProject(
+  [stableIdPersisted],
+  new Map([
+    ["dataset-loaded", [
+      { columnId: "response-id", name: "Yield", sqlType: "DOUBLE" },
+      { columnId: "temperature-id", name: "Temperature", sqlType: "DOUBLE" },
+      { columnId: "pressure-id", name: "Pressure", sqlType: "DOUBLE" },
+    ]],
+  ]),
+);
+assert.equal(useFitModelStore.getState().items[0]?.response.name, "Yield");
+assert.equal(useFitModelStore.getState().items[0]?.response.columnId, "response-id");
+assert.deepEqual(useFitModelStore.getState().items[0]?.terms, [
+  { kind: "main", columnNames: ["Temperature"] },
+  { kind: "main", columnNames: ["Pressure"] },
+  { kind: "interaction", columnNames: ["Pressure", "Temperature"] },
+]);
+useFitModelStore.getState().loadFromProject([persisted, invalidPowerPersisted, malformed]);
+
 persisted.terms[0].columnNames[0] = "Mutated";
 persisted.response.name = "Mutated";
 assert.equal(useFitModelStore.getState().items[0]?.terms[0]?.columnNames[0], "Temperature");

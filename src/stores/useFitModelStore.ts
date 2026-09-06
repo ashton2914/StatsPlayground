@@ -8,6 +8,7 @@ import {
 } from "@/components/fitModel/fitModelConfig";
 import type { FieldRef } from "@/graphCore";
 import { useProjectStore } from "@/stores/useProjectStore";
+import type { ColumnDescriptor } from "@/types/data";
 import type { FitModelConstruct, FitModelItem, FitModelLoadIssue, FitModelTerm } from "@/types/fitModel";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 
@@ -27,7 +28,10 @@ interface FitModelStore {
   ) => void;
   deleteItem: (id: string) => void;
   deleteByDataset: (datasetId: string) => void;
-  loadFromProject: (items: unknown[]) => void;
+  loadFromProject: (
+    items: unknown[],
+    columnDescriptorsByDataset?: ReadonlyMap<string, readonly ColumnDescriptor[]>,
+  ) => void;
   reset: () => void;
   nextName: () => string;
 }
@@ -49,7 +53,39 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function cloneResponse(value: FieldRef): FieldRef {
-  return { name: value.name, type: value.type };
+  return {
+    ...(value.columnId ? { columnId: value.columnId } : {}),
+    name: value.name,
+    type: value.type,
+  };
+}
+
+function reconcileColumnIdentities(
+  item: FitModelItem,
+  descriptors: readonly ColumnDescriptor[],
+): FitModelItem {
+  const byId = new Map(descriptors.map((descriptor) => [descriptor.columnId, descriptor]));
+  const byName = new Map(descriptors.map((descriptor) => [descriptor.name, descriptor]));
+  const resolveDescriptor = (columnId: string | undefined, name: string) => (
+    (columnId ? byId.get(columnId) : undefined) ?? byName.get(name) ?? byId.get(name)
+  );
+  const responseDescriptor = resolveDescriptor(item.response.columnId, item.response.name);
+  const resolveName = (name: string) => resolveDescriptor(undefined, name)?.name ?? name;
+
+  return {
+    ...item,
+    response: responseDescriptor
+      ? {
+          columnId: responseDescriptor.columnId,
+          name: responseDescriptor.name,
+          type: item.response.type,
+        }
+      : item.response,
+    terms: item.terms.map((term) => ({
+      ...term,
+      columnNames: term.columnNames.map(resolveName),
+    })) as FitModelTerm[],
+  };
 }
 
 function cloneTerms(terms: readonly FitModelTerm[]): FitModelTerm[] {
@@ -246,7 +282,11 @@ function normalizeLoadedFitModel(value: unknown): {
 
   let normalizedResponse: FieldRef = { name: "", type: "continuous" };
   if (isObject(response) && typeof response.name === "string" && (response.type === "continuous" || response.type === "ordinal" || response.type === "nominal")) {
-    normalizedResponse = { name: response.name, type: response.type };
+    normalizedResponse = {
+      ...(typeof response.columnId === "string" ? { columnId: response.columnId } : {}),
+      name: response.name,
+      type: response.type,
+    };
   } else {
     loadIssueDetails.push("invalidResponseShape");
   }
@@ -425,7 +465,7 @@ export const useFitModelStore = create<FitModelStore>((set, get) => ({
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((state) => ({ items: state.items.filter((item) => item.sourceDatasetId !== datasetId) }));
   },
-  loadFromProject: (items) => set(() => {
+  loadFromProject: (items, columnDescriptorsByDataset = new Map()) => set(() => {
     const normalized: FitModelItem[] = [];
     const migrationWarnings: string[] = [];
     for (const value of items) {
@@ -433,7 +473,10 @@ export const useFitModelStore = create<FitModelStore>((set, get) => ({
       if (!next.item) {
         continue;
       }
-      normalized.push(next.item);
+      normalized.push(reconcileColumnIdentities(
+        next.item,
+        columnDescriptorsByDataset.get(next.item.sourceDatasetId) ?? [],
+      ));
       migrationWarnings.push(...next.warnings);
     }
     return {

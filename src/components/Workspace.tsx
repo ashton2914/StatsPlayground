@@ -754,13 +754,13 @@ export function Workspace() {
   const handleCreateFitModelItem = async (definition: FitModelCreateDefinition) => {
     if (!activeDatasetId) return;
     const sourceDatasetId = activeDatasetId;
-    const [columns, displayProps] = await Promise.all([
-      dataService.getColumns(sourceDatasetId),
+    const [columnDescriptors, displayProps] = await Promise.all([
+      dataService.getColumnDescriptors(sourceDatasetId),
       dataService.getColumnDisplayProps(sourceDatasetId).catch(() => []),
     ]);
     const displayPropsByIndex = new Map(displayProps.map((entry) => [entry.colIndex, entry]));
-    const fields = columns.map(([name, sqlType], index) => (
-      toFitModelFieldInfo(name, sqlType, displayPropsByIndex.get(index)).field
+    const fields = columnDescriptors.map(({ columnId, name, sqlType }, index) => (
+      toFitModelFieldInfo(name, sqlType, displayPropsByIndex.get(index), columnId).field
     ));
     const id = crypto.randomUUID();
     const name = nextFitModelName();
@@ -1479,7 +1479,15 @@ export function Workspace() {
           loadGraphBuildersFromProject(result.graphBuilders as GraphBuilderItem[]);
         }
         loadFitYByXFromProject((result.fitYByX ?? []) as FitYByXItem[]);
-        loadFitModelFromProject((result.fitModels ?? []) as FitModelItem[]);
+        const persistedFitModels = (result.fitModels ?? []) as FitModelItem[];
+        const fitModelDatasetIds = [...new Set(persistedFitModels.map((item) => item.sourceDatasetId))];
+        const fitModelColumnDescriptors = new Map(await Promise.all(
+          fitModelDatasetIds.map(async (datasetId) => [
+            datasetId,
+            await dataService.getColumnDescriptors(datasetId).catch(() => []),
+          ] as const),
+        ));
+        loadFitModelFromProject(persistedFitModels, fitModelColumnDescriptors);
         loadReportsFromProject((result.reports ?? []) as ReportItem[]);
         loadTabulatesFromProject((result.tabulates ?? []) as TabulateItem[]);
         loadDistributionsFromProject(result.distributions ?? []);
