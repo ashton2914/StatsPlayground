@@ -38,9 +38,9 @@ export function getDistributionCompositeGraphFrame(
       return {
         ...packet,
         sourceColumn: DISTRIBUTION_MELT_CATEGORY_COLUMN,
-        bins: packet.bins.map(({ category: _category, ...bin }) => ({
+        bins: packet.bins.map(({ category: _category, group, ...bin }) => ({
           ...bin,
-          sourceColumn: bin.group ?? bin.sourceColumn,
+          category: group ?? bin.sourceColumn,
         })),
       };
     }
@@ -48,9 +48,9 @@ export function getDistributionCompositeGraphFrame(
       return {
         ...packet,
         sourceColumn: DISTRIBUTION_MELT_CATEGORY_COLUMN,
-        entries: packet.entries.map(({ category: _category, ...entry }) => ({
+        entries: packet.entries.map(({ category: _category, group, ...entry }) => ({
           ...entry,
-          sourceColumn: entry.group ?? entry.sourceColumn,
+          category: group ?? entry.sourceColumn,
         })),
       };
     }

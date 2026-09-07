@@ -122,7 +122,7 @@ export function createDefaultDistributionAnalysisConfig(): DistributionAnalysisC
   return {
     confidenceLevel: 0.95,
     specLimits: {},
-    fitDistributions: [],
+    fitDistributions: ["normal"],
   };
 }
 

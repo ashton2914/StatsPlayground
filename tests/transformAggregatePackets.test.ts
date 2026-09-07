@@ -4,8 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
+import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter.ts";
 import type { GraphTheme } from "../src/graphCore/theme.ts";
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
+import type { DistributionReportResponse } from "../src/types/distribution.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
 
 const localStorageState = new Map<string, string>();
@@ -2415,6 +2417,94 @@ for (const element of [
     series.some((entry) => entry.type === "scatter" && entry.name === "5-Number"),
     "enabled five-number labels must render in the composite",
   );
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "__sp_value__", type: "continuous" },
+      y: { name: "__sp_variable__", type: "nominal" },
+    },
+    elements: [
+      { kind: "histogram", enabled: true },
+      {
+        kind: "normalCurve",
+        enabled: true,
+        options: { elementId: "distribution.overview.fittedCurves" },
+      },
+      { kind: "boxplot", enabled: true },
+    ],
+  };
+  const overview = baseFrame([
+    {
+      kind: "histogram",
+      yColumn: "distribution.overview.histogram",
+      sourceColumn: "responseColumn",
+      binCount: 2,
+      minValue: 4.2,
+      maxValue: 4.6,
+      missingCount: 0,
+      binWidth: 0.2,
+      totalCount: 10,
+      bins: [
+        { group: "203-A1", category: "Overall", sourceColumn: "203-A1", binStart: 4.2, binEnd: 4.4, count: 4 },
+        { group: "203-A1", category: "Overall", sourceColumn: "203-A1", binStart: 4.4, binEnd: 4.6, count: 6 },
+      ],
+    },
+    {
+      kind: "precomputedCurve",
+      elementId: "distribution.overview.fittedCurves",
+      seriesId: "203-A1:fit:normal",
+      seriesName: "203-A1 - Normal",
+      group: "203-A1",
+      category: "203-A1",
+      sourceColumn: "203-A1",
+      interpolation: "linear",
+      points: [{ x: 4.2, y: 0.2 }, { x: 4.4, y: 6 }, { x: 4.6, y: 0.2 }],
+    },
+  ]);
+  const boxPlot = baseFrame([{
+    kind: "boxPlot",
+    yColumn: "distribution.boxPlot",
+    sourceColumn: "responseColumn",
+    entries: [{
+      group: "203-A1",
+      category: "Overall",
+      sourceColumn: "203-A1",
+      count: 10,
+      min: 4.2,
+      q1: 4.36,
+      median: 4.4,
+      q3: 4.45,
+      max: 4.56,
+      whiskerLow: 4.2,
+      whiskerHigh: 4.56,
+      outliers: [],
+    }],
+  }]);
+  const graphFrames = {
+    overview,
+    boxPlot,
+    ecdf: baseFrame([]),
+    normalQuantile: baseFrame([]),
+  } satisfies DistributionReportResponse["graphFrames"];
+  const frame = getDistributionCompositeGraphFrame({ graphFrames });
+
+  const option = buildGraph(
+    spec,
+    baseData(["__sp_variable__", "__sp_value__"], []),
+    theme,
+    { __sp_variable__: ["203-A1"] },
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const histogram = series.find((entry) => String(entry.id ?? "").startsWith("__hist_cat_"));
+  const normal = series.find((entry) => String(entry.id ?? "").startsWith("__normal_cat_"));
+  const box = series.find((entry) => entry.type === "boxplot");
+
+  assert.ok(Array.isArray(histogram?.data) && histogram.data.length > 0, "production packets must render histogram bars");
+  assert.ok(Array.isArray(normal?.data) && normal.data.length > 0, "production packets must render the fitted normal curve");
+  assert.ok(Array.isArray(box?.data) && box.data.length > 0, "production packets must render the box plot");
 }
 
 {

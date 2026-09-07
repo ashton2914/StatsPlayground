@@ -18,8 +18,23 @@ interface AnalysisStore {
 
 const ANALYSIS_HELPERS = createNamedDocumentHelpers("Analysis");
 
-function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentPatch): AnalysisDocument {
+function ensureNormalFit(analysis: AnalysisDocument): AnalysisDocument {
+  const fitDistributions = analysis.definition.analysis.fitDistributions;
+  if (fitDistributions.includes("normal")) return analysis;
   return {
+    ...analysis,
+    definition: {
+      ...analysis.definition,
+      analysis: {
+        ...analysis.definition.analysis,
+        fitDistributions: ["normal", ...fitDistributions],
+      },
+    },
+  };
+}
+
+function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentPatch): AnalysisDocument {
+  return ensureNormalFit({
     ...analysis,
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.definition !== undefined ? { definition: patch.definition } : {}),
@@ -27,7 +42,7 @@ function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentP
     ...(patch.source !== undefined ? { source: patch.source } : {}),
     ...(patch.configRevision !== undefined ? { configRevision: patch.configRevision } : {}),
     ...(patch.updatedAt !== undefined ? { updatedAt: patch.updatedAt } : {}),
-  };
+  });
 }
 
 export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
@@ -35,9 +50,10 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
   counter: 0,
   addAnalysis: (analysis) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
+    const normalizedAnalysis = ensureNormalFit(analysis);
     set((state) => ({
-      items: [...state.items, analysis],
-      counter: Math.max(state.counter, ANALYSIS_HELPERS.maxSuffix([analysis])),
+      items: [...state.items, normalizedAnalysis],
+      counter: Math.max(state.counter, ANALYSIS_HELPERS.maxSuffix([normalizedAnalysis])),
     }));
   },
   updateAnalysis: (id, patch) => {
@@ -53,7 +69,10 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       items: removeDocumentById(state.items, id),
     }));
   },
-  loadAnalyses: (items) => set({ items, counter: ANALYSIS_HELPERS.maxSuffix(items) }),
+  loadAnalyses: (items) => {
+    const normalizedItems = items.map(ensureNormalFit);
+    set({ items: normalizedItems, counter: ANALYSIS_HELPERS.maxSuffix(normalizedItems) });
+  },
   reset: () => set({ items: [], counter: 0 }),
   nextName: () => {
     assertProjectMutable(useProjectStore.getState().readOnly);

@@ -89,12 +89,12 @@ assert.deepEqual(compositeFrame.aggregates.map((packet) => packet.kind), ["histo
 const compositeHistogram = compositeFrame.aggregates.find((packet) => packet.kind === "histogram");
 const compositeBoxPlot = compositeFrame.aggregates.find((packet) => packet.kind === "boxPlot");
 assert.equal(compositeHistogram?.sourceColumn, "__sp_variable__");
-assert.deepEqual(compositeHistogram?.bins.map((bin) => [bin.category, bin.sourceColumn]), [
-  [undefined, "DIM1 | A"],
+assert.deepEqual(compositeHistogram?.bins.map((bin) => [bin.category, bin.group, bin.sourceColumn]), [
+  ["DIM1 | A", undefined, "DIM1"],
 ]);
 assert.equal(compositeBoxPlot?.sourceColumn, "__sp_variable__");
-assert.deepEqual(compositeBoxPlot?.entries.map((entry) => [entry.category, entry.sourceColumn]), [
-  [undefined, "DIM1 | A"],
+assert.deepEqual(compositeBoxPlot?.entries.map((entry) => [entry.category, entry.group, entry.sourceColumn]), [
+  ["DIM1 | A", undefined, "DIM1"],
 ]);
 assert.deepEqual(
   mapDistributionCompositeExternalDataState({ status: "success", result: { graphFrames } }),

@@ -3,6 +3,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AnalysisGraph } from "../src/components/analysis/presentation";
 import type { GraphRuntimeProps } from "../src/components/graphBuilder/GraphRuntime";
 import { Graph, type GraphSpec } from "../src/graphCore";
+import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter";
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS, type GraphDataFrame } from "../src/types/graphData";
 
 import "../src/components/analysis/analysis.css";
@@ -24,7 +25,7 @@ const compositeSpec: GraphSpec = {
   ],
 };
 
-const compositeFrame: GraphDataFrame = {
+const productionFrame: GraphDataFrame = {
   requestId: "visual:composite",
   datasetId: "dataset-1",
   generation: 1,
@@ -38,7 +39,7 @@ const compositeFrame: GraphDataFrame = {
     {
       kind: "histogram",
       yColumn: "__sp_y",
-      sourceColumn: "__sp_variable__",
+      sourceColumn: "responseColumn",
       binCount: 6,
       minValue: 85,
       maxValue: 121,
@@ -47,6 +48,8 @@ const compositeFrame: GraphDataFrame = {
       totalCount: 10,
       bins: responses.flatMap((sourceColumn) =>
         [1, 2, 4, 2, 1, 0].map((count, index) => ({
+          group: sourceColumn,
+          category: "Overall",
           sourceColumn,
           binStart: 85 + index * 6,
           binEnd: 91 + index * 6,
@@ -58,6 +61,7 @@ const compositeFrame: GraphDataFrame = {
       elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves,
       seriesId: `fit-${sourceColumn}`,
       seriesName: `${sourceColumn} - Normal`,
+      group: sourceColumn,
       category: sourceColumn,
       sourceColumn,
       interpolation: "linear" as const,
@@ -74,8 +78,10 @@ const compositeFrame: GraphDataFrame = {
     {
       kind: "boxPlot",
       yColumn: "__sp_y",
-      sourceColumn: "__sp_variable__",
+      sourceColumn: "responseColumn",
       entries: responses.map((sourceColumn, responseIndex) => ({
+        group: sourceColumn,
+        category: "Overall",
         sourceColumn,
         count: 10,
         min: 85,
@@ -91,6 +97,22 @@ const compositeFrame: GraphDataFrame = {
   ],
   rawPointDisposition: { status: "empty", validRows: 0, budget: 8_000 },
 };
+
+const emptyFrame = { ...productionFrame, aggregates: [] };
+const compositeFrame = getDistributionCompositeGraphFrame({
+  graphFrames: {
+    overview: {
+      ...productionFrame,
+      aggregates: productionFrame.aggregates.filter((packet) => packet.kind !== "boxPlot"),
+    },
+    boxPlot: {
+      ...productionFrame,
+      aggregates: productionFrame.aggregates.filter((packet) => packet.kind === "boxPlot"),
+    },
+    ecdf: emptyFrame,
+    normalQuantile: emptyFrame,
+  },
+});
 
 class VisualErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null as string | null };
