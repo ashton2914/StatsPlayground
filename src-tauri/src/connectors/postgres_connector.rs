@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use fallible_iterator::FallibleIterator;
+use postgres::config::SslMode;
 use postgres::{Config, NoTls};
+use postgres_native_tls::MakeTlsConnector;
 
 use crate::connectors::{ConnectorBatch, ConnectorRow, ConnectorValue};
 use crate::error::AppError;
@@ -371,9 +373,76 @@ impl PostgresConnector {
                 self.definition.connect_timeout_seconds,
             )));
 
+        if self.definition.tls_mode == TlsMode::Disabled {
+            config.ssl_mode(SslMode::Disable);
+            return config
+                .connect(NoTls)
+                .map_err(|error| Self::connection_error(&error));
+        }
+        config.ssl_mode(SslMode::Require);
+        let connector = self.tls_connector()?;
         config
-            .connect(NoTls)
+            .connect(MakeTlsConnector::new(connector))
             .map_err(|error| Self::connection_error(&error))
+    }
+
+    fn tls_connector(&self) -> Result<native_tls::TlsConnector, DataLinkError> {
+        let mut builder = native_tls::TlsConnector::builder();
+        builder.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
+        if matches!(self.definition.tls_mode, TlsMode::VerifyCa | TlsMode::VerifyFull) {
+            if let Some(pem) = self.definition.tls_root_certificate_pem.as_deref() {
+                for certificate in Self::root_certificates(pem)? {
+                    builder.add_root_certificate(certificate);
+                }
+            }
+        }
+        match self.definition.tls_mode {
+            TlsMode::Required => {
+                builder.danger_accept_invalid_certs(true);
+                builder.danger_accept_invalid_hostnames(true);
+            }
+            TlsMode::VerifyCa => {
+                builder.danger_accept_invalid_hostnames(true);
+            }
+            TlsMode::VerifyFull => {}
+            TlsMode::Disabled => {
+                return Err(DataLinkError::new(
+                    DataLinkErrorCategory::Tls,
+                    "TLS is disabled for this PostgreSQL connection",
+                ));
+            }
+        }
+        builder.build().map_err(|_| {
+            DataLinkError::new(
+                DataLinkErrorCategory::Tls,
+                "Could not configure PostgreSQL TLS",
+            )
+        })
+    }
+
+    fn root_certificates(pem: &str) -> Result<Vec<native_tls::Certificate>, DataLinkError> {
+        let invalid_certificate = || DataLinkError::new(
+            DataLinkErrorCategory::Tls,
+            "Invalid PostgreSQL CA certificate; provide PEM certificates only (maximum 256 KiB)",
+        );
+        if pem.len() > 256 * 1024 {
+            return Err(invalid_certificate());
+        }
+        let mut reader = std::io::Cursor::new(pem.as_bytes());
+        let mut certificates = Vec::new();
+        for item in rustls_pemfile::read_all(&mut reader) {
+            match item.map_err(|_| invalid_certificate())? {
+                rustls_pemfile::Item::X509Certificate(der) => {
+                    certificates.push(native_tls::Certificate::from_der(der.as_ref())
+                        .map_err(|_| invalid_certificate())?);
+                }
+                _ => return Err(invalid_certificate()),
+            }
+        }
+        if certificates.is_empty() {
+            return Err(invalid_certificate());
+        }
+        Ok(certificates)
     }
 
     fn validate(
@@ -388,12 +457,6 @@ impl PostgresConnector {
         if definition.authentication_type != AuthenticationType::UsernamePassword {
             return Err(Self::query_failure(
                 "PostgreSQL currently supports username/password authentication only",
-            ));
-        }
-        if definition.tls_mode != TlsMode::Disabled {
-            return Err(DataLinkError::new(
-                DataLinkErrorCategory::Tls,
-                "The selected PostgreSQL TLS mode is not supported yet",
             ));
         }
         if definition.host.trim().is_empty() {
@@ -417,6 +480,12 @@ impl PostgresConnector {
     }
 
     fn connection_error(error: &postgres::Error) -> DataLinkError {
+        if error.to_string() == "error performing TLS handshake" {
+            return DataLinkError::new(
+                DataLinkErrorCategory::Tls,
+                "PostgreSQL TLS negotiation or certificate verification failed",
+            );
+        }
         if let Some(database_error) = error.as_db_error() {
             let code = database_error.code().code();
             if code.starts_with("28") {
@@ -469,6 +538,7 @@ mod tests {
             database: "statsplayground_test".to_string(),
             authentication_type: AuthenticationType::UsernamePassword,
             tls_mode: TlsMode::Disabled,
+            tls_root_certificate_pem: None,
             connect_timeout_seconds: 5,
         }
     }
@@ -481,14 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_modes_and_invalid_timeout() {
-        let mut definition = fixture_definition();
-        definition.tls_mode = TlsMode::Required;
-        let tls_error = PostgresConnector::new(definition, fixture_credentials("unused"))
-            .err()
-            .expect("reject unsupported TLS mode");
-        assert_eq!(tls_error.category, DataLinkErrorCategory::Tls);
-
+    fn rejects_invalid_timeout() {
         let mut definition = fixture_definition();
         definition.connect_timeout_seconds = 0;
         let timeout_error = PostgresConnector::new(definition, fixture_credentials("unused"))
@@ -496,6 +559,17 @@ mod tests {
             .expect("reject zero timeout");
         assert_eq!(timeout_error.category, DataLinkErrorCategory::Query);
         assert!(timeout_error.to_string().contains("between 1 and 300"));
+    }
+
+    #[test]
+    fn builds_supported_tls_modes() {
+        for mode in [TlsMode::Required, TlsMode::VerifyCa, TlsMode::VerifyFull] {
+            let mut definition = fixture_definition();
+            definition.tls_mode = mode;
+            let connector = PostgresConnector::new(definition, fixture_credentials("unused"))
+                .expect("create connector");
+            connector.tls_connector().expect("build TLS connector");
+        }
     }
 
     #[test]
@@ -510,6 +584,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_root_certificates_without_exposing_input() {
+        for pem in [
+            String::new(),
+            "not-a-certificate-secret".to_string(),
+            "-----BEGIN CERTIFICATE-----\nbm90LWEtdmFsaWQtY2VydA==\n-----END CERTIFICATE-----".to_string(),
+            "x".repeat(256 * 1024 + 1),
+        ] {
+            let mut definition = fixture_definition();
+            definition.tls_mode = TlsMode::VerifyFull;
+            definition.tls_root_certificate_pem = Some(pem);
+            let connector = PostgresConnector::new(definition, fixture_credentials("unused"))
+                .expect("create connector");
+            let error = connector.tls_connector().err().expect("reject invalid CA");
+            assert_eq!(error.category, DataLinkErrorCategory::Tls);
+            assert!(!error.message.contains("not-a-certificate-secret"));
+        }
+    }
+
+    #[test]
     #[ignore = "requires the local PostgreSQL fixture and STATSPG_TEST_POSTGRES_PASSWORD"]
     fn connects_to_configured_postgresql_fixture() {
         let password = std::env::var("STATSPG_TEST_POSTGRES_PASSWORD")
@@ -519,6 +612,131 @@ mod tests {
                 .expect("create connector");
 
         connector.test_connection().expect("connect to fixture");
+    }
+
+    fn tls_fixture_certificate(name: &str) -> String {
+        let directory = std::env::var("STATSPG_TEST_POSTGRES_TLS_CERT_DIR")
+            .expect("STATSPG_TEST_POSTGRES_TLS_CERT_DIR must contain the fixture public CA files");
+        std::fs::read_to_string(std::path::Path::new(&directory).join(name))
+            .expect("read public fixture CA")
+    }
+
+    fn tls_fixture_definition(mode: TlsMode, host: &str) -> ConnectionDefinition {
+        let mut definition = fixture_definition();
+        definition.host = host.to_string();
+        definition.port = 16434;
+        if matches!(mode, TlsMode::VerifyCa | TlsMode::VerifyFull) {
+            definition.tls_root_certificate_pem = Some(tls_fixture_certificate("ca.pem"));
+        }
+        definition.tls_mode = mode;
+        definition
+    }
+
+    #[test]
+    #[ignore = "requires the isolated postgresql-tls fixture and its public CA files"]
+    fn tls_fixture_modes_encrypt_connections() {
+        for (mode, host) in [
+            (TlsMode::Required, "127.0.0.1"),
+            (TlsMode::VerifyCa, "127.0.0.1"),
+            (TlsMode::VerifyFull, "localhost"),
+        ] {
+            let connector = PostgresConnector::new(
+                tls_fixture_definition(mode, host),
+                fixture_credentials("stats_reader_local_only"),
+            ).expect("create TLS connector");
+            let mut client = connector.connect().expect("connect with TLS");
+            let row = client.query_one(
+                "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()", &[],
+            ).expect("inspect transport encryption");
+            assert!(row.get::<_, bool>("ssl"));
+            assert!(matches!(row.get::<_, String>("version").as_str(), "TLSv1.2" | "TLSv1.3"));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the isolated postgresql-tls fixture and its public CA files"]
+    fn tls_fixture_rejects_untrusted_ca_and_wrong_hostname() {
+        for mode in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
+            for certificate in [None, Some(tls_fixture_certificate("other-ca.pem"))] {
+                let mut definition = tls_fixture_definition(mode.clone(), "localhost");
+                definition.tls_root_certificate_pem = certificate;
+                let connector = PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
+                    .expect("create untrusted connector");
+                let error = connector.test_connection().expect_err("reject untrusted CA");
+                assert_eq!(error.category, DataLinkErrorCategory::Tls);
+                assert!(!error.message.contains("stats_reader_local_only"));
+            }
+        }
+        let connector = PostgresConnector::new(
+            tls_fixture_definition(TlsMode::VerifyFull, "127.0.0.1"),
+            fixture_credentials("stats_reader_local_only"),
+        ).expect("create hostname mismatch connector");
+        let error = connector.test_connection().expect_err("reject hostname mismatch");
+        assert_eq!(error.category, DataLinkErrorCategory::Tls);
+    }
+
+    #[test]
+    #[ignore = "requires the isolated postgresql-tls fixture and its public CA files"]
+    fn tls_fixture_rejects_plaintext_without_downgrade() {
+        for mode in [TlsMode::Required, TlsMode::VerifyCa, TlsMode::VerifyFull] {
+            let mut definition = tls_fixture_definition(mode, "localhost");
+            definition.port = 16435;
+            let connector = PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
+                .expect("create connector requiring TLS");
+            let error = connector.test_connection().expect_err("reject plaintext server");
+            assert_eq!(error.category, DataLinkErrorCategory::Tls);
+        }
+        let mut definition = tls_fixture_definition(TlsMode::Disabled, "127.0.0.1");
+        definition.port = 16435;
+        let connector = PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
+            .expect("create explicitly plaintext connector");
+        let mut client = connector.connect().expect("connect without TLS only when requested");
+        let row = client.query_one("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()", &[])
+            .expect("inspect plaintext transport");
+        assert!(!row.get::<_, bool>("ssl"));
+    }
+
+    #[test]
+    #[ignore = "requires the isolated postgresql-tls fixture and its public CA files"]
+    fn tls_fixture_preserves_authentication_and_network_errors() {
+        let connector = PostgresConnector::new(
+            tls_fixture_definition(TlsMode::VerifyFull, "localhost"),
+            fixture_credentials("must-not-appear-in-errors"),
+        ).expect("create connector with incorrect password");
+        let error = connector.test_connection().expect_err("reject incorrect password");
+        assert_eq!(error.category, DataLinkErrorCategory::Authentication);
+        assert!(!error.message.contains("must-not-appear-in-errors"));
+        let mut definition = tls_fixture_definition(TlsMode::VerifyFull, "127.0.0.1");
+        let unused_port = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve unused port");
+        definition.port = unused_port.local_addr().expect("local address").port();
+        drop(unused_port);
+        let connector = PostgresConnector::new(definition, fixture_credentials("unused"))
+            .expect("create unreachable connector");
+        let error = connector.test_connection().expect_err("reject unreachable server");
+        assert_eq!(error.category, DataLinkErrorCategory::Network);
+    }
+
+    #[test]
+    #[ignore = "requires the isolated postgresql-tls fixture and its public CA files"]
+    fn tls_fixture_discovers_previews_and_imports_snapshots() {
+        let definition = tls_fixture_definition(TlsMode::VerifyFull, "localhost");
+        let credentials = fixture_credentials("stats_reader_local_only");
+        let connector = PostgresConnector::new(definition.clone(), credentials.clone())
+            .expect("create verified connector");
+        let objects = connector.list_objects().expect("discover over TLS");
+        assert_eq!(objects.len(), 4);
+        let state = crate::state::AppState::new().expect("create app state");
+        let service = crate::services::io_service::IoService::new(&state);
+        for (name, row_count) in [("customers", 3), ("measurements", 100_000)] {
+            let object = objects.iter().find(|object| object.name == name).expect("find fixture object");
+            let preview = connector.preview(object, 100).expect("preview over TLS");
+            assert_eq!(preview.rows.len(), row_count.min(100));
+            let summary = service.import_postgres_snapshot(
+                definition.clone(), credentials.clone(), object.clone(), name, |_, _| {}, || false,
+            ).expect("import verified TLS snapshot");
+            assert_eq!(summary.status, "completed");
+            assert_eq!(summary.total_rows_written, row_count);
+        }
     }
 
     #[test]

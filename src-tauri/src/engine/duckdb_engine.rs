@@ -5,7 +5,7 @@ use std::time::Instant;
 use duckdb::types::{OrderedMap, TimeUnit, Value};
 use duckdb::{appender_params_from_iter, params, params_from_iter, Config, Connection};
 
-use crate::connectors::{ConnectorValue, DataConnector, PostgresConnector, SqliteConnector};
+use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
 use crate::engine::sql_query::{normalize_identifier, validate_read_only_query};
 use crate::error::AppError;
 use crate::models::data_link::SourceObjectRef;
@@ -3252,9 +3252,9 @@ impl DuckDbEngine {
         }
     }
 
-    pub fn import_postgres_snapshot<F, C>(
+    pub fn import_server_snapshot<F, C>(
         &self,
-        connector: &PostgresConnector,
+        connector: &ServerConnector,
         object: &SourceObjectRef,
         target_name: &str,
         source_description: &str,
@@ -3271,7 +3271,7 @@ impl DuckDbEngine {
             .map_err(|error| AppError::Database(error.message))?;
         if columns.is_empty() {
             return Err(AppError::InvalidParam(
-                "PostgreSQL object must contain at least one column".to_string(),
+                "Database object must contain at least one column".to_string(),
             ));
         }
         let total_rows = connector
@@ -3281,7 +3281,13 @@ impl DuckDbEngine {
         let table_name = format!("dataset_{}", id.replace('-', "_"));
         let column_types = columns
             .iter()
-            .map(|column| Self::map_postgres_type(&column.source_type))
+            .map(|column| {
+                if connector.source_type() == "mysql" {
+                    Self::map_mysql_type(&column.source_type)
+                } else {
+                    Self::map_postgres_type(&column.source_type)
+                }
+            })
             .collect::<Vec<_>>();
         let column_definitions = columns
             .iter()
@@ -3309,12 +3315,12 @@ impl DuckDbEngine {
                     for row in batch.rows {
                         if is_cancelled() {
                             return Err(AppError::Cancelled(
-                                "PostgreSQL import cancelled".to_string(),
+                                "Database import cancelled".to_string(),
                             ));
                         }
                         let row_id = i64::try_from(row.source_index).map_err(|_| {
                             AppError::InvalidParam(
-                                "PostgreSQL row index is out of range".to_string(),
+                                "Database row index is out of range".to_string(),
                             )
                         })?;
                         let mut values = Vec::with_capacity(columns.len() + 1);
@@ -3341,13 +3347,13 @@ impl DuckDbEngine {
             }
 
             let row_count = i64::try_from(rows_done).map_err(|_| {
-                AppError::InvalidParam("PostgreSQL row count is out of range".to_string())
+                AppError::InvalidParam("Database row count is out of range".to_string())
             })?;
             for (column_index, (column, target_type)) in
                 columns.iter().zip(&column_types).enumerate()
             {
                 let column_index = i32::try_from(column_index).map_err(|_| {
-                    AppError::InvalidParam("PostgreSQL column count is out of range".to_string())
+                    AppError::InvalidParam("Database column count is out of range".to_string())
                 })?;
                 self.conn.execute(
                     "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
@@ -3355,11 +3361,11 @@ impl DuckDbEngine {
                 )?;
             }
             let column_count = i32::try_from(columns.len()).map_err(|_| {
-                AppError::InvalidParam("PostgreSQL column count is out of range".to_string())
+                AppError::InvalidParam("Database column count is out of range".to_string())
             })?;
             self.conn.execute(
-                "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'postgresql', $4, $5)",
-                params![id, target_name, source_description, row_count, column_count],
+                "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, $4, $5, $6)",
+                params![id, target_name, source_description, connector.source_type(), row_count, column_count],
             )?;
             Ok((self.get_dataset_meta(&id)?, rows_done))
         })();
@@ -3384,6 +3390,18 @@ impl DuckDbEngine {
         }
     }
 
+    fn map_mysql_type(source_type: &str) -> &'static str {
+        let source_type = source_type.to_ascii_lowercase();
+        let base = source_type.split(['(', ' ']).next().unwrap_or("");
+        match base {
+            "bigint" if source_type.contains("unsigned") => "VARCHAR",
+            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => "BIGINT",
+            "float" | "double" | "real" => "DOUBLE",
+            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => "BLOB",
+            _ => "VARCHAR",
+        }
+    }
+
     fn map_postgres_type(source_type: &str) -> &'static str {
         match source_type.to_ascii_lowercase().as_str() {
             "smallint" | "integer" | "bigint" | "smallserial" | "serial" | "bigserial"
@@ -3403,7 +3421,7 @@ impl DuckDbEngine {
     ) -> Result<Value, AppError> {
         let conversion_error = |value: &str| {
             AppError::InvalidParam(format!(
-                "Cannot convert value '{value}' in PostgreSQL object '{source_object}', column '{source_column}', row {source_row} to {target_type}"
+                "Cannot convert value '{value}' in database object '{source_object}', column '{source_column}', row {source_row} to {target_type}"
             ))
         };
         match (target_type, value) {

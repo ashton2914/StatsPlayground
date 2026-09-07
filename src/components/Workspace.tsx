@@ -182,6 +182,7 @@ export function Workspace() {
   const [showPrefs, setShowPrefs] = useState(false);
   const [showSqlQuery, setShowSqlQuery] = useState(false);
   const [showPostgresDataLink, setShowPostgresDataLink] = useState(false);
+  const [serverConnector, setServerConnector] = useState<"postgresql" | "mysql">("postgresql");
   const sqliteDataLinkPath = useDataLinkStore((state) => state.filePath);
   const openDataLink = useDataLinkStore((state) => state.open);
   const closeDataLink = useDataLinkStore((state) => state.close);
@@ -1456,7 +1457,8 @@ export function Workspace() {
               <div className="menu-sep" />
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportCsv}>{t("menu.importCsv")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportSqlite}>{t("menu.importSqlite")}</div>
-              <div className="menu-item" onClick={() => setShowPostgresDataLink(true)}>{t("menu.connectPostgres")}</div>
+              <div className="menu-item" onClick={() => { setServerConnector("postgresql"); setShowPostgresDataLink(true); }}>{t("menu.connectPostgres")}</div>
+              <div className="menu-item" onClick={() => { setServerConnector("mysql"); setShowPostgresDataLink(true); }}>{t("menu.connectMysql", { defaultValue: "Connect MySQL..." })}</div>
               <div className="menu-sep" />
               <div className="menu-item" onClick={handleExportSqlite}>{t("menu.exportSqlite")}</div>
               <div className="menu-item" onClick={handleExportCsvZip}>{t("menu.exportCsv")}</div>
@@ -1687,15 +1689,20 @@ export function Workspace() {
 
       {showPostgresDataLink && (
         <PostgresDataLinkDialog
+          key={serverConnector}
+          connector={serverConnector}
+          existingDatasetNames={datasets.map((dataset) => dataset.name)}
           onClose={() => setShowPostgresDataLink(false)}
           onImported={async (targetName) => {
+            markDirty();
             await refreshDatasets();
             const imported = useDataStore
               .getState()
               .datasets.find((dataset) => dataset.name.toLowerCase() === targetName.toLowerCase());
             if (imported) setActiveDataset(imported.id);
-            markDirty();
-            recordAction(t("history.importPostgres", { name: targetName }));
+            recordAction(serverConnector === "mysql"
+              ? t("history.importMysql", { name: targetName, defaultValue: "Import MySQL snapshot: {{name}}" })
+              : t("history.importPostgres", { name: targetName }));
           }}
         />
       )}

@@ -67,6 +67,46 @@ fn validate_selections(selections: &[SqliteImportSelection]) -> Result<(), AppEr
 }
 
 #[tauri::command(async)]
+pub async fn test_server_connection(definition: ConnectionDefinition, credentials: ConnectionCredentials) -> Result<(), DataLinkError> {
+    tokio::task::spawn_blocking(move || DataLinkService::test_server_connection(definition, credentials))
+        .await.map_err(|_| server_worker_error())?
+}
+
+#[tauri::command(async)]
+pub async fn list_server_source_objects(definition: ConnectionDefinition, credentials: ConnectionCredentials) -> Result<Vec<SourceObjectRef>, DataLinkError> {
+    tokio::task::spawn_blocking(move || DataLinkService::list_server_objects(definition, credentials))
+        .await.map_err(|_| server_worker_error())?
+}
+
+#[tauri::command(async)]
+pub async fn get_server_source_schema(definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef) -> Result<Vec<SourceColumn>, DataLinkError> {
+    tokio::task::spawn_blocking(move || DataLinkService::get_server_schema(definition, credentials, object))
+        .await.map_err(|_| server_worker_error())?
+}
+
+#[tauri::command(async)]
+pub async fn preview_server_source_object(definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, limit: usize) -> Result<PreviewResult, DataLinkError> {
+    tokio::task::spawn_blocking(move || DataLinkService::preview_server_object(definition, credentials, object, limit))
+        .await.map_err(|_| server_worker_error())?
+}
+
+#[tauri::command(async)]
+pub async fn import_server_snapshot(app: AppHandle, definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, target_name: String) -> Result<ImportSummary, AppError> {
+    if target_name.trim().is_empty() {
+        return Err(AppError::InvalidParam("Target dataset name is required".into()));
+    }
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _permit = crate::commands::io_commands::acquire_mutation_permit(state.inner())?;
+        IoService::new(state.inner()).import_server_snapshot(definition, credentials, object, target_name.trim(), |_, _| {}, || false)
+    }).await.map_err(|_| AppError::Database("Database import worker failed".into()))?
+}
+
+fn server_worker_error() -> DataLinkError {
+    DataLinkError::new(DataLinkErrorCategory::Query, "Database operation could not be completed")
+}
+
+#[tauri::command(async)]
 pub async fn test_postgres_connection(
     definition: ConnectionDefinition,
     credentials: ConnectionCredentials,

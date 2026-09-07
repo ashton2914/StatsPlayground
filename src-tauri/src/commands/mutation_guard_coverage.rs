@@ -38,6 +38,26 @@ mod tests {
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
             (
+                "commands::data_link_commands::test_server_connection",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::list_server_source_objects",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::get_server_source_schema",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::preview_server_source_object",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::import_server_snapshot",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::data_link_commands::test_postgres_connection",
                 CommandClass::ReadOnly,
             ),

@@ -38,6 +38,8 @@ pub struct ConnectionDefinition {
     pub database: String,
     pub authentication_type: AuthenticationType,
     pub tls_mode: TlsMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_root_certificate_pem: Option<String>,
     pub connect_timeout_seconds: u32,
 }
 
@@ -172,6 +174,7 @@ mod tests {
             database: "statsplayground_test".to_string(),
             authentication_type: AuthenticationType::UsernamePassword,
             tls_mode: TlsMode::Disabled,
+            tls_root_certificate_pem: None,
             connect_timeout_seconds: 10,
         };
 
@@ -180,6 +183,9 @@ mod tests {
         assert_eq!(value["authenticationType"], "usernamePassword");
         assert_eq!(value["connectTimeoutSeconds"], 10);
         assert!(value.get("password").is_none());
+        let restored: ConnectionDefinition = serde_json::from_value(value)
+            .expect("accept legacy connection without a CA certificate");
+        assert!(restored.tls_root_certificate_pem.is_none());
     }
 
     #[test]

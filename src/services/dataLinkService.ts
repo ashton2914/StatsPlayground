@@ -12,6 +12,21 @@ import type {
 } from "@/types/dataLink";
 
 export const dataLinkService = {
+  testServerConnection: (definition: ConnectionDefinition, credentials: ConnectionCredentials) =>
+    invoke<void>("test_server_connection", { definition, credentials }),
+
+  listServerObjects: (definition: ConnectionDefinition, credentials: ConnectionCredentials) =>
+    invoke<SourceObjectRef[]>("list_server_source_objects", { definition, credentials }),
+
+  getServerSchema: (definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef) =>
+    invoke<SourceColumn[]>("get_server_source_schema", { definition, credentials, object }),
+
+  previewServerObject: (definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, limit = 100) =>
+    invoke<PreviewResult>("preview_server_source_object", { definition, credentials, object, limit }),
+
+  importServerSnapshot: (definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, targetName: string) =>
+    invoke<ImportSummary>("import_server_snapshot", { definition, credentials, object, targetName }),
+
   testPostgresConnection: (
     definition: ConnectionDefinition,
     credentials: ConnectionCredentials,

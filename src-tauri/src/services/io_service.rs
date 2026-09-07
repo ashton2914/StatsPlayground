@@ -1,4 +1,4 @@
-use crate::connectors::PostgresConnector;
+use crate::connectors::ServerConnector;
 use crate::error::AppError;
 use crate::models::data_link::{
     ConnectionCredentials, ConnectionDefinition, ImportSummary, ImportTableSummary,
@@ -70,6 +70,7 @@ mod tests {
             database: "statsplayground_test".to_string(),
             authentication_type: AuthenticationType::UsernamePassword,
             tls_mode: TlsMode::Disabled,
+            tls_root_certificate_pem: None,
             connect_timeout_seconds: 5,
         };
         let credentials = ConnectionCredentials {
@@ -110,6 +111,53 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the local MySQL fixture and STATSPG_TEST_MYSQL_PASSWORD"]
+    fn mysql_snapshot_import_and_cancellation() {
+        let definition = ConnectionDefinition {
+            connector: ConnectorKind::MySql,
+            host: "127.0.0.1".into(), port: 53306,
+            database: "statsplayground_test".into(),
+            authentication_type: AuthenticationType::UsernamePassword,
+            tls_mode: TlsMode::Disabled, connect_timeout_seconds: 10,
+            tls_root_certificate_pem: None,
+        };
+        let credentials = ConnectionCredentials {
+            username: "stats_reader".into(),
+            password: std::env::var("STATSPG_TEST_MYSQL_PASSWORD").expect("fixture password"),
+        };
+        let state = AppState::new().expect("app state");
+        let service = IoService::new(&state);
+        let object = |name: &str| SourceObjectRef {
+            catalog: Some("statsplayground_test".into()), schema: Some("statsplayground_test".into()),
+            name: name.into(), object_type: SourceObjectType::Table,
+        };
+        for (name, expected) in [("customers", 3), ("measurements", 100_000), ("type_samples", 2), ("empty_table", 0)] {
+            let progress = std::cell::Cell::new((0, 0));
+            let summary = service.import_server_snapshot(
+                definition.clone(), credentials.clone(), object(name), name,
+                |done, total| progress.set((done, total)), || false,
+            ).expect("import fixture");
+            assert_eq!(summary.total_rows_written, expected);
+            assert_eq!(progress.get(), (expected, expected));
+        }
+        let cancelled = service.import_server_snapshot(
+            definition, credentials, object("measurements"), "cancelled_import", |_, _| {}, || true,
+        ).expect_err("cancel import");
+        assert!(matches!(cancelled, AppError::Cancelled(_)));
+        let database = state.db.lock().expect("database");
+        let datasets = database.list_datasets().expect("datasets");
+        assert_eq!(datasets.len(), 4);
+        assert!(datasets.iter().all(|dataset| dataset.source_type == "mysql"));
+        assert!(!datasets.iter().any(|dataset| dataset.name == "cancelled_import"));
+        let types = datasets.iter().find(|dataset| dataset.name == "type_samples").expect("type dataset");
+        let values = database.query_table(&types.id, 0, 100, Some("id"), Some("asc")).expect("read imported values");
+        assert_eq!(values.rows[0][2], "18446744073709551615");
+        assert_eq!(values.rows[0][3], "123456789012345678901.123456789");
+        assert_eq!(values.column_types[4], "BLOB");
+        assert!(values.rows[0][8].is_null());
+    }
+
+    #[test]
     #[ignore = "requires the local PostgreSQL fixture and STATSPG_TEST_POSTGRES_PASSWORD"]
     fn imports_large_postgres_snapshot_in_batches() {
         let password = std::env::var("STATSPG_TEST_POSTGRES_PASSWORD")
@@ -121,6 +169,7 @@ mod tests {
             database: "statsplayground_test".to_string(),
             authentication_type: AuthenticationType::UsernamePassword,
             tls_mode: TlsMode::Disabled,
+            tls_root_certificate_pem: None,
             connect_timeout_seconds: 5,
         };
         let credentials = ConnectionCredentials {
@@ -277,20 +326,36 @@ impl<'a> IoService<'a> {
         F: Fn(usize, usize),
         C: Fn() -> bool,
     {
+        self.import_server_snapshot(definition, credentials, object, target_name, on_progress, is_cancelled)
+    }
+
+    pub fn import_server_snapshot<F, C>(
+        &self,
+        definition: ConnectionDefinition,
+        credentials: ConnectionCredentials,
+        object: SourceObjectRef,
+        target_name: &str,
+        on_progress: F,
+        is_cancelled: C,
+    ) -> Result<ImportSummary, AppError>
+    where
+        F: Fn(usize, usize),
+        C: Fn() -> bool,
+    {
         let source_name = object
             .schema
             .as_deref()
             .map(|schema| format!("{schema}.{}", object.name))
             .unwrap_or_else(|| object.name.clone());
         let source_description = format!("{}.{}", definition.database, source_name);
-        let connector = PostgresConnector::new(definition, credentials)
+        let connector = ServerConnector::new(definition, credentials)
             .map_err(|error| AppError::Database(error.message))?;
         let db = self
             .state
             .db
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
-        let (_, rows_written) = db.import_postgres_snapshot(
+        let (_, rows_written) = db.import_server_snapshot(
             &connector,
             &object,
             target_name,

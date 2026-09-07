@@ -20,6 +20,7 @@ export interface ConnectionDefinition {
   database: string;
   authenticationType: AuthenticationType;
   tlsMode: TlsMode;
+  tlsRootCertificatePem?: string;
   connectTimeoutSeconds: number;
 }
 

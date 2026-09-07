@@ -22,6 +22,11 @@ pub fn run() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::data_link_commands::test_postgres_connection,
+            commands::data_link_commands::test_server_connection,
+            commands::data_link_commands::list_server_source_objects,
+            commands::data_link_commands::get_server_source_schema,
+            commands::data_link_commands::preview_server_source_object,
+            commands::data_link_commands::import_server_snapshot,
             commands::data_link_commands::list_postgres_source_objects,
             commands::data_link_commands::get_postgres_source_schema,
             commands::data_link_commands::preview_postgres_source_object,
