@@ -55,7 +55,7 @@ export function SqliteDataLinkDialog({
   }, [filePath]);
 
   const handleImport = async () => {
-    const selections = tableObjects
+    const selections: SqliteImportSelection[] = tableObjects
       .filter((object) => selectedTables.has(object.name))
       .map((object) => ({
         sourceName: object.name,

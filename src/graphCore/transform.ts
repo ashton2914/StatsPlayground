@@ -60,7 +60,7 @@ interface PanelFacetContext {
 }
 
 function matchesPanelFacet(
-  value: { facetX?: string; facetY?: string; wrap?: string },
+  value: { facetX?: string | null; facetY?: string | null; wrap?: string | null },
   panelFacet: PanelFacetContext,
 ): boolean {
   if (panelFacet.groupXValue !== null && value.facetX !== panelFacet.groupXValue) {
