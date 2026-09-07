@@ -1,4 +1,10 @@
 export { AnalysisView, type AnalysisViewRuntime } from "./AnalysisView";
+export { analysisEditorRegistry } from "./analysisEditorRegistry";
+export { analysisExecutors } from "./analysisExecutors";
+export { analysisGraphPolicies } from "./analysisGraphPolicies";
+export { analysisKindDescriptors } from "./analysisKindDescriptors";
+export { analysisReportPolicies } from "./analysisReportPolicies";
+export { analysisViewRegistry } from "./analysisViewRegistry";
 export {
   migrateLegacyDistributions,
   type DistributionAnalysisMigrationInput,
