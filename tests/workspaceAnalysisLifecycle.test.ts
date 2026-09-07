@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import type { AnalysisDocument } from "../src/types/analysis.ts";
+import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
 import {
   buildAnalysisProjectPayload,
   createEmptyWorkspaceDocumentSelection,
@@ -8,6 +9,7 @@ import {
   getRetainedActiveAnalysisIdAfterDatasetDeletion,
   hydrateAnalysisProjectPayload,
   selectWorkspaceDocument,
+  shouldMarkAnalysisMigrationDirty,
 } from "../src/components/analysis/analysisWorkspaceLifecycle.ts";
 
 function makeAnalysis(id: string, datasetId: string): AnalysisDocument {
@@ -48,7 +50,6 @@ assert.deepEqual(createEmptyWorkspaceDocumentSelection(), {
   activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: null,
-  activeDistributionId: null,
   activeTabulateId: null,
 });
 
@@ -59,7 +60,6 @@ assert.deepEqual(selectWorkspaceDocument("analysis", "analysis-1"), {
   activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: "analysis-1",
-  activeDistributionId: null,
   activeTabulateId: null,
 });
 
@@ -70,7 +70,6 @@ assert.deepEqual(selectWorkspaceDocument("dataset", "dataset-1"), {
   activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: null,
-  activeDistributionId: null,
   activeTabulateId: null,
 });
 
@@ -81,7 +80,6 @@ assert.deepEqual(selectWorkspaceDocument("fitModel", "fit-model-1"), {
   activeFitModelId: "fit-model-1",
   activeReportId: null,
   activeAnalysisId: null,
-  activeDistributionId: null,
   activeTabulateId: null,
 });
 
@@ -93,8 +91,10 @@ assert.deepEqual(
   {
     analyses: analysisItems,
     analysisFolders,
+    distributions: [],
+    distributionFolders: {},
   },
-  "save payload must preserve saved analyses and folder assignments",
+  "save payload must preserve analyses while clearing legacy Distribution collections",
 );
 
 assert.deepEqual(
@@ -102,6 +102,7 @@ assert.deepEqual(
   {
     analyses: [],
     analysisFolders: {},
+    migratedCount: 0,
   },
   "open/reset hydration must default analysis payloads to empty collections",
 );
@@ -111,9 +112,44 @@ assert.deepEqual(
   {
     analyses: analysisItems,
     analysisFolders,
+    migratedCount: 0,
   },
   "open hydration must preserve saved analyses and folder assignments",
 );
+
+const legacyDistribution = createDistributionItem({
+  id: "distribution-legacy",
+  name: "Legacy Distribution",
+  sourceDatasetId: "dataset-legacy",
+  responses: [{ name: "DIM1", type: "continuous" }],
+  weight: null,
+  frequency: null,
+  by: [],
+  columns: [{
+    name: "DIM1",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    field: { name: "DIM1", type: "continuous" },
+  }],
+  analysis: {
+    confidenceLevel: 0.95,
+    specLimits: {},
+    fitDistributions: ["normal"],
+  },
+  createdAt: "2026-09-03T00:00:00.000Z",
+});
+const migratedPayload = hydrateAnalysisProjectPayload({
+  analyses: analysisItems,
+  analysisFolders,
+  distributions: [legacyDistribution],
+  distributionFolders: { [legacyDistribution.id]: "saved/legacy" },
+});
+assert.equal(migratedPayload.migratedCount, 1);
+assert.equal(migratedPayload.analyses.at(-1)?.documentType, "analysis");
+assert.equal(migratedPayload.analyses.at(-1)?.source.datasetId, "dataset-legacy");
+assert.equal(migratedPayload.analysisFolders[legacyDistribution.id], "saved/legacy");
+assert.equal(shouldMarkAnalysisMigrationDirty(migratedPayload.migratedCount), true);
+assert.equal(shouldMarkAnalysisMigrationDirty(0), false);
 
 assert.equal(
   getRetainedActiveAnalysisIdAfterDatasetDeletion({

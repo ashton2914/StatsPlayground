@@ -13,6 +13,13 @@ const columns: DistributionFieldInfo[] = [
   { name: "Group", sqlType: "VARCHAR", integerCompatible: false, field: { name: "Group", type: "nominal" } },
 ];
 
+const manyColumns: DistributionFieldInfo[] = Array.from({ length: 240 }, (_, index) => ({
+  name: `Measurement ${String(index + 1).padStart(3, "0")}`,
+  sqlType: "DOUBLE",
+  integerCompatible: false,
+  field: { name: `Measurement ${String(index + 1).padStart(3, "0")}`, type: "continuous" },
+}));
+
 test("creates one persisted Distribution definition from role assignments", async ({ mount }) => {
   let saved: DistributionItem | null = null;
   const component = await mount(
@@ -117,4 +124,28 @@ test("uses shared controls without collapsing the desktop dialog", async ({ moun
   expect(new Set(specificationBounds.map(({ y }) => Math.round(y))).size).toBe(1);
   expect(specificationBounds.every(({ width }) => width >= 120)).toBe(true);
   await dialog.screenshot({ path: "test-results/distribution-dialog-shared-controls.png" });
+});
+
+test("keeps hundreds of fields inside a bounded scrollable selector", async ({ mount, page }) => {
+  const component = await mount(
+    <DistributionDialog open datasetId="dataset-1" columns={manyColumns} defaultName="Distribution 1"
+      onSubmit={() => {}} onCancel={() => {}} />,
+  );
+
+  const dialog = component.getByRole("dialog", { name: "Distribution" });
+  const bounds = await dialog.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.y).toBeGreaterThanOrEqual(12);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(page.viewportSize()!.height - 12);
+  await expect(component.getByRole("button", { name: "Save" })).toBeVisible();
+  await expect(component.getByRole("button", { name: "Cancel" })).toBeVisible();
+
+  const fieldList = component.locator(".distribution-column-list");
+  const overflow = await fieldList.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflowY: getComputedStyle(element).overflowY,
+  }));
+  expect(overflow.scrollHeight).toBeGreaterThan(overflow.clientHeight);
+  expect(overflow.overflowY).toBe("auto");
 });

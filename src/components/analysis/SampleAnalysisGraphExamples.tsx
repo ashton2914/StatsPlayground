@@ -26,8 +26,8 @@ export function createSampleEcdfOption(responseName: string): GraphPanelOptionFa
         type: "value",
         name: "Cumulative probability",
         data: undefined,
-        min: 0,
-        max: 1,
+        min: axis.min ?? 0,
+        max: axis.max ?? 1,
         ...(axis.axisLabel != null && typeof axis.axisLabel === "object"
           ? { axisLabel: { ...(axis.axisLabel as Record<string, unknown>), formatter: undefined } }
           : {}),
@@ -35,16 +35,12 @@ export function createSampleEcdfOption(responseName: string): GraphPanelOptionFa
       series: sourceSeries.map((series, index) => {
         if (series == null || typeof series !== "object" || Array.isArray(series)) return series;
         const source = series as Record<string, unknown>;
-        const sourceData = Array.isArray(source.data) ? source.data : [];
         const lineStyle = source.lineStyle != null && typeof source.lineStyle === "object"
           ? source.lineStyle as Record<string, unknown>
           : {};
         return {
           ...source,
           type: "line",
-          data: sourceData.map((point) => Array.isArray(point) && point.length >= 2
-            ? [point[1], point[0]]
-            : point),
           step: "end",
           smooth: false,
           showSymbol: false,

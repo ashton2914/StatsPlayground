@@ -612,6 +612,12 @@ pub struct PrecomputedCurvePacket {
     pub series_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_column: Option<String>,
     pub interpolation: PrecomputedCurveInterpolation,
     pub points: Vec<PrecomputedCurvePoint>,
 }

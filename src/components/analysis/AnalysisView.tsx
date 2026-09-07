@@ -9,27 +9,25 @@ import {
   AnalysisGraph,
   AnalysisShell,
   AnalysisStack,
-  AnalysisTable,
   AnalysisText,
 } from "@/components/analysis/presentation";
 import { describeDistributionAnalysis } from "@/components/analysis/adapters";
-import { ProcessCapabilityReport } from "@/components/distribution/ProcessCapabilityReport";
-import { mapDistributionExternalDataState, type DistributionGraphRole } from "@/graphCore/distributionAdapter";
+import { DistributionReport } from "@/components/distribution/DistributionReport";
+import {
+  mapDistributionCompositeExternalDataState,
+  type DistributionGraphRole,
+} from "@/graphCore/distributionAdapter";
 import type { RefLineX, RefLineY, YAxisConfig } from "@/graphCore";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { DistributionReportResponse } from "@/types/distribution";
-import { DISTRIBUTION_GRAPH_ELEMENT_IDS, type GraphDataFrame } from "@/types/graphData";
 import type { EmbeddedGraphConfig, Graph2DState } from "@/types/graphBuilder";
 
 import {
   useAnalysisExecution,
   type UseAnalysisExecutionRuntime,
 } from "./useAnalysisExecution";
-import {
-  createSampleEcdfOption,
-  SampleFiveNumberRange,
-} from "./SampleAnalysisGraphExamples";
+import { createDistributionGraphBuilderConfig } from "./distributionCompositeGraph";
 
 import "./analysis.css";
 
@@ -50,7 +48,7 @@ interface AnalysisViewProps {
   onGraphConfigChange?: (role: AnalysisBuilderGraphRole, graph: EmbeddedGraphConfig) => void;
 }
 
-type AnalysisBuilderGraphRole = "overview" | "ecdf";
+type AnalysisBuilderGraphRole = "overview";
 
 export interface AnalysisViewRuntime extends UseAnalysisExecutionRuntime {
   renderGraph?: (props: GraphRuntimeProps & { role: DistributionGraphRole }) => ReactNode;
@@ -76,54 +74,18 @@ export function AnalysisView({
   const graphItems = useMemo(() => {
     if (!supportedItem) return null;
     const overview = supportedItem.definition.graphs.overview;
+    const boxPlot = supportedItem.definition.graphs.boxPlot;
     return {
       distributionComposite: createEmbeddedGraphItem({
-      id: `analysis-graph:${item.id}:distributionComposite`,
-      name: item.name,
-      sourceDatasetId: item.source.datasetId,
-      config: {
-        ...overview,
-        modeStates: {
-          ...overview.modeStates,
-          twoD: {
-            ...overview.modeStates.twoD,
-            elements: [
-              { kind: "histogram", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram } },
-              { kind: "line", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves } },
-              { kind: "boxplot", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot } },
-            ],
-          },
-        },
-      },
-      createdAt: item.createdAt,
-    }),
-    ecdf: createEmbeddedGraphItem({
-      id: `analysis-graph:${item.id}:ecdf`,
-      name: item.name,
-      sourceDatasetId: item.source.datasetId,
-      config: item.definition.graphs.ecdf,
-      createdAt: item.createdAt,
-    }),
+        id: `analysis-graph:${item.id}:distributionComposite`,
+        name: item.name,
+        sourceDatasetId: item.source.datasetId,
+        config: createDistributionGraphBuilderConfig(overview, boxPlot, supportedItem.definition.responses),
+        createdAt: item.createdAt,
+      }),
     };
   }, [item, supportedItem]);
   const responseName = supportedItem?.definition.responses.map((response) => response.name).join(", ") ?? item.name;
-  const ecdfOptionFactory = useMemo(() => createSampleEcdfOption(responseName), [responseName]);
-  const compositeDataState = useMemo(() => {
-    if (executionState.status !== "success") {
-      return executionState.status === "error"
-        ? { status: "error" as const, frame: null, error: executionState.error }
-        : { status: "loading" as const, frame: null, error: null };
-    }
-    const overview = executionState.result.graphFrames.overview;
-    const boxPlot = executionState.result.graphFrames.boxPlot;
-    const frame: GraphDataFrame = {
-      ...overview,
-      requestId: `${overview.requestId}:composite`,
-      aggregates: [...overview.aggregates, ...boxPlot.aggregates],
-    };
-    return { status: "ready" as const, frame, error: null };
-  }, [executionState]);
-
   const updateGraph2D = (role: AnalysisBuilderGraphRole, patch: Partial<Graph2DState>) => {
     if (!onGraphConfigChange) return;
     const graph = item.definition.graphs[role];
@@ -161,11 +123,6 @@ export function AnalysisView({
   }
 
   const summary = describeDistributionAnalysis(item, dataset ?? null, t);
-  const rangeResult = executionState.status === "success" ? firstResult(executionState.result) : null;
-  const rangeSummary = rangeResult?.blocks.find((block) => block.summaryData)?.summaryData;
-  const q1 = rangeResult?.quantiles.find((quantile) => quantile.probability === 0.25)?.value;
-  const q3 = rangeResult?.quantiles.find((quantile) => quantile.probability === 0.75)?.value;
-
   return (
     <AnalysisShell
       title={item.name}
@@ -197,8 +154,8 @@ export function AnalysisView({
                     runtimeProps: {
                       item: graphItems.distributionComposite,
                       dataset,
-                      minPanelHeight: 360,
-                      externalDataState: compositeDataState,
+                      panelLayout: "fit",
+                      externalDataState: mapDistributionCompositeExternalDataState(executionState),
                       onXAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "overview", axis: "x" }) : undefined,
                       onYAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "overview", axis: "y" }) : undefined,
                     },
@@ -207,60 +164,16 @@ export function AnalysisView({
                     ? (props) => runtime.renderGraph?.({ ...props, role: "overview" })
                     : undefined}
                 />
-                <AnalysisGraph
-                  title={t("distribution.graph.ecdf", { defaultValue: "Empirical cumulative distribution" })}
-                  graphRole="ecdf"
-                  data-analysis-block="graph"
-                  contentClassName="analysis-graph-ecdf"
-                  strategy={{
-                    mode: "builder-custom",
-                    runtimeProps: {
-                      item: graphItems.ecdf,
-                      dataset,
-                      minPanelHeight: 220,
-                      externalDataState: mapDistributionExternalDataState(executionState, "ecdf"),
-                      onXAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "ecdf", axis: "x" }) : undefined,
-                      onYAxisDblClick: onGraphConfigChange ? () => setAxisDialog({ role: "ecdf", axis: "y" }) : undefined,
-                    },
-                    optionFactory: ecdfOptionFactory,
-                  }}
-                  renderGraph={runtime?.renderGraph
-                    ? (props) => runtime.renderGraph?.({ ...props, role: "ecdf" })
-                    : undefined}
-                />
-                <AnalysisGraph
-                  title={t("distribution.graph.fiveNumberRange", { defaultValue: "Five-number range" })}
-                  graphRole="summaryRange"
-                  data-analysis-block="graph"
-                  contentClassName="analysis-graph-summary-range"
-                  strategy={{
-                    mode: "custom",
-                    render: () => rangeResult && rangeSummary && q1 != null && q3 != null
-                      ? (
-                          <SampleFiveNumberRange
-                            responseName={rangeResult.yName}
-                            minimum={rangeSummary.minimum}
-                            q1={q1}
-                            median={rangeSummary.median}
-                            q3={q3}
-                            maximum={rangeSummary.maximum}
-                            mean={rangeSummary.mean}
-                          />
-                        )
-                      : null,
-                  }}
-                />
               </>
             )}
 
             <AnalysisTextBlock state={executionState} />
 
-            <AnalysisFrame title="Summary Statistical" data-analysis-block="tables">
-              <AnalysisTables state={executionState} datasetMissing={dataset == null} />
-            </AnalysisFrame>
-
-            <AnalysisFrame title="Process Capabilities" data-analysis-block="process-capabilities">
-              <AnalysisProcessCapabilities state={executionState} datasetMissing={dataset == null} />
+            <AnalysisFrame
+              title={t("distribution.report.title", { defaultValue: "Statistical Report" })}
+              data-analysis-block="report"
+            >
+              <AnalysisDistributionReport state={executionState} datasetMissing={dataset == null} />
             </AnalysisFrame>
           </AnalysisStack>
         </AnalysisFrame>
@@ -296,7 +209,7 @@ function UnsupportedAnalysis({ item, message }: { item: AnalysisDocument; messag
     <div className="main-content">
       <div className="workspace-empty">
         <h2>{item.name}</h2>
-        <p role="alert">{message}</p>
+        <AnalysisText role="alert">{message}</AnalysisText>
       </div>
     </div>
   );
@@ -314,7 +227,7 @@ function AnalysisTextBlock({ state }: { state: ReturnType<typeof useAnalysisExec
   );
 }
 
-function AnalysisTables({ state, datasetMissing }: {
+function AnalysisDistributionReport({ state, datasetMissing }: {
   state: ReturnType<typeof useAnalysisExecution>;
   datasetMissing: boolean;
 }) {
@@ -325,103 +238,17 @@ function AnalysisTables({ state, datasetMissing }: {
   }
   if (state.status === "error") return <AnalysisUnavailable message={state.error} alert />;
 
-  const result = firstResult(state.result);
-  const summary = result?.blocks.find((block) => block.summaryData)?.summaryData;
-  if (!result) return <AnalysisUnavailable message={t("distribution.report.unavailable", { defaultValue: "No results available." })} />;
-
-  return (
-    <AnalysisStack>
-      <AnalysisTable
-        title={t("distribution.report.quantiles", { defaultValue: "Quantiles" })}
-        width="standard"
-        columns={[
-          { key: "probability", label: t("distribution.report.probability") },
-          { key: "label", label: t("distribution.report.label") },
-          { key: "value", label: t("distribution.report.value"), numeric: true },
-        ]}
-        rows={result.quantiles.map((quantile) => ({
-          key: String(quantile.probability),
-          cells: [
-            formatProbability(quantile.probability),
-            quantileLabel(quantile.probability, t),
-            formatNumber(quantile.value),
-          ],
-        }))}
-      />
-      {summary && (
-        <>
-          <SummaryTableFrame title={t("distribution.report.location")} rows={[
-            ["n", summary.n], ["mean", summary.mean], ["median", summary.median],
-            ["minimum", summary.minimum], ["maximum", summary.maximum],
-          ]} />
-          <SummaryTableFrame title={t("distribution.report.variation")} rows={[
-            ["stdDev", summary.stdDev], ["stdError", summary.stdError],
-            ["range", summary.range], ["iqr", summary.iqr], ["mad", summary.mad],
-          ]} />
-        </>
-      )}
-    </AnalysisStack>
-  );
-}
-
-function SummaryTableFrame({ title, rows }: { title: string; rows: Array<[string, number | null]> }) {
-  const { t } = useTranslation();
-  return (
-    <AnalysisTable
-      title={title}
-      width="compact"
-      columns={[
-        { key: "metric", label: t("distribution.report.metric", { defaultValue: "Metric" }) },
-        { key: "value", label: t("distribution.report.value"), numeric: true },
-      ]}
-      rows={rows.map(([label, value]) => ({
-        key: label,
-        cells: [t(`distribution.statistics.${label}`), formatNumber(value)],
-      }))}
-    />
-  );
+  return <DistributionReport groups={state.result.groups} reportBlocks={state.result.reportBlocks} />;
 }
 
 function AnalysisUnavailable({ message, alert = false }: { message: string; alert?: boolean }) {
-  return <p className="analysis-unavailable" role={alert ? "alert" : undefined}>{message}</p>;
+  return <AnalysisText role={alert ? "alert" : undefined}>{message}</AnalysisText>;
 }
 
 function firstResult(response: DistributionReportResponse) {
   return response.groups.flatMap((group) => group.yResults)[0] ?? null;
 }
 
-function quantileLabel(probability: number, t: (key: string) => string): string {
-  if (probability === 0) return t("distribution.statistics.minimum");
-  if (probability === 0.25) return "Q1";
-  if (probability === 0.5) return t("distribution.statistics.median");
-  if (probability === 0.75) return "Q3";
-  if (probability === 1) return t("distribution.statistics.maximum");
-  return "";
-}
-
-function formatProbability(probability: number): string {
-  return `${Number.parseFloat((probability * 100).toFixed(3))}%`;
-}
-
 function formatNumber(value: number | null): string {
   return value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 10 });
-}
-
-function AnalysisProcessCapabilities({ state, datasetMissing }: {
-  state: ReturnType<typeof useAnalysisExecution>;
-  datasetMissing: boolean;
-}) {
-  const { t } = useTranslation();
-  if (datasetMissing) return <AnalysisUnavailable message={t("workspace.analysisSourceMissing")} />;
-  if (state.status === "idle" || state.status === "loading") return null;
-  if (state.status === "error") return <AnalysisUnavailable message={state.error} alert />;
-
-  const capabilityData = state.result.groups
-    .flatMap((group) => group.yResults)
-    .flatMap((result) => result.blocks)
-    .find((block) => block.capabilityData)?.capabilityData;
-
-  return capabilityData
-    ? <ProcessCapabilityReport data={capabilityData} />
-    : <AnalysisUnavailable message={t("distribution.report.unavailable", { defaultValue: "Process capability requires specification limits." })} />;
 }

@@ -912,26 +912,31 @@ fn request_is_aggregate_only(
     request: &GraphDataRequest,
     aggregate_packets: &[GraphAggregatePacket],
 ) -> bool {
-    if request.elements.is_empty() {
+    if request.elements.is_empty() || aggregate_packets.is_empty() {
         return false;
     }
 
-    let correlation_only = request
-        .elements
-        .iter()
-        .all(|element| element.kind.eq_ignore_ascii_case("correlationMatrix"))
-        && aggregate_packets
-            .iter()
-            .all(|packet| matches!(packet, GraphAggregatePacket::CorrelationMatrix(_)));
-    let normal_curve_only = request
-        .elements
-        .iter()
-        .all(|element| element.kind.eq_ignore_ascii_case("normalCurve"))
-        && aggregate_packets
-            .iter()
-            .all(|packet| matches!(packet, GraphAggregatePacket::Summary(_)));
-
-    !aggregate_packets.is_empty() && (correlation_only || normal_curve_only)
+    request.elements.iter().all(|element| {
+        if element.kind.eq_ignore_ascii_case("histogram") {
+            aggregate_packets
+                .iter()
+                .any(|packet| matches!(packet, GraphAggregatePacket::Histogram(_)))
+        } else if element.kind.eq_ignore_ascii_case("normalCurve") {
+            aggregate_packets
+                .iter()
+                .any(|packet| matches!(packet, GraphAggregatePacket::Summary(_)))
+        } else if element.kind.eq_ignore_ascii_case("boxplot") {
+            aggregate_packets
+                .iter()
+                .any(|packet| matches!(packet, GraphAggregatePacket::BoxPlot(_)))
+        } else if element.kind.eq_ignore_ascii_case("correlationMatrix") {
+            aggregate_packets
+                .iter()
+                .any(|packet| matches!(packet, GraphAggregatePacket::CorrelationMatrix(_)))
+        } else {
+            false
+        }
+    })
 }
 
 fn is_renderable_xy(metadata: &ProjectionMetadata, values: &[Value]) -> Result<bool, AppError> {
@@ -4435,6 +4440,114 @@ mod tests {
             completion.raw_point_disposition,
             GraphRawPointDisposition::Empty { .. }
         ));
+    }
+
+    #[test]
+    fn stream_with_sink_multi_response_distribution_omits_raw_chunks() {
+        let state = AppState::new().expect("state");
+        let dataset_id = "multi-response-distribution";
+        {
+            let db = state.db.lock().expect("db lock");
+            db.create_empty_table(
+                dataset_id,
+                "Multi-response Distribution",
+                &["d1".into(), "d2".into(), "d3".into(), "d4".into()],
+                &[
+                    "DOUBLE".into(),
+                    "DOUBLE".into(),
+                    "DOUBLE".into(),
+                    "DOUBLE".into(),
+                ],
+            )
+            .expect("create distribution table");
+            let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+            db.conn()
+                .execute(
+                    &format!(
+                        "INSERT INTO \"{table_name}\" (_row_id, d1, d2, d3, d4)
+                         SELECT i, i * 1.0, i * 1.1, i * 0.9, i * 1.2
+                         FROM range(1, 129) AS generated(i)"
+                    ),
+                    [],
+                )
+                .expect("insert distribution rows");
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = 128 WHERE id = $1",
+                    params![dataset_id],
+                )
+                .expect("update row count");
+        }
+
+        let mut request = GraphDataRequest {
+            request_id: format!("request-{dataset_id}"),
+            dataset_id: dataset_id.to_string(),
+            generation: 0,
+            fields: ["d1", "d2", "d3", "d4"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, column)| GraphFieldBinding {
+                    role: format!("multiY{index}"),
+                    column: column.to_string(),
+                })
+                .collect(),
+            filters: Vec::new(),
+            elements: ["histogram", "normalCurve", "boxplot"]
+                .into_iter()
+                .map(|kind| GraphElementRequest {
+                    kind: kind.to_string(),
+                    summary_stat: "none".to_string(),
+                    correlation_method: None,
+                })
+                .collect(),
+            sampling: GraphSampling::Full,
+            raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1200,
+                height: 700,
+            },
+        };
+        let service = GraphDataService::new(&state);
+        let mut sink = RecordingSink::default();
+
+        let completion = service
+            .stream_with_sink(&request, &mut sink)
+            .expect("distribution stream completion");
+
+        assert_eq!(sink.header_count, 0);
+        assert_eq!(sink.payload_count, 0);
+        assert_eq!(sink.aggregate_packets.len(), 3);
+        assert_eq!(completion.chunks_sent, 0);
+        assert!(matches!(
+            completion.raw_point_disposition,
+            GraphRawPointDisposition::Empty { .. }
+        ));
+
+        request.request_id = format!("request-{dataset_id}-single-response");
+        request.fields.truncate(1);
+        let mut single_response_sink = RecordingSink::default();
+        let single_response_completion = service
+            .stream_with_sink(&request, &mut single_response_sink)
+            .expect("single-response distribution stream completion");
+
+        assert_eq!(single_response_sink.header_count, 0);
+        assert_eq!(single_response_sink.payload_count, 0);
+        assert_eq!(single_response_sink.aggregate_packets.len(), 3);
+        assert_eq!(single_response_completion.chunks_sent, 0);
+
+        request.request_id = format!("request-{dataset_id}-histogram-normal");
+        request
+            .elements
+            .retain(|element| !element.kind.eq_ignore_ascii_case("boxplot"));
+        let mut two_layer_sink = RecordingSink::default();
+        let two_layer_completion = service
+            .stream_with_sink(&request, &mut two_layer_sink)
+            .expect("histogram and normal curve stream completion");
+
+        assert_eq!(two_layer_sink.header_count, 0);
+        assert_eq!(two_layer_sink.payload_count, 0);
+        assert_eq!(two_layer_sink.aggregate_packets.len(), 2);
+        assert_eq!(two_layer_completion.chunks_sent, 0);
     }
 
     #[test]

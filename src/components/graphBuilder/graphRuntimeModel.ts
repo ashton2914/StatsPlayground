@@ -70,7 +70,7 @@ function deriveMeltInfo(item: GraphBuilderItem): GraphRuntimeMeltInfo | null {
   const multiX = item.modeStates.twoD.multiX ?? [];
   const multiY = item.modeStates.twoD.multiY ?? [];
   const xActive = multiX.length >= 2;
-  const yActive = multiY.length >= 2;
+  const yActive = multiY.length >= 1;
   if (!xActive && !yActive) return null;
   const slot: "x" | "y" = xActive ? "x" : "y";
   const cols = slot === "x" ? multiX : multiY;

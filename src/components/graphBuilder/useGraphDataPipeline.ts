@@ -661,7 +661,7 @@ export function canExecuteGraphRequest(
   }
   const multiXCount = fields.filter((field) => /^multiX\d+$/.test(field.role)).length;
   const multiYCount = fields.filter((field) => /^multiY\d+$/.test(field.role)).length;
-  return (hasX && hasY) || multiXCount >= 2 || multiYCount >= 2;
+  return (hasX && hasY) || multiXCount >= 2 || multiYCount >= 1;
 }
 
 interface GraphRequestPlan {
@@ -713,7 +713,7 @@ function deriveActiveMultiFields(item: GraphBuilderItem): GraphFieldBinding[] {
   const multiX = item.modeStates.twoD.multiX ?? [];
   const multiY = item.modeStates.twoD.multiY ?? [];
   const xActive = multiX.length >= 2;
-  const yActive = multiY.length >= 2;
+  const yActive = multiY.length >= 1;
 
   if (!xActive && !yActive) {
     return [];

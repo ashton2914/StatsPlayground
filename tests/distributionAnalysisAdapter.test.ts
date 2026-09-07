@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  createDistributionAnalysisDocument,
   createDistributionAnalysisPatch,
   describeDistributionAnalysis,
   toDistributionEditorItem,
@@ -67,5 +68,14 @@ assert.equal(patch.definition?.kind, "distribution");
 assert.deepEqual(patch.definition?.responses, submitted.responses);
 assert.equal(patch.definition?.analysis.confidenceLevel, 0.99);
 assert.deepEqual(patch.definition?.graphs, submitted.graphs);
+
+const created = createDistributionAnalysisDocument(editorItem, "2026-09-06T01:00:00.000Z");
+assert.equal(created.documentType, "analysis");
+assert.equal(created.analysisKind, "distribution");
+assert.equal(created.configRevision, 1);
+assert.deepEqual(created.source, { datasetId: editorItem.sourceDatasetId });
+assert.deepEqual(created.definition.graphs, editorItem.graphs);
+assert.equal(created.createdAt, editorItem.createdAt);
+assert.equal(created.updatedAt, "2026-09-06T01:00:00.000Z");
 
 console.log("distribution analysis adapter OK");

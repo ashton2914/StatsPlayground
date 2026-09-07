@@ -1,12 +1,16 @@
 import { useTranslation } from "react-i18next";
 
+import {
+  AnalysisFrame,
+  AnalysisStack,
+  AnalysisTable,
+  AnalysisText,
+} from "@/components/analysis/presentation";
 import type {
   DistributionGroupResult,
   DistributionGroupValueV1,
   DistributionReportBlock,
 } from "@/types/distribution";
-
-import "../reportTable.css";
 
 import { ContinuousFitComparisonReport, ContinuousFitReport } from "./ContinuousFitReport";
 import { ProcessCapabilityReport } from "./ProcessCapabilityReport";
@@ -23,7 +27,7 @@ export function DistributionReport({ groups, reportBlocks }: DistributionReportP
   const standaloneBlocks = reportBlocks.filter((block) => !nestedBlockIds.has(block.blockId));
 
   return (
-    <div className="distribution-report-tree">
+    <AnalysisStack data-testid="distribution-report">
       {groups.map((group, groupIndex) => (
         <GroupSection
           key={groupIdentity(group)}
@@ -33,16 +37,15 @@ export function DistributionReport({ groups, reportBlocks }: DistributionReportP
         />
       ))}
       {standaloneBlocks.length > 0 && (
-        <details className="distribution-report-group">
-          <summary className="distribution-group-heading">Report</summary>
-          <div className="distribution-group-content">
+        <AnalysisFrame title="Report">
+          <AnalysisStack>
             {standaloneBlocks.filter(hasReportContent).map((block) => (
               <ReportBlock key={block.blockId} block={block} />
             ))}
-          </div>
-        </details>
+          </AnalysisStack>
+        </AnalysisFrame>
       )}
-    </div>
+    </AnalysisStack>
   );
 }
 
@@ -65,57 +68,44 @@ function GroupSection({
       }).join(" / ");
 
   return (
-    <details
-      className="distribution-report-group"
+    <AnalysisFrame
+      title={label}
       data-testid={`distribution-group-${groupIndex}`}
-      open={defaultOpen}
+      defaultExpanded={defaultOpen}
     >
-      <summary className="distribution-group-heading">{label}</summary>
-      <div className="distribution-group-content">
+      <AnalysisStack>
         {group.yResults.map((result, yIndex) => {
           const summaryBlock = result.blocks.find((block) => block.summaryData);
           return (
-            <details className="distribution-y-section" key={result.yColumn.columnId} open={yIndex === 0}>
-              <summary className="distribution-y-heading">{result.yName}</summary>
-              <div className="distribution-y-content">
-                <section className="distribution-report-block distribution-table-pair">
-                  <div>
-                    <h3>{t("distribution.report.quantiles")}</h3>
-                    <table className="sp-fit-y-by-x-report-table distribution-quantile-table">
-                      <thead>
-                        <tr>
-                          <th>{t("distribution.report.probability")}</th>
-                          <th>{t("distribution.report.label")}</th>
-                          <th>{t("distribution.report.value")}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {result.quantiles.map((quantile) => (
-                          <tr key={quantile.probability}>
-                            <th scope="row">{formatProbability(quantile.probability)}</th>
-                            <td>{quantileLabel(quantile.probability, t)}</td>
-                            <td>{formatNumber(quantile.value)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {summaryBlock?.summaryData && (
-                    <div>
-                      <h3>{t("distribution.report.summary")}</h3>
-                      <SummaryDataTables summaryData={summaryBlock.summaryData} />
-                    </div>
-                  )}
-                </section>
+            <AnalysisFrame title={result.yName} key={result.yColumn.columnId} defaultExpanded={yIndex === 0}>
+              <AnalysisStack>
+                <AnalysisTable
+                  title={t("distribution.report.quantiles")}
+                  width="wide"
+                  columns={[
+                    { key: "probability", label: t("distribution.report.probability"), rowHeader: true },
+                    { key: "label", label: t("distribution.report.label") },
+                    { key: "value", label: t("distribution.report.value"), numeric: true },
+                  ]}
+                  rows={result.quantiles.map((quantile) => ({
+                    key: String(quantile.probability),
+                    cells: [
+                      formatProbability(quantile.probability),
+                      quantileLabel(quantile.probability, t),
+                      formatNumber(quantile.value),
+                    ],
+                  }))}
+                />
+                {summaryBlock?.summaryData && <SummaryDataTables summaryData={summaryBlock.summaryData} />}
                 {result.blocks
                   .filter((block) => block !== summaryBlock && hasReportContent(block))
                   .map((block) => <ReportBlock key={block.blockId} block={block} />)}
-              </div>
-            </details>
+              </AnalysisStack>
+            </AnalysisFrame>
           );
         })}
-      </div>
-    </details>
+      </AnalysisStack>
+    </AnalysisFrame>
   );
 }
 
@@ -129,17 +119,17 @@ export function ReportBlock({ block }: { block: DistributionReportBlock }) {
     : t(block.titleKey);
 
   return (
-    <section className="distribution-report-block" data-testid={`distribution-report-block-${block.blockId}`}>
-      <h3>{blockTitle}</h3>
+    <AnalysisFrame title={blockTitle} data-testid={`distribution-report-block-${block.blockId}`}>
+      <AnalysisStack>
       {compatibilityStatus && (
-        <p className="distribution-compatibility-status">
+        <AnalysisText>
           {t(`distribution.compatibility.${compatibilityStatus}`)}
-        </p>
+        </AnalysisText>
       )}
       {block.status !== "available" && block.reasonCode && (
-        <p className="distribution-report-unavailable" data-testid={`distribution-report-unavailable-${block.blockId}`}>
+        <AnalysisText data-testid={`distribution-report-unavailable-${block.blockId}`}>
           {t("distribution.report.unavailableReason", { reason: block.reasonCode })}
-        </p>
+        </AnalysisText>
       )}
       {block.summaryData && <SummaryDataTables summaryData={block.summaryData} />}
       {block.distributionFitData && <ContinuousFitReport data={block.distributionFitData} />}
@@ -147,7 +137,8 @@ export function ReportBlock({ block }: { block: DistributionReportBlock }) {
         <ContinuousFitComparisonReport data={block.distributionFitComparisonData} />
       )}
       {block.capabilityData && <ProcessCapabilityReport data={block.capabilityData} />}
-    </section>
+      </AnalysisStack>
+    </AnalysisFrame>
   );
 }
 
@@ -158,7 +149,7 @@ function SummaryDataTables({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="distribution-summary-tables">
+    <AnalysisStack>
       <SummaryTable title={t("distribution.report.location")} rows={[
         ["n", summaryData.n], ["nMissing", summaryData.nMissing],
         ["mean", summaryData.mean], ["median", summaryData.median],
@@ -172,24 +163,28 @@ function SummaryDataTables({
         ["meanCiLower", summaryData.meanCiLower], ["meanCiUpper", summaryData.meanCiUpper],
         ["range", summaryData.range], ["iqr", summaryData.iqr], ["mad", summaryData.mad],
       ]} />
-    </div>
+    </AnalysisStack>
   );
 }
 
 function SummaryTable({ title, rows }: { title: string; rows: Array<[string, number | string | null]> }) {
   const { t } = useTranslation();
   return (
-    <table className="sp-fit-y-by-x-report-table distribution-summary-table">
-      <caption>{title}</caption>
-      <tbody>
-        {rows.map(([label, value]) => (
-          <tr key={label}>
-            <th scope="row">{t(`distribution.statistics.${label}`)}</th>
-            <td>{typeof value === "number" ? formatNumber(value) : value ?? "-"}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <AnalysisTable
+      title={title}
+      width="compact"
+      columns={[
+        { key: "metric", label: t("distribution.report.metric", { defaultValue: "Metric" }), rowHeader: true },
+        { key: "value", label: t("distribution.report.value"), numeric: true },
+      ]}
+      rows={rows.map(([label, value]) => ({
+        key: label,
+        cells: [
+          t(`distribution.statistics.${label}`),
+          typeof value === "number" ? formatNumber(value) : value ?? "-",
+        ],
+      }))}
+    />
   );
 }
 

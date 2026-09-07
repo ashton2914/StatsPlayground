@@ -20,6 +20,8 @@ import {
 import { DistributionRoleZone } from "./DistributionRoleZone";
 import { SpecificationLimitsEditor } from "./SpecificationLimitsEditor";
 
+import "./distribution.css";
+
 interface DistributionDialogProps {
   open: boolean;
   datasetId: string;

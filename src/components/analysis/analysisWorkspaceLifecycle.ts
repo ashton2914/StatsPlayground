@@ -2,6 +2,8 @@ import type { SaveProjectRequest } from "@/services/projectService";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { OpenProjectResult } from "@/types/project";
 
+import { migrateLegacyDistributions } from "./distributionAnalysisMigration";
+
 export interface WorkspaceDocumentSelection {
   activeDatasetId: string | null;
   activeGraphBuilderId: string | null;
@@ -9,7 +11,6 @@ export interface WorkspaceDocumentSelection {
   activeFitModelId: string | null;
   activeReportId: string | null;
   activeAnalysisId: string | null;
-  activeDistributionId: string | null;
   activeTabulateId: string | null;
 }
 
@@ -20,7 +21,6 @@ export type WorkspaceDocumentKind =
   | "fitModel"
   | "report"
   | "analysis"
-  | "distribution"
   | "tabulate";
 
 export function createEmptyWorkspaceDocumentSelection(): WorkspaceDocumentSelection {
@@ -31,7 +31,6 @@ export function createEmptyWorkspaceDocumentSelection(): WorkspaceDocumentSelect
     activeFitModelId: null,
     activeReportId: null,
     activeAnalysisId: null,
-    activeDistributionId: null,
     activeTabulateId: null,
   };
 }
@@ -44,7 +43,6 @@ export function selectWorkspaceDocument(kind: WorkspaceDocumentKind, id: string)
   if (kind === "fitModel") next.activeFitModelId = id;
   if (kind === "report") next.activeReportId = id;
   if (kind === "analysis") next.activeAnalysisId = id;
-  if (kind === "distribution") next.activeDistributionId = id;
   if (kind === "tabulate") next.activeTabulateId = id;
   return next;
 }
@@ -52,20 +50,27 @@ export function selectWorkspaceDocument(kind: WorkspaceDocumentKind, id: string)
 export function buildAnalysisProjectPayload(input: {
   analyses: AnalysisDocument[];
   analysisFolders: Record<string, string>;
-}): Pick<SaveProjectRequest, "analyses" | "analysisFolders"> {
+}): Pick<SaveProjectRequest, "analyses" | "analysisFolders" | "distributions" | "distributionFolders"> {
   return {
     analyses: input.analyses,
     analysisFolders: input.analysisFolders,
+    distributions: [],
+    distributionFolders: {},
   };
 }
 
 export function hydrateAnalysisProjectPayload(
-  result: Partial<Pick<OpenProjectResult, "analyses" | "analysisFolders">>,
-): Pick<OpenProjectResult, "analyses" | "analysisFolders"> {
-  return {
+  result: Partial<Pick<
+    OpenProjectResult,
+    "analyses" | "analysisFolders" | "distributions" | "distributionFolders"
+  >>,
+): Pick<OpenProjectResult, "analyses" | "analysisFolders"> & { migratedCount: number } {
+  return migrateLegacyDistributions({
     analyses: result.analyses ?? [],
     analysisFolders: result.analysisFolders ?? {},
-  };
+    distributions: result.distributions ?? [],
+    distributionFolders: result.distributionFolders ?? {},
+  });
 }
 
 export function getRetainedActiveAnalysisIdAfterDatasetDeletion(input: {
@@ -76,6 +81,10 @@ export function getRetainedActiveAnalysisIdAfterDatasetDeletion(input: {
     return null;
   }
   return input.activeAnalysis.id;
+}
+
+export function shouldMarkAnalysisMigrationDirty(migratedCount: number): boolean {
+  return migratedCount > 0;
 }
 
 export function getAnalysisCreationHistoryKey(origin: "sample" | "generic"): "history.analysisSample" | "history.newAnalysis" {

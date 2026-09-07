@@ -1520,42 +1520,66 @@ function intervalHalf(ys: number[], kind: string): number {
 function findSummaryPacket(
   aggregatePackets: readonly GraphAggregatePacket[] | undefined,
   panelFacet?: PanelFacetContext,
+  categoryColumn?: string,
 ): SummaryPacket | null {
   if (!aggregatePackets || aggregatePackets.length === 0) return null;
   const packet = aggregatePackets.find((candidate) => candidate.kind === "summary");
   if (!packet || packet.kind !== "summary") return null;
-  if (!panelFacet) return packet;
+  const summaries = panelFacet
+    ? packet.summaries.filter((entry) => matchesPanelFacet(entry, panelFacet))
+    : packet.summaries;
+  if (packet.sourceColumn !== categoryColumn) {
+    return panelFacet ? { ...packet, summaries } : packet;
+  }
   return {
     ...packet,
-    summaries: packet.summaries.filter((entry) => matchesPanelFacet(entry, panelFacet)),
+    summaries: summaries.map((entry) => entry.category || !entry.sourceColumn
+      ? entry
+      : { ...entry, category: entry.sourceColumn }),
   };
 }
 
 function findBoxPlotPacket(
   aggregatePackets: readonly GraphAggregatePacket[] | undefined,
   panelFacet?: PanelFacetContext,
+  categoryColumn?: string,
 ): BoxPlotPacket | null {
   if (!aggregatePackets || aggregatePackets.length === 0) return null;
   const packet = aggregatePackets.find((candidate) => candidate.kind === "boxPlot");
   if (!packet || packet.kind !== "boxPlot") return null;
-  if (!panelFacet) return packet;
+  const entries = panelFacet
+    ? packet.entries.filter((entry) => matchesPanelFacet(entry, panelFacet))
+    : packet.entries;
+  if (packet.sourceColumn !== categoryColumn) {
+    return panelFacet ? { ...packet, entries } : packet;
+  }
   return {
     ...packet,
-    entries: packet.entries.filter((entry) => matchesPanelFacet(entry, panelFacet)),
+    entries: entries.map((entry) => entry.category || !entry.sourceColumn
+      ? entry
+      : { ...entry, category: entry.sourceColumn }),
   };
 }
 
 function findHistogramPacket(
   aggregatePackets: readonly GraphAggregatePacket[] | undefined,
   panelFacet?: PanelFacetContext,
+  categoryColumn?: string,
 ): HistogramPacket | null {
   if (!aggregatePackets || aggregatePackets.length === 0) return null;
   const packet = aggregatePackets.find((candidate) => candidate.kind === "histogram");
   if (!packet || packet.kind !== "histogram") return null;
-  if (!panelFacet) return packet;
+  const bins = panelFacet
+    ? packet.bins.filter((entry) => matchesPanelFacet(entry, panelFacet))
+    : packet.bins;
+  if (packet.sourceColumn !== categoryColumn) {
+    return panelFacet ? { ...packet, bins } : packet;
+  }
   return {
     ...packet,
-    bins: packet.bins.filter((entry) => matchesPanelFacet(entry, panelFacet)),
+    bins: bins.map((entry) => entry.category || !entry.sourceColumn
+      ? entry
+      : { ...entry, category: entry.sourceColumn }),
   };
 }
 
@@ -2890,10 +2914,74 @@ function transposeMarkData(arr: any[] | undefined): any[] | undefined {
  *
  *  markLine / markArea sit on the series, not the data points, and
  *  always need the xAxis ↔ yAxis key flip via `transposeMarkData`. */
-function transposeSeriesData(s: any): any {
+function transposeSeriesData(s: any, histogramStackStarts?: Map<string, number>): any {
   if (!s || typeof s !== "object") return s;
   const out: any = { ...s };
   const seriesType = s.type;
+  if (
+    seriesType === "custom" &&
+    typeof s.id === "string" &&
+    s.id.startsWith("__hist_mode_a_") &&
+    Number.isFinite(Number(s.__histBinWidth)) &&
+    Array.isArray(s.data)
+  ) {
+    out.type = "bar";
+    out.data = s.data.map((point: unknown) => {
+      if (!Array.isArray(point) || point.length < 3) return point;
+      return [Number(point[1]), Math.max(0, Number(point[0]) - Number(point[2]))];
+    });
+    out.barWidth = "99%";
+    if (typeof s.__histStack === "string") out.stack = s.__histStack;
+    else delete out.stack;
+    delete out.coordinateSystem;
+    delete out.renderItem;
+    delete out.__histStack;
+    return out;
+  }
+  if (
+    seriesType === "bar" &&
+    typeof s.id === "string" &&
+    s.id.startsWith("__hist_mode_a_") &&
+    Array.isArray(s.data)
+  ) {
+    const binWidth = Number(s.__histBinWidth);
+    const stackKey = typeof s.stack === "string" ? s.stack : "";
+    out.type = "custom";
+    out.coordinateSystem = "cartesian2d";
+    out.clip = true;
+    out.__histStack = stackKey || undefined;
+    out.data = s.data.map((point: unknown) => {
+      if (!Array.isArray(point) || point.length < 2) return point;
+      const center = Number(point[0]);
+      const count = Math.max(0, Number(point[1]) || 0);
+      const key = stackKey ? `${stackKey}\u0000${center}` : "";
+      const start = key ? (histogramStackStarts?.get(key) ?? 0) : 0;
+      if (key) histogramStackStarts?.set(key, start + count);
+      return [start + count, center, start];
+    });
+    out.renderItem = (_params: any, api: any) => {
+      const countEnd = Number(api.value(0));
+      const center = Number(api.value(1));
+      const countStart = Number(api.value(2));
+      if (![countEnd, center, countStart, binWidth].every(Number.isFinite)) return null;
+      const start = api.coord([countStart, center]);
+      const end = api.coord([countEnd, center]);
+      const thickness = Math.max(1, Math.abs(api.size([0, binWidth])[1]) * 0.99);
+      return {
+        type: "rect",
+        shape: {
+          x: Math.min(start[0], end[0]),
+          y: start[1] - thickness / 2,
+          width: Math.abs(end[0] - start[0]),
+          height: thickness,
+        },
+        style: api.style(),
+      };
+    };
+    delete out.barWidth;
+    delete out.stack;
+    return out;
+  }
   const FLIP_TYPES = new Set(["scatter", "effectScatter", "line", "bar"]);
   if (FLIP_TYPES.has(seriesType) && Array.isArray(s.data)) {
     out.data = s.data.map((pt: any) => {
@@ -3004,7 +3092,8 @@ export function transposeOption(opt: EChartsOption): EChartsOption {
   out.xAxis = opt.yAxis;
   out.yAxis = opt.xAxis;
   const series = Array.isArray(opt.series) ? (opt.series as any[]) : [];
-  out.series = series.map((s) => transposeSeriesData(s));
+  const histogramStackStarts = new Map<string, number>();
+  out.series = series.map((s) => transposeSeriesData(s, histogramStackStarts));
   return out;
 }
 
@@ -3145,6 +3234,12 @@ function buildSingleOption(
     (e) => e.kind === "normalCurve" && e.enabled !== false,
   );
   const hasNormalCurveEl = !!normalCurveElement;
+  const normalCurvePackets = normalCurveElement
+    ? findPrecomputedCurvePackets(
+        aggregatePackets,
+        getOpt<string>(normalCurveElement.options, "elementId", ""),
+      )
+    : [];
   const showNormalSigmaBands = normalCurveElement?.options?.showSigmaBands === true;
   const hasDistributionEl = hasHistogramEl || hasNormalCurveEl;
   const compositeBoxPlotElement = elements.find(
@@ -3159,6 +3254,14 @@ function buildSingleOption(
     && xField?.type === "continuous"
     && !yField
   ) {
+    const boxPlotOptions = compositeBoxPlotElement.options;
+    const showBoxPlotOutliers = getOpt<boolean>(boxPlotOptions, "outliers", true);
+    const boxPlotType = getOpt<string>(boxPlotOptions, "boxType", "outlier");
+    const showBoxPlotFiveNumberSummary = getOpt<boolean>(boxPlotOptions, "fiveNumberSummary", false);
+    const boxPlotWidthProportion = Math.max(
+      0,
+      Math.min(1, getOpt<number>(boxPlotOptions, "widthProportion", 0)),
+    );
     const distributionOption = buildSingleOption(
       {
         ...spec,
@@ -3177,12 +3280,25 @@ function buildSingleOption(
     const upperXAxis = distributionOption.xAxis as Record<string, unknown>;
     const upperYAxis = distributionOption.yAxis as Record<string, unknown>;
     const boxValues = compositeBoxPlotPacket.entries.map((entry) => [
-      entry.whiskerLow,
+      boxPlotType === "outlier" ? entry.whiskerLow : entry.min,
       entry.q1,
       entry.median,
       entry.q3,
-      entry.whiskerHigh,
+      boxPlotType === "outlier" ? entry.whiskerHigh : entry.max,
     ]);
+    const boxPlotOutliers = showBoxPlotOutliers
+      ? compositeBoxPlotPacket.entries.flatMap((entry) => entry.outliers.map((outlier) => [
+          outlier.value,
+          entry.category ?? "",
+        ]))
+      : [];
+    const fiveNumberLabels = showBoxPlotFiveNumberSummary
+      ? compositeBoxPlotPacket.entries.flatMap((entry) => [
+          { value: entry.q1, category: entry.category ?? "", text: `Q1 ${entry.q1.toFixed(2)}` },
+          { value: entry.median, category: entry.category ?? "", text: `${entry.median.toFixed(2)}` },
+          { value: entry.q3, category: entry.category ?? "", text: `Q3 ${entry.q3.toFixed(2)}` },
+        ])
+      : [];
 
     distributionOption.grid = [
       { left: 72, right: 28, top: 20, bottom: 92 },
@@ -3212,7 +3328,7 @@ function buildSingleOption(
         xAxisIndex: 1,
         yAxisIndex: 1,
         data: boxValues,
-        boxWidth: [12, 28],
+        boxWidth: [12, 28 + boxPlotWidthProportion * 12],
         clip: true,
         itemStyle: {
           color: withAlpha(theme.categorical[0], 0.18),
@@ -3221,6 +3337,33 @@ function buildSingleOption(
         },
         z: 4,
       },
+      ...(boxPlotOutliers.length > 0 ? [{
+        name: "Outliers",
+        type: "scatter",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: boxPlotOutliers,
+        symbolSize: 6,
+        itemStyle: { color: theme.categorical[0] },
+        z: 5,
+      }] : []),
+      ...(fiveNumberLabels.length > 0 ? [{
+        name: "5-Number",
+        type: "scatter",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: fiveNumberLabels.map((label) => [label.value, label.category]),
+        symbolSize: 0.1,
+        label: {
+          show: true,
+          position: "top",
+          color: theme.fgSecondary,
+          fontSize: 10,
+          formatter: (params: { dataIndex: number }) => fiveNumberLabels[params.dataIndex]?.text ?? "",
+        },
+        silent: true,
+        z: 6,
+      }] : []),
     ];
     return distributionOption as EChartsOption;
   }
@@ -3367,7 +3510,7 @@ function buildSingleOption(
     && enabledElements.length === 1
     && enabledElements[0].kind === "points"
     && getOpt<string>(enabledElements[0].options, "summaryStat", "none") === "none";
-  const summaryPacket = findSummaryPacket(aggregatePackets, panelFacet);
+  const summaryPacket = findSummaryPacket(aggregatePackets, panelFacet, xField?.name);
 
   if (frame) {
     const frameRanges: SharedAxisRanges = {};
@@ -3436,8 +3579,8 @@ function buildSingleOption(
     x?: { min: number; max: number };
     y?: { min: number; max: number };
   } | undefined;
-  const boxPlotPacket = findBoxPlotPacket(aggregatePackets, panelFacet);
-  const histogramPacket = findHistogramPacket(aggregatePackets, panelFacet);
+  const boxPlotPacket = findBoxPlotPacket(aggregatePackets, panelFacet, xField?.name);
+  const histogramPacket = findHistogramPacket(aggregatePackets, panelFacet, xField?.name);
   const heatmapPacket = findHeatmapPacket(aggregatePackets, panelFacet);
   const histogramElementCount = enabledElements.filter((e) => e.kind === "histogram").length;
   const histogramOnlyPacketMode =
@@ -4617,8 +4760,12 @@ function buildSingleOption(
               String(entry.category ?? "") === cat &&
               (!grouping || String(entry.group ?? DEFAULT_GROUP_KEY) === slot.key)
             );
+            const curvePacket = normalCurvePackets.find((packet) =>
+              String(packet.category ?? packet.sourceColumn ?? "") === cat
+              && (!grouping || String(packet.group ?? DEFAULT_GROUP_KEY) === slot.key)
+            );
             let values: number[] = [];
-            if (!packetEntry) {
+            if (!packetEntry && !curvePacket) {
               values = slot.rowIdxs
                 .filter((index) => String(data.rows[index]?.[xIdx] ?? "") === cat)
                 .map((index) => toNum(data.rows[index]?.[yIdx]))
@@ -4628,16 +4775,18 @@ function buildSingleOption(
             const mean = packetEntry?.mean ?? raw.mean;
             const std = packetEntry?.stddev ?? raw.std;
             const count = packetEntry?.count ?? raw.n;
-            const points = normalCurve(
-              mean,
-              std,
-              count,
-              yWidth,
-              packetEntry?.min ?? dataLo,
-              packetEntry?.max ?? dataHi,
-            );
+            const points: [number, number][] = curvePacket
+              ? curvePacket.points.map((point) => [point.x, point.y])
+              : normalCurve(
+                  mean,
+                  std,
+                  count,
+                  yWidth,
+                  packetEntry?.min ?? dataLo,
+                  packetEntry?.max ?? dataHi,
+                );
             if (points.length === 0) continue;
-            const sigmaBands = showNormalSigmaBands
+            const sigmaBands = showNormalSigmaBands && !curvePacket
               ? normalSigmaBands(mean, std, count, yWidth)
               : [];
             let maxWeight = 0;
@@ -4679,7 +4828,7 @@ function buildSingleOption(
                   const slotSize = catIsX ? api.size([1, 0])[0] : api.size([0, 1])[1];
                   const maxExtent = Math.max(0, slotSize * 0.85 - 1) * histHeight;
                   const maxWeight = hasHistogramEl
-                    ? (perCatMaxCount.get(info.cat) ?? 0)
+                    ? Math.max(perCatMaxCount.get(info.cat) ?? 0, maxByCat.get(info.cat) ?? info.maxWeight)
                     : (maxByCat.get(info.cat) ?? info.maxWeight);
                   if (maxWeight <= 0) return null;
                   const curvePoints: number[][] = [];
@@ -4731,7 +4880,7 @@ function buildSingleOption(
               const slotSize = catIsX ? api.size([1, 0])[0] : api.size([0, 1])[1];
               const maxExtent = Math.max(0, slotSize * 0.85 - 1) * histHeight;
               const maxWeight = hasHistogramEl
-                ? (perCatMaxCount.get(info.cat) ?? 0)
+                ? Math.max(perCatMaxCount.get(info.cat) ?? 0, maxByCat.get(info.cat) ?? info.maxWeight)
                 : (maxByCat.get(info.cat) ?? info.maxWeight);
               if (maxWeight <= 0) return null;
               const shapePoints: number[][] = [];
@@ -4995,7 +5144,7 @@ function buildSingleOption(
       // Emit one (or more) series per group based on the chosen style.
       // Shared `stackId` ensures grouped bars stack within each bin.
       const stackId = "__hist_stack__";
-      histGroupSlots.forEach((slot) => {
+      histGroupSlots.forEach((slot, slotIndex) => {
         const styleKey = grouping ? slot.key : DEFAULT_GROUP_KEY;
         const rs = resolvedStyleFor(styleKey);
         const gxs = packetModeA || summaryModeA
@@ -5030,10 +5179,12 @@ function buildSingleOption(
           for (const bc of binChoices) {
             const layer = histogramBins(gxs, bc);
             series.push({
+              id: `__hist_mode_a_${slotIndex}_shadowgram_${bc}`,
               type: "bar",
               name: slot.key,
               data: layer.centers.map((c, i) => [c, layer.counts[i]]),
               barWidth: "99%",
+              __histBinWidth: layer.width,
               itemStyle: { color: lineColor, opacity: 0.15 },
               silent: true,
               tooltip: { show: false },
@@ -5079,10 +5230,12 @@ function buildSingleOption(
           // Default: filled bar histogram. Stacked when grouped so
           // each bin shows the per-group contribution as a segment.
           series.push({
+            id: `__hist_mode_a_${slotIndex}`,
             type: "bar",
             name: slot.key,
             data: centers.map((c, i) => [c, groupCounts[i]]),
             barWidth: "99%",
+            __histBinWidth: width,
             itemStyle: { color: barFillColor },
             ...(grouping ? { stack: stackId } : {}),
             ...labelCfg,

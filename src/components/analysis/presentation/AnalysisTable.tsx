@@ -8,6 +8,7 @@ export interface AnalysisTableColumn {
   key: string;
   label: ReactNode;
   numeric?: boolean;
+  rowHeader?: boolean;
 }
 
 export interface AnalysisTableRow {
@@ -47,7 +48,15 @@ export function AnalysisTable({
             <tbody>
               {rows.map((row) => (
                 <tr key={row.key}>
-                  {columns.map((column, index) => (
+                  {columns.map((column, index) => column.rowHeader ? (
+                    <th
+                      className={column.numeric ? "analysis-ui-table-numeric" : undefined}
+                      key={column.key}
+                      scope="row"
+                    >
+                      {row.cells[index]}
+                    </th>
+                  ) : (
                     <td className={column.numeric ? "analysis-ui-table-numeric" : undefined} key={column.key}>
                       {row.cells[index]}
                     </td>

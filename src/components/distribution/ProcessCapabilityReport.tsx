@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { AnalysisStack, AnalysisTable } from "@/components/analysis/presentation";
+import { AnalysisStack, AnalysisTable, AnalysisText } from "@/components/analysis/presentation";
 import type {
   CapabilityTypedValueV1,
   ProcessCapabilityDataV1,
@@ -69,7 +69,7 @@ export function ProcessCapabilityReport({ data }: { data: ProcessCapabilityDataV
       <IndexTable title={t("distribution.capability.overall")} rows={overallRows} intervals={data.intervals} />
       <NonconformanceTable data={data.nonconformance} />
       {data.warnings.map((warning) => (
-        <p className="distribution-capability-warning" key={warning}>{t(warning)}</p>
+        <AnalysisText key={warning}>{t(warning)}</AnalysisText>
       ))}
     </AnalysisStack>
   );
@@ -94,7 +94,7 @@ function IndexTable({
       title={title}
       width="wide"
       columns={[
-        { key: "index", label: t("distribution.capability.index") },
+        { key: "index", label: t("distribution.capability.index"), rowHeader: true },
         { key: "estimate", label: t("distribution.capability.estimate"), numeric: true },
         { key: "lower", label: t("distribution.capability.lowerConfidence", { confidencePercent }), numeric: true },
         { key: "upper", label: t("distribution.capability.upperConfidence", { confidencePercent }), numeric: true },
@@ -135,7 +135,7 @@ function NonconformanceTable({ data }: { data: ProcessCapabilityDataV1["nonconfo
       title={t("distribution.capability.nonconformance")}
       width="wide"
       columns={[
-        { key: "portion", label: t("distribution.capability.portion") },
+        { key: "portion", label: t("distribution.capability.portion"), rowHeader: true },
         { key: "observed", label: t("distribution.capability.observedPercent"), numeric: true },
         { key: "within", label: t("distribution.capability.expectedWithinPercent"), numeric: true },
         { key: "overall", label: t("distribution.capability.expectedOverallPercent"), numeric: true },
@@ -155,7 +155,7 @@ function NonconformanceTable({ data }: { data: ProcessCapabilityDataV1["nonconfo
 
 function metricValueColumns(t: (key: string, values?: Record<string, unknown>) => string) {
   return [
-    { key: "metric", label: t("distribution.report.metric", { defaultValue: "Metric" }) },
+    { key: "metric", label: t("distribution.report.metric", { defaultValue: "Metric" }), rowHeader: true },
     { key: "value", label: t("distribution.report.value"), numeric: true },
   ];
 }

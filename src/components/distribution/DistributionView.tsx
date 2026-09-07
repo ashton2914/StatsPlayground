@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AnalysisFrame, AnalysisText } from "@/components/analysis/presentation";
 import {
   type DistributionGraphRole,
 } from "@/graphCore/distributionAdapter";
@@ -63,7 +64,7 @@ export function DistributionView({ item, dataset }: DistributionViewProps) {
 
       <section className="distribution-graph-section">
         {dataset == null ? (
-          <div className="workspace-empty"><p>{t("workspace.datasourceDeleted")}</p></div>
+          <div className="workspace-empty"><AnalysisText>{t("workspace.datasourceDeleted")}</AnalysisText></div>
         ) : (
           <DistributionViewGraphGrid
             item={item}
@@ -83,10 +84,12 @@ export function DistributionView({ item, dataset }: DistributionViewProps) {
 
       {dataset == null
         ? (
-          <section className="distribution-report-section">
-            <h2>{t("distribution.report.title", { defaultValue: "Statistical Report" })}</h2>
-            <p className="distribution-report-unavailable">{t("workspace.datasourceDeleted")}</p>
-          </section>
+          <AnalysisFrame
+            className="distribution-report-section"
+            title={t("distribution.report.title", { defaultValue: "Statistical Report" })}
+          >
+            <AnalysisText>{t("workspace.datasourceDeleted")}</AnalysisText>
+          </AnalysisFrame>
         )
         : <DistributionReportPanel reportState={reportState} />}
     </div>

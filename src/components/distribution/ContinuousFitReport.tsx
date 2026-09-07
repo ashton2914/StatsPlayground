@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 
+import { AnalysisStack, AnalysisTable, AnalysisText } from "@/components/analysis/presentation";
 import type {
   CapabilityTypedValueV1,
   ContinuousDistributionIdV1,
@@ -81,14 +82,12 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
       ? formatReason(t, data.reasonCode)
       : t(`distribution.fit.states.${data.status}`, { defaultValue: data.status });
     return (
-      <div className="distribution-fit-report">
-        <p className="distribution-report-unavailable">
+      <AnalysisText>
           {t("distribution.fit.unavailable", {
             defaultValue: "Fit unavailable: {{reason}}",
             reason,
           })}
-        </p>
-      </div>
+      </AnalysisText>
     );
   }
 
@@ -100,87 +99,86 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
   ] as const;
 
   return (
-    <div className="distribution-fit-report">
-      <p className="distribution-compatibility-status">
+    <AnalysisStack>
+      <AnalysisText>
         {t(`distribution.compatibility.${data.provenance.compatibilityStatus}`)}
-      </p>
-      <div className="distribution-fit-tables">
-        <table className="sp-fit-y-by-x-report-table distribution-fit-table" aria-label={`${distribution} ${t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}`}>
-          <caption>{t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}</caption>
-          <thead><tr>
-            <th scope="col">{t("distribution.fit.parameter", { defaultValue: "Parameter" })}</th>
-            <th scope="col">{t("distribution.fit.estimate", { defaultValue: "Estimate" })}</th>
-            <th scope="col">{t("distribution.fitStandardError", { defaultValue: "Std Error" })}</th>
-            <th scope="col">{t("distribution.fitLower95", { defaultValue: "Lower 95%" })}</th>
-            <th scope="col">{t("distribution.fitUpper95", { defaultValue: "Upper 95%" })}</th>
-          </tr></thead>
-          <tbody>
-            {parameters.map((parameter) => (
-              <tr key={parameter.parameterId}>
-                <th scope="row">{t(`distribution.fit.parametersById.${parameter.labelId}`, { defaultValue: parameter.labelId })}</th>
-                <td>{formatValue(parameter.estimate, t)}</td>
-                <td>{formatValue(parameter.standardError, t)}</td>
-                <td>{formatValue(parameter.lowerConfidence, t)}</td>
-                <td>{formatValue(parameter.upperConfidence, t)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <table className="sp-fit-y-by-x-report-table distribution-fit-table" aria-label={`${distribution} ${t("distribution.fit.measuresAria", { defaultValue: "measures" })}`}>
-          <caption>{t("distribution.fit.measures", { defaultValue: "Measures" })}</caption>
-          <thead><tr><th scope="col">{t("distribution.fit.measure", { defaultValue: "Measure" })}</th><th scope="col">{t("distribution.report.value")}</th></tr></thead>
-          <tbody>
-            {measures.map(([metricId, value]) => (
-              <tr key={metricId}>
-                <th scope="row">{t(`distribution.fit.metrics.${metricId}`, { defaultValue: metricId })}</th>
-                <td>{formatValue(value)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      </AnalysisText>
+      <AnalysisTable
+        title={t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}
+        width="wide"
+        ariaLabel={`${distribution} ${t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}`}
+        columns={[
+          { key: "parameter", label: t("distribution.fit.parameter", { defaultValue: "Parameter" }), rowHeader: true },
+          { key: "estimate", label: t("distribution.fit.estimate", { defaultValue: "Estimate" }), numeric: true },
+          { key: "standardError", label: t("distribution.fitStandardError", { defaultValue: "Std Error" }), numeric: true },
+          { key: "lowerConfidence", label: t("distribution.fitLower95", { defaultValue: "Lower 95%" }), numeric: true },
+          { key: "upperConfidence", label: t("distribution.fitUpper95", { defaultValue: "Upper 95%" }), numeric: true },
+        ]}
+        rows={parameters.map((parameter) => ({
+          key: parameter.parameterId,
+          cells: [
+            t(`distribution.fit.parametersById.${parameter.labelId}`, { defaultValue: parameter.labelId }),
+            formatValue(parameter.estimate, t),
+            formatValue(parameter.standardError, t),
+            formatValue(parameter.lowerConfidence, t),
+            formatValue(parameter.upperConfidence, t),
+          ],
+        }))}
+      />
+      <AnalysisTable
+        title={t("distribution.fit.measures", { defaultValue: "Measures" })}
+        width="compact"
+        ariaLabel={`${distribution} ${t("distribution.fit.measuresAria", { defaultValue: "measures" })}`}
+        columns={[
+          { key: "measure", label: t("distribution.fit.measure", { defaultValue: "Measure" }), rowHeader: true },
+          { key: "value", label: t("distribution.report.value"), numeric: true },
+        ]}
+        rows={measures.map(([metricId, value]) => ({
+          key: metricId,
+          cells: [t(`distribution.fit.metrics.${metricId}`, { defaultValue: metricId }), formatValue(value)],
+        }))}
+      />
       {data.distributionId === "lognormal" && (
-        <p className="distribution-fit-parameter-note">
+        <AnalysisText>
           {t("distribution.fit.lognormalNaturalLogNote", {
             defaultValue: "Parameters use the natural logarithm of the response.",
           })}
-        </p>
+        </AnalysisText>
       )}
-      <p className="distribution-fit-convergence">
+      <AnalysisText>
         {t("distribution.fit.convergence", { defaultValue: "Convergence" })}: {t(`distribution.fit.states.${data.convergence.status}`, { defaultValue: data.convergence.status })}
         {data.convergence.reasonCode ? ` (${formatReason(t, data.convergence.reasonCode)})` : ""}
-      </p>
-    </div>
+      </AnalysisText>
+    </AnalysisStack>
   );
 }
 
 export function ContinuousFitComparisonReport({ data }: { data: DistributionFitComparisonDataV1 }) {
   const { t } = useTranslation();
   return (
-    <table className="sp-fit-y-by-x-report-table distribution-fit-table distribution-fit-comparison" aria-label={t("distribution.fit.comparison", { defaultValue: "Fit Comparison" })}>
-      <caption>{t("distribution.fit.comparison", { defaultValue: "Fit Comparison" })}</caption>
-      <thead>
-        <tr>
-          <th>{t("distribution.fit.distribution", { defaultValue: "Distribution" })}</th>
-          <th>AICc</th>
-          <th>AIC</th>
-          <th>BIC</th>
-          <th>{t("distribution.fit.status", { defaultValue: "Status" })}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {data.rows.map((row) => (
-          <tr key={row.distributionId}>
-            <th scope="row">{t(`distribution.fit.distributions.${row.distributionId}`, { defaultValue: row.distributionId })}</th>
-            <td>{formatValue(row.aicc)}</td>
-            <td>{formatValue(row.aic)}</td>
-            <td>{formatValue(row.bic)}</td>
-            <td>{row.reasonCode
-              ? formatReason(t, row.reasonCode)
-              : t(`distribution.fit.states.${row.status}`, { defaultValue: row.status })}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <AnalysisTable
+      title={t("distribution.fit.comparison", { defaultValue: "Fit Comparison" })}
+      width="wide"
+      ariaLabel={t("distribution.fit.comparison", { defaultValue: "Fit Comparison" })}
+      columns={[
+        { key: "distribution", label: t("distribution.fit.distribution", { defaultValue: "Distribution" }), rowHeader: true },
+        { key: "aicc", label: "AICc", numeric: true },
+        { key: "aic", label: "AIC", numeric: true },
+        { key: "bic", label: "BIC", numeric: true },
+        { key: "status", label: t("distribution.fit.status", { defaultValue: "Status" }) },
+      ]}
+      rows={data.rows.map((row) => ({
+        key: row.distributionId,
+        cells: [
+          t(`distribution.fit.distributions.${row.distributionId}`, { defaultValue: row.distributionId }),
+          formatValue(row.aicc),
+          formatValue(row.aic),
+          formatValue(row.bic),
+          row.reasonCode
+            ? formatReason(t, row.reasonCode)
+            : t(`distribution.fit.states.${row.status}`, { defaultValue: row.status }),
+        ],
+      }))}
+    />
   );
 }

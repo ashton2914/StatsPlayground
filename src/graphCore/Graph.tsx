@@ -37,6 +37,7 @@ interface GraphProps {
   minPanelWidth?: number;
   /** 单个面板最小高 */
   minPanelHeight?: number;
+  panelLayout?: "scroll" | "fit";
   /**
    * Optional per-column user-defined value ordering. Keyed by column name;
    * each entry lists the categorical values in the order they should appear
@@ -113,7 +114,7 @@ interface GraphProps {
   optionFactory?: GraphPanelOptionFactory;
 }
 
-export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPanelHeight = 240, valueOrders, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect, optionFactory }: GraphProps) {
+export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPanelHeight = 240, panelLayout = "scroll", valueOrders, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect, optionFactory }: GraphProps) {
   // 订阅主题变化以触发重渲染
   const themeMode = useThemeStore((s) => s.mode);
 
@@ -121,6 +122,9 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
   // 3D 模式只显示 3D 图层（surface / scatter3d）；无 3D 图层时由
   // Chart3D 显示提示。
   const use3DScene = !!spec.threeD;
+  const fitPanels = panelLayout === "fit";
+  const gridMinPanelWidth = fitPanels ? 0 : minPanelWidth;
+  const gridMinPanelHeight = fitPanels ? 0 : minPanelHeight;
 
   const built = useMemo(() => {
     if (use3DScene) return { cols: 1, rows: 1, panels: [] as ReturnType<typeof buildGraph>["panels"] };
@@ -155,12 +159,13 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
         className={`gc-graph${className ? " " + className : ""}`}
         style={{
           display: "grid",
-          gridTemplateColumns: `repeat(${built3D?.cols ?? 1}, minmax(${minPanelWidth}px, 1fr))`,
-          gridTemplateRows: `repeat(${built3D?.rows ?? 1}, minmax(${minPanelHeight}px, 1fr))`,
+          gridTemplateColumns: `repeat(${built3D?.cols ?? 1}, minmax(${gridMinPanelWidth}px, 1fr))`,
+          gridTemplateRows: `repeat(${built3D?.rows ?? 1}, minmax(${gridMinPanelHeight}px, 1fr))`,
           gap: 8,
+          boxSizing: "border-box",
           width: "100%",
           height: "100%",
-          overflow: "auto",
+          overflow: fitPanels ? "visible" : "auto",
           padding: 4,
         }}
       >
@@ -171,7 +176,7 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
             data={data}
             built={panel}
             title={panel.title}
-            minHeight={minPanelHeight}
+            minHeight={gridMinPanelHeight}
           />
         ))}
       </div>
@@ -183,18 +188,19 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
       className={`gc-graph${className ? " " + className : ""}`}
       style={{
         display: "grid",
-        gridTemplateColumns: `repeat(${built.cols}, minmax(${minPanelWidth}px, 1fr))`,
+        gridTemplateColumns: `repeat(${built.cols}, minmax(${gridMinPanelWidth}px, 1fr))`,
         // Explicit row count is required so Group Y (vertical faceting)
         // actually stacks panels into N rows — without this, the grid
         // falls back to a single implicit row and panels reflow into the
         // X axis only. minmax() keeps each row from collapsing below the
         // per-panel minimum height while still letting the grid grow to
         // fill the available space.
-        gridTemplateRows: `repeat(${built.rows}, minmax(${minPanelHeight}px, 1fr))`,
+        gridTemplateRows: `repeat(${built.rows}, minmax(${gridMinPanelHeight}px, 1fr))`,
         gap: 8,
+        boxSizing: "border-box",
         width: "100%",
         height: "100%",
-        overflow: "auto",
+        overflow: fitPanels ? "visible" : "auto",
         padding: 4,
       }}
     >
@@ -203,7 +209,7 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
           key={i}
           title={p.title}
           option={p.option}
-          minHeight={minPanelHeight}
+          minHeight={gridMinPanelHeight}
           onYAxisDblClick={onYAxisDblClick}
           onXAxisDblClick={onXAxisDblClick}
           onAxisRangeChange={onAxisRangeChange}
