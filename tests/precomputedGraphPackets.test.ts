@@ -208,6 +208,13 @@ assert.equal(
   false,
   "non-finite curve coordinates must be rejected",
 );
+for (const field of ["group", "category", "sourceColumn"] as const) {
+  assert.equal(
+    isGraphAggregatePacket({ ...validLinearCurvePacket, [field]: 42 }),
+    false,
+    `precomputed curve ${field} must be a string when provided`,
+  );
+}
 
 const frame = frameWithAggregates([
   validPointPacket,

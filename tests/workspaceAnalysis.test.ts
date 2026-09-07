@@ -42,6 +42,10 @@ assertSourceIncludes(workspaceSource, "setAnalysisFolder", "Workspace must move 
 assertSourceIncludes(workspaceSource, "buildAnalysisProjectPayload", "Workspace must delegate analysis save payload shaping to the lifecycle helper");
 assertSourceIncludes(workspaceSource, "hydrateAnalysisProjectPayload", "Workspace must delegate analysis open hydration to the lifecycle helper");
 assertSourceIncludes(workspaceSource, "analyses: folderPayload.analyses", "Project save payload must include analyses");
+assertSourceIncludes(workspaceSource, "distributions: []", "Project save must not persist migrated legacy Distribution documents");
+assert.equal(workspaceSource.includes("useDistributionStore"), false, "Workspace must not import or hydrate the legacy Distribution store");
+assertSourceIncludes(workspaceSource, "distributionFolders: {}", "Migrated Distribution folder assignments must leave the legacy folder map empty");
+assertSourceIncludes(workspaceSource, "shouldMarkAnalysisMigrationDirty(analysisProjectPayload.migratedCount)", "Project open must apply the tested migration dirty-state decision");
 assertSourceIncludes(workspaceSource, 'kind === "analysis"', "Drag payload and context menu unions must include Analysis items");
 assertSourceIncludes(workspaceSource, "analysesByParent", "Tree grouping must include Analysis documents by folder");
 assertSourceIncludes(workspaceSource, "fsSetAnalysisFolder", "Drop handling must assign Analysis documents into folders");
@@ -58,6 +62,14 @@ assertSourceIncludes(workspaceSource, "createDistributionAnalysisPatch", "Worksp
 assertSourceIncludes(workspaceSource, "initialItem={toDistributionEditorItem(editingAnalysis)}", "The Distribution selector must open with committed Analysis inputs");
 assertSourceIncludes(workspaceSource, "setEditingAnalysisId(null)", "Cancel and Save must close the Analysis editor session");
 assertSourceIncludes(workspaceSource, "onEditInputs={() =>", "AnalysisView must expose the shared Shell edit command to Workspace");
+const distributionCreateHandler = workspaceSource.match(
+  /const handleCreateDistributionItem = [\s\S]*?(?=\n  const handleRenameSubmit)/,
+)?.[0] ?? "";
+assertSourceIncludes(distributionCreateHandler, "createDistributionAnalysisDocument", "Distribution creation must build a canonical Analysis document");
+assertSourceIncludes(distributionCreateHandler, "addAnalysis(created)", "Distribution creation must enter the Analysis store");
+assertSourceIncludes(distributionCreateHandler, 'activateWorkspaceDocument("analysis", created.id)', "Distribution creation must activate the Analysis document");
+assert.equal(distributionCreateHandler.includes("addDistribution"), false, "Distribution creation must not enter the legacy store");
+assertSourceIncludes(workspaceSource, "nextDistributionAnalysisName", "Distribution default names must come from the Analysis namespace");
 assert.equal(workspaceSource.includes("deleteAnalysisByDataset"), false, "Deleting a source table must not cascade-delete saved Analysis documents");
 assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Prune must include live Analysis ids without dropping Fit Model ids");
 assertSourceIncludes(workspaceSource, "selectWorkspaceDocument", "Workspace must use the shared lifecycle helper for active-document exclusivity");

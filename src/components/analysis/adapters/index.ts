@@ -1,4 +1,5 @@
 export {
+  createDistributionAnalysisDocument,
   createDistributionAnalysisPatch,
   describeDistributionAnalysis,
   toDistributionEditorItem,

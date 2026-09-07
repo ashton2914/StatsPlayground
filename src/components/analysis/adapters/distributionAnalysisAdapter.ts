@@ -3,6 +3,8 @@ import type { AnalysisDocument, AnalysisDocumentPatch, DistributionAnalysisDefin
 import type { DatasetMeta } from "../../../types/data";
 import type { DistributionItem, SpecLimitsOverride } from "../../../types/distribution";
 
+export { createDistributionAnalysisDocument } from "../distributionAnalysisMigration";
+
 type Translate = (key: string, values?: Record<string, unknown>) => string;
 
 function formatLimit(value: number | null): string {

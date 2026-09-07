@@ -1,10 +1,6 @@
-.analysis-graph-distribution { height: 384px; padding: 12px; }
-.analysis-graph-ecdf { height: 244px; padding: 12px; }
-.analysis-graph-summary-range { height: 132px; }
+.analysis-graph-distribution { box-sizing: border-box; height: 384px; padding: 12px; }
 
-.analysis-graph-distribution > [data-graph-role],
-.analysis-graph-ecdf > [data-graph-role],
-.analysis-graph-summary-range > [data-graph-role] { width: 100%; height: 100%; }
+.analysis-graph-distribution > [data-graph-role] { width: 100%; height: 100%; }
 
 .analysis-sample-range {
   display: grid;

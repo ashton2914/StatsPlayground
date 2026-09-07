@@ -21,25 +21,28 @@ const presentationSource = readFileSync(
   new URL("../src/components/distribution/distributionPresentation.tsx", import.meta.url),
   "utf8",
 );
-
-const assertTablesUseFitYByXStyle = (source: string): void => {
-  const tableTags = source.match(/<table(?:\s[^>]*)?>/g) ?? [];
-  assert.ok(tableTags.length > 0);
-  tableTags.forEach((tableTag) => {
-    assert.match(tableTag, /className="[^"]*sp-fit-y-by-x-report-table[^"]*"/);
-  });
-};
+const analysisViewSource = readFileSync(
+  new URL("../src/components/analysis/AnalysisView.tsx", import.meta.url),
+  "utf8",
+);
 
 assert.match(reportSource, /DistributionGroupResult/);
 assert.match(reportSource, /DistributionReportBlock/);
-assert.match(reportSource, /<details/);
+assert.match(reportSource, /AnalysisFrame/);
+assert.match(reportSource, /AnalysisTable/);
+assert.match(reportSource, /AnalysisStack/);
+assert.match(reportSource, /AnalysisText/);
 assert.match(reportSource, /SummaryDataTables/);
 assert.match(reportSource, /ContinuousFitComparisonReport/);
 assert.match(reportSource, /ProcessCapabilityReport/);
-assertTablesUseFitYByXStyle(reportSource);
-assertTablesUseFitYByXStyle(continuousFitSource);
+assert.doesNotMatch(reportSource, /<table|<caption|<details|reportTable\.css/);
+assert.match(continuousFitSource, /AnalysisTable/);
+assert.match(continuousFitSource, /AnalysisStack/);
+assert.match(continuousFitSource, /AnalysisText/);
+assert.doesNotMatch(continuousFitSource, /<table|<caption|<details|sp-fit-y-by-x-report-table/);
 assert.match(capabilitySource, /AnalysisTable/);
 assert.match(capabilitySource, /AnalysisStack/);
+assert.match(capabilitySource, /AnalysisText/);
 assert.doesNotMatch(capabilitySource, /<table|<caption/);
 assert.doesNotMatch(reportSource, /DistributionChart|GraphRuntime|useDistributionReport|useDistributionStore/);
 assert.doesNotMatch(capabilitySource, /DistributionChart|ProcessCapabilityChart|echarts/);
@@ -47,9 +50,15 @@ assert.doesNotMatch(capabilitySource, /DistributionChart|ProcessCapabilityChart|
 assert.match(viewSource, /useDistributionReport/);
 assert.match(viewSource, /DistributionReportPanel/);
 assert.match(viewSource, /DistributionGraphGrid/);
+assert.match(viewSource, /AnalysisFrame/);
+assert.match(viewSource, /AnalysisText/);
 assert.match(presentationSource, /<DistributionReport/);
 assert.match(presentationSource, /reportState\.status === "error"/);
+assert.match(presentationSource, /AnalysisFrame/);
+assert.match(presentationSource, /AnalysisText/);
+assert.doesNotMatch(presentationSource, /distribution-report-status/);
 assert.match(presentationSource, /externalDataState:\s*mapDistributionExternalDataState\(reportState, role\)/);
 assert.match(presentationSource, /renderGraph \? renderGraph\(graphProps\) : <GraphRuntime \{\.\.\.graphProps\} \/>/);
+assert.match(analysisViewSource, /function AnalysisUnavailable[\s\S]*return <AnalysisText/);
 
 console.log("distribution report wiring OK");

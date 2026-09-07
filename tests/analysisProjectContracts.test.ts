@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import { hydrateAnalysisProjectPayload } from "../src/components/analysis/analysisWorkspaceLifecycle.ts";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample.ts";
+import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
 import type { SaveProjectRequest } from "../src/services/projectService";
 import type { OpenProjectResult, ProjectInfo } from "../src/types/project";
 
@@ -98,5 +100,28 @@ assert.deepEqual(saveRequest.analyses, [analysis]);
 assert.deepEqual(saveRequest.analysisFolders, { "analysis-1": "Analyses/Sample" });
 assert.deepEqual(openResult.analyses, [analysis]);
 assert.deepEqual(openResult.analysisFolders, { "analysis-1": "Analyses/Sample" });
+
+const response = { name: "DIM2", type: "continuous" as const };
+const legacyDistribution = createDistributionItem({
+  id: "legacy-distribution",
+  name: "Legacy Distribution",
+  sourceDatasetId: "dataset-2",
+  responses: [response],
+  weight: null,
+  frequency: null,
+  by: [],
+  columns: [{ name: response.name, sqlType: "DOUBLE", integerCompatible: false, field: response }],
+  createdAt: "2026-09-06T00:00:00.000Z",
+});
+const hydrated = hydrateAnalysisProjectPayload({
+  analyses: [analysis],
+  analysisFolders: { "analysis-1": "Analyses/Sample" },
+  distributions: [legacyDistribution],
+  distributionFolders: { "legacy-distribution": "Analyses/Legacy" },
+});
+assert.equal(hydrated.migratedCount, 1);
+assert.equal(hydrated.analyses.length, 2);
+assert.equal(hydrated.analyses[1]?.documentType, "analysis");
+assert.equal(hydrated.analysisFolders["legacy-distribution"], "Analyses/Legacy");
 
 console.log("analysis project contracts passed");

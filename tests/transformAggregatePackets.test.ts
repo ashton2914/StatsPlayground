@@ -4,8 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
+import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter.ts";
 import type { GraphTheme } from "../src/graphCore/theme.ts";
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
+import type { DistributionReportResponse } from "../src/types/distribution.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
 
 const localStorageState = new Map<string, string>();
@@ -679,7 +681,16 @@ for (const mode of ["uniform", "normal"] as const) {
     },
     elements: [
       { kind: "points", enabled: true, options: { summaryStat: "none" } },
-      { kind: "boxplot", enabled: true },
+      {
+        kind: "boxplot",
+        enabled: true,
+        options: {
+          boxType: "range",
+          outliers: true,
+          fiveNumberSummary: true,
+          widthProportion: 0.5,
+        },
+      },
     ],
   };
   const panel = buildGraph(spec, data, theme, undefined, typedDateFrame([boxPacket])).panels[0];
@@ -2337,7 +2348,16 @@ for (const element of [
     elements: [
       { kind: "histogram", enabled: true, options: { histStyle: "bar" } },
       { kind: "line", enabled: true, options: { elementId: "rust-normal-fit" } },
-      { kind: "boxplot", enabled: true },
+      {
+        kind: "boxplot",
+        enabled: true,
+        options: {
+          boxType: "range",
+          outliers: true,
+          fiveNumberSummary: true,
+          widthProportion: 0.5,
+        },
+      },
     ],
   };
   const frame = baseFrame([
@@ -2368,7 +2388,7 @@ for (const element of [
         max: 2,
         whiskerLow: 0,
         whiskerHigh: 2,
-        outliers: [],
+        outliers: [{ value: 2.4, rowIndex: 9 }],
       }],
     },
   ]);
@@ -2385,7 +2405,106 @@ for (const element of [
     series.some((entry) => entry.id === "rust-normal-fit" && entry.type === "line"),
     "the composite must include the Rust-computed fitted curve",
   );
-  assert.ok(series.some((entry) => entry.type === "boxplot"), "the composite must include a box plot");
+  const compositeBoxPlot = series.find((entry) => entry.type === "boxplot");
+  assert.ok(compositeBoxPlot, "the composite must include a box plot");
+  assert.deepEqual(compositeBoxPlot.data, [[0, 0.8, 1.3, 1.6, 2]], "range mode must use min/max");
+  assert.deepEqual(compositeBoxPlot.boxWidth, [12, 34], "width proportion must affect composite box width");
+  assert.ok(
+    series.some((entry) => entry.type === "scatter" && entry.name === "Outliers"),
+    "enabled outliers must render in the composite",
+  );
+  assert.ok(
+    series.some((entry) => entry.type === "scatter" && entry.name === "5-Number"),
+    "enabled five-number labels must render in the composite",
+  );
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "__sp_value__", type: "continuous" },
+      y: { name: "__sp_variable__", type: "nominal" },
+    },
+    elements: [
+      { kind: "histogram", enabled: true },
+      {
+        kind: "normalCurve",
+        enabled: true,
+        options: { elementId: "distribution.overview.fittedCurves" },
+      },
+      { kind: "boxplot", enabled: true },
+    ],
+  };
+  const overview = baseFrame([
+    {
+      kind: "histogram",
+      yColumn: "distribution.overview.histogram",
+      sourceColumn: "responseColumn",
+      binCount: 2,
+      minValue: 4.2,
+      maxValue: 4.6,
+      missingCount: 0,
+      binWidth: 0.2,
+      totalCount: 10,
+      bins: [
+        { group: "203-A1", category: "Overall", sourceColumn: "203-A1", binStart: 4.2, binEnd: 4.4, count: 4 },
+        { group: "203-A1", category: "Overall", sourceColumn: "203-A1", binStart: 4.4, binEnd: 4.6, count: 6 },
+      ],
+    },
+    {
+      kind: "precomputedCurve",
+      elementId: "distribution.overview.fittedCurves",
+      seriesId: "203-A1:fit:normal",
+      seriesName: "203-A1 - Normal",
+      group: "203-A1",
+      category: "203-A1",
+      sourceColumn: "203-A1",
+      interpolation: "linear",
+      points: [{ x: 4.2, y: 0.2 }, { x: 4.4, y: 6 }, { x: 4.6, y: 0.2 }],
+    },
+  ]);
+  const boxPlot = baseFrame([{
+    kind: "boxPlot",
+    yColumn: "distribution.boxPlot",
+    sourceColumn: "responseColumn",
+    entries: [{
+      group: "203-A1",
+      category: "Overall",
+      sourceColumn: "203-A1",
+      count: 10,
+      min: 4.2,
+      q1: 4.36,
+      median: 4.4,
+      q3: 4.45,
+      max: 4.56,
+      whiskerLow: 4.2,
+      whiskerHigh: 4.56,
+      outliers: [],
+    }],
+  }]);
+  const graphFrames = {
+    overview,
+    boxPlot,
+    ecdf: baseFrame([]),
+    normalQuantile: baseFrame([]),
+  } satisfies DistributionReportResponse["graphFrames"];
+  const frame = getDistributionCompositeGraphFrame({ graphFrames });
+
+  const option = buildGraph(
+    spec,
+    baseData(["__sp_variable__", "__sp_value__"], []),
+    theme,
+    { __sp_variable__: ["203-A1"] },
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const histogram = series.find((entry) => String(entry.id ?? "").startsWith("__hist_cat_"));
+  const normal = series.find((entry) => String(entry.id ?? "").startsWith("__normal_cat_"));
+  const box = series.find((entry) => entry.type === "boxplot");
+
+  assert.ok(Array.isArray(histogram?.data) && histogram.data.length > 0, "production packets must render histogram bars");
+  assert.ok(Array.isArray(normal?.data) && normal.data.length > 0, "production packets must render the fitted normal curve");
+  assert.ok(Array.isArray(box?.data) && box.data.length > 0, "production packets must render the box plot");
 }
 
 {
@@ -2627,6 +2746,156 @@ for (const element of [
 
 {
   const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true },
+      { kind: "normalCurve", enabled: true },
+    ],
+    autoSpecX: { lsl: 4.23, target: 4.38, usl: 4.53 },
+    transpose: true,
+  };
+  const frame = frameBackedAggregateFrame([
+    {
+      kind: "histogram",
+      xColumn: "measurement",
+      binCount: 3,
+      minValue: 4.2,
+      maxValue: 4.5,
+      missingCount: 0,
+      binWidth: 0.1,
+      totalCount: 9,
+      bins: [
+        { binStart: 4.2, binEnd: 4.3, count: 2 },
+        { binStart: 4.3, binEnd: 4.4, count: 5 },
+        { binStart: 4.4, binEnd: 4.5, count: 2 },
+      ],
+    },
+    {
+      kind: "summary",
+      xColumn: "measurement",
+      summaries: [{ count: 9, mean: 4.35, median: 4.35, stddev: 0.08, min: 4.2, max: 4.5 }],
+    },
+  ], 9);
+
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["measurement"], 9),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const histogram = panelSeries(option).find((entry) => String(entry.id ?? "").startsWith("__hist_mode_a_"));
+  assert.equal(histogram?.type, "custom", "Y-only histogram bars must use horizontal rectangle geometry");
+  const renderItem = histogram?.renderItem as ((params: unknown, api: unknown) => { shape: Record<string, number> }) | undefined;
+  assert.ok(renderItem);
+  const histogramData = histogram!.data as number[][];
+  const populatedBinIndex = histogramData.findIndex(([countEnd, , countStart]) => countEnd > countStart);
+  assert.ok(populatedBinIndex >= 0);
+  const populatedBin = histogramData[populatedBinIndex];
+  const shape = renderItem(
+    { dataIndex: populatedBinIndex, coordSys: { x: 10, y: 20, width: 200, height: 300 } },
+    {
+      value: (dimension: number) => populatedBin[dimension],
+      coord: ([count, value]: [number, number]) => [10 + count * 20, 320 - (value - 4.2) * 1_000],
+      size: ([, span]: [number, number]) => [0, span * 1_000],
+      style: () => ({}),
+    },
+  ).shape;
+  assert.equal(
+    shape.width,
+    (populatedBin[0] - populatedBin[2]) * 20,
+    "count must control bar width after a 90-degree rotation",
+  );
+  const renderedBinWidth = Math.abs(histogramData[1][1] - histogramData[0][1]);
+  assert.ok(Math.abs(shape.height - renderedBinWidth * 1_000 * 0.99) < 1e-9);
+  assert.equal(shape.x, 10, "horizontal bars must start at the count-axis baseline");
+  const normal = panelSeries(option).find((entry) => String(entry.id ?? "").startsWith("__normal_curve_"));
+  const normalData = normal?.data as number[][];
+  assert.ok(normalData.every(([count, value]) => count >= 0 && Number.isFinite(value)));
+  assert.ok(normalData.some(([, value]) => value < 4.35));
+  assert.ok(normalData.some(([, value]) => value > 4.35));
+  const specLineCarrier = panelSeries(option).find((entry) => entry.markLine != null);
+  const specLineData = (specLineCarrier?.markLine as { data: Array<Record<string, unknown>> }).data;
+  assert.deepEqual(specLineData.map((entry) => entry.yAxis), [4.23, 4.38, 4.53]);
+  assert.ok(specLineData.every((entry) => !("xAxis" in entry)));
+
+  const analysisOption = buildGraph(
+    {
+      ...spec,
+      encoding: { y: { name: "measurement", type: "continuous" } },
+      autoSpecX: undefined,
+      autoSpecY: spec.autoSpecX,
+      transpose: false,
+    },
+    frameBackedAggregateData(["measurement"], 9),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  assert.equal(
+    panelSeries(analysisOption).find((entry) => String(entry.id ?? "").startsWith("__hist_mode_a_"))?.type,
+    "custom",
+    "Analysis Y-only Distribution must use the same rotated histogram geometry",
+  );
+  const swappedAnalysisOption = buildGraph(
+    {
+      ...spec,
+      encoding: { y: { name: "measurement", type: "continuous" } },
+      autoSpecX: undefined,
+      autoSpecY: spec.autoSpecX,
+      transpose: true,
+    },
+    frameBackedAggregateData(["measurement"], 9),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const swappedAnalysisHistogram = panelSeries(swappedAnalysisOption)
+    .find((entry) => String(entry.id ?? "").startsWith("__hist_mode_a_"));
+  assert.equal(
+    swappedAnalysisHistogram?.type,
+    "bar",
+    "swapping an already rotated Analysis histogram must restore vertical bars",
+  );
+  assert.ok(
+    (swappedAnalysisHistogram?.data as number[][]).some(([value, count]) => value > 4 && count > 0),
+  );
+
+  const stacked = transposeOption({
+    xAxis: { type: "value" },
+    yAxis: { type: "value" },
+    series: [
+      {
+        id: "__hist_mode_a_0",
+        type: "bar",
+        stack: "build",
+        __histBinWidth: 0.1,
+        data: [[4.35, 2]],
+      },
+      {
+        id: "__hist_mode_a_1",
+        type: "bar",
+        stack: "build",
+        __histBinWidth: 0.1,
+        data: [[4.35, 3]],
+      },
+    ],
+  });
+  const [firstBuild, secondBuild] = stacked.series as Array<Record<string, unknown>>;
+  assert.deepEqual(firstBuild.data, [[2, 4.35, 0]]);
+  assert.deepEqual(secondBuild.data, [[5, 4.35, 2]]);
+  const restored = transposeOption(stacked);
+  const [restoredFirstBuild, restoredSecondBuild] = restored.series as Array<Record<string, unknown>>;
+  assert.equal(restoredFirstBuild.type, "bar");
+  assert.equal(restoredSecondBuild.type, "bar");
+  assert.equal(restoredFirstBuild.stack, "build");
+  assert.equal(restoredSecondBuild.stack, "build");
+  assert.deepEqual(restoredFirstBuild.data, [[4.35, 2]]);
+  assert.deepEqual(restoredSecondBuild.data, [[4.35, 3]]);
+}
+
+{
+  const spec: GraphSpec = {
     encoding: {
       x: { name: "category", type: "nominal" },
       y: { name: "measurement", type: "continuous" },
@@ -2678,4 +2947,108 @@ for (const element of [
       "each Summary-only facet should render its Normal curve",
     );
   }
+}
+
+{
+  const responses = ["203-A1", "203-A2", "203-A3", "203-A4"];
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "__sp_value__", type: "continuous" },
+      y: { name: "__sp_variable__", type: "nominal" },
+    },
+    elements: [
+      { kind: "histogram", enabled: true },
+      {
+        kind: "normalCurve",
+        enabled: true,
+        options: { elementId: "distribution.overview.fittedCurves" },
+      },
+      { kind: "boxplot", enabled: true },
+    ],
+  };
+  const frame = frameBackedAggregateFrame([
+    {
+      kind: "histogram",
+      yColumn: "__sp_y",
+      sourceColumn: "__sp_variable__",
+      binCount: 2,
+      minValue: 0,
+      maxValue: 4,
+      missingCount: 0,
+      binWidth: 2,
+      totalCount: 40,
+      bins: responses.flatMap((sourceColumn, responseIndex) => [
+        { sourceColumn, binStart: 0, binEnd: 2, count: 4 + responseIndex },
+        { sourceColumn, binStart: 2, binEnd: 4, count: 6 - responseIndex },
+      ]),
+    },
+    ...responses.map((sourceColumn, responseIndex) => ({
+      kind: "precomputedCurve" as const,
+      elementId: "distribution.overview.fittedCurves",
+      seriesId: `fit-${sourceColumn}`,
+      seriesName: `${sourceColumn} - Normal`,
+      category: sourceColumn,
+      sourceColumn,
+      interpolation: "linear" as const,
+      points: [
+        { x: 0, y: 0.1 },
+        { x: 1.5 + responseIndex * 0.2, y: 12 },
+        { x: 4, y: 0.1 },
+      ],
+    })),
+    {
+      kind: "boxPlot",
+      yColumn: "__sp_y",
+      sourceColumn: "__sp_variable__",
+      entries: responses.map((sourceColumn, responseIndex) => ({
+        sourceColumn,
+        count: 10,
+        min: 0,
+        q1: 1 + responseIndex * 0.1,
+        median: 1.5 + responseIndex * 0.2,
+        q3: 2 + responseIndex * 0.1,
+        max: 4,
+        whiskerLow: 0,
+        whiskerHigh: 4,
+        outliers: [],
+      })),
+    },
+  ], 40);
+
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["__sp_variable__", "__sp_value__"], 40),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const yAxis = (Array.isArray(option.yAxis) ? option.yAxis[0] : option.yAxis) as Record<string, unknown>;
+  assert.deepEqual(yAxis.data, responses, "multiY source columns must become ordered category labels");
+  const series = panelSeries(option);
+  const categoriesInCustomSeries = (idPrefix: string) => Array.from(new Set(
+    series
+      .filter((entry) => String(entry.id ?? "").startsWith(idPrefix))
+      .flatMap((entry) => Array.isArray(entry.data) ? entry.data : [])
+      .map((point) => Array.isArray(point) ? String(point[1] ?? "") : "")
+      .filter(Boolean),
+  ));
+  assert.deepEqual(categoriesInCustomSeries("__hist_cat_"), responses);
+  assert.deepEqual(categoriesInCustomSeries("__normal_cat_"), responses);
+  const normalSeries = series.find((entry) => String(entry.id ?? "").startsWith("__normal_cat_"))!;
+  const normalShape = (normalSeries.renderItem as (params: unknown, api: unknown) => {
+    shape: { points: number[][] };
+  })(
+    { dataIndex: 0, seriesId: normalSeries.id },
+    {
+      coord: ([value]: [number, string]) => [value * 10, 50],
+      size: () => [100, 100],
+    },
+  );
+  assert.ok(
+    normalShape.shape.points.every((point) => point[1] >= 14 && point[1] <= 99),
+    "precomputed curves must stay within their category slot",
+  );
+  const boxplotSeries = series.find((entry) => entry.type === "boxplot");
+  assert.ok(boxplotSeries);
+  assert.equal((boxplotSeries.data as unknown[]).length, responses.length);
 }

@@ -226,9 +226,14 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
           <button type="button" onClick={onXAxisDblClick}>{`Open ${role} X axis`}</button>
           <button type="button" onClick={onYAxisDblClick}>{`Open ${role} Y axis`}</button>
           {role === "overview" && (
-            <output data-testid="composite-element-kinds">
-              {graphItem.modeStates.twoD.elements.map((element) => element.kind).join(",")}
-            </output>
+            <>
+              <output data-testid="composite-element-kinds">
+                {graphItem.modeStates.twoD.elements.map((element) => element.kind).join(",")}
+              </output>
+              <output data-testid="composite-packet-kinds">
+                {externalDataState?.frame?.aggregates.map((packet) => packet.kind).join(",") ?? "none"}
+              </output>
+            </>
           )}
         </div>
       ),
@@ -264,7 +269,6 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
       <div>{`compute-calls:${computeCalls}`}</div>
       <div>{`generation-calls:${generationCalls}`}</div>
       <output data-testid="overview-x-min">{item.definition.graphs.overview.modeStates.twoD.xAxis?.min ?? "auto"}</output>
-      <output data-testid="ecdf-y-min">{item.definition.graphs.ecdf.modeStates.twoD.yAxis?.min ?? "auto"}</output>
       <output data-testid="edit-inputs-calls">{editInputsCalls}</output>
       <AnalysisView
         item={item}

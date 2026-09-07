@@ -77,7 +77,7 @@ const block = (patch: Partial<DistributionReportBlockV1>): DistributionReportBlo
 
 test("renders available Continuous Fit parameter estimates and JMP measures with complete grid lines", async ({ mount }) => {
   const component = await mount(<ReportBlock block={block({ distributionFitData: fit })} />);
-  await expect(component.getByRole("heading", { name: "Continuous Fit - Normal" })).toBeVisible();
+  await expect(component.getByRole("button", { name: "Continuous Fit - Normal" })).toBeVisible();
   await expect(component.getByRole("table", { name: "Normal Parameter Estimates" })).toBeVisible();
   const measures = component.getByRole("table", { name: "Normal measures" });
   await expect(measures).toBeVisible();
@@ -95,8 +95,10 @@ test("renders available Continuous Fit parameter estimates and JMP measures with
   await expect(measures.getByRole("rowheader", { name: "BIC" })).toBeVisible();
   await expect(measures.getByRole("rowheader", { name: "AIC", exact: true })).toHaveCount(0);
   await expect(measures.getByRole("rowheader", { name: "LogLikelihood", exact: true })).toHaveCount(0);
-  await expect(component.locator(".distribution-fit-table td").first()).toHaveCSS("border-right-style", "solid");
-  await expect(component.locator(".distribution-fit-table td").first()).toHaveCSS("border-bottom-style", "solid");
+  await expect(component.locator(".distribution-fit-table")).toHaveCount(0);
+  await expect(component.locator(".analysis-ui-table")).toHaveCount(2);
+  await expect(measures.getByRole("rowheader").first()).toHaveCSS("border-right-style", "solid");
+  await expect(measures.getByRole("rowheader").first()).toHaveCSS("border-bottom-style", "solid");
 });
 
 test("uses model-specific parameter terminology without fixed location rows", async ({ mount }) => {
@@ -263,5 +265,7 @@ test("renders Fit All comparison in backend row order", async ({ mount }) => {
   await expect(table.locator("tbody tr")).toHaveCount(2);
   await expect(table.locator("tbody tr").nth(0).locator("th")).toHaveText("Normal");
   await expect(table.locator("tbody tr").nth(1).locator("th")).toHaveText("Gamma");
+  await expect(component.locator(".distribution-fit-table")).toHaveCount(0);
+  await expect(component.locator(".analysis-ui-table")).toHaveCount(1);
   await expect(table.locator("tbody td").first()).toHaveCSS("border-right-style", "solid");
 });

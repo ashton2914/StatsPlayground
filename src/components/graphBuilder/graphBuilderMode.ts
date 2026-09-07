@@ -157,12 +157,25 @@ function normalizeTwoDEncodingAndMultiAxes(
   encoding: Partial<Graph2DState["encoding"]>,
   multiXInput: unknown,
   multiYInput: unknown,
+  elements: ChartElement[] = [],
 ): Pick<Graph2DState, "encoding" | "multiX" | "multiY"> {
   const multiX = toFieldRefArray(multiXInput);
   const multiY = toFieldRefArray(multiYInput);
 
   const xCollapsed = collapseSingleContinuousAxisField(encoding, multiX, "x");
-  const yCollapsed = collapseSingleContinuousAxisField(xCollapsed.encoding, multiY, "y");
+  const enabledKinds = new Set(
+    elements.filter((element) => element.enabled !== false).map((element) => element.kind),
+  );
+  const preserveDistributionMultiY = multiY.length === 1
+    && enabledKinds.has("histogram")
+    && enabledKinds.has("normalCurve")
+    && enabledKinds.has("boxplot");
+  const yCollapsed = preserveDistributionMultiY
+    ? (() => {
+        const { y: _y, ...encodingWithoutY } = xCollapsed.encoding;
+        return { encoding: encodingWithoutY, multiFields: multiY };
+      })()
+    : collapseSingleContinuousAxisField(xCollapsed.encoding, multiY, "y");
 
   return {
     encoding: yCollapsed.encoding,
@@ -256,10 +269,12 @@ function normalizeCurrentModeItem(item: GraphBuilderItem): GraphBuilderItem {
   const twoDInput = item.modeStates.twoD as unknown as Record<string, unknown>;
   const threeDInput = item.modeStates.threeD as unknown as Record<string, unknown>;
   const multivariateInput = item.modeStates.multivariate as unknown as Record<string, unknown>;
+  const twoDElements = toElements(twoDInput.elements).filter((element) => getLayerMode(element.kind) === "2d");
   const normalizedTwoDAxes = normalizeTwoDEncodingAndMultiAxes(
     pickEncoding(twoDInput.encoding, TWO_D_KEYS),
     twoDInput.multiX,
     twoDInput.multiY,
+    twoDElements,
   );
 
   const twoDCore: Graph2DState = {
@@ -268,7 +283,7 @@ function normalizeCurrentModeItem(item: GraphBuilderItem): GraphBuilderItem {
     ...(twoDInput.transposed === true ? { transposed: true } : {}),
     multiX: normalizedTwoDAxes.multiX,
     multiY: normalizedTwoDAxes.multiY,
-    elements: toElements(twoDInput.elements).filter((element) => getLayerMode(element.kind) === "2d"),
+    elements: twoDElements,
     smootherLambda: typeof twoDInput.smootherLambda === "number" ? twoDInput.smootherLambda : twoDDefault.smootherLambda,
   };
   const twoDWithOpts = withOptional(
@@ -401,6 +416,7 @@ export function normalizeGraphBuilderItem(item: unknown): GraphBuilderItem {
     { ...shared2D },
     source.multiX,
     source.multiY,
+    elements.filter((element) => getLayerMode(element.kind) === "2d"),
   );
 
   twoD.encoding = normalizedLegacyTwoDAxes.encoding;

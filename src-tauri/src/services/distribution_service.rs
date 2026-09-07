@@ -802,14 +802,17 @@ fn build_graph_frames(
         for y_result in &group.y_results {
             let series_name = graph_series_name(&y_result.y_name, &group_name);
             let series_key = graph_series_key(&y_result.y_name, &group.group_key)?;
-            let mut result_count = 0_u64;
+            let summary = y_result
+                .blocks
+                .iter()
+                .find_map(|item| item.block.summary_data.as_ref());
+            let result_count = summary.map_or(0, |value| value.n);
+            if let Some(summary) = summary {
+                source_rows = source_rows.max(summary.n.saturating_add(summary.n_missing));
+                processed_rows = processed_rows.max(summary.n);
+            }
             for item in &y_result.blocks {
                 let block = &item.block;
-                if let Some(summary) = &block.summary_data {
-                    source_rows = source_rows.max(summary.n.saturating_add(summary.n_missing));
-                    processed_rows = processed_rows.max(summary.n);
-                    result_count = summary.n;
-                }
                 match &block.chart_data {
                     Some(DistributionChartDataV1::HistogramData { bins, .. }) => {
                         for bin in bins {
@@ -837,11 +840,11 @@ fn build_graph_frames(
                             facet_z: None,
                             wrap: None,
                             count: result_count,
-                            min: coordinates.lower_whisker,
+                            min: summary.map_or(coordinates.lower_whisker, |value| value.minimum),
                             q1: coordinates.lower_quartile,
                             median: coordinates.median,
                             q3: coordinates.upper_quartile,
-                            max: coordinates.upper_whisker,
+                            max: summary.map_or(coordinates.upper_whisker, |value| value.maximum),
                             whisker_low: coordinates.lower_whisker,
                             whisker_high: coordinates.upper_whisker,
                             outliers: coordinates
@@ -861,6 +864,9 @@ fn build_graph_frames(
                                 element_id: DISTRIBUTION_ECDF_ELEMENT_ID.to_string(),
                                 series_id: Some(format!("{series_key}:ecdf")),
                                 series_name: Some(series_name.clone()),
+                                group: Some(series_name.clone()),
+                                category: Some(group_name.clone()),
+                                source_column: Some(y_result.y_name.clone()),
                                 interpolation: PrecomputedCurveInterpolation::StepEnd,
                                 points: points
                                     .iter()
@@ -927,6 +933,9 @@ fn build_graph_frames(
                                     element_id: element_id.to_string(),
                                     series_id: Some(format!("{series_key}:normalQuantile:{role}")),
                                     series_name: Some(series_name.clone()),
+                                    group: Some(series_name.clone()),
+                                    category: Some(group_name.clone()),
+                                    source_column: Some(y_result.y_name.clone()),
                                     interpolation: PrecomputedCurveInterpolation::Linear,
                                     points: points
                                         .into_iter()
@@ -956,6 +965,9 @@ fn build_graph_frames(
                                     distribution_id(fit.distribution_id.clone())
                                 )),
                                 series_name: Some(fit_name),
+                                group: Some(series_name.clone()),
+                                category: Some(series_name.clone()),
+                                source_column: Some(y_result.y_name.clone()),
                                 interpolation: PrecomputedCurveInterpolation::Linear,
                                 points: curve
                                     .points
@@ -2119,6 +2131,11 @@ mod tests {
             ("2", "20", "East"),
             ("3", "30", "West"),
             ("4", "40", "West"),
+            ("5", "45", "East"),
+            ("6", "46", "West"),
+            ("7", "47", "East"),
+            ("8", "48", "West"),
+            ("1000", "50", "East"),
         ] {
             let row_id = data.add_row(&dataset.id).expect("add row");
             data.update_cell(&dataset.id, row_id, "height", height)
@@ -2172,6 +2189,20 @@ mod tests {
         assert!(histograms[0].bins.iter().all(|bin| bin.group.is_some()
             && bin.category.is_some()
             && bin.source_column.is_some()));
+        let fitted_curves = first
+            .graph_frames
+            .overview
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::PrecomputedCurve(packet) => Some(packet),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(fitted_curves.len(), 6);
+        assert!(fitted_curves.iter().all(|curve| curve.group.is_some()
+            && curve.category.is_some()
+            && curve.source_column.is_some()));
         let boxes = first
             .graph_frames
             .box_plot
@@ -2187,6 +2218,13 @@ mod tests {
         assert!(boxes[0].entries.iter().all(|entry| entry.group.is_some()
             && entry.category.is_some()
             && entry.source_column.is_some()));
+        assert!(
+            boxes[0]
+                .entries
+                .iter()
+                .any(|entry| entry.max > entry.whisker_high),
+            "box plot packets must retain extrema beyond Tukey whiskers"
+        );
         assert_eq!(first.graph_frames.ecdf.aggregates.len(), 6);
         assert_eq!(first.graph_frames.normal_quantile.aggregates.len(), 24);
         assert_eq!(

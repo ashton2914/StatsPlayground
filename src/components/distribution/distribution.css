@@ -27,8 +27,7 @@
   gap: 16px;
 }
 
-.distribution-view-header h2,
-.distribution-report-section > h2 {
+.distribution-view-header h2 {
   margin: 0 0 6px;
   font-size: 18px;
 }
@@ -38,11 +37,14 @@
   font-size: 12px;
 }
 
-.distribution-graph-section,
-.distribution-report-section {
+.distribution-graph-section {
   margin-top: 20px;
   border-top: 1px solid var(--border-color);
   padding-top: 16px;
+}
+
+.distribution-report-section {
+  margin-top: 20px;
 }
 
 .distribution-graph-grid {
@@ -73,16 +75,6 @@
   }
 }
 
-.distribution-report-group {
-  border-bottom: 1px solid var(--border-color);
-}
-
-.distribution-report-group > summary,
-.distribution-y-section > summary {
-  cursor: pointer;
-  color: var(--text-primary);
-}
-
 .distribution-disclosure {
   width: 100%;
   display: flex;
@@ -97,18 +89,6 @@
 
 .distribution-disclosure:hover {
   background: var(--bg-secondary);
-}
-
-.distribution-group-heading {
-  min-height: 36px;
-  font-weight: 650;
-}
-
-.distribution-y-heading {
-  flex: 1 1 auto;
-  min-height: 32px;
-  padding-left: 18px;
-  font-weight: 600;
 }
 
 .distribution-y-header {
@@ -192,56 +172,6 @@
   text-align: left;
   background: transparent;
   text-decoration: underline;
-}
-
-.distribution-y-content {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 0 0 12px 42px;
-}
-
-.distribution-report-block {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.distribution-compatibility-status {
-  margin: -4px 0 10px;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.distribution-quantile-table {
-  font-variant-numeric: tabular-nums;
-}
-
-.distribution-report-block .sp-fit-y-by-x-report-table th:last-child,
-.distribution-report-block .sp-fit-y-by-x-report-table td:last-child {
-  border-right: 1px solid var(--border-main);
-}
-
-.distribution-report-block .sp-fit-y-by-x-report-table tbody tr:last-child th,
-.distribution-report-block .sp-fit-y-by-x-report-table tbody tr:last-child td {
-  border-bottom: 1px solid var(--border-main);
-}
-
-.distribution-quantile-table th,
-.distribution-quantile-table td:nth-child(2) {
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.distribution-quantile-table thead th {
-  text-align: left;
-}
-
-.distribution-quantile-table thead th:last-child,
-.distribution-quantile-table td:last-child {
-  text-align: right;
 }
 
 .distribution-dialog {
@@ -436,8 +366,7 @@
   }
 }
 
-.distribution-results > section,
-.distribution-report-block {
+.distribution-results > section {
   padding: 14px 0;
   border-bottom: 1px solid var(--border-color);
 }
@@ -445,116 +374,6 @@
 .distribution-results h3 {
   margin: 0 0 10px;
   font-size: 14px;
-}
-
-.distribution-report-unavailable {
-  margin: 0 0 10px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.distribution-summary-tables {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 18px;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.distribution-table-pair {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-  gap: 18px;
-}
-
-.distribution-table-pair-vertical {
-  grid-template-columns: 1fr;
-}
-
-.distribution-summary-table {
-  font-variant-numeric: tabular-nums;
-}
-
-.distribution-summary-table caption {
-  padding: 0 8px 6px;
-  text-align: left;
-  font-weight: 600;
-}
-
-.distribution-summary-table th {
-  text-align: left;
-}
-
-.distribution-summary-table td {
-  text-align: right;
-}
-
-.distribution-fit-tables {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 18px;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.distribution-fit-table {
-  font-variant-numeric: tabular-nums;
-}
-
-.distribution-fit-table caption {
-  padding: 6px 8px;
-  text-align: left;
-  font-weight: 650;
-}
-
-.distribution-fit-table th {
-  text-align: left;
-}
-
-.distribution-fit-table td:not(:first-child) {
-  text-align: right;
-}
-
-.distribution-fit-convergence {
-  margin: 8px 0 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-@media (max-width: 900px) {
-  .distribution-fit-tables {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 900px) {
-  .distribution-table-pair {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 700px) {
-  .distribution-y-content {
-    padding-left: 14px;
-  }
-
-  .distribution-summary-tables {
-    grid-template-columns: 1fr;
-  }
-}
-
-.distribution-fit-report {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-}
-
-.distribution-capability-warning {
-  color: var(--text-secondary);
 }
 
 .distribution-spec-editor {

@@ -40,6 +40,7 @@ export interface GraphRuntimeProps {
   item: GraphBuilderItem;
   dataset: DatasetMeta;
   minPanelHeight?: number;
+  panelLayout?: "scroll" | "fit";
   externalDataState?: ExternalGraphDataState;
   showPointBudgetAction?: boolean;
   onRequestSampleMode?: () => void;
@@ -99,6 +100,7 @@ export function GraphRuntime({
   item,
   dataset,
   minPanelHeight,
+  panelLayout,
   externalDataState,
   showPointBudgetAction = false,
   onRequestSampleMode,
@@ -341,6 +343,7 @@ export function GraphRuntime({
             data={graphData}
             frame={frame}
             minPanelHeight={minPanelHeight}
+            panelLayout={panelLayout}
             valueOrders={valueOrders}
             onYAxisDblClick={effectiveItem.mode === "multivariate" ? undefined : (axesTransposed ? onXAxisDblClick : onYAxisDblClick)}
             onXAxisDblClick={effectiveItem.mode === "multivariate" ? undefined : (axesTransposed ? onYAxisDblClick : onXAxisDblClick)}

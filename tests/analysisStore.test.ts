@@ -121,6 +121,15 @@ assert.equal(useAnalysisStore.getState().counter, 7);
 useAnalysisStore.getState().removeAnalysis("analysis-1");
 assert.deepEqual(useAnalysisStore.getState().items, []);
 
+const legacyAnalysis = makeAnalysisDocument({ id: "legacy-analysis", name: "Legacy Analysis" });
+legacyAnalysis.definition.analysis.fitDistributions = [];
+useAnalysisStore.getState().loadAnalyses([legacyAnalysis]);
+assert.deepEqual(
+  useAnalysisStore.getState().items[0]?.definition.analysis.fitDistributions,
+  ["normal"],
+  "legacy Distribution Analysis documents must restore the required fitted normal curve",
+);
+
 useAnalysisStore.getState().loadAnalyses([
   makeAnalysisDocument({ id: "analysis-2", name: "Analysis 2" }),
   makeAnalysisDocument({ id: "analysis-5", name: "Analysis 5" }),

@@ -305,7 +305,7 @@ assert.deepEqual(validateDistributionRoles({
 }, [responseField, nonIntegerFrequencyField]), { ok: false, error: "invalidFrequency" });
 
 const defaultAnalysis = createDefaultDistributionAnalysisConfig();
-assert.deepEqual(defaultAnalysis, { confidenceLevel: 0.95, specLimits: {}, fitDistributions: [] });
+assert.deepEqual(defaultAnalysis, { confidenceLevel: 0.95, specLimits: {}, fitDistributions: ["normal"] });
 
 const distributionItem = createDistributionItem({
   id: "distribution-1",

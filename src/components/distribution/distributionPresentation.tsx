@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
+import { AnalysisFrame, AnalysisText } from "@/components/analysis/presentation";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
 import { GraphRuntime } from "@/components/graphBuilder/GraphRuntime";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
@@ -104,17 +105,19 @@ export function DistributionReportPanel({ reportState }: { reportState: Distribu
   const { t } = useTranslation();
 
   return (
-    <section className="distribution-report-section">
-      <h2>{t("distribution.report.title", { defaultValue: "Statistical Report" })}</h2>
+    <AnalysisFrame
+      className="distribution-report-section"
+      title={t("distribution.report.title", { defaultValue: "Statistical Report" })}
+    >
       {(reportState.status === "idle" || reportState.status === "loading") && (
-        <p className="distribution-report-status">{t("distribution.report.loading", { defaultValue: "Loading report..." })}</p>
+        <AnalysisText>{t("distribution.report.loading", { defaultValue: "Loading report..." })}</AnalysisText>
       )}
       {reportState.status === "error" && (
-        <p className="distribution-report-unavailable" role="alert">{reportState.error}</p>
+        <AnalysisText role="alert">{reportState.error}</AnalysisText>
       )}
       {reportState.status === "success" && (
         <DistributionReport groups={reportState.result.groups} reportBlocks={reportState.result.reportBlocks} />
       )}
-    </section>
+    </AnalysisFrame>
   );
 }

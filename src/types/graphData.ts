@@ -230,6 +230,9 @@ export interface PrecomputedCurvePacket {
   elementId: string;
   seriesId?: string;
   seriesName?: string;
+  group?: string;
+  category?: string;
+  sourceColumn?: string;
   interpolation: PrecomputedCurveInterpolation;
   points: PrecomputedCurvePoint[];
 }
@@ -497,6 +500,9 @@ export function isGraphAggregatePacket(value: unknown): value is GraphAggregateP
     return isNonEmptyString(value.elementId)
       && (value.seriesId === undefined || isNonEmptyString(value.seriesId))
       && (value.seriesName === undefined || isNonEmptyString(value.seriesName))
+      && isOptionalString(value.group)
+      && isOptionalString(value.category)
+      && isOptionalString(value.sourceColumn)
       && isPrecomputedCurveInterpolation(value.interpolation)
       && Array.isArray(value.points)
       && value.points.every(isPrecomputedCurvePoint);

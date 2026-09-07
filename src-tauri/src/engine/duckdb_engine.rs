@@ -1453,7 +1453,7 @@ impl DuckDbEngine {
         multi_y_columns.sort();
         multi_y_columns.dedup();
 
-        if y_column.is_none() && multi_x_columns.len() < 2 {
+        if y_column.is_none() && multi_x_columns.len() < 2 && multi_y_columns.is_empty() {
             return Err(AppError::InvalidParam(
                 "graph request is missing role y".into(),
             ));
@@ -1626,7 +1626,7 @@ impl DuckDbEngine {
                 values.extend(filter_values.iter().cloned());
             }
             (branches.join(" UNION ALL "), values, "VARCHAR".to_string())
-        } else if multi_y_columns.len() >= 2 {
+        } else if !multi_y_columns.is_empty() {
             let mut branches = Vec::with_capacity(multi_y_columns.len());
             let mut values = Vec::with_capacity(
                 filter_values.len() * multi_y_columns.len() + multi_y_columns.len(),
@@ -1708,7 +1708,7 @@ impl DuckDbEngine {
         let multi_x_active = multi_x_columns.len() >= 2;
         let multi_x_axis_mode = multi_x_active && y_column.is_none();
         let multi_x_merge_mode = multi_x_active && y_column.is_some();
-        let multi_y_active = multi_y_columns.len() >= 2;
+        let multi_y_active = !multi_y_columns.is_empty();
         let melt_active = multi_x_active || multi_y_active;
         let mut projection_select_items = Vec::new();
         let mut projected_columns = Vec::new();
