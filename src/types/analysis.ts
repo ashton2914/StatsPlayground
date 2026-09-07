@@ -4,10 +4,12 @@ import type { DistributionAnalysisConfig, DistributionItem } from "./distributio
 
 export type AnalysisKind = "distribution";
 
-export interface AnalysisPresentation {
+export interface DistributionAnalysisPresentation {
   schemaVersion: 1;
   layout: "distribution-v1";
 }
+
+export type AnalysisPresentation = DistributionAnalysisPresentation;
 
 export interface DistributionAnalysisDefinition {
   kind: "distribution";
@@ -19,7 +21,7 @@ export interface DistributionAnalysisDefinition {
   graphs: DistributionItem["graphs"];
 }
 
-export interface AnalysisDocument {
+export interface DistributionAnalysisDocument {
   schemaVersion: 1;
   documentType: "analysis";
   id: string;
@@ -28,10 +30,16 @@ export interface AnalysisDocument {
   configRevision: number;
   source: { datasetId: string };
   definition: DistributionAnalysisDefinition;
-  presentation: AnalysisPresentation;
+  presentation: DistributionAnalysisPresentation;
   createdAt: string;
   updatedAt: string;
 }
+
+export type AnalysisDocument = DistributionAnalysisDocument;
+
+export type AnalysisDocumentByKind = {
+  [Document in AnalysisDocument as Document["analysisKind"]]: Document;
+};
 
 export type AnalysisDocumentPatch = Partial<Pick<
   AnalysisDocument,

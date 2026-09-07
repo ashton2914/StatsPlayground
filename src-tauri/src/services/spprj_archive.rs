@@ -38,7 +38,7 @@ use std::path::Path;
 
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::AppError;
 use crate::services::workflow_domain;
@@ -3355,23 +3355,118 @@ fn validate_report_value(value: &Value, context: &str) -> Result<(), AppError> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct AnalysisValidatorContract {
+    analysis_kind: &'static str,
+    document_schema_version: i64,
+    definition_kind: &'static str,
+    presentation_schema_version: i64,
+    presentation_layout: &'static str,
+    validate_definition: fn(&Map<String, Value>, &str) -> Result<(), AppError>,
+}
+
+const ANALYSIS_VALIDATOR_CONTRACTS: &[AnalysisValidatorContract] = &[AnalysisValidatorContract {
+    analysis_kind: "distribution",
+    document_schema_version: 1,
+    definition_kind: "distribution",
+    presentation_schema_version: 1,
+    presentation_layout: "distribution-v1",
+    validate_definition: validate_distribution_analysis_definition,
+}];
+
+fn validate_distribution_analysis_definition(
+    definition: &Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    validate_field_ref_array(
+        definition.get("responses"),
+        &format!("{context} analysis definition.responses"),
+    )?;
+    validate_optional_field_ref(
+        definition.get("weight"),
+        &format!("{context} analysis definition.weight"),
+    )?;
+    validate_optional_field_ref(
+        definition.get("frequency"),
+        &format!("{context} analysis definition.frequency"),
+    )?;
+    validate_field_ref_array(
+        definition.get("by"),
+        &format!("{context} analysis definition.by"),
+    )?;
+
+    let analysis = definition
+        .get("analysis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.analysis is missing"
+            ))
+        })?;
+    validate_distribution_analysis_config(
+        analysis,
+        &format!("{context} analysis definition.analysis"),
+    )?;
+
+    let graphs = definition
+        .get("graphs")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.graphs is missing"
+            ))
+        })?;
+    for key in ["overview", "boxPlot", "ecdf", "normalQuantile"] {
+        let graph = graphs.get(key).and_then(Value::as_object).ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.graphs.{key} is missing"
+            ))
+        })?;
+        validate_embedded_graph_config(
+            graph,
+            &format!("{context} analysis definition.graphs.{key}"),
+        )?;
+    }
+
+    Ok(())
+}
+
 fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError> {
     let object = value
         .as_object()
         .ok_or_else(|| AppError::FileIO(format!("{context} analysis is not a JSON object")))?;
-    if object.get("schemaVersion").and_then(Value::as_i64) != Some(1) {
-        return Err(AppError::FileIO(format!(
-            "{context} analysis is missing required schemaVersion"
-        )));
-    }
     if object.get("documentType").and_then(Value::as_str) != Some("analysis") {
         return Err(AppError::FileIO(format!(
             "{context} analysis must use documentType analysis"
         )));
     }
-    if object.get("analysisKind").and_then(Value::as_str) != Some("distribution") {
+    let analysis_kind = object
+        .get("analysisKind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing analysisKind")))?;
+    let definition = object
+        .get("definition")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required definition")))?;
+    let definition_kind = definition
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition is missing kind")))?;
+    let contract = ANALYSIS_VALIDATOR_CONTRACTS
+        .iter()
+        .find(|contract| {
+            contract.analysis_kind == analysis_kind && contract.definition_kind == definition_kind
+        })
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis uses unsupported analysisKind/definition kind {analysis_kind}/{definition_kind}"
+            ))
+        })?;
+    if object.get("schemaVersion").and_then(Value::as_i64)
+        != Some(contract.document_schema_version)
+    {
         return Err(AppError::FileIO(format!(
-            "{context} analysis must use supported analysisKind distribution"
+            "{context} analysis is missing required schemaVersion"
         )));
     }
     if object.get("configRevision").and_then(Value::as_u64).is_none() {
@@ -3396,48 +3491,20 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
         .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required source")))?;
     require_non_empty_string(source.get("datasetId"), &format!("{context} analysis source.datasetId"))?;
 
-    let definition = object
-        .get("definition")
-        .and_then(Value::as_object)
-        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required definition")))?;
-    if definition.get("kind").and_then(Value::as_str) != Some("distribution") {
-        return Err(AppError::FileIO(format!(
-            "{context} analysis definition must use supported kind distribution"
-        )));
-    }
-    validate_field_ref_array(definition.get("responses"), &format!("{context} analysis definition.responses"))?;
-    validate_optional_field_ref(definition.get("weight"), &format!("{context} analysis definition.weight"))?;
-    validate_optional_field_ref(definition.get("frequency"), &format!("{context} analysis definition.frequency"))?;
-    validate_field_ref_array(definition.get("by"), &format!("{context} analysis definition.by"))?;
-
-    let analysis = definition
-        .get("analysis")
-        .and_then(Value::as_object)
-        .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.analysis is missing")))?;
-    validate_distribution_analysis_config(analysis, &format!("{context} analysis definition.analysis"))?;
-
-    let graphs = definition
-        .get("graphs")
-        .and_then(Value::as_object)
-        .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs is missing")))?;
-    for key in ["overview", "boxPlot", "ecdf", "normalQuantile"] {
-        let graph = graphs
-            .get(key)
-            .and_then(Value::as_object)
-            .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition.graphs.{key} is missing")))?;
-        validate_embedded_graph_config(graph, &format!("{context} analysis definition.graphs.{key}"))?;
-    }
+    (contract.validate_definition)(definition, context)?;
 
     let presentation = object
         .get("presentation")
         .and_then(Value::as_object)
         .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required presentation")))?;
-    if presentation.get("schemaVersion").and_then(Value::as_i64) != Some(1) {
+    if presentation.get("schemaVersion").and_then(Value::as_i64)
+        != Some(contract.presentation_schema_version)
+    {
         return Err(AppError::FileIO(format!(
             "{context} analysis presentation must use schemaVersion 1"
         )));
     }
-    if presentation.get("layout").and_then(Value::as_str) != Some("distribution-v1") {
+    if presentation.get("layout").and_then(Value::as_str) != Some(contract.presentation_layout) {
         return Err(AppError::FileIO(format!(
             "{context} analysis presentation must use layout distribution-v1"
         )));
@@ -5022,6 +5089,46 @@ mod tests {
         assert_eq!(loaded.analyses[0], analysis);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn analysis_kind_manifest_matches_validator_contracts() {
+        let manifest: Value = serde_json::from_str(include_str!(
+            "../../../contracts/analysis/kinds.v1.json"
+        ))
+        .expect("parse Analysis kind manifest");
+        assert_eq!(manifest.get("schemaVersion").and_then(Value::as_i64), Some(1));
+
+        let kinds = manifest
+            .get("kinds")
+            .and_then(Value::as_array)
+            .expect("Analysis kind manifest kinds");
+        assert_eq!(kinds.len(), ANALYSIS_VALIDATOR_CONTRACTS.len());
+
+        for (entry, contract) in kinds.iter().zip(ANALYSIS_VALIDATOR_CONTRACTS) {
+            let entry = entry.as_object().expect("Analysis kind manifest entry");
+            assert_eq!(entry.len(), 4);
+            assert_eq!(entry.get("analysisKind").and_then(Value::as_str), Some(contract.analysis_kind));
+            assert_eq!(
+                entry.get("documentSchemaVersion").and_then(Value::as_i64),
+                Some(contract.document_schema_version)
+            );
+            assert_eq!(entry.get("definitionKind").and_then(Value::as_str), Some(contract.definition_kind));
+
+            let presentation = entry
+                .get("presentation")
+                .and_then(Value::as_object)
+                .expect("Analysis kind presentation contract");
+            assert_eq!(presentation.len(), 2);
+            assert_eq!(
+                presentation.get("schemaVersion").and_then(Value::as_i64),
+                Some(contract.presentation_schema_version)
+            );
+            assert_eq!(
+                presentation.get("layout").and_then(Value::as_str),
+                Some(contract.presentation_layout)
+            );
+        }
     }
 
     #[test]

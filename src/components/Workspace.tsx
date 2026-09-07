@@ -32,9 +32,12 @@ import { ReportView } from "./report";
 import { AnalysisView } from "./analysis/AnalysisView";
 import {
   createDistributionAnalysisDocument,
-  createDistributionAnalysisPatch,
-  toDistributionEditorItem,
 } from "./analysis/adapters";
+import {
+  createAnalysisEditorPatch as createDistributionAnalysisPatch,
+  toAnalysisEditorItem as toDistributionEditorItem,
+} from "./analysis/analysisEditorRegistry";
+import { createAnalysisGraphPersistencePatch } from "./analysis/analysisGraphPolicies";
 import { DistributionDialog, type DistributionFieldInfo } from "./distribution";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
@@ -2721,13 +2724,13 @@ export function Workspace() {
                   onEditInputs={() => void handleEditAnalysisInputs(item.id)}
                   onGraphConfigChange={readOnly ? undefined : (role, graph) => {
                     const current = useAnalysisStore.getState().items.find((entry) => entry.id === item.id) ?? item;
-                    updateAnalysis(item.id, {
-                      definition: {
-                        ...current.definition,
-                        graphs: { ...current.definition.graphs, [role]: graph },
-                      },
-                      updatedAt: new Date().toISOString(),
-                    });
+                    const graphUpdate = createAnalysisGraphPersistencePatch(
+                      current,
+                      role,
+                      graph,
+                      new Date().toISOString(),
+                    );
+                    updateAnalysis(item.id, graphUpdate.patch);
                     markDirty();
                   }}
                 />

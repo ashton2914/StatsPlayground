@@ -39,3 +39,6 @@ asked.
 
 For end-to-end feature work see the `statsplayground-dev` skill; for chart work
 in `src/graphCore/` see the `graphcore-echarts` skill.
+
+For Analysis kinds, follow `docs/analysis-development-standard.md` and the
+scoped `.github/instructions/analysis-development.instructions.md` rules.
