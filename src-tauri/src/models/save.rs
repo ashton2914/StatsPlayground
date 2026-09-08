@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use crate::models::project::ProjectInfo;
 use crate::models::table::{ColumnDisplayProps, DatasetMeta};
+use crate::services::table_transform_domain::TableTransformDefinition;
+use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{LogicalFolder, WorkflowDefinition, WorkflowRun};
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -41,6 +43,10 @@ pub struct SaveProjectRequest {
     pub logical_folders: Vec<LogicalFolder>,
     #[serde(default)]
     pub workflow_runs: Vec<WorkflowRun>,
+    #[serde(default)]
+    pub table_transforms: Vec<TableTransformDefinition>,
+    #[serde(default)]
+    pub table_transform_bindings: Vec<TableTransformProjectBinding>,
 }
 
 #[derive(Debug, Clone)]

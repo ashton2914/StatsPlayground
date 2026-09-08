@@ -4,6 +4,10 @@ import type { DistributionItem } from "@/types/distribution";
 import type { ProjectInfo, OpenProjectResult, ImportTableResult } from "@/types/project";
 import type { ReportItem } from "@/types/report";
 import type {
+  TableTransformDefinition,
+  TableTransformProjectBinding,
+} from "@/types/tableTransform";
+import type {
   LogicalFolder,
   WorkflowDefinition,
   WorkflowRun,
@@ -61,6 +65,8 @@ export interface SaveProjectRequest {
   workflows: WorkflowDefinition[];
   logicalFolders: LogicalFolder[];
   workflowRuns: WorkflowRun[];
+  tableTransforms?: TableTransformDefinition[];
+  tableTransformBindings?: TableTransformProjectBinding[];
 }
 
 export type SavePhase = "preparing" | "table" | "metadata" | "compressing" | "finalizing";

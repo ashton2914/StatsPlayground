@@ -348,6 +348,26 @@ mod tests {
             ("commands::project_commands::import_table", CommandClass::Mutation),
             ("commands::project_commands::export_graph", CommandClass::ReadOnly),
             ("commands::project_commands::import_graph", CommandClass::ReadOnly),
+            (
+                "commands::project_commands::create_table_transform",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::run_table_transform",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::rebind_table_transform",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::export_table_transform",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::project_commands::import_table_transform",
+                CommandClass::Mutation,
+            ),
             ("commands::table_commands::get_columns", CommandClass::ReadOnly),
             (
                 "commands::table_commands::get_column_descriptors",

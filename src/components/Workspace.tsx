@@ -21,7 +21,8 @@ import { SqlQueryDialog } from "./SqlQueryDialog";
 import { HelpDialog } from "./HelpDialog";
 import { PostgresDataLinkDialog } from "./dataLink/PostgresDataLinkDialog";
 import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
-import { TableOpsDialog, type TableOpType } from "./TableOpsDialog";
+import { TableOpsDialog } from "./TableOpsDialog";
+import { TableTransformView } from "./tableTransform/TableTransformView";
 import { GraphBuilderView } from "./graphBuilder";
 import { FitYByXRoleDialog } from "./fitYByX";
 import { HypothesisTestDialog } from "./hypothesisTest";
@@ -73,6 +74,7 @@ import { useReportStore } from "@/stores/useReportStore";
 import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
+import { useTableTransformStore } from "@/stores/useTableTransformStore";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import {
   createDefaultGraph2DState,
@@ -270,6 +272,13 @@ export function Workspace() {
   const logicalFolders = useWorkflowStore((s) => s.logicalFolders);
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
   const lineageGraph = useWorkflowStore((s) => s.lineageGraph);
+  const createAndRunTableTransform = useTableTransformStore((s) => s.createAndRun);
+  const tableTransforms = useTableTransformStore((s) => s.definitions);
+  const tableTransformBindings = useTableTransformStore((s) => s.bindings);
+  const rebindTableTransform = useTableTransformStore((s) => s.rebindAndRun);
+  const rerunTableTransform = useTableTransformStore((s) => s.rerun);
+  const loadTableTransforms = useTableTransformStore((s) => s.loadFromProject);
+  const resetTableTransforms = useTableTransformStore((s) => s.reset);
   const loadWorkflowsFromProject = useWorkflowStore((s) => s.loadFromProject);
   const resetWorkflows = useWorkflowStore((s) => s.reset);
   const addGraphBuilder = useGraphBuilderStore((s) => s.addItem);
@@ -306,6 +315,7 @@ export function Workspace() {
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
   /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
   const [activeGraphBuilderId, setActiveGraphBuilderId] = useState<string | null>(null);
+  const [activeTableTransformId, setActiveTableTransformId] = useState<string | null>(null);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
   const [activeTabulateId, setActiveTabulateId] = useState<string | null>(null);
@@ -324,7 +334,7 @@ export function Workspace() {
   const cancellingImport = useDataLinkStore((state) => state.cancelling);
   const cancelActiveImport = useDataLinkStore((state) => state.cancelImport);
   const [helpDialog, setHelpDialog] = useState<"about" | "license" | null>(null);
-  const [tableOp, setTableOp] = useState<TableOpType | null>(null);
+  const [showTableTransformDialog, setShowTableTransformDialog] = useState(false);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
   const [showFitModelDialog, setShowFitModelDialog] = useState(false);
   const [showHypothesisTestDialog, setShowHypothesisTestDialog] = useState(false);
@@ -396,6 +406,7 @@ export function Workspace() {
 
   const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
     setActiveDataset(selection.activeDatasetId);
+    setActiveTableTransformId(selection.activeTableTransformId);
     setActiveGraphBuilderId(selection.activeGraphBuilderId);
     setActiveReportId(selection.activeReportId);
     setActiveAnalysisId(selection.activeAnalysisId);
@@ -1472,6 +1483,8 @@ export function Workspace() {
           workflows,
           logicalFolders,
           workflowRuns,
+          tableTransforms,
+          tableTransformBindings,
         });
       } else {
         await saveProject({
@@ -1494,6 +1507,8 @@ export function Workspace() {
           workflows,
           logicalFolders,
           workflowRuns,
+          tableTransforms,
+          tableTransformBindings,
         });
       }
       showToast(t("common.saved"), 1500);
@@ -1523,6 +1538,7 @@ export function Workspace() {
     resetAnalyses();
     resetTabulates();
     resetWorkflows();
+    resetTableTransforms();
     fsReset();
     await initProject();
     await refreshDatasets();
@@ -1544,6 +1560,7 @@ export function Workspace() {
       resetAnalyses();
       resetTabulates();
       resetWorkflows();
+      resetTableTransforms();
       setBusyMessage(t("workspace.openingProject"));
       const unlisten = await listen<{
         datasetIndex: number;
@@ -1577,6 +1594,7 @@ export function Workspace() {
         resetAnalyses();
         resetTabulates();
         resetWorkflows();
+        resetTableTransforms();
         await refreshDatasets();
         tableCounter.current = 0;
         // Restore snapshots from project file (history is session-only)
@@ -1605,6 +1623,10 @@ export function Workspace() {
             edges: [],
           },
         });
+        loadTableTransforms(
+          result.tableTransforms ?? [],
+          result.tableTransformBindings ?? [],
+        );
         // Restore folder tree + table/graph→folder assignments. We do this
         // after datasets/graphs are loaded so a subsequent prune pass keeps
         // assignments in sync with currently-existing items.
@@ -2003,6 +2025,8 @@ export function Workspace() {
       arr.push(ds);
       tablesByParent.set(p, arr);
     }
+    const tableTransformsByParent = new Map<string, typeof tableTransforms>();
+    tableTransformsByParent.set(ROOT, tableTransforms);
     // Graphs per parent path.
     const graphsByParent = new Map<string, GraphBuilderItem[]>();
     for (const gb of graphBuilders) {
@@ -2032,8 +2056,8 @@ export function Workspace() {
       arr.push(item);
       tabulatesByParent.set(p, arr);
     }
-    return { ROOT, childFolders, tablesByParent, graphsByParent, reportsByParent, analysesByParent, tabulatesByParent };
-  }, [folders, tableFolders, graphFolders, reportFolders, analysisFolders, tabulateFolders, datasets, graphBuilders, reportItems, analysisItems, tabulates]);
+    return { ROOT, childFolders, tablesByParent, tableTransformsByParent, graphsByParent, reportsByParent, analysesByParent, tabulatesByParent };
+  }, [folders, tableFolders, graphFolders, reportFolders, analysisFolders, tabulateFolders, datasets, tableTransforms, graphBuilders, reportItems, analysisItems, tabulates]);
 
   /** Recursively render one folder level. */
   const renderFolderLevel = (parent: string | null, depth: number): React.ReactNode[] => {
@@ -2042,6 +2066,7 @@ export function Workspace() {
     const out: React.ReactNode[] = [];
     const folderChildren = tree.childFolders.get(key) ?? [];
     const tableChildren = tree.tablesByParent.get(key) ?? [];
+    const transformChildren = tree.tableTransformsByParent.get(key) ?? [];
     const graphChildren = tree.graphsByParent.get(key) ?? [];
     const reportChildren = tree.reportsByParent.get(key) ?? [];
     const analysisChildren = tree.analysesByParent.get(key) ?? [];
@@ -2152,6 +2177,21 @@ export function Workspace() {
             <span className="ds-name">{withProjectExtension(ds.name, "table")}</span>
           )}
           <span className="ds-info">{ds.rowCount}×{ds.colCount}</span>
+        </div>,
+      );
+    }
+    for (const transform of transformChildren) {
+      const binding = tableTransformBindings.find((item) => item.definitionId === transform.id);
+      out.push(
+        <div
+          key={`table-transform:${transform.id}`}
+          className={`dataset-item ${activeTableTransformId === transform.id ? "active" : ""}`}
+          style={{ paddingLeft: 8 + depth * 12 + 12 }}
+          onClick={() => activateWorkspaceDocument("tableTransform", transform.id)}
+        >
+          <i className="ds-icon fa-solid fa-shuffle" aria-hidden="true" />
+          <span className="ds-name">{withProjectExtension(transform.name, "tableTransform")}</span>
+          <span className="ds-info gb-source-tag">{binding?.lastRun?.status ?? transform.operation.kind}</span>
         </div>,
       );
     }
@@ -2374,6 +2414,12 @@ export function Workspace() {
             </MenuDropdown>
             <MenuDropdown label={t("menu.table")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateTable}>{t("menu.newTable")}<span className="menu-shortcut">{modKey}N</span></div>
+              <div
+                className={`menu-item${readOnly || datasets.length === 0 ? " menu-item-disabled" : ""}`}
+                onClick={readOnly || datasets.length === 0 ? undefined : () => setShowTableTransformDialog(true)}
+              >
+                {t("menu.transform", { defaultValue: "Transform..." })}
+              </div>
               <div className="menu-sep" />
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportCsv}>{t("menu.importCsv")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportSqlite}>{t("menu.importSqlite")}</div>
@@ -2667,6 +2713,37 @@ export function Workspace() {
                 />
               );
             })()
+          ) : activeTableTransformId ? (
+            (() => {
+              const definition = tableTransforms.find((item) => item.id === activeTableTransformId);
+              const binding = tableTransformBindings.find((item) => item.definitionId === activeTableTransformId);
+              if (!definition || !binding) {
+                return <div className="main-content"><div className="workspace-empty"><p>{t("tableTransform.missing", { defaultValue: "Table transform no longer exists" })}</p></div></div>;
+              }
+              return (
+                <TableTransformView
+                  definition={definition}
+                  binding={binding}
+                  datasets={datasets}
+                  readOnly={readOnly}
+                  onRebind={async (role, tableDocumentId) => {
+                    await rebindTableTransform(definition.id, role, tableDocumentId);
+                    await refreshDatasets();
+                    setTableKey((key) => key + 1);
+                    invalidateData();
+                    markDirty();
+                  }}
+                  onRerun={async () => {
+                    await rerunTableTransform(definition.id);
+                    await refreshDatasets();
+                    setTableKey((key) => key + 1);
+                    invalidateData();
+                    markDirty();
+                  }}
+                  onOpenOutput={(tableDocumentId) => activateWorkspaceDocument("dataset", tableDocumentId)}
+                />
+              );
+            })()
           ) : activeDatasetId ? (
             <DataTableView
               key={tableKey}
@@ -2674,7 +2751,6 @@ export function Workspace() {
               onColumnRenamed={(oldName, newName, sqlType) => {
                 migrateLegacyGraphColumnName(activeDatasetId, oldName, newName, sqlType);
               }}
-              onTableOp={setTableOp}
             />
           ) : (
             <div className="main-content">
@@ -2767,21 +2843,15 @@ export function Workspace() {
 
       {helpDialog && <HelpDialog mode={helpDialog} onClose={() => setHelpDialog(null)} />}
 
-      {tableOp && (
+      {showTableTransformDialog && (
         <TableOpsDialog
-          op={tableOp}
           datasets={datasets}
           activeDatasetId={activeDatasetId}
-          onClose={() => setTableOp(null)}
-          onCreated={async (ds) => {
+          onClose={() => setShowTableTransformDialog(false)}
+          onSubmit={async (draft) => {
+            const execution = await createAndRunTableTransform(draft);
             await refreshDatasets();
-            activateWorkspaceDocument("dataset", ds.id);
-            markDirty();
-          }}
-          onUpdated={async () => {
-            await refreshDatasets();
-            setTableKey(k => k + 1);
-            invalidateData();
+            if (execution.output) activateWorkspaceDocument("dataset", execution.output.id);
             markDirty();
           }}
         />

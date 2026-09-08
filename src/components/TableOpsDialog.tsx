@@ -4,13 +4,16 @@ import type { TFunction } from "i18next";
 import { dataService } from "@/services/dataService";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { DualListPicker } from "@/components/DualListPicker";
+import { createTableTransformDraft } from "@/components/tableTransform/createTableTransformDraft";
+import {
+  DEFAULT_TABLE_TRANSFORM_TYPE,
+  TABLE_TRANSFORM_TYPES,
+  type TableTransformType,
+} from "@/components/tableTransform/tableTransformOptions";
 import type { DatasetMeta } from "@/types/data";
+import type { TableFilterComparisonOperator, TableTransformDraft, TableTransformOperation } from "@/types/tableTransform";
 
 // ─── Types ───
-
-export type TableOpType =
-  | "summary" | "subset" | "sort" | "stack"
-  | "split" | "transpose" | "join" | "update" | "concatenate";
 
 /**
  * Each form registers its primary (Confirm) action with the parent through
@@ -21,13 +24,13 @@ export type PrimaryAction = { disabled: boolean; onClick: () => void };
 export type SetPrimary = (p: PrimaryAction | null) => void;
 
 interface Props {
-  op: TableOpType;
   datasets: DatasetMeta[];
   activeDatasetId: string | null;
   onClose: () => void;
-  onCreated: (ds: DatasetMeta) => void;     // new table created
-  onUpdated: () => void;                     // existing table modified (update)
+  onSubmit: (draft: TableTransformDraft) => Promise<void>;
 }
+
+type DraftExecutor = (operation: TableTransformOperation, tableIds: string[], outputName: string) => void;
 
 // ─── Shared helpers ───
 
@@ -67,9 +70,10 @@ function DatasetSelect({
 
 // ─── Main Component ───
 
-export function TableOpsDialog({ op, datasets, activeDatasetId, onClose, onCreated, onUpdated }: Props) {
+export function TableOpsDialog({ datasets, activeDatasetId, onClose, onSubmit }: Props) {
   const { t } = useTranslation();
   const readOnly = useProjectStore((s) => s.readOnly);
+  const [op, setOp] = useState<TableTransformType>(DEFAULT_TABLE_TRANSFORM_TYPE);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [primary, setPrimary] = useState<PrimaryAction | null>(null);
@@ -88,25 +92,20 @@ export function TableOpsDialog({ op, datasets, activeDatasetId, onClose, onCreat
 
   // Memoized so child forms can put `exec` in their useLayoutEffect deps without
   // re-registering primary on every parent render.
-  const exec = useCallback(async (fn: () => Promise<DatasetMeta | void>) => {
+  const exec = useCallback(async (operation: TableTransformOperation, tableIds: string[], outputName: string) => {
     setError(null);
     setBusy(true);
     try {
-      const result = await fn();
-      if (result && typeof result === "object" && "id" in result) {
-        onCreated(result as DatasetMeta);
-      } else {
-        onUpdated();
-      }
+      await onSubmit(createTableTransformDraft(outputName, outputName, operation, tableIds));
       onClose();
     } catch (e: unknown) {
       setError(String(e));
     } finally {
       setBusy(false);
     }
-  }, [onCreated, onUpdated, onClose]);
+  }, [onSubmit, onClose]);
 
-  const title: Record<TableOpType, string> = {
+  const labels: Record<TableTransformType, string> = {
     summary: t("tableOp.summary"),
     subset: t("tableOp.subset"),
     sort: t("tableOp.sort"),
@@ -120,11 +119,33 @@ export function TableOpsDialog({ op, datasets, activeDatasetId, onClose, onCreat
 
   const confirmDisabled = busy || readOnly || !primary || primary.disabled;
 
+  const handleOperationChange = (next: TableTransformType) => {
+    setPrimary(null);
+    setError(null);
+    setOp(next);
+  };
+
   return (
     <div className="sp-dialog-overlay" onMouseDown={onClose}>
       <div className="sp-dialog sp-dialog-wide" onMouseDown={e => e.stopPropagation()}>
-        <div className="sp-dialog-title">{title[op]}</div>
+        <div className="sp-dialog-title">{t("tableOp.transformTitle", { defaultValue: "Transform Table" })}</div>
         <div className="sp-dialog-body">
+          <div className="sp-dialog-field">
+            <label className="sp-dialog-label" htmlFor="table-transform-type">
+              {t("tableOp.transformType", { defaultValue: "Transform type" })}
+            </label>
+            <select
+              id="table-transform-type"
+              className="sp-dialog-select"
+              value={op}
+              onChange={(event) => handleOperationChange(event.target.value as TableTransformType)}
+            >
+              {TABLE_TRANSFORM_TYPES.map((type) => (
+                <option key={type} value={type}>{labels[type]}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Source dataset selector (for most ops) */}
           {op !== "join" && op !== "update" && op !== "concatenate" && (
             <DatasetSelect datasets={datasets} value={sourceId} onChange={setSourceId} label={t("tableOp.sourceTable")} />
@@ -160,7 +181,7 @@ export function TableOpsDialog({ op, datasets, activeDatasetId, onClose, onCreat
 
 function SortForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   sourceId: string; cols: [string, string][]; sourceName: string;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [sortCol, setSortCol] = useState("");
   const [sortOrder, setSortOrder] = useState("asc");
@@ -170,7 +191,7 @@ function SortForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !sourceId || !sortCol,
-      onClick: () => exec(() => dataService.sortTable(sourceId, [sortCol], [sortOrder], t("tableOp.resultSuffix.sort", { name: sourceName }))),
+      onClick: () => exec({ kind: "sort", sortColumns: [{ column: sortCol, direction: sortOrder === "asc" ? "ascending" : "descending" }] }, [sourceId], t("tableOp.resultSuffix.sort", { name: sourceName })),
     });
   }, [setPrimary, sourceId, sortCol, sortOrder, sourceName, exec, t]);
 
@@ -197,13 +218,16 @@ function SortForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
 
 function SubsetForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   sourceId: string; cols: [string, string][]; sourceName: string;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [selectedCols, setSelectedCols] = useState<string[]>([]);
-  const [filter, setFilter] = useState("");
+  const [filterColumn, setFilterColumn] = useState("");
+  const [filterOperator, setFilterOperator] = useState<TableFilterComparisonOperator>("equal");
+  const [filterValue, setFilterValue] = useState("");
 
   // Default: keep all columns whenever the source table changes.
   useEffect(() => { setSelectedCols(cols.map(([n]) => n)); }, [cols]);
+  useEffect(() => { setFilterColumn(""); setFilterValue(""); }, [sourceId]);
 
   const items = useMemo(
     () => cols.map(([name, type_]) => ({ key: name, label: name, hint: type_ })),
@@ -213,14 +237,18 @@ function SubsetForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !sourceId || selectedCols.length === 0,
-      onClick: () => exec(() => dataService.subsetTable(
-        sourceId,
-        sortByColOrder(selectedCols, cols),
-        filter || null,
-        t("tableOp.resultSuffix.subset", { name: sourceName }),
-      )),
+      onClick: () => exec({
+        kind: "subset",
+        columns: sortByColOrder(selectedCols, cols),
+        filter: filterColumn ? {
+          kind: "comparison",
+          column: filterColumn,
+          operator: filterOperator,
+          value: { type: "string", value: filterValue },
+        } : undefined,
+      }, [sourceId], t("tableOp.resultSuffix.subset", { name: sourceName })),
     });
-  }, [setPrimary, sourceId, selectedCols, cols, filter, sourceName, exec, t]);
+  }, [setPrimary, sourceId, selectedCols, cols, filterColumn, filterOperator, filterValue, sourceName, exec, t]);
 
   return (
     <>
@@ -233,8 +261,16 @@ function SubsetForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
       />
       <div className="sp-dialog-field">
         <label className="sp-dialog-label">{t("tableOp.subsetWhere")}</label>
-        <input className="sp-dialog-input" value={filter} onChange={e => setFilter(e.target.value)}
-          placeholder={t("tableOp.subsetWherePlaceholder")} />
+        <div className="sp-dialog-inline-fields">
+          <select className="sp-dialog-select" aria-label={t("tableOp.subsetFilterColumn", { defaultValue: "Filter column" })} value={filterColumn} onChange={e => setFilterColumn(e.target.value)}>
+            <option value="">{t("tableOp.subsetNoFilter", { defaultValue: "No filter" })}</option>
+            {cols.map(([name]) => <option key={name} value={name}>{name}</option>)}
+          </select>
+          <select className="sp-dialog-select" aria-label={t("tableOp.subsetFilterOperator", { defaultValue: "Filter operator" })} value={filterOperator} disabled={!filterColumn} onChange={e => setFilterOperator(e.target.value as TableFilterComparisonOperator)}>
+            <option value="equal">=</option><option value="notEqual">!=</option><option value="greaterThan">&gt;</option><option value="greaterThanOrEqual">&gt;=</option><option value="lessThan">&lt;</option><option value="lessThanOrEqual">&lt;=</option>
+          </select>
+          <input className="sp-dialog-input" aria-label={t("tableOp.subsetFilterValue", { defaultValue: "Filter value" })} value={filterValue} disabled={!filterColumn} onChange={e => setFilterValue(e.target.value)} />
+        </div>
       </div>
     </>
   );
@@ -244,7 +280,7 @@ function SubsetForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
 
 function SummaryForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   sourceId: string; cols: [string, string][]; sourceName: string;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [statCols, setStatCols] = useState<string[]>([]);
   const [groupCols, setGroupCols] = useState<string[]>([]);
@@ -275,13 +311,7 @@ function SummaryForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !sourceId || statCols.length === 0 || stats.size === 0,
-      onClick: () => exec(() => dataService.summaryTable(
-        sourceId,
-        sortByColOrder(statCols, cols),
-        sortByColOrder(groupCols, cols),
-        [...stats],
-        t("tableOp.resultSuffix.summary", { name: sourceName }),
-      )),
+      onClick: () => exec({ kind: "summary", statisticColumns: sortByColOrder(statCols, cols), groupColumns: sortByColOrder(groupCols, cols), statistics: [...stats] as Array<"n" | "mean" | "std" | "min" | "max" | "sum" | "median"> }, [sourceId], t("tableOp.resultSuffix.summary", { name: sourceName })),
     });
   }, [setPrimary, sourceId, statCols, groupCols, cols, stats, sourceName, exec, t]);
 
@@ -327,12 +357,12 @@ function SummaryForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
 
 function TransposeForm({ sourceId, sourceName, exec, setPrimary, t }: {
   sourceId: string; sourceName: string;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !sourceId,
-      onClick: () => exec(() => dataService.transposeTable(sourceId, t("tableOp.resultSuffix.transpose", { name: sourceName }))),
+      onClick: () => exec({ kind: "transpose" }, [sourceId], t("tableOp.resultSuffix.transpose", { name: sourceName })),
     });
   }, [setPrimary, sourceId, sourceName, exec, t]);
   return null;
@@ -342,7 +372,7 @@ function TransposeForm({ sourceId, sourceName, exec, setPrimary, t }: {
 
 function StackForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   sourceId: string; cols: [string, string][]; sourceName: string;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [stackOrder, setStackOrder] = useState<string[]>([]);
 
@@ -368,12 +398,7 @@ function StackForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !sourceId || stackOrder.length === 0,
-      onClick: () => exec(() => dataService.stackTable(
-        sourceId,
-        stackOrder,
-        idCols,
-        t("tableOp.resultSuffix.stack", { name: sourceName }),
-      )),
+      onClick: () => exec({ kind: "stack", stackColumns: stackOrder, idColumns: idCols }, [sourceId], t("tableOp.resultSuffix.stack", { name: sourceName })),
     });
   }, [setPrimary, sourceId, stackOrder, idCols, sourceName, exec, t]);
 
@@ -402,7 +427,7 @@ function StackForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
 
 function SplitForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   sourceId: string; cols: [string, string][]; sourceName: string;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [splitCol, setSplitCol] = useState("");
   const [valueCol, setValueCol] = useState("");
@@ -432,13 +457,7 @@ function SplitForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !sourceId || !splitCol || !valueCol || splitCol === valueCol,
-      onClick: () => exec(() => dataService.splitTable(
-        sourceId,
-        splitCol,
-        valueCol,
-        sortByColOrder(idCols, cols),
-        t("tableOp.resultSuffix.split", { name: sourceName }),
-      )),
+      onClick: () => exec({ kind: "split", splitColumn: splitCol, valueColumn: valueCol, idColumns: sortByColOrder(idCols, cols) }, [sourceId], t("tableOp.resultSuffix.split", { name: sourceName })),
     });
   }, [setPrimary, sourceId, splitCol, valueCol, idCols, cols, sourceName, exec, t]);
 
@@ -471,7 +490,7 @@ function SplitForm({ sourceId, cols, sourceName, exec, setPrimary, t }: {
 
 function JoinForm({ datasets, activeId, exec, setPrimary, t }: {
   datasets: DatasetMeta[]; activeId: string | null;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [leftId, setLeftId] = useState(activeId ?? "");
   const [rightId, setRightId] = useState("");
@@ -498,7 +517,7 @@ function JoinForm({ datasets, activeId, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !leftId || !rightId || !leftKey || !rightKey,
-      onClick: () => exec(() => dataService.joinTables(leftId, rightId, joinType, leftKey, rightKey, t("tableOp.resultSuffix.join", { left: leftName, right: rightName }))),
+      onClick: () => exec({ kind: "join", joinType: joinType as "inner" | "left" | "right" | "full", leftKey, rightKey }, [leftId, rightId], t("tableOp.resultSuffix.join", { left: leftName, right: rightName })),
     });
   }, [setPrimary, leftId, rightId, joinType, leftKey, rightKey, leftName, rightName, exec, t]);
 
@@ -535,7 +554,7 @@ function JoinForm({ datasets, activeId, exec, setPrimary, t }: {
 
 function UpdateForm({ datasets, activeId, exec, setPrimary, t }: {
   datasets: DatasetMeta[]; activeId: string | null;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [leftId, setLeftId] = useState(activeId ?? "");
   const [rightId, setRightId] = useState("");
@@ -574,9 +593,9 @@ function UpdateForm({ datasets, activeId, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: !leftId || !rightId || !matchCol || updateCols.length === 0,
-      onClick: () => exec(() => dataService.updateTable(leftId, rightId, matchCol, sortByColOrder(updateCols, leftCols))),
+      onClick: () => exec({ kind: "update", matchColumn: matchCol, updateColumns: sortByColOrder(updateCols, leftCols) }, [leftId, rightId], t("tableOp.resultSuffix.update", { name: datasets.find(d => d.id === leftId)?.name ?? "" })),
     });
-  }, [setPrimary, leftId, rightId, matchCol, updateCols, leftCols, exec]);
+  }, [setPrimary, leftId, rightId, matchCol, updateCols, leftCols, datasets, exec, t]);
 
   return (
     <>
@@ -605,7 +624,7 @@ function UpdateForm({ datasets, activeId, exec, setPrimary, t }: {
 
 function ConcatenateForm({ datasets, activeId, exec, setPrimary, t }: {
   datasets: DatasetMeta[]; activeId: string | null;
-  exec: (fn: () => Promise<DatasetMeta | void>) => void; setPrimary: SetPrimary; t: TFunction;
+  exec: DraftExecutor; setPrimary: SetPrimary; t: TFunction;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set(activeId ? [activeId] : []));
 
@@ -614,7 +633,7 @@ function ConcatenateForm({ datasets, activeId, exec, setPrimary, t }: {
   useLayoutEffect(() => {
     setPrimary({
       disabled: selected.size < 2,
-      onClick: () => exec(() => dataService.concatenateTables([...selected], t("tableOp.concatResult"))),
+      onClick: () => exec({ kind: "concatenate", sourceCount: selected.size }, [...selected], t("tableOp.concatResult")),
     });
   }, [setPrimary, selected, exec, t]);
 
