@@ -2302,7 +2302,7 @@ fn build_report_lineage_operation(
         input_ports.push(workflow_domain::LineagePort {
             id: input_port_id.clone(),
             name: format!("{source_kind_key}:{}", source_ref.id),
-            payload_kind: port_payload_kind(&source_ref.kind),
+            payload_kind: port_payload_kind(&source_ref.kind)?,
         });
         edges.push(workflow_domain::LineageEdge {
             id: format!(

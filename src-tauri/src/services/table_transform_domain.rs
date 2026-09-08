@@ -521,6 +521,7 @@ fn contract_columns(
                 canonical_duckdb_type: canonical_duckdb_type(&source.col_type),
                 required: true,
                 required_by_operation_ids: vec![CONTRACT_OPERATION_ID.to_string()],
+                required_extras: Default::default(),
             })
         })
         .collect()
