@@ -253,6 +253,7 @@ export function Workspace() {
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
   const lineageGraph = useWorkflowStore((s) => s.lineageGraph);
   const loadWorkflowsFromProject = useWorkflowStore((s) => s.loadFromProject);
+  const addWorkflow = useWorkflowStore((s) => s.addWorkflow);
   const resetWorkflows = useWorkflowStore((s) => s.reset);
   const addGraphBuilder = useGraphBuilderStore((s) => s.addItem);
   const renameGraphBuilder = useGraphBuilderStore((s) => s.renameItem);
@@ -1482,6 +1483,64 @@ export function Workspace() {
   };
   handleSaveRef.current = handleSave;
 
+  const handleSaveWorkflowSelection = async (name: string, nodeIds: string[]) => {
+    if (readOnly) return;
+    const initiallySelected = new Set(nodeIds);
+    const selectedInputArtifactIds = new Set(
+      lineageGraph.edges
+        .filter((edge) => edge.kind === "consumes"
+          && initiallySelected.has(edge.source.nodeId)
+          && initiallySelected.has(edge.target.nodeId))
+        .map((edge) => edge.source.nodeId),
+    );
+    const selectedNodeIds = nodeIds.filter((nodeId) => !selectedInputArtifactIds.has(nodeId));
+    const selectedNodeIdSet = new Set(selectedNodeIds);
+    const selectedEdgeIds = lineageGraph.edges
+      .filter((edge) => selectedNodeIdSet.has(edge.source.nodeId)
+        && selectedNodeIdSet.has(edge.target.nodeId))
+      .map((edge) => edge.id);
+    const externalInputIds = new Set(
+      lineageGraph.edges
+        .filter((edge) => edge.kind === "consumes"
+          && selectedNodeIdSet.has(edge.target.nodeId)
+          && !selectedNodeIdSet.has(edge.source.nodeId))
+        .map((edge) => edge.source.nodeId),
+    );
+
+    try {
+      const tableSchemas = await Promise.all([...externalInputIds].map(async (artifactNodeId) => {
+        const node = lineageGraph.nodes.find((candidate) => candidate.id === artifactNodeId);
+        if (!node || node.nodeType !== "artifact" || node.artifactKind !== "table") {
+          throw new Error(`Workflow input ${artifactNodeId} is not a table`);
+        }
+        const columns = await dataService.getColumns(node.documentRef.id);
+        return {
+          artifactNodeId,
+          columns: columns.map(([columnName, colType]) => ({ name: columnName, colType })),
+        };
+      }));
+      const workflow = await projectService.extractWorkflow({
+        workflowId: `workflow-${crypto.randomUUID()}`,
+        name,
+        formatVersion: "1",
+        revision: 1,
+        graph: lineageGraph,
+        selectedNodeIds,
+        selectedEdgeIds,
+        tableSchemas,
+        operationColumnRequirements: [],
+      });
+      addWorkflow(workflow);
+      setActiveWorkflowViewId(workflow.id);
+      markDirty();
+    } catch (error) {
+      alert(t("workflow.saveFailed", {
+        defaultValue: "Failed to save workflow: {{message}}",
+        message: String(error),
+      }));
+    }
+  };
+
   const showToast = (message: string, durationMs: number) => {
     setToastMessage(message);
     if (toastTimerRef.current !== null) {
@@ -2615,6 +2674,8 @@ export function Workspace() {
               lineageGraph={lineageGraph}
               workflow={workflows.find((workflow) => workflow.id === activeWorkflowViewId)}
               datasets={datasets}
+              suggestedWorkflowName={`Workflow ${workflows.length + 1}`}
+              onSaveSelection={readOnly ? undefined : handleSaveWorkflowSelection}
             />
           ) : activeAnalysisId ? (
             (() => {

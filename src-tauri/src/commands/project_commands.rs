@@ -5,6 +5,7 @@ use crate::error::AppError;
 use crate::models::project::ProjectInfo;
 use crate::models::save::{SaveProgress, SaveProjectRequest};
 use crate::services::project_service::{OpenProjectResult, ProjectService};
+use crate::services::workflow_domain::{self, WorkflowDefinition, WorkflowExtractionRequest};
 use crate::state::AppState;
 
 pub(crate) fn acquire_mutation_permit(
@@ -109,6 +110,13 @@ pub async fn save_project(
 #[tauri::command]
 pub fn get_current_project(state: State<'_, AppState>) -> Result<Option<ProjectInfo>, AppError> {
     get_current_project_entry(state.inner())
+}
+
+#[tauri::command]
+pub fn extract_workflow(
+    request: WorkflowExtractionRequest,
+) -> Result<WorkflowDefinition, AppError> {
+    workflow_domain::extract_workflow(request)
 }
 
 // ----------------------------------------------------------------------------

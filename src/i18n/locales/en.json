@@ -180,6 +180,9 @@
     "schemaCheckFailed": "Schema check failed",
     "schemaIncompatible": "{{missing}} missing, {{mismatch}} wrong type",
     "schemaCompatible": "Schema compatible",
+    "namePrompt": "Workflow name",
+    "saveSelection": "Save as workflow",
+    "saveFailed": "Failed to save workflow: {{message}}",
     "noLineage": "No workflow lineage is available yet."
   },
   "workspace": {

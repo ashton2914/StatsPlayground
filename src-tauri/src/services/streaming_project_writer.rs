@@ -1770,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_writer_emits_indexed_workflow_json_entries() {
+    fn stream_writer_emits_indexed_workflow_entries() {
         let state = AppState::new().unwrap();
         let dataset = seed_named_dataset(&state, "table_1", "data");
         let destination = temp_path("workflow-indexed-save");
@@ -1806,7 +1806,7 @@ mod tests {
 
         let reopened = spprj_archive::read_project_file(destination.to_str().unwrap()).unwrap();
         assert_eq!(reopened.manifest.workflow_files.len(), 1);
-        assert_eq!(reopened.manifest.workflow_files[0].file, "workflows/workflow-1.json");
+        assert_eq!(reopened.manifest.workflow_files[0].file, "workflow/workflow-1.spwf");
         assert_eq!(reopened.workflows.len(), 1);
         assert_eq!(reopened.workflows[0].revision, 2);
 

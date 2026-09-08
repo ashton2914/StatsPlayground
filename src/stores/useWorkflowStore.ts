@@ -17,6 +17,7 @@ interface WorkflowStore {
     workflowRuns: WorkflowRun[];
     lineageGraph: ProjectLineageGraph;
   }) => void;
+  addWorkflow: (workflow: WorkflowDefinition) => void;
   reset: () => void;
 }
 
@@ -33,6 +34,9 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
   workflowRuns: [],
   lineageGraph: EMPTY_LINEAGE,
   loadFromProject: (data) => set(data),
+  addWorkflow: (workflow) => set((state) => ({
+    workflows: [...state.workflows, workflow],
+  })),
   reset: () => set({
     workflows: [],
     logicalFolders: [],

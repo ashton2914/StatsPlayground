@@ -8,6 +8,7 @@ export default defineConfig({
   fullyParallel: false,
   use: {
     ...devices["Desktop Chrome"],
+    channel: process.env.PLAYWRIGHT_CHANNEL,
     viewport: { width: 1000, height: 700 },
     ctViteConfig: {
       resolve: {

@@ -1667,7 +1667,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
             id: workflow.id.clone(),
             name: workflow.name.clone(),
             revision: workflow.revision,
-            file: format!("workflows/{}.json", workflow.id),
+            file: format!("workflow/{}.spwf", workflow.id),
         })
         .collect::<Vec<_>>();
 
@@ -3140,9 +3140,19 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
     }
 
     for entry in &manifest.workflow_files {
-        validate_indexed_path(&entry.file, "workflows", ".json", "workflow")?;
+        let (root, extension) = if entry.file.to_ascii_lowercase().ends_with(".spwf") {
+            ("workflow", ".spwf")
+        } else {
+            ("workflows", ".json")
+        };
+        validate_indexed_path(&entry.file, root, extension, "workflow")?;
         validate_display_basename(&entry.id)?;
-        validate_manifest_id_matches_file_basename(&entry.file, &entry.id, ".json", "workflow")?;
+        validate_manifest_id_matches_file_basename(
+            &entry.file,
+            &entry.id,
+            extension,
+            "workflow",
+        )?;
         ensure_unique_file(&mut seen_files, &entry.file)?;
     }
 
@@ -4469,7 +4479,7 @@ mod tests {
         assert_eq!(loaded.manifest.workflow_files.len(), 1);
         assert_eq!(loaded.manifest.workflow_files[0].id, "workflow-1");
         assert_eq!(loaded.manifest.workflow_files[0].revision, 3);
-        assert_eq!(loaded.manifest.workflow_files[0].file, "workflows/workflow-1.json");
+        assert_eq!(loaded.manifest.workflow_files[0].file, "workflow/workflow-1.spwf");
 
         let _ = std::fs::remove_file(path);
     }

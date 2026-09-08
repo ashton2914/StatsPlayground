@@ -6,6 +6,7 @@ import type { ReportItem } from "@/types/report";
 import type {
   LogicalFolder,
   WorkflowDefinition,
+  WorkflowExtractionRequest,
   WorkflowRun,
 } from "@/types/workflow";
 
@@ -100,6 +101,9 @@ export const projectService = {
   },
 
   getCurrentProject: () => invoke<ProjectInfo | null>("get_current_project"),
+
+  extractWorkflow: (request: WorkflowExtractionRequest) =>
+    invoke<WorkflowDefinition>("extract_workflow", { request }),
 
   // ---- Single-table / single-graph share helpers --------------------------
   // .sptb = standalone table file, .spgh = standalone graph file. Both can

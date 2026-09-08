@@ -179,6 +179,9 @@
     "schemaCheckFailed": "Kiểm tra schema thất bại",
     "schemaIncompatible": "Thiếu {{missing}}, {{mismatch}} sai kiểu",
     "schemaCompatible": "Schema tương thích",
+    "namePrompt": "Tên quy trình",
+    "saveSelection": "Lưu thành quy trình",
+    "saveFailed": "Không thể lưu quy trình: {{message}}",
     "noLineage": "Chưa có dòng dữ liệu quy trình."
   },
   "workspace": {

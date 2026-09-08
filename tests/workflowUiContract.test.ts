@@ -6,6 +6,7 @@ import {
   validateWorkflowInputSchema,
 } from "../src/utils/workflowSchema.ts";
 import { layoutWorkflowGraph } from "../src/utils/workflowLayout.ts";
+import { useWorkflowStore } from "../src/stores/useWorkflowStore.ts";
 import type { SchemaContract } from "../src/types/workflow.ts";
 
 const contract: SchemaContract = {
@@ -95,3 +96,42 @@ for (const field of ["workflows", "logical_folders", "workflow_runs", "lineage_g
 for (const field of ["workflows", "logicalFolders", "workflowRuns"]) {
   assert.match(projectClient, new RegExp(`\\b${field}:`));
 }
+
+const projectCommands = readFileSync(
+  new URL("../src-tauri/src/commands/project_commands.rs", import.meta.url),
+  "utf8",
+);
+const tauriRegistry = readFileSync(
+  new URL("../src-tauri/src/lib.rs", import.meta.url),
+  "utf8",
+);
+const workspace = readFileSync(
+  new URL("../src/components/Workspace.tsx", import.meta.url),
+  "utf8",
+);
+
+assert.match(projectClient, /extractWorkflow:\s*\(request: WorkflowExtractionRequest\)/);
+assert.match(projectClient, /invoke<WorkflowDefinition>\("extract_workflow", \{ request \}\)/);
+assert.match(projectCommands, /pub fn extract_workflow\(/);
+assert.match(tauriRegistry, /commands::project_commands::extract_workflow/);
+assert.match(workspace, /const handleSaveWorkflowSelection = async/);
+assert.match(workspace, /projectService\.extractWorkflow\(/);
+assert.match(workspace, /addWorkflow\(workflow\)/);
+assert.match(
+  workspace,
+  /onSaveSelection=\{readOnly \? undefined : handleSaveWorkflowSelection\}/,
+);
+
+useWorkflowStore.getState().reset();
+useWorkflowStore.getState().addWorkflow({
+  id: "workflow-new",
+  name: "New workflow",
+  formatVersion: "1",
+  revision: 1,
+  inputSlots: [],
+  operations: [],
+  edges: [],
+  outputDeclarations: [],
+});
+assert.equal(useWorkflowStore.getState().workflows[0]?.id, "workflow-new");
+useWorkflowStore.getState().reset();

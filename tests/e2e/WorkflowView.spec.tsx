@@ -35,6 +35,31 @@ const lineageGraph: ProjectLineageGraph = {
   }],
 };
 
+const directedLineageGraph: ProjectLineageGraph = {
+  ...lineageGraph,
+  nodes: [
+    ...lineageGraph.nodes,
+    {
+      nodeType: "artifact",
+      id: "graph-1",
+      documentRef: { kind: "graph", id: "graph-1" },
+      name: "Yield graph",
+      artifactKind: "graph",
+      inputPort: { id: "input", name: "input", payloadKind: "graph" },
+      outputPort: { id: "output", name: "output", payloadKind: "graph" },
+    },
+  ],
+  edges: [
+    ...lineageGraph.edges,
+    {
+      id: "edge-2",
+      kind: "produces",
+      source: { nodeId: "operation-1", portId: "output" },
+      target: { nodeId: "graph-1", portId: "input" },
+    },
+  ],
+};
+
 const workflow: WorkflowDefinition = {
   id: "workflow-1",
   name: "Analyze yield",
@@ -179,4 +204,84 @@ test("ignores a stale schema response after changing the input table", async ({ 
   await expect(component.locator(".workflow-schema-status .valid")).toContainText("Schema compatible");
   await page.waitForTimeout(150);
   await expect(component.locator(".workflow-schema-status .valid")).toContainText("Schema compatible");
+});
+
+test("selects all upstream and downstream nodes", async ({ mount, page }) => {
+  const component = await mount(
+    <div style={{ width: 800, height: 600 }}>
+      <WorkflowView lineageGraph={directedLineageGraph} datasets={[dataset]} />
+    </div>,
+  );
+
+  const nodes = component.locator(".workflow-node");
+  await nodes.nth(2).click();
+  await expect(nodes.nth(0)).toHaveClass(/selected/);
+  await expect(nodes.nth(1)).toHaveClass(/selected/);
+  await expect(nodes.nth(2)).toHaveClass(/selected/);
+
+  await nodes.nth(2).click({ modifiers: [process.platform === "darwin" ? "Meta" : "Control"] });
+  await expect(nodes.nth(0)).not.toHaveClass(/selected/);
+  await expect(nodes.nth(1)).not.toHaveClass(/selected/);
+  await expect(nodes.nth(2)).not.toHaveClass(/selected/);
+
+  await page.keyboard.press("Escape");
+  await expect(nodes.nth(0)).not.toHaveClass(/selected/);
+  await expect(nodes.nth(1)).not.toHaveClass(/selected/);
+});
+
+test("selects intersecting nodes with a drag marquee", async ({ mount, page }) => {
+  const component = await mount(
+    <div style={{ width: 800, height: 600 }}>
+      <WorkflowView lineageGraph={lineageGraph} datasets={[dataset]} />
+    </div>,
+  );
+
+  const canvas = component.locator(".workflow-canvas");
+  const firstNode = component.locator(".workflow-node").first();
+  const canvasBox = await canvas.boundingBox();
+  const nodeBox = await firstNode.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  expect(nodeBox).not.toBeNull();
+
+  await page.mouse.move(nodeBox!.x - 8, nodeBox!.y - 8);
+  await page.mouse.down();
+  await page.mouse.move(nodeBox!.x + nodeBox!.width + 8, nodeBox!.y + nodeBox!.height + 8);
+  await page.mouse.up();
+
+  await expect(firstNode).toHaveClass(/selected/);
+  await expect(component.locator(".workflow-node").nth(1)).toHaveClass(/selected/);
+  await expect(canvas.locator(".workflow-selection-marquee")).toHaveCount(0);
+});
+
+test("prompts for a name and saves the selected lineage nodes", async ({ mount }) => {
+  let savedWorkflowSelection: { name: string; nodeIds: string[] } | null = null;
+  const component = await mount(
+    <div style={{ width: 800, height: 600 }}>
+      <WorkflowView
+        lineageGraph={lineageGraph}
+        datasets={[dataset]}
+        suggestedWorkflowName="Workflow 1"
+        onSaveSelection={async (name, nodeIds) => {
+          savedWorkflowSelection = { name, nodeIds };
+        }}
+      />
+    </div>,
+  );
+
+  const saveButton = component.getByRole("button", { name: "Save as workflow" });
+  await expect(saveButton).toBeDisabled();
+  await component.locator(".workflow-node-operation").click();
+  await expect(saveButton).toBeEnabled();
+
+  await saveButton.click();
+  const nameDialog = component.getByRole("dialog", { name: "Workflow name" });
+  await expect(nameDialog).toBeVisible();
+  const nameInput = nameDialog.getByLabel("Workflow name");
+  await expect(nameInput).toHaveValue("Workflow 1");
+  await nameInput.fill("Yield review");
+  await nameDialog.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => savedWorkflowSelection).toEqual({
+    name: "Yield review",
+    nodeIds: ["table-1", "operation-1"],
+  });
 });

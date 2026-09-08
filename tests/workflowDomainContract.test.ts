@@ -95,7 +95,7 @@ const manifestFields: ProjectWorkflowManifestFields = {
       id: workflow.id,
       name: workflow.name,
       revision: workflow.revision,
-      file: "workflows/workflow-1.json",
+      file: "workflow/workflow-1.spwf",
     },
   ],
   logicalFolders: [
@@ -112,7 +112,7 @@ const manifestFields: ProjectWorkflowManifestFields = {
 const serialized = JSON.parse(JSON.stringify({ workflow, ...manifestFields }));
 
 assert.equal(serialized.lineageGraph.nodes[0].nodeType, "artifact");
-assert.equal(serialized.workflowFiles[0].file, "workflows/workflow-1.json");
+assert.equal(serialized.workflowFiles[0].file, "workflow/workflow-1.spwf");
 assert.equal(serialized.logicalFolders[0].parentFolderId, "folder-workflow-1");
 assert.equal(serialized.workflowRuns[0].parentFolderId, "folder-run-1");
 assert.equal(

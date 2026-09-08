@@ -78,6 +78,31 @@ export interface ProjectLineageGraph {
   edges: LineageEdge[];
 }
 
+export interface WorkflowSourceTable {
+  artifactNodeId: string;
+  columns: Array<{ name: string; colType: string }>;
+}
+
+export interface WorkflowOperationInputSchema {
+  operationId: string;
+  inputPortId: string;
+  requiredColumnNames: string[];
+}
+
+export interface WorkflowExtractionRequest {
+  workflowId: string;
+  name: string;
+  description?: string;
+  formatVersion: string;
+  revision: number;
+  graph: ProjectLineageGraph;
+  selectedNodeIds: string[];
+  selectedEdgeIds: string[];
+  tableSchemas: WorkflowSourceTable[];
+  operationColumnRequirements: WorkflowOperationInputSchema[];
+  layout?: WorkflowLayout;
+}
+
 export type LogicalFolderKind = "project" | "workflow" | "workflowRun";
 
 export interface LogicalFolder {

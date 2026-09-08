@@ -278,6 +278,10 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::project_commands::extract_workflow",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::project_commands::export_table",
                 CommandClass::ReadOnly,
             ),
