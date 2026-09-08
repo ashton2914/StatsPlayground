@@ -187,6 +187,7 @@
     "schemaProperties": "必要属性",
     "schemaConsumers": "下游消费节点",
     "schemaNone": "无",
+    "schemaUnavailable": "Schema 要求不可用，请重新创建此工作流。",
     "namePrompt": "工作流名称",
     "saveSelection": "保存为工作流",
     "saveFailed": "保存工作流失败：{{message}}",

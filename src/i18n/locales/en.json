@@ -187,6 +187,7 @@
     "schemaProperties": "Required properties",
     "schemaConsumers": "Consumed by",
     "schemaNone": "None",
+    "schemaUnavailable": "Schema requirements unavailable. Recreate this workflow.",
     "namePrompt": "Workflow name",
     "saveSelection": "Save as workflow",
     "saveFailed": "Failed to save workflow: {{message}}",

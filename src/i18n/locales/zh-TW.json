@@ -186,6 +186,7 @@
     "schemaProperties": "必要屬性",
     "schemaConsumers": "下游消費節點",
     "schemaNone": "無",
+    "schemaUnavailable": "Schema 要求無法使用，請重新建立此工作流程。",
     "namePrompt": "工作流程名稱",
     "saveSelection": "儲存為工作流程",
     "saveFailed": "儲存工作流程失敗：{{message}}",

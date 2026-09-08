@@ -186,6 +186,7 @@
     "schemaProperties": "Thuộc tính bắt buộc",
     "schemaConsumers": "Được dùng bởi",
     "schemaNone": "Không có",
+    "schemaUnavailable": "Yêu cầu schema không khả dụng. Hãy tạo lại quy trình này.",
     "namePrompt": "Tên quy trình",
     "saveSelection": "Lưu thành quy trình",
     "saveFailed": "Không thể lưu quy trình: {{message}}",

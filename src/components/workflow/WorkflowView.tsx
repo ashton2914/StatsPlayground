@@ -346,6 +346,7 @@ export function WorkflowView({
           <h3>{t("workflow.inputs", { defaultValue: "Workflow inputs" })}</h3>
           <div className="workflow-input-grid">
             {workflow.inputSlots.map((slot) => {
+              const schemaResolved = slot.schemaContract.columns.some((column) => column.required);
               const report = reports[slot.id];
               const blocking = report ? isSchemaValidationBlocking(report) : false;
               return (
@@ -354,13 +355,16 @@ export function WorkflowView({
                   <select
                     id={`workflow-input-${slot.id}`}
                     value={bindings[slot.id] ?? ""}
+                    disabled={!schemaResolved}
                     onChange={(event) => void bindInput(slot.id, event.target.value)}
                   >
                     <option value="">{t("workflow.chooseTable", { defaultValue: "Choose input table" })}</option>
                     {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
                   </select>
                   <div className="workflow-schema-status" aria-live="polite">
-                    {checkingSlotId === slot.id ? (
+                    {!schemaResolved ? (
+                      <span className="invalid"><i className="fa-solid fa-circle-exclamation" aria-hidden="true" /> {t("workflow.schemaUnavailable", { defaultValue: "Schema requirements unavailable. Recreate this workflow." })}</span>
+                    ) : checkingSlotId === slot.id ? (
                       <span className="checking"><i className="fa-solid fa-spinner fa-spin" aria-hidden="true" /> {t("workflow.checkingSchema", { defaultValue: "Checking schema" })}</span>
                     ) : checkError[slot.id] ? (
                       <span className="invalid"><i className="fa-solid fa-circle-exclamation" aria-hidden="true" /> {t("workflow.schemaCheckFailed", { defaultValue: "Schema check failed" })}</span>
@@ -556,7 +560,7 @@ export function WorkflowView({
                   </tr>
                 </thead>
                 <tbody>
-                  {inspectedSlot.schemaContract.columns
+                  {inspectedSlot.schemaContract.columns.some((column) => column.required) ? inspectedSlot.schemaContract.columns
                     .filter((column) => column.required)
                     .map((column) => {
                       const extras = Object.entries(column.requiredExtras ?? {});
@@ -574,7 +578,13 @@ export function WorkflowView({
                           <td>{column.requiredByOperationIds.join(", ")}</td>
                         </tr>
                       );
-                    })}
+                    }) : (
+                      <tr>
+                        <td colSpan={4} className="workflow-schema-none">
+                          {t("workflow.schemaUnavailable", { defaultValue: "Schema requirements unavailable. Recreate this workflow." })}
+                        </td>
+                      </tr>
+                    )}
                 </tbody>
               </table>
             </div>

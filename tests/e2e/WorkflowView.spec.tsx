@@ -208,6 +208,33 @@ test("shows a saved workflow input schema when its initial node is double-clicke
   await expect(dialog).toHaveCount(0);
 });
 
+test("blocks a saved workflow whose input schema contract is empty", async ({ mount }) => {
+  const workflowWithEmptySchema: WorkflowDefinition = {
+    ...workflow,
+    inputSlots: [{
+      ...workflow.inputSlots[0],
+      schemaContract: {
+        schemaFingerprint: "schema-empty",
+        columns: [],
+      },
+    }],
+  };
+  const component = await mount(
+    <div style={{ width: 800, height: 600 }}>
+      <WorkflowView
+        lineageGraph={lineageGraph}
+        workflow={workflowWithEmptySchema}
+        datasets={[dataset]}
+      />
+    </div>,
+  );
+
+  await expect(component.getByLabel("Measurements")).toBeDisabled();
+  await component.locator(".workflow-node-input").dblclick();
+  const dialog = component.getByRole("dialog", { name: "Schema requirements" });
+  await expect(dialog).toContainText("Schema requirements unavailable. Recreate this workflow.");
+});
+
 test("ignores a stale schema response after changing the input table", async ({ mount, page }) => {
   await page.evaluate(() => {
     Object.assign(window, {

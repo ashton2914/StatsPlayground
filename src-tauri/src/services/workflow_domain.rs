@@ -1256,6 +1256,13 @@ fn build_input_slots(
             .collect::<Vec<_>>();
         columns.sort_by(|left, right| left.name.cmp(&right.name));
 
+        if columns.is_empty() {
+            return Err(invalid(format!(
+                "workflow input {} resolved to no required columns",
+                artifact_id
+            )));
+        }
+
         input_slots.push(ExtractedInputSlot {
             original_artifact_id: artifact_id,
             slot: InputSlot {
@@ -3104,6 +3111,30 @@ mod tests {
         assert!(error
             .to_string()
             .contains("cannot determine required columns for operation operation-sql-1 input operation-sql-1-in-source"));
+    }
+
+    #[test]
+    fn extract_workflow_rejects_complete_schema_that_resolves_to_no_columns() {
+        let error = extract_workflow(extraction_request(
+            workflow_extraction_graph(),
+            &["operation-sql-1", "artifact-table-joined"],
+            &["edge-sql-table"],
+            vec![WorkflowSourceTable {
+                artifact_node_id: "artifact-table-source-a".to_string(),
+                columns: vec![],
+            }],
+            vec![WorkflowOperationInputSchema {
+                operation_id: "operation-sql-1".to_string(),
+                input_port_id: "operation-sql-1-in-source".to_string(),
+                columns: vec![],
+                complete_schema: true,
+            }],
+        ))
+        .expect_err("an empty resolved schema must not create an unusable workflow");
+
+        assert!(error
+            .to_string()
+            .contains("workflow input artifact-table-source-a resolved to no required columns"));
     }
 
     #[test]
