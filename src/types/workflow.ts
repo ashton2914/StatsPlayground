@@ -1,8 +1,12 @@
 export type ProjectDocumentKind =
   | "table"
+  | "tableTransform"
   | "graph"
+  | "analysis"
+  | "distribution"
   | "fitYByX"
   | "tabulate"
+  | "report"
   | "snapshot";
 
 export interface ProjectDocumentRef {
@@ -14,8 +18,11 @@ export type PortPayloadKind =
   | "any"
   | "table"
   | "graph"
+  | "analysis"
+  | "distribution"
   | "fitYByX"
   | "tabulate"
+  | "report"
   | "snapshot";
 
 export type ArtifactKind = Exclude<PortPayloadKind, "any">;
@@ -23,14 +30,30 @@ export type ArtifactKind = Exclude<PortPayloadKind, "any">;
 export type OperationKind =
   | "import"
   | "sqlQuery"
+  | "tableTransform"
   | "graphGeneration"
+  | "analysisExecution"
   | "fitYByX"
-  | "tabulate";
+  | "tabulate"
+  | "reportComposition";
+
+export type WorkflowSemanticExtraKind = "valueOrder" | "spec";
+
+export interface TableColumnConsumption {
+  name: string;
+  requiredExtraKinds: WorkflowSemanticExtraKind[];
+}
+
+export interface TableInputRequirement {
+  columns: TableColumnConsumption[];
+  completeSchema: boolean;
+}
 
 export interface LineagePort {
   id: string;
   name: string;
   payloadKind: PortPayloadKind;
+  tableRequirement?: TableInputRequirement;
 }
 
 export interface ArtifactNode {
