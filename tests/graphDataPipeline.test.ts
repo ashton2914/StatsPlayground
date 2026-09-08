@@ -130,6 +130,10 @@ assert.equal(makeGraphRows(10).length, 10);
   const graphBuilderViewPath = resolve(TEST_FILE_DIR, "../src/components/graphBuilder/GraphBuilderView.tsx");
   const graphBuilderViewSource = readFileSync(graphBuilderViewPath, "utf8");
   const graphBuilderViewAst = parseTs("GraphBuilderView.tsx", graphBuilderViewSource);
+  const graphLayerConfigSource = readFileSync(
+    resolve(TEST_FILE_DIR, "../src/components/graphBuilder/graphLayerConfig.ts"),
+    "utf8",
+  );
   const graphBuilderFiles = listGraphBuilderProductionFiles();
 
   assert.equal(
@@ -146,6 +150,11 @@ assert.equal(makeGraphRows(10).length, 10);
     graphBuilderViewSource.includes("newRows.push([...row"),
     false,
     "GraphBuilderView production graph path must not do frontend melt expansion with newRows.push([...row, ...])",
+  );
+  assert.match(
+    graphLayerConfigSource,
+    /GRAPH_LAYER_DEFS[\s\S]*?kind:\s*["']bar["']/,
+    "Graph Builder must expose the supported Bar layer in its add-layer menu",
   );
   assert.equal(
     referencesIdentifier(graphBuilderViewAst, "loadGraphTableData"),
@@ -470,6 +479,35 @@ assert.deepEqual(Array.from(decoded.sizeValues ?? []), [1.5, 2.5]);
 assert.deepEqual(decoded.dictionaries.x, ["Central", "East"]);
 assert.deepEqual(Array.from(decoded.validity.x), [0b00000001]);
 assert.deepEqual(Array.from(decoded.validity.y), [0b00000011]);
+
+assert.equal(
+  isGraphAggregatePacket({
+    kind: "summary",
+    xColumn: "BillingCountry",
+    yColumn: "Total",
+    groupColumn: null,
+    sourceColumn: null,
+    summaries: [{
+      group: null,
+      category: "USA",
+      sourceColumn: null,
+      facetX: null,
+      facetY: null,
+      facetZ: null,
+      wrap: null,
+      count: 7,
+      mean: 5.7,
+      median: 5.9,
+      stddev: 1.2,
+      min: 0.99,
+      max: 13.86,
+      intervalLow: null,
+      intervalHigh: null,
+    }],
+  }),
+  true,
+  "aggregate guard must accept null fields serialized from Rust Option values",
+);
 
 const dynamicPayload = new ArrayBuffer(184);
 new Uint32Array(dynamicPayload, 0, 2).set([0, 1]);
@@ -1784,6 +1822,42 @@ function makeProgressedChunk(
   assert.equal(transportError, null);
   assert.equal(payloadByteLength, payload.byteLength);
   assert.deepEqual(receivedBytes, Array.from(new Uint8Array(payload)));
+  assert.deepEqual(events, ["header", "payload", "complete"]);
+}
+
+{
+  const events: string[] = [];
+  let transportError: string | null = null;
+  const request = makeRequest("req-typed-array-payload", 27);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {
+      events.push("header");
+    },
+    onPayload: (receivedPayload) => {
+      events.push("payload");
+      assert.equal(receivedPayload.byteLength, makePayload(0).byteLength);
+    },
+    onAggregate: () => {},
+    onComplete: () => {
+      events.push("complete");
+    },
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({
+    messageType: "header",
+    ...makeHeader(request.requestId, request.generation, 0, true),
+  });
+  transport.onChannelMessage(new Uint8Array(makePayload(0)));
+  transport.onChannelMessage({
+    messageType: "complete",
+    ...makeCompletion(request.requestId, request.generation),
+    chunksSent: 1,
+  });
+
+  assert.equal(transportError, null);
   assert.deepEqual(events, ["header", "payload", "complete"]);
 }
 

@@ -9,6 +9,7 @@ export type LayerDim = "2d" | "3d" | "multivariate";
 
 export const GRAPH_LAYER_DEFS: GraphLayerDef[] = [
   { kind: "points", icon: "●" },
+  { kind: "bar", icon: "▮" },
   { kind: "line", icon: "╱" },
   { kind: "smoother", icon: "∿" },
   { kind: "fitline", icon: "ƒ" },

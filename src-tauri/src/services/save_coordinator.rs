@@ -66,7 +66,9 @@ impl SaveCoordinator {
             .map_err(|_| AppError::Database("Save coordinator lock poisoned".to_string()))?;
 
         if state.save_waiting || state.saving {
-            return Err(AppError::Busy("Another save is already in progress".to_string()));
+            return Err(AppError::Busy(
+                "Another save is already in progress".to_string(),
+            ));
         }
 
         // Register save intent atomically before waiting so new mutation permits are blocked.
@@ -113,11 +115,7 @@ impl SaveCoordinator {
     fn test_wait_until_save_waiting_and_waiting_for_mutations(&self) {
         let mut observed = self.observer.state.lock().expect("observer lock");
         while !(observed.save_waiting_registered && observed.begin_save_wait_entries > 0) {
-            observed = self
-                .observer
-                .condvar
-                .wait(observed)
-                .expect("observer wait");
+            observed = self.observer.condvar.wait(observed).expect("observer wait");
         }
     }
 
@@ -125,11 +123,7 @@ impl SaveCoordinator {
     fn test_wait_until_begin_save_wait_entries_at_least(&self, expected: usize) {
         let mut observed = self.observer.state.lock().expect("observer lock");
         while observed.begin_save_wait_entries < expected {
-            observed = self
-                .observer
-                .condvar
-                .wait(observed)
-                .expect("observer wait");
+            observed = self.observer.condvar.wait(observed).expect("observer wait");
         }
     }
 
@@ -137,11 +131,7 @@ impl SaveCoordinator {
     fn test_wait_until_save_started(&self) {
         let mut observed = self.observer.state.lock().expect("observer lock");
         while !observed.save_started {
-            observed = self
-                .observer
-                .condvar
-                .wait(observed)
-                .expect("observer wait");
+            observed = self.observer.condvar.wait(observed).expect("observer wait");
         }
     }
 
@@ -152,7 +142,10 @@ impl SaveCoordinator {
         // holding this lock prevents pre-wait lost notifications.
         let state = self.state.lock().expect("coordinator lock");
         assert!(state.save_waiting, "save intent must remain registered");
-        assert!(state.active_mutations > 0, "active mutation must keep wait loop active");
+        assert!(
+            state.active_mutations > 0,
+            "active mutation must keep wait loop active"
+        );
         self.condvar.notify_all();
         drop(state);
     }
@@ -271,7 +264,9 @@ mod tests {
         assert!(matches!(while_still_waiting, AppError::ReadOnly(_)));
 
         drop(permit);
-        save_started_rx.recv().expect("save should eventually start");
+        save_started_rx
+            .recv()
+            .expect("save should eventually start");
 
         release_save_tx.send(()).expect("release save");
         handle.join().expect("join save thread");
@@ -321,7 +316,9 @@ mod tests {
         let coordinator = SaveCoordinator::new();
         let save_guard = coordinator.begin_save().expect("first save starts");
 
-        let second = coordinator.begin_save().expect_err("second save should fail");
+        let second = coordinator
+            .begin_save()
+            .expect_err("second save should fail");
         assert!(matches!(second, AppError::Busy(_)));
 
         drop(save_guard);
@@ -353,7 +350,9 @@ mod tests {
         assert!(matches!(while_waiting, AppError::ReadOnly(_)));
 
         drop(permit);
-        save_started_rx.recv().expect("save should start after drain");
+        save_started_rx
+            .recv()
+            .expect("save should start after drain");
 
         let while_saving = coordinator
             .mutation_permit()

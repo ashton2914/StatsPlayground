@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter.ts";
 import type { GraphTheme } from "../src/graphCore/theme.ts";
+import { DEFAULT_GROUP_KEY } from "../src/graphCore/types.ts";
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
 import type { DistributionReportResponse } from "../src/types/distribution.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
@@ -1273,6 +1274,12 @@ for (const element of [
         x: { name: "x", type: histogramMode ? "nominal" : "continuous" },
         y: { name: "y", type: "continuous" },
       },
+      styles: {
+        [DEFAULT_GROUP_KEY]: {
+          fill: { color: "#123456" },
+        },
+      },
+      yAxis: { minorTickCount: 0 },
       elements: [
         { kind: "points", enabled: true, options: { summaryStat: "none" } },
         overlay.element,
@@ -1311,7 +1318,16 @@ for (const element of [
       `points + ${overlay.name} must emit the packet overlay`,
     );
     const xAxis = panel.option.xAxis as { min?: number; max?: number };
-    const yAxis = panel.option.yAxis as { min?: number; max?: number };
+    const yAxis = panel.option.yAxis as {
+      min?: number;
+      max?: number;
+      minorTick?: { show?: boolean };
+    };
+    assert.equal(
+      yAxis.minorTick?.show,
+      false,
+      `points + ${overlay.name} must honor an explicit request to hide minor ticks`,
+    );
     if (!histogramMode) {
       assert.deepEqual(
         { min: xAxis.min, max: xAxis.max },
@@ -1320,6 +1336,13 @@ for (const element of [
       );
     }
     if (overlay.name === "heatmap") {
+      const heatmapSeries = panelSeries(panel.option as Record<string, unknown>)
+        .find((entry) => entry.type === "heatmap");
+      assert.equal(
+        (heatmapSeries?.itemStyle as { color?: string } | undefined)?.color,
+        "#123456",
+        "an ungrouped heatmap must consume the same automatic fill theme as every other filled graph",
+      );
       assert.deepEqual(
         { min: yAxis.min, max: yAxis.max },
         { min: 2, max: 12 },
@@ -1786,7 +1809,7 @@ for (const element of [
     data: GraphData;
     spec: GraphSpec;
     frame: GraphDataFrame;
-    verify: (series: Array<Record<string, unknown>>) => void;
+    verify: (series: Array<Record<string, unknown>>, option: Record<string, unknown>) => void;
   }> = [
     {
       name: "histogram packet",
@@ -1880,6 +1903,96 @@ for (const element of [
       },
     },
     {
+      name: "frame-backed categorical scatter axes",
+      data: frameBackedAggregateData(["x", "y"]),
+      spec: {
+        encoding: {
+          x: { name: "x", type: "nominal" },
+          y: { name: "y", type: "continuous" },
+        },
+        elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+      },
+      frame: frameBackedAggregateFrame([
+        {
+          kind: "summary",
+          xColumn: "x",
+          yColumn: "y",
+          groupColumn: null,
+          sourceColumn: null,
+          summaries: [
+            {
+              group: null,
+              category: "USA",
+              sourceColumn: null,
+              facetX: null,
+              facetY: null,
+              facetZ: null,
+              wrap: null,
+              count: 2,
+              mean: 7,
+              median: 7,
+              stddev: 1,
+              min: 2,
+              max: 12,
+              intervalLow: null,
+              intervalHigh: null,
+            },
+          ],
+        },
+      ]),
+      verify: (_series, option) => {
+        const xAxis = option.xAxis as Record<string, unknown>;
+        const yAxis = option.yAxis as Record<string, unknown>;
+        assert.deepEqual(xAxis.data, ["USA"], "summary categories must populate the frame-backed X axis");
+        assert.equal(typeof yAxis.min, "number", "summary minima must establish a finite Y-axis range");
+        assert.equal(typeof yAxis.max, "number", "summary maxima must establish a finite Y-axis range");
+      },
+    },
+    {
+      name: "summary sum packet",
+      data: frameBackedAggregateData(["x", "y"]),
+      spec: {
+        encoding: {
+          x: { name: "x", type: "nominal" },
+          y: { name: "y", type: "continuous" },
+        },
+        elements: [{ kind: "points", enabled: true, options: { summaryStat: "sum", errorInterval: "none" } }],
+      },
+      frame: frameBackedAggregateFrame([
+        {
+          kind: "summary",
+          xColumn: "x",
+          yColumn: "y",
+          groupColumn: null,
+          sourceColumn: null,
+          summaries: [
+            {
+              group: null,
+              category: "USA",
+              sourceColumn: null,
+              facetX: null,
+              facetY: null,
+              facetZ: null,
+              wrap: null,
+              count: 2,
+              mean: 7,
+              median: 7,
+              stddev: 1,
+              min: 2,
+              max: 12,
+              intervalLow: null,
+              intervalHigh: null,
+            },
+          ],
+        },
+      ]),
+      verify: (series) => {
+        const summary = series.find((entry) => String(entry.id ?? "").endsWith("__summary"));
+        assert.ok(summary, "frame-backed Sum must produce a summary series");
+        assert.deepEqual(summary.data, [["USA", 14]], "Sum must derive from the server mean and count");
+        },
+          },
+          {
       name: "grouped boxplot packet",
       data: frameBackedAggregateData(["event_date", "cost", "region"], 300_000),
       spec: {
@@ -1964,8 +2077,9 @@ for (const element of [
     assert.doesNotThrow(
       () => {
         const built = buildGraph(testCase.spec, testCase.data, theme, undefined, testCase.frame);
-        const series = panelSeries(built.panels[0].option as Record<string, unknown>);
-        testCase.verify(series);
+        const option = built.panels[0].option as Record<string, unknown>;
+        const series = panelSeries(option);
+        testCase.verify(series, option);
       },
       `${testCase.name} must not reconstruct legacy rows for frame-backed packet ownership`,
     );

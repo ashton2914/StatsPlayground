@@ -1,4 +1,5 @@
 export { useDataStore } from "./useDataStore";
+export { useDataLinkStore } from "./useDataLinkStore";
 export {
   useFolderStore,
   normalizeFolderPath,

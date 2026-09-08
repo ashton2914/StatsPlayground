@@ -490,6 +490,7 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
     // Inverse axes are excluded: their coordinate system is flipped, so
     // the drag-delta sign convention would be wrong for all callers.
     const readAxisBounds = (which: "x" | "y"): { min: number; max: number } | null => {
+      if (getAxisType(which) === "category") return null;
       if (isAxisInverse(which)) return null;
       const r = getGridRect();
       if (!r) return null;

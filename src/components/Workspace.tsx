@@ -10,6 +10,7 @@ import {
   folderParent,
   validateFolderOrFileName,
 } from "@/stores/useFolderStore";
+import { useDataLinkStore } from "@/stores/useDataLinkStore";
 import { dataService } from "@/services/dataService";
 import { ioService } from "@/services/ioService";
 import { projectService } from "@/services/projectService";
@@ -18,6 +19,8 @@ import { HistoryPanel, type SnapshotMenuData } from "./HistoryPanel";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { SqlQueryDialog } from "./SqlQueryDialog";
 import { HelpDialog } from "./HelpDialog";
+import { PostgresDataLinkDialog } from "./dataLink/PostgresDataLinkDialog";
+import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
 import { TableOpsDialog, type TableOpType } from "./TableOpsDialog";
 import { GraphBuilderView } from "./graphBuilder";
 import { FitYByXRoleDialog } from "./fitYByX";
@@ -92,6 +95,7 @@ import {
   type ProjectDocumentKind,
 } from "@/utils/projectFileNaming";
 import type { NamedSnapshot } from "@/types/history";
+import type { ImportSummary, SqliteImportSelection } from "@/types/dataLink";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -294,6 +298,16 @@ export function Workspace() {
   const [renameValue, setRenameValue] = useState("");
   const [showPrefs, setShowPrefs] = useState(false);
   const [showSqlQuery, setShowSqlQuery] = useState(false);
+  const [showPostgresDataLink, setShowPostgresDataLink] = useState(false);
+  const [serverConnector, setServerConnector] = useState<"postgresql" | "mysql">("postgresql");
+  const sqliteDataLinkPath = useDataLinkStore((state) => state.filePath);
+  const openDataLink = useDataLinkStore((state) => state.open);
+  const closeDataLink = useDataLinkStore((state) => state.close);
+  const importDataLinkSelection = useDataLinkStore((state) => state.importSelected);
+  const importProgress = useDataLinkStore((state) => state.progress);
+  const activeImportRequestId = useDataLinkStore((state) => state.requestId);
+  const cancellingImport = useDataLinkStore((state) => state.cancelling);
+  const cancelActiveImport = useDataLinkStore((state) => state.cancelImport);
   const [helpDialog, setHelpDialog] = useState<"about" | "license" | null>(null);
   const [tableOp, setTableOp] = useState<TableOpType | null>(null);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
@@ -351,13 +365,6 @@ export function Workspace() {
   const [snapMenu, setSnapMenu] = useState<SnapshotMenuData | null>(null);
   const [confirmDeleteSnapId, setConfirmDeleteSnapId] = useState<string | null>(null);
   const snapRenameRef = useRef<((id: string) => void) | null>(null);
-  const [importProgress, setImportProgress] = useState<{
-    tableName: string;
-    tableIndex: number;
-    tableTotal: number;
-    rowsDone: number;
-    rowsTotal: number;
-  } | null>(null);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [busyProgress, setBusyProgress] = useState<{ rowsDone: number; rowsTotal: number } | null>(null);
   const [tableKey, setTableKey] = useState(0);
@@ -1210,36 +1217,19 @@ export function Workspace() {
       multiple: false,
     });
     if (selected) {
-      // Listen for progress events
-      const unlisten = await listen<{
-        table_name: string;
-        table_index: number;
-        table_total: number;
-        rows_done: number;
-        rows_total: number;
-      }>("import-progress", (event) => {
-        setImportProgress({
-          tableName: event.payload.table_name,
-          tableIndex: event.payload.table_index,
-          tableTotal: event.payload.table_total,
-          rowsDone: event.payload.rows_done,
-          rowsTotal: event.payload.rows_total,
-        });
-      });
-      try {
-        setImportProgress({ tableName: t("common.preparing"), tableIndex: 0, tableTotal: 0, rowsDone: 0, rowsTotal: 0 });
-        await ioService.importSqlite(selected as string);
-        await refreshDatasets();
-        markDirty();
-        const fileName = (selected as string).split(/[\\\\/]/).pop() ?? "SQLite";
-        recordAction(t("history.importSqlite", { file: fileName }));
-      } catch (e) {
-        alert(t("alert.importSqliteFailed") + String(e));
-      } finally {
-        unlisten();
-        setImportProgress(null);
-      }
+      openDataLink(selected as string);
     }
+  };
+
+  const importSelectedSqlite = async (selections: SqliteImportSelection[]): Promise<ImportSummary> => {
+    const summary = await importDataLinkSelection(selections);
+    if (summary.status === "completed" && summary.imported.length > 0) {
+      await refreshDatasets();
+      markDirty();
+      const fileName = sqliteDataLinkPath?.split(/[\\/]/).pop() ?? "SQLite";
+      recordAction(t("history.importSqlite", { file: fileName }));
+    }
+    return summary;
   };
 
   const handleExportSqlite = async () => {
@@ -2322,6 +2312,8 @@ export function Workspace() {
               <div className="menu-sep" />
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportCsv}>{t("menu.importCsv")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportSqlite}>{t("menu.importSqlite")}</div>
+              <div className="menu-item" onClick={() => { setServerConnector("postgresql"); setShowPostgresDataLink(true); }}>{t("menu.connectPostgres")}</div>
+              <div className="menu-item" onClick={() => { setServerConnector("mysql"); setShowPostgresDataLink(true); }}>{t("menu.connectMysql", { defaultValue: "Connect MySQL..." })}</div>
               <div className="menu-sep" />
               <div className="menu-item" onClick={handleExportSqlite}>{t("menu.exportSqlite")}</div>
               <div className="menu-item" onClick={handleExportCsvZip}>{t("menu.exportCsv")}</div>
@@ -2672,6 +2664,35 @@ export function Workspace() {
 
       {showPrefs && <PreferencesDialog onClose={() => setShowPrefs(false)} />}
 
+      {showPostgresDataLink && (
+        <PostgresDataLinkDialog
+          key={serverConnector}
+          connector={serverConnector}
+          existingDatasetNames={datasets.map((dataset) => dataset.name)}
+          onClose={() => setShowPostgresDataLink(false)}
+          onImported={async (targetName) => {
+            markDirty();
+            await refreshDatasets();
+            const imported = useDataStore
+              .getState()
+              .datasets.find((dataset) => dataset.name.toLowerCase() === targetName.toLowerCase());
+            if (imported) setActiveDataset(imported.id);
+            recordAction(serverConnector === "mysql"
+              ? t("history.importMysql", { name: targetName, defaultValue: "Import MySQL snapshot: {{name}}" })
+              : t("history.importPostgres", { name: targetName }));
+          }}
+        />
+      )}
+
+      {sqliteDataLinkPath && (
+        <SqliteDataLinkDialog
+          filePath={sqliteDataLinkPath}
+          existingDatasetNames={datasets.map((dataset) => dataset.name)}
+          onClose={closeDataLink}
+          onImport={importSelectedSqlite}
+        />
+      )}
+
       {helpDialog && <HelpDialog mode={helpDialog} onClose={() => setHelpDialog(null)} />}
 
       {tableOp && (
@@ -2811,6 +2832,11 @@ export function Workspace() {
                 <div className="sp-progress-fill sp-progress-indeterminate" />
               </div>
             )}
+            <div style={{ marginTop: 16, textAlign: "right" }}>
+              <button className="btn-secondary" onClick={cancelActiveImport} disabled={cancellingImport || !activeImportRequestId}>
+                {cancellingImport ? t("workspace.cancellingImport") : t("workspace.cancelImport")}
+              </button>
+            </div>
           </div>
         </div>
       )}
