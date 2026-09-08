@@ -57,6 +57,14 @@ function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentP
       ...(patch.presentation?.layout === "fit-y-by-x-v1" ? { presentation: patch.presentation } : {}),
     };
   }
+  if (analysis.analysisKind === "hypothesisTest") {
+    return {
+      ...analysis,
+      ...shared,
+      ...(patch.definition?.kind === "hypothesisTest" ? { definition: patch.definition } : {}),
+      ...(patch.presentation?.layout === "hypothesis-test-v1" ? { presentation: patch.presentation } : {}),
+    };
+  }
   return {
     ...analysis,
     ...shared,

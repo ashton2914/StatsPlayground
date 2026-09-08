@@ -1,4 +1,21 @@
 {
+  "hypothesisTest": {
+    "title": "假设检验",
+    "analysisName": "分析名称",
+    "response": "响应",
+    "condition": "条件",
+    "measurements": "测量列",
+    "subject": "受试者 / 区组 ID",
+    "method": "检验方法",
+    "chooseMethod": "选择检验方法",
+    "alternative": "备择假设",
+    "postHoc": "事后比较",
+    "levelOrder": "水平顺序（逗号分隔）",
+    "layout": { "label": "数据布局", "long": "长表", "wide": "宽表" },
+    "studyDesign": { "label": "研究设计", "independent": "独立样本", "pairedOrBlocked": "配对或区组" },
+    "selectionMode": { "label": "方法选择", "automatic": "自动", "guided": "引导", "manual": "手动" },
+    "graph": { "dataAndEstimates": "数据与估计", "diagnosticValues": "诊断值", "normalQq": "正态 Q-Q 图", "distribution": "分布摘要", "observations": "观测值", "meanInterval": "均值区间", "subjectProfile": "受试者轨迹", "responseAxis": "响应", "observationOrderAxis": "观测顺序", "groupResiduals": "组内残差", "pairedDifferences": "配对差值", "additiveResiduals": "加性模型残差", "theoreticalQuantileAxis": "理论分位数", "observedDiagnosticAxis": "观测诊断值", "reference": "参考线" }
+  },
   "serverBatch": {
     "selectAll": "全选",
     "selectObject": "选择 {{name}}",
@@ -75,6 +92,7 @@
     "tabulate": "Tabulate",
     "fitYByX": "拟合 Y by X",
     "distribution": "分布",
+    "hypothesisTest": "假设检验",
     "ops": "操作",
     "opSummary": "汇总",
     "opSubset": "子集",

@@ -8,6 +8,9 @@ export default defineConfig({
   fullyParallel: false,
   use: {
     ...devices["Desktop Chrome"],
+    launchOptions: process.env.PLAYWRIGHT_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+      : undefined,
     viewport: { width: 1000, height: 700 },
     ctViteConfig: {
       resolve: {

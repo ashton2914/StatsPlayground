@@ -7,10 +7,14 @@ use duckdb::{appender_params_from_iter, params, params_from_iter, Config, Connec
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
 use crate::engine::correlation::{correlate, CorrelationFailure, StatisticalMethod};
+use crate::engine::hypothesis_test::normalize::{
+    HypothesisTestRows, LongHypothesisTestRow, WideHypothesisTestRow,
+};
 use crate::engine::sql_query::{normalize_identifier, validate_read_only_query};
 use crate::error::AppError;
 use crate::models::data_link::SourceObjectRef;
 use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRow, FitYByXRows};
+use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::graph_data::{
     BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, CorrelationMatrixCell, CorrelationMatrixPacket,
     CorrelationMethod, CorrelationUnavailableReason, GraphAggregatePacket, GraphDataRequest,
@@ -7982,6 +7986,145 @@ impl DuckDbEngine {
         Ok(FitYByXRows { source_rows, rows })
     }
 
+    pub fn read_hypothesis_test_rows(
+        &self,
+        dataset_id: &str,
+        roles: &HypothesisTestRoles,
+    ) -> Result<HypothesisTestRows, AppError> {
+        self.get_dataset_meta(dataset_id)?;
+        let user_columns = self.get_user_columns(dataset_id)?;
+        let column_type = |field: &HypothesisTestFieldRef| {
+            user_columns
+                .iter()
+                .find(|(name, _)| name == &field.name)
+                .map(|(_, column_type)| column_type.as_str())
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown hypothesis test column: {}", field.name)))
+        };
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+
+        match roles {
+            HypothesisTestRoles::Long { response, condition, subject } => {
+                if response.name == condition.name
+                    || subject.as_ref().is_some_and(|field| {
+                        field.name == response.name || field.name == condition.name
+                    })
+                {
+                    return Err(AppError::InvalidParam(
+                        "hypothesis test roles must reference different columns".into(),
+                    ));
+                }
+                if !is_numeric_type(column_type(response)?) {
+                    return Err(AppError::InvalidParam(format!(
+                        "hypothesis test response must be numeric: {}",
+                        response.name
+                    )));
+                }
+                column_type(condition)?;
+                let condition_role = self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
+                if !matches!(condition_role.to_ascii_lowercase().as_str(), "nominal" | "ordinal") {
+                    return Err(AppError::InvalidParam(format!(
+                        "hypothesis test condition must be categorical: {}",
+                        condition.name
+                    )));
+                }
+                if let Some(subject) = subject {
+                    column_type(subject)?;
+                }
+
+                let response = Self::quote_identifier(&response.name);
+                let condition = Self::quote_identifier(&condition.name);
+                let subject_projection = subject.as_ref()
+                    .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
+                    .unwrap_or_default();
+                let query_sql = format!(
+                    "SELECT _row_id, {response}, {condition}{subject_projection} FROM {table} ORDER BY _row_id"
+                );
+                let mut statement = self.conn.prepare(&query_sql)?;
+                let mut query_rows = statement.query([])?;
+                let mut rows = Vec::new();
+                while let Some(row) = query_rows.next()? {
+                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
+                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    rows.push(LongHypothesisTestRow {
+                        identity,
+                        response: fit_y_by_x_numeric_value(row.get::<_, Value>(1)?),
+                        condition: fit_y_by_x_display_value(row.get::<_, Value>(2)?),
+                        subject: if subject.is_some() {
+                            fit_y_by_x_display_value(row.get::<_, Value>(3)?)
+                        } else {
+                            None
+                        },
+                    });
+                }
+                Ok(HypothesisTestRows::Long(rows))
+            }
+            HypothesisTestRoles::Wide { measurements, subject } => {
+                if measurements.len() < 2 {
+                    return Err(AppError::InvalidParam(
+                        "wide hypothesis test requires at least two measurement columns".into(),
+                    ));
+                }
+                let mut names = HashSet::new();
+                for measurement in measurements {
+                    if !names.insert(measurement.name.as_str()) {
+                        return Err(AppError::InvalidParam(
+                            "wide hypothesis test measurement columns must be unique".into(),
+                        ));
+                    }
+                    if !is_numeric_type(column_type(measurement)?) {
+                        return Err(AppError::InvalidParam(format!(
+                            "hypothesis test measurement must be numeric: {}",
+                            measurement.name
+                        )));
+                    }
+                }
+                if let Some(subject) = subject {
+                    if names.contains(subject.name.as_str()) {
+                        return Err(AppError::InvalidParam(
+                            "hypothesis test subject must differ from measurements".into(),
+                        ));
+                    }
+                    column_type(subject)?;
+                }
+
+                let measurement_projection = measurements.iter()
+                    .map(|field| Self::quote_identifier(&field.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let subject_projection = subject.as_ref()
+                    .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
+                    .unwrap_or_default();
+                let query_sql = format!(
+                    "SELECT _row_id, {measurement_projection}{subject_projection} FROM {table} ORDER BY _row_id"
+                );
+                let mut statement = self.conn.prepare(&query_sql)?;
+                let mut query_rows = statement.query([])?;
+                let mut rows = Vec::new();
+                while let Some(row) = query_rows.next()? {
+                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
+                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let values = (0..measurements.len())
+                        .map(|index| row.get::<_, Value>(index + 1).map(fit_y_by_x_numeric_value))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    rows.push(WideHypothesisTestRow {
+                        identity,
+                        subject: if subject.is_some() {
+                            fit_y_by_x_display_value(row.get::<_, Value>(measurements.len() + 1)?)
+                        } else {
+                            None
+                        },
+                        measurements: values,
+                    });
+                }
+                Ok(HypothesisTestRows::Wide {
+                    conditions: measurements.iter().map(|field| field.name.clone()).collect(),
+                    explicit_subject: subject.is_some(),
+                    rows,
+                })
+            }
+        }
+    }
+
     fn fit_y_by_x_column_role(
         &self,
         dataset_id: &str,
@@ -9698,6 +9841,48 @@ mod tests {
         assert!(
             matches!(error, AppError::InvalidParam(message) if message.contains("unknown dataset"))
         );
+    }
+
+    #[test]
+    fn read_hypothesis_test_rows_keeps_raw_missing_cells_and_identity() {
+        use crate::engine::hypothesis_test::normalize::HypothesisTestRows;
+        use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
+
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_y_by_x_dataset(
+            &engine,
+            "hypothesis-long-reader",
+            &["response", "condition"],
+            &["DOUBLE", "VARCHAR"],
+            r#"
+            INSERT INTO "dataset_hypothesis_long_reader" (_row_id, response, condition) VALUES
+                (1, 10.0, 'A'),
+                (2, NULL, 'B');
+            "#,
+            2,
+        );
+        engine.conn().execute(
+            "UPDATE _meta_columns SET role = 'nominal' WHERE dataset_id = $1 AND col_name = 'condition'",
+            params!["hypothesis-long-reader"],
+        ).expect("set condition role");
+
+        let rows = engine.read_hypothesis_test_rows(
+            "hypothesis-long-reader",
+            &HypothesisTestRoles::Long {
+                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
+                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
+                subject: None,
+            },
+        ).expect("read hypothesis test rows");
+
+        let HypothesisTestRows::Long(rows) = rows else {
+            panic!("expected long rows");
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].identity, "1");
+        assert_eq!(rows[0].response, Some(10.0));
+        assert_eq!(rows[1].response, None);
+        assert_eq!(rows[1].condition.as_deref(), Some("B"));
     }
 
     #[test]

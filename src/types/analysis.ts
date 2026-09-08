@@ -9,8 +9,12 @@ import type {
   FitModelTerm,
 } from "./fitModel";
 import type { FitYByXPersonality } from "./fitYByX";
+import type {
+  HypothesisTestAnalysisDefinition,
+  HypothesisTestAnalysisPresentation,
+} from "./hypothesisTest";
 
-export type AnalysisKind = "distribution" | "fitYByX" | "fitModel";
+export type AnalysisKind = "distribution" | "fitYByX" | "fitModel" | "hypothesisTest";
 
 export interface DistributionAnalysisPresentation {
   schemaVersion: 1;
@@ -31,7 +35,8 @@ export interface FitModelAnalysisPresentation {
 export type AnalysisPresentation =
   | DistributionAnalysisPresentation
   | FitYByXAnalysisPresentation
-  | FitModelAnalysisPresentation;
+  | FitModelAnalysisPresentation
+  | HypothesisTestAnalysisPresentation;
 
 export interface DistributionAnalysisDefinition {
   kind: "distribution";
@@ -103,10 +108,25 @@ export interface FitModelAnalysisDocument {
   updatedAt: string;
 }
 
+export interface HypothesisTestAnalysisDocument {
+  schemaVersion: 1;
+  documentType: "analysis";
+  id: string;
+  name: string;
+  analysisKind: "hypothesisTest";
+  configRevision: number;
+  source: { datasetId: string };
+  definition: HypothesisTestAnalysisDefinition;
+  presentation: HypothesisTestAnalysisPresentation;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type AnalysisDocument =
   | DistributionAnalysisDocument
   | FitYByXAnalysisDocument
-  | FitModelAnalysisDocument;
+  | FitModelAnalysisDocument
+  | HypothesisTestAnalysisDocument;
 
 export type AnalysisDocumentByKind = {
   [Document in AnalysisDocument as Document["analysisKind"]]: Document;

@@ -3394,6 +3394,28 @@ const ANALYSIS_VALIDATOR_CONTRACTS: &[AnalysisValidatorContract] = &[
         validate_definition: validate_fit_model_analysis_definition,
         validate_presentation: validate_fit_model_analysis_presentation,
     },
+    AnalysisValidatorContract {
+        analysis_kind: "hypothesisTest",
+        document_schema_version: 1,
+        definition_kind: "hypothesisTest",
+        presentation_schema_version: 1,
+        presentation_layout: "hypothesis-test-v1",
+        validate_definition: validate_hypothesis_test_analysis_definition,
+        validate_presentation: validate_hypothesis_test_analysis_presentation,
+    },
+];
+
+const HYPOTHESIS_TEST_METHOD_IDS: &[&str] = &[
+    "studentTwoSampleT",
+    "welchTwoSampleT",
+    "mannWhitneyU",
+    "oneWayAnova",
+    "welchAnova",
+    "kruskalWallis",
+    "pairedT",
+    "wilcoxonSignedRank",
+    "randomizedBlockAnova",
+    "friedman",
 ];
 
 fn validate_distribution_analysis_presentation(
@@ -3588,6 +3610,276 @@ fn validate_fit_model_analysis_definition(
     }
     if !migration_issue && !required_main_effects.is_subset(&main_effects) {
         return Err(AppError::FileIO(format!("{context} analysis definition.terms is missing a main effect")));
+    }
+    Ok(())
+}
+
+fn validate_hypothesis_test_analysis_definition(
+    definition: &Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    let roles = definition.get("roles").and_then(Value::as_object).ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.roles must be an object"))
+    })?;
+    let layout = roles.get("layout").and_then(Value::as_str).ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.roles.layout is missing"))
+    })?;
+    let subject = roles.get("subject");
+    match layout {
+        "long" => {
+            let response = roles.get("response").ok_or_else(|| {
+                AppError::FileIO(format!("{context} analysis definition.roles.response is missing"))
+            })?;
+            validate_hypothesis_test_field(response, "continuous", &format!(
+                "{context} analysis definition.roles.response"
+            ))?;
+            let condition = roles.get("condition").ok_or_else(|| {
+                AppError::FileIO(format!("{context} analysis definition.roles.condition is missing"))
+            })?;
+            validate_field_ref_value(condition, &format!(
+                "{context} analysis definition.roles.condition"
+            ))?;
+            let condition_type = condition
+                .as_object()
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str);
+            if !matches!(condition_type, Some("nominal" | "ordinal")) {
+                return Err(AppError::FileIO(format!(
+                    "{context} analysis definition.roles.condition must be nominal or ordinal"
+                )));
+            }
+            validate_optional_field_ref(subject, &format!(
+                "{context} analysis definition.roles.subject"
+            ))?;
+            let response_name = response.as_object().and_then(|value| value.get("name"));
+            let condition_name = condition.as_object().and_then(|value| value.get("name"));
+            if response_name == condition_name {
+                return Err(AppError::FileIO(format!(
+                    "{context} analysis response and condition must be different fields"
+                )));
+            }
+        }
+        "wide" => {
+            let measurements = roles.get("measurements").and_then(Value::as_array).ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "{context} analysis definition.roles.measurements must be an array"
+                ))
+            })?;
+            if measurements.len() < 2 {
+                return Err(AppError::FileIO(format!(
+                    "{context} analysis definition.roles.measurements must contain at least two fields"
+                )));
+            }
+            let mut names = HashSet::new();
+            for (index, measurement) in measurements.iter().enumerate() {
+                validate_hypothesis_test_field(
+                    measurement,
+                    "continuous",
+                    &format!("{context} analysis definition.roles.measurements[{index}]"),
+                )?;
+                let name = measurement
+                    .as_object()
+                    .and_then(|value| value.get("name"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| AppError::FileIO(format!(
+                        "{context} analysis definition.roles.measurements[{index}].name is missing"
+                    )))?;
+                if !names.insert(name) {
+                    return Err(AppError::FileIO(format!(
+                        "{context} analysis definition.roles.measurements must be unique"
+                    )));
+                }
+            }
+            validate_optional_field_ref(subject, &format!(
+                "{context} analysis definition.roles.subject"
+            ))?;
+        }
+        _ => return Err(AppError::FileIO(format!(
+            "{context} analysis definition.roles.layout must be long or wide"
+        ))),
+    }
+
+    let study_design = definition.get("studyDesign").and_then(Value::as_str);
+    if !matches!(study_design, Some("independent" | "pairedOrBlocked")) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.studyDesign is invalid"
+        )));
+    }
+    let has_subject = subject.is_some_and(|value| !value.is_null());
+    if study_design == Some("pairedOrBlocked") && layout == "long" && !has_subject {
+        return Err(AppError::FileIO(format!(
+            "{context} pairedOrBlocked long analysis requires roles.subject"
+        )));
+    }
+    if study_design == Some("independent") && has_subject {
+        return Err(AppError::FileIO(format!(
+            "{context} independent analysis must not define roles.subject"
+        )));
+    }
+
+    let selection_mode = definition.get("selectionMode").and_then(Value::as_str);
+    if !matches!(selection_mode, Some("automatic" | "guided" | "manual")) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.selectionMode is invalid"
+        )));
+    }
+    let manual_selection = definition.get("manualSelection");
+    if selection_mode == Some("automatic") && manual_selection.is_some_and(|value| !value.is_null()) {
+        return Err(AppError::FileIO(format!(
+            "{context} automatic analysis definition.manualSelection must be null"
+        )));
+    }
+    if selection_mode == Some("manual") && !manual_selection.is_some_and(Value::is_object) {
+        return Err(AppError::FileIO(format!(
+            "{context} manual analysis definition.manualSelection must be an object"
+        )));
+    }
+    if let Some(manual) = manual_selection.filter(|value| !value.is_null()) {
+        let manual = manual.as_object().ok_or_else(|| AppError::FileIO(format!(
+            "{context} analysis definition.manualSelection must be an object or null"
+        )))?;
+        validate_hypothesis_test_method_id(
+            manual.get("methodId"),
+            &format!("{context} analysis definition.manualSelection.methodId"),
+        )?;
+        if !matches!(manual.get("reason"), None | Some(Value::Null) | Some(Value::String(_))) {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis definition.manualSelection.reason must be a string or null"
+            )));
+        }
+    }
+
+    if !matches!(definition.get("alternative").and_then(Value::as_str), Some("twoSided" | "less" | "greater")) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.alternative is invalid"
+        )));
+    }
+    validate_open_probability(definition.get("alpha"), &format!(
+        "{context} analysis definition.alpha"
+    ))?;
+    validate_open_probability(definition.get("confidenceLevel"), &format!(
+        "{context} analysis definition.confidenceLevel"
+    ))?;
+
+    let level_order = definition.get("levelOrder").and_then(Value::as_array).ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.levelOrder must be an array"))
+    })?;
+    let mut levels = HashSet::new();
+    for level in level_order {
+        let level = level.as_str().filter(|value| !value.is_empty()).ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.levelOrder must contain non-empty strings"
+            ))
+        })?;
+        if !levels.insert(level) {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis definition.levelOrder must be unique"
+            )));
+        }
+    }
+    if !matches!(definition.get("referenceLevel"), Some(Value::Null) | Some(Value::String(_))) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.referenceLevel must be a string or null"
+        )));
+    }
+    if !matches!(definition.get("postHoc").and_then(Value::as_str), Some("automatic" | "off")) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.postHoc is invalid"
+        )));
+    }
+    if definition.get("selectorVersion").and_then(Value::as_str) != Some("1") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.selectorVersion must be 1"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_hypothesis_test_field(
+    value: &Value,
+    expected_type: &str,
+    context: &str,
+) -> Result<(), AppError> {
+    validate_field_ref_value(value, context)?;
+    if value.as_object().and_then(|field| field.get("type")).and_then(Value::as_str)
+        != Some(expected_type)
+    {
+        return Err(AppError::FileIO(format!(
+            "{context} must be {expected_type}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_hypothesis_test_method_id(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    let method_id = value.and_then(Value::as_str).ok_or_else(|| {
+        AppError::FileIO(format!("{context} is missing"))
+    })?;
+    if !HYPOTHESIS_TEST_METHOD_IDS.contains(&method_id) {
+        return Err(AppError::FileIO(format!("{context} is invalid")));
+    }
+    Ok(())
+}
+
+fn validate_open_probability(value: Option<&Value>, context: &str) -> Result<(), AppError> {
+    value
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0 && *value < 1.0)
+        .ok_or_else(|| AppError::FileIO(format!(
+            "{context} must be a finite number between 0 and 1"
+        )))?;
+    Ok(())
+}
+
+fn validate_hypothesis_test_analysis_presentation(
+    presentation: &Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    if !matches!(presentation.get("activeResultTab").and_then(Value::as_str), Some("results" | "diagnostics" | "audit")) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis presentation.activeResultTab is invalid"
+        )));
+    }
+    let collapsed = presentation.get("collapsedSections").and_then(Value::as_array).ok_or_else(|| {
+        AppError::FileIO(format!(
+            "{context} analysis presentation.collapsedSections must be an array"
+        ))
+    })?;
+    let mut sections = HashSet::new();
+    for section in collapsed {
+        let section = section.as_str().ok_or_else(|| AppError::FileIO(format!(
+            "{context} analysis presentation.collapsedSections is invalid"
+        )))?;
+        if !matches!(section, "methodEvidence" | "sensitivity" | "postHoc" | "exclusions" | "audit")
+            || !sections.insert(section)
+        {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis presentation.collapsedSections is invalid"
+            )));
+        }
+    }
+    let graphs = presentation.get("graphs").and_then(Value::as_object).ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis presentation.graphs must be an object"))
+    })?;
+    for key in ["showRawData", "showIntervals", "showDiagnostics"] {
+        if graphs.get(key).and_then(Value::as_bool).is_none() {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis presentation.graphs.{key} must be boolean"
+            )));
+        }
+    }
+    if let Some(sort) = presentation.get("tableSort").filter(|value| !value.is_null()) {
+        let sort = sort.as_object().ok_or_else(|| AppError::FileIO(format!(
+            "{context} analysis presentation.tableSort must be an object or null"
+        )))?;
+        require_non_empty_string(sort.get("key"), &format!(
+            "{context} analysis presentation.tableSort.key"
+        ))?;
+        if !matches!(sort.get("direction").and_then(Value::as_str), Some("ascending" | "descending")) {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis presentation.tableSort.direction is invalid"
+            )));
+        }
     }
     Ok(())
 }
@@ -4353,6 +4645,51 @@ mod tests {
             "presentation": {
                 "schemaVersion": 1,
                 "layout": "fit-model-v1"
+            },
+            "createdAt": "2026-09-08T00:00:00Z",
+            "updatedAt": "2026-09-08T00:00:00Z"
+        })
+    }
+
+    fn hypothesis_test_analysis_doc(id: &str, name: &str) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "documentType": "analysis",
+            "id": id,
+            "name": name,
+            "analysisKind": "hypothesisTest",
+            "configRevision": 1,
+            "source": { "datasetId": "table-1" },
+            "definition": {
+                "kind": "hypothesisTest",
+                "roles": {
+                    "layout": "long",
+                    "response": { "name": "Strength", "type": "continuous" },
+                    "condition": { "name": "Site", "type": "nominal" },
+                    "subject": null
+                },
+                "studyDesign": "independent",
+                "selectionMode": "automatic",
+                "manualSelection": null,
+                "alternative": "twoSided",
+                "alpha": 0.05,
+                "confidenceLevel": 0.95,
+                "levelOrder": [],
+                "referenceLevel": null,
+                "postHoc": "automatic",
+                "selectorVersion": "1"
+            },
+            "presentation": {
+                "schemaVersion": 1,
+                "layout": "hypothesis-test-v1",
+                "activeResultTab": "results",
+                "collapsedSections": [],
+                "graphs": {
+                    "showRawData": true,
+                    "showIntervals": true,
+                    "showDiagnostics": true
+                },
+                "tableSort": null
             },
             "createdAt": "2026-09-08T00:00:00Z",
             "updatedAt": "2026-09-08T00:00:00Z"
@@ -5588,6 +5925,37 @@ mod tests {
         let mut invalid_migration_issue = fit_model;
         invalid_migration_issue["definition"]["migrationIssue"] = json!({ "code": 7, "detail": "bad" });
         assert!(validate_analysis_value(&invalid_migration_issue, "analysis validation").is_err());
+
+        let hypothesis_test = hypothesis_test_analysis_doc("hypothesis-1", "Strength by Site");
+        assert!(validate_analysis_value(&hypothesis_test, "analysis validation").is_ok());
+
+        let mut invalid_hypothesis_response = hypothesis_test.clone();
+        invalid_hypothesis_response["definition"]["roles"]["response"]["type"] = json!("nominal");
+        assert!(matches!(
+            validate_analysis_value(&invalid_hypothesis_response, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("response")
+        ));
+
+        let mut invalid_manual_selection = hypothesis_test.clone();
+        invalid_manual_selection["definition"]["selectionMode"] = json!("manual");
+        assert!(matches!(
+            validate_analysis_value(&invalid_manual_selection, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("manualSelection")
+        ));
+
+        let mut invalid_alpha = hypothesis_test.clone();
+        invalid_alpha["definition"]["alpha"] = json!(1.0);
+        assert!(matches!(
+            validate_analysis_value(&invalid_alpha, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("alpha")
+        ));
+
+        let mut persisted_hypothesis_result = hypothesis_test;
+        persisted_hypothesis_result["result"] = json!({ "pValue": 0.01 });
+        assert!(matches!(
+            validate_analysis_value(&persisted_hypothesis_result, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("result")
+        ));
     }
 
     #[test]

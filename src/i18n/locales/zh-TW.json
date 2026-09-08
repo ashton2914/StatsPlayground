@@ -1,4 +1,21 @@
 {
+  "hypothesisTest": {
+    "title": "假設檢定",
+    "analysisName": "分析名稱",
+    "response": "反應",
+    "condition": "條件",
+    "measurements": "測量欄",
+    "subject": "受試者 / 區組 ID",
+    "method": "檢定方法",
+    "chooseMethod": "選擇檢定方法",
+    "alternative": "對立假設",
+    "postHoc": "事後比較",
+    "levelOrder": "水準順序（逗號分隔）",
+    "layout": { "label": "資料配置", "long": "長表", "wide": "寬表" },
+    "studyDesign": { "label": "研究設計", "independent": "獨立樣本", "pairedOrBlocked": "配對或區組" },
+    "selectionMode": { "label": "方法選擇", "automatic": "自動", "guided": "引導", "manual": "手動" },
+    "graph": { "dataAndEstimates": "資料與估計", "diagnosticValues": "診斷值", "normalQq": "常態 Q-Q 圖", "distribution": "分布摘要", "observations": "觀測值", "meanInterval": "平均值區間", "subjectProfile": "受試者軌跡", "responseAxis": "反應", "observationOrderAxis": "觀測順序", "groupResiduals": "組內殘差", "pairedDifferences": "配對差值", "additiveResiduals": "加性模型殘差", "theoreticalQuantileAxis": "理論分位數", "observedDiagnosticAxis": "觀測診斷值", "reference": "參考線" }
+  },
   "common": {
     "ok": "確定",
     "cancel": "取消",
@@ -56,6 +73,7 @@
     "tabulate": "Tabulate",
     "fitYByX": "配適 Y by X",
     "distribution": "分佈",
+    "hypothesisTest": "假設檢定",
     "ops": "操作",
     "opSummary": "彙總",
     "opSubset": "子集",

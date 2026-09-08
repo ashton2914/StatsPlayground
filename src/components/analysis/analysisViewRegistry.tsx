@@ -11,6 +11,7 @@ import { analysisViewContracts } from "./analysisViewContracts";
 import { DistributionAnalysisResults } from "./renderers/DistributionAnalysisResults";
 import { FitYByXAnalysisResults } from "./renderers/FitYByXAnalysisResults";
 import { FitModelAnalysisResults } from "./renderers/FitModelAnalysisResults";
+import { HypothesisTestAnalysisResults } from "./renderers/HypothesisTestAnalysisResults";
 import type { UseAnalysisExecutionRuntime } from "./useAnalysisExecution";
 
 export interface AnalysisViewRuntime extends UseAnalysisExecutionRuntime {
@@ -35,6 +36,7 @@ export const analysisViewRegistry = {
   distribution: DistributionAnalysisResults,
   fitYByX: FitYByXAnalysisResults,
   fitModel: FitModelAnalysisResults,
+  hypothesisTest: HypothesisTestAnalysisResults,
 } satisfies {
   [Kind in AnalysisKind]: ComponentType<AnalysisKindViewProps<Kind>>;
 };

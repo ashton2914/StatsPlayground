@@ -1,4 +1,21 @@
 {
+  "hypothesisTest": {
+    "title": "Hypothesis Test",
+    "analysisName": "Analysis name",
+    "response": "Response",
+    "condition": "Condition",
+    "measurements": "Measurements",
+    "subject": "Subject / block ID",
+    "method": "Method",
+    "chooseMethod": "Choose a method",
+    "alternative": "Alternative",
+    "postHoc": "Post-hoc",
+    "levelOrder": "Level order (comma-separated)",
+    "layout": { "label": "Data layout", "long": "Long", "wide": "Wide" },
+    "studyDesign": { "label": "Study design", "independent": "Independent", "pairedOrBlocked": "Paired or blocked" },
+    "selectionMode": { "label": "Method selection", "automatic": "Automatic", "guided": "Guided", "manual": "Manual" },
+    "graph": { "dataAndEstimates": "Data and estimates", "diagnosticValues": "Diagnostic values", "normalQq": "Normal Q-Q", "distribution": "Distribution", "observations": "Observations", "meanInterval": "Mean interval", "subjectProfile": "Subject profile", "responseAxis": "Response", "observationOrderAxis": "Observation order", "groupResiduals": "Group residuals", "pairedDifferences": "Paired differences", "additiveResiduals": "Additive residuals", "theoreticalQuantileAxis": "Theoretical quantile", "observedDiagnosticAxis": "Observed diagnostic value", "reference": "Reference" }
+  },
   "serverBatch": {
     "selectAll": "Select all",
     "selectObject": "Select {{name}}",
@@ -75,6 +92,7 @@
     "tabulate": "Tabulate",
     "fitYByX": "Fit Y by X",
     "distribution": "Distribution",
+    "hypothesisTest": "Hypothesis Test",
     "ops": "Operations",
     "opSummary": "Summary",
     "opSubset": "Subset",

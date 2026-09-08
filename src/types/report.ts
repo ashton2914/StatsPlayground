@@ -1,4 +1,4 @@
-export type ReportEmbedKind = "table" | "graph" | "fitYByX" | "tabulate" | "distribution";
+export type ReportEmbedKind = "table" | "graph" | "fitYByX" | "tabulate" | "distribution" | "hypothesisTest";
 
 export interface ReportDependency {
   kind: ReportEmbedKind;

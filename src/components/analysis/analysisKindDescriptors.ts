@@ -74,4 +74,22 @@ export const analysisKindDescriptors = {
       reportEmbedding: false,
     },
   },
+  hypothesisTest: {
+    identity: {
+      analysisKind: "hypothesisTest",
+      definitionKind: "hypothesisTest",
+    },
+    schema: {
+      document: 1,
+      presentation: 1,
+      layout: "hypothesis-test-v1",
+    },
+    locale: {
+      title: "hypothesisTest.title",
+    },
+    capabilities: {
+      graphEditing: false,
+      reportEmbedding: true,
+    },
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisKindDescriptor<Kind> };
