@@ -10,7 +10,7 @@
     "benchmark:scatter": "node scripts/runScatterBudget.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:analysis:typecheck": "tsc -p tests/tsconfig.analysis-contracts.json",
+    "test:analysis:typecheck": "tsc -p tests/tsconfig.analysis-typecheck.json",
     "test:analysis:contracts": "tsx --tsconfig tsconfig.app.json tests/analysisKindRegistry.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisDocument.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisStore.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisSample.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisProjectContracts.test.ts && tsx --tsconfig tsconfig.app.json tests/folderStore.analysis.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysis.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysisLifecycle.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysisSample.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisExecution.test.ts",
     "test:analysis:ui": "playwright test -c playwright-ct.config.ts tests/analysisShell.spec.tsx tests/analysisPresentation.spec.tsx tests/analysisView.spec.tsx",
     "test:analysis:kinds": "tsx --tsconfig tsconfig.app.json tests/distributionAnalysisMigration.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionAnalysisAdapter.test.ts && tsx --tsconfig tsconfig.app.json tests/sampleAnalysisGraphExamples.test.ts && tsx --tsconfig tsconfig.app.json tests/transformAggregatePackets.test.ts",

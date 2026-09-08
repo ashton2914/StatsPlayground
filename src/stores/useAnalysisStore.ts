@@ -19,6 +19,7 @@ interface AnalysisStore {
 const ANALYSIS_HELPERS = createNamedDocumentHelpers("Analysis");
 
 function ensureNormalFit(analysis: AnalysisDocument): AnalysisDocument {
+  if (analysis.analysisKind !== "distribution") return analysis;
   const fitDistributions = analysis.definition.analysis.fitDistributions;
   if (fitDistributions.includes("normal")) return analysis;
   return {
@@ -34,15 +35,26 @@ function ensureNormalFit(analysis: AnalysisDocument): AnalysisDocument {
 }
 
 function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentPatch): AnalysisDocument {
-  return ensureNormalFit({
-    ...analysis,
+  const shared = {
     ...(patch.name !== undefined ? { name: patch.name } : {}),
-    ...(patch.definition !== undefined ? { definition: patch.definition } : {}),
-    ...(patch.presentation !== undefined ? { presentation: patch.presentation } : {}),
     ...(patch.source !== undefined ? { source: patch.source } : {}),
     ...(patch.configRevision !== undefined ? { configRevision: patch.configRevision } : {}),
     ...(patch.updatedAt !== undefined ? { updatedAt: patch.updatedAt } : {}),
-  });
+  };
+  if (analysis.analysisKind === "distribution") {
+    return ensureNormalFit({
+      ...analysis,
+      ...shared,
+      ...(patch.definition?.kind === "distribution" ? { definition: patch.definition } : {}),
+      ...(patch.presentation?.layout === "distribution-v1" ? { presentation: patch.presentation } : {}),
+    });
+  }
+  return {
+    ...analysis,
+    ...shared,
+    ...(patch.definition?.kind === "fitYByX" ? { definition: patch.definition } : {}),
+    ...(patch.presentation?.layout === "fit-y-by-x-v1" ? { presentation: patch.presentation } : {}),
+  };
 }
 
 export const useAnalysisStore = create<AnalysisStore>((set, get) => ({

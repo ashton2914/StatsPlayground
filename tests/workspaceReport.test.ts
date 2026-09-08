@@ -54,8 +54,8 @@ assertSourceIncludes(workspaceSource, "menu.report", "Workspace must expose a Re
 assertSourceIncludes(workspaceSource, "handleCreateReport", "Workspace must expose a report creation action");
 
 assertSourceIncludes(workspaceSource, "activeReportId", "Workspace must track the active report document");
-assertSourceIncludes(workspaceSource, "setActiveReportId(null)", "Opening any other document or resetting the workspace must clear the active report");
-assertSourceIncludes(workspaceSource, "setActiveReportId(id)", "Selecting or creating a report must activate it");
+assertSourceIncludes(workspaceSource, "clearWorkspaceDocumentSelection", "Opening or resetting the workspace must clear the active report");
+assertSourceIncludes(workspaceSource, 'activateWorkspaceDocument("report", id)', "Selecting or creating a report must activate it");
 assertSourceIncludes(workspaceSource, "activeReportId === item.id", "DIRECTORY rows must highlight the active report");
 
 assertSourceIncludes(workspaceSource, "reports: reportItems", "Project save payload must include reports");
@@ -63,7 +63,7 @@ assertSourceIncludes(workspaceSource, "reportFolders", "Project save/open payloa
 assertSourceIncludes(workspaceSource, "setReportFolder", "Workspace must move reports through the folder store");
 assertSourceIncludes(workspaceSource, "loadReportsFromProject((result.reports ?? [])", "Project open must load saved reports");
 assertSourceIncludes(workspaceSource, "resetReports()", "Project close/open reset must clear the report store");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds)", "Prune must include live distribution and report ids");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Prune must include live Analysis and report ids");
 
 assertSourceIncludes(workspaceSource, '| { kind: "report"; id: string }', "Drag payload and context menu unions must include reports");
 assertSourceIncludes(workspaceSource, "reportsByParent", "Tree grouping must include reports by folder");

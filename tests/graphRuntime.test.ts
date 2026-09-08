@@ -266,19 +266,19 @@ assert.equal(
   "GraphRuntime must select external state only after calling its internal pipeline hook",
 );
 
-const fitYByXViewSource = readFileSync(
-  resolve(process.cwd(), "src/components/fitYByX/FitYByXView.tsx"),
+const fitYByXAnalysisSource = readFileSync(
+  resolve(process.cwd(), "src/components/analysis/renderers/FitYByXAnalysisResults.tsx"),
   "utf8",
 );
 assert.equal(
-  fitYByXViewSource.includes("createEmbeddedGraphItem"),
+  fitYByXAnalysisSource.includes("createEmbeddedGraphItem"),
   true,
-  "FitYByXView must continue to derive an embedded graph item for GraphRuntime rather than altering GraphRuntime behavior",
+  "Fit Y by X Analysis must derive an embedded graph item rather than altering GraphRuntime behavior",
 );
 assert.equal(
-  fitYByXViewSource.includes("<GraphRuntime"),
+  fitYByXAnalysisSource.includes("<AnalysisGraph"),
   true,
-  "FitYByXView must continue rendering GraphRuntime directly for the graph section",
+  "Fit Y by X Analysis must render through the shared Analysis graph host",
 );
 
 console.log("graphRuntime contract tests passed");

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { hydrateAnalysisProjectPayload } from "../src/components/analysis/analysisWorkspaceLifecycle.ts";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample.ts";
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
+import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
 import type { SaveProjectRequest } from "../src/services/projectService";
 import type { OpenProjectResult, ProjectInfo } from "../src/types/project";
 
@@ -123,5 +124,25 @@ assert.equal(hydrated.migratedCount, 1);
 assert.equal(hydrated.analyses.length, 2);
 assert.equal(hydrated.analyses[1]?.documentType, "analysis");
 assert.equal(hydrated.analysisFolders["legacy-distribution"], "Analyses/Legacy");
+
+const legacyFitYByX = createFitYByXItem({
+  id: "legacy-fit-y-by-x",
+  name: "DIM2 by Site",
+  sourceDatasetId: "dataset-2",
+  response,
+  factor: { name: "Site", type: "nominal" },
+  createdAt: "2026-09-06T00:00:00.000Z",
+});
+const hydratedWithFitYByX = hydrateAnalysisProjectPayload({
+  analyses: [analysis],
+  analysisFolders: { "analysis-1": "Analyses/Sample" },
+  distributions: [legacyDistribution],
+  distributionFolders: { "legacy-distribution": "Analyses/Legacy" },
+  fitYByX: [legacyFitYByX],
+  fitYByXFolders: { "legacy-fit-y-by-x": "Analyses/Fit" },
+});
+assert.equal(hydratedWithFitYByX.migratedCount, 2);
+assert.equal(hydratedWithFitYByX.analyses[2]?.id, legacyFitYByX.id);
+assert.equal(hydratedWithFitYByX.analysisFolders[legacyFitYByX.id], "Analyses/Fit");
 
 console.log("analysis project contracts passed");

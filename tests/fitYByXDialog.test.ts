@@ -27,11 +27,7 @@ assert.equal(
   true,
   "Fit Y by X barrel must keep exporting FitYByXRoleZone",
 );
-assert.equal(
-  fitYByXBarrelSource.includes("FitYByXView") && fitYByXBarrelSource.includes("./FitYByXView"),
-  true,
-  "Fit Y by X barrel must keep exporting FitYByXView",
-);
+assert.equal(fitYByXBarrelSource.includes("FitYByXView"), false, "Fit Y by X barrel must not export the obsolete live view");
 assert.equal(
   fitYByXBarrelSource.includes("createDefaultFitYByXGraphConfig")
     && fitYByXBarrelSource.includes("createFitYByXItem")
@@ -116,61 +112,61 @@ assert.deepEqual(visibleBySqlType.map(({ name }) => name), ["height"]);
 const visibleByRole = filterFitYByXFields([responseField, factorField, ordinalField], "ordinal");
 assert.deepEqual(visibleByRole.map(({ name }) => name), ["batch"]);
 
-const fitYByXViewSource = readFileSync(
-  resolve(process.cwd(), "src/components/fitYByX/FitYByXView.tsx"),
+const fitYByXAnalysisSource = readFileSync(
+  resolve(process.cwd(), "src/components/analysis/renderers/FitYByXAnalysisResults.tsx"),
   "utf8",
 );
 
 assert.equal(
-  fitYByXViewSource.includes("workspace.datasourceDeleted"),
+  fitYByXAnalysisSource.includes("workspace.analysisSourceMissing"),
   true,
-  "FitYByXView must use the workspace unavailable-document presentation when the source dataset is missing",
+  "Fit Y by X Analysis must use the shared missing-source presentation",
 );
 assert.equal(
-  fitYByXViewSource.includes("{item.name}"),
+  fitYByXAnalysisSource.includes("title={item.name}"),
   true,
-  "FitYByXView must preserve the analysis header when the source dataset is missing",
+  "Fit Y by X Analysis must preserve the analysis header when the source dataset is missing",
 );
 assert.equal(
-  fitYByXViewSource.includes("dataset ?") && fitYByXViewSource.includes("workspace.datasourceLabel") && fitYByXViewSource.includes("workspace.datasourceDeleted"),
+  fitYByXAnalysisSource.includes("dataset?.name ?? t(\"workspace.analysisSourceMissing\")"),
   true,
-  "FitYByXView must preserve the source slot and switch it to the deleted-source label when the dataset is missing",
+  "Fit Y by X Analysis must preserve the source slot with the missing-source label",
 );
 assert.equal(
-  fitYByXViewSource.includes("item.response.name") && fitYByXViewSource.includes("item.factor.name"),
+  fitYByXAnalysisSource.includes("item.definition.response.name") && fitYByXAnalysisSource.includes("item.definition.factor.name"),
   true,
-  "FitYByXView must preserve response and factor summary context when the dataset is missing",
+  "Fit Y by X Analysis must preserve response and factor summary context when the dataset is missing",
 );
 
 assert.equal(
-  fitYByXViewSource.includes("useGraphBuilderStore"),
+  fitYByXAnalysisSource.includes("useGraphBuilderStore"),
   false,
-  "FitYByXView must not import or reference useGraphBuilderStore",
+  "Fit Y by X Analysis must not import or reference useGraphBuilderStore",
 );
 assert.equal(
-  fitYByXViewSource.includes("fit-y-by-x-graph:${item.id}"),
+  fitYByXAnalysisSource.includes("analysis-graph:${item.id}:main"),
   true,
-  "FitYByXView must materialize an embedded graph id from the Fit Y by X item id",
+  "Fit Y by X Analysis must materialize a role-qualified embedded graph id",
 );
 assert.equal(
-  fitYByXViewSource.includes("<GraphRuntime") || fitYByXViewSource.includes("GraphRuntime("),
+  fitYByXAnalysisSource.includes("<AnalysisGraph"),
   true,
-  "FitYByXView must mount GraphRuntime when the source dataset exists",
+  "Fit Y by X Analysis must mount the shared graph host when the source dataset exists",
 );
 assert.equal(
-  fitYByXViewSource.includes("React.lazy") || fitYByXViewSource.includes("lazy(") || fitYByXViewSource.includes("<Suspense"),
+  fitYByXAnalysisSource.includes("React.lazy") || fitYByXAnalysisSource.includes("lazy(") || fitYByXAnalysisSource.includes("<Suspense"),
   false,
-  "FitYByXView must synchronously mount GraphRuntime without lazy or Suspense",
+  "Fit Y by X Analysis must synchronously mount its graph without lazy or Suspense",
 );
 assert.equal(
-  fitYByXViewSource.includes("dataset == null") || fitYByXViewSource.includes("dataset === undefined"),
+  fitYByXAnalysisSource.includes("dataset == null"),
   true,
-  "FitYByXView must guard the missing-source case before mounting GraphRuntime",
+  "Fit Y by X Analysis must guard the missing-source case before mounting the graph",
 );
 assert.equal(
-  fitYByXViewSource.includes("dataset == null ? (") || fitYByXViewSource.includes("dataset === undefined ? ("),
+  fitYByXAnalysisSource.includes("dataset == null ? ("),
   true,
-  "FitYByXView must render the unavailable state inline instead of returning early before the surrounding analysis context",
+  "Fit Y by X Analysis must render the unavailable state inline within its context",
 );
 
 const fitYByXRoleDialogSource = readFileSync(
@@ -206,6 +202,24 @@ assert.equal(
     && fitYByXRoleDialogSource.includes("Oneway"),
   true,
   "FitYByXRoleDialog must localize the derived personality labels",
+);
+assert.equal(
+  fitYByXRoleDialogSource.includes('mode: "create" | "edit"')
+    && fitYByXRoleDialogSource.includes("initialValue?: FitYByXAnalysisEditorItem"),
+  true,
+  "FitYByXRoleDialog must expose controlled create and edit modes",
+);
+assert.equal(
+  fitYByXRoleDialogSource.includes("disabled={mode === \"edit\"}"),
+  true,
+  "FitYByXRoleDialog must disable analysis name editing in edit mode",
+);
+assert.equal(
+  fitYByXRoleDialogSource.includes('type="number"')
+    && fitYByXRoleDialogSource.includes("confidenceLevel > 0")
+    && fitYByXRoleDialogSource.includes("confidenceLevel < 1"),
+  true,
+  "FitYByXRoleDialog must require a confidence level in the open interval (0, 1)",
 );
 
 const expectedMissingFactorCopy = {

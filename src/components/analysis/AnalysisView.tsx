@@ -3,7 +3,9 @@ import { useTranslation } from "react-i18next";
 import { AnalysisText } from "@/components/analysis/presentation";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
+import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 
+import type { AnalysisGraphRoleByKind } from "./analysisGraphPolicies";
 import { analysisKindDescriptors } from "./analysisKindDescriptors";
 import {
   analysisViewRegistry,
@@ -20,9 +22,10 @@ interface AnalysisViewProps {
   runtime?: AnalysisViewRuntime;
   canEditInputs?: boolean;
   onEditInputs?: () => void;
-  onGraphConfigChange?: Parameters<
-    typeof analysisViewRegistry.distribution
-  >[0]["onGraphConfigChange"];
+  onGraphConfigChange?: (
+    role: AnalysisGraphRoleByKind[AnalysisDocument["analysisKind"]],
+    graph: EmbeddedGraphConfig,
+  ) => void;
 }
 
 type AnalysisCompatibility = "supported" | "schema" | "kind" | "presentation";
@@ -30,10 +33,7 @@ type AnalysisCompatibility = "supported" | "schema" | "kind" | "presentation";
 function getAnalysisCompatibility(item: AnalysisDocument): AnalysisCompatibility {
   if (item.schemaVersion !== 1) return "schema";
 
-  const descriptor = (analysisKindDescriptors as Partial<Record<
-    string,
-    typeof analysisKindDescriptors.distribution
-  >>)[String(item.analysisKind)];
+  const descriptor = analysisKindDescriptors[item.analysisKind];
   if (!descriptor || item.definition?.kind !== descriptor.identity.definitionKind) return "kind";
   if (
     item.presentation?.schemaVersion !== descriptor.schema.presentation
@@ -65,15 +65,31 @@ export function AnalysisView({
     return <UnsupportedAnalysis item={item} message={t("workspace.analysisUnsupportedPresentation", { defaultValue: "Unsupported analysis presentation." })} />;
   }
 
-  const Renderer = analysisViewRegistry[item.analysisKind];
+  if (item.analysisKind === "distribution") {
+    return (
+      <analysisViewRegistry.distribution
+        item={item}
+        dataset={dataset}
+        runtime={runtime}
+        canEditInputs={canEditInputs}
+        onEditInputs={onEditInputs}
+        onGraphConfigChange={onGraphConfigChange
+          ? (role, graph) => onGraphConfigChange(role, graph)
+          : undefined}
+      />
+    );
+  }
+
   return (
-    <Renderer
+    <analysisViewRegistry.fitYByX
       item={item}
       dataset={dataset}
       runtime={runtime}
       canEditInputs={canEditInputs}
       onEditInputs={onEditInputs}
-      onGraphConfigChange={onGraphConfigChange}
+      onGraphConfigChange={onGraphConfigChange
+        ? (role, graph) => onGraphConfigChange(role, graph)
+        : undefined}
     />
   );
 }

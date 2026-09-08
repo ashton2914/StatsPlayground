@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { createFitYByXAnalysisDocument } from "../src/components/analysis/adapters/fitYByXAnalysisAdapter";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample";
+import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig";
 import { useAnalysisExecution } from "../src/components/analysis/useAnalysisExecution";
 import type { AnalysisDocument } from "../src/types/analysis";
 import type { DatasetMeta } from "../src/types/data";
 import type { DistributionReportResponse } from "../src/types/distribution";
+import type { FitYByXResponse } from "../src/types/fitYByX";
 
 function createDataset(): DatasetMeta {
   return {
@@ -26,6 +29,21 @@ function createAnalysisDocument(): AnalysisDocument {
     analysisId: "analysis-1",
     analysisName: "Strength Distribution",
     createdAt: "2026-09-03T00:00:00.000Z",
+  });
+}
+
+function createFitYByXDocument(): AnalysisDocument {
+  return createFitYByXAnalysisDocument({
+    item: createFitYByXItem({
+      id: "fit-1",
+      name: "Strength by Site",
+      sourceDatasetId: "dataset-1",
+      response: { name: "Strength", type: "continuous" },
+      factor: { name: "Site", type: "nominal" },
+      createdAt: "2026-09-03T00:00:00.000Z",
+    }),
+    confidenceLevel: 0.95,
+    updatedAt: "2026-09-03T00:00:00.000Z",
   });
 }
 
@@ -100,6 +118,21 @@ function createResponse(median: number, generation: number): DistributionReportR
   };
 }
 
+function createFitYByXResponse(generation: number): FitYByXResponse {
+  return {
+    datasetId: "dataset-1",
+    generation,
+    result: {
+      kind: "notComputable",
+      personality: "oneway",
+      reason: "insufficientGroups",
+      usedRows: 1,
+      excludedRows: 0,
+      confidenceLevel: 0.95,
+    },
+  };
+}
+
 function summarizeState(
   item: AnalysisDocument,
   state: ReturnType<typeof useAnalysisExecution>,
@@ -112,15 +145,24 @@ function summarizeState(
     case "error":
       return `${item.configRevision}:error:${state.request?.generation ?? "pending"}`;
     case "success": {
+      if (state.analysisKind === "fitYByX") {
+        return `${item.configRevision}:success:${state.result.result.kind}`;
+      }
       const median = state.result.groups[0]?.yResults[0]?.blocks[0]?.summaryData?.median ?? "missing";
       return `${item.configRevision}:success:${median}`;
     }
   }
 }
 
-export function AnalysisExecutionHarness() {
+export function AnalysisExecutionHarness({
+  analysisKind = "distribution",
+}: {
+  analysisKind?: AnalysisDocument["analysisKind"];
+}) {
   const [dataset] = useState(createDataset());
-  const [item, setItem] = useState(createAnalysisDocument);
+  const [item, setItem] = useState(
+    analysisKind === "fitYByX" ? createFitYByXDocument : createAnalysisDocument,
+  );
   const [current, setCurrent] = useState(() => createResponse(101.044792, 4));
   const [computeCalls, setComputeCalls] = useState(0);
   const [generationCalls, setGenerationCalls] = useState(0);
@@ -131,6 +173,7 @@ export function AnalysisExecutionHarness() {
   const currentDatasetRef = useRef(dataset);
   const deferNextResponseRef = useRef(deferNextResponse);
   const pendingResolverRef = useRef<((value: DistributionReportResponse) => void) | null>(null);
+  const pendingFitResolverRef = useRef<((value: FitYByXResponse) => void) | null>(null);
   const runtimeRef = useRef<Parameters<typeof useAnalysisExecution>[2]>(null);
 
   useEffect(() => {
@@ -168,6 +211,17 @@ export function AnalysisExecutionHarness() {
         }
         return currentResponseRef.current;
       },
+      computeFitYByX: async () => {
+        setComputeCalls((count) => count + 1);
+        if (deferNextResponseRef.current) {
+          deferNextResponseRef.current = false;
+          setDeferNextResponse(false);
+          return await new Promise<FitYByXResponse>((resolve) => {
+            pendingFitResolverRef.current = resolve;
+          });
+        }
+        return createFitYByXResponse(currentDatasetRef.current.generation);
+      },
     };
   }
 
@@ -197,8 +251,51 @@ export function AnalysisExecutionHarness() {
       <button
         type="button"
         onClick={() => {
+          setItem((previous) => previous.analysisKind === "fitYByX"
+            ? {
+              ...previous,
+              presentation: {
+                ...previous.presentation,
+                graph: {
+                  ...previous.presentation.graph,
+                  modeStates: {
+                    ...previous.presentation.graph.modeStates,
+                    twoD: {
+                      ...previous.presentation.graph.modeStates.twoD,
+                      xAxis: { min: 1, max: 4 },
+                    },
+                  },
+                },
+              },
+            }
+            : previous);
+        }}
+      >
+        Change graph presentation
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setDeferNextResponse(true);
+          setItem((previous) => previous.analysisKind === "fitYByX"
+            ? {
+              ...previous,
+              configRevision: previous.configRevision + 1,
+              definition: { ...previous.definition, confidenceLevel: 0.9 },
+              updatedAt: "2026-09-03T00:05:00.000Z",
+            }
+            : previous);
+        }}
+      >
+        Change confidence
+      </button>
+      <button
+        type="button"
+        onClick={() => {
           pendingResolverRef.current?.(currentResponseRef.current);
           pendingResolverRef.current = null;
+          pendingFitResolverRef.current?.(createFitYByXResponse(currentDatasetRef.current.generation));
+          pendingFitResolverRef.current = null;
         }}
       >
         Resolve pending response

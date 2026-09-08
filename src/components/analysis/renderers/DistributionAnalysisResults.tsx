@@ -14,12 +14,25 @@ import { DistributionReport } from "@/components/distribution/DistributionReport
 import { AxisSettingsDialog } from "@/components/graphBuilder/AxisSettingsDialog";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
 import type { RefLineX, RefLineY, YAxisConfig } from "@/graphCore";
-import { mapDistributionCompositeExternalDataState } from "@/graphCore/distributionAdapter";
+import {
+  mapDistributionCompositeExternalDataState,
+  type DistributionFrameSourceState,
+} from "@/graphCore/distributionAdapter";
 import type { DistributionReportResponse } from "@/types/distribution";
 import type { Graph2DState } from "@/types/graphBuilder";
 
 type DistributionAnalysisResultsProps = AnalysisKindViewProps<"distribution">;
 type DistributionBuilderGraphRole = "overview";
+
+function toDistributionFrameSourceState(
+  state: ReturnType<typeof useAnalysisExecution>,
+): DistributionFrameSourceState {
+  if (state.status === "success") {
+    return state.analysisKind === "distribution" ? state : { status: "loading" };
+  }
+  if (state.status === "error") return { status: "error", error: state.error };
+  return { status: state.status };
+}
 
 export function DistributionAnalysisResults({
   item,
@@ -101,7 +114,9 @@ export function DistributionAnalysisResults({
                   item: graphItems.distributionComposite,
                   dataset,
                   panelLayout: "fit",
-                  externalDataState: mapDistributionCompositeExternalDataState(executionState),
+                  externalDataState: mapDistributionCompositeExternalDataState(
+                    toDistributionFrameSourceState(executionState),
+                  ),
                   onXAxisDblClick: onGraphConfigChange
                     ? () => setAxisDialog({ role: "overview", axis: "x" })
                     : undefined,
@@ -156,7 +171,9 @@ export function DistributionAnalysisResults({
 }
 
 function AnalysisTextBlock({ state }: { state: ReturnType<typeof useAnalysisExecution> }) {
-  const result = state.status === "success" ? firstResult(state.result) : null;
+  const result = state.status === "success" && state.analysisKind === "distribution"
+    ? firstResult(state.result)
+    : null;
   const summary = result?.blocks.find((block) => block.summaryData)?.summaryData;
   if (!result || !summary) return null;
 
@@ -177,6 +194,7 @@ function AnalysisDistributionReport({ state, datasetMissing }: {
     return <AnalysisUnavailable message={t("distribution.report.loading", { defaultValue: "Loading report..." })} />;
   }
   if (state.status === "error") return <AnalysisUnavailable message={state.error} alert />;
+  if (state.analysisKind !== "distribution") return null;
 
   return <DistributionReport groups={state.result.groups} reportBlocks={state.result.reportBlocks} />;
 }

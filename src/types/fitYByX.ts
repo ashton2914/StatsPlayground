@@ -111,6 +111,12 @@ export type FitYByXResult =
   | FitYByXBivariateResult
   | FitYByXNotComputableResult;
 
+export interface FitYByXResponse {
+  datasetId: string;
+  generation: number;
+  result: FitYByXResult;
+}
+
 export interface FitYByXItem {
   id: string;
   name: string;

@@ -1,13 +1,19 @@
 import type { SaveProjectRequest } from "@/services/projectService";
 import type { AnalysisDocument } from "@/types/analysis";
+import type { FitYByXItem } from "@/types/fitYByX";
+import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 import type { OpenProjectResult } from "@/types/project";
 
+import {
+  createAnalysisGraphPersistencePatch,
+  type AnalysisGraphPersistenceResult,
+} from "./analysisGraphPolicies";
 import { migrateLegacyDistributions } from "./distributionAnalysisMigration";
+import { migrateLegacyFitYByX } from "./fitYByXAnalysisMigration";
 
 export interface WorkspaceDocumentSelection {
   activeDatasetId: string | null;
   activeGraphBuilderId: string | null;
-  activeFitYByXId: string | null;
   activeFitModelId: string | null;
   activeReportId: string | null;
   activeAnalysisId: string | null;
@@ -17,7 +23,6 @@ export interface WorkspaceDocumentSelection {
 export type WorkspaceDocumentKind =
   | "dataset"
   | "graph"
-  | "fitYByX"
   | "fitModel"
   | "report"
   | "analysis"
@@ -27,7 +32,6 @@ export function createEmptyWorkspaceDocumentSelection(): WorkspaceDocumentSelect
   return {
     activeDatasetId: null,
     activeGraphBuilderId: null,
-    activeFitYByXId: null,
     activeFitModelId: null,
     activeReportId: null,
     activeAnalysisId: null,
@@ -39,7 +43,6 @@ export function selectWorkspaceDocument(kind: WorkspaceDocumentKind, id: string)
   const next = createEmptyWorkspaceDocumentSelection();
   if (kind === "dataset") next.activeDatasetId = id;
   if (kind === "graph") next.activeGraphBuilderId = id;
-  if (kind === "fitYByX") next.activeFitYByXId = id;
   if (kind === "fitModel") next.activeFitModelId = id;
   if (kind === "report") next.activeReportId = id;
   if (kind === "analysis") next.activeAnalysisId = id;
@@ -50,12 +53,17 @@ export function selectWorkspaceDocument(kind: WorkspaceDocumentKind, id: string)
 export function buildAnalysisProjectPayload(input: {
   analyses: AnalysisDocument[];
   analysisFolders: Record<string, string>;
-}): Pick<SaveProjectRequest, "analyses" | "analysisFolders" | "distributions" | "distributionFolders"> {
+}): Pick<
+  SaveProjectRequest,
+  "analyses" | "analysisFolders" | "distributions" | "distributionFolders" | "fitYByX" | "fitYByXFolders"
+> {
   return {
     analyses: input.analyses,
     analysisFolders: input.analysisFolders,
     distributions: [],
     distributionFolders: {},
+    fitYByX: [],
+    fitYByXFolders: {},
   };
 }
 
@@ -63,14 +71,28 @@ export function hydrateAnalysisProjectPayload(
   result: Partial<Pick<
     OpenProjectResult,
     "analyses" | "analysisFolders" | "distributions" | "distributionFolders"
-  >>,
+  >> & {
+    fitYByX?: FitYByXItem[];
+    fitYByXFolders?: Record<string, string>;
+  },
 ): Pick<OpenProjectResult, "analyses" | "analysisFolders"> & { migratedCount: number } {
-  return migrateLegacyDistributions({
+  const distributions = migrateLegacyDistributions({
     analyses: result.analyses ?? [],
     analysisFolders: result.analysisFolders ?? {},
     distributions: result.distributions ?? [],
     distributionFolders: result.distributionFolders ?? {},
   });
+  const fitYByX = migrateLegacyFitYByX({
+    analyses: distributions.analyses,
+    analysisFolders: distributions.analysisFolders,
+    fitYByX: result.fitYByX ?? [],
+    fitYByXFolders: result.fitYByXFolders ?? {},
+  });
+  return {
+    analyses: fitYByX.analyses,
+    analysisFolders: fitYByX.analysisFolders,
+    migratedCount: distributions.migratedCount + fitYByX.migratedCount,
+  };
 }
 
 export function getRetainedActiveAnalysisIdAfterDatasetDeletion(input: {
@@ -85,6 +107,20 @@ export function getRetainedActiveAnalysisIdAfterDatasetDeletion(input: {
 
 export function shouldMarkAnalysisMigrationDirty(migratedCount: number): boolean {
   return migratedCount > 0;
+}
+
+export function createWorkspaceAnalysisGraphConfigPatch(
+  document: AnalysisDocument,
+  role: "overview" | "main",
+  graph: EmbeddedGraphConfig,
+  updatedAt: string,
+): AnalysisGraphPersistenceResult {
+  if (document.analysisKind === "distribution") {
+    if (role !== "overview") throw new Error(`Unsupported Distribution graph role: ${role}`);
+    return createAnalysisGraphPersistencePatch(document, role, graph, updatedAt);
+  }
+  if (role !== "main") throw new Error(`Unsupported Fit Y by X graph role: ${role}`);
+  return createAnalysisGraphPersistencePatch(document, role, graph, updatedAt);
 }
 
 export function getAnalysisCreationHistoryKey(origin: "sample" | "generic"): "history.analysisSample" | "history.newAnalysis" {

@@ -7,7 +7,6 @@ export {
   folderBaseName,
   validateFolderOrFileName,
 } from "./useFolderStore";
-export { useFitYByXStore } from "./useFitYByXStore";
 export { useFitModelStore } from "./useFitModelStore";
 export { useReportStore } from "./useReportStore";
 export { useAnalysisStore } from "./useAnalysisStore";

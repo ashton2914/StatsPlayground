@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::models::fit_y_by_x::{FitYByXRequest, FitYByXResult};
+use crate::models::fit_y_by_x::{FitYByXRequest, FitYByXResponse};
 use crate::services::fit_y_by_x_service::FitYByXService;
 use crate::state::AppState;
 use tauri::State;
@@ -8,8 +8,15 @@ use tauri::State;
 pub fn fit_y_by_x(
     state: State<'_, AppState>,
     request: FitYByXRequest,
-) -> Result<FitYByXResult, AppError> {
-    FitYByXService::new(&state).run(request)
+) -> Result<FitYByXResponse, AppError> {
+    let dataset_id = request.dataset_id.clone();
+    let generation = request.generation;
+    let result = FitYByXService::new(&state).run(request)?;
+    Ok(FitYByXResponse {
+        dataset_id,
+        generation,
+        result,
+    })
 }
 
 #[cfg(test)]
@@ -37,7 +44,7 @@ mod tests {
 
         assert!(signature.contains("state: State<'_, AppState>"));
         assert!(signature.contains("request: FitYByXRequest"));
-        assert!(source.contains("FitYByXService::new(&state).run(request)"));
+        assert!(source.contains("FitYByXService::new(&state).run(request)?"));
     }
 
     #[test]
@@ -56,20 +63,26 @@ mod tests {
         assert_eq!(request.generation, 7);
         assert_eq!(request.personality, FitYByXPersonality::Oneway);
 
-        let value = serde_json::to_value(FitYByXResult::NotComputable(NotComputableResult {
-            personality: FitYByXPersonality::Bivariate,
-            reason: FitYByXNotComputableReason::ConstantFactor,
-            used_rows: 3,
-            excluded_rows: 2,
-            confidence_level: 0.95,
-        }))
+        let value = serde_json::to_value(crate::models::fit_y_by_x::FitYByXResponse {
+            dataset_id: request.dataset_id,
+            generation: request.generation,
+            result: FitYByXResult::NotComputable(NotComputableResult {
+                personality: FitYByXPersonality::Bivariate,
+                reason: FitYByXNotComputableReason::ConstantFactor,
+                used_rows: 3,
+                excluded_rows: 2,
+                confidence_level: 0.95,
+            }),
+        })
         .expect("response should serialize");
 
-        assert_eq!(value["kind"], "notComputable");
-        assert_eq!(value["usedRows"], 3);
-        assert_eq!(value["excludedRows"], 2);
-        assert_eq!(value["confidenceLevel"], 0.95);
-        assert_eq!(value["personality"], "bivariate");
-        assert_eq!(value["reason"], "constantFactor");
+        assert_eq!(value["datasetId"], "ds1");
+        assert_eq!(value["generation"], 7);
+        assert_eq!(value["result"]["kind"], "notComputable");
+        assert_eq!(value["result"]["usedRows"], 3);
+        assert_eq!(value["result"]["excludedRows"], 2);
+        assert_eq!(value["result"]["confidenceLevel"], 0.95);
+        assert_eq!(value["result"]["personality"], "bivariate");
+        assert_eq!(value["result"]["reason"], "constantFactor");
     }
 }

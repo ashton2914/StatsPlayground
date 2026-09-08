@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 
 import type { AnalysisDocument } from "../src/types/analysis.ts";
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
+import { createDefaultFitYByXGraphConfig } from "../src/components/fitYByX/fitYByXConfig.ts";
 import {
   buildAnalysisProjectPayload,
+  createWorkspaceAnalysisGraphConfigPatch,
   createEmptyWorkspaceDocumentSelection,
   getAnalysisCreationHistoryKey,
   getRetainedActiveAnalysisIdAfterDatasetDeletion,
@@ -46,7 +48,6 @@ function makeAnalysis(id: string, datasetId: string): AnalysisDocument {
 assert.deepEqual(createEmptyWorkspaceDocumentSelection(), {
   activeDatasetId: null,
   activeGraphBuilderId: null,
-  activeFitYByXId: null,
   activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: null,
@@ -56,7 +57,6 @@ assert.deepEqual(createEmptyWorkspaceDocumentSelection(), {
 assert.deepEqual(selectWorkspaceDocument("analysis", "analysis-1"), {
   activeDatasetId: null,
   activeGraphBuilderId: null,
-  activeFitYByXId: null,
   activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: "analysis-1",
@@ -66,7 +66,6 @@ assert.deepEqual(selectWorkspaceDocument("analysis", "analysis-1"), {
 assert.deepEqual(selectWorkspaceDocument("dataset", "dataset-1"), {
   activeDatasetId: "dataset-1",
   activeGraphBuilderId: null,
-  activeFitYByXId: null,
   activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: null,
@@ -76,7 +75,6 @@ assert.deepEqual(selectWorkspaceDocument("dataset", "dataset-1"), {
 assert.deepEqual(selectWorkspaceDocument("fitModel", "fit-model-1"), {
   activeDatasetId: null,
   activeGraphBuilderId: null,
-  activeFitYByXId: null,
   activeFitModelId: "fit-model-1",
   activeReportId: null,
   activeAnalysisId: null,
@@ -93,8 +91,10 @@ assert.deepEqual(
     analysisFolders,
     distributions: [],
     distributionFolders: {},
+    fitYByX: [],
+    fitYByXFolders: {},
   },
-  "save payload must preserve analyses while clearing legacy Distribution collections",
+  "save payload must preserve analyses while clearing legacy Analysis collections",
 );
 
 assert.deepEqual(
@@ -171,5 +171,46 @@ assert.equal(
 
 assert.equal(getAnalysisCreationHistoryKey("sample"), "history.analysisSample");
 assert.equal(getAnalysisCreationHistoryKey("generic"), "history.newAnalysis");
+
+const response = { name: "Strength", type: "continuous" as const };
+const factor = { name: "Site", type: "nominal" as const };
+const fitYByXDocument = {
+  schemaVersion: 1 as const,
+  documentType: "analysis" as const,
+  id: "fit-1",
+  name: "Strength by Site",
+  analysisKind: "fitYByX" as const,
+  configRevision: 3,
+  source: { datasetId: "dataset-1" },
+  definition: {
+    kind: "fitYByX" as const,
+    response,
+    factor,
+    personality: "oneway" as const,
+    confidenceLevel: 0.95,
+  },
+  presentation: {
+    schemaVersion: 1 as const,
+    layout: "fit-y-by-x-v1" as const,
+    graph: createDefaultFitYByXGraphConfig({ response, factor }),
+  },
+  createdAt: "2026-09-07T00:00:00.000Z",
+  updatedAt: "2026-09-07T00:00:00.000Z",
+};
+const changedGraph = structuredClone(fitYByXDocument.presentation.graph);
+changedGraph.modeStates.twoD.yAxis = { min: 8, max: 14 };
+const graphResult = createWorkspaceAnalysisGraphConfigPatch(
+  fitYByXDocument,
+  "main",
+  changedGraph,
+  "2026-09-07T01:00:00.000Z",
+);
+assert.equal(graphResult.statisticalInputsChanged, false);
+assert.equal(graphResult.patch.configRevision, undefined);
+assert.equal(graphResult.patch.definition, undefined);
+assert.deepEqual(graphResult.patch.presentation, {
+  ...fitYByXDocument.presentation,
+  graph: changedGraph,
+});
 
 console.log("workspace analysis lifecycle helpers passed");

@@ -10,7 +10,7 @@ function readSource(relativePath: string): string {
 }
 
 const graphBuilderSource = readSource("src/components/graphBuilder/GraphBuilderView.tsx");
-const fitYByXSource = readSource("src/components/fitYByX/FitYByXView.tsx");
+const fitYByXSource = readSource("src/components/analysis/renderers/FitYByXAnalysisResults.tsx");
 const axisSettingsSource = readSource("src/components/graphBuilder/AxisSettingsDialog.tsx");
 
 assert.match(
@@ -61,7 +61,7 @@ for (const callback of [
   "onAxisContextMenu",
 ]) {
   assert.equal(
-    fitYByXSource.includes(`${callback}=`),
+    fitYByXSource.includes(`${callback}:`),
     true,
     `Fit Y by X must wire GraphRuntime ${callback}`,
   );
@@ -69,20 +69,20 @@ for (const callback of [
 
 assert.match(
   fitYByXSource,
-  /readOnly \? undefined : handleAxisRangeChange/,
-  "Fit Y by X must disable persistent zoom changes for read-only projects",
+  /onAxisRangeChange: onGraphConfigChange/,
+  "Fit Y by X must disable persistent zoom changes when graph editing is unavailable",
 );
 
 assert.match(
   fitYByXSource,
-  /const currentItem = useFitYByXStore\.getState\(\)\.items\.find/,
-  "Fit Y by X axis changes must merge against the latest store snapshot",
+  /updateEmbeddedGraph2D\(item\.presentation\.graph, updater\)/,
+  "Fit Y by X axis changes must update the canonical presentation graph",
 );
 
 assert.match(
   fitYByXSource,
-  /updateItem\(item\.id, \{ graph: nextGraph \}\);/,
-  "Fit Y by X axis changes must persist through its own document store",
+  /onGraphConfigChange\("main",/,
+  "Fit Y by X axis changes must persist through the shared Analysis graph callback",
 );
 
 const baseGraph = {

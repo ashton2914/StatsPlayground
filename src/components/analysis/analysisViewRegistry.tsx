@@ -9,10 +9,11 @@ import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 import type { AnalysisGraphRoleByKind } from "./analysisGraphPolicies";
 import { analysisViewContracts } from "./analysisViewContracts";
 import { DistributionAnalysisResults } from "./renderers/DistributionAnalysisResults";
+import { FitYByXAnalysisResults } from "./renderers/FitYByXAnalysisResults";
 import type { UseAnalysisExecutionRuntime } from "./useAnalysisExecution";
 
 export interface AnalysisViewRuntime extends UseAnalysisExecutionRuntime {
-  renderGraph?: (props: GraphRuntimeProps & { role: DistributionGraphRole }) => ReactNode;
+  renderGraph?: (props: GraphRuntimeProps & { role: DistributionGraphRole | "main" }) => ReactNode;
 }
 
 export interface AnalysisKindViewProps<Kind extends AnalysisKind> {
@@ -29,6 +30,7 @@ export interface AnalysisKindViewProps<Kind extends AnalysisKind> {
 
 export const analysisViewRegistry = {
   distribution: DistributionAnalysisResults,
+  fitYByX: FitYByXAnalysisResults,
 } satisfies {
   [Kind in AnalysisKind]: ComponentType<AnalysisKindViewProps<Kind>>;
 };

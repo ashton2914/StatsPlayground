@@ -1,5 +1,20 @@
-import type { AnalysisKind } from "@/types/analysis";
+import type { AnalysisDocument, AnalysisDocumentByKind, AnalysisKind } from "@/types/analysis";
+
+export interface AnalysisReportPolicy<Kind extends AnalysisKind> {
+  dependencyKind: "fitYByX";
+  accepts: (document: AnalysisDocument) => document is AnalysisDocumentByKind[Kind];
+}
+
+export function isFitYByXAnalysisDocument(
+  document: AnalysisDocument,
+): document is AnalysisDocumentByKind["fitYByX"] {
+  return document.analysisKind === "fitYByX";
+}
 
 export const analysisReportPolicies = {
   distribution: null,
-} satisfies Record<AnalysisKind, object | null>;
+  fitYByX: {
+    dependencyKind: "fitYByX",
+    accepts: isFitYByXAnalysisDocument,
+  },
+} satisfies { [Kind in AnalysisKind]: AnalysisReportPolicy<Kind> | null };
