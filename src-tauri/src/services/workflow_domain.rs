@@ -137,6 +137,7 @@ pub enum ArtifactKind {
 pub enum OperationKind {
     Import,
     SqlQuery,
+    TableTransform,
     GraphGeneration,
     FitYByX,
     Tabulate,

@@ -1,5 +1,6 @@
 export type ProjectDocumentKind =
   | "table"
+  | "tableTransform"
   | "graph"
   | "fitYByX"
   | "tabulate"
@@ -23,6 +24,7 @@ export type ArtifactKind = Exclude<PortPayloadKind, "any">;
 export type OperationKind =
   | "import"
   | "sqlQuery"
+  | "tableTransform"
   | "graphGeneration"
   | "fitYByX"
   | "tabulate";

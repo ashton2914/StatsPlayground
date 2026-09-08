@@ -197,6 +197,7 @@ pub struct ProjectManifest {
 #[serde(rename_all = "camelCase")]
 pub enum ProjectDocumentKind {
     Table,
+    TableTransform,
     Graph,
     FitYByX,
     Tabulate,
@@ -1848,7 +1849,7 @@ fn build_project_lineage_graph(
         .chain(snapshot_refs.iter().map(|entry| {
             build_artifact_node(ProjectDocumentKind::Snapshot, &entry.id, &entry.name)
         }))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, AppError>>()?;
     artifact_nodes.sort_by(|left, right| left.id.cmp(&right.id));
     lineage_graph.nodes.extend(
         artifact_nodes
@@ -1944,11 +1945,11 @@ fn build_artifact_node(
     kind: ProjectDocumentKind,
     id: &str,
     name: &str,
-) -> workflow_domain::ArtifactNode {
+) -> Result<workflow_domain::ArtifactNode, AppError> {
     let node_id = artifact_node_id(&kind, id);
-    let payload_kind = port_payload_kind(&kind);
+    let payload_kind = port_payload_kind(&kind)?;
 
-    workflow_domain::ArtifactNode {
+    Ok(workflow_domain::ArtifactNode {
         id: node_id.clone(),
         document_ref: ProjectDocumentRef {
             kind: kind.clone(),
@@ -1956,7 +1957,7 @@ fn build_artifact_node(
         },
         name: name.to_string(),
         parent_folder_id: None,
-        artifact_kind: artifact_kind(&kind),
+        artifact_kind: artifact_kind(&kind)?,
         input_port: workflow_domain::LineagePort {
             id: format!("{node_id}-input"),
             name: "input".to_string(),
@@ -1968,7 +1969,7 @@ fn build_artifact_node(
             payload_kind,
         },
         materialized_by_workflow_run_id: None,
-    }
+    })
 }
 
 fn ensure_known_source_table(
@@ -2020,7 +2021,7 @@ fn build_project_lineage_operation(
         output_ports: vec![workflow_domain::LineagePort {
             id: operation_output_port_id.clone(),
             name: "result".to_string(),
-            payload_kind: port_payload_kind(&target_ref.kind),
+            payload_kind: port_payload_kind(&target_ref.kind)?,
         }],
     };
 
@@ -2153,6 +2154,7 @@ fn artifact_node_id(kind: &ProjectDocumentKind, id: &str) -> String {
 fn document_kind_key(kind: &ProjectDocumentKind) -> &'static str {
     match kind {
         ProjectDocumentKind::Table => "table",
+        ProjectDocumentKind::TableTransform => "tableTransform",
         ProjectDocumentKind::Graph => "graph",
         ProjectDocumentKind::FitYByX => "fitYByX",
         ProjectDocumentKind::Tabulate => "tabulate",
@@ -2160,28 +2162,39 @@ fn document_kind_key(kind: &ProjectDocumentKind) -> &'static str {
     }
 }
 
-fn artifact_kind(kind: &ProjectDocumentKind) -> workflow_domain::ArtifactKind {
+fn artifact_kind(
+    kind: &ProjectDocumentKind,
+) -> Result<workflow_domain::ArtifactKind, AppError> {
     match kind {
-        ProjectDocumentKind::Table => workflow_domain::ArtifactKind::Table,
-        ProjectDocumentKind::Graph => workflow_domain::ArtifactKind::Graph,
-        ProjectDocumentKind::FitYByX => workflow_domain::ArtifactKind::FitYByX,
-        ProjectDocumentKind::Tabulate => workflow_domain::ArtifactKind::Tabulate,
-        ProjectDocumentKind::Snapshot => workflow_domain::ArtifactKind::Snapshot,
+        ProjectDocumentKind::Table => Ok(workflow_domain::ArtifactKind::Table),
+        ProjectDocumentKind::Graph => Ok(workflow_domain::ArtifactKind::Graph),
+        ProjectDocumentKind::FitYByX => Ok(workflow_domain::ArtifactKind::FitYByX),
+        ProjectDocumentKind::Tabulate => Ok(workflow_domain::ArtifactKind::Tabulate),
+        ProjectDocumentKind::Snapshot => Ok(workflow_domain::ArtifactKind::Snapshot),
+        ProjectDocumentKind::TableTransform => Err(AppError::InvalidParam(
+            "table transform definitions are operation documents, not artifacts".to_string(),
+        )),
     }
 }
 
-fn port_payload_kind(kind: &ProjectDocumentKind) -> workflow_domain::PortPayloadKind {
+fn port_payload_kind(
+    kind: &ProjectDocumentKind,
+) -> Result<workflow_domain::PortPayloadKind, AppError> {
     match kind {
-        ProjectDocumentKind::Table => workflow_domain::PortPayloadKind::Table,
-        ProjectDocumentKind::Graph => workflow_domain::PortPayloadKind::Graph,
-        ProjectDocumentKind::FitYByX => workflow_domain::PortPayloadKind::FitYByX,
-        ProjectDocumentKind::Tabulate => workflow_domain::PortPayloadKind::Tabulate,
-        ProjectDocumentKind::Snapshot => workflow_domain::PortPayloadKind::Snapshot,
+        ProjectDocumentKind::Table => Ok(workflow_domain::PortPayloadKind::Table),
+        ProjectDocumentKind::Graph => Ok(workflow_domain::PortPayloadKind::Graph),
+        ProjectDocumentKind::FitYByX => Ok(workflow_domain::PortPayloadKind::FitYByX),
+        ProjectDocumentKind::Tabulate => Ok(workflow_domain::PortPayloadKind::Tabulate),
+        ProjectDocumentKind::Snapshot => Ok(workflow_domain::PortPayloadKind::Snapshot),
+        ProjectDocumentKind::TableTransform => Err(AppError::InvalidParam(
+            "table transform definitions do not carry artifact payloads".to_string(),
+        )),
     }
 }
 
 fn operation_kind(kind: &ProjectDocumentKind) -> Result<workflow_domain::OperationKind, AppError> {
     match kind {
+        ProjectDocumentKind::TableTransform => Ok(workflow_domain::OperationKind::TableTransform),
         ProjectDocumentKind::Graph => Ok(workflow_domain::OperationKind::GraphGeneration),
         ProjectDocumentKind::FitYByX => Ok(workflow_domain::OperationKind::FitYByX),
         ProjectDocumentKind::Tabulate => Ok(workflow_domain::OperationKind::Tabulate),
@@ -2876,6 +2889,7 @@ fn manifest_contains_document(manifest: &ProjectManifest, document: &ProjectDocu
 
     match document.kind {
         ProjectDocumentKind::Table => manifest.tables.iter().any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::TableTransform => false,
         ProjectDocumentKind::Graph => manifest.graphs.iter().any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::FitYByX => manifest
             .fit_y_by_x_files
