@@ -8,9 +8,10 @@ use crate::error::AppError;
 use crate::models::table::DatasetMeta;
 use crate::services::spprj_archive::{ProjectDocumentKind, ProjectDocumentRef, TableColumn};
 use crate::services::table_transform_domain::{
-    validate_table_transform_definition, JoinType, SortDirection, SummaryStatistic,
-    TableFilterComparisonOperator, TableFilterExpression, TableFilterLogicalOperator,
-    TableFilterScalar, TableTransformDefinition, TableTransformOperation,
+    derive_input_contracts, validate_table_transform_definition, JoinType, SortDirection,
+    SummaryStatistic, TableFilterComparisonOperator, TableFilterExpression,
+    TableFilterLogicalOperator, TableFilterScalar, TableTransformDefinition, TableTransformDraft,
+    TableTransformOperation, TableTransformOutput,
 };
 use crate::services::workflow_domain::{
     validate_lineage_graph, validate_schema_contract, ArtifactKind, ArtifactNode, LineageEdge,
@@ -87,6 +88,46 @@ pub struct TableTransformService<'a> {
 impl<'a> TableTransformService<'a> {
     pub fn new(engine: &'a DuckDbEngine) -> Self {
         Self { engine }
+    }
+
+    pub fn create_from_draft(
+        &self,
+        draft: &TableTransformDraft,
+        inputs: Vec<TableTransformInputBinding>,
+        lineage: &mut ProjectLineageGraph,
+    ) -> Result<(TableTransformDefinition, TableTransformExecutionResult), AppError> {
+        let source_schemas = inputs
+            .iter()
+            .map(|input| {
+                let columns = self
+                    .engine
+                    .get_user_columns(&input.table_document_id)?
+                    .into_iter()
+                    .map(|(name, col_type)| TableColumn {
+                        name,
+                        col_type,
+                        width: None,
+                        format: None,
+                        extras: None,
+                    })
+                    .collect();
+                Ok((input.role.clone(), columns))
+            })
+            .collect::<Result<HashMap<_, _>, AppError>>()?;
+        let definition = TableTransformDefinition {
+            id: Uuid::new_v4().to_string(),
+            name: draft.name.clone(),
+            format_version: "1".to_string(),
+            revision: 1,
+            operation: draft.operation.clone(),
+            input_slots: derive_input_contracts(&draft.operation, &source_schemas)?,
+            output: TableTransformOutput {
+                table_document_id: Uuid::new_v4().to_string(),
+                name: draft.output_name.clone(),
+            },
+        };
+        let execution = self.create_and_run(&definition, inputs, lineage)?;
+        Ok((definition, execution))
     }
 
     pub fn create_and_run(

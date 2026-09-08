@@ -2,6 +2,10 @@ import type { AnalysisDocument } from "./analysis";
 import type { DistributionItem } from "./distribution";
 import type { ReportItem } from "./report";
 import type {
+  TableTransformDefinition,
+  TableTransformProjectBinding,
+} from "./tableTransform";
+import type {
   LogicalFolder,
   ProjectLineageGraph,
   WorkflowDefinition,
@@ -62,6 +66,8 @@ export interface OpenProjectResult {
   logicalFolders: LogicalFolder[];
   workflowRuns: WorkflowRun[];
   lineageGraph: ProjectLineageGraph;
+  tableTransforms: TableTransformDefinition[];
+  tableTransformBindings: TableTransformProjectBinding[];
 }
 
 /** 导入 .sptb 的返回值。

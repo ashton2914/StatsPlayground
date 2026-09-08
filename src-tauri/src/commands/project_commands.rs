@@ -4,8 +4,23 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::error::AppError;
 use crate::models::project::ProjectInfo;
 use crate::models::save::{SaveProgress, SaveProjectRequest};
-use crate::services::project_service::{OpenProjectResult, ProjectService};
+use crate::services::project_service::{ImportedTableTransform, OpenProjectResult, ProjectService};
+use crate::services::spprj_archive;
+use crate::services::table_transform_domain::{TableTransformDefinition, TableTransformDraft};
+use crate::services::table_transform_service::{
+    TableTransformExecutionResult, TableTransformInputBinding, TableTransformProjectBinding,
+    TableTransformService,
+};
+use crate::services::workflow_domain::ProjectLineageGraph;
 use crate::state::AppState;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableTransformCommandResult {
+    pub definition: TableTransformDefinition,
+    pub execution: TableTransformExecutionResult,
+    pub lineage_graph: ProjectLineageGraph,
+}
 
 pub(crate) fn acquire_mutation_permit(
     state: &AppState,
@@ -34,6 +49,71 @@ pub(crate) fn import_graph_entry(
 ) -> Result<serde_json::Value, AppError> {
     let service = ProjectService::new(state);
     service.import_graph(file_path)
+}
+
+pub(crate) fn create_table_transform_entry(
+    state: &AppState,
+    draft: TableTransformDraft,
+    input_bindings: Vec<TableTransformInputBinding>,
+    mut lineage_graph: ProjectLineageGraph,
+) -> Result<TableTransformCommandResult, AppError> {
+    let _permit = acquire_mutation_permit(state)?;
+    let engine = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let (definition, execution) = TableTransformService::new(&engine)
+        .create_from_draft(&draft, input_bindings, &mut lineage_graph)?;
+    Ok(TableTransformCommandResult {
+        definition,
+        execution,
+        lineage_graph,
+    })
+}
+
+fn run_table_transform_entry(
+    state: &AppState,
+    definition: TableTransformDefinition,
+    binding: TableTransformProjectBinding,
+    mut lineage_graph: ProjectLineageGraph,
+) -> Result<TableTransformCommandResult, AppError> {
+    let _permit = acquire_mutation_permit(state)?;
+    let engine = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let execution =
+        TableTransformService::new(&engine).run(&definition, &binding, &mut lineage_graph)?;
+    Ok(TableTransformCommandResult {
+        definition,
+        execution,
+        lineage_graph,
+    })
+}
+
+fn rebind_table_transform_entry(
+    state: &AppState,
+    definition: TableTransformDefinition,
+    binding: TableTransformProjectBinding,
+    input_bindings: Vec<TableTransformInputBinding>,
+    mut lineage_graph: ProjectLineageGraph,
+) -> Result<TableTransformCommandResult, AppError> {
+    let _permit = acquire_mutation_permit(state)?;
+    let rebound = TableTransformProjectBinding {
+        inputs: input_bindings,
+        ..binding
+    };
+    let engine = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let execution =
+        TableTransformService::new(&engine).run(&definition, &rebound, &mut lineage_graph)?;
+    Ok(TableTransformCommandResult {
+        definition,
+        execution,
+        lineage_graph,
+    })
 }
 
 #[tauri::command]
@@ -182,12 +262,79 @@ pub fn import_graph(
     import_graph_entry(state.inner(), &file_path)
 }
 
+#[tauri::command]
+pub fn create_table_transform(
+    state: State<'_, AppState>,
+    draft: TableTransformDraft,
+    input_bindings: Vec<TableTransformInputBinding>,
+    lineage_graph: ProjectLineageGraph,
+) -> Result<TableTransformCommandResult, AppError> {
+    create_table_transform_entry(
+        state.inner(),
+        draft,
+        input_bindings,
+        lineage_graph,
+    )
+}
+
+#[tauri::command]
+pub fn run_table_transform(
+    state: State<'_, AppState>,
+    definition: TableTransformDefinition,
+    binding: TableTransformProjectBinding,
+    lineage_graph: ProjectLineageGraph,
+) -> Result<TableTransformCommandResult, AppError> {
+    run_table_transform_entry(state.inner(), definition, binding, lineage_graph)
+}
+
+#[tauri::command]
+pub fn rebind_table_transform(
+    state: State<'_, AppState>,
+    definition: TableTransformDefinition,
+    binding: TableTransformProjectBinding,
+    input_bindings: Vec<TableTransformInputBinding>,
+    lineage_graph: ProjectLineageGraph,
+) -> Result<TableTransformCommandResult, AppError> {
+    rebind_table_transform_entry(
+        state.inner(),
+        definition,
+        binding,
+        input_bindings,
+        lineage_graph,
+    )
+}
+
+#[tauri::command]
+pub fn export_table_transform(
+    definition: TableTransformDefinition,
+    file_path: String,
+) -> Result<(), AppError> {
+    spprj_archive::write_table_transform_file(&definition, &file_path)
+}
+
+#[tauri::command]
+pub fn import_table_transform(
+    state: State<'_, AppState>,
+    file_path: String,
+) -> Result<ImportedTableTransform, AppError> {
+    let _permit = acquire_mutation_permit(state.inner())?;
+    ProjectService::new(&state).import_table_transform(&file_path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
     use crate::error::AppError;
+    use crate::services::table_transform_domain::{
+        SortColumn, SortDirection, TableTransformDraft, TableTransformOperation,
+    };
+    use crate::services::table_transform_service::{
+        TableTransformInputBinding, TableTransformRunStatus,
+    };
+    use crate::services::workflow_domain::ProjectLineageGraph;
+    use crate::state::AppState;
 
     fn function_signature(source: &str, function_name: &str) -> String {
         let start = source
@@ -342,5 +489,70 @@ mod tests {
                 .expect("spawned save task should join")
                 .expect("blocking save closure should complete");
         });
+    }
+
+    #[test]
+    fn create_table_transform_command_executes_against_real_project_state() {
+        let state = AppState::new().expect("create state");
+        let operation = TableTransformOperation::Sort {
+            sort_columns: vec![SortColumn {
+                column: "value".to_string(),
+                direction: SortDirection::Ascending,
+            }],
+        };
+        {
+            let engine = state.db.lock().expect("lock database");
+            engine
+                .create_empty_table(
+                    "source-table",
+                    "Source",
+                    &["value".to_string()],
+                    &["BIGINT".to_string()],
+                )
+                .expect("create source");
+            let row = engine.add_row("source-table").expect("add row");
+            engine
+                .update_cell("source-table", row, "value", "2")
+                .expect("set value");
+        }
+        let draft = TableTransformDraft {
+            name: "Reusable sort".to_string(),
+            output_name: "Sorted output".to_string(),
+            operation,
+        };
+
+        let result = super::create_table_transform_entry(
+            &state,
+            draft,
+            vec![TableTransformInputBinding {
+                role: "source".to_string(),
+                table_document_id: "source-table".to_string(),
+            }],
+            ProjectLineageGraph::default(),
+        )
+        .expect("execute transform");
+
+        assert_eq!(result.execution.status, TableTransformRunStatus::Succeeded);
+        let output_id = result.execution.output.expect("stable output").id;
+        assert_eq!(result.definition.output.table_document_id, output_id);
+        assert_eq!(result.definition.input_slots[0].role, "source");
+        assert!(!result.lineage_graph.nodes.is_empty());
+    }
+
+    #[test]
+    fn table_transform_commands_are_registered() {
+        let source = include_str!("../lib.rs");
+        for command in [
+            "create_table_transform",
+            "run_table_transform",
+            "rebind_table_transform",
+            "export_table_transform",
+            "import_table_transform",
+        ] {
+            assert!(
+                source.contains(&format!("commands::project_commands::{command}")),
+                "{command} must be registered"
+            );
+        }
     }
 }

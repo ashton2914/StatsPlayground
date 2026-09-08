@@ -33,6 +33,14 @@ pub struct TableTransformDefinition {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct TableTransformDraft {
+    pub name: String,
+    pub output_name: String,
+    pub operation: TableTransformOperation,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct TableTransformInputSlot {
     pub role: String,
     pub schema_contract: SchemaContract,

@@ -11,6 +11,7 @@ import {
 } from "../src/utils/projectFileNaming.ts";
 
 assert.equal(projectFileExtension("table"), ".sptb");
+assert.equal(projectFileExtension("tableTransform"), ".sptbtf");
 assert.equal(projectFileExtension("graph"), ".spgh");
 assert.equal(projectFileExtension("fitYByX"), ".spf");
 assert.equal(projectFileExtension("tabulate"), ".spf");
@@ -20,6 +21,7 @@ assert.equal(projectFileExtension("analysis"), ".span");
 assert.equal(projectFileExtension("snapshot"), ".json");
 assert.equal(ensureProjectFileName("DIM1 Analysis", "analysis"), "DIM1 Analysis.span");
 assert.equal(ensureProjectFileName("DIM1 Analysis.span", "analysis"), "DIM1 Analysis.span");
+assert.equal(ensureProjectFileName("Reusable Sort.SPTBTF", "tableTransform"), "Reusable Sort.sptbtf");
 assert.equal(
   formatSnapshotTimestamp(new Date(2026, 8, 1, 13, 34, 5)),
   "20260901133405",
