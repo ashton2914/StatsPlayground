@@ -1,0 +1,18 @@
+[
+  {
+    "seedId": "seed.synthetic.histogram.001",
+    "seed": 104729,
+    "caseId": "synthetic.histogram.001",
+    "inputHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "expectedHash": "sha256:e0004b40ddc6673b8340ae1e514132b26675a44c1af4409887b4a46c4f6ce9fe",
+    "status": "synthetic"
+  },
+  {
+    "seedId": "seed.synthetic.qq.001",
+    "seed": 130363,
+    "caseId": "synthetic.qq.001",
+    "inputHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "expectedHash": "sha256:97eb3a6b1b563d55e1502eed22af5e05019014dd0364a6350d8dcbf85fb38022",
+    "status": "synthetic"
+  }
+]

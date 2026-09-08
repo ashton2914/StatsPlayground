@@ -1,0 +1,73 @@
+.sp-fit-y-by-x-dialog {
+  width: min(92vw, 980px);
+  max-width: min(92vw, 980px);
+  min-height: 540px;
+}
+
+.sp-fit-y-by-x-dialog-body {
+  gap: 12px;
+}
+
+.sp-fit-y-by-x-dialog-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) minmax(260px, 320px);
+  gap: 12px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.sp-fit-y-by-x-fields-panel,
+.sp-fit-y-by-x-zone {
+  min-height: 0;
+  border: 1px solid var(--border-main);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.sp-fit-y-by-x-fields-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.sp-fit-y-by-x-roles-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.sp-fit-y-by-x-field {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sp-fit-y-by-x-field-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sp-fit-y-by-x-field-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.sp-fit-y-by-x-help {
+  padding: 12px;
+  border: 1px dashed var(--border-main);
+  border-radius: 8px;
+  color: var(--fg-hint);
+  font-size: 12px;
+  background: var(--bg-card);
+}
+
+@media (max-width: 900px) {
+  .sp-fit-y-by-x-dialog-grid {
+    grid-template-columns: 1fr;
+  }
+}

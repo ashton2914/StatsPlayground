@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.app.json",
+  "compilerOptions": {
+    "composite": false,
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "../src/components/analysis/adapters/fitYByXAnalysisAdapter.ts",
+    "../src/components/analysis/fitYByXAnalysisMigration.ts",
+    "../src/types/analysis.ts",
+    "./fitYByXAnalysisMigration.test.ts"
+  ]
+}

@@ -6,8 +6,16 @@ import "./index.css";
 import "./i18n";
 import "./stores/useThemeStore";
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+const root = ReactDOM.createRoot(document.getElementById("root")!);
+
+if (import.meta.env.DEV && import.meta.env.VITE_SCATTER_BENCHMARK === "1") {
+  import("./benchmarks/ScatterBudgetBenchmark").then(({ ScatterBudgetBenchmark }) => {
+    root.render(<ScatterBudgetBenchmark />);
+  });
+} else {
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}

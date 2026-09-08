@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kinds": [
+    {
+      "analysisKind": "distribution",
+      "documentSchemaVersion": 1,
+      "definitionKind": "distribution",
+      "presentation": {
+        "schemaVersion": 1,
+        "layout": "distribution-v1"
+      }
+    },
+    {
+      "analysisKind": "fitYByX",
+      "documentSchemaVersion": 1,
+      "definitionKind": "fitYByX",
+      "presentation": {
+        "schemaVersion": 1,
+        "layout": "fit-y-by-x-v1"
+      }
+    }
+  ]
+}

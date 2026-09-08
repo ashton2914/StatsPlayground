@@ -16,3 +16,12 @@ pub struct DatasetNameMigration {
     pub old_name: String,
     pub new_name: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentNameMigration {
+    pub id: String,
+    pub kind: String,
+    pub old_name: String,
+    pub new_name: String,
+}

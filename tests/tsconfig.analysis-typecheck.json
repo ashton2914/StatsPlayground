@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.app.json",
+  "compilerOptions": {
+    "composite": false,
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "../src/components/analysis/**/*.ts",
+    "../src/components/analysis/**/*.tsx",
+    "../src/types/analysis.ts",
+    "./analysisKindRegistry.test.ts"
+  ]
+}

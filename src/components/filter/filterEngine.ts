@@ -11,7 +11,7 @@
  * a stale filter doesn't silently delete every row.
  */
 
-import type { GraphData } from "@/graphCore";
+import type { FieldRef, GraphData } from "@/graphCore";
 import type {
   FilterCategoricalRule,
   FilterContinuousRule,
@@ -19,6 +19,21 @@ import type {
   FilterRule,
   FilterRuleItem,
 } from "@/types/filter";
+
+export function createInitialCategoricalRule(
+  field: FieldRef,
+  data: GraphData | null,
+  mode: "include" | "exclude",
+): FilterCategoricalRule {
+  if (mode === "exclude") {
+    return { kind: "categorical", field, selected: [], exclude: true };
+  }
+  const values = distinctColumnValues(data, field.name);
+  if (values.length === 0 && (data?.rows.length ?? 0) === 0) {
+    return { kind: "categorical", field, selected: [], exclude: true };
+  }
+  return { kind: "categorical", field, selected: values, exclude: false };
+}
 
 export function applyFilters(
   data: GraphData | null,

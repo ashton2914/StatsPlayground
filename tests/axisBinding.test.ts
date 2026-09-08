@@ -36,6 +36,22 @@ function containsNodeText(root: ts.Node, sourceFile: ts.SourceFile, exactText: s
   return found;
 }
 
+function isExactSlotFieldBinding(
+  prop: ts.ObjectLiteralElementLike,
+  sourceFile: ts.SourceFile,
+  expectedValue: string,
+): boolean {
+  if (!ts.isPropertyAssignment(prop) || !ts.isComputedPropertyName(prop.name)) return false;
+  const keyExpr = unwrapParens(prop.name.expression);
+  if (!ts.isIdentifier(keyExpr) || keyExpr.text !== "slot" || keyExpr.getText(sourceFile) !== "slot") {
+    return false;
+  }
+  const valueExpr = unwrapParens(prop.initializer);
+  return ts.isIdentifier(valueExpr)
+    && valueExpr.text === expectedValue
+    && valueExpr.getText(sourceFile) === expectedValue;
+}
+
 const rangeAndStyle: YAxisConfig = {
   min: 2,
   max: 8,
@@ -191,7 +207,21 @@ assert.ok(axisConfigVarName, "bindFieldToSlot must extract axisConfig from prepa
 
 let guardedAxisIf: ts.IfStatement | null = null;
 let guardedPayload: ts.ObjectLiteralExpression | null = null;
-let axisKeyExprText: string | null = null;
+
+function getUpdaterPayload(
+  arg: ts.Expression,
+): ts.ObjectLiteralExpression | null {
+  if (!(ts.isArrowFunction(arg) || ts.isFunctionExpression(arg))) return null;
+  const body = unwrapParens(arg.body);
+  if (ts.isObjectLiteralExpression(body)) return body;
+  if (!ts.isBlock(body)) return null;
+  for (const stmt of body.statements) {
+    if (!ts.isReturnStatement(stmt) || !stmt.expression) continue;
+    const ret = unwrapParens(stmt.expression);
+    if (ts.isObjectLiteralExpression(ret)) return ret;
+  }
+  return null;
+}
 
 for (const stmt of bindBody.statements) {
   if (!ts.isIfStatement(stmt) || !ts.isBlock(stmt.thenStatement)) continue;
@@ -199,10 +229,11 @@ for (const stmt of bindBody.statements) {
   for (const thenStmt of stmt.thenStatement.statements) {
     if (!ts.isExpressionStatement(thenStmt) || !ts.isCallExpression(thenStmt.expression)) continue;
     const call = thenStmt.expression;
-    if (!ts.isIdentifier(call.expression) || call.expression.text !== "updateItem") continue;
-    if (call.arguments.length < 2 || !ts.isObjectLiteralExpression(call.arguments[1])) continue;
+    if (!ts.isIdentifier(call.expression) || call.expression.text !== "setTwoDState") continue;
+    if (call.arguments.length < 1) continue;
 
-    const payload = call.arguments[1];
+    const payload = getUpdaterPayload(call.arguments[0]);
+    if (!payload) continue;
     const encodingProp = payload.properties.find(
       (p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "encoding",
     );
@@ -210,41 +241,75 @@ for (const stmt of bindBody.statements) {
     if (
       !ts.isObjectLiteralExpression(encodingProp.initializer)
       || !encodingProp.initializer.properties.some(
-        (prop) => ts.isPropertyAssignment(prop) && ts.isComputedPropertyName(prop.name),
+        (prop) => isExactSlotFieldBinding(prop, graphBuilderAst, "field"),
       )
     ) {
       continue;
     }
 
-    let payloadAxisKeyExpr: ts.Expression | null = null;
-    let hasAxisConfigSpread = false;
-    let hasMultiClearSpread = false;
+    let hasAxisXSpread = false;
+    let hasAxisYSpread = false;
+    let hasMultiXClearSpread = false;
+    let hasMultiYClearSpread = false;
 
     for (const prop of payload.properties) {
       if (!ts.isSpreadAssignment(prop)) continue;
       const spreadExpr = unwrapParens(prop.expression);
       if (!ts.isConditionalExpression(spreadExpr)) continue;
 
+      const cond = spreadExpr.condition;
       const whenTrue = unwrapParens(spreadExpr.whenTrue);
       if (!ts.isObjectLiteralExpression(whenTrue)) continue;
 
-      for (const innerProp of whenTrue.properties) {
-        if (!ts.isPropertyAssignment(innerProp) || !ts.isComputedPropertyName(innerProp.name)) continue;
-
-        if (ts.isIdentifier(innerProp.initializer) && innerProp.initializer.text === axisConfigVarName) {
-          hasAxisConfigSpread = true;
-          payloadAxisKeyExpr = innerProp.name.expression;
+      const axisProp = whenTrue.properties.find((innerProp) =>
+        ts.isPropertyAssignment(innerProp)
+        && ts.isIdentifier(innerProp.name)
+        && ts.isIdentifier(innerProp.initializer)
+        && innerProp.initializer.text === axisConfigVarName,
+      );
+      if (axisProp && ts.isPropertyAssignment(axisProp) && ts.isIdentifier(axisProp.name)) {
+        if (
+          axisProp.name.text === "xAxis"
+          && containsIdentifier(cond, "axisKey")
+          && containsNodeText(cond, graphBuilderAst, '"xAxis"')
+        ) {
+          hasAxisXSpread = true;
         }
-        if (ts.isIdentifier(innerProp.initializer) && innerProp.initializer.text === "undefined") {
-          hasMultiClearSpread = true;
+        if (
+          axisProp.name.text === "yAxis"
+          && containsIdentifier(cond, "axisKey")
+          && containsNodeText(cond, graphBuilderAst, '"yAxis"')
+        ) {
+          hasAxisYSpread = true;
+        }
+      }
+
+      for (const innerProp of whenTrue.properties) {
+        if (!ts.isPropertyAssignment(innerProp) || !ts.isIdentifier(innerProp.name)) continue;
+        if (
+          innerProp.name.text === "multiX"
+          && ts.isArrayLiteralExpression(innerProp.initializer)
+          && innerProp.initializer.elements.length === 0
+          && containsIdentifier(cond, "multiKey")
+          && containsNodeText(cond, graphBuilderAst, '"multiX"')
+        ) {
+          hasMultiXClearSpread = true;
+        }
+        if (
+          innerProp.name.text === "multiY"
+          && ts.isArrayLiteralExpression(innerProp.initializer)
+          && innerProp.initializer.elements.length === 0
+          && containsIdentifier(cond, "multiKey")
+          && containsNodeText(cond, graphBuilderAst, '"multiY"')
+        ) {
+          hasMultiYClearSpread = true;
         }
       }
     }
 
-    if (hasAxisConfigSpread && hasMultiClearSpread && payloadAxisKeyExpr) {
+    if (hasAxisXSpread && hasAxisYSpread && hasMultiXClearSpread && hasMultiYClearSpread) {
       guardedAxisIf = stmt;
       guardedPayload = payload;
-      axisKeyExprText = payloadAxisKeyExpr.getText(graphBuilderAst);
       break;
     }
   }
@@ -252,24 +317,23 @@ for (const stmt of bindBody.statements) {
   if (guardedAxisIf) break;
 }
 
-assert.ok(guardedAxisIf, "bindFieldToSlot must issue one guarded atomic update payload for axis binding");
-assert.ok(guardedPayload, "guarded atomic axis update payload must be present");
-assert.ok(axisKeyExprText, "axis key expression must be inferred from computed axis payload property");
+assert.ok(guardedAxisIf, "bindFieldToSlot must issue one guarded atomic mode-state update for axis binding");
+assert.ok(guardedPayload, "guarded atomic mode-state payload must be present");
 
 assert.ok(
   ts.isBinaryExpression(guardedAxisIf!.expression)
   && guardedAxisIf!.expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken,
-  "atomic axis update branch must be guarded by a conjunction",
+  "atomic axis mode-state branch must be guarded by a conjunction",
 );
 
 assert.ok(
   containsIdentifier(guardedAxisIf!.expression, bindingChangedVarName!),
-  "guard conjunction must include the binding-change expression derived from prepareAxisBinding",
+  "mode-state guard conjunction must include the binding-change expression derived from prepareAxisBinding",
 );
 
 assert.ok(
-  containsNodeText(guardedAxisIf!.expression, graphBuilderAst, axisKeyExprText!),
-  "guard conjunction must include the same computed axis-key expression used in the atomic payload",
+  containsIdentifier(guardedAxisIf!.expression, "axisKey"),
+  "mode-state guard conjunction must include axisKey",
 );
 
 let foundSetEncodingFallback = false;
@@ -281,10 +345,10 @@ walk(bindBody, (node) => {
   const body = arg0.body;
   const candidate = ts.isParenthesizedExpression(body) ? body.expression : body;
   if (!ts.isObjectLiteralExpression(candidate)) return;
-  const hasComputed = candidate.properties.some(
-    (prop) => ts.isPropertyAssignment(prop) && ts.isComputedPropertyName(prop.name),
+  const hasExactSlotField = candidate.properties.some(
+    (prop) => isExactSlotFieldBinding(prop, graphBuilderAst, "field"),
   );
-  if (hasComputed) foundSetEncodingFallback = true;
+  if (hasExactSlotField) foundSetEncodingFallback = true;
 });
 
 assert.ok(

@@ -1,7 +1,11 @@
+import { SCATTER_RENDER_BUDGET } from "../../graphCore/scatterBudget.ts";
+import { resolveEffectiveGraphSampling } from "./graphSamplingPolicy.ts";
+import { MAX_MULTIVARIATE_COLUMNS } from "./updateMultivariateColumns.ts";
 import { useEffect, useMemo, useState } from "react";
 import {
   decodeGraphPayload,
   type GraphAggregatePacket,
+  type CorrelationMethod,
   type DecodedGraphChunk,
   type DecodedRawPointChunk,
   type GraphChunkHeader,
@@ -13,7 +17,7 @@ import {
   type GraphElementRequest,
   type GraphViewport,
 } from "../../types/graphData.ts";
-import type { GraphBuilderItem } from "../../types/graphBuilder";
+import type { GraphBuilderItem } from "../../types/graphBuilder.ts";
 import type { DatasetMeta, TableWindowFilter } from "../../types/data";
 import type { FilterRuleItem } from "../../types/filter";
 
@@ -61,6 +65,27 @@ export interface GraphDataPipelineResult {
   error: string | null;
   progress: GraphLoadProgress | null;
   pendingRequest: GraphDataRequest | null;
+}
+
+export type ExternalGraphDataState =
+  | { status: "loading"; frame: null; error: null }
+  | { status: "ready"; frame: GraphDataFrame; error: null }
+  | { status: "error"; frame: null; error: string };
+
+type GraphRuntimeDataState = Pick<GraphDataPipelineResult, "frame" | "status" | "error" | "progress">;
+
+export function selectGraphRuntimeDataState(
+  internalState: GraphRuntimeDataState,
+  externalState: ExternalGraphDataState | undefined,
+): GraphRuntimeDataState {
+  if (!externalState) return internalState;
+  if (externalState.status === "ready") {
+    return { frame: externalState.frame, status: "ready", error: null, progress: null };
+  }
+  if (externalState.status === "error") {
+    return { frame: null, status: "error", error: externalState.error, progress: null };
+  }
+  return { frame: null, status: "pending", error: null, progress: null };
 }
 
 function sanitizeCount(value: number): number {
@@ -296,10 +321,18 @@ function ingestDecodedChunk(state: GraphStreamState, chunk: DecodedGraphChunk): 
   };
 }
 
-function hasCoherentCompletion(pending: PendingGraphState, chunksSent: number): boolean {
+function hasCoherentCompletion(
+  pending: PendingGraphState,
+  completion: GraphDataCompletion,
+): boolean {
+  const { chunksSent, rawPointDisposition } = completion;
+  if (!rawPointDisposition) return false;
   if (chunksSent === 0) {
-    return pending.finalChunkIndex === null && pending.chunkIndexes.size === 0;
+    return pending.finalChunkIndex === null
+      && pending.chunkIndexes.size === 0
+      && (rawPointDisposition.status === "empty" || rawPointDisposition.status === "omitted");
   }
+  if (rawPointDisposition.status !== "included" || rawPointDisposition.validRows <= 0) return false;
   if (pending.finalChunkIndex === null) {
     return false;
   }
@@ -439,7 +472,7 @@ export function reduceGraphStream(state: GraphStreamState, message: GraphStreamM
       if (state.pendingHeader) {
         return failPending(state, "graph terminal marker arrived with a pending header");
       }
-      if (!hasCoherentCompletion(state.pending, completion.chunksSent)) {
+      if (!hasCoherentCompletion(state.pending, completion)) {
         return failPending(state, "graph terminal marker has inconsistent chunksSent");
       }
 
@@ -474,6 +507,7 @@ export function reduceGraphStream(state: GraphStreamState, message: GraphStreamM
         extents: state.pending.extents,
         rawChunks,
         aggregates: state.pending.aggregates,
+        rawPointDisposition: completion.rawPointDisposition,
       };
 
       return {
@@ -492,21 +526,6 @@ export function reduceGraphStream(state: GraphStreamState, message: GraphStreamM
       return failPending(state, message.error);
     }
   }
-}
-
-function deriveSampling(item: GraphBuilderItem): GraphSampling {
-  const sampling = item.sampling;
-  if (!sampling || sampling.mode === "full") {
-    return { mode: "full" };
-  }
-
-  const size = Math.trunc(sampling.size);
-  const seed = Math.trunc(sampling.seed);
-  if (!Number.isFinite(size) || !Number.isFinite(seed) || size <= 0 || seed < 0) {
-    return { mode: "full" };
-  }
-
-  return { mode: "sample", size, seed };
 }
 
 function serializeFilters(filters: FilterRuleItem[]): TableWindowFilter[] {
@@ -536,42 +555,165 @@ function serializeFilters(filters: FilterRuleItem[]): TableWindowFilter[] {
   });
 }
 
-function deriveElements(item: GraphBuilderItem): GraphElementRequest[] {
-  return item.elements
-    .filter((element) => element.enabled !== false)
-    .map((element) => ({
-      kind: element.kind,
-      summaryStat:
-        typeof element.options?.summaryStat === "string"
-          ? String(element.options.summaryStat)
-          : "none",
-    }));
+const CORRELATION_METHOD_SET: ReadonlySet<CorrelationMethod> = new Set([
+  "pearson",
+  "spearman",
+  "kendall",
+]);
+
+function normalizeCorrelationMethod(value: unknown): CorrelationMethod {
+  if (typeof value === "string" && CORRELATION_METHOD_SET.has(value as CorrelationMethod)) {
+    return value as CorrelationMethod;
+  }
+  return "pearson";
 }
 
-function hasEnabledElementKinds(item: GraphBuilderItem): Set<string> {
+export function deriveElements(item: GraphBuilderItem): GraphElementRequest[] {
+  if (item.mode === "multivariate") {
+    return [{
+      kind: "correlationMatrix",
+      summaryStat: "none",
+      correlationMethod: normalizeCorrelationMethod(item.modeStates.multivariate.correlationMethod),
+    }];
+  }
+
+  const activeElements = item.mode === "3d"
+    ? item.modeStates.threeD.elements
+    : item.modeStates.twoD.elements;
+
+  return activeElements
+    .filter((element) => element.enabled !== false)
+    .map((element) => {
+      const requestElement: GraphElementRequest = {
+        kind: element.kind,
+        summaryStat:
+          typeof element.options?.summaryStat === "string"
+            ? String(element.options.summaryStat)
+            : "none",
+      };
+
+      if (element.kind === "correlationMatrix") {
+        return {
+          ...requestElement,
+          correlationMethod: normalizeCorrelationMethod(element.options?.correlationMethod),
+        };
+      }
+
+      return requestElement;
+    });
+}
+
+function isFitYByXAnalysisGraph(
+  item: GraphBuilderItem,
+  elements: readonly GraphElementRequest[],
+): boolean {
+  if (item.mode !== "2d" || !item.id.startsWith("fit-y-by-x-graph:")) {
+    return false;
+  }
+
+  const kinds = new Set(elements.map((element) => String(element.kind).toLowerCase()));
+  return kinds.has("boxplot") || kinds.has("fitline");
+}
+
+export function deriveGraphRequestParts(item: GraphBuilderItem): {
+  fields: GraphFieldBinding[];
+  filters: TableWindowFilter[];
+  elements: GraphElementRequest[];
+  sampling: GraphSampling;
+} {
+  const elements = deriveElements(item);
+  return {
+    fields: deriveFields(item),
+    filters: serializeFilters(item.filters ?? []),
+    elements,
+    sampling: item.mode === "multivariate" || isFitYByXAnalysisGraph(item, elements)
+      ? { mode: "full" }
+      : resolveEffectiveGraphSampling(item.sampling, elements),
+  };
+}
+
+export function canExecuteGraphRequest(
+  item: GraphBuilderItem,
+  fields: readonly GraphFieldBinding[],
+  elements: readonly GraphElementRequest[],
+): boolean {
+  if (item.mode === "multivariate") {
+    const selectedColumns = item.modeStates.multivariate.columns.length;
+    return selectedColumns >= 2 && selectedColumns <= MAX_MULTIVARIATE_COLUMNS;
+  }
+
+  const hasCorrelationElement = elements.some((element) => element.kind === "correlationMatrix");
+  if (hasCorrelationElement) {
+    return fields.some((field) => /^multi[XY]\d+$/.test(field.role));
+  }
+
+  const hasX = fields.some((field) => field.role === "x");
+  const hasY = fields.some((field) => field.role === "y");
+  const activeState = item.mode === "3d" ? item.modeStates.threeD : item.modeStates.twoD;
+  const hasNormalCurve = elements.some((element) => element.kind === "normalCurve");
+  if (hasNormalCurve) {
+    const continuousField = activeState.encoding.y?.type === "continuous"
+      ? activeState.encoding.y
+      : activeState.encoding.x?.type === "continuous"
+        ? activeState.encoding.x
+        : undefined;
+    if (continuousField && fields.some((field) => field.column === continuousField.name)) return true;
+  }
+  const multiXCount = fields.filter((field) => /^multiX\d+$/.test(field.role)).length;
+  const multiYCount = fields.filter((field) => /^multiY\d+$/.test(field.role)).length;
+  return (hasX && hasY) || multiXCount >= 1 || multiYCount >= 1;
+}
+
+interface GraphRequestPlan {
+  fields: GraphFieldBinding[];
+  filters: TableWindowFilter[];
+  elements: GraphElementRequest[];
+  sampling: GraphSampling;
+  executable: boolean;
+}
+
+function deriveGraphRequestPlan(item: GraphBuilderItem): GraphRequestPlan {
+  const parts = deriveGraphRequestParts(item);
+  return {
+    ...parts,
+    executable: canExecuteGraphRequest(item, parts.fields, parts.elements),
+  };
+}
+
+export function deriveGraphRequestIdentity(item: GraphBuilderItem): string {
+  return JSON.stringify(deriveGraphRequestPlan(item));
+}
+
+function hasEnabledElementKinds(elements: readonly GraphElementRequest[]): Set<string> {
   return new Set(
-    item.elements
-      .filter((element) => element.enabled !== false)
+    elements
       .map((element) => String(element.kind).toLowerCase()),
   );
 }
 
-function deriveGroupingColumn(item: GraphBuilderItem): string | undefined {
+function deriveGroupingColumn(
+  mode: GraphBuilderItem["mode"],
+  encoding: Partial<Record<"x" | "y" | "z" | "color" | "size" | "overlay" | "groupX" | "groupY" | "groupZ" | "wrap", { name: string }>>,
+): string | undefined {
   return (
-    item.encoding.overlay?.name
-    ?? item.encoding.color?.name
-    ?? item.encoding.groupX?.name
-    ?? item.encoding.groupY?.name
-    ?? (item.threeD ? item.encoding.groupZ?.name : undefined)
-    ?? item.encoding.wrap?.name
+    encoding.overlay?.name
+    ?? encoding.color?.name
+    ?? encoding.groupX?.name
+    ?? encoding.groupY?.name
+    ?? (mode === "3d" ? encoding.groupZ?.name : undefined)
+    ?? encoding.wrap?.name
   );
 }
 
 function deriveActiveMultiFields(item: GraphBuilderItem): GraphFieldBinding[] {
-  const multiX = item.multiX ?? [];
-  const multiY = item.multiY ?? [];
-  const xActive = multiX.length >= 2;
-  const yActive = multiY.length >= 2;
+  if (item.mode !== "2d") {
+    return [];
+  }
+
+  const multiX = item.modeStates.twoD.multiX ?? [];
+  const multiY = item.modeStates.twoD.multiY ?? [];
+  const xActive = multiX.length >= 1;
+  const yActive = multiY.length >= 1;
 
   if (!xActive && !yActive) {
     return [];
@@ -592,9 +734,36 @@ function deriveActiveMultiFields(item: GraphBuilderItem): GraphFieldBinding[] {
 }
 
 export function deriveFields(item: GraphBuilderItem): GraphFieldBinding[] {
+  if (item.mode === "multivariate") {
+    const fields: GraphFieldBinding[] = [];
+    const seen = new Set<string>();
+    const columns = item.modeStates.multivariate.columns ?? [];
+
+    const addField = (role: string, column: string | undefined): void => {
+      if (!column || seen.has(`${role}:${column}`)) {
+        return;
+      }
+      seen.add(`${role}:${column}`);
+      fields.push({ role, column });
+    };
+
+    for (let index = 0; index < columns.length; index += 1) {
+      addField(`multiY${index}`, columns[index].name);
+    }
+
+    for (const filter of item.filters ?? []) {
+      addField("filter", filter.rule.field.name);
+    }
+
+    return fields;
+  }
+
   const fields: GraphFieldBinding[] = [];
   const seen = new Set<string>();
-  const enabledKinds = hasEnabledElementKinds(item);
+  const activeMode = item.mode;
+  const activeState = activeMode === "3d" ? item.modeStates.threeD : item.modeStates.twoD;
+  const enabledKinds = hasEnabledElementKinds(deriveElements(item));
+  const encoding = activeState.encoding;
 
   const addField = (role: string, column: string | undefined): void => {
     if (!column || seen.has(`${role}:${column}`)) {
@@ -604,28 +773,38 @@ export function deriveFields(item: GraphBuilderItem): GraphFieldBinding[] {
     fields.push({ role, column });
   };
 
-  addField("x", item.encoding.x?.name);
-  addField("y", item.encoding.y?.name);
-  const has3DElement = enabledKinds.has("surface") || enabledKinds.has("scatter3d");
-  if (item.threeD && has3DElement) {
-    addField("z", item.encoding.z?.name);
+  const normalCurveXOnly =
+    enabledKinds.has("normalcurve") &&
+    encoding.x?.type === "continuous" &&
+    !encoding.y;
+  if (normalCurveXOnly) {
+    addField("y", encoding.x?.name);
+  } else {
+    addField("x", encoding.x?.name);
+    addField("y", encoding.y?.name);
+  }
+  const has3DElement = enabledKinds.has("surface") || enabledKinds.has("contour3d") || enabledKinds.has("scatter3d");
+  if (activeMode === "3d" && has3DElement) {
+    addField("z", item.modeStates.threeD.encoding.z?.name);
   }
 
   const canUseSize = enabledKinds.has("points") || enabledKinds.has("scatter3d");
   if (canUseSize) {
-    addField("size", item.encoding.size?.name);
+    addField("size", encoding.size?.name);
   }
 
-  const hasHiddenGroups = (item.hiddenGroups?.length ?? 0) > 0;
+  const hasHiddenGroups = (activeState.hiddenGroups?.length ?? 0) > 0;
   const canUseGroup = enabledKinds.size > 0 || hasHiddenGroups;
   if (canUseGroup) {
-    addField("group", deriveGroupingColumn(item));
+    addField("group", deriveGroupingColumn(activeMode, encoding));
   }
 
-  addField("groupX", item.encoding.groupX?.name);
-    addField("groupZ", item.encoding.groupZ?.name);
-  addField("groupY", item.encoding.groupY?.name);
-  addField("wrap", item.encoding.wrap?.name);
+  addField("groupX", encoding.groupX?.name);
+  if (activeMode === "3d") {
+    addField("groupZ", item.modeStates.threeD.encoding.groupZ?.name);
+  }
+  addField("groupY", encoding.groupY?.name);
+  addField("wrap", encoding.wrap?.name);
 
   for (const filter of item.filters ?? []) {
     addField("filter", filter.rule.field.name);
@@ -735,6 +914,7 @@ export function useGraphDataPipeline(
   item: GraphBuilderItem,
   dataset: DatasetMeta,
   viewport: GraphViewport,
+  enabled = true,
 ): GraphDataPipelineResult {
   const [state, setState] = useState<GraphStreamState>(() => createInitialGraphStreamState());
   const [debouncedViewport, setDebouncedViewport] = useState<GraphViewport>(viewport);
@@ -748,26 +928,27 @@ export function useGraphDataPipeline(
     };
   }, [viewport.height, viewport.width]);
 
+  const requestIdentity = deriveGraphRequestIdentity(item);
+  const requestPlan = useMemo(
+    () => JSON.parse(requestIdentity) as GraphRequestPlan,
+    [requestIdentity],
+  );
   const requestSkeleton = useMemo(() => {
-    const sampling = deriveSampling(item);
-    const fields = deriveFields(item);
-    const filters = serializeFilters(item.filters ?? []);
-    const elements = deriveElements(item);
+    if (!enabled) return null;
 
     return {
       datasetId: dataset.id,
-      fields,
-      filters,
-      elements,
-      sampling,
+      ...requestPlan,
       viewport: debouncedViewport,
     };
-  }, [dataset.id, item, debouncedViewport]);
+  }, [dataset.generation, dataset.id, requestPlan, debouncedViewport, enabled]);
 
   useEffect(() => {
-    const hasX = requestSkeleton.fields.some((field) => field.role === "x");
-    const hasY = requestSkeleton.fields.some((field) => field.role === "y");
-    if (!hasX || !hasY) {
+    if (!enabled || !requestSkeleton) {
+      setState(createInitialGraphStreamState());
+      return;
+    }
+    if (!requestSkeleton.executable) {
       setState((previous) => ({
         ...previous,
         pending: null,
@@ -808,6 +989,7 @@ export function useGraphDataPipeline(
           filters: requestSkeleton.filters,
           elements: requestSkeleton.elements,
           sampling: requestSkeleton.sampling,
+          rawPointBudget: SCATTER_RENDER_BUDGET,
           viewport: requestSkeleton.viewport,
         };
 
@@ -864,7 +1046,7 @@ export function useGraphDataPipeline(
       disposed = true;
       cancellationCoordinator.cancelActive();
     };
-  }, [dataset.id, requestSkeleton]);
+  }, [dataset.id, enabled, requestSkeleton]);
 
   return {
     frame: state.committed,

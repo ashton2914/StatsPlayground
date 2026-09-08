@@ -1,0 +1,44 @@
+name: Distribution Phase 0
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "tests/**"
+      - "package*.json"
+      - ".github/workflows/distribution-phase0.yml"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:distribution
+      - run: npm run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: distribution-synthetic-${{ matrix.os }}
+          path: tests/fixtures/distribution/seeds.json

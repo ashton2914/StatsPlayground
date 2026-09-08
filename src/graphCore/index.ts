@@ -1,20 +1,7 @@
 /** Graph Core 模块出口 */
-export { Graph } from "./Graph";
-export { RawPointsLayer } from "./RawPointsLayer";
+export { Graph, type GraphPanelSeriesContext, type GraphPanelOptionFactory } from "./Graph";
 export { getGraphTheme, buildAxisCommon } from "./theme";
 export { buildGraph, isMissing, type BuiltGraph, type ScatterPointPick } from "./transform";
-export {
-  drawRawPoints,
-  buildPixelIndex,
-  hitTestPoint,
-  hitTestBrush,
-  rasterizeToRgba,
-  stableRgbaDigest,
-  type RawPointChunkViews,
-  type RawPointPanelDescriptor,
-  type RawPointProjector,
-  type RawPointPixelIndex,
-} from "./rawPoints";
 export {
   inferFieldType,
   DEFAULT_GROUP_KEY,
@@ -26,7 +13,6 @@ export {
   type GraphSpec,
   type GraphData,
   type SmootherOptions,
-  type RawPointJitterOptions,
   type MarkStyle,
   type GroupStyle,
   type GroupStyleMap,

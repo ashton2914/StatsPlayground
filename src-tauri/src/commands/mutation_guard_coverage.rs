@@ -118,6 +118,14 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::fit_model_commands::fit_model",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::fit_model_commands::save_fit_model_columns",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::data_commands::locate_table_row",
                 CommandClass::ReadOnly,
             ),
@@ -131,6 +139,10 @@ mod tests {
             ),
             (
                 "commands::data_commands::create_table_from_sql_query",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::create_table_from_rows",
                 CommandClass::Mutation,
             ),
             (
@@ -256,9 +268,14 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
-                "commands::tabulate_commands::tabulate",
+                "commands::fit_y_by_x_commands::fit_y_by_x",
                 CommandClass::ReadOnly,
             ),
+            (
+                "commands::distribution_commands::compute_distribution_report",
+                CommandClass::ReadOnly,
+            ),
+            ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
             (
                 "commands::io_commands::import_sqlite",
@@ -324,30 +341,16 @@ mod tests {
                 "commands::project_commands::export_tables_sptb_zip",
                 CommandClass::ReadOnly,
             ),
+            ("commands::project_commands::import_table", CommandClass::Mutation),
+            ("commands::project_commands::export_graph", CommandClass::ReadOnly),
+            ("commands::project_commands::import_graph", CommandClass::ReadOnly),
+            ("commands::table_commands::get_columns", CommandClass::ReadOnly),
             (
-                "commands::project_commands::import_table",
-                CommandClass::Mutation,
-            ),
-            (
-                "commands::project_commands::export_graph",
+                "commands::table_commands::get_column_descriptors",
                 CommandClass::ReadOnly,
             ),
-            (
-                "commands::project_commands::import_graph",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::table_commands::get_columns",
-                CommandClass::ReadOnly,
-            ),
-            (
-                "commands::table_commands::sort_table",
-                CommandClass::Mutation,
-            ),
-            (
-                "commands::table_commands::subset_table",
-                CommandClass::Mutation,
-            ),
+            ("commands::table_commands::sort_table", CommandClass::Mutation),
+            ("commands::table_commands::subset_table", CommandClass::Mutation),
             (
                 "commands::table_commands::transpose_table",
                 CommandClass::Mutation,
@@ -379,11 +382,12 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 47] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 49] {
         [
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
             ("data_commands.rs", "create_table_from_sql_query"),
+            ("data_commands.rs", "create_table_from_rows"),
             ("data_commands.rs", "create_table"),
             ("data_commands.rs", "add_row"),
             ("data_commands.rs", "add_rows"),
@@ -424,6 +428,7 @@ mod tests {
             ("table_commands.rs", "concatenate_tables"),
             ("io_commands.rs", "import_sqlite"),
             ("history_commands.rs", "restore_project_snapshot"),
+            ("fit_model_commands.rs", "save_fit_model_columns"),
             ("project_commands.rs", "init_project"),
             ("project_commands.rs", "create_project"),
             ("project_commands.rs", "open_project"),
@@ -576,12 +581,14 @@ mod tests {
         let table_source = include_str!("table_commands.rs");
         let io_source = include_str!("io_commands.rs");
         let history_source = include_str!("history_commands.rs");
+        let fit_model_source = include_str!("fit_model_commands.rs");
         let project_source = include_str!("project_commands.rs");
 
         assert_module_helper_routes_to_save_coordinator(data_source, "data_commands.rs");
         assert_module_helper_routes_to_save_coordinator(table_source, "table_commands.rs");
         assert_module_helper_routes_to_save_coordinator(io_source, "io_commands.rs");
         assert_module_helper_routes_to_save_coordinator(history_source, "history_commands.rs");
+        assert_module_helper_routes_to_save_coordinator(fit_model_source, "fit_model_commands.rs");
         assert_module_helper_routes_to_save_coordinator(project_source, "project_commands.rs");
 
         for (file_name, function_name) in functions_requiring_mutation_permit() {
@@ -590,6 +597,7 @@ mod tests {
                 "table_commands.rs" => table_source,
                 "io_commands.rs" => io_source,
                 "history_commands.rs" => history_source,
+                "fit_model_commands.rs" => fit_model_source,
                 "project_commands.rs" => project_source,
                 _ => panic!("unexpected file in permit coverage list: {file_name}"),
             };

@@ -34,35 +34,54 @@ function toRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function toBinaryPayload(value: unknown): ArrayBuffer | null {
+  if (value instanceof ArrayBuffer) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice().buffer;
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const byte = value[index];
+      if (!Object.prototype.hasOwnProperty.call(value, index)
+        || !Number.isInteger(byte)
+        || byte < 0
+        || byte > 255) {
+        return null;
+      }
+    }
+    return Uint8Array.from(value).buffer;
+  }
+  return null;
+}
+
+function normalizeStructuredValue(value: unknown): unknown {
+  if (value === null) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return value.map(normalizeStructuredValue);
+  }
+  const record = toRecord(value);
+  if (!record) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, normalizeStructuredValue(entry)]),
+  );
+}
+
 function parseStructuredMessage(message: unknown): Record<string, unknown> | null {
   if (typeof message === "string") {
     try {
       const parsed = JSON.parse(message) as unknown;
-      return toRecord(parsed);
+      return toRecord(normalizeStructuredValue(parsed));
     } catch {
       return null;
     }
   }
-  return toRecord(message);
-}
-
-function toPayloadBuffer(message: unknown): ArrayBuffer | null {
-  if (message instanceof ArrayBuffer) {
-    return message;
-  }
-  if (ArrayBuffer.isView(message)) {
-    return message.buffer.slice(
-      message.byteOffset,
-      message.byteOffset + message.byteLength,
-    ) as ArrayBuffer;
-  }
-  if (
-    Array.isArray(message)
-    && message.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
-  ) {
-    return Uint8Array.from(message as number[]).buffer;
-  }
-  return null;
+  return toRecord(normalizeStructuredValue(message));
 }
 
 function describeMessageShape(message: unknown): string {
@@ -111,7 +130,27 @@ function isGraphDataCompletion(value: unknown): value is GraphDataCompletion {
     && typeof record.generation === "number"
     && Number.isInteger(record.chunksSent)
     && typeof record.cancelled === "boolean"
+    && isRawPointDisposition(record.rawPointDisposition)
   );
+}
+
+function isRawPointDisposition(value: unknown): boolean {
+  const record = toRecord(value);
+  if (!record || !Number.isInteger(record.validRows) || !Number.isInteger(record.budget)) {
+    return false;
+  }
+  if ((record.validRows as number) < 0 || (record.budget as number) <= 0) {
+    return false;
+  }
+  if (record.status === "included") {
+    return true;
+  }
+  if (record.status === "empty") {
+    return record.validRows === 0;
+  }
+  return record.status === "omitted"
+    && record.reason === "pointBudgetExceeded"
+    && (record.validRows as number) > (record.budget as number);
 }
 
 function isGraphAggregatePacket(value: unknown): value is GraphAggregatePacket {
@@ -131,6 +170,7 @@ function completionEquals(left: GraphDataCompletion, right: GraphDataCompletion)
     && left.processedRows === right.processedRows
     && left.chunksSent === right.chunksSent
     && left.cancelled === right.cancelled
+    && JSON.stringify(left.rawPointDisposition) === JSON.stringify(right.rawPointDisposition)
   );
 }
 
@@ -138,11 +178,16 @@ export function createGraphStreamTransport(
   request: GraphDataRequest,
   handlers: GraphStreamTransportHandlers,
 ): GraphStreamTransport {
+  const aggregateOnlyCorrelation =
+    request.elements.length > 0
+    && request.elements.every((element) => element.kind === "correlationMatrix");
+
   const seenChunkIndexes = new Set<number>();
   let nextChunkIndex = 0;
   let pendingHeader: GraphChunkHeader | null = null;
   let invokeCompletion: GraphDataCompletion | null = null;
   let sawFinalChunkPayload = false;
+  const pendingZeroChunkAggregates: GraphAggregatePacket[] = [];
   let closed = false;
   let failed = false;
 
@@ -163,7 +208,7 @@ export function createGraphStreamTransport(
         return;
       }
 
-      const payload = toPayloadBuffer(message);
+      const payload = toBinaryPayload(message);
       if (payload) {
         if (!pendingHeader) {
           fail("graph payload arrived before header");
@@ -225,6 +270,18 @@ export function createGraphStreamTransport(
           fail("graph terminal marker has inconsistent chunksSent");
           return;
         }
+        if (pendingZeroChunkAggregates.length > 0) {
+          const disposition = structured.rawPointDisposition;
+          if (structured.chunksSent !== 0
+            || (disposition.status !== "empty" && disposition.status !== "omitted")) {
+            fail("graph aggregate packet arrived before all raw chunks were delivered");
+            return;
+          }
+          for (const packet of pendingZeroChunkAggregates) {
+            handlers.onAggregate(packet);
+          }
+          pendingZeroChunkAggregates.length = 0;
+        }
         if (invokeCompletion && !completionEquals(invokeCompletion, structured)) {
           fail("graph terminal marker does not match invoke completion");
           return;
@@ -238,10 +295,18 @@ export function createGraphStreamTransport(
       if (isGraphAggregatePacket(structured)) {
         if (!pendingHeader) {
           if (!sawFinalChunkPayload) {
-            fail("graph aggregate packet arrived before all raw chunks were delivered");
-            return;
+            if (aggregateOnlyCorrelation) {
+              if (structured.kind !== "correlationMatrix") {
+                fail("graph aggregate packet kind does not match correlation-only request");
+                return;
+              }
+              handlers.onAggregate(structured);
+              return;
+            }
+            pendingZeroChunkAggregates.push(structured);
+          } else {
+            handlers.onAggregate(structured);
           }
-          handlers.onAggregate(structured);
           return;
         }
         fail("graph aggregate packet arrived before payload for the previous chunk");

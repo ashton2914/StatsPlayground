@@ -14,7 +14,7 @@ import "echarts-gl";
 import type { GraphSpec, GraphData } from "./types";
 import { withoutGraphAnimation } from "./animation";
 import { getGraphTheme } from "./theme";
-import { build3DOption } from "./threeD";
+import { build3DOption, type Build3DResult } from "./threeD";
 import { useThemeStore } from "@/stores/useThemeStore";
 import { useTranslation } from "react-i18next";
 import type { GraphDataFrame } from "@/types/graphData";
@@ -23,18 +23,21 @@ interface Chart3DProps {
   spec: GraphSpec;
   data: GraphData;
   frame?: GraphDataFrame;
+  built?: Build3DResult;
+  title?: string;
+  minHeight?: number;
 }
 
-export function Chart3D({ spec, data, frame }: Chart3DProps) {
+export function Chart3D({ spec, data, frame, built: providedBuilt, title, minHeight = 240 }: Chart3DProps) {
   const { t } = useTranslation();
   const themeMode = useThemeStore((s) => s.mode);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
   const built = useMemo(
-    () => build3DOption(spec, data, getGraphTheme(), frame),
+    () => providedBuilt ?? build3DOption(spec, data, getGraphTheme(), frame),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [spec, data, frame, themeMode],
+    [spec, data, frame, providedBuilt, themeMode],
   );
 
   // 初始化 / 销毁。
@@ -63,16 +66,23 @@ export function Chart3D({ spec, data, frame }: Chart3DProps) {
   }, [built]);
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
-      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
-      {!built.option && built.hint && (
-        <div
-          className="gb-empty"
-          style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
-        >
-          {t(built.hint.key, { defaultValue: built.hint.def })}
+    <div style={{ display: "flex", flexDirection: "column", background: "var(--bg-card)", minHeight }}>
+      {title && (
+        <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-secondary)", background: "var(--bg-header)" }}>
+          {title}
         </div>
       )}
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+        {!built.option && built.hint && (
+          <div
+            className="gb-empty"
+            style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
+          >
+            {t(built.hint.key, { defaultValue: built.hint.def })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

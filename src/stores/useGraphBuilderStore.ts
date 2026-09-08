@@ -7,6 +7,9 @@
 import { create } from "zustand";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import type { GraphSampling } from "@/types/graphData";
+import { normalizeGraphBuilderItem } from "@/components/graphBuilder/graphBuilderMode";
+import { migrateLegacyGraphColumnName } from "@/components/graphBuilder/graphColumnIdentity";
+import { normalizeGroupThemeSlots } from "@/components/graphBuilder/graphThemeIdentity";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 
@@ -25,9 +28,12 @@ function normalizeSampling(sampling: GraphSampling | undefined): GraphSampling {
 }
 
 function normalizeItem(item: GraphBuilderItem): GraphBuilderItem {
+  const normalized = normalizeGraphBuilderItem(item);
+  const groupThemeSlots = normalizeGroupThemeSlots(normalized.groupThemeSlots);
   return {
-    ...item,
-    sampling: normalizeSampling(item.sampling),
+    ...normalized,
+    sampling: normalizeSampling(normalized.sampling),
+    groupThemeSlots: Object.keys(groupThemeSlots).length > 0 ? groupThemeSlots : undefined,
   };
 }
 
@@ -36,6 +42,7 @@ interface GraphBuilderStore {
   addItem: (item: GraphBuilderItem) => void;
   updateItem: (id: string, patch: Partial<GraphBuilderItem>) => void;
   renameItem: (id: string, name: string) => void;
+  migrateLegacyColumnName: (datasetId: string, oldName: string, newName: string, sqlType: string) => void;
   deleteItem: (id: string) => void;
   /** 删除某数据表时联动删除其所有图表 */
   deleteByDataset: (datasetId: string) => void;
@@ -59,7 +66,7 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set) => ({
     {
       assertProjectMutable(useProjectStore.getState().readOnly);
       set((s) => ({
-        items: s.items.map((it) => (it.id === id ? normalizeItem({ ...it, ...patch }) : it)),
+        items: s.items.map((it) => (it.id === id ? { ...it, ...patch, sampling: normalizeSampling((patch.sampling ?? it.sampling)) } : it)),
       }));
     },
   renameItem: (id, name) =>
@@ -67,6 +74,17 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set) => ({
       assertProjectMutable(useProjectStore.getState().readOnly);
       set((s) => ({
         items: s.items.map((it) => (it.id === id ? { ...it, name } : it)),
+      }));
+    },
+  migrateLegacyColumnName: (datasetId, oldName, newName, sqlType) =>
+    {
+      assertProjectMutable(useProjectStore.getState().readOnly);
+      set((s) => ({
+        items: s.items.map((item) => (
+          item.sourceDatasetId === datasetId
+            ? migrateLegacyGraphColumnName(item, oldName, newName, sqlType)
+            : item
+        )),
       }));
     },
   deleteItem: (id) =>
@@ -83,7 +101,7 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set) => ({
     },
   loadFromProject: (items) =>
     set(() => {
-      const normalized = items.map((item) => normalizeItem(item));
+      const normalized = items.map(normalizeItem);
       const maxNum = items.reduce((m, it) => {
         const match = it.name.match(/^图表(\d+)$/);
         return match ? Math.max(m, parseInt(match[1], 10)) : m;

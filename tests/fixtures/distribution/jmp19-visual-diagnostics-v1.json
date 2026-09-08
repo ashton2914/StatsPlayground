@@ -1,0 +1,373 @@
+{
+  "schemaVersion": "1",
+  "cases": [
+    {
+      "schemaVersion": "1",
+      "caseId": "normalscore.documented.n1.unique",
+      "methodId": "normalScore.documented.rankOverNPlus1",
+      "jmpVersion": "19",
+      "compatibilityStatus": "documentedCompatible",
+      "input": {
+        "values": [
+          0
+        ],
+        "mode": "machineOnly"
+      },
+      "inputHash": "sha256:8f5a50591ada7baff6935f3f3de7abc9923188549e8c6a4d88db4db5d0f295b3",
+      "expected": {
+        "formula": "documentedFormula",
+        "observedValues": [
+          0
+        ],
+        "probabilities": [
+          0.5
+        ],
+        "normalScores": [
+          0
+        ],
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "normalscore.documented.n2.unique",
+      "methodId": "normalScore.documented.rankOverNPlus1",
+      "jmpVersion": "19",
+      "compatibilityStatus": "documentedCompatible",
+      "input": {
+        "values": [
+          -1,
+          2
+        ],
+        "mode": "machineOnly"
+      },
+      "inputHash": "sha256:9681fcf79f4cccf7d06420c962bf1e6c01c67e5a438822195940e7e37c106eb4",
+      "expected": {
+        "formula": "documentedFormula",
+        "observedValues": [
+          -1,
+          2
+        ],
+        "probabilities": [
+          0.3333333333333333,
+          0.6666666666666666
+        ],
+        "normalScores": [
+          -0.43072729929545756,
+          0.43072729929545744
+        ],
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "normalscore.documented.n3.unique",
+      "methodId": "normalScore.documented.rankOverNPlus1",
+      "jmpVersion": "19",
+      "compatibilityStatus": "documentedCompatible",
+      "input": {
+        "values": [
+          3,
+          -2,
+          0
+        ],
+        "mode": "machineOnly"
+      },
+      "inputHash": "sha256:8a9aae8c06a2a5f4427452a8046165a7d0f4033a73054e4f5a8dd565805cf1d1",
+      "expected": {
+        "formula": "documentedFormula",
+        "observedValues": [
+          -2,
+          0,
+          3
+        ],
+        "probabilities": [
+          0.25,
+          0.5,
+          0.75
+        ],
+        "normalScores": [
+          -0.6744897501960817,
+          0,
+          0.6744897501960817
+        ],
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "normalscore.documented.n5.unique",
+      "methodId": "normalScore.documented.rankOverNPlus1",
+      "jmpVersion": "19",
+      "compatibilityStatus": "documentedCompatible",
+      "input": {
+        "values": [
+          -5,
+          -1,
+          0,
+          2,
+          7
+        ],
+        "mode": "machineOnly"
+      },
+      "inputHash": "sha256:c950d7d546934b8cb8970731c6028530cb73ba979e2c4a2d4ab457737b6b74ac",
+      "expected": {
+        "formula": "documentedFormula",
+        "observedValues": [
+          -5,
+          -1,
+          0,
+          2,
+          7
+        ],
+        "probabilities": [
+          0.16666666666666666,
+          0.3333333333333333,
+          0.5,
+          0.6666666666666666,
+          0.8333333333333334
+        ],
+        "normalScores": [
+          -0.967421566101701,
+          -0.43072729929545756,
+          0,
+          0.43072729929545744,
+          0.967421566101701
+        ],
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "normalscore.documented.n10.unique",
+      "methodId": "normalScore.documented.rankOverNPlus1",
+      "jmpVersion": "19",
+      "compatibilityStatus": "documentedCompatible",
+      "input": {
+        "values": [
+          -9,
+          -4,
+          -1,
+          0,
+          1,
+          2,
+          3,
+          5,
+          8,
+          13
+        ],
+        "mode": "machineOnly"
+      },
+      "inputHash": "sha256:c3750739e89c97e0d5e6d3b6ea0586538fc8a2a647be2793c1710030cc932fbf",
+      "expected": {
+        "formula": "documentedFormula",
+        "observedValues": [
+          -9,
+          -4,
+          -1,
+          0,
+          1,
+          2,
+          3,
+          5,
+          8,
+          13
+        ],
+        "probabilities": [
+          0.09090909090909091,
+          0.18181818181818182,
+          0.2727272727272727,
+          0.36363636363636365,
+          0.45454545454545453,
+          0.5454545454545454,
+          0.6363636363636364,
+          0.7272727272727273,
+          0.8181818181818182,
+          0.9090909090909091
+        ],
+        "normalScores": [
+          -1.3351777361189379,
+          -0.9084578676371458,
+          -0.6045853465832371,
+          -0.3487556955170447,
+          -0.11418529432142824,
+          0.11418529432142814,
+          0.3487556955170447,
+          0.6045853465832371,
+          0.9084578676371458,
+          1.3351777361189379
+        ],
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "normalscore.documented.freq.n5.unique",
+      "methodId": "normalScore.documented.rankOverNPlus1.freq",
+      "jmpVersion": "19",
+      "compatibilityStatus": "documentedCompatible",
+      "input": {
+        "values": [
+          2,
+          -3,
+          5,
+          0,
+          -1
+        ],
+        "frequencies": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "mode": "machineOnly"
+      },
+      "inputHash": "sha256:bd0f6317d476d8f9af9e2b5c1c378e743efc9a19b3d47e08162d2f822fdf9ba8",
+      "expected": {
+        "formula": "documentedFormula",
+        "observedValues": [
+          -3,
+          -1,
+          0,
+          2,
+          5
+        ],
+        "probabilities": [
+          0.16666666666666666,
+          0.3333333333333333,
+          0.5,
+          0.6666666666666666,
+          0.8333333333333334
+        ],
+        "normalScores": [
+          -0.967421566101701,
+          -0.43072729929545756,
+          0,
+          0.43072729929545744,
+          0.967421566101701
+        ],
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "normalscore.pending.ties.n5",
+      "methodId": "normalScore.pending.ties",
+      "jmpVersion": "19",
+      "compatibilityStatus": "compatibilityPending",
+      "input": {
+        "values": [
+          -2,
+          -2,
+          0,
+          3,
+          3
+        ],
+        "datasetClass": "ties",
+        "mode": "machineOnly"
+      },
+      "inputHash": "sha256:da837e8d649b966b2944ba0cd8ad687da8178ffa9d96ee892e7ed29d2615502b",
+      "expected": {
+        "marker": "missingEvidence",
+        "mode": "pendingOnly",
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "histogram.jmpauto.pending.constant.probability",
+      "methodId": "histogram.jmpAuto.syntheticBins",
+      "jmpVersion": "19",
+      "compatibilityStatus": "compatibilityPending",
+      "input": {
+        "datasetClass": "constant",
+        "nClass": "n1To20",
+        "mode": "machineOnly",
+        "scale": "probability"
+      },
+      "inputHash": "sha256:7a21afc26a3bc9851c455b666e463f3ea1a2683da84c3802118175c07b13f4d4",
+      "expected": {
+        "marker": "missingEvidence",
+        "mode": "pendingOnly",
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "histogram.jmpauto.pending.narrowdecimal.count",
+      "methodId": "histogram.jmpAuto.syntheticBins",
+      "jmpVersion": "19",
+      "compatibilityStatus": "compatibilityPending",
+      "input": {
+        "datasetClass": "narrowDecimal",
+        "nClass": "n1To20",
+        "mode": "machineOnly",
+        "scale": "count"
+      },
+      "inputHash": "sha256:698863b0ff7d65ba8930d653b9694e2d1cf3986e4df2417d4bccdf05c9217b6e",
+      "expected": {
+        "marker": "missingEvidence",
+        "mode": "pendingOnly",
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "histogram.jmpauto.pending.mixedsign.density",
+      "methodId": "histogram.jmpAuto.syntheticBins",
+      "jmpVersion": "19",
+      "compatibilityStatus": "compatibilityPending",
+      "input": {
+        "datasetClass": "mixedSign",
+        "nClass": "n1To20",
+        "mode": "machineOnly",
+        "scale": "density"
+      },
+      "inputHash": "sha256:6b6d2f978daa60681a6c71d7c702276b6681a1062ca11b945e6bd049b69ff4a8",
+      "expected": {
+        "marker": "missingEvidence",
+        "mode": "pendingOnly",
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "histogram.jmpauto.pending.outlier.probability",
+      "methodId": "histogram.jmpAuto.syntheticBins",
+      "jmpVersion": "19",
+      "compatibilityStatus": "compatibilityPending",
+      "input": {
+        "datasetClass": "outlier",
+        "nClass": "n1To20",
+        "mode": "machineOnly",
+        "scale": "probability"
+      },
+      "inputHash": "sha256:9c32bcc773c79bab9f02520a81c3e346f2dda7d614c15dcbd7d760a7615bef3f",
+      "expected": {
+        "marker": "missingEvidence",
+        "mode": "pendingOnly",
+        "recorded": "recorded"
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "caseId": "histogram.jmpauto.pending.boundary.count",
+      "methodId": "histogram.jmpAuto.syntheticBins",
+      "jmpVersion": "19",
+      "compatibilityStatus": "compatibilityPending",
+      "input": {
+        "datasetClass": "boundary",
+        "nClass": "n1To20",
+        "mode": "machineOnly",
+        "scale": "count"
+      },
+      "inputHash": "sha256:21a71e323d2d6222ca977e5405abebad3cfce0c27122f1cc53f395f7fc5a023c",
+      "expected": {
+        "marker": "missingEvidence",
+        "mode": "pendingOnly",
+        "recorded": "recorded"
+      }
+    }
+  ]
+}

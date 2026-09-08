@@ -1,24 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import ts from "typescript";
 
 import { buildGraph } from "../src/graphCore/transform.ts";
 import { getGraphTheme } from "../src/graphCore/theme.ts";
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
-
-function parseTsx(fileName: string, source: string): ts.SourceFile {
-	return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-}
-
-function parseTs(fileName: string, source: string): ts.SourceFile {
-	return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-}
-
-function walk(node: ts.Node, visit: (n: ts.Node) => void): void {
-	visit(node);
-	node.forEachChild((child) => walk(child, visit));
-}
 
 function bits(flags: number[]): Uint8Array {
 	const out = new Uint8Array(Math.max(1, Math.ceil(flags.length / 8)));
@@ -43,89 +29,8 @@ function scatterSeries(option: unknown): any[] {
 }
 
 const graphSource = readFileSync(new URL("../src/graphCore/Graph.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-const graphAst = parseTsx("Graph.tsx", graphSource);
-
-let importsRawPointsLayer = false;
-let rendersRawPointsLayer = false;
-let passesRawPointsViaDescriptor = false;
-
-walk(graphAst, (node) => {
-	if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === "./RawPointsLayer") {
-		const clause = node.importClause;
-		const named = clause?.namedBindings;
-		if (named && ts.isNamedImports(named)) {
-			importsRawPointsLayer = named.elements.some((el) => el.name.text === "RawPointsLayer");
-		}
-	}
-
-	if (!ts.isJsxSelfClosingElement(node) && !ts.isJsxOpeningElement(node)) return;
-	if (!ts.isIdentifier(node.tagName) || node.tagName.text !== "RawPointsLayer") return;
-	rendersRawPointsLayer = true;
-
-	for (const attr of node.attributes.properties) {
-		if (!ts.isJsxAttribute(attr) || attr.name.text !== "descriptor") continue;
-		if (!attr.initializer || !ts.isJsxExpression(attr.initializer)) continue;
-		if (attr.initializer.expression && ts.isIdentifier(attr.initializer.expression) && attr.initializer.expression.text === "rawPoints") {
-			passesRawPointsViaDescriptor = true;
-		}
-	}
-});
-
-assert.ok(importsRawPointsLayer, "Graph.tsx must import RawPointsLayer");
-assert.ok(rendersRawPointsLayer, "Graph.tsx must render RawPointsLayer");
-assert.ok(passesRawPointsViaDescriptor, "Graph.tsx must pass panel rawPoints through the descriptor prop");
-
-const transformSource = readFileSync(new URL("../src/graphCore/transform.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-const transformAst = parseTs("transform.ts", transformSource);
-
-let buildGraphDecl: ts.FunctionDeclaration | null = null;
-walk(transformAst, (node) => {
-	if (ts.isFunctionDeclaration(node) && node.name?.text === "buildGraph") {
-		buildGraphDecl = node;
-	}
-});
-
-assert.ok(buildGraphDecl && buildGraphDecl.body, "transform.ts must define buildGraph");
-const buildGraphBody = buildGraphDecl!.body!;
-const dataParam = buildGraphDecl!.parameters[1];
-assert.ok(dataParam && ts.isIdentifier(dataParam.name), "buildGraph must have a GraphData input parameter");
-const dataParamName = (dataParam.name as ts.Identifier).text;
-
-let hasFrameBackedDataSubstitution = false;
-walk(buildGraphBody, (node) => {
-	if (!ts.isVariableDeclaration(node) || !node.initializer || !ts.isConditionalExpression(node.initializer)) return;
-	const expr = node.initializer;
-
-	const branches = [expr.whenTrue, expr.whenFalse];
-	const hasEmptyRowsObject = branches.some((branch) => {
-		if (!ts.isObjectLiteralExpression(branch)) return false;
-
-		let hasColumns = false;
-		let hasEmptyRows = false;
-
-		for (const prop of branch.properties) {
-			if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) continue;
-			if (prop.name.text === "columns") {
-				hasColumns = true;
-			}
-			if (prop.name.text === "rows" && ts.isArrayLiteralExpression(prop.initializer) && prop.initializer.elements.length === 0) {
-				hasEmptyRows = true;
-			}
-		}
-
-		return hasColumns && hasEmptyRows;
-	});
-
-	const hasOriginalDataBranch = branches.some((branch) => ts.isIdentifier(branch) && branch.text === dataParamName);
-	if (hasEmptyRowsObject && hasOriginalDataBranch) {
-		hasFrameBackedDataSubstitution = true;
-	}
-});
-
-assert.ok(
-	hasFrameBackedDataSubstitution,
-	"buildGraph must switch between original input data and a frame-backed { columns, rows: [] } substitute",
-);
+assert.equal(graphSource.includes("RawPointsLayer"), false, "Graph.tsx must not host a second point renderer");
+assert.equal(graphSource.includes("./rawPoints"), false, "Graph.tsx must not use Canvas point hit testing");
 
 const sourceData: GraphData = {
 	columns: ["x", "y", "overlay", "_row_id"],
@@ -187,7 +92,6 @@ const theme = getGraphTheme();
 
 const builtWithoutFrame = buildGraph(baseSpec, sourceData, theme);
 assert.equal(builtWithoutFrame.panels.length, 1, "non-frame path should produce one panel for the baseline spec");
-assert.equal(builtWithoutFrame.panels[0].rawPoints, null, "non-frame path should not expose a rawPoints descriptor");
 
 const nonFrameScatter = scatterSeries(builtWithoutFrame.panels[0].option);
 const nonFrameRawScatter = nonFrameScatter.find((s) => hasPickPayload(s));
@@ -197,17 +101,17 @@ assert.ok(nonFrameScatter.every((s) => s.large !== true), "raw scatter fallback 
 
 const builtWithFrameSingle = buildGraph(baseSpec, sourceData, theme, undefined, frame);
 assert.equal(builtWithFrameSingle.panels.length, 1, "frame-backed single-panel path should produce one panel");
-assert.ok(builtWithFrameSingle.panels[0].rawPoints, "frame-backed single-panel path must expose a rawPoints descriptor");
+const frameScatterSeries = scatterSeries(builtWithFrameSingle.panels[0].option);
 assert.ok(
-	builtWithFrameSingle.panels[0].rawPoints?.colName === "y" && (builtWithFrameSingle.panels[0].rawPoints?.chunks.length ?? 0) > 0,
-	"frame-backed rawPoints descriptor must include column identity and chunk payload",
+	frameScatterSeries.length > 0,
+	"frame-backed points must produce standard ECharts scatter series",
 );
 assert.ok(
-	scatterSeries(builtWithFrameSingle.panels[0].option).every((s) => !hasPickPayload(s)),
-	"when a frame-backed rawPoints descriptor exists, raw scatter fallback with __pick must not be reachable",
+	frameScatterSeries.some(hasPickPayload),
+	"frame-backed ECharts scatter must retain __pick metadata",
 );
 assert.ok(
-	scatterSeries(builtWithFrameSingle.panels[0].option).every((s) => s.large !== true),
+	frameScatterSeries.every((s) => s.large !== true),
 	"frame-backed points rendering should never enable large mode",
 );
 
@@ -222,16 +126,20 @@ const facetedSpec: GraphSpec = {
 const builtWithFrameFaceted = buildGraph(facetedSpec, sourceData, theme, undefined, frame);
 assert.ok(builtWithFrameFaceted.panels.length >= 2, "frame-backed faceted path should produce multiple panels from facet keys");
 assert.ok(
-	builtWithFrameFaceted.panels.every((panel) => panel.rawPoints !== null),
-	"frame-backed faceted panels must each expose a non-null rawPoints descriptor",
-);
-assert.ok(
-	builtWithFrameFaceted.panels.every((panel) => scatterSeries(panel.option).every((s) => !hasPickPayload(s))),
-	"frame-backed faceted panels must keep raw scatter fallback unreachable when rawPoints descriptors exist",
+	builtWithFrameFaceted.panels.every((panel) => scatterSeries(panel.option).some(hasPickPayload)),
+	"every populated facet must expose frame-backed ECharts pick metadata",
 );
 assert.ok(
 	builtWithFrameFaceted.panels.every((panel) => scatterSeries(panel.option).every((s) => s.large !== true)),
 	"frame-backed faceted panels must never enable large mode on scatter series",
 );
+const facetPickCounts = builtWithFrameFaceted.panels
+	.map((panel) => scatterSeries(panel.option).reduce((count, series) => (
+		count + (Array.isArray(series.data)
+			? series.data.filter((item: any) => !!item?.__pick).length
+			: 0)
+	), 0))
+	.sort((left, right) => left - right);
+assert.deepEqual(facetPickCounts, [1, 2], "each facet must contain only its matching frame-backed points");
 
 console.log("scatter progressive source regression passed");

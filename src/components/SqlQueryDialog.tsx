@@ -4,6 +4,10 @@ import { dataService } from "@/services/dataService";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type { DatasetMeta, SqlQueryResult } from "@/types/data";
 import { folderAncestors, folderBaseName, normalizeFolderPath } from "@/stores/useFolderStore";
+import {
+  resolveProjectBasenameForKind,
+  type ProjectBasenameValidationError,
+} from "@/utils/projectFileNaming";
 import "./sqlQueryDialog.css";
 
 interface SqlQueryDialogProps {
@@ -30,12 +34,33 @@ function breadcrumbs(path: string | null, rootLabel: string): string {
 }
 
 function nextResultName(datasets: DatasetMeta[]): string {
-  const existing = new Set(datasets.map((dataset) => dataset.name.trim().toLowerCase()));
   const base = "Query Result";
-  if (!existing.has(base.toLowerCase())) return base;
-  let index = 2;
-  while (existing.has(`${base} (${index})`.toLowerCase())) index += 1;
-  return `${base} (${index})`;
+  const resolved = resolveProjectBasenameForKind(base, "table", datasets.map((dataset) => dataset.name));
+  return resolved.error ? base : resolved.basename;
+}
+
+function validationMessage(t: (key: string, options?: Record<string, unknown>) => string, code: ProjectBasenameValidationError): string {
+  if (code === "empty") {
+    return t("sqlQuery.nameValidationEmpty");
+  }
+  if (code === "invalidChars") {
+    return t("alert.invalidName.invalidChars", {
+      defaultValue: "Name contains invalid characters: / \\ : * ? \" < > |",
+    });
+  }
+  if (code === "edgeDots") {
+    return t("alert.invalidName.edgeDots", {
+      defaultValue: "Name cannot start or end with a dot or space.",
+    });
+  }
+  if (code === "controlChars") {
+    return t("alert.invalidName.controlChars", {
+      defaultValue: "Name contains control characters.",
+    });
+  }
+  return t("alert.invalidName.reserved", {
+    defaultValue: "Name is reserved by Windows and cannot be used.",
+  });
 }
 
 function renderCell(value: unknown): string {
@@ -87,8 +112,7 @@ export function SqlQueryDialog({ datasets, tableFolders, onClose, onCreated }: S
 
   const createState = useMemo(() => {
     const trimmed = newTableName.trim();
-    const duplicate = datasets.some((dataset) => dataset.name.trim().toLowerCase() === trimmed.toLowerCase());
-    return { trimmed, duplicate };
+    return { trimmed };
   }, [datasets, newTableName]);
 
   const trimmedSql = sql.trim();
@@ -97,7 +121,7 @@ export function SqlQueryDialog({ datasets, tableFolders, onClose, onCreated }: S
   const canRun = !busy && trimmedSql.length > 0;
   const canPageBack = !busy && !!result && page > 1;
   const canPageForward = !busy && !!result && page * PAGE_SIZE < result.totalRows;
-  const canCreate = !busy && isPreviewCurrent && createState.trimmed.length > 0 && !createState.duplicate;
+  const canCreate = !busy && isPreviewCurrent && createState.trimmed.length > 0;
   const footerText = busy
     ? (showCreate ? t("sqlQuery.statusCreating") : t("sqlQuery.statusRunning"))
     : result
@@ -194,8 +218,17 @@ export function SqlQueryDialog({ datasets, tableFolders, onClose, onCreated }: S
       setError(`${t("sqlQuery.validationErrorTitle")}: ${t("sqlQuery.nameValidationEmpty")}`);
       return;
     }
-    if (createState.duplicate) {
-      setError(`${t("sqlQuery.validationErrorTitle")}: ${t("sqlQuery.nameValidationDuplicate", { name: createState.trimmed })}`);
+    const resolved = resolveProjectBasenameForKind(newTableName, "table", datasets.map((dataset) => dataset.name));
+    if (resolved.error === "wrongExtension") {
+      setError(`${t("sqlQuery.validationErrorTitle")}: ${t("sqlQuery.nameValidationWrongExtension", {
+        defaultValue: "Use the {{expected}} extension for table names (not {{actual}}).",
+        expected: resolved.expectedExtension,
+        actual: resolved.actualExtension,
+      })}`);
+      return;
+    }
+    if (resolved.error) {
+      setError(`${t("sqlQuery.validationErrorTitle")}: ${validationMessage(t, resolved.error)}`);
       return;
     }
 
@@ -205,7 +238,7 @@ export function SqlQueryDialog({ datasets, tableFolders, onClose, onCreated }: S
     setCreating(true);
     setError(null);
     try {
-      const meta = await dataService.createTableFromSqlQuery(successfulSql, createState.trimmed);
+      const meta = await dataService.createTableFromSqlQuery(successfulSql, resolved.basename);
       if (requestId !== requestIdRef.current) return;
       await onCreated(meta);
       onClose();

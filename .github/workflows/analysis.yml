@@ -1,0 +1,43 @@
+name: Analysis
+
+on:
+  push:
+    paths:
+      - "contracts/analysis/**"
+      - "src/components/analysis/**"
+      - "src/components/distribution/useDistributionReport.ts"
+      - "src/components/Workspace.tsx"
+      - "src/graphCore/distributionAdapter.ts"
+      - "src/services/distributionService.ts"
+      - "src/types/analysis.ts"
+      - "src/types/distribution.ts"
+      - "src-tauri/src/services/spprj_archive.rs"
+      - "tests/analysis*"
+      - "tests/distributionAnalysis*"
+      - "tests/tsconfig.analysis-contracts.json"
+      - "package*.json"
+      - ".github/workflows/analysis.yml"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:analysis
+      - run: cargo test --manifest-path src-tauri/Cargo.toml analysis_kind_manifest_matches_validator_contracts
+      - run: npm run build

@@ -1,4 +1,7 @@
 pub mod data_link;
+pub mod distribution;
+pub mod fit_model;
+pub mod fit_y_by_x;
 pub mod graph_data;
 pub mod project;
 pub mod save;

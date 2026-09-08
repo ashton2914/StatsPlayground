@@ -1,5 +1,16 @@
 import type { TableWindowFilter } from "./data";
 
+export const DISTRIBUTION_GRAPH_ELEMENT_IDS = {
+  overviewHistogram: "distribution.overview.histogram",
+  overviewFittedCurves: "distribution.overview.fittedCurves",
+  boxPlot: "distribution.boxPlot",
+  ecdf: "distribution.ecdf",
+  normalQuantilePoints: "distribution.normalQuantile.points",
+  normalQuantileReference: "distribution.normalQuantile.reference",
+  normalQuantileLower: "distribution.normalQuantile.lower",
+  normalQuantileUpper: "distribution.normalQuantile.upper",
+} as const;
+
 export interface GraphFieldBinding {
   role: string;
   column: string;
@@ -8,6 +19,7 @@ export interface GraphFieldBinding {
 export interface GraphElementRequest {
   kind: string;
   summaryStat: string;
+  correlationMethod?: CorrelationMethod;
 }
 
 export type GraphSampling =
@@ -27,6 +39,7 @@ export interface GraphDataRequest {
   filters: TableWindowFilter[];
   elements: GraphElementRequest[];
   sampling: GraphSampling;
+  rawPointBudget: number;
   viewport: GraphViewport;
 }
 
@@ -74,7 +87,18 @@ export interface GraphDataCompletion {
   processedRows: number;
   chunksSent: number;
   cancelled: boolean;
+  rawPointDisposition: GraphRawPointDisposition;
 }
+
+export type GraphRawPointDisposition =
+  | { status: "included"; validRows: number; budget: number }
+  | { status: "empty"; validRows: 0; budget: number }
+  | {
+      status: "omitted";
+      reason: "pointBudgetExceeded";
+      validRows: number;
+      budget: number;
+    };
 
 export interface GraphChunkMessage {
   header: GraphChunkHeader;
@@ -179,6 +203,40 @@ export interface BoxPlotPacket {
   entries: BoxPlotEntry[];
 }
 
+export interface PrecomputedPoint {
+  x: number;
+  y: number;
+  label?: string;
+  group?: string;
+}
+
+export interface PrecomputedPointPacket {
+  kind: "precomputedPoints";
+  elementId: string;
+  seriesId?: string;
+  seriesName?: string;
+  points: PrecomputedPoint[];
+}
+
+export type PrecomputedCurveInterpolation = "linear" | "stepEnd";
+
+export interface PrecomputedCurvePoint {
+  x: number;
+  y: number;
+}
+
+export interface PrecomputedCurvePacket {
+  kind: "precomputedCurve";
+  elementId: string;
+  seriesId?: string;
+  seriesName?: string;
+  group?: string;
+  category?: string;
+  sourceColumn?: string;
+  interpolation: PrecomputedCurveInterpolation;
+  points: PrecomputedCurvePoint[];
+}
+
 export interface SummaryEntry {
   group?: string | null;
   category?: string | null;
@@ -206,11 +264,33 @@ export interface SummaryPacket {
   summaries: SummaryEntry[];
 }
 
+export type CorrelationMethod = "pearson" | "spearman" | "kendall";
+
+export type CorrelationUnavailableReason = "insufficientData" | "zeroVariance";
+
+export interface CorrelationMatrixCell {
+  xIndex: number;
+  yIndex: number;
+  coefficient?: number | null;
+  sampleCount: number;
+  unavailableReason?: CorrelationUnavailableReason;
+}
+
+export interface CorrelationMatrixPacket {
+  kind: "correlationMatrix";
+  method: CorrelationMethod;
+  columns: string[];
+  cells: CorrelationMatrixCell[];
+}
+
 export type GraphAggregatePacket =
   | HistogramPacket
   | HeatmapPacket
   | BoxPlotPacket
-  | SummaryPacket;
+  | SummaryPacket
+  | CorrelationMatrixPacket
+  | PrecomputedPointPacket
+  | PrecomputedCurvePacket;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
@@ -222,6 +302,10 @@ function isString(value: unknown): value is string {
 
 function isOptionalString(value: unknown): value is string | null | undefined {
   return value == null || typeof value === "string";
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -236,15 +320,33 @@ function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 0;
 }
 
-function hasOwn(value: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+function isCorrelationMethod(value: unknown): value is CorrelationMethod {
+  return value === "pearson" || value === "spearman" || value === "kendall";
+}
+
+function isCorrelationUnavailableReason(value: unknown): value is CorrelationUnavailableReason {
+  return value === "insufficientData" || value === "zeroVariance";
+}
+
+function isPrecomputedCurveInterpolation(value: unknown): value is PrecomputedCurveInterpolation {
+  return value === "linear" || value === "stepEnd";
+}
+
+function isPrecomputedPoint(value: unknown): value is PrecomputedPoint {
+  if (!isRecord(value)) return false;
+  return isFiniteNumber(value.x)
+    && isFiniteNumber(value.y)
+    && isOptionalString(value.label)
+    && isOptionalString(value.group);
+}
+
+function isPrecomputedCurvePoint(value: unknown): value is PrecomputedCurvePoint {
+  if (!isRecord(value)) return false;
+  return isFiniteNumber(value.x) && isFiniteNumber(value.y);
 }
 
 function isHistogramBin(value: unknown): value is HistogramBin {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -259,9 +361,6 @@ function isHistogramBin(value: unknown): value is HistogramBin {
 
 function isHeatmapCell(value: unknown): value is HeatmapCell {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -287,9 +386,6 @@ function isBoxPlotOutlier(value: unknown): value is BoxPlotOutlier {
 
 function isBoxPlotEntry(value: unknown): value is BoxPlotEntry {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -311,9 +407,6 @@ function isBoxPlotEntry(value: unknown): value is BoxPlotEntry {
 
 function isSummaryEntry(value: unknown): value is SummaryEntry {
   if (!isRecord(value)) return false;
-  if (!hasOwn(value, "facetX") || !hasOwn(value, "facetY") || !hasOwn(value, "facetZ") || !hasOwn(value, "wrap")) {
-    return false;
-  }
   return isOptionalString(value.group)
     && isOptionalString(value.category)
     && isOptionalString(value.sourceColumn)
@@ -331,9 +424,92 @@ function isSummaryEntry(value: unknown): value is SummaryEntry {
     && isOptionalFiniteNumber(value.intervalHigh);
 }
 
+function isCorrelationMatrixPacket(value: unknown): value is CorrelationMatrixPacket {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (!isCorrelationMethod(value.method)) {
+    return false;
+  }
+  if (!Array.isArray(value.columns) || value.columns.length < 2 || value.columns.length > 20) {
+    return false;
+  }
+
+  const seenColumns = new Set<string>();
+  for (const column of value.columns) {
+    if (!isString(column) || column.trim().length === 0 || seenColumns.has(column)) {
+      return false;
+    }
+    seenColumns.add(column);
+  }
+
+  if (!Array.isArray(value.cells)) {
+    return false;
+  }
+
+  const columnCount = value.columns.length;
+  if (value.cells.length !== columnCount ** 2) {
+    return false;
+  }
+
+  for (let index = 0; index < value.cells.length; index += 1) {
+    const cell = value.cells[index];
+    if (!isRecord(cell)) {
+      return false;
+    }
+
+    const expectedXIndex = index % columnCount;
+    const expectedYIndex = Math.floor(index / columnCount);
+    if (cell.xIndex !== expectedXIndex || cell.yIndex !== expectedYIndex) {
+      return false;
+    }
+    if (!isNonNegativeInteger(cell.xIndex) || !isNonNegativeInteger(cell.yIndex)) {
+      return false;
+    }
+    if (!isNonNegativeInteger(cell.sampleCount)) {
+      return false;
+    }
+
+    const coefficientIsMissing = cell.coefficient === undefined || cell.coefficient === null;
+    if (coefficientIsMissing) {
+      if (!isCorrelationUnavailableReason(cell.unavailableReason)) {
+        return false;
+      }
+      continue;
+    }
+
+    if (!isFiniteNumber(cell.coefficient) || cell.coefficient < -1 || cell.coefficient > 1) {
+      return false;
+    }
+    if (cell.unavailableReason !== undefined) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function isGraphAggregatePacket(value: unknown): value is GraphAggregatePacket {
   if (!isRecord(value) || !isString(value.kind)) {
     return false;
+  }
+  if (value.kind === "precomputedPoints") {
+    return isNonEmptyString(value.elementId)
+      && (value.seriesId === undefined || isNonEmptyString(value.seriesId))
+      && (value.seriesName === undefined || isNonEmptyString(value.seriesName))
+      && Array.isArray(value.points)
+      && value.points.every(isPrecomputedPoint);
+  }
+  if (value.kind === "precomputedCurve") {
+    return isNonEmptyString(value.elementId)
+      && (value.seriesId === undefined || isNonEmptyString(value.seriesId))
+      && (value.seriesName === undefined || isNonEmptyString(value.seriesName))
+      && isOptionalString(value.group)
+      && isOptionalString(value.category)
+      && isOptionalString(value.sourceColumn)
+      && isPrecomputedCurveInterpolation(value.interpolation)
+      && Array.isArray(value.points)
+      && value.points.every(isPrecomputedCurvePoint);
   }
   if (value.kind === "histogram") {
     return isOptionalString(value.xColumn)
@@ -383,6 +559,9 @@ export function isGraphAggregatePacket(value: unknown): value is GraphAggregateP
       && Array.isArray(value.summaries)
       && value.summaries.every(isSummaryEntry);
   }
+  if (value.kind === "correlationMatrix") {
+    return isCorrelationMatrixPacket(value);
+  }
   return false;
 }
 
@@ -416,6 +595,7 @@ export interface GraphDataFrame {
   extents: Record<string, { min: number; max: number }>;
   rawChunks: readonly DecodedRawPointChunk[];
   aggregates: readonly GraphAggregatePacket[];
+  rawPointDisposition: GraphRawPointDisposition;
 }
 
 export interface DecodedGraphChunk extends DecodedRawPointChunk {

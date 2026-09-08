@@ -6,6 +6,7 @@ export interface DatasetMeta {
   sourceType: "csv" | "excel" | "parquet" | "json" | "sqlite" | "sptb" | "manual" | "query";
   rowCount: number;
   colCount: number;
+  generation: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -17,6 +18,12 @@ export interface ColumnMeta {
   colType: string;
   role: "continuous" | "nominal" | "ordinal" | "id";
   missingCount: number;
+}
+
+export interface ColumnDescriptor {
+  columnId: string;
+  name: string;
+  sqlType: string;
 }
 
 /** 表查询参数 */
@@ -116,4 +123,11 @@ export interface ColumnDisplayProps {
    * 值的形状由前端 `columnExtras` 注册表定义；后端按不透明 JSON 处理。
    */
   extras?: Record<string, unknown>;
+}
+
+export interface CreateTableFromRowsRequest {
+  name: string;
+  columnNames: string[];
+  columnTypes: string[];
+  rows: Array<Array<string | number | boolean | null>>;
 }

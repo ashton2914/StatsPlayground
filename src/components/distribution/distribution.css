@@ -1,0 +1,408 @@
+.distribution-view,
+.distribution-dialog,
+.distribution-menu {
+  --text-primary: var(--fg-primary);
+  --text-secondary: var(--fg-muted);
+  --bg-primary: var(--bg-dialog);
+  --bg-secondary: var(--bg-header);
+  --border-color: var(--border-main);
+}
+
+.distribution-view {
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 20px 24px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  scrollbar-gutter: stable;
+}
+
+.distribution-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.distribution-view-header h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.distribution-view-header span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.distribution-graph-section {
+  margin-top: 20px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 16px;
+}
+
+.distribution-report-section {
+  margin-top: 20px;
+}
+
+.distribution-graph-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.distribution-graph-region {
+  min-width: 0;
+}
+
+.distribution-graph-region h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.distribution-graph-runtime {
+  height: clamp(240px, 34vh, 420px);
+  min-height: 0;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+@media (max-width: 900px) {
+  .distribution-graph-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.distribution-disclosure {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  color: var(--text-primary);
+  background: transparent;
+}
+
+.distribution-disclosure:hover {
+  background: var(--bg-secondary);
+}
+
+.distribution-y-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.distribution-analysis-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.distribution-icon-button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+}
+
+.distribution-analysis-menu {
+  position: absolute;
+  z-index: 100;
+  top: 30px;
+  right: 8px;
+  min-width: 250px;
+  max-width: min(360px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 96px));
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-menu, #fff);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 32%);
+}
+
+.distribution-menu-group {
+  margin: 0;
+  padding: 6px 4px;
+  border: 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.distribution-menu-group:first-child {
+  border-top: 0;
+}
+
+.distribution-menu-group legend {
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.distribution-menu-option {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.distribution-menu-option input {
+  margin: 0;
+}
+
+.distribution-menu-inline-label,
+.distribution-menu-method {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.distribution-menu-action {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  text-decoration: underline;
+}
+
+.distribution-dialog {
+  width: min(980px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: min(720px, calc(100vh - 32px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.distribution-dialog-header,
+.distribution-dialog-body,
+.distribution-column-row,
+.distribution-column-actions,
+.distribution-role-chip,
+.distribution-option {
+  display: flex;
+  align-items: center;
+}
+
+.distribution-dialog-header {
+  flex: 0 0 auto;
+  justify-content: space-between;
+}
+
+.distribution-dialog-header h3 {
+  margin: 0;
+}
+
+.distribution-dialog-body {
+  align-items: stretch;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.distribution-dialog-scroll {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.distribution-dialog > .dialog-actions {
+  flex: 0 0 auto;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.distribution-column-browser {
+  flex: 0 0 360px;
+  min-width: 0;
+}
+
+.distribution-role-zone h4 {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.distribution-dialog-header .distribution-name-input {
+  width: min(280px, 45%);
+}
+
+.distribution-column-list {
+  max-height: 390px;
+  margin-top: 8px;
+  overflow: auto;
+  border: 1px solid var(--border-color);
+}
+
+.distribution-column-row {
+  min-height: 34px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px 3px 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.distribution-column-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.distribution-column-actions {
+  flex: 0 0 auto;
+  gap: 3px;
+}
+
+.distribution-role-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.distribution-options {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr);
+  gap: 24px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color);
+}
+
+.distribution-role-zone {
+  min-height: 88px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.distribution-role-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.distribution-role-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.distribution-role-chip {
+  width: min(100%, 340px);
+  min-width: 0;
+  gap: 4px;
+  padding-left: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.distribution-role-chip-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.distribution-option {
+  grid-template-columns: minmax(160px, 1fr) 96px;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.distribution-option .ui-field-label {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.distribution-option .ui-input {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.distribution-run-hint {
+  margin: 12px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .distribution-dialog-body {
+    flex-direction: column;
+  }
+
+  .distribution-column-browser {
+    flex-basis: auto;
+  }
+
+  .distribution-role-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .distribution-options,
+  .distribution-role-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .distribution-option {
+    justify-content: flex-start;
+  }
+}
+
+.distribution-results > section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.distribution-results h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.distribution-spec-editor {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.distribution-spec-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.distribution-spec-fields label {
+  display: grid;
+  gap: 5px;
+}
+
+.distribution-spec-source,
+.distribution-spec-editor p {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .distribution-spec-fields {
+    grid-template-columns: 1fr;
+  }
+}

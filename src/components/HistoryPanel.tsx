@@ -4,6 +4,10 @@ import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useLocaleStore } from "@/stores/useLocaleStore";
 import { bcp47For } from "@/i18n";
+import {
+  projectFileExtension,
+  resolveProjectBasenameForKind,
+} from "@/utils/projectFileNaming";
 import { listen } from "@tauri-apps/api/event";
 
 export interface SnapshotMenuData {
@@ -36,6 +40,11 @@ export function HistoryPanel({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameRef = useRef<HTMLInputElement>(null);
+  const snapshotExtension = projectFileExtension("snapshot");
+
+  const withSnapshotExtension = useCallback((basename: string): string => {
+    return `${basename}${snapshotExtension}`;
+  }, [snapshotExtension]);
 
   // Draggable divider state (percentage of history section)
   const [historyPct, setHistoryPct] = useState(60);
@@ -96,10 +105,42 @@ export function HistoryPanel({
       setRenamingId(null);
       return;
     }
-    const trimmed = renameValue.trim();
-    if (trimmed) {
+    const snap = snapshots.find((entry) => entry.id === id);
+    if (!snap) {
+      setRenamingId(null);
+      return;
+    }
+    const resolved = resolveProjectBasenameForKind(
+      renameValue,
+      "snapshot",
+      snapshots.map((entry) => entry.name),
+      snap.name,
+    );
+    if (resolved.error === "wrongExtension") {
+      alert(t("alert.invalidName.wrongExtension", {
+        defaultValue: "Use the {{expected}} extension for this item (not {{actual}}).",
+        expected: resolved.expectedExtension,
+        actual: resolved.actualExtension,
+      }));
+      return;
+    }
+    if (resolved.error) {
+      if (resolved.error === "controlChars") {
+        alert(t("alert.invalidName.controlChars", {
+          defaultValue: "Name contains control characters.",
+        }));
+      } else if (resolved.error === "reserved") {
+        alert(t("alert.invalidName.reserved", {
+          defaultValue: "Name is reserved by Windows and cannot be used.",
+        }));
+      } else {
+        alert(t(`alert.invalidName.${resolved.error}`, { defaultValue: "Invalid name." }));
+      }
+      return;
+    }
+    if (resolved.basename !== snap.name) {
       const { renameSnapshot } = useHistoryStore.getState();
-      renameSnapshot(id, trimmed);
+      renameSnapshot(id, resolved.basename);
     }
     setRenamingId(null);
   };
@@ -224,21 +265,24 @@ export function HistoryPanel({
                 </div>
                 <div className="snapshot-item-body">
                   {renamingId === snap.id ? (
-                    <input
-                      ref={renameRef}
-                      className="snapshot-rename-input"
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onBlur={() => handleRenameSubmit(snap.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleRenameSubmit(snap.id);
-                        if (e.key === "Escape") setRenamingId(null);
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    />
+                    <span className="snapshot-rename-shell">
+                      <input
+                        ref={renameRef}
+                        className="snapshot-rename-input"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={() => handleRenameSubmit(snap.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleRenameSubmit(snap.id);
+                          if (e.key === "Escape") setRenamingId(null);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <span className="snapshot-fixed-ext">{snapshotExtension}</span>
+                    </span>
                   ) : (
                     <span className="snapshot-item-name">
-                      {snap.name}
+                      {withSnapshotExtension(snap.name)}
                     </span>
                   )}
                   <span className="snapshot-item-time">

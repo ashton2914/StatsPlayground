@@ -1,27 +1,41 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import ts from "typescript";
+import { SCATTER_RENDER_BUDGET } from "../src/graphCore/scatterBudget.ts";
 import { decodeGraphPayload, isGraphAggregatePacket } from "../src/types/graphData.ts";
 import {
+  canExecuteGraphRequest,
   createInitialGraphStreamState,
   createStreamStartCancellationCoordinator,
+  deriveElements,
   deriveFields,
+  deriveGraphRequestIdentity,
+  deriveGraphRequestParts,
   reduceGraphStream,
   type GraphLoadProgress,
   type GraphStreamState,
 } from "../src/components/graphBuilder/useGraphDataPipeline.ts";
+import {
+  updateMultivariateColumns,
+} from "../src/components/graphBuilder/updateMultivariateColumns.ts";
+import {
+  deriveMultivariateSlotBinding,
+  resolveCanvasDropSlot,
+} from "../src/components/graphBuilder/multivariateInteractions.ts";
+import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
+import { createEmbeddedGraphItem, normalizeGraphBuilderItem } from "../src/components/graphBuilder/graphBuilderMode.ts";
 import { createGraphStreamTransport } from "../src/services/graphDataTransport.ts";
 import type {
   GraphChunkHeader,
   GraphDataCompletion,
   GraphDataRequest,
   GraphDataFrame,
+  GraphElementRequest,
 } from "../src/types/graphData.ts";
 import type { GraphBuilderItem } from "../src/types/graphBuilder.ts";
 
-const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
+const TEST_FILE_DIR = resolve(process.cwd(), "tests");
 
 type JsonObject = Record<string, unknown>;
 
@@ -110,14 +124,16 @@ assert.equal(makeGraphRows(10).length, 10);
 {
   const graphSource = readFileSync(resolve(TEST_FILE_DIR, "../src/graphCore/Graph.tsx"), "utf8");
   assert.equal(graphSource.includes("toScatterPick("), false, "Graph.tsx must not call undefined toScatterPick");
-  const helperUses = graphSource.match(/bigintToScatterPointPick\(/g) ?? [];
-  assert.ok(helperUses.length >= 2, "Graph.tsx click and brush conversion must share bigintToScatterPointPick helper");
 }
 
 {
   const graphBuilderViewPath = resolve(TEST_FILE_DIR, "../src/components/graphBuilder/GraphBuilderView.tsx");
   const graphBuilderViewSource = readFileSync(graphBuilderViewPath, "utf8");
   const graphBuilderViewAst = parseTs("GraphBuilderView.tsx", graphBuilderViewSource);
+  const graphLayerConfigSource = readFileSync(
+    resolve(TEST_FILE_DIR, "../src/components/graphBuilder/graphLayerConfig.ts"),
+    "utf8",
+  );
   const graphBuilderFiles = listGraphBuilderProductionFiles();
 
   assert.equal(
@@ -136,8 +152,8 @@ assert.equal(makeGraphRows(10).length, 10);
     "GraphBuilderView production graph path must not do frontend melt expansion with newRows.push([...row, ...])",
   );
   assert.match(
-    graphBuilderViewSource,
-    /CHART_TYPE_DEFS[\s\S]*?kind:\s*["']bar["']/,
+    graphLayerConfigSource,
+    /GRAPH_LAYER_DEFS[\s\S]*?kind:\s*["']bar["']/,
     "Graph Builder must expose the supported Bar layer in its add-layer menu",
   );
   assert.equal(
@@ -155,6 +171,29 @@ assert.equal(makeGraphRows(10).length, 10);
     false,
     "GraphBuilder pipeline view must not call dataService.queryTableWindow",
   );
+  assert.match(
+    graphBuilderViewSource,
+    /GRAPH_LAYER_DEFS_WITH_CORRELATION[\s\S]*correlationMatrix/,
+    "GraphBuilderView must keep correlationMatrix available in layer definitions",
+  );
+  assert.match(graphBuilderViewSource, /item\.mode === "multivariate"/);
+  assert.match(graphBuilderViewSource, /setMode\("2d"\)/);
+  assert.match(graphBuilderViewSource, /setMode\("3d"\)/);
+  assert.match(graphBuilderViewSource, /setMode\("multivariate"\)/);
+  assert.match(graphBuilderViewSource, /modeStates\.multivariate\.columns/);
+  assert.match(graphBuilderViewSource, /resolveCanvasDropSlot\(/);
+  assert.match(graphBuilderViewSource, /deriveMultivariateSlotBinding\(/);
+  assert.match(
+    graphBuilderViewSource,
+    /<GraphRuntime[\s\S]*onStateChange=\{setRuntimeState\}[\s\S]*\/?>[\s\S]*\{correlationNoticeText && \(/,
+    "GraphBuilderView must render the multivariate rejection status outside the extracted GraphRuntime block",
+  );
+  assert.doesNotMatch(graphBuilderViewSource, /isCorrelationMatrixItem\(item\)/);
+  assert.equal(
+    graphBuilderViewSource.includes("CorrelationMatrixOptions"),
+    true,
+    "LayerCard must render CorrelationMatrixOptions",
+  );
 
   for (const graphBuilderFile of graphBuilderFiles) {
     const relativeFile = graphBuilderFile.replace(resolve(TEST_FILE_DIR, "../"), "").replace(/\\/g, "/");
@@ -168,6 +207,142 @@ assert.equal(makeGraphRows(10).length, 10);
 }
 
 {
+  const continuous = (name: string) => ({ name, type: "continuous" as const });
+
+  assert.equal(
+    resolveCanvasDropSlot({ isMultivariateMode: true, xBound: false, yBound: false }),
+    "y",
+  );
+  assert.equal(
+    resolveCanvasDropSlot({ isMultivariateMode: true, xBound: true, yBound: true }),
+    "y",
+  );
+  assert.equal(
+    resolveCanvasDropSlot({ isMultivariateMode: false, xBound: false, yBound: false }),
+    "x",
+  );
+  assert.equal(
+    resolveCanvasDropSlot({ isMultivariateMode: false, xBound: true, yBound: false }),
+    "y",
+  );
+
+  const empty = deriveMultivariateSlotBinding([]);
+  assert.equal(empty.field, undefined);
+  assert.equal(empty.showManager, false);
+  assert.equal(empty.columns.length, 0);
+
+  const single = deriveMultivariateSlotBinding([continuous("a")]);
+  assert.equal(single.field?.name, "a");
+  assert.equal(single.showManager, true);
+  assert.deepEqual(single.columns.map((field) => field.name), ["a"]);
+
+  const multi = deriveMultivariateSlotBinding([
+    continuous("a"),
+    continuous("b"),
+  ]);
+  assert.equal(multi.field, undefined);
+  assert.equal(multi.showManager, true);
+  assert.deepEqual(multi.columns.map((field) => field.name), ["a", "b"]);
+}
+
+{
+  const continuous = (name: string) => ({ name, type: "continuous" as const });
+  const nominal = (name: string) => ({ name, type: "nominal" as const });
+
+  const appendResult = updateMultivariateColumns(
+    [continuous("a"), continuous("b")],
+    { type: "append", fields: [continuous("c"), continuous("d")] },
+  );
+  assert.equal(appendResult.error, undefined);
+  assert.deepEqual(
+    appendResult.columns.map((field) => field.name),
+    ["a", "b", "c", "d"],
+  );
+
+  const reorderResult = updateMultivariateColumns(
+    [continuous("a"), continuous("b"), continuous("c")],
+    { type: "reorder", from: 2, to: 0 },
+  );
+  assert.equal(reorderResult.error, undefined);
+  assert.deepEqual(
+    reorderResult.columns.map((field) => field.name),
+    ["c", "a", "b"],
+  );
+
+  const removeResult = updateMultivariateColumns(
+    [continuous("a"), continuous("b"), continuous("c")],
+    { type: "remove", index: 1 },
+  );
+  assert.equal(removeResult.error, undefined);
+  assert.deepEqual(
+    removeResult.columns.map((field) => field.name),
+    ["a", "c"],
+  );
+
+  const duplicateResult = updateMultivariateColumns(
+    [continuous("a"), continuous("b")],
+    { type: "append", fields: [continuous("b")] },
+  );
+  assert.equal(duplicateResult.error, "duplicateField");
+  assert.deepEqual(
+    duplicateResult.columns.map((field) => field.name),
+    ["a", "b"],
+  );
+
+  const categoricalResult = updateMultivariateColumns(
+    [continuous("a"), continuous("b")],
+    { type: "append", fields: [nominal("cat")] },
+  );
+  assert.equal(categoricalResult.error, "invalidFieldType");
+  assert.deepEqual(
+    categoricalResult.columns.map((field) => field.name),
+    ["a", "b"],
+  );
+
+  const maxColumns = Array.from({ length: 20 }, (_, index) => continuous(`v${index + 1}`));
+  const overflowResult = updateMultivariateColumns(maxColumns, {
+    type: "append",
+    fields: [continuous("v21")],
+  });
+  assert.equal(overflowResult.error, "maxColumns");
+  assert.equal(overflowResult.columns.length, 20);
+}
+
+{
+  const fit = createFitYByXItem({
+    id: "fit-bivariate-request",
+    name: "Fit Y by X 1",
+    sourceDatasetId: "dataset-fit",
+    response: { name: "height", type: "continuous" },
+    factor: { name: "age", type: "continuous" },
+    createdAt: new Date(0).toISOString(),
+  });
+  const graphItem = createEmbeddedGraphItem({
+    id: `fit-y-by-x-graph:${fit.id}`,
+    name: fit.name,
+    sourceDatasetId: fit.sourceDatasetId,
+    config: fit.graph,
+    createdAt: fit.createdAt,
+  });
+
+  const { fields, filters, elements, sampling } = deriveGraphRequestParts(graphItem);
+
+  assert.deepEqual(graphItem.modeStates.twoD.encoding.x, { name: "age", type: "continuous" });
+  assert.deepEqual(graphItem.modeStates.twoD.encoding.y, { name: "height", type: "continuous" });
+  assert.deepEqual(fields, [
+    { role: "x", column: "age" },
+    { role: "y", column: "height" },
+  ]);
+  assert.deepEqual(filters, []);
+  assert.deepEqual(elements, [
+    { kind: "points", summaryStat: "none" },
+    { kind: "fitline", summaryStat: "none" },
+  ]);
+  assert.deepEqual(sampling, { mode: "full" });
+  assert.equal(canExecuteGraphRequest(graphItem, fields, elements), true);
+}
+
+{
   const en = readJson("../src/i18n/locales/en.json");
   const vi = readJson("../src/i18n/locales/vi.json");
   const zhCn = readJson("../src/i18n/locales/zh-CN.json");
@@ -176,6 +351,22 @@ assert.equal(makeGraphRows(10).length, 10);
     "graph.rowStatus.pending",
     "graph.rowStatus.pendingRows",
     "graph.pipeline.progress",
+    "graph.type.correlationMatrix",
+    "graph.opt.correlationMethod",
+    "graph.opt.correlation.pearson",
+    "graph.opt.correlation.spearman",
+    "graph.opt.correlation.kendall",
+    "graph.correlation.requiresColumns",
+    "graph.correlation.tooManyColumns",
+    "graph.correlation.pair",
+    "graph.correlation.coefficient",
+    "graph.correlation.unavailableLabel",
+    "graph.correlation.sampleCount",
+    "graph.correlation.unavailableReason.insufficientData",
+    "graph.correlation.unavailableReason.zeroVariance",
+    "graph.correlation.unavailableReason.unknown",
+    "graph.correlation.dropReason.duplicateField",
+    "graph.correlation.dropReason.invalidFieldType",
   ];
 
   for (const keyPath of requiredLocalePaths) {
@@ -405,6 +596,7 @@ assert.deepEqual(Array.from(dynamicDecoded.wrapCodes ?? []), [1, 1]);
     filters: [],
     elements: [{ kind: "line", summaryStat: "none" }],
     sampling: { mode: "full" },
+    rawPointBudget: 8_000,
     viewport: { width: 1024, height: 768 },
   };
 
@@ -449,6 +641,7 @@ assert.deepEqual(Array.from(dynamicDecoded.wrapCodes ?? []), [1, 1]);
       processedRows: 3,
       chunksSent: 1,
       cancelled: false,
+      rawPointDisposition: { status: "included", validRows: 3, budget: 8_000 },
     },
   });
 
@@ -515,7 +708,159 @@ assert.equal(isGraphAggregatePacket({
       count: 1,
     },
   ],
-}), false);
+}), true);
+
+assert.equal(isGraphAggregatePacket({
+  kind: "boxPlot",
+  yColumn: "cost",
+  entries: [
+    {
+      count: 4,
+      min: 1,
+      q1: 2,
+      median: 3,
+      q3: 4,
+      max: 5,
+      whiskerLow: 1,
+      whiskerHigh: 5,
+      outliers: [],
+    },
+  ],
+}), true);
+
+assert.equal(isGraphAggregatePacket({
+  kind: "boxPlot",
+  yColumn: "cost",
+  entries: [
+    {
+      group: "DV",
+      category: "203-A6",
+      sourceColumn: "203-A6",
+      count: 4,
+      min: 4.3,
+      q1: 4.35,
+      median: 4.4,
+      q3: 4.45,
+      max: 4.5,
+      whiskerLow: 4.3,
+      whiskerHigh: 4.5,
+      outliers: [],
+    },
+  ],
+}), true);
+
+const validCorrelationPacket = {
+  kind: "correlationMatrix" as const,
+  method: "pearson",
+  columns: ["a", "b"],
+  cells: [
+    { xIndex: 0, yIndex: 0, coefficient: 1, sampleCount: 10 },
+    { xIndex: 1, yIndex: 0, coefficient: 0.5, sampleCount: 9 },
+    { xIndex: 0, yIndex: 1, coefficient: 0.5, sampleCount: 9 },
+    { xIndex: 1, yIndex: 1, coefficient: 1, sampleCount: 10 },
+  ],
+};
+
+assert.equal(isGraphAggregatePacket(validCorrelationPacket), true);
+assert.equal(isGraphAggregatePacket({ ...validCorrelationPacket, method: "distance" }), false);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: validCorrelationPacket.cells.slice(0, 3),
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    columns: ["a", "a"],
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: [
+      validCorrelationPacket.cells[0],
+      validCorrelationPacket.cells[1],
+      validCorrelationPacket.cells[2],
+      { ...validCorrelationPacket.cells[3], xIndex: 0, yIndex: 0 },
+    ],
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: [
+      validCorrelationPacket.cells[0],
+      validCorrelationPacket.cells[1],
+      validCorrelationPacket.cells[2],
+      { ...validCorrelationPacket.cells[3], xIndex: 2 },
+    ],
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: [
+      validCorrelationPacket.cells[0],
+      validCorrelationPacket.cells[1],
+      { ...validCorrelationPacket.cells[2], coefficient: 1.01 },
+      validCorrelationPacket.cells[3],
+    ],
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: [
+      validCorrelationPacket.cells[0],
+      { ...validCorrelationPacket.cells[1], sampleCount: -1 },
+      validCorrelationPacket.cells[2],
+      validCorrelationPacket.cells[3],
+    ],
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: [
+      validCorrelationPacket.cells[0],
+      { ...validCorrelationPacket.cells[1], sampleCount: 2.5 },
+      validCorrelationPacket.cells[2],
+      validCorrelationPacket.cells[3],
+    ],
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: [
+      validCorrelationPacket.cells[0],
+      { ...validCorrelationPacket.cells[1], coefficient: undefined },
+      validCorrelationPacket.cells[2],
+      validCorrelationPacket.cells[3],
+    ],
+  }),
+  false,
+);
+assert.equal(
+  isGraphAggregatePacket({
+    ...validCorrelationPacket,
+    cells: [
+      validCorrelationPacket.cells[0],
+      { ...validCorrelationPacket.cells[1], unavailableReason: "zeroVariance" },
+      validCorrelationPacket.cells[2],
+      validCorrelationPacket.cells[3],
+    ],
+  }),
+  false,
+);
 
 assert.throws(
   () =>
@@ -634,6 +979,7 @@ function makeRequest(requestId: string, generation: number): GraphDataRequest {
     filters: [],
     elements: [{ kind: "points", summaryStat: "none" }],
     sampling: { mode: "full" },
+    rawPointBudget: 8_000,
     viewport: { width: 1280, height: 720 },
   };
 }
@@ -686,6 +1032,7 @@ function makeCompletion(requestId: string, generation: number, cancelled = false
     processedRows: 4,
     chunksSent: 2,
     cancelled,
+    rawPointDisposition: { status: "included", validRows: 4, budget: 8_000 },
   };
 }
 
@@ -701,6 +1048,7 @@ function makeCommittedFrame(): GraphDataFrame {
     extents: {},
     rawChunks: [],
     aggregates: [],
+    rawPointDisposition: { status: "empty", validRows: 0, budget: 8_000 },
   };
 }
 
@@ -722,20 +1070,173 @@ function run(state: GraphStreamState, ...messages: Parameters<typeof reduceGraph
   return next;
 }
 
-function makeGraphBuilderItem(overrides: Partial<GraphBuilderItem> = {}): GraphBuilderItem {
+function defaultModeStates(): GraphBuilderItem["modeStates"] {
+  return {
+    twoD: {
+      encoding: {},
+      multiX: [],
+      multiY: [],
+      elements: [{ kind: "points", enabled: true }],
+      smootherLambda: 0.4,
+    },
+    threeD: {
+      encoding: {},
+      elements: [{ kind: "scatter3d", enabled: true }],
+      smootherLambda: 0.4,
+    },
+    multivariate: {
+      columns: [],
+      chartType: "correlationMatrix",
+      correlationMethod: "pearson",
+    },
+  };
+}
+
+function continuous(name: string): { name: string; type: "continuous" } {
+  return { name, type: "continuous" };
+}
+
+function makeGraphBuilderItem(overrides: Record<string, unknown> = {}): GraphBuilderItem {
+  return normalizeGraphBuilderItem({
+    id: "graph-1",
+    name: "Graph 1",
+    sourceDatasetId: "dataset-1",
+    createdAt: new Date(0).toISOString(),
+    ...overrides,
+  });
+}
+
+function makeCanonicalGraphBuilderItem(input: {
+  mode: GraphBuilderItem["mode"];
+  modeStates: GraphBuilderItem["modeStates"];
+  filters?: GraphBuilderItem["filters"];
+  sampling?: GraphBuilderItem["sampling"];
+}): GraphBuilderItem {
   return {
     id: "graph-1",
     name: "Graph 1",
     sourceDatasetId: "dataset-1",
-    encoding: {
-      x: { name: "region", type: "nominal" },
-      y: { name: "cost", type: "continuous" },
-    },
-    elements: [{ kind: "points", enabled: true }],
-    smootherLambda: 0.5,
-    createdAt: new Date().toISOString(),
-    ...overrides,
+    createdAt: new Date(0).toISOString(),
+    mode: input.mode,
+    modeStates: input.modeStates,
+    filters: input.filters,
+    sampling: input.sampling,
   };
+}
+
+function makeLegacyGraphBuilderItem(overrides: Record<string, unknown> = {}): GraphBuilderItem {
+  const raw = overrides as {
+    mode?: GraphBuilderItem["mode"];
+    modeStates?: Partial<GraphBuilderItem["modeStates"]>;
+    encoding?: Record<string, { name: string; type: "continuous" | "nominal" | "ordinal" | "date" }>;
+    elements?: Array<{ kind: string; enabled?: boolean; options?: Record<string, unknown> }>;
+    multiX?: Array<{ name: string; type: "continuous" | "nominal" | "ordinal" | "date" }>;
+    multiY?: Array<{ name: string; type: "continuous" | "nominal" | "ordinal" | "date" }>;
+    threeD?: boolean;
+    filters?: GraphBuilderItem["filters"];
+    sampling?: GraphBuilderItem["sampling"];
+    hiddenGroups?: string[];
+    groupStyles?: GraphBuilderItem["modeStates"]["twoD"]["groupStyles"];
+    smootherLambda?: number;
+  };
+
+  return makeGraphBuilderItem(raw);
+}
+
+{
+  const base = makeLegacyGraphBuilderItem({
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+      overlay: { name: "build", type: "nominal" },
+    },
+    elements: [{ kind: "boxplot", enabled: true }],
+    hiddenGroups: [],
+  });
+  const visualOnlyChange = makeLegacyGraphBuilderItem({
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+      overlay: { name: "build", type: "nominal" },
+    },
+    elements: [{ kind: "boxplot", enabled: true }],
+    hiddenGroups: ["EV2"],
+    groupStyles: {
+      "TC1.6": { fill: { color: "#ff0000" } },
+    },
+  });
+  const dataChange: GraphBuilderItem = {
+    ...base,
+    filters: [{
+      op: "AND",
+      rule: { kind: "categorical", field: "build", selected: ["EV2"] },
+    }],
+  };
+
+  assert.equal(
+    deriveGraphRequestIdentity(visualOnlyChange),
+    deriveGraphRequestIdentity(base),
+    "legend visibility and color edits must not restart the graph data stream",
+  );
+  assert.notEqual(
+    deriveGraphRequestIdentity(dataChange),
+    deriveGraphRequestIdentity(base),
+    "filter edits must still restart the graph data stream",
+  );
+}
+
+{
+  const normalCurveItem = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: { y: continuous("measurement") },
+        elements: [{ kind: "normalCurve", enabled: true }],
+      },
+    },
+    sampling: { mode: "full" },
+  });
+  const parts = deriveGraphRequestParts(normalCurveItem);
+
+  assert.deepEqual(parts.fields, [{ role: "y", column: "measurement" }]);
+  assert.deepEqual(parts.elements, [{ kind: "normalCurve", summaryStat: "none" }]);
+  assert.deepEqual(parts.sampling, { mode: "full" });
+  assert.equal(canExecuteGraphRequest(normalCurveItem, parts.fields, parts.elements), true);
+}
+
+{
+  const xOnlyNormalCurve = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: { x: continuous("measurement") },
+        elements: [{ kind: "normalCurve", enabled: true }],
+      },
+    },
+  });
+  const parts = deriveGraphRequestParts(xOnlyNormalCurve);
+
+  assert.deepEqual(parts.fields, [{ role: "y", column: "measurement" }]);
+  assert.equal(canExecuteGraphRequest(xOnlyNormalCurve, parts.fields, parts.elements), true);
+}
+
+function makeEquivalentEmbeddedGraphItem(item: GraphBuilderItem): GraphBuilderItem {
+  return createEmbeddedGraphItem({
+    id: `${item.id}-embedded`,
+    name: `${item.name} embedded`,
+    sourceDatasetId: item.sourceDatasetId,
+    createdAt: item.createdAt,
+    config: {
+      mode: item.mode,
+      modeStates: item.modeStates,
+      filters: item.filters,
+      sampling: item.sampling,
+    },
+  });
 }
 
 function roleColumns(fields: ReturnType<typeof deriveFields>, role: string): string[] {
@@ -771,6 +1272,73 @@ function makeProgressedChunk(
       },
     },
   };
+}
+
+{
+  const defaults = defaultModeStates();
+  const interactive = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      twoD: {
+        encoding: {
+          x: { name: "site", type: "nominal" },
+          y: { name: "height", type: "continuous" },
+          overlay: { name: "batch", type: "ordinal" },
+        },
+        multiX: [],
+        multiY: [],
+        elements: [
+          { kind: "points", enabled: true },
+          { kind: "boxplot", enabled: true },
+        ],
+        smootherLambda: 0.4,
+      },
+      threeD: defaults.threeD,
+      multivariate: defaults.multivariate,
+    },
+    filters: [
+      { op: "AND", rule: { kind: "categorical", field: "site", selected: ["North", "South"] } },
+    ],
+    sampling: { mode: "full" },
+  });
+  const embedded = makeEquivalentEmbeddedGraphItem(interactive);
+
+  assert.deepEqual(
+    deriveGraphRequestParts(interactive),
+    deriveGraphRequestParts(embedded),
+    "equivalent interactive and embedded graph items must derive identical request parts",
+  );
+}
+
+{
+  const fitYByXItem = createFitYByXItem({
+    id: "fit-1",
+    name: "Fit Y by X 1",
+    sourceDatasetId: "dataset-1",
+    response: { name: "height", type: "continuous" },
+    factor: { name: "site", type: "nominal" },
+    createdAt: new Date(0).toISOString(),
+  });
+  const interactive = normalizeGraphBuilderItem({
+    ...fitYByXItem.graph,
+    id: "fit-y-by-x-graph:interactive",
+    name: "Fit Y by X Interactive",
+    sourceDatasetId: fitYByXItem.sourceDatasetId,
+    createdAt: fitYByXItem.createdAt,
+  });
+  const embedded = createEmbeddedGraphItem({
+    id: "fit-y-by-x-graph:fit-1",
+    name: fitYByXItem.name,
+    sourceDatasetId: fitYByXItem.sourceDatasetId,
+    createdAt: fitYByXItem.createdAt,
+    config: fitYByXItem.graph,
+  });
+
+  assert.deepEqual(
+    deriveGraphRequestParts(interactive),
+    deriveGraphRequestParts(embedded),
+    "interactive Fit Y by X and embedded Fit Y by X items must derive identical request parts",
+  );
 }
 
 {
@@ -948,6 +1516,7 @@ function makeProgressedChunk(
         processedRows: 0,
         chunksSent: 0,
         cancelled: false,
+        rawPointDisposition: { status: "empty", validRows: 0, budget: 8_000 },
       },
     },
   );
@@ -960,6 +1529,71 @@ function makeProgressedChunk(
     sourceRows: 0,
     percent: 100,
   });
+}
+
+{
+  const state = run(
+    createInitialGraphStreamState(makeCommittedFrame()),
+    { type: "start", request: makeRequest("req-points-omitted", 35) },
+    { type: "aggregate", packet: histogramPacket },
+    {
+      type: "complete",
+      completion: {
+        requestId: "req-points-omitted",
+        datasetId: "dataset-1",
+        generation: 35,
+        sourceRows: 8_001,
+        processedRows: 8_001,
+        chunksSent: 0,
+        cancelled: false,
+        rawPointDisposition: {
+          status: "omitted",
+          reason: "pointBudgetExceeded",
+          validRows: 8_001,
+          budget: 8_000,
+        },
+      },
+    },
+  );
+
+  assert.equal(state.status, "ready");
+  assert.equal(state.error, null);
+  assert.equal(state.committed?.rawChunks.length, 0);
+  assert.equal(state.committed?.aggregates.length, 1);
+  assert.deepEqual(state.committed?.rawPointDisposition, {
+    status: "omitted",
+    reason: "pointBudgetExceeded",
+    validRows: 8_001,
+    budget: 8_000,
+  });
+}
+
+{
+  const state = run(
+    createInitialGraphStreamState(makeCommittedFrame()),
+    { type: "start", request: makeRequest("req-included-without-chunks", 36) },
+    {
+      type: "complete",
+      completion: {
+        requestId: "req-included-without-chunks",
+        datasetId: "dataset-1",
+        generation: 36,
+        sourceRows: 1,
+        processedRows: 1,
+        chunksSent: 0,
+        cancelled: false,
+        rawPointDisposition: {
+          status: "included",
+          validRows: 1,
+          budget: 8_000,
+        },
+      },
+    },
+  );
+
+  assert.equal(state.pending, null);
+  assert.equal(state.committed?.requestId, "old-request");
+  assert.match(state.error ?? "", /inconsistent chunksSent/i);
 }
 
 {
@@ -1152,6 +1786,48 @@ function makeProgressedChunk(
 {
   const events: string[] = [];
   let transportError: string | null = null;
+  let payloadByteLength = 0;
+  let receivedBytes: number[] = [];
+  const request = makeRequest("req-transport-byte-array", 29);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {
+      events.push("header");
+    },
+    onPayload: (payload) => {
+      events.push("payload");
+      payloadByteLength = payload.byteLength;
+      receivedBytes = Array.from(new Uint8Array(payload));
+    },
+    onAggregate: () => {},
+    onComplete: () => {
+      events.push("complete");
+    },
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  const payload = makePayload(0);
+  transport.onChannelMessage({
+    messageType: "header",
+    ...makeHeader(request.requestId, request.generation, 0, true),
+  });
+  transport.onChannelMessage(Array.from(new Uint8Array(payload)));
+  transport.onChannelMessage({
+    messageType: "complete",
+    ...makeCompletion(request.requestId, request.generation),
+    chunksSent: 1,
+  });
+
+  assert.equal(transportError, null);
+  assert.equal(payloadByteLength, payload.byteLength);
+  assert.deepEqual(receivedBytes, Array.from(new Uint8Array(payload)));
+  assert.deepEqual(events, ["header", "payload", "complete"]);
+}
+
+{
+  const events: string[] = [];
+  let transportError: string | null = null;
   const request = makeRequest("req-typed-array-payload", 27);
   const transport = createGraphStreamTransport(request, {
     onHeader: () => {
@@ -1172,12 +1848,12 @@ function makeProgressedChunk(
 
   transport.onChannelMessage({
     messageType: "header",
-    ...makeHeader("req-typed-array-payload", 27, 0, true),
+    ...makeHeader(request.requestId, request.generation, 0, true),
   });
   transport.onChannelMessage(new Uint8Array(makePayload(0)));
   transport.onChannelMessage({
     messageType: "complete",
-    ...makeCompletion("req-typed-array-payload", 27),
+    ...makeCompletion(request.requestId, request.generation),
     chunksSent: 1,
   });
 
@@ -1186,18 +1862,82 @@ function makeProgressedChunk(
 }
 
 {
+  let transportError: string | null = null;
+  const request = makeRequest("req-transport-sparse-byte-array", 30);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {},
+    onPayload: () => {},
+    onAggregate: () => {},
+    onComplete: () => {},
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({
+    messageType: "header",
+    ...makeHeader(request.requestId, request.generation, 0, true),
+  });
+  transport.onChannelMessage([1, , 3]);
+
+  assert.match(transportError ?? "", /unknown chunk/i);
+}
+
+{
+  let aggregate: GraphAggregatePacket | null = null;
+  let transportError: string | null = null;
+  const request = makeRequest("req-correlation-null-options", 23);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {},
+    onPayload: () => {},
+    onAggregate: (packet) => {
+      aggregate = packet;
+    },
+    onComplete: () => {},
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({
+    messageType: "header",
+    ...makeHeader(request.requestId, request.generation, 0, true),
+  });
+  transport.onChannelMessage(makePayload(0));
+  transport.onChannelMessage(JSON.stringify({
+    messageType: "aggregate",
+    kind: "correlationMatrix",
+    method: "pearson",
+    columns: ["a", "b"],
+    cells: [
+      { xIndex: 0, yIndex: 0, coefficient: 1, sampleCount: 10, unavailableReason: null },
+      { xIndex: 1, yIndex: 0, coefficient: null, sampleCount: 10, unavailableReason: "zeroVariance" },
+      { xIndex: 0, yIndex: 1, coefficient: null, sampleCount: 10, unavailableReason: "zeroVariance" },
+      { xIndex: 1, yIndex: 1, coefficient: 1, sampleCount: 10, unavailableReason: null },
+    ],
+  }));
+
+  assert.equal(transportError, null);
+  assert.equal(aggregate?.kind, "correlationMatrix");
+}
+
+{
   const events: string[] = [];
   let transportError: string | null = null;
-  const request = makeRequest("req-number-array-payload", 28);
+  const request: GraphDataRequest = {
+    ...makeRequest("req-correlation-aggregate-only", 27),
+    elements: [{ kind: "correlationMatrix", summaryStat: "none", correlationMethod: "pearson" }],
+  };
   const transport = createGraphStreamTransport(request, {
     onHeader: () => {
       events.push("header");
     },
-    onPayload: (receivedPayload) => {
+    onPayload: () => {
       events.push("payload");
-      assert.equal(receivedPayload.byteLength, makePayload(0).byteLength);
     },
-    onAggregate: () => {},
+    onAggregate: (packet) => {
+      events.push(`aggregate:${packet.kind}`);
+    },
     onComplete: () => {
       events.push("complete");
     },
@@ -1207,18 +1947,89 @@ function makeProgressedChunk(
   });
 
   transport.onChannelMessage({
-    messageType: "header",
-    ...makeHeader("req-number-array-payload", 28, 0, true),
+    messageType: "aggregate",
+    ...validCorrelationPacket,
   });
-  transport.onChannelMessage(Array.from(new Uint8Array(makePayload(0))));
   transport.onChannelMessage({
     messageType: "complete",
-    ...makeCompletion("req-number-array-payload", 28),
-    chunksSent: 1,
+    ...makeCompletion(request.requestId, request.generation),
+    chunksSent: 0,
   });
 
   assert.equal(transportError, null);
-  assert.deepEqual(events, ["header", "payload", "complete"]);
+  assert.deepEqual(events, ["aggregate:correlationMatrix", "complete"]);
+}
+
+{
+  const events: string[] = [];
+  let transportError: string | null = null;
+  const request: GraphDataRequest = {
+    ...makeRequest("req-correlation-aggregate-only-wrong-kind", 28),
+    elements: [{ kind: "correlationMatrix", summaryStat: "none", correlationMethod: "pearson" }],
+  };
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {
+      events.push("header");
+    },
+    onPayload: () => {
+      events.push("payload");
+    },
+    onAggregate: () => {
+      events.push("aggregate");
+    },
+    onComplete: () => {
+      events.push("complete");
+    },
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({
+    messageType: "aggregate",
+    kind: "summary",
+    yColumn: "cost",
+    summaries: [],
+  });
+
+  assert.deepEqual(events, []);
+  assert.match(transportError ?? "", /aggregate/i);
+}
+
+{
+  const events: string[] = [];
+  let transportError: string | null = null;
+  const request = makeRequest("req-omitted-aggregate", 27);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => events.push("header"),
+    onPayload: () => events.push("payload"),
+    onAggregate: () => events.push("aggregate"),
+    onComplete: () => events.push("complete"),
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({ messageType: "aggregate", ...histogramPacket });
+  transport.onChannelMessage({
+    messageType: "complete",
+    requestId: request.requestId,
+    datasetId: request.datasetId,
+    generation: request.generation,
+    sourceRows: 8_001,
+    processedRows: 8_001,
+    chunksSent: 0,
+    cancelled: false,
+    rawPointDisposition: {
+      status: "omitted",
+      reason: "pointBudgetExceeded",
+      validRows: 8_001,
+      budget: 8_000,
+    },
+  });
+
+  assert.equal(transportError, null);
+  assert.deepEqual(events, ["aggregate", "complete"]);
 }
 
 {
@@ -1249,9 +2060,66 @@ function makeProgressedChunk(
     yColumn: "cost",
     summaries: [],
   });
+  transport.onChannelMessage({
+    messageType: "complete",
+    ...makeCompletion(request.requestId, request.generation),
+    chunksSent: 0,
+  });
 
   assert.deepEqual(events, []);
   assert.match(transportError ?? "", /aggregate/i);
+}
+
+{
+  let aggregate: GraphAggregatePacket | null = null;
+  let transportError: string | null = null;
+  const request = makeRequest("req-aggregate-null-options", 27);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {},
+    onPayload: () => {},
+    onAggregate: (packet) => {
+      aggregate = packet;
+    },
+    onComplete: () => {},
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({
+    messageType: "header",
+    ...makeHeader("req-aggregate-null-options", 27, 0, true),
+  });
+  transport.onChannelMessage(makePayload(0));
+  transport.onChannelMessage(JSON.stringify({
+    messageType: "aggregate",
+    kind: "histogram",
+    xColumn: null,
+    yColumn: "cost",
+    groupColumn: null,
+    sourceColumn: null,
+    binCount: 1,
+    minValue: 0,
+    maxValue: 1,
+    missingCount: 0,
+    binWidth: 1,
+    totalCount: 1,
+    bins: [{
+      group: null,
+      category: null,
+      sourceColumn: null,
+      facetX: null,
+      facetY: null,
+      facetZ: null,
+      wrap: null,
+      binStart: 0,
+      binEnd: 1,
+      count: 1,
+    }],
+  }));
+
+  assert.equal(transportError, null);
+  assert.equal(aggregate?.kind, "histogram");
 }
 
 {
@@ -1296,6 +2164,7 @@ function makeProgressedChunk(
       processedRows: 10,
       chunksSent: 1,
       cancelled: false,
+      rawPointDisposition: { status: "included", validRows: 2, budget: 8_000 },
     } },
   );
 
@@ -1372,7 +2241,184 @@ function makeProgressedChunk(
 }
 
 {
-  const colorGrouped = makeGraphBuilderItem({
+  const noColumns = makeCanonicalGraphBuilderItem({
+    mode: "multivariate",
+    modeStates: {
+      ...defaultModeStates(),
+      multivariate: {
+        columns: [],
+        chartType: "correlationMatrix",
+        correlationMethod: "pearson",
+      },
+    },
+  });
+  const oneColumn = makeCanonicalGraphBuilderItem({
+    mode: "multivariate",
+    modeStates: {
+      ...defaultModeStates(),
+      multivariate: {
+        columns: [continuous("only_one")],
+        chartType: "correlationMatrix",
+        correlationMethod: "pearson",
+      },
+    },
+  });
+  const twoColumns = makeCanonicalGraphBuilderItem({
+    mode: "multivariate",
+    modeStates: {
+      ...defaultModeStates(),
+      multivariate: {
+        columns: [continuous("c0"), continuous("c1")],
+        chartType: "correlationMatrix",
+        correlationMethod: "pearson",
+      },
+    },
+  });
+
+  assert.equal(canExecuteGraphRequest(noColumns, deriveGraphRequestParts(noColumns).fields, deriveGraphRequestParts(noColumns).elements), false);
+  assert.equal(canExecuteGraphRequest(oneColumn, deriveGraphRequestParts(oneColumn).fields, deriveGraphRequestParts(oneColumn).elements), false);
+  assert.equal(canExecuteGraphRequest(twoColumns, deriveGraphRequestParts(twoColumns).fields, deriveGraphRequestParts(twoColumns).elements), true);
+}
+
+{
+  const correlationItem = makeCanonicalGraphBuilderItem({
+    mode: "multivariate",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: {
+          x: continuous("inactive_x"),
+          y: continuous("inactive_y"),
+        },
+      },
+      multivariate: {
+        columns: [continuous("a"), continuous("b"), continuous("c")],
+        chartType: "correlationMatrix",
+        correlationMethod: "spearman",
+      },
+    },
+    filters: [
+      {
+        id: "corr-filter",
+        op: "AND",
+        rule: {
+          kind: "categorical",
+          field: { name: "segment", type: "nominal" },
+          selected: ["A"],
+          exclude: false,
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(roleColumns(deriveFields(correlationItem), "multiY0"), ["a"]);
+  assert.deepEqual(roleColumns(deriveFields(correlationItem), "multiY2"), ["c"]);
+  assert.deepEqual(roleColumns(deriveFields(correlationItem), "x"), []);
+  assert.deepEqual(roleColumns(deriveFields(correlationItem), "filter"), ["segment"]);
+  const correlationElementsExpected: GraphElementRequest[] = [
+    { kind: "correlationMatrix", summaryStat: "none", correlationMethod: "spearman" },
+  ];
+  assert.deepEqual(deriveElements(correlationItem), correlationElementsExpected);
+  assert.deepEqual(
+    deriveFields(correlationItem).filter((field) => field.column === "__sp_variable__" || field.column === "__sp_value__"),
+    [],
+  );
+
+  const invalidMethodItem = makeCanonicalGraphBuilderItem({
+    mode: "multivariate",
+    modeStates: {
+      ...defaultModeStates(),
+      multivariate: {
+        columns: [continuous("k0"), continuous("k1")],
+        chartType: "correlationMatrix",
+        correlationMethod: "distance" as "pearson",
+      },
+    },
+  });
+
+  const invalidCorrelationElementsExpected: GraphElementRequest[] = [
+    { kind: "correlationMatrix", summaryStat: "none", correlationMethod: "pearson" },
+  ];
+  assert.deepEqual(deriveElements(invalidMethodItem), invalidCorrelationElementsExpected);
+
+  const mixedCorrelationItem = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: {
+          x: continuous("x_active"),
+          y: continuous("y_active"),
+        },
+      },
+      multivariate: {
+        columns: [continuous("my0"), continuous("my1"), continuous("my2")],
+        chartType: "correlationMatrix",
+        correlationMethod: "pearson",
+      },
+    },
+    filters: [
+      {
+        id: "corr-filter",
+        op: "AND",
+        rule: {
+          kind: "categorical",
+          field: { name: "segment", type: "nominal" },
+          selected: ["A"],
+          exclude: false,
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(deriveFields(mixedCorrelationItem), [
+    { role: "x", column: "x_active" },
+    { role: "y", column: "y_active" },
+    { role: "filter", column: "segment" },
+  ]);
+
+  const sampledMultivariateItem = makeCanonicalGraphBuilderItem({
+    mode: "multivariate",
+    modeStates: {
+      ...defaultModeStates(),
+      multivariate: {
+        columns: [continuous("s0"), continuous("s1")],
+        chartType: "correlationMatrix",
+        correlationMethod: "pearson",
+      },
+    },
+    sampling: { mode: "sample", size: 100, seed: 7 },
+  });
+  assert.deepEqual(deriveGraphRequestParts(sampledMultivariateItem).sampling, { mode: "full" });
+
+  const rawItem = makeLegacyGraphBuilderItem({
+    elements: [
+      { kind: "points", enabled: true, options: { summaryStat: "none" } },
+      { kind: "fitline", enabled: true, options: { degree: 1 } },
+    ],
+    sampling: { mode: "full" },
+  });
+  const rawParts = deriveGraphRequestParts(rawItem);
+
+  assert.deepEqual(rawParts.sampling, {
+    mode: "sample",
+    size: SCATTER_RENDER_BUDGET,
+    seed: 0,
+  });
+  assert.deepEqual(rawParts.elements.map((element) => element.kind), ["points", "fitline"]);
+
+  const boxItem = makeLegacyGraphBuilderItem({
+    elements: [{ kind: "boxplot", enabled: true }],
+    sampling: { mode: "full" },
+  });
+
+  assert.deepEqual(deriveGraphRequestParts(boxItem).sampling, { mode: "full" });
+}
+
+{
+  const colorGrouped = makeLegacyGraphBuilderItem({
     encoding: {
       x: { name: "x", type: "continuous" },
       y: { name: "y", type: "continuous" },
@@ -1386,7 +2432,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(fields, "y"), ["y"]);
 
   const overlayFallback = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1399,7 +2445,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(overlayFallback, "group"), ["ov"]);
 
   const groupXFallback = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1412,7 +2458,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(groupXFallback, "groupX"), ["gx"]);
 
   const groupYFallback = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1425,7 +2471,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(groupYFallback, "groupY"), ["gy"]);
 
   const groupZFallback = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       threeD: true,
       encoding: {
         x: { name: "x", type: "continuous" },
@@ -1443,7 +2489,7 @@ function makeProgressedChunk(
 
 {
   const activeMultiX = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x_stale", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1456,13 +2502,57 @@ function makeProgressedChunk(
     }),
   );
 
-  assert.deepEqual(roleColumns(activeMultiX, "x"), ["x_stale"]);
+  assert.deepEqual(roleColumns(activeMultiX, "x"), []);
   assert.deepEqual(roleColumns(activeMultiX, "multiX0"), ["mx0"]);
   assert.deepEqual(roleColumns(activeMultiX, "multiX1"), ["mx1"]);
   assert.deepEqual(roleColumns(activeMultiX, "multiX2"), ["mx2"]);
 
+  const multiXAxisItem = makeLegacyGraphBuilderItem({
+    encoding: {},
+    multiX: [
+      { name: "203-A6", type: "continuous" },
+      { name: "203-A7", type: "continuous" },
+      { name: "203-A8", type: "continuous" },
+      { name: "203-A9", type: "continuous" },
+    ],
+    elements: [
+      { kind: "points", enabled: true },
+      { kind: "boxplot", enabled: true },
+    ],
+  });
+  const multiXAxisParts = deriveGraphRequestParts(multiXAxisItem);
+  assert.equal(
+    canExecuteGraphRequest(multiXAxisItem, multiXAxisParts.fields, multiXAxisParts.elements),
+    true,
+    "multi-X axis mode must issue a graph data request",
+  );
+
+  const singleMultiXAxisItem = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: {},
+        multiX: [continuous("measurement")],
+        elements: [
+          { kind: "histogram", enabled: true },
+          { kind: "normalCurve", enabled: true },
+          { kind: "boxplot", enabled: true },
+        ],
+      },
+    },
+  });
+  const singleMultiXParts = deriveGraphRequestParts(singleMultiXAxisItem);
+  assert.deepEqual(singleMultiXParts.fields, [{ role: "multiX0", column: "measurement" }]);
+  assert.equal(
+    canExecuteGraphRequest(singleMultiXAxisItem, singleMultiXParts.fields, singleMultiXParts.elements),
+    true,
+    "one X variable must use the same executable request path as multiple X variables",
+  );
+
   const activeMultiY = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y_stale", type: "continuous" },
@@ -1477,9 +2567,21 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(activeMultiY, "y"), ["y_stale"]);
   assert.deepEqual(roleColumns(activeMultiY, "multiY0"), ["my0"]);
   assert.deepEqual(roleColumns(activeMultiY, "multiY1"), ["my1"]);
+  const multiYOnlyItem = makeLegacyGraphBuilderItem({
+    encoding: {},
+    multiY: [
+      { name: "my0", type: "continuous" },
+      { name: "my1", type: "continuous" },
+    ],
+  });
+  const multiYOnlyParts = deriveGraphRequestParts(multiYOnlyItem);
+  assert.equal(
+    canExecuteGraphRequest(multiYOnlyItem, multiYOnlyParts.fields, multiYOnlyParts.elements),
+    true,
+  );
 
   const activeMultiBoth = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x_stale", type: "continuous" },
         y: { name: "y_stale", type: "continuous" },
@@ -1503,7 +2605,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(activeMultiBoth, "multiY2"), ["my2"]);
 
   const staleInactiveMulti = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1513,13 +2615,13 @@ function makeProgressedChunk(
     }),
   );
 
-  assert.deepEqual(roleColumns(staleInactiveMulti, "multiX0"), []);
+  assert.deepEqual(roleColumns(staleInactiveMulti, "multiX0"), ["only_one"]);
   assert.deepEqual(roleColumns(staleInactiveMulti, "multiY0"), []);
 }
 
 {
   const hiddenWrapFacet = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1534,7 +2636,7 @@ function makeProgressedChunk(
 
 {
   const staleUnused = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1563,7 +2665,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(staleUnused, "filter"), ["category_filter"]);
 
   const pointsWithSize = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       encoding: {
         x: { name: "x", type: "continuous" },
         y: { name: "y", type: "continuous" },
@@ -1575,7 +2677,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(pointsWithSize, "size"), ["point_size"]);
 
   const no3DElement = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       threeD: true,
       encoding: {
         x: { name: "x", type: "continuous" },
@@ -1588,7 +2690,7 @@ function makeProgressedChunk(
   assert.deepEqual(roleColumns(no3DElement, "z"), []);
 
   const with3DElement = deriveFields(
-    makeGraphBuilderItem({
+    makeLegacyGraphBuilderItem({
       threeD: true,
       encoding: {
         x: { name: "x", type: "continuous" },

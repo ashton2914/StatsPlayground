@@ -23,16 +23,78 @@ import { PostgresDataLinkDialog } from "./dataLink/PostgresDataLinkDialog";
 import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
 import { TableOpsDialog, type TableOpType } from "./TableOpsDialog";
 import { GraphBuilderView } from "./graphBuilder";
+import { FitYByXRoleDialog } from "./fitYByX";
+import {
+  FitModelRoleDialog,
+  FitModelView,
+  createFitModelItem,
+  toFitModelFieldInfo,
+  type FitModelCreateDefinition,
+} from "./fitModel";
+import { ReportView } from "./report";
+import { AnalysisView } from "./analysis/AnalysisView";
+import {
+  createDistributionAnalysisDocument,
+  createFitYByXAnalysisDocument,
+  type FitYByXAnalysisEditorItem,
+} from "./analysis/adapters";
+import {
+  createAnalysisEditorPatch,
+  toAnalysisEditorItem,
+} from "./analysis/analysisEditorRegistry";
+import { DistributionDialog, type DistributionFieldInfo } from "./distribution";
 import { TabulateView } from "./tabulate";
+import { WorkflowPanel, WorkflowView } from "./workflow";
+import {
+  ANALYSIS_SAMPLE_COLUMN,
+  createAnalysisSample,
+  createAnalysisSampleDocument,
+} from "./analysis/analysisSample";
+import {
+  buildAnalysisProjectPayload,
+  createWorkspaceAnalysisGraphConfigPatch,
+  createEmptyWorkspaceDocumentSelection,
+  getAnalysisCreationHistoryKey,
+  getRetainedActiveAnalysisIdAfterDatasetDeletion,
+  hydrateAnalysisProjectPayload,
+  selectWorkspaceDocument,
+  shouldMarkAnalysisMigrationDirty,
+  type WorkspaceDocumentKind,
+  type WorkspaceDocumentSelection,
+} from "./analysis/analysisWorkspaceLifecycle";
 import "./graphBuilder/graphBuilder.css";
+import "./fitYByX/fitYByX.css";
+import "./fitModel/fitModel.css";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
+import { useFitModelStore } from "@/stores/useFitModelStore";
+import { useReportStore } from "@/stores/useReportStore";
+import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
+import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
+import {
+  createDefaultGraph2DState,
+  createDefaultGraph3DState,
+  createDefaultMultivariateGraphState,
+} from "@/components/graphBuilder/graphBuilderMode";
+import type { AnalysisDocument, FitYByXAnalysisDocument } from "@/types/analysis";
+import type { FitYByXItem } from "@/types/fitYByX";
+import type { FitModelItem, FitModelPrefill } from "@/types/fitModel";
+import type { ReportItem } from "@/types/report";
+import type { DistributionItem } from "@/types/distribution";
 import type { TabulateItem } from "@/types/tabulate";
+import { inferFieldType } from "@/graphCore/types";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
+import {
+  allocateProjectBasename,
+  projectFileExtension,
+  resolveProjectBasenameForKind,
+  type ProjectBasenameValidationError,
+  type ProjectDocumentKind,
+} from "@/utils/projectFileNaming";
 import type { NamedSnapshot } from "@/types/history";
 import type { ImportSummary, SqliteImportSelection } from "@/types/dataLink";
 
@@ -40,6 +102,28 @@ function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
   const s = n.toPrecision(10);
   return parseFloat(s).toString();
+}
+
+function nextDistributionAnalysisName(items: readonly AnalysisDocument[]): string {
+  let maximum = 0;
+  for (const item of items) {
+    const match = /^Distribution (\d+)$/.exec(item.name);
+    if (match) maximum = Math.max(maximum, Number(match[1]));
+  }
+  return `Distribution ${maximum + 1}`;
+}
+
+function nextFitYByXAnalysisName(items: readonly AnalysisDocument[]): string {
+  let maximum = 0;
+  for (const item of items) {
+    const match = /^Fit Y by X (\d+)$/.exec(item.name);
+    if (match) maximum = Math.max(maximum, Number(match[1]));
+  }
+  return `Fit Y by X ${maximum + 1}`;
+}
+
+function isFitYByXAnalysisDocument(item: AnalysisDocument): item is FitYByXAnalysisDocument {
+  return item.analysisKind === "fitYByX";
 }
 
 /**
@@ -157,25 +241,58 @@ export function Workspace() {
   } = useProjectStore();
   const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
-  const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory } = useHistoryStore();
+  const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory, invalidateData } = useHistoryStore();
   const graphBuilders = useGraphBuilderStore((s) => s.items);
+  const fitModelItems = useFitModelStore((s) => s.items);
+  const addFitModel = useFitModelStore((s) => s.addItem);
+  const renameFitModel = useFitModelStore((s) => s.renameItem);
+  const deleteFitModel = useFitModelStore((s) => s.deleteItem);
+  const deleteFitModelByDataset = useFitModelStore((s) => s.deleteByDataset);
+  const nextFitModelName = useFitModelStore((s) => s.nextName);
+  const resetFitModels = useFitModelStore((s) => s.reset);
+  const loadFitModelFromProject = useFitModelStore((s) => s.loadFromProject);
   const tabulates = useTabulateStore((s) => s.items);
+  const workflows = useWorkflowStore((s) => s.workflows);
+  const logicalFolders = useWorkflowStore((s) => s.logicalFolders);
+  const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
+  const lineageGraph = useWorkflowStore((s) => s.lineageGraph);
+  const loadWorkflowsFromProject = useWorkflowStore((s) => s.loadFromProject);
+  const resetWorkflows = useWorkflowStore((s) => s.reset);
   const addGraphBuilder = useGraphBuilderStore((s) => s.addItem);
   const renameGraphBuilder = useGraphBuilderStore((s) => s.renameItem);
+  const migrateLegacyGraphColumnName = useGraphBuilderStore((s) => s.migrateLegacyColumnName);
   const deleteGraphBuilder = useGraphBuilderStore((s) => s.deleteItem);
   const deleteGraphBuildersByDataset = useGraphBuilderStore((s) => s.deleteByDataset);
   const resetGraphBuilders = useGraphBuilderStore((s) => s.reset);
   const loadGraphBuildersFromProject = useGraphBuilderStore((s) => s.loadFromProject);
   const gbCounter = useGraphBuilderStore((s) => s.counter);
   const bumpGbCounter = useGraphBuilderStore((s) => s.bumpCounter);
+  const reportItems = useReportStore((s) => s.items);
+  const addReport = useReportStore((s) => s.addItem);
+  const renameReport = useReportStore((s) => s.renameItem);
+  const deleteReport = useReportStore((s) => s.deleteItem);
+  const resetReports = useReportStore((s) => s.reset);
+  const loadReportsFromProject = useReportStore((s) => s.loadFromProject);
+  const nextReportName = useReportStore((s) => s.nextName);
+  const analysisItems = useAnalysisStore((s) => s.items);
+  const fitYByXAnalysisItems = analysisItems.filter(isFitYByXAnalysisDocument);
+  const addAnalysis = useAnalysisStore((s) => s.addAnalysis);
+  const updateAnalysis = useAnalysisStore((s) => s.updateAnalysis);
+  const deleteAnalysis = useAnalysisStore((s) => s.removeAnalysis);
+  const loadAnalyses = useAnalysisStore((s) => s.loadAnalyses);
+  const resetAnalyses = useAnalysisStore((s) => s.reset);
   const addTabulate = useTabulateStore((s) => s.addItem);
   const renameTabulate = useTabulateStore((s) => s.renameItem);
   const deleteTabulate = useTabulateStore((s) => s.deleteItem);
   const resetTabulates = useTabulateStore((s) => s.reset);
   const loadTabulatesFromProject = useTabulateStore((s) => s.loadFromProject);
-  const [activeTab, setActiveTab] = useState<"files" | "history">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
+  const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
   /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
   const [activeGraphBuilderId, setActiveGraphBuilderId] = useState<string | null>(null);
+  const [activeFitModelId, setActiveFitModelId] = useState<string | null>(null);
+  const [activeReportId, setActiveReportId] = useState<string | null>(null);
+  const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
   const [activeTabulateId, setActiveTabulateId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -193,6 +310,13 @@ export function Workspace() {
   const cancelActiveImport = useDataLinkStore((state) => state.cancelImport);
   const [helpDialog, setHelpDialog] = useState<"about" | "license" | null>(null);
   const [tableOp, setTableOp] = useState<TableOpType | null>(null);
+  const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
+  const [showFitModelDialog, setShowFitModelDialog] = useState(false);
+  const [fitModelPrefill, setFitModelPrefill] = useState<FitModelPrefill | null>(null);
+  const [showDistributionDialog, setShowDistributionDialog] = useState(false);
+  const [distributionColumns, setDistributionColumns] = useState<DistributionFieldInfo[]>([]);
+  const [editingAnalysisId, setEditingAnalysisId] = useState<string | null>(null);
+  const [analysisEditorColumns, setAnalysisEditorColumns] = useState<DistributionFieldInfo[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
@@ -200,6 +324,9 @@ export function Workspace() {
   const folders = useFolderStore((s) => s.folders);
   const tableFolders = useFolderStore((s) => s.tableFolders);
   const graphFolders = useFolderStore((s) => s.graphFolders);
+  const fitModelFolders = useFolderStore((s) => s.fitModelFolders);
+  const reportFolders = useFolderStore((s) => s.reportFolders);
+  const analysisFolders = useFolderStore((s) => s.analysisFolders);
   const tabulateFolders = useFolderStore((s) => s.tabulateFolders);
   const collapsedFolders = useFolderStore((s) => s.collapsed);
   const fsCreateFolder = useFolderStore((s) => s.createFolder);
@@ -208,6 +335,9 @@ export function Workspace() {
   const fsMoveFolder = useFolderStore((s) => s.moveFolder);
   const fsSetTableFolder = useFolderStore((s) => s.setTableFolder);
   const fsSetGraphFolder = useFolderStore((s) => s.setGraphFolder);
+  const fsSetFitModelFolder = useFolderStore((s) => s.setFitModelFolder);
+  const fsSetReportFolder = useFolderStore((s) => s.setReportFolder);
+  const fsSetAnalysisFolder = useFolderStore((s) => s.setAnalysisFolder);
   const fsSetTabulateFolder = useFolderStore((s) => s.setTabulateFolder);
   const fsToggleCollapsed = useFolderStore((s) => s.toggleCollapsed);
   const fsCollapseAll = useFolderStore((s) => s.collapseAll);
@@ -228,6 +358,9 @@ export function Workspace() {
   type CtxMenu =
     | { kind: "table"; id: string; x: number; y: number }
     | { kind: "graph"; id: string; x: number; y: number }
+    | { kind: "fitModel"; id: string; x: number; y: number }
+    | { kind: "report"; id: string; x: number; y: number }
+    | { kind: "analysis"; id: string; x: number; y: number }
     | { kind: "tabulate"; id: string; x: number; y: number }
     | { kind: "folder"; path: string; x: number; y: number }
     | { kind: "empty"; x: number; y: number };
@@ -240,11 +373,167 @@ export function Workspace() {
   const [tableKey, setTableKey] = useState(0);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
+  const reportHistoryTimerRef = useRef<number | null>(null);
+  const pendingReportHistoryRef = useRef<{ id: string; name: string } | null>(null);
+
+  useEffect(() => {
+    if (
+      activeDatasetId
+      || activeGraphBuilderId
+      || activeReportId
+      || activeTabulateId
+    ) {
+      setActiveFitModelId(null);
+    }
+  }, [
+    activeDatasetId,
+    activeGraphBuilderId,
+    activeReportId,
+    activeTabulateId,
+  ]);
 
   /** Record an action to history (synchronous — no IPC) */
   const recordAction = useCallback((desc: string) => {
     recordHistory(desc);
   }, [recordHistory]);
+
+  const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
+    setActiveDataset(selection.activeDatasetId);
+    setActiveGraphBuilderId(selection.activeGraphBuilderId);
+    setActiveFitModelId(selection.activeFitModelId);
+    setActiveReportId(selection.activeReportId);
+    setActiveAnalysisId(selection.activeAnalysisId);
+    setActiveTabulateId(selection.activeTabulateId);
+  }, [setActiveDataset]);
+
+  const activateWorkspaceDocument = useCallback((kind: WorkspaceDocumentKind, id: string) => {
+    applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
+  }, [applyWorkspaceDocumentSelection]);
+
+  const clearWorkspaceDocumentSelection = useCallback(() => {
+    applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
+  }, [applyWorkspaceDocumentSelection]);
+
+  const flushPendingReportHistory = useCallback(() => {
+    const pending = pendingReportHistoryRef.current;
+    if (!pending) {
+      return;
+    }
+    pendingReportHistoryRef.current = null;
+    if (reportHistoryTimerRef.current !== null) {
+      window.clearTimeout(reportHistoryTimerRef.current);
+      reportHistoryTimerRef.current = null;
+    }
+    recordAction(t("history.editReport", {
+      defaultValue: 'Edit report "{{name}}"',
+      name: pending.name,
+    }));
+  }, [recordAction, t]);
+
+  const scheduleReportHistory = useCallback((id: string, name: string) => {
+    pendingReportHistoryRef.current = { id, name };
+    if (reportHistoryTimerRef.current !== null) {
+      window.clearTimeout(reportHistoryTimerRef.current);
+    }
+    reportHistoryTimerRef.current = window.setTimeout(() => {
+      flushPendingReportHistory();
+    }, 700);
+  }, [flushPendingReportHistory]);
+
+  const handleReportMarkdownChange = useCallback((id: string, markdown: string) => {
+    if (readOnly) {
+      return;
+    }
+    const current = useReportStore.getState().items.find((item) => item.id === id);
+    if (!current || current.markdown === markdown) {
+      return;
+    }
+    useReportStore.getState().updateMarkdown(id, markdown, new Date().toISOString());
+    markDirty();
+    scheduleReportHistory(id, current.name);
+  }, [markDirty, readOnly, scheduleReportHistory]);
+
+  useEffect(() => {
+    const pending = pendingReportHistoryRef.current;
+    if (pending && activeReportId !== pending.id) {
+      flushPendingReportHistory();
+    }
+  }, [activeReportId, flushPendingReportHistory]);
+
+  useEffect(() => () => {
+    flushPendingReportHistory();
+  }, [flushPendingReportHistory]);
+
+  useEffect(() => {
+    if (!editingAnalysisId) return;
+    const editing = analysisItems.find((item) => item.id === editingAnalysisId);
+    if (!editing || !datasets.some((dataset) => dataset.id === editing.source.datasetId)) {
+      setEditingAnalysisId(null);
+    }
+  }, [analysisItems, datasets, editingAnalysisId]);
+
+  const analysisDocumentNames = useMemo(
+    () => [
+      ...analysisItems.map((item) => item.name),
+      ...fitModelItems.map((item) => item.name),
+      ...tabulates.map((item) => item.name),
+    ],
+    [analysisItems, fitModelItems, tabulates],
+  );
+
+  const withProjectExtension = useCallback((basename: string, kind: ProjectDocumentKind): string => {
+    return `${basename}${projectFileExtension(kind)}`;
+  }, []);
+
+  const invalidProjectNameMessage = useCallback((code: ProjectBasenameValidationError): string => {
+    if (code === "controlChars") {
+      return t("alert.invalidName.controlChars", {
+        defaultValue: "Name contains control characters.",
+      });
+    }
+    if (code === "reserved") {
+      return t("alert.invalidName.reserved", {
+        defaultValue: "Name is reserved by Windows and cannot be used.",
+      });
+    }
+    return t(`alert.invalidName.${code}`, { defaultValue: "Invalid name." });
+  }, [t]);
+
+  const resolveProjectBasename = useCallback((
+    requestedName: string,
+    kind: ProjectDocumentKind,
+    currentName?: string,
+  ): { basename: string; error: null } | { basename: null; error: string } => {
+    let existingNames: string[];
+    if (kind === "table") {
+      existingNames = datasets.map((d) => d.name);
+    } else if (kind === "graph") {
+      existingNames = graphBuilders.map((item) => item.name);
+    } else if (kind === "analysis") {
+      existingNames = analysisItems.map((item) => item.name);
+    } else if (kind === "fitYByX" || kind === "tabulate") {
+      existingNames = analysisDocumentNames;
+    } else if (kind === "report") {
+      existingNames = reportItems.map((item) => item.name);
+    } else {
+      existingNames = [];
+    }
+    const resolved = resolveProjectBasenameForKind(requestedName, kind, existingNames, currentName);
+    if (resolved.error === "wrongExtension") {
+      return {
+        basename: null,
+        error: t("alert.invalidName.wrongExtension", {
+          defaultValue: "Use the {{expected}} extension for this item (not {{actual}}).",
+          expected: resolved.expectedExtension,
+          actual: resolved.actualExtension,
+        }),
+      };
+    }
+    if (resolved.error) {
+      return { basename: null, error: invalidProjectNameMessage(resolved.error) };
+    }
+    return { basename: resolved.basename, error: null };
+  }, [analysisDocumentNames, analysisItems, datasets, graphBuilders, invalidProjectNameMessage, reportItems, t]);
 
   /** Called when history/snapshot is restored — refresh all UI */
   const handleHistoryRestored = useCallback(async () => {
@@ -254,9 +543,16 @@ export function Workspace() {
     if (activeDatasetId && !updatedDatasets.find((d) => d.id === activeDatasetId)) {
       setActiveDataset(null);
     }
+    if (activeFitModelId) {
+      const activeFitModel = useFitModelStore.getState().items.find((item) => item.id === activeFitModelId);
+      if (activeFitModel && !updatedDatasets.find((dataset) => dataset.id === activeFitModel.sourceDatasetId)) {
+        setActiveFitModelId(null);
+      }
+    }
     // Force DataTableView to remount and reload data
     setTableKey((k) => k + 1);
-  }, [refreshDatasets, activeDatasetId, setActiveDataset]);
+    invalidateData();
+  }, [refreshDatasets, activeDatasetId, activeFitModelId, setActiveDataset, invalidateData]);
 
   useEffect(() => {
     refreshDatasets();
@@ -305,8 +601,13 @@ export function Workspace() {
     const dsIds = new Set(datasets.map((d) => d.id));
     const gbIds = new Set(graphBuilders.map((g) => g.id));
     const tabulateIds = new Set(tabulates.map((item) => item.id));
-    fsPrune(dsIds, gbIds, tabulateIds);
-  }, [datasets, graphBuilders, tabulates, fsPrune]);
+    const fitYByXIds = new Set<string>();
+    const fitModelIds = new Set(fitModelItems.map((item) => item.id));
+    const reportIds = new Set(reportItems.map((item) => item.id));
+    const distributionIds = new Set<string>();
+    const analysisIds = new Set(analysisItems.map((item) => item.id));
+    fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds);
+  }, [analysisItems, datasets, graphBuilders, tabulates, fitModelItems, reportItems, fsPrune]);
 
   // Cmd/Ctrl+,: open preferences
   useEffect(() => {
@@ -358,17 +659,31 @@ export function Workspace() {
   const handleCreateTable = async () => {
     if (readOnly) return;
     tableCounter.current += 1;
-    const name = `Table${tableCounter.current}`;
+    const resolved = resolveProjectBasenameForKind(
+      `Table${tableCounter.current}`,
+      "table",
+      datasets.map((dataset) => dataset.name),
+    );
+    if (resolved.error) {
+      const message = resolved.error === "wrongExtension"
+        ? t("alert.invalidName.wrongExtension", {
+            defaultValue: "Use the {{expected}} extension for this item (not {{actual}}).",
+            expected: resolved.expectedExtension,
+            actual: resolved.actualExtension,
+          })
+        : invalidProjectNameMessage(resolved.error);
+      alert(message);
+      return;
+    }
+    const name = resolved.basename;
     const meta = await dataService.createTable(name, [], []);
     await refreshDatasets();
     markDirty();
-    setActiveGraphBuilderId(null);
-    setActiveTabulateId(null);
-    setActiveDataset(meta.id);
-    recordAction(t("history.newTable", { name }));
+    activateWorkspaceDocument("dataset", meta.id);
+    recordAction(t("history.newTable", { name: meta.name }));
     // Enter rename mode
     setRenamingId(meta.id);
-    setRenameValue(name);
+    setRenameValue(meta.name);
   };
   handleCreateTableRef.current = handleCreateTable;
 
@@ -398,20 +713,25 @@ export function Workspace() {
         const n = parseInt(g.name.slice(prefix.length), 10);
         return Number.isFinite(n) && n > max ? n : max;
       }, 0);
-    const name = `${ds.name} - Graph${perTableMax + 1}`;
+    const name = allocateProjectBasename(
+      `${ds.name} - Graph${perTableMax + 1}`,
+      ".spgh",
+      graphBuilders.map((item) => item.name),
+    );
     const item: GraphBuilderItem = {
       id,
       name,
       sourceDatasetId: ds.id,
-      encoding: {},
-      elements: [{ kind: "points", enabled: true }],
-      smootherLambda: 0.4,
+      mode: "2d",
+      modeStates: {
+        twoD: createDefaultGraph2DState(),
+        threeD: createDefaultGraph3DState(),
+        multivariate: createDefaultMultivariateGraphState(),
+      },
       createdAt: new Date().toISOString(),
     };
     addGraphBuilder(item);
-    setActiveDataset(null);
-    setActiveGraphBuilderId(id);
-    setActiveTabulateId(null);
+    activateWorkspaceDocument("graph", id);
     markDirty();
     recordAction(t("history.newGraph", { name, source: ds.name }));
     setRenamingId(id);
@@ -428,7 +748,11 @@ export function Workspace() {
     const id = crypto.randomUUID();
     const item: TabulateItem = {
       id,
-      name: useTabulateStore.getState().nextName(),
+      name: allocateProjectBasename(
+        useTabulateStore.getState().nextName(),
+        ".spf",
+        analysisDocumentNames,
+      ),
       sourceDatasetId: activeDatasetId,
       rowFields: [],
       columnFields: [],
@@ -438,13 +762,282 @@ export function Workspace() {
       createdAt: new Date().toISOString(),
     };
     addTabulate(item);
-    setActiveDataset(null);
-    setActiveGraphBuilderId(null);
-    setActiveTabulateId(id);
+    activateWorkspaceDocument("tabulate", id);
     markDirty();
     recordAction(t("history.newTabulate", { name: item.name, source: ds.name }));
     setRenamingId(id);
     setRenameValue(item.name);
+  };
+
+  const handleCreateFitYByX = () => {
+    if (readOnly) return;
+    if (!activeDatasetId) {
+      alert(t("alert.selectDatasetFirst"));
+      return;
+    }
+    setShowFitYByXDialog(true);
+  };
+
+  const openFitModel = (prefill?: FitModelPrefill) => {
+    if (readOnly) return;
+    const sourceDatasetId = prefill?.sourceDatasetId ?? activeDatasetId;
+    if (!sourceDatasetId || !datasets.some((dataset) => dataset.id === sourceDatasetId)) {
+      alert(t("alert.selectDatasetFirst"));
+      return;
+    }
+    setActiveDataset(sourceDatasetId);
+    setFitModelPrefill(prefill ?? null);
+    setShowFitModelDialog(true);
+  };
+
+  const handleCreateFitModel = () => openFitModel();
+
+  const handleCreateFitModelItem = async (definition: FitModelCreateDefinition) => {
+    if (!activeDatasetId) return;
+    const sourceDatasetId = activeDatasetId;
+    const [columns, displayProps] = await Promise.all([
+      dataService.getColumns(sourceDatasetId),
+      dataService.getColumnDisplayProps(sourceDatasetId).catch(() => []),
+    ]);
+    const displayPropsByIndex = new Map(displayProps.map((entry) => [entry.colIndex, entry]));
+    const fields = columns.map(([name, sqlType], index) => (
+      toFitModelFieldInfo(name, sqlType, displayPropsByIndex.get(index)).field
+    ));
+    const id = crypto.randomUUID();
+    const name = nextFitModelName();
+    const item = createFitModelItem({
+      id,
+      name,
+      sourceDatasetId,
+      response: definition.response,
+      construct: definition.construct,
+      terms: definition.terms,
+      centeringMethod: definition.centeringMethod,
+      createdAt: new Date().toISOString(),
+      fields,
+    });
+    const source = datasets.find((dataset) => dataset.id === sourceDatasetId)?.name ?? sourceDatasetId;
+    addFitModel(item);
+    activateWorkspaceDocument("fitModel", id);
+    setShowFitModelDialog(false);
+    setFitModelPrefill(null);
+    markDirty();
+    recordAction(t("history.newFitModel", { name, source }));
+    setRenamingId(id);
+    setRenameValue(name);
+  };
+
+  const handleCreateFitYByXItem = (item: FitYByXAnalysisEditorItem) => {
+    const requestedName = item.name.trim();
+    const resolved = resolveProjectBasename(
+      requestedName || nextFitYByXAnalysisName(analysisItems),
+      "analysis",
+    );
+    if (resolved.error) {
+      alert(resolved.error);
+      return;
+    }
+    if (resolved.basename === null) return;
+    const created = createFitYByXAnalysisDocument({
+      item: { ...item, name: resolved.basename },
+      confidenceLevel: item.confidenceLevel,
+      updatedAt: new Date().toISOString(),
+    });
+    const source = datasets.find((dataset) => dataset.id === created.source.datasetId)?.name
+      ?? created.source.datasetId;
+    addAnalysis(created);
+    activateWorkspaceDocument("analysis", created.id);
+    setShowFitYByXDialog(false);
+    markDirty();
+    recordAction(t("history.newFitYByX", { name: created.name, source }));
+    setRenamingId(created.id);
+    setRenameValue(created.name);
+  };
+
+  const handleCreateReport = () => {
+    if (readOnly) return;
+    const timestamp = new Date().toISOString();
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const item: ReportItem = {
+      schemaVersion: 1,
+      id,
+      name: allocateProjectBasename(nextReportName(), ".sprp", reportItems.map((entry) => entry.name)),
+      markdown: "",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    addReport(item);
+    activateWorkspaceDocument("report", id);
+    markDirty();
+    recordAction(t("history.newReport", { name: item.name }));
+    setRenamingId(id);
+    setRenameValue(item.name);
+  };
+
+  const handleCreateAnalysisSample = async () => {
+    if (readOnly) return;
+    const timestamp = new Date().toISOString();
+    const createId = (prefix: string) => (
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    );
+    const tableName = allocateProjectBasename(
+      "DIM1 Sample",
+      ".sptb",
+      datasets.map((dataset) => dataset.name),
+    );
+    const analysisName = allocateProjectBasename(
+      "DIM1 Analysis",
+      ".span",
+      analysisItems.map((analysis) => analysis.name),
+    );
+
+    let createdDatasetId: string | null = null;
+    let addedAnalysisId: string | null = null;
+    try {
+      const sample = createAnalysisSample(112, 200);
+      const dataset = await dataService.createTableFromRows({
+        name: tableName,
+        columnNames: [ANALYSIS_SAMPLE_COLUMN],
+        columnTypes: ["DOUBLE"],
+        rows: sample.rows,
+      });
+      createdDatasetId = dataset.id;
+      await refreshDatasets();
+      const analysis = createAnalysisSampleDocument({
+        datasetId: dataset.id,
+        analysisId: createId("analysis"),
+        analysisName,
+        createdAt: timestamp,
+      });
+
+      addAnalysis(analysis);
+      addedAnalysisId = analysis.id;
+      activateWorkspaceDocument("analysis", analysis.id);
+      markDirty();
+      recordAction(t(getAnalysisCreationHistoryKey("sample"), { name: analysis.name }));
+    } catch (error) {
+      if (addedAnalysisId) deleteAnalysis(addedAnalysisId);
+      if (createdDatasetId) {
+        try {
+          await dataService.deleteDataset(createdDatasetId);
+          await refreshDatasets();
+        } catch {
+        }
+      }
+      alert(t("alert.analysisSampleFailed", {
+        defaultValue: "Failed to create sample analysis: {{message}}",
+        message: String(error),
+      }));
+    }
+  };
+
+  const handleCreateDistribution = async () => {
+    if (readOnly) return;
+    if (!activeDatasetId) {
+      alert(t("alert.selectDatasetFirst"));
+      return;
+    }
+    try {
+      const columns = await dataService.getColumns(activeDatasetId);
+      setDistributionColumns(columns.map(([name, sqlType]) => ({
+        name,
+        sqlType,
+        integerCompatible: /^(?:U?(?:TINY|SMALL|BIG|HUGE)?INT(?:EGER)?)$/i.test(sqlType),
+        field: { name, type: inferFieldType(sqlType) },
+      })));
+      setShowDistributionDialog(true);
+    } catch (error) {
+      alert(t("distribution.loadFieldsFailed", {
+        defaultValue: "Failed to load fields: {{message}}",
+        message: String(error),
+      }));
+    }
+  };
+
+  const handleEditAnalysisInputs = async (id: string) => {
+    if (readOnly) return;
+    const analysis = analysisItems.find((item) => item.id === id);
+    if (!analysis) return;
+    const dataset = datasets.find((item) => item.id === analysis.source.datasetId);
+    if (!dataset) return;
+    if (analysis.analysisKind === "fitYByX") {
+      setEditingAnalysisId(id);
+      return;
+    }
+    try {
+      const columns = await dataService.getColumns(dataset.id);
+      setAnalysisEditorColumns(columns.map(([name, sqlType]) => ({
+        name,
+        sqlType,
+        integerCompatible: /^(?:U?(?:TINY|SMALL|BIG|HUGE)?INT(?:EGER)?)$/i.test(sqlType),
+        field: { name, type: inferFieldType(sqlType) },
+      })));
+      setEditingAnalysisId(id);
+    } catch (error) {
+      alert(t("distribution.loadFieldsFailed", {
+        defaultValue: "Failed to load fields: {{message}}",
+        message: String(error),
+      }));
+    }
+  };
+
+  const handleUpdateDistributionAnalysisInputs = (editing: AnalysisDocument, submitted: DistributionItem) => {
+    if (readOnly) return;
+    if (editing.analysisKind !== "distribution") return;
+    updateAnalysis(editing.id, createAnalysisEditorPatch(
+      editing,
+      submitted,
+      new Date().toISOString(),
+    ));
+    setEditingAnalysisId(null);
+    markDirty();
+    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+  };
+
+  const handleUpdateFitYByXAnalysisInputs = (
+    editing: FitYByXAnalysisDocument,
+    submitted: FitYByXAnalysisEditorItem,
+  ) => {
+    if (readOnly) return;
+    updateAnalysis(editing.id, createAnalysisEditorPatch(
+      editing,
+      submitted,
+      new Date().toISOString(),
+    ));
+    setEditingAnalysisId(null);
+    markDirty();
+    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+  };
+
+  const handleCreateDistributionItem = (item: DistributionItem) => {
+    if (readOnly) return;
+    const resolved = resolveProjectBasename(
+      item.name.trim() || nextDistributionAnalysisName(analysisItems),
+      "analysis",
+    );
+    if (resolved.error) {
+      alert(resolved.error);
+      return;
+    }
+    if (resolved.basename === null) return;
+    const created = createDistributionAnalysisDocument(
+      { ...item, name: resolved.basename },
+      new Date().toISOString(),
+    );
+    const source = datasets.find((dataset) => dataset.id === created.source.datasetId)?.name
+      ?? created.source.datasetId;
+    addAnalysis(created);
+    activateWorkspaceDocument("analysis", created.id);
+    setShowDistributionDialog(false);
+    markDirty();
+    recordAction(t(getAnalysisCreationHistoryKey("generic"), { name: created.name, source }));
+    setRenamingId(created.id);
+    setRenameValue(created.name);
   };
 
   const handleRenameSubmit = async (id: string) => {
@@ -460,30 +1053,101 @@ export function Workspace() {
     // 是图表项还是数据表？
     const gb = useGraphBuilderStore.getState().items.find((it) => it.id === id);
     if (gb) {
-      if (trimmed !== gb.name) {
-        renameGraphBuilder(id, trimmed);
+      const resolved = resolveProjectBasename(trimmed, "graph", gb.name);
+      if (resolved.error !== null) {
+        alert(resolved.error);
+        return;
+      }
+      const basename = resolved.basename;
+      if (basename !== gb.name) {
+        renameGraphBuilder(id, basename);
         markDirty();
-        recordAction(t("history.renameGraph", { old: gb.name, new: trimmed }));
+        recordAction(t("history.renameGraph", { old: gb.name, new: basename }));
       }
       setRenamingId(null);
       return;
     }
     const tabulate = useTabulateStore.getState().items.find((it) => it.id === id);
     if (tabulate) {
-      if (trimmed !== tabulate.name) {
-        renameTabulate(id, trimmed);
+      const resolved = resolveProjectBasename(trimmed, "tabulate", tabulate.name);
+      if (resolved.error !== null) {
+        alert(resolved.error);
+        return;
+      }
+      const basename = resolved.basename;
+      if (basename !== tabulate.name) {
+        renameTabulate(id, basename);
         markDirty();
-        recordAction(t("history.renameTabulate", { old: tabulate.name, new: trimmed }));
+        recordAction(t("history.renameTabulate", { old: tabulate.name, new: basename }));
+      }
+      setRenamingId(null);
+      return;
+    }
+    const fitModel = useFitModelStore.getState().items.find((it) => it.id === id);
+    if (fitModel) {
+      if (trimmed !== fitModel.name) {
+        renameFitModel(id, trimmed);
+        markDirty();
+        recordAction(t("history.renameFitModel", { old: fitModel.name, new: trimmed }));
+      }
+      setRenamingId(null);
+      return;
+    }
+    const report = useReportStore.getState().items.find((it) => it.id === id);
+    if (report) {
+      flushPendingReportHistory();
+      const resolved = resolveProjectBasename(trimmed, "report", report.name);
+      if (resolved.error !== null) {
+        alert(resolved.error);
+        return;
+      }
+      const basename = resolved.basename;
+      if (basename !== report.name) {
+        renameReport(id, basename);
+        markDirty();
+        recordAction(t("history.renameReport", { old: report.name, new: basename }));
+      }
+      setRenamingId(null);
+      return;
+    }
+    const analysis = useAnalysisStore.getState().items.find((it) => it.id === id);
+    if (analysis) {
+      const resolved = resolveProjectBasename(trimmed, "analysis", analysis.name);
+      if (resolved.error !== null) {
+        alert(resolved.error);
+        return;
+      }
+      const basename = resolved.basename;
+      if (basename !== analysis.name) {
+        updateAnalysis(id, { name: basename, updatedAt: new Date().toISOString() });
+        markDirty();
+        recordAction(t("history.renameAnalysis", { old: analysis.name, new: basename }));
       }
       setRenamingId(null);
       return;
     }
     const oldName = datasets.find((d) => d.id === id)?.name;
-    if (trimmed !== oldName) {
-      await dataService.renameDataset(id, trimmed);
-      await refreshDatasets();
-      markDirty();
-      recordAction(t("history.renameTable", { old: oldName ?? "", new: trimmed }));
+    if (!oldName) {
+      setRenamingId(null);
+      return;
+    }
+    const resolved = resolveProjectBasename(trimmed, "table", oldName);
+    if (resolved.error !== null) {
+      alert(resolved.error);
+      return;
+    }
+    const basename = resolved.basename;
+    if (basename !== oldName) {
+      try {
+        await dataService.renameDataset(id, basename);
+        await refreshDatasets();
+        markDirty();
+        recordAction(t("history.renameTable", { old: oldName, new: basename }));
+      } catch (error) {
+        alert(t("alert.renameTableFailed", {
+          defaultValue: "Rename table failed: ",
+        }) + String(error));
+      }
     }
     setRenamingId(null);
   };
@@ -504,8 +1168,44 @@ export function Workspace() {
     if (item) recordAction(t("history.deleteTabulate", { name: item.name }));
   };
 
+  const handleDeleteFitModel = (id: string) => {
+    const item = useFitModelStore.getState().items.find((entry) => entry.id === id);
+    deleteFitModel(id);
+    if (activeFitModelId === id) setActiveFitModelId(null);
+    markDirty();
+    if (item) recordAction(t("history.deleteFitModel", { name: item.name }));
+  };
+
+  const handleDeleteReport = (id: string) => {
+    const item = useReportStore.getState().items.find((entry) => entry.id === id);
+    flushPendingReportHistory();
+    deleteReport(id);
+    if (activeReportId === id) setActiveReportId(null);
+    markDirty();
+    if (item) recordAction(t("history.deleteReport", { name: item.name }));
+  };
+
+  const handleDeleteAnalysis = (id: string) => {
+    if (readOnly) return;
+    const item = useAnalysisStore.getState().items.find((entry) => entry.id === id);
+    deleteAnalysis(id);
+    if (activeAnalysisId === id) setActiveAnalysisId(null);
+    markDirty();
+    if (item) recordAction(t("history.deleteAnalysis", { name: item.name }));
+  };
+
   const handleDeleteDataset = async (id: string) => {
     const name = datasets.find((d) => d.id === id)?.name ?? id;
+    const activeFitModel = activeFitModelId
+      ? useFitModelStore.getState().items.find((item) => item.id === activeFitModelId)
+      : null;
+    const activeAnalysis = activeAnalysisId
+      ? useAnalysisStore.getState().items.find((item) => item.id === activeAnalysisId)
+      : null;
+    const retainedActiveAnalysisId = getRetainedActiveAnalysisIdAfterDatasetDeletion({
+      deletedDatasetId: id,
+      activeAnalysis: activeAnalysis ?? null,
+    });
     await dataService.deleteDataset(id);
     if (activeDatasetId === id) setActiveDataset(null);
     // 联动删除引用此数据表的图表
@@ -516,6 +1216,9 @@ export function Workspace() {
         .items.find((it) => it.id === activeGraphBuilderId);
       if (!stillExists) setActiveGraphBuilderId(null);
     }
+    deleteFitModelByDataset(id);
+    if (activeFitModel?.sourceDatasetId === id) setActiveFitModelId(null);
+    if (retainedActiveAnalysisId) setActiveAnalysisId(retainedActiveAnalysisId);
     await refreshDatasets();
     markDirty();
     recordAction(t("history.deleteTable", { name }));
@@ -633,9 +1336,7 @@ export function Workspace() {
       // Per issue #7 the .sptb file carries no folder info; the imported
       // table lands at the project root. The user can drag it into a
       // folder afterwards.
-      setActiveGraphBuilderId(null);
-      setActiveTabulateId(null);
-      setActiveDataset(result.id);
+      activateWorkspaceDocument("dataset", result.id);
       markDirty();
     } catch (e) {
       alert(t("alert.importTableFailed") + String(e));
@@ -681,9 +1382,7 @@ export function Workspace() {
         id = `gb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       }
       addGraphBuilder({ ...item, id });
-      setActiveDataset(null);
-      setActiveTabulateId(null);
-      setActiveGraphBuilderId(id);
+      activateWorkspaceDocument("graph", id);
       markDirty();
     } catch (e) {
       alert(t("alert.importGraphFailed") + String(e));
@@ -692,6 +1391,7 @@ export function Workspace() {
 
   const handleSave = async () => {
     if (saving) return;
+    flushPendingReportHistory();
     const { snapshots } = useHistoryStore.getState();
     const gbItems = useGraphBuilderStore.getState().items;
     // History is session-only (not persisted); only snapshots are saved.
@@ -703,7 +1403,10 @@ export function Workspace() {
       folders,
       tableFolders,
       graphFolders,
+      fitModelFolders,
+      reportFolders,
       tabulateFolders,
+      ...buildAnalysisProjectPayload({ analyses: analysisItems, analysisFolders }),
     };
     try {
       if (!project?.filePath) {
@@ -718,22 +1421,48 @@ export function Workspace() {
           history: [],
           snapshots,
           graphBuilders: gbItems,
+          fitYByX: [],
+          fitModels: fitModelItems,
           tabulates,
+          distributions: [],
+          analyses: folderPayload.analyses,
           folders: folderPayload.folders,
           tableFolders: folderPayload.tableFolders,
           graphFolders: folderPayload.graphFolders,
+          fitYByXFolders: {},
+          fitModelFolders: folderPayload.fitModelFolders,
+          reportFolders: folderPayload.reportFolders,
           tabulateFolders: folderPayload.tabulateFolders,
+          reports: reportItems,
+          distributionFolders: folderPayload.distributionFolders,
+          analysisFolders: folderPayload.analysisFolders,
+          workflows,
+          logicalFolders,
+          workflowRuns,
         });
       } else {
         await saveProject({
           history: [],
           snapshots,
           graphBuilders: gbItems,
+          fitYByX: [],
+          fitModels: fitModelItems,
           tabulates,
+          distributions: [],
+          analyses: folderPayload.analyses,
           folders: folderPayload.folders,
           tableFolders: folderPayload.tableFolders,
           graphFolders: folderPayload.graphFolders,
+          fitYByXFolders: {},
+          fitModelFolders: folderPayload.fitModelFolders,
+          reportFolders: folderPayload.reportFolders,
           tabulateFolders: folderPayload.tabulateFolders,
+          reports: reportItems,
+          distributionFolders: folderPayload.distributionFolders,
+          analysisFolders: folderPayload.analysisFolders,
+          workflows,
+          logicalFolders,
+          workflowRuns,
         });
       }
       showToast(t("common.saved"), 1500);
@@ -755,12 +1484,15 @@ export function Workspace() {
   };
 
   const handleCloseProject = async () => {
-    setActiveDataset(null);
-    setActiveGraphBuilderId(null);
-    setActiveTabulateId(null);
+    flushPendingReportHistory();
+    clearWorkspaceDocumentSelection();
     resetHistory();
     resetGraphBuilders();
+    resetFitModels();
+    resetReports();
+    resetAnalyses();
     resetTabulates();
+    resetWorkflows();
     fsReset();
     await initProject();
     await refreshDatasets();
@@ -774,12 +1506,15 @@ export function Workspace() {
       multiple: false,
     });
     if (selected) {
-      setActiveDataset(null);
-      setActiveGraphBuilderId(null);
-      setActiveTabulateId(null);
+      flushPendingReportHistory();
+      clearWorkspaceDocumentSelection();
       resetHistory();
       resetGraphBuilders();
+      resetFitModels();
+      resetReports();
+      resetAnalyses();
       resetTabulates();
+      resetWorkflows();
       setBusyMessage(t("workspace.openingProject"));
       const unlisten = await listen<{
         datasetIndex: number;
@@ -796,12 +1531,22 @@ export function Workspace() {
       });
       try {
         const result = await openProject(selected as string);
-        setActiveDataset(null);
-        setActiveGraphBuilderId(null);
-        setActiveTabulateId(null);
+        const analysisProjectPayload = hydrateAnalysisProjectPayload({
+          analyses: result.analyses ?? [],
+          analysisFolders: result.analysisFolders ?? {},
+          distributions: result.distributions ?? [],
+          distributionFolders: result.distributionFolders ?? {},
+          fitYByX: (result.fitYByX ?? []) as FitYByXItem[],
+          fitYByXFolders: result.fitYByXFolders ?? {},
+        });
+        clearWorkspaceDocumentSelection();
         resetHistory();
         resetGraphBuilders();
+        resetFitModels();
+        resetReports();
+        resetAnalyses();
         resetTabulates();
+        resetWorkflows();
         await refreshDatasets();
         tableCounter.current = 0;
         // Restore snapshots from project file (history is session-only)
@@ -816,7 +1561,21 @@ export function Workspace() {
         if (result.graphBuilders && result.graphBuilders.length > 0) {
           loadGraphBuildersFromProject(result.graphBuilders as GraphBuilderItem[]);
         }
+        loadFitModelFromProject((result.fitModels ?? []) as FitModelItem[]);
+        loadReportsFromProject((result.reports ?? []) as ReportItem[]);
+        loadAnalyses(analysisProjectPayload.analyses as AnalysisDocument[]);
         loadTabulatesFromProject((result.tabulates ?? []) as TabulateItem[]);
+        loadWorkflowsFromProject({
+          workflows: result.workflows ?? [],
+          logicalFolders: result.logicalFolders ?? [],
+          workflowRuns: result.workflowRuns ?? [],
+          lineageGraph: result.lineageGraph ?? {
+            id: "project-lineage",
+            name: "Project lineage",
+            nodes: [],
+            edges: [],
+          },
+        });
         // Restore folder tree + table/graph→folder assignments. We do this
         // after datasets/graphs are loaded so a subsequent prune pass keeps
         // assignments in sync with currently-existing items.
@@ -824,11 +1583,24 @@ export function Workspace() {
           folders: result.folders ?? [],
           tableFolders: result.tableFolders ?? {},
           graphFolders: result.graphFolders ?? {},
+          fitYByXFolders: {},
+          fitModelFolders: result.fitModelFolders ?? {},
+          reportFolders: result.reportFolders ?? {},
           tabulateFolders: result.tabulateFolders ?? {},
+          distributionFolders: {},
+          analysisFolders: analysisProjectPayload.analysisFolders,
         });
-        if (result.datasetNameMigrations.length > 0) {
+        if (shouldMarkAnalysisMigrationDirty(analysisProjectPayload.migratedCount)) {
+          markDirty();
+        }
+        if (result.documentNameMigrations.length > 0) {
           showToast(
-            t("workspace.datasetNameMigrations", { count: result.datasetNameMigrations.length }),
+            t("workspace.documentNameMigrations", { count: result.documentNameMigrations.length }),
+            4000,
+          );
+        } else if (result.requiresMigration) {
+          showToast(
+            t("workspace.projectRequiresMigration"),
             4000,
           );
         }
@@ -1120,6 +1892,9 @@ export function Workspace() {
   type DragPayload =
     | { kind: "table"; id: string }
     | { kind: "graph"; id: string }
+    | { kind: "fitModel"; id: string }
+    | { kind: "report"; id: string }
+    | { kind: "analysis"; id: string }
     | { kind: "tabulate"; id: string }
     | { kind: "folder"; path: string };
 
@@ -1154,6 +1929,9 @@ export function Workspace() {
     if (!canDropOn(payload, target)) return;
     if (payload.kind === "table") fsSetTableFolder(payload.id, target);
     else if (payload.kind === "graph") fsSetGraphFolder(payload.id, target);
+    else if (payload.kind === "fitModel") fsSetFitModelFolder(payload.id, target);
+    else if (payload.kind === "report") fsSetReportFolder(payload.id, target);
+    else if (payload.kind === "analysis") fsSetAnalysisFolder(payload.id, target);
     else if (payload.kind === "tabulate") fsSetTabulateFolder(payload.id, target);
     else if (payload.kind === "folder") fsMoveFolder(payload.path, target);
     markDirty();
@@ -1175,8 +1953,7 @@ export function Workspace() {
   };
 
   // ---- Tree structure: group folders + items by parent --------------------
-  // Memoize on the (folders, tableFolders, graphFolders, tabulateFolders,
-  // datasets, graphBuilders, tabulates) tuple so we only rebuild when something actually changed.
+  // Memoize on the folder maps and live documents so we only rebuild when something actually changed.
   const tree = useMemo(() => {
     // Children per parent path. Root parent is the magic key `__root__`.
     const ROOT = "__root__";
@@ -1207,6 +1984,27 @@ export function Workspace() {
       arr.push(gb);
       graphsByParent.set(p, arr);
     }
+    const fitModelByParent = new Map<string, FitModelItem[]>();
+    for (const item of fitModelItems) {
+      const p = fitModelFolders[item.id] ?? ROOT;
+      const arr = fitModelByParent.get(p) ?? [];
+      arr.push(item);
+      fitModelByParent.set(p, arr);
+    }
+    const reportsByParent = new Map<string, ReportItem[]>();
+    for (const item of reportItems) {
+      const p = reportFolders[item.id] ?? ROOT;
+      const arr = reportsByParent.get(p) ?? [];
+      arr.push(item);
+      reportsByParent.set(p, arr);
+    }
+    const analysesByParent = new Map<string, AnalysisDocument[]>();
+    for (const item of analysisItems) {
+      const p = analysisFolders[item.id] ?? ROOT;
+      const arr = analysesByParent.get(p) ?? [];
+      arr.push(item);
+      analysesByParent.set(p, arr);
+    }
     const tabulatesByParent = new Map<string, TabulateItem[]>();
     for (const item of tabulates) {
       const p = tabulateFolders[item.id] ?? ROOT;
@@ -1214,8 +2012,8 @@ export function Workspace() {
       arr.push(item);
       tabulatesByParent.set(p, arr);
     }
-    return { ROOT, childFolders, tablesByParent, graphsByParent, tabulatesByParent };
-  }, [folders, tableFolders, graphFolders, tabulateFolders, datasets, graphBuilders, tabulates]);
+    return { ROOT, childFolders, tablesByParent, graphsByParent, fitModelByParent, reportsByParent, analysesByParent, tabulatesByParent };
+  }, [folders, tableFolders, graphFolders, fitModelFolders, reportFolders, analysisFolders, tabulateFolders, datasets, graphBuilders, fitModelItems, reportItems, analysisItems, tabulates]);
 
   /** Recursively render one folder level. */
   const renderFolderLevel = (parent: string | null, depth: number): React.ReactNode[] => {
@@ -1225,6 +2023,9 @@ export function Workspace() {
     const folderChildren = tree.childFolders.get(key) ?? [];
     const tableChildren = tree.tablesByParent.get(key) ?? [];
     const graphChildren = tree.graphsByParent.get(key) ?? [];
+    const fitModelChildren = tree.fitModelByParent.get(key) ?? [];
+    const reportChildren = tree.reportsByParent.get(key) ?? [];
+    const analysisChildren = tree.analysesByParent.get(key) ?? [];
     const tabulateChildren = tree.tabulatesByParent.get(key) ?? [];
     // Folders first, then tables, then graphs, matching the prior visual order
     // (tables-then-graphs at the root level).
@@ -1297,9 +2098,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(e) => handleDragStart(e, { kind: "table", id: ds.id })}
           onClick={() => {
-            setActiveGraphBuilderId(null);
-            setActiveTabulateId(null);
-            setActiveDataset(ds.id);
+            activateWorkspaceDocument("dataset", ds.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
@@ -1314,21 +2113,24 @@ export function Workspace() {
         >
           <i className="ds-icon fa-solid fa-table" aria-hidden="true" />
           {renamingId === ds.id ? (
-            <input
-              ref={renameInputRef}
-              className="ds-rename-input"
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onBlur={() => handleRenameSubmit(ds.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleRenameSubmit(ds.id);
-                if (e.key === "Escape") setRenamingId(null);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              autoFocus
-            />
+            <span className="ds-rename-shell">
+              <input
+                ref={renameInputRef}
+                className="ds-rename-input"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => void handleRenameSubmit(ds.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleRenameSubmit(ds.id);
+                  if (e.key === "Escape") setRenamingId(null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+              />
+              <span className="ds-fixed-ext">{projectFileExtension("table")}</span>
+            </span>
           ) : (
-            <span className="ds-name">{ds.name}</span>
+            <span className="ds-name">{withProjectExtension(ds.name, "table")}</span>
           )}
           <span className="ds-info">{ds.rowCount}×{ds.colCount}</span>
         </div>,
@@ -1344,9 +2146,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(e) => handleDragStart(e, { kind: "graph", id: gb.id })}
           onClick={() => {
-            setActiveDataset(null);
-            setActiveTabulateId(null);
-            setActiveGraphBuilderId(gb.id);
+            activateWorkspaceDocument("graph", gb.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
@@ -1362,24 +2162,173 @@ export function Workspace() {
         >
           <i className="ds-icon fa-solid fa-chart-pie" aria-hidden="true" />
           {renamingId === gb.id ? (
+            <span className="ds-rename-shell">
+              <input
+                ref={renameInputRef}
+                className="ds-rename-input"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => handleRenameSubmit(gb.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleRenameSubmit(gb.id);
+                  if (e.key === "Escape") setRenamingId(null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+              />
+              <span className="ds-fixed-ext">{projectFileExtension("graph")}</span>
+            </span>
+          ) : (
+            <span className="ds-name">{withProjectExtension(gb.name, "graph")}</span>
+          )}
+          <span className="ds-info gb-source-tag">
+            {sourceDs ? sourceDs.name : t("workspace.datasourceMissing")}
+          </span>
+        </div>,
+      );
+    }
+    for (const item of fitModelChildren) {
+      const sourceDs = datasets.find((dataset) => dataset.id === item.sourceDatasetId);
+      const fitModelUnavailable = !sourceDs || Boolean(item.loadIssue);
+      out.push(
+        <div
+          key={`fitModel:${item.id}`}
+          className={`dataset-item ${activeFitModelId === item.id ? "active" : ""}`}
+          style={{ paddingLeft: 8 + depth * 12 + 12 }}
+          draggable={!readOnly}
+          onDragStart={(event) => handleDragStart(event, { kind: "fitModel", id: item.id })}
+          onClick={() => {
+            activateWorkspaceDocument("fitModel", item.id);
+          }}
+          onDoubleClick={() => {
+            if (readOnly) return;
+            setRenamingId(item.id);
+            setRenameValue(item.name);
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setCtxMenu({ kind: "fitModel", id: item.id, x: event.clientX, y: event.clientY });
+          }}
+          title={fitModelUnavailable ? t("workspace.fitModelSourceMissing") : t("workspace.datasourceLabel", { name: sourceDs.name })}
+        >
+          <i className="ds-icon fa-solid fa-wave-square" aria-hidden="true" />
+          {renamingId === item.id ? (
             <input
               ref={renameInputRef}
               className="ds-rename-input"
               value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onBlur={() => handleRenameSubmit(gb.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleRenameSubmit(gb.id);
-                if (e.key === "Escape") setRenamingId(null);
+              onChange={(event) => setRenameValue(event.target.value)}
+              onBlur={() => handleRenameSubmit(item.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") handleRenameSubmit(item.id);
+                if (event.key === "Escape") setRenamingId(null);
               }}
-              onClick={(e) => e.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
               autoFocus
             />
           ) : (
-            <span className="ds-name">{gb.name}</span>
+            <span className="ds-name">{item.name}</span>
           )}
           <span className="ds-info gb-source-tag">
-            {sourceDs ? sourceDs.name : t("workspace.datasourceMissing")}
+            {fitModelUnavailable ? t("workspace.fitModelSourceMissing") : sourceDs.name}
+          </span>
+        </div>,
+      );
+    }
+    for (const item of reportChildren) {
+      out.push(
+        <div
+          key={`report:${item.id}`}
+          className={`dataset-item ${activeReportId === item.id ? "active" : ""}`}
+          style={{ paddingLeft: 8 + depth * 12 + 12 }}
+          draggable={!readOnly}
+          onDragStart={(e) => handleDragStart(e, { kind: "report", id: item.id })}
+          onClick={() => {
+            activateWorkspaceDocument("report", item.id);
+          }}
+          onDoubleClick={() => {
+            if (readOnly) return;
+            setRenamingId(item.id);
+            setRenameValue(item.name);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setCtxMenu({ kind: "report", id: item.id, x: e.clientX, y: e.clientY });
+          }}
+        >
+          <i className="ds-icon fa-solid fa-file-lines" aria-hidden="true" />
+          {renamingId === item.id ? (
+            <span className="ds-rename-shell">
+              <input
+                ref={renameInputRef}
+                className="ds-rename-input"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => handleRenameSubmit(item.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleRenameSubmit(item.id);
+                  if (e.key === "Escape") setRenamingId(null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+              />
+              <span className="ds-fixed-ext">{projectFileExtension("report")}</span>
+            </span>
+          ) : (
+            <span className="ds-name">{withProjectExtension(item.name, "report")}</span>
+          )}
+        </div>,
+      );
+    }
+    for (const item of analysisChildren) {
+      const sourceDs = datasets.find((dataset) => dataset.id === item.source.datasetId);
+      out.push(
+        <div
+          key={`analysis:${item.id}`}
+          className={`dataset-item ${activeAnalysisId === item.id ? "active" : ""}`}
+          style={{ paddingLeft: 8 + depth * 12 + 12 }}
+          draggable={!readOnly}
+          onDragStart={(event) => handleDragStart(event, { kind: "analysis", id: item.id })}
+          onClick={() => {
+            activateWorkspaceDocument("analysis", item.id);
+          }}
+          onDoubleClick={() => {
+            if (readOnly) return;
+            setRenamingId(item.id);
+            setRenameValue(item.name);
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setCtxMenu({ kind: "analysis", id: item.id, x: event.clientX, y: event.clientY });
+          }}
+          title={sourceDs ? t("workspace.datasourceLabel", { name: sourceDs.name }) : t("workspace.analysisSourceMissing")}
+        >
+          <i className="ds-icon fa-solid fa-magnifying-glass-chart" aria-hidden="true" />
+          {renamingId === item.id ? (
+            <span className="ds-rename-shell">
+              <input
+                ref={renameInputRef}
+                className="ds-rename-input"
+                value={renameValue}
+                onChange={(event) => setRenameValue(event.target.value)}
+                onBlur={() => handleRenameSubmit(item.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") handleRenameSubmit(item.id);
+                  if (event.key === "Escape") setRenamingId(null);
+                }}
+                onClick={(event) => event.stopPropagation()}
+                autoFocus
+              />
+              <span className="ds-fixed-ext">{projectFileExtension("analysis")}</span>
+            </span>
+          ) : (
+            <span className="ds-name">{withProjectExtension(item.name, "analysis")}</span>
+          )}
+          <span className="ds-info gb-source-tag">
+            {sourceDs ? sourceDs.name : t("workspace.analysisSourceMissing")}
           </span>
         </div>,
       );
@@ -1394,9 +2343,7 @@ export function Workspace() {
           draggable={!readOnly}
           onDragStart={(e) => handleDragStart(e, { kind: "tabulate", id: item.id })}
           onClick={() => {
-            setActiveDataset(null);
-            setActiveGraphBuilderId(null);
-            setActiveTabulateId(item.id);
+            activateWorkspaceDocument("tabulate", item.id);
           }}
           onDoubleClick={() => {
             if (readOnly) return;
@@ -1412,21 +2359,24 @@ export function Workspace() {
         >
           <i className="ds-icon fa-solid fa-table-cells-large" aria-hidden="true" />
           {renamingId === item.id ? (
-            <input
-              ref={renameInputRef}
-              className="ds-rename-input"
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onBlur={() => handleRenameSubmit(item.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleRenameSubmit(item.id);
-                if (e.key === "Escape") setRenamingId(null);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              autoFocus
-            />
+            <span className="ds-rename-shell">
+              <input
+                ref={renameInputRef}
+                className="ds-rename-input"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => handleRenameSubmit(item.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleRenameSubmit(item.id);
+                  if (e.key === "Escape") setRenamingId(null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+              />
+              <span className="ds-fixed-ext">{projectFileExtension("tabulate")}</span>
+            </span>
           ) : (
-            <span className="ds-name">{item.name}</span>
+            <span className="ds-name">{withProjectExtension(item.name, "tabulate")}</span>
           )}
           <span className="ds-info gb-source-tag">
             {sourceDs ? sourceDs.name : t("workspace.tabulateSourceMissing")}
@@ -1477,11 +2427,39 @@ export function Workspace() {
             </MenuDropdown>
             <MenuDropdown label={t("menu.analyze")}>
               <div
+                className={`menu-item${readOnly ? " menu-item-disabled" : ""}`}
+                onClick={readOnly ? undefined : handleCreateAnalysisSample}
+              >
+                {t("menu.analysisSample")}
+              </div>
+              <div className="menu-sep" />
+              <div
                 className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
                 onClick={activeDatasetId && !readOnly ? handleCreateTabulate : undefined}
               >
                 {t("menu.tabulate")}
               </div>
+              <div
+                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId && !readOnly ? handleCreateFitYByX : undefined}
+              >
+                {t("menu.fitYByX")}
+              </div>
+              <div
+                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId && !readOnly ? handleCreateFitModel : undefined}
+              >
+                {t("menu.fitModel")}
+              </div>
+              <div
+                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId && !readOnly ? handleCreateDistribution : undefined}
+              >
+                {t("menu.distribution")}
+              </div>
+            </MenuDropdown>
+            <MenuDropdown label={t("menu.report")}>
+              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateReport}>{t("menu.newReport")}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.help")}>
               <div className="menu-item" onClick={() => setHelpDialog("about")}>{t("menu.about")}</div>
@@ -1549,6 +2527,14 @@ export function Workspace() {
               <path d="M320 128C426 128 512 214 512 320C512 426 426 512 320 512C254.8 512 197.1 479.5 162.4 429.7C152.3 415.2 132.3 411.7 117.8 421.8C103.3 431.9 99.8 451.9 109.9 466.4C156.1 532.6 233 576 320 576C461.4 576 576 461.4 576 320C576 178.6 461.4 64 320 64C234.3 64 158.5 106.1 112 170.7L112 144C112 126.3 97.7 112 80 112C62.3 112 48 126.3 48 144L48 256C48 273.7 62.3 288 80 288L104.6 288C105.1 288 105.6 288 106.1 288L192.1 288C209.8 288 224.1 273.7 224.1 256C224.1 238.3 209.8 224 192.1 224L153.8 224C186.9 166.6 249 128 320 128zM344 216C344 202.7 333.3 192 320 192C306.7 192 296 202.7 296 216L296 320C296 326.4 298.5 332.5 303 337L375 409C384.4 418.4 399.6 418.4 408.9 409C418.2 399.6 418.3 384.4 408.9 375.1L343.9 310.1L343.9 216z"/>
             </svg>
           </button>
+          <button
+            className={`activity-btn${activeTab === "workflow" ? " activity-btn-active" : ""}`}
+            onClick={() => setActiveTab("workflow")}
+            title={t("workflow.title", { defaultValue: "Workflow" })}
+            aria-label={t("workflow.title", { defaultValue: "Workflow" })}
+          >
+            <i className="fa-solid fa-diagram-project" aria-hidden="true" />
+          </button>
         </div>
 
         {/* Left: Side Panel */}
@@ -1590,13 +2576,21 @@ export function Workspace() {
                   }
                 }}
               >
-                {datasets.length === 0 && graphBuilders.length === 0 && tabulates.length === 0 && folders.length === 0 ? (
+                {datasets.length === 0 && graphBuilders.length === 0 && fitModelItems.length === 0 && reportItems.length === 0 && analysisItems.length === 0 && tabulates.length === 0 && folders.length === 0 ? (
                   <div className="empty-hint">{t("common.noContent")}</div>
                 ) : (
                   renderFolderLevel(null, 0)
                 )}
               </div>
             </>
+          ) : activeTab === "workflow" ? (
+            <WorkflowPanel
+              lineageGraph={lineageGraph}
+              workflows={workflows}
+              workflowRuns={workflowRuns}
+              selectedId={activeWorkflowViewId}
+              onSelect={setActiveWorkflowViewId}
+            />
           ) : (
             <HistoryPanel
               setBusyMessage={setBusyMessage}
@@ -1608,14 +2602,57 @@ export function Workspace() {
 
         {/* Right: Main Content */}
         <div className="main-area">
-          {activeTabulateId ? (
+          {activeTab === "workflow" ? (
+            <WorkflowView
+              lineageGraph={lineageGraph}
+              workflow={workflows.find((workflow) => workflow.id === activeWorkflowViewId)}
+              datasets={datasets}
+            />
+          ) : activeAnalysisId ? (
+            (() => {
+              const item = analysisItems.find((entry) => entry.id === activeAnalysisId);
+              if (!item) {
+                return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.analysisMissing")}</p></div></div>;
+              }
+              const ds = datasets.find((dataset) => dataset.id === item.source.datasetId);
+              return (
+                <AnalysisView item={item} dataset={ds}
+                  canEditInputs={!readOnly && ds != null}
+                  onEditInputs={() => void handleEditAnalysisInputs(item.id)}
+                  onGraphConfigChange={readOnly ? undefined : (role, graph) => {
+                    const current = useAnalysisStore.getState().items.find((entry) => entry.id === item.id) ?? item;
+                    const graphUpdate = createWorkspaceAnalysisGraphConfigPatch(
+                      current,
+                      role,
+                      graph,
+                      new Date().toISOString(),
+                    );
+                    updateAnalysis(item.id, graphUpdate.patch);
+                    markDirty();
+                  }}
+                />
+              );
+            })()
+          ) : activeTabulateId ? (
             (() => {
               const item = tabulates.find((entry) => entry.id === activeTabulateId);
               if (!item) {
                 return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.tabulateMissing", { defaultValue: "Tabulate no longer exists" })}</p></div></div>;
               }
               const ds = datasets.find((d) => d.id === item.sourceDatasetId);
-              return <TabulateView item={item} dataset={ds} />;
+              return (
+                <TabulateView
+                  item={item}
+                  dataset={ds}
+                  existingDatasetNames={datasets.map((entry) => entry.name)}
+                  onTableCreated={async (dataset) => {
+                    await refreshDatasets();
+                    markDirty();
+                    activateWorkspaceDocument("dataset", dataset.id);
+                    recordAction(t("history.tabulateTableCreated", { name: dataset.name }));
+                  }}
+                />
+              );
             })()
           ) : activeGraphBuilderId ? (
             (() => {
@@ -1625,8 +2662,56 @@ export function Workspace() {
               if (!ds) return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.datasourceDeleted")}</p></div></div>;
               return <GraphBuilderView item={item} dataset={ds} />;
             })()
+          ) : activeFitModelId ? (
+            (() => {
+              const item = fitModelItems.find((entry) => entry.id === activeFitModelId);
+              if (!item) {
+                return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.fitModelMissing")}</p></div></div>;
+              }
+              const ds = datasets.find((dataset) => dataset.id === item.sourceDatasetId);
+              if (!ds) {
+                return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.fitModelSourceMissing")}</p></div></div>;
+              }
+              return (
+                <FitModelView
+                  item={item}
+                  dataset={ds}
+                  readOnly={readOnly}
+                  onDatasetChanged={async () => {
+                    markDirty();
+                    await refreshDatasets();
+                  }}
+                />
+              );
+            })()
+          ) : activeReportId ? (
+            (() => {
+              const item = reportItems.find((entry) => entry.id === activeReportId);
+              if (!item) {
+                return <div className="main-content"><div className="workspace-empty"><p>{t("workspace.reportMissing")}</p></div></div>;
+              }
+              return (
+                <ReportView
+                  item={item}
+                  tableOptions={datasets.map((dataset) => ({ id: dataset.id, name: dataset.name }))}
+                  graphOptions={graphBuilders.map((graph) => ({ id: graph.id, name: graph.name }))}
+                  fitYByXOptions={fitYByXAnalysisItems.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
+                  tabulateOptions={tabulates.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
+                  distributionOptions={[]}
+                  onMarkdownChange={(markdown) => handleReportMarkdownChange(item.id, markdown)}
+                  readOnly={readOnly}
+                />
+              );
+            })()
           ) : activeDatasetId ? (
-            <DataTableView key={tableKey} datasetId={activeDatasetId} onTableOp={setTableOp} />
+            <DataTableView
+              key={tableKey}
+              datasetId={activeDatasetId}
+              onColumnRenamed={(oldName, newName, sqlType) => {
+                migrateLegacyGraphColumnName(activeDatasetId, oldName, newName, sqlType);
+              }}
+              onTableOp={setTableOp}
+            />
           ) : (
             <div className="main-content">
               <div className="workspace-empty">
@@ -1726,12 +2811,13 @@ export function Workspace() {
           onClose={() => setTableOp(null)}
           onCreated={async (ds) => {
             await refreshDatasets();
-            setActiveDataset(ds.id);
+            activateWorkspaceDocument("dataset", ds.id);
             markDirty();
           }}
           onUpdated={async () => {
             await refreshDatasets();
             setTableKey(k => k + 1);
+            invalidateData();
             markDirty();
           }}
         />
@@ -1744,14 +2830,77 @@ export function Workspace() {
           onClose={() => setShowSqlQuery(false)}
           onCreated={async (dataset) => {
             await refreshDatasets();
-            setActiveGraphBuilderId(null);
-            setActiveDataset(dataset.id);
+            activateWorkspaceDocument("dataset", dataset.id);
             markDirty();
             recordAction(t("history.sqlQueryTableCreated", { name: dataset.name }));
             setShowSqlQuery(false);
           }}
         />
       )}
+
+      {showFitYByXDialog && activeDatasetId && (
+        <FitYByXRoleDialog
+          mode="create"
+          dataset={datasets.find((dataset) => dataset.id === activeDatasetId)!}
+          defaultName={nextFitYByXAnalysisName(analysisItems)}
+          onCancel={() => setShowFitYByXDialog(false)}
+          onCreate={handleCreateFitYByXItem}
+        />
+      )}
+
+      {showFitModelDialog && activeDatasetId && (
+        <FitModelRoleDialog
+          dataset={datasets.find((dataset) => dataset.id === activeDatasetId)!}
+          prefill={fitModelPrefill}
+          onCancel={() => {
+            setShowFitModelDialog(false);
+            setFitModelPrefill(null);
+          }}
+          onCreateDefinition={handleCreateFitModelItem}
+        />
+      )}
+
+      {showDistributionDialog && activeDatasetId && (
+        <DistributionDialog
+          open={showDistributionDialog}
+          datasetId={activeDatasetId}
+          columns={distributionColumns}
+          defaultName={nextDistributionAnalysisName(analysisItems)}
+          onCancel={() => setShowDistributionDialog(false)}
+          onSubmit={handleCreateDistributionItem}
+        />
+      )}
+
+      {editingAnalysisId && (() => {
+        const editingAnalysis = analysisItems.find((item) => item.id === editingAnalysisId);
+        const dataset = editingAnalysis
+          ? datasets.find((item) => item.id === editingAnalysis.source.datasetId)
+          : undefined;
+        if (!editingAnalysis || !dataset) return null;
+        if (editingAnalysis.analysisKind === "fitYByX") {
+          return (
+            <FitYByXRoleDialog
+              mode="edit"
+              dataset={dataset}
+              defaultName={editingAnalysis.name}
+              initialValue={toAnalysisEditorItem(editingAnalysis)}
+              onCancel={() => setEditingAnalysisId(null)}
+              onCreate={(submitted) => handleUpdateFitYByXAnalysisInputs(editingAnalysis, submitted)}
+            />
+          );
+        }
+        return (
+          <DistributionDialog
+            open
+            datasetId={editingAnalysis.source.datasetId}
+            columns={analysisEditorColumns}
+            defaultName={editingAnalysis.name}
+            initialItem={toAnalysisEditorItem(editingAnalysis)}
+            onCancel={() => setEditingAnalysisId(null)}
+            onSubmit={(submitted) => handleUpdateDistributionAnalysisInputs(editingAnalysis, submitted)}
+          />
+        );
+      })()}
 
       {importProgress && (
         <div className="sp-dialog-overlay">
@@ -1826,9 +2975,7 @@ export function Workspace() {
                 <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
                   setRenamingId(id);
                   setRenameValue(ds.name);
-                  setActiveGraphBuilderId(null);
-                  setActiveTabulateId(null);
-                  setActiveDataset(id);
+                  activateWorkspaceDocument("dataset", id);
                   setCtxMenu(null);
                 })}>{t("common.rename")}</div>
                 <div className="sp-ctx-sep" />
@@ -1849,13 +2996,62 @@ export function Workspace() {
                 <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
                   setRenamingId(id);
                   setRenameValue(gb.name);
-                  setActiveDataset(null);
-                  setActiveTabulateId(null);
-                  setActiveGraphBuilderId(id);
+                  activateWorkspaceDocument("graph", id);
                   setCtxMenu(null);
                 })}>{t("common.rename")}</div>
                 <div className="sp-ctx-sep" />
                 <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteGraphBuilder(id); setCtxMenu(null); })}>{t("common.delete")}</div>
+              </>
+            );
+          })()}
+          {ctxMenu.kind === "fitModel" && (() => {
+            const id = ctxMenu.id;
+            const item = fitModelItems.find((entry) => entry.id === id);
+            if (!item) return null;
+            return (
+              <>
+                <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
+                  setRenamingId(id);
+                  setRenameValue(item.name);
+                  activateWorkspaceDocument("fitModel", id);
+                  setCtxMenu(null);
+                })}>{t("common.rename")}</div>
+                <div className="sp-ctx-sep" />
+                <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteFitModel(id); setCtxMenu(null); })}>{t("common.delete")}</div>
+              </>
+            );
+          })()}
+          {ctxMenu.kind === "report" && (() => {
+            const id = ctxMenu.id;
+            const item = reportItems.find((entry) => entry.id === id);
+            if (!item) return null;
+            return (
+              <>
+                <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
+                  setRenamingId(id);
+                  setRenameValue(item.name);
+                  activateWorkspaceDocument("report", id);
+                  setCtxMenu(null);
+                })}>{t("common.rename")}</div>
+                <div className="sp-ctx-sep" />
+                <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteReport(id); setCtxMenu(null); })}>{t("common.delete")}</div>
+              </>
+            );
+          })()}
+          {ctxMenu.kind === "analysis" && (() => {
+            const id = ctxMenu.id;
+            const item = analysisItems.find((entry) => entry.id === id);
+            if (!item) return null;
+            return (
+              <>
+                <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
+                  setRenamingId(id);
+                  setRenameValue(item.name);
+                  activateWorkspaceDocument("analysis", id);
+                  setCtxMenu(null);
+                })}>{t("common.rename")}</div>
+                <div className="sp-ctx-sep" />
+                <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteAnalysis(id); setCtxMenu(null); })}>{t("common.delete")}</div>
               </>
             );
           })()}
@@ -1868,9 +3064,7 @@ export function Workspace() {
                 <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
                   setRenamingId(id);
                   setRenameValue(item.name);
-                  setActiveDataset(null);
-                  setActiveGraphBuilderId(null);
-                  setActiveTabulateId(id);
+                  activateWorkspaceDocument("tabulate", id);
                   setCtxMenu(null);
                 })}>{t("common.rename")}</div>
                 <div className="sp-ctx-sep" />

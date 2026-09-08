@@ -1,10 +1,17 @@
 pub mod archive_cell;
 pub mod data_link_service;
 pub mod data_service;
+pub mod distribution_fit;
+pub mod distribution_kernel;
+pub mod distribution_service;
+pub mod fit_model_service;
+pub mod fit_y_by_x_service;
 pub mod graph_data_service;
 pub mod io_service;
+pub mod normal_capability;
 pub mod project_service;
 pub mod save_coordinator;
+pub mod workflow_domain;
 pub mod spprj_archive;
 pub mod stats_service;
 pub mod streaming_project_writer;

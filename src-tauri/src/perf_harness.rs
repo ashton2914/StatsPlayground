@@ -8,7 +8,8 @@ use crate::error::AppError;
 #[cfg(test)]
 use crate::models::graph_data::{GraphAggregatePacket, GraphChunkHeader, GraphDataCompletion};
 use crate::models::graph_data::{
-    GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphSampling, GraphViewport,
+    GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphRawPointDisposition,
+    GraphSampling, GraphViewport,
 };
 use crate::models::save::SaveProjectRequest;
 #[cfg(test)]
@@ -315,8 +316,10 @@ fn build_graph_request(dataset_id: &str, generation: u64) -> GraphDataRequest {
         elements: vec![GraphElementRequest {
             kind: "points".to_string(),
             summary_stat: "none".to_string(),
+            correlation_method: None,
         }],
         sampling: GraphSampling::Full,
+        raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
         viewport: GraphViewport {
             width: 1200,
             height: 700,
@@ -467,21 +470,29 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         )));
     }
     let selected_columns = capture.selected_columns;
-    if selected_columns != 3 {
+    let raw_points_included = matches!(
+        completion.raw_point_disposition,
+        GraphRawPointDisposition::Included { .. }
+    );
+    let expected_selected_columns = if raw_points_included { 3 } else { 0 };
+    if selected_columns != expected_selected_columns {
         return Err(AppError::InvalidParam(format!(
-            "graph service selected column mismatch: expected 3, got {selected_columns}"
+            "graph service selected column mismatch: expected {expected_selected_columns}, got {selected_columns}"
         )));
     }
-    if capture.projected_columns
-        != vec![
+    let expected_projected_columns = if raw_points_included {
+        vec![
             "_row_id".to_string(),
             "region".to_string(),
             "cost".to_string(),
         ]
-    {
+    } else {
+        Vec::new()
+    };
+    if capture.projected_columns != expected_projected_columns {
         return Err(AppError::InvalidParam(format!(
-            "graph projected columns mismatch: expected [_row_id, region, cost], got {:?}",
-            capture.projected_columns
+            "graph projected columns mismatch: expected {:?}, got {:?}",
+            expected_projected_columns, capture.projected_columns
         )));
     }
 
@@ -754,11 +765,24 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
                         history,
                         snapshots,
                         graph_builders,
+                        fit_y_by_x: Vec::new(),
+                        fit_models: Vec::new(),
+                        reports: Vec::new(),
+                        distributions: Vec::new(),
+                        analyses: Vec::new(),
                         tabulates,
                         folders,
                         table_folders,
                         graph_folders,
+                        fit_y_by_x_folders: std::collections::HashMap::new(),
+                        fit_model_folders: std::collections::HashMap::new(),
+                        report_folders: std::collections::HashMap::new(),
+                        distribution_folders: std::collections::HashMap::new(),
+                        analysis_folders: std::collections::HashMap::new(),
                         tabulate_folders,
+                        workflows: Vec::new(),
+                        logical_folders: Vec::new(),
+                        workflow_runs: Vec::new(),
                     },
                     None,
                 )
@@ -958,7 +982,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.result_rows, 10_000);
-        assert_eq!(report.selected_columns, 3);
+        assert_eq!(report.selected_columns, 0);
         assert_eq!(report.processed_rows, Some(10_000));
     }
 
@@ -1110,6 +1134,10 @@ mod tests {
             processed_rows: 1,
             chunks_sent: 1,
             cancelled: false,
+            raw_point_disposition: crate::models::graph_data::GraphRawPointDisposition::Included {
+                valid_rows: 1,
+                budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            },
         };
 
         let actual = measure_transferred_bytes(&[chunk.clone()], &[aggregate.clone()], &completion)

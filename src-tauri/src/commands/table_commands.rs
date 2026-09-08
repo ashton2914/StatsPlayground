@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::error::AppError;
-use crate::models::table::DatasetMeta;
+use crate::models::table::{ColumnDescriptor, DatasetMeta};
 use crate::services::data_service::DataService;
 use crate::state::AppState;
 
@@ -30,6 +30,15 @@ pub fn get_columns(
 ) -> Result<Vec<(String, String)>, AppError> {
     let service = DataService::new(&state);
     service.get_columns(&dataset_id)
+}
+
+#[tauri::command]
+pub fn get_column_descriptors(
+    state: State<'_, AppState>,
+    dataset_id: String,
+) -> Result<Vec<ColumnDescriptor>, AppError> {
+    let service = DataService::new(&state);
+    service.get_column_descriptors(&dataset_id)
 }
 
 #[tauri::command]

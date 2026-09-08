@@ -13,6 +13,11 @@ import {
   redoIncrementalEntry,
   undoIncrementalEntry,
 } from "@/utils/historyTimeline";
+import {
+  allocateProjectBasename,
+  formatSnapshotTimestamp,
+  projectFileExtension,
+} from "@/utils/projectFileNaming";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 
@@ -54,12 +59,14 @@ interface HistoryStore {
   pendingRestore: unknown | null;
   pendingAction: PendingHistoryAction | null;
   historyRevision: number;
+  dataRevision: number;
   historyError: string | null;
   tableMutationDepth: number;
 
   /** Record a new action with optional afterState for undo/redo */
   record: (description: string, afterState?: unknown) => void;
   recordTable: (description: string, action: TableHistoryAction) => void;
+  invalidateData: () => void;
   tryBeginTableMutation: () => boolean;
   endTableMutation: () => void;
   /** Undo one step (go to previous entry's afterState) */
@@ -94,6 +101,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   pendingRestore: null,
   pendingAction: null,
   historyRevision: 0,
+  dataRevision: 0,
   historyError: null,
   tableMutationDepth: 0,
 
@@ -132,8 +140,12 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       if (state.pendingAction) return state;
       const next = recordIncrementalEntry(state, entry, MAX_HISTORY);
       dropDiscardedChangeSets(state.history, next.history);
-      return next;
+      return { ...next, dataRevision: state.dataRevision + 1 };
     });
+  },
+
+  invalidateData: () => {
+    set((state) => ({ dataRevision: state.dataRevision + 1 }));
   },
 
   tryBeginTableMutation: () => {
@@ -191,6 +203,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
           ? {
               pendingAction: null,
               historyRevision: state.historyRevision + 1,
+              dataRevision: state.dataRevision + 1,
               history: nextGeneration == null
                 ? state.history
                 : state.history.map((entry) => updateReplayGeneration(
@@ -260,6 +273,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
           ? {
               pendingAction: null,
               historyRevision: state.historyRevision + 1,
+              dataRevision: state.dataRevision + 1,
               history: nextGeneration == null
                 ? state.history
                 : state.history.map((entry) => updateReplayGeneration(
@@ -307,11 +321,15 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const snapshot = await historyService.captureProjectSnapshot();
       const ts = nowISO();
       const d = new Date(ts);
-      const pad = (n: number) => n.toString().padStart(2, "0");
-      const defaultName = `Snapshot ${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const defaultName = `Snapshot ${formatSnapshotTimestamp(d)}`;
+      const resolvedName = allocateProjectBasename(
+        name || defaultName,
+        projectFileExtension("snapshot"),
+        get().snapshots.map((snap) => snap.name),
+      );
       const entry: NamedSnapshot = {
         id: nextId(),
-        name: name || defaultName,
+        name: resolvedName,
         timestamp: ts,
         snapshot,
       };

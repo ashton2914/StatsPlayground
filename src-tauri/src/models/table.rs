@@ -12,6 +12,7 @@ pub struct DatasetMeta {
     pub source_type: String,
     pub row_count: i64,
     pub col_count: i32,
+    pub generation: u64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -28,6 +29,23 @@ pub struct AddedRowsResult {
 pub struct ColumnDefinition {
     pub name: String,
     pub column_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnDescriptor {
+    pub column_id: String,
+    pub name: String,
+    pub sql_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTableFromRowsRequest {
+    pub name: String,
+    pub column_names: Vec<String>,
+    pub column_types: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
 }
 
 /// Column metadata

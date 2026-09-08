@@ -28,10 +28,14 @@ function getEffectiveTheme(mode: ThemeMode): "light" | "dark" {
  *  affects red/yellow/green button hover hint colors. */
 function syncWindowTheme(mode: ThemeMode) {
   const effective = mode === "system" ? null : mode;
-  // null tells the OS to follow system; otherwise force light/dark caption.
-  getCurrentWindow().setTheme(effective).catch(() => {
-    // Non-Tauri context (e.g. browser dev) — ignore.
-  });
+  try {
+    // null tells the OS to follow system; otherwise force light/dark caption.
+    getCurrentWindow().setTheme(effective).catch(() => {
+      // Non-Tauri context (e.g. browser dev) — ignore.
+    });
+  } catch {
+    // Component tests and plain browser contexts do not expose a Tauri window.
+  }
 }
 
 function applyTheme(mode: ThemeMode) {
@@ -49,13 +53,13 @@ export const useThemeStore = create<ThemeState>((set) => ({
   },
 }));
 
-// Apply on load
-applyTheme(getStoredMode());
+if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+  applyTheme(getStoredMode());
 
-// Listen for system theme changes
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  const mode = useThemeStore.getState().mode;
-  if (mode === "system") {
-    applyTheme("system");
-  }
-});
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    const mode = useThemeStore.getState().mode;
+    if (mode === "system") {
+      applyTheme("system");
+    }
+  });
+}

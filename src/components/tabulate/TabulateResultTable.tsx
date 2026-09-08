@@ -17,6 +17,10 @@ interface TabulateResultTableProps {
   visibleColumnDepth: number;
   onVisibleRowDepthChange: (depth: number) => void;
   onVisibleColumnDepthChange: (depth: number) => void;
+  onExport: () => void;
+  exporting: boolean;
+  exportDisabled: boolean;
+  presentation?: "interactive" | "readOnly";
 }
 
 interface HeaderCellSpan {
@@ -36,6 +40,10 @@ export function TabulateResultTable({
   visibleColumnDepth,
   onVisibleRowDepthChange,
   onVisibleColumnDepthChange,
+  onExport,
+  exporting,
+  exportDisabled,
+  presentation = "interactive",
 }: TabulateResultTableProps) {
   const { t } = useTranslation();
   const visibleRowFields = item.rowFields.slice(0, visibleRowDepth);
@@ -51,23 +59,38 @@ export function TabulateResultTable({
   const hasRowTotals = result.rowTotals.length > 0;
   const hasColumnTotals = result.columnTotals.length > 0;
   const hasGrandTotals = result.grandTotals.length > 0;
+  const exportLabel = exporting ? t("tabulate.exportingTable") : t("tabulate.exportTable");
 
   return (
     <div className="sp-tabulate-results-shell">
-      <div className="sp-tabulate-results-toolbar">
-        <DepthControl
-          label={t("tabulate.visibleRows")}
-          depth={visibleRowDepth}
-          maxDepth={item.rowFields.length}
-          onChange={onVisibleRowDepthChange}
-        />
-        <DepthControl
-          label={t("tabulate.visibleColumns")}
-          depth={visibleColumnDepth}
-          maxDepth={item.columnFields.length}
-          onChange={onVisibleColumnDepthChange}
-        />
-      </div>
+      {presentation === "interactive" ? (
+        <div className="sp-tabulate-results-toolbar">
+          <DepthControl
+            label={t("tabulate.visibleRows")}
+            depth={visibleRowDepth}
+            maxDepth={item.rowFields.length}
+            onChange={onVisibleRowDepthChange}
+          />
+          <DepthControl
+            label={t("tabulate.visibleColumns")}
+            depth={visibleColumnDepth}
+            maxDepth={item.columnFields.length}
+            onChange={onVisibleColumnDepthChange}
+          />
+          <button
+            type="button"
+            className={`sp-tabulate-inline-button sp-tabulate-export-button${exporting ? " is-busy" : ""}`}
+            onClick={onExport}
+            disabled={exportDisabled}
+            title={exportLabel}
+            aria-label={exportLabel}
+            aria-busy={exporting}
+          >
+            <i className="fa-solid fa-table-arrow-up" aria-hidden="true" />
+            <span>{exportLabel}</span>
+          </button>
+        </div>
+      ) : null}
 
       <div className="sp-tabulate-table-wrap">
         <table className="sp-tabulate-table">

@@ -16,7 +16,14 @@ export const SUPPORTED_LOCALES: Array<{ code: Locale; label: string }> = [
 
 const STORAGE_KEY = "sp-locale";
 
+function hasLocalStorage(): boolean {
+  return typeof localStorage !== "undefined";
+}
+
 export function getStoredLocale(): Locale {
+  if (!hasLocalStorage()) {
+    return "en";
+  }
   const stored = localStorage.getItem(STORAGE_KEY);
   if (stored === "en" || stored === "zh-CN" || stored === "zh-TW" || stored === "vi") {
     return stored;
@@ -25,6 +32,9 @@ export function getStoredLocale(): Locale {
 }
 
 export function persistLocale(loc: Locale) {
+  if (!hasLocalStorage()) {
+    return;
+  }
   localStorage.setItem(STORAGE_KEY, loc);
 }
 

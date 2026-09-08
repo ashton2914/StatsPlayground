@@ -29,7 +29,11 @@ import type {
   FilterOp,
   FilterRule,
 } from "@/types/filter";
-import { distinctColumnValues, numericColumnExtent } from "./filterEngine";
+import {
+  createInitialCategoricalRule,
+  distinctColumnValues,
+  numericColumnExtent,
+} from "./filterEngine";
 import "./filter.css";
 
 interface FilterPanelProps {
@@ -63,13 +67,7 @@ function makeRule(
   if (kind === "date") {
     return { kind: "date", field, start: null, end: null };
   }
-  // Categorical: pre-select every distinct value so the rule starts as
-  // pass-through (toggling off boxes narrows the result).
-  if (categoricalMode === "exclude") {
-    return { kind: "categorical", field, selected: [], exclude: true };
-  }
-  const all = distinctColumnValues(data, field.name);
-  return { kind: "categorical", field, selected: all, exclude: false };
+  return createInitialCategoricalRule(field, data, categoricalMode);
 }
 
 let _ruleIdSeq = 0;
@@ -615,7 +613,7 @@ function CategoricalEditor({
           {t("graph.filter.clearAll", { defaultValue: "None" })}
         </button>
         <span className="gb-filter-cats-count">
-          {rule.selected.length}/{all.length}
+          {selectedSet.size}/{all.length}
         </span>
       </div>
       <div className="gb-filter-cats-list">

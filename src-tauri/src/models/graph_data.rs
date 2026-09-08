@@ -4,6 +4,19 @@ use serde::{Deserialize, Serialize};
 
 use super::table::TableWindowFilter;
 
+pub const GRAPH_SCATTER_RENDER_BUDGET: usize = 8_000;
+pub const DISTRIBUTION_OVERVIEW_HISTOGRAM_ELEMENT_ID: &str = "distribution.overview.histogram";
+pub const DISTRIBUTION_OVERVIEW_FITTED_CURVES_ELEMENT_ID: &str =
+    "distribution.overview.fittedCurves";
+pub const DISTRIBUTION_BOX_PLOT_ELEMENT_ID: &str = "distribution.boxPlot";
+pub const DISTRIBUTION_ECDF_ELEMENT_ID: &str = "distribution.ecdf";
+pub const DISTRIBUTION_NORMAL_QUANTILE_POINTS_ELEMENT_ID: &str =
+    "distribution.normalQuantile.points";
+pub const DISTRIBUTION_NORMAL_QUANTILE_REFERENCE_ELEMENT_ID: &str =
+    "distribution.normalQuantile.reference";
+pub const DISTRIBUTION_NORMAL_QUANTILE_LOWER_ELEMENT_ID: &str = "distribution.normalQuantile.lower";
+pub const DISTRIBUTION_NORMAL_QUANTILE_UPPER_ELEMENT_ID: &str = "distribution.normalQuantile.upper";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphFieldBinding {
@@ -11,11 +24,21 @@ pub struct GraphFieldBinding {
     pub column: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CorrelationMethod {
+    Pearson,
+    Spearman,
+    Kendall,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphElementRequest {
     pub kind: String,
     pub summary_stat: String,
+    #[serde(default)]
+    pub correlation_method: Option<CorrelationMethod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +65,7 @@ pub struct GraphDataRequest {
     pub filters: Vec<TableWindowFilter>,
     pub elements: Vec<GraphElementRequest>,
     pub sampling: GraphSampling,
+    pub raw_point_budget: usize,
     pub viewport: GraphViewport,
 }
 
@@ -237,6 +261,34 @@ impl GraphChunkHeader {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum GraphRawPointOmissionReason {
+    PointBudgetExceeded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GraphRawPointDisposition {
+    Included {
+        valid_rows: u64,
+        budget: usize,
+    },
+    Empty {
+        valid_rows: u64,
+        budget: usize,
+    },
+    Omitted {
+        reason: GraphRawPointOmissionReason,
+        valid_rows: u64,
+        budget: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct GraphDataCompletion {
     pub request_id: String,
     pub dataset_id: String,
@@ -245,6 +297,7 @@ pub struct GraphDataCompletion {
     pub processed_rows: u64,
     pub chunks_sent: u32,
     pub cancelled: bool,
+    pub raw_point_disposition: GraphRawPointDisposition,
 }
 
 #[cfg(test)]
@@ -264,12 +317,58 @@ mod tests {
             "filters": [],
             "elements": [{ "kind": "points", "summaryStat": "none" }],
             "sampling": { "mode": "full" },
+            "rawPointBudget": 8000,
             "viewport": { "width": 1200, "height": 700 }
         }))
         .unwrap();
 
         assert_eq!(request.request_id, "req-1");
         assert!(matches!(request.sampling, GraphSampling::Full));
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["rawPointBudget"],
+            8000
+        );
+    }
+
+    #[test]
+    fn graph_completion_round_trips_raw_point_dispositions() {
+        let dispositions = [
+            serde_json::json!({
+                "status": "included",
+                "validRows": 7,
+                "budget": 8000
+            }),
+            serde_json::json!({
+                "status": "empty",
+                "validRows": 0,
+                "budget": 8000
+            }),
+            serde_json::json!({
+                "status": "omitted",
+                "reason": "pointBudgetExceeded",
+                "validRows": 8001,
+                "budget": 8000
+            }),
+        ];
+
+        for raw_point_disposition in dispositions {
+            let completion: GraphDataCompletion = serde_json::from_value(serde_json::json!({
+                "requestId": "req-1",
+                "datasetId": "dataset-id",
+                "generation": 7,
+                "sourceRows": 8001,
+                "processedRows": 8001,
+                "chunksSent": 0,
+                "cancelled": false,
+                "rawPointDisposition": raw_point_disposition
+            }))
+            .unwrap();
+
+            assert_eq!(
+                serde_json::to_value(completion).unwrap()["rawPointDisposition"],
+                raw_point_disposition
+            );
+        }
     }
 
     #[test]
@@ -327,6 +426,9 @@ pub enum GraphAggregatePacket {
     Heatmap(HeatmapPacket),
     BoxPlot(BoxPlotPacket),
     Summary(SummaryPacket),
+    CorrelationMatrix(CorrelationMatrixPacket),
+    PrecomputedPoints(PrecomputedPointPacket),
+    PrecomputedCurve(PrecomputedCurvePacket),
 }
 
 pub const GRAPH_VIRTUAL_VALUE_COLUMN: &str = "__sp_value__";
@@ -345,9 +447,12 @@ impl GraphAggregatePacket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistogramPacket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_column: Option<String>,
     pub y_column: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
     pub bin_count: u32,
     pub min_value: Option<f64>,
@@ -361,12 +466,19 @@ pub struct HistogramPacket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistogramBin {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_x: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_y: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_z: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<String>,
     pub bin_start: f64,
     pub bin_end: f64,
@@ -415,9 +527,12 @@ pub struct HeatmapCell {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BoxPlotPacket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_column: Option<String>,
     pub y_column: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
     pub entries: Vec<BoxPlotEntry>,
 }
@@ -425,12 +540,19 @@ pub struct BoxPlotPacket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BoxPlotEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_x: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_y: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facet_z: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<String>,
     pub count: u64,
     pub min: f64,
@@ -447,8 +569,64 @@ pub struct BoxPlotEntry {
 #[serde(rename_all = "camelCase")]
 pub struct BoxPlotOutlier {
     pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedPointPacket {
+    pub element_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_name: Option<String>,
+    pub points: Vec<PrecomputedPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedPoint {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PrecomputedCurveInterpolation {
+    Linear,
+    StepEnd,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedCurvePacket {
+    pub element_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_column: Option<String>,
+    pub interpolation: PrecomputedCurveInterpolation,
+    pub points: Vec<PrecomputedCurvePoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecomputedCurvePoint {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -479,4 +657,60 @@ pub struct SummaryEntry {
     pub max: f64,
     pub interval_low: Option<f64>,
     pub interval_high: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CorrelationUnavailableReason {
+    InsufficientData,
+    ZeroVariance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrelationMatrixCell {
+    pub x_index: u32,
+    pub y_index: u32,
+    pub coefficient: Option<f64>,
+    pub sample_count: u64,
+    pub unavailable_reason: Option<CorrelationUnavailableReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrelationMatrixPacket {
+    pub method: CorrelationMethod,
+    pub columns: Vec<String>,
+    pub cells: Vec<CorrelationMatrixCell>,
+}
+
+#[cfg(test)]
+mod correlation_matrix_tests {
+    use super::*;
+
+    #[test]
+    fn correlation_matrix_packet_serializes_with_camel_case_and_kind_tag() {
+        let packet = GraphAggregatePacket::CorrelationMatrix(CorrelationMatrixPacket {
+            method: CorrelationMethod::Spearman,
+            columns: vec!["a".to_string(), "b".to_string()],
+            cells: vec![CorrelationMatrixCell {
+                x_index: 0,
+                y_index: 1,
+                coefficient: None,
+                sample_count: 3,
+                unavailable_reason: Some(CorrelationUnavailableReason::ZeroVariance),
+            }],
+        });
+
+        let value = serde_json::to_value(packet).expect("serialize correlation packet");
+
+        assert_eq!(value["kind"], serde_json::json!("correlationMatrix"));
+        assert_eq!(value["method"], serde_json::json!("spearman"));
+        assert_eq!(value["cells"][0]["sampleCount"], serde_json::json!(3));
+        assert_eq!(value["cells"][0]["coefficient"], serde_json::Value::Null);
+        assert_eq!(
+            value["cells"][0]["unavailableReason"],
+            serde_json::json!("zeroVariance")
+        );
+    }
 }

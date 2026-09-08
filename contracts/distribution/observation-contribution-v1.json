@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "dimensions": [
+    { "code": "yMissing", "action": "exclude" },
+    { "code": "weightMissing", "action": "exclude" },
+    { "code": "weightZero", "action": "exclude" },
+    { "code": "weightNegative", "action": "reject" },
+    { "code": "weightNonFinite", "action": "reject" },
+    { "code": "frequencyMissing", "action": "exclude" },
+    { "code": "frequencyZero", "action": "exclude" },
+    { "code": "frequencyNegative", "action": "reject" },
+    { "code": "frequencyNonInteger", "action": "reject" },
+    { "code": "frequencyNonFinite", "action": "reject" },
+    { "code": "weightAndFrequency", "action": "combine" },
+    { "code": "byMissing", "action": "separateGroup" },
+    { "code": "emptyGroup", "action": "unavailable" },
+    { "code": "singleObservation", "action": "partial" },
+    { "code": "constantColumn", "action": "partial" }
+  ]
+}

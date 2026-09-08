@@ -1,5 +1,13 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { AnalysisDocument } from "@/types/analysis";
+import type { DistributionItem } from "@/types/distribution";
 import type { ProjectInfo, OpenProjectResult, ImportTableResult } from "@/types/project";
+import type { ReportItem } from "@/types/report";
+import type {
+  LogicalFolder,
+  WorkflowDefinition,
+  WorkflowRun,
+} from "@/types/workflow";
 
 /** Optional folder payload accepted by the save_project command.
  *  Folder maps are manifest metadata now; they are not used to route archive
@@ -12,8 +20,22 @@ export interface SaveProjectFolders {
   tableFolders: Record<string, string>;
   /** graphId → folder path. Root graphs are simply absent. */
   graphFolders: Record<string, string>;
+  /** fitYByXId → folder path. Root analyses are simply absent. */
+  fitYByXFolders: Record<string, string>;
+  /** fitModelId → folder path. Root analyses are simply absent. */
+  fitModelFolders?: Record<string, string>;
   /** tabulateId → folder path. Root tabulates are simply absent. */
   tabulateFolders: Record<string, string>;
+  /** reportId → folder path. Root reports are simply absent. */
+  reportFolders: Record<string, string>;
+  /** Reports persisted with the project. */
+  reports: ReportItem[];
+  /** distributionId → folder path. Root analyses are simply absent. */
+  distributionFolders: Record<string, string>;
+  /** Analysis documents persisted with the project. */
+  analyses: AnalysisDocument[];
+  /** analysisId → folder path. Root analyses are simply absent. */
+  analysisFolders: Record<string, string>;
 }
 
 export interface SaveProjectRequest {
@@ -21,11 +43,24 @@ export interface SaveProjectRequest {
   history: unknown[];
   snapshots: unknown[];
   graphBuilders: unknown[];
+  fitYByX: unknown[];
+  fitModels?: unknown[];
   tabulates: unknown[];
+  distributions: DistributionItem[];
+  analyses: AnalysisDocument[];
   folders: string[];
   tableFolders: Record<string, string>;
   graphFolders: Record<string, string>;
+  fitYByXFolders: Record<string, string>;
+  fitModelFolders?: Record<string, string>;
   tabulateFolders: Record<string, string>;
+  reportFolders: Record<string, string>;
+  reports: ReportItem[];
+  distributionFolders: Record<string, string>;
+  analysisFolders: Record<string, string>;
+  workflows: WorkflowDefinition[];
+  logicalFolders: LogicalFolder[];
+  workflowRuns: WorkflowRun[];
 }
 
 export type SavePhase = "preparing" | "table" | "metadata" | "compressing" | "finalizing";

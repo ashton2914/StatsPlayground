@@ -4,8 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
+import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter.ts";
 import type { GraphTheme } from "../src/graphCore/theme.ts";
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
+import type { DistributionReportResponse } from "../src/types/distribution.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
 
 const localStorageState = new Map<string, string>();
@@ -28,8 +30,7 @@ Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
 });
 
-const { buildGraph } = await import("../src/graphCore/transform.ts");
-const { drawRawPoints } = await import("../src/graphCore/rawPoints.ts");
+const { buildGraph, transposeOption } = await import("../src/graphCore/transform.ts");
 
 {
   const transformSource = readFileSync(resolve(TEST_FILE_DIR, "../src/graphCore/transform.ts"), "utf8");
@@ -103,6 +104,1231 @@ function frameBackedAggregateFrame(aggregates: GraphDataFrame["aggregates"], sou
   };
 }
 
+function typedNumericFrame(aggregates: GraphDataFrame["aggregates"] = []): GraphDataFrame {
+  return {
+    ...frameBackedAggregateFrame(aggregates, 6),
+    extents: {
+      x: { min: 1, max: 6 },
+      y: { min: 2, max: 12 },
+    },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 6,
+      xValues: new Float64Array([1, 2, 3, 4, 5, 6]),
+      yValues: new Float64Array([2, 4, 5, 8, 9, 12]),
+      rowIds: new BigInt64Array([1n, 2n, 3n, 4n, 5n, 6n]),
+      validity: {
+        x: new Uint8Array([0b00111111]),
+        y: new Uint8Array([0b00111111]),
+      },
+    }],
+  };
+}
+
+function typedGroupedNumericFrame(aggregates: GraphDataFrame["aggregates"] = []): GraphDataFrame {
+  const frame = typedNumericFrame(aggregates);
+  return {
+    ...frame,
+    dictionaries: { group: ["East", "West"] },
+    rawChunks: frame.rawChunks.map((chunk) => ({
+      ...chunk,
+      groupCodes: new Uint32Array([0, 1, 0, 1, 0, 1]),
+      validity: {
+        ...chunk.validity,
+        group: new Uint8Array([0b00111111]),
+      },
+    })),
+  };
+}
+
+function frameScatterValues(panel: { option: unknown }): Array<{
+  value: [number | string, number | string];
+  __pick?: { rowId: number; colName: string };
+}> {
+  const scatter = panelSeries(panel.option as Record<string, unknown>)
+    .find((entry) => entry.type === "scatter");
+  assert.ok(scatter, "expected frame-backed scatter series");
+  return scatter.data as Array<{
+    value: [number | string, number | string];
+    __pick?: { rowId: number; colName: string };
+  }>;
+}
+
+{
+  const selectedOrder = ["203-A2", "203-A4", "203-A1", "203-A3"];
+  const frameDictionaryOrder = ["203-A1", "203-A4", "203-A3", "203-A2"];
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "__sp_value__", type: "continuous" },
+      y: { name: "__sp_variable__", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true }],
+    transpose: true,
+    hiddenGroups: ["EV2"],
+    styles: { "TC1.6": { point: { color: "#ff0000" } } },
+  };
+  const frame: GraphDataFrame = {
+    ...baseFrame([]),
+    sourceRows: 4,
+    processedRows: 4,
+    dictionaries: { y: frameDictionaryOrder },
+    extents: { x: { min: 1, max: 4 } },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 4,
+      xValues: new Float64Array([1, 2, 3, 4]),
+      yValues: new Uint32Array([0, 1, 2, 3]),
+      rowIds: new BigInt64Array([1n, 2n, 3n, 4n]),
+      validity: {
+        x: new Uint8Array([0b00001111]),
+        y: new Uint8Array([0b00001111]),
+      },
+    }],
+  };
+
+  const built = buildGraph(
+    spec,
+    baseData(["_row_id", "__sp_variable__", "__sp_value__"], []),
+    theme,
+    { __sp_variable__: selectedOrder },
+    frame,
+  );
+  const option = built.panels[0].option as { xAxis?: { data?: string[] } };
+  const xAxis = option.xAxis;
+  const scatter = panelSeries(option).find((entry) => entry.type === "scatter");
+
+  assert.deepEqual(
+    xAxis?.data,
+    selectedOrder,
+    "visual-only legend and style changes must not let frame dictionary order replace the selected multi-column order",
+  );
+  assert.deepEqual(
+    (scatter?.data as Array<{ value: [string, number] }>).map((point) => point.value[0]),
+    frameDictionaryOrder,
+    "selected axis order must not replace the frame dictionary used to decode category codes",
+  );
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+    },
+    elements: [{ kind: "points", enabled: true }],
+    transpose: true,
+  };
+  const built = buildGraph(
+    spec,
+    frameBackedAggregateData(["x", "y"], 6),
+    theme,
+    undefined,
+    typedNumericFrame(),
+  );
+
+  assert.deepEqual(
+    frameScatterValues(built.panels[0]).map((point) => point.value),
+    [[2, 1], [4, 2], [5, 3], [8, 4], [9, 5], [12, 6]],
+    "visual transpose must swap rendered coordinates without changing frame roles",
+  );
+}
+
+function typedFacetedNumericFrame(): GraphDataFrame {
+  const frame = typedNumericFrame();
+  return {
+    ...frame,
+    dictionaries: { facetX: ["A", "B"] },
+    rawChunks: frame.rawChunks.map((chunk) => ({
+      ...chunk,
+      facetXCodes: new Uint32Array([0, 0, 0, 1, 1, 1]),
+      validity: {
+        ...chunk.validity,
+        facetX: new Uint8Array([0b00111111]),
+      },
+    })),
+  };
+}
+
+function typedDateFrame(aggregates: GraphDataFrame["aggregates"] = []): GraphDataFrame {
+  return {
+    ...frameBackedAggregateFrame(aggregates, 4),
+    dictionaries: { x: ["2026-01-01", "2026-01-02"] },
+    extents: {
+      x: { min: 0, max: 1 },
+      y: { min: 2, max: 9 },
+    },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 4,
+      xValues: new Uint32Array([0, 0, 1, 1]),
+      yValues: new Float64Array([2, 5, 6, 9]),
+      rowIds: new BigInt64Array([1n, 2n, 3n, 4n]),
+      validity: {
+        x: new Uint8Array([0b00001111]),
+        y: new Uint8Array([0b00001111]),
+      },
+    }],
+  };
+}
+
+const STYLE_MATRIX_GROUP_ORDER = ["EV", "EV1", "EV2", "TC1.6"] as const;
+const STYLE_MATRIX_PANEL_ORDER = ["Panel-A", "Panel-B"] as const;
+const STYLE_MATRIX_TARGET_GROUP = "TC1.6";
+const STYLE_MATRIX_VALUE_ORDERS = {
+  Build: [...STYLE_MATRIX_GROUP_ORDER],
+  panel: [...STYLE_MATRIX_PANEL_ORDER],
+  Shade: ["S-EV", "S-EV1", "S-EV2", "S-TC"],
+};
+const STYLE_MATRIX_STYLES: NonNullable<GraphSpec["styles"]> = {
+  EV: {
+    line: { color: "#a10011" },
+    fill: { color: "#b10022" },
+    point: { color: "#c10033", fillColor: "#c10033" },
+    gradient: { color: "#d10044" },
+  },
+  EV1: {
+    line: { color: "#115500" },
+    fill: { color: "#227700" },
+    point: { color: "#339900", fillColor: "#339900" },
+    gradient: { color: "#44bb00" },
+  },
+  EV2: {
+    line: { color: "#001199" },
+    fill: { color: "#0022bb" },
+    point: { color: "#0033dd", fillColor: "#0033dd" },
+    gradient: { color: "#0044ff" },
+  },
+  "TC1.6": {
+    line: { color: "#7a0f70" },
+    fill: { color: "#c71db8" },
+    point: { color: "#ff4be9", fillColor: "#ff4be9" },
+    gradient: { color: "#ff8ff3" },
+  },
+};
+
+function opaqueRgba(hex: string): string {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex);
+  assert.ok(match, `expected hex color, received ${hex}`);
+  const rgb = match![1];
+  return `rgba(${parseInt(rgb.slice(0, 2), 16)}, ${parseInt(rgb.slice(2, 4), 16)}, ${parseInt(rgb.slice(4, 6), 16)}, 1)`;
+}
+
+function belongsToGroup(entry: Record<string, unknown>, groupKey: string): boolean {
+  const name = typeof entry.name === "string" ? entry.name : "";
+  const id = typeof entry.id === "string" ? entry.id : "";
+  return name === groupKey
+    || name.startsWith(`${groupKey} `)
+    || name.startsWith(`${groupKey}_`)
+    || id.startsWith(`${groupKey}__`)
+    || id.startsWith(`${groupKey}_`);
+}
+
+function assertSeriesMatchesResolvedGroupStyle(
+  entry: Record<string, unknown>,
+  expected: NonNullable<GraphSpec["styles"]>[typeof STYLE_MATRIX_TARGET_GROUP],
+  label: string,
+): void {
+  const type = String(entry.type ?? "");
+  if (type === "scatter") {
+    const itemStyle = entry.itemStyle as { color?: string; borderColor?: string } | undefined;
+    assert.equal(itemStyle?.color, expected.point?.color, `${label} scatter fill must use point style color`);
+    assert.equal(itemStyle?.borderColor, expected.point?.color, `${label} scatter border must use point style color`);
+    return;
+  }
+  if (type === "line") {
+    const lineStyle = entry.lineStyle as { color?: string } | undefined;
+    const itemStyle = entry.itemStyle as { color?: string } | undefined;
+    const areaStyle = entry.areaStyle as { color?: string } | undefined;
+    if (lineStyle) {
+      assert.equal(lineStyle.color, expected.line?.color, `${label} line stroke must use line style color`);
+    }
+    if (itemStyle) {
+      assert.equal(itemStyle.color, expected.line?.color, `${label} line itemStyle must use line style color`);
+    }
+    if (areaStyle) {
+      const id = typeof entry.id === "string" ? entry.id : "";
+      const expectedAreaColor = id.includes("_fit") || id.endsWith("__band_hi")
+        ? expected.line?.color
+        : expected.fill?.color;
+      assert.equal(areaStyle.color, expectedAreaColor, `${label} filled line area must use the expected group style color`);
+    }
+    return;
+  }
+  if (type === "bar" || type === "heatmap") {
+    const itemStyle = entry.itemStyle as { color?: string } | undefined;
+    assert.equal(itemStyle?.color, expected.fill?.color, `${label} ${type} fill must use fill style color`);
+    return;
+  }
+  if (type === "boxplot") {
+    const itemStyle = entry.itemStyle as { color?: string; borderColor?: string } | undefined;
+    assert.equal(itemStyle?.color, opaqueRgba(expected.fill?.color ?? ""), `${label} box fill must use fill style color`);
+    assert.equal(itemStyle?.borderColor, opaqueRgba(expected.line?.color ?? ""), `${label} box border must use line style color`);
+  }
+}
+
+function assertTargetGroupSeriesStyled(
+  series: Array<Record<string, unknown>>,
+  label: string,
+): void {
+  const matching = series.filter((entry) => belongsToGroup(entry, STYLE_MATRIX_TARGET_GROUP));
+  assert.ok(matching.length > 0, `${label} must emit at least one ${STYLE_MATRIX_TARGET_GROUP} series`);
+  for (const entry of matching) {
+    assertSeriesMatchesResolvedGroupStyle(entry, STYLE_MATRIX_STYLES[STYLE_MATRIX_TARGET_GROUP], label);
+  }
+}
+
+function assertPanelKeepsMissingMiddleGap(
+  series: Array<Record<string, unknown>>,
+  label: string,
+): void {
+  assert.equal(
+    series.some((entry) => belongsToGroup(entry, "EV2")),
+    false,
+    `${label} should keep EV2 absent in Panel-A instead of reindexing later groups`,
+  );
+}
+
+function styleMatrixPointFrame(aggregates: GraphDataFrame["aggregates"] = []): GraphDataFrame {
+  const bitmask = new Uint8Array([0xff, 0x03]);
+  return {
+    ...frameBackedAggregateFrame(aggregates, 10),
+    dictionaries: {
+      group: [...STYLE_MATRIX_GROUP_ORDER],
+      facetX: [...STYLE_MATRIX_PANEL_ORDER],
+    },
+    extents: {
+      x: { min: 1, max: 4 },
+      y: { min: 1, max: 6.5 },
+    },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 10,
+      xValues: new Float64Array([1, 2, 2, 3, 4, 1, 2, 2, 3, 4]),
+      yValues: new Float64Array([1.1, 1.8, 2.4, 3.2, 4.1, 1.2, 2.2, 3.7, 4.8, 6.1]),
+      rowIds: new BigInt64Array([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n]),
+      groupCodes: new Uint32Array([0, 1, 3, 3, 3, 0, 2, 3, 3, 3]),
+      facetXCodes: new Uint32Array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1]),
+      validity: {
+        x: bitmask,
+        y: bitmask,
+        group: bitmask,
+        facetX: bitmask,
+      },
+    }],
+    aggregates,
+  };
+}
+
+function styleMatrixAggregateOnlyFrame(aggregates: GraphDataFrame["aggregates"]): GraphDataFrame {
+  return {
+    ...frameBackedAggregateFrame(aggregates, 10),
+    dictionaries: {
+      group: [...STYLE_MATRIX_GROUP_ORDER],
+      facetX: [...STYLE_MATRIX_PANEL_ORDER],
+    },
+    aggregates,
+  };
+}
+
+function styleMatrixBoxPlotPacket(): GraphDataFrame["aggregates"][number] {
+  return {
+    kind: "boxPlot",
+    xColumn: "x",
+    yColumn: "y",
+    groupColumn: "Build",
+    entries: [
+      { group: "EV", facetX: "Panel-A", category: "1", count: 4, min: 1, q1: 1.1, median: 1.2, q3: 1.3, max: 1.4, whiskerLow: 1, whiskerHigh: 1.4, outliers: [] },
+      { group: "EV1", facetX: "Panel-A", category: "1", count: 4, min: 1.5, q1: 1.6, median: 1.7, q3: 1.8, max: 1.9, whiskerLow: 1.5, whiskerHigh: 1.9, outliers: [] },
+      { group: "TC1.6", facetX: "Panel-A", category: "1", count: 4, min: 3.1, q1: 3.3, median: 3.5, q3: 3.7, max: 3.9, whiskerLow: 3.1, whiskerHigh: 3.9, outliers: [] },
+      { group: "EV", facetX: "Panel-B", category: "1", count: 4, min: 1.1, q1: 1.2, median: 1.3, q3: 1.4, max: 1.5, whiskerLow: 1.1, whiskerHigh: 1.5, outliers: [] },
+      { group: "EV2", facetX: "Panel-B", category: "1", count: 4, min: 2.1, q1: 2.2, median: 2.3, q3: 2.4, max: 2.5, whiskerLow: 2.1, whiskerHigh: 2.5, outliers: [] },
+      { group: "TC1.6", facetX: "Panel-B", category: "1", count: 4, min: 4.2, q1: 4.4, median: 4.6, q3: 4.8, max: 5, whiskerLow: 4.2, whiskerHigh: 5, outliers: [] },
+    ],
+  };
+}
+
+function styleMatrixHistogramPacket(): GraphDataFrame["aggregates"][number] {
+  return {
+    kind: "histogram",
+    xColumn: "x",
+    yColumn: "y",
+    groupColumn: "Build",
+    binCount: 2,
+    minValue: 0,
+    maxValue: 4,
+    missingCount: 0,
+    binWidth: 2,
+    totalCount: 12,
+    bins: [
+      { group: "EV", facetX: "Panel-A", binStart: 0, binEnd: 2, count: 2 },
+      { group: "EV1", facetX: "Panel-A", binStart: 0, binEnd: 2, count: 2 },
+      { group: "TC1.6", facetX: "Panel-A", binStart: 0, binEnd: 2, count: 3 },
+      { group: "TC1.6", facetX: "Panel-A", binStart: 2, binEnd: 4, count: 2 },
+      { group: "EV", facetX: "Panel-B", binStart: 0, binEnd: 2, count: 2 },
+      { group: "EV2", facetX: "Panel-B", binStart: 0, binEnd: 2, count: 2 },
+      { group: "TC1.6", facetX: "Panel-B", binStart: 0, binEnd: 2, count: 1 },
+      { group: "TC1.6", facetX: "Panel-B", binStart: 2, binEnd: 4, count: 2 },
+    ],
+  };
+}
+
+function styleMatrixHeatmapPacket(): GraphDataFrame["aggregates"][number] {
+  return {
+    kind: "heatmap",
+    xColumn: "x",
+    yColumn: "y",
+    groupColumn: "Build",
+    xBinCount: 1,
+    yBinCount: 1,
+    xMin: 0,
+    xMax: 2,
+    yMin: 0,
+    yMax: 2,
+    missingCount: 0,
+    xBinWidth: 2,
+    yBinWidth: 2,
+    totalCount: 6,
+    cells: [
+      { group: "EV", facetX: "Panel-A", xBinIndex: 0, yBinIndex: 0, xBinStart: 0, xBinEnd: 2, yBinStart: 0, yBinEnd: 2, count: 1 },
+      { group: "EV1", facetX: "Panel-A", xBinIndex: 0, yBinIndex: 0, xBinStart: 0, xBinEnd: 2, yBinStart: 0, yBinEnd: 2, count: 1 },
+      { group: "TC1.6", facetX: "Panel-A", xBinIndex: 0, yBinIndex: 0, xBinStart: 0, xBinEnd: 2, yBinStart: 0, yBinEnd: 2, count: 2 },
+      { group: "EV", facetX: "Panel-B", xBinIndex: 0, yBinIndex: 0, xBinStart: 0, xBinEnd: 2, yBinStart: 0, yBinEnd: 2, count: 1 },
+      { group: "EV2", facetX: "Panel-B", xBinIndex: 0, yBinIndex: 0, xBinStart: 0, xBinEnd: 2, yBinStart: 0, yBinEnd: 2, count: 1 },
+      { group: "TC1.6", facetX: "Panel-B", xBinIndex: 0, yBinIndex: 0, xBinStart: 0, xBinEnd: 2, yBinStart: 0, yBinEnd: 2, count: 2 },
+    ],
+  };
+}
+
+for (const mode of ["uniform", "normal"] as const) {
+  for (const data of [
+    baseData(
+      ["_row_id", "category", "value"],
+      [[101, "A", 10], [102, "A", 10], [103, "A", 10]],
+    ),
+    baseData(
+      ["category", "value"],
+      [["A", 10], ["A", 10], ["A", 10]],
+    ),
+  ]) {
+    const spec: GraphSpec = {
+      encoding: {
+        x: { name: "category", type: "nominal" },
+        y: { name: "value", type: "continuous" },
+      },
+      elements: [{
+        kind: "points",
+        enabled: true,
+        options: { summaryStat: "none", jitter: mode, jitterLimit: 0.5 },
+      }],
+    };
+    const first = JSON.stringify(buildGraph(spec, data, theme));
+    const second = JSON.stringify(buildGraph(spec, data, theme));
+    assert.equal(
+      second,
+      first,
+      `repeated legacy ${mode} builds must be identical with ${data.columns.includes("_row_id") ? "row IDs" : "source-index fallback"}`,
+    );
+  }
+}
+
+{
+  const data = frameBackedAggregateData(["event_date", "cost"], 4);
+  const pointsSpec: GraphSpec = {
+    encoding: {
+      x: { name: "event_date", type: "datetime" },
+      y: { name: "cost", type: "continuous" },
+    },
+    elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+  };
+  const built = buildGraph(pointsSpec, data, theme, undefined, typedDateFrame());
+  const panel = built.panels[0];
+  const xAxis = panel.option.xAxis as { type?: string; data?: string[] };
+  assert.equal(xAxis.type, "time");
+  assert.equal(xAxis.data, undefined);
+  assert.ok(Number(xAxis.min) <= Date.parse("2026-01-01"));
+  assert.ok(Number(xAxis.max) >= Date.parse("2026-01-02"));
+  const pointSeries = panelSeries(panel.option as Record<string, unknown>)
+    .filter((entry) => entry.type === "scatter");
+  assert.equal(pointSeries.length, 1, "frame-backed date points must also emit ECharts scatter");
+  const dateValues = (pointSeries[0].data as Array<{ value: [number, number] }>)
+    .map((item) => item.value[0]);
+  assert.deepEqual(dateValues, [
+    Date.parse("2026-01-01"),
+    Date.parse("2026-01-01"),
+    Date.parse("2026-01-02"),
+    Date.parse("2026-01-02"),
+  ]);
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "measurement", type: "continuous" },
+    },
+    elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+  };
+  const frame: GraphDataFrame = {
+    ...frameBackedAggregateFrame([], 3),
+    extents: { x: { min: 11, max: 33 } },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 3,
+      xValues: new Float64Array([11, 22, 33]),
+      yValues: new Float64Array([101, 202, 303]),
+      rowIds: new BigInt64Array([1n, 2n, 3n]),
+      validity: {
+        x: new Uint8Array([0b00000111]),
+        y: new Uint8Array([0b00000111]),
+      },
+    }],
+  };
+
+  const items = frameScatterValues(buildGraph(
+    spec,
+    frameBackedAggregateData(["measurement"], 3),
+    theme,
+    undefined,
+    frame,
+  ).panels[0]);
+  assert.deepEqual(items.map((item) => item.value), [[11, ""], [22, ""], [33, ""]]);
+  assert.ok(items.every((item) => item.__pick?.colName === "measurement"));
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "measurement", type: "continuous" },
+      y: { name: "region", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+  };
+  const frame: GraphDataFrame = {
+    ...frameBackedAggregateFrame([], 4),
+    dictionaries: { y: ["East", "West"] },
+    extents: { x: { min: 10, max: 40 } },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 4,
+      xValues: new Float64Array([10, 20, 30, 40]),
+      yValues: new Float64Array([0, 1, 0, 1]),
+      rowIds: new BigInt64Array([11n, 12n, 13n, 14n]),
+      validity: {
+        x: new Uint8Array([0b00001111]),
+        y: new Uint8Array([0b00001111]),
+      },
+    }],
+  };
+
+  const items = frameScatterValues(buildGraph(
+    spec,
+    frameBackedAggregateData(["measurement", "region"], 4),
+    theme,
+    { region: ["East", "West"] },
+    frame,
+  ).panels[0]);
+  assert.deepEqual(items.map((item) => item.value), [
+    [10, "East"],
+    [20, "West"],
+    [30, "East"],
+    [40, "West"],
+  ]);
+  assert.ok(items.every((item) => item.__pick?.colName === "measurement"));
+}
+
+{
+  const data = frameBackedAggregateData(["event_date", "cost"], 4);
+  const boxPacket: GraphDataFrame["aggregates"][number] = {
+    kind: "boxPlot",
+    xColumn: "event_date",
+    yColumn: "cost",
+    entries: [
+      {
+        category: "2026-01-01",
+        count: 2,
+        min: 2,
+        q1: 2.5,
+        median: 3.5,
+        q3: 4.5,
+        max: 5,
+        whiskerLow: 2,
+        whiskerHigh: 5,
+        outliers: [],
+      },
+      {
+        category: "2026-01-02",
+        count: 2,
+        min: 6,
+        q1: 6.5,
+        median: 7.5,
+        q3: 8.5,
+        max: 9,
+        whiskerLow: 6,
+        whiskerHigh: 9,
+        outliers: [],
+      },
+    ],
+  };
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "event_date", type: "datetime" },
+      y: { name: "cost", type: "continuous" },
+    },
+    elements: [
+      { kind: "points", enabled: true, options: { summaryStat: "none" } },
+      {
+        kind: "boxplot",
+        enabled: true,
+        options: {
+          boxType: "range",
+          outliers: true,
+          fiveNumberSummary: true,
+          widthProportion: 0.5,
+        },
+      },
+    ],
+  };
+  const panel = buildGraph(spec, data, theme, undefined, typedDateFrame([boxPacket])).panels[0];
+  const series = panelSeries(panel.option as Record<string, unknown>);
+  assert.ok(series.some((entry) => entry.type === "scatter" && Array.isArray(entry.data) && entry.data.length > 0));
+  assert.ok(series.some((entry) => entry.type === "boxplot"));
+}
+
+for (const element of [
+  { kind: "line", enabled: true, options: { summaryStat: "none" } },
+  { kind: "bar", enabled: true },
+  { kind: "smoother", enabled: true },
+  { kind: "fitline", enabled: true, options: { degree: 1 } },
+] satisfies GraphSpec["elements"]) {
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+    },
+    elements: [element],
+  };
+  const series = panelSeries(
+    buildGraph(spec, frameBackedAggregateData(["x", "y"], 6), theme, undefined, typedNumericFrame())
+      .panels[0].option as Record<string, unknown>,
+  );
+  assert.ok(series.length > 0, `frame-backed ${element.kind} must emit a renderable series`);
+  assert.ok(series.some((entry) => Array.isArray(entry.data) && entry.data.length > 0));
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      color: { name: "region", type: "nominal" },
+    },
+    elements: [{ kind: "line", enabled: true, options: { summaryStat: "none" } }],
+  };
+  const series = panelSeries(
+    buildGraph(
+      spec,
+      frameBackedAggregateData(["x", "y", "region"], 6),
+      theme,
+      undefined,
+      typedGroupedNumericFrame(),
+    ).panels[0].option as Record<string, unknown>,
+  ).filter((entry) => entry.type === "line");
+  assert.deepEqual(series.map((entry) => entry.name), ["East", "West"]);
+  assert.ok(series.every((entry) => Array.isArray(entry.data) && entry.data.length === 3));
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      color: { name: "region", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+    hiddenGroups: ["West"],
+    styles: {
+      East: { point: { color: "#123456", markerSize: 8, opacity: 1 } },
+    },
+  };
+  const panel = buildGraph(
+    spec,
+    frameBackedAggregateData(["x", "y", "region"], 6),
+    theme,
+    undefined,
+    typedGroupedNumericFrame(),
+  ).panels[0];
+  const pointSeries = panelSeries(panel.option as Record<string, unknown>)
+    .filter((entry) => entry.type === "scatter");
+  assert.deepEqual(pointSeries.map((entry) => entry.name), ["East"]);
+  assert.equal(pointSeries[0].symbol, "circle");
+  assert.equal(pointSeries[0].symbolSize, 8);
+  assert.equal(pointSeries[0].progressive, 0);
+  assert.notEqual(pointSeries[0].large, true);
+  assert.deepEqual(pointSeries[0].itemStyle, {
+    color: "#123456",
+    borderColor: "#123456",
+    opacity: 1,
+  });
+  const pointItems = pointSeries[0].data as Array<{
+    value: [number, number];
+    symbolOffset: [number, number];
+    __pick: { rowId: number; colName: string };
+  }>;
+  assert.equal(pointItems.length, 3);
+  assert.ok(pointItems.every((item) => item.__pick.colName === "y"));
+  assert.ok(pointItems.every((item) => Array.isArray(item.symbolOffset)));
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      color: { name: "region", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+    hiddenGroups: ["West"],
+  };
+  const rows = [
+    [1, 10, "East"],
+    [2, 20, "East"],
+    [-1000, -2000, "West"],
+    [1000, 2000, "West"],
+  ];
+  const frame: GraphDataFrame = {
+    ...frameBackedAggregateFrame([], 4),
+    dictionaries: { group: ["East", "West"] },
+    extents: {
+      x: { min: -1000, max: 1000 },
+      y: { min: -2000, max: 2000 },
+    },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 4,
+      xValues: new Float64Array([1, 2, -1000, 1000]),
+      yValues: new Float64Array([10, 20, -2000, 2000]),
+      rowIds: new BigInt64Array([1n, 2n, 3n, 4n]),
+      groupCodes: new Uint32Array([0, 0, 1, 1]),
+      validity: {
+        x: new Uint8Array([0b00001111]),
+        y: new Uint8Array([0b00001111]),
+        group: new Uint8Array([0b00001111]),
+      },
+    }],
+  };
+  const legacyPanel = buildGraph(
+    spec,
+    baseData(["x", "y", "region"], rows),
+    theme,
+    { region: ["East", "West"] },
+  ).panels[0];
+  const framePanel = buildGraph(
+    spec,
+    frameBackedAggregateData(["x", "y", "region"], 4),
+    theme,
+    { region: ["East", "West"] },
+    frame,
+  ).panels[0];
+  const legacyXAxis = legacyPanel.option.xAxis as { min?: number; max?: number };
+  const legacyYAxis = legacyPanel.option.yAxis as { min?: number; max?: number };
+  const frameXAxis = framePanel.option.xAxis as { min?: number; max?: number };
+  const frameYAxis = framePanel.option.yAxis as { min?: number; max?: number };
+  assert.deepEqual(
+    { min: frameXAxis.min, max: frameXAxis.max },
+    { min: legacyXAxis.min, max: legacyXAxis.max },
+    "frame-backed point-only X bounds must match legacy hidden-group filtering",
+  );
+  assert.deepEqual(
+    { min: frameYAxis.min, max: frameYAxis.max },
+    { min: legacyYAxis.min, max: legacyYAxis.max },
+    "frame-backed point-only Y bounds must match legacy hidden-group filtering",
+  );
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      color: { name: "region", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+    hiddenGroups: ["East"],
+  };
+  const panel = buildGraph(
+    spec,
+    frameBackedAggregateData(["x", "y", "region"], 6),
+    theme,
+    undefined,
+    typedGroupedNumericFrame(),
+  ).panels[0];
+  const pointSeries = panelSeries(panel.option as Record<string, unknown>)
+    .filter((entry) => entry.type === "scatter");
+  assert.deepEqual(pointSeries.map((entry) => entry.name), ["West"]);
+  assert.equal(
+    (pointSeries[0].itemStyle as { color?: string }).color,
+    "#cc660b",
+    "hidden groups must not shift later groups into an earlier palette slot",
+  );
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+    },
+    elements: [{
+      kind: "points",
+      enabled: true,
+      options: { summaryStat: "none", jitter: "normal", jitterLimit: 0.75 },
+    }],
+  };
+  const panel = buildGraph(
+    spec,
+    frameBackedAggregateData(["x", "y"], 6),
+    theme,
+    undefined,
+    typedNumericFrame(),
+  ).panels[0];
+  const pointItems = panelSeries(panel.option as Record<string, unknown>)
+    .filter((entry) => entry.type === "scatter")
+    .flatMap((entry) => entry.data as Array<{ symbolOffset: [number, number] }>);
+  assert.ok(pointItems.length > 0);
+  assert.ok(pointItems.some((item) => item.symbolOffset[0] !== 0));
+}
+
+{
+  const summaryPacket: GraphDataFrame["aggregates"][number] = {
+    kind: "summary",
+    xColumn: "x",
+    yColumn: "y",
+    summaries: [{
+      category: "1",
+      count: 6,
+      mean: 6.67,
+      median: 6.5,
+      stddev: 3.6,
+      min: 2,
+      max: 12,
+    }],
+  };
+  for (const kind of ["points", "line"] as const) {
+    const spec: GraphSpec = {
+      encoding: {
+        x: { name: "x", type: "continuous" },
+        y: { name: "y", type: "continuous" },
+      },
+      elements: [{ kind, enabled: true, options: { summaryStat: "mean", errorInterval: "none" } }],
+    };
+    const series = panelSeries(
+      buildGraph(
+        spec,
+        frameBackedAggregateData(["x", "y"], 6),
+        theme,
+        undefined,
+        typedNumericFrame([summaryPacket]),
+      ).panels[0].option as Record<string, unknown>,
+    );
+    assert.ok(series.length > 0, `summary packet must render standalone ${kind}`);
+  }
+}
+
+{
+  const overlayElements: GraphSpec["elements"] = [
+    { kind: "points", enabled: true, options: { summaryStat: "none" } },
+    { kind: "line", enabled: true, options: { summaryStat: "none" } },
+    { kind: "bar", enabled: true },
+    { kind: "smoother", enabled: true },
+    { kind: "fitline", enabled: true, options: { degree: 1 } },
+  ];
+  for (const overlay of overlayElements.slice(1)) {
+    const spec: GraphSpec = {
+      encoding: {
+        x: { name: "x", type: "continuous" },
+        y: { name: "y", type: "continuous" },
+      },
+      elements: [overlayElements[0], overlay],
+    };
+    const panel = buildGraph(
+      spec,
+      frameBackedAggregateData(["x", "y"], 6),
+      theme,
+      undefined,
+      typedNumericFrame(),
+    ).panels[0];
+    assert.ok(
+      panelSeries(panel.option as Record<string, unknown>).some(
+        (entry) => entry.type === "scatter" && Array.isArray(entry.data) && entry.data.length > 0,
+      ),
+      `points + ${overlay.kind} must retain ECharts points`,
+    );
+    assert.ok(
+      panelSeries(panel.option as Record<string, unknown>).some(
+        (entry) => Array.isArray(entry.data) && entry.data.length > 0,
+      ),
+      `points + ${overlay.kind} must emit the overlay series`,
+    );
+  }
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      groupX: { name: "panel", type: "nominal" },
+    },
+    elements: [{ kind: "line", enabled: true, options: { summaryStat: "none" } }],
+  };
+  const built = buildGraph(
+    spec,
+    frameBackedAggregateData(["x", "y", "panel"], 6),
+    theme,
+    undefined,
+    typedFacetedNumericFrame(),
+  );
+  assert.equal(built.panels.length, 2);
+  for (const panel of built.panels) {
+    const line = panelSeries(panel.option as Record<string, unknown>).find((entry) => entry.type === "line");
+    assert.ok(line);
+    assert.equal((line?.data as unknown[]).length, 3, `facet ${panel.title} must contain only its rows`);
+  }
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      groupX: { name: "panel", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true, options: { summaryStat: "none" } }],
+  };
+  const built = buildGraph(
+    spec,
+    frameBackedAggregateData(["x", "y", "panel"], 6),
+    theme,
+    undefined,
+    typedFacetedNumericFrame(),
+  );
+  assert.equal(built.panels.length, 2);
+  for (const panel of built.panels) {
+    const scatter = panelSeries(panel.option as Record<string, unknown>)
+      .find((entry) => entry.type === "scatter");
+    assert.ok(scatter, `facet ${panel.title} must emit frame-backed scatter`);
+    assert.equal((scatter.data as unknown[]).length, 3, `facet ${panel.title} must contain only its points`);
+  }
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      overlay: { name: "Build", type: "nominal" },
+      color: { name: "Shade", type: "nominal" },
+      groupX: { name: "panel", type: "nominal" },
+    },
+    styles: STYLE_MATRIX_STYLES,
+    elements: [{ kind: "line", enabled: true, options: { summaryStat: "none" } }],
+  };
+  const data = baseData(
+    ["panel", "x", "y", "Build", "Shade"],
+    [
+      ["Panel-A", 1, 1.1, "EV", "S-EV"],
+      ["Panel-A", 2, 1.8, "EV1", "S-EV1"],
+      ["Panel-A", 2, 2.4, "TC1.6", "S-TC"],
+      ["Panel-A", 3, 3.2, "TC1.6", "S-TC"],
+      ["Panel-A", 4, 4.1, "TC1.6", "S-TC"],
+      ["Panel-B", 1, 1.2, "EV", "S-EV"],
+      ["Panel-B", 2, 2.2, "EV2", "S-EV2"],
+      ["Panel-B", 2, 3.7, "TC1.6", "S-TC"],
+      ["Panel-B", 3, 4.8, "TC1.6", "S-TC"],
+      ["Panel-B", 4, 6.1, "TC1.6", "S-TC"],
+    ],
+  );
+  const panel = buildGraph(spec, data, theme, STYLE_MATRIX_VALUE_ORDERS).panels[0];
+  const series = panelSeries(panel.option as Record<string, unknown>);
+  assertPanelKeepsMissingMiddleGap(series, "overlay precedence panel");
+  assertTargetGroupSeriesStyled(series, "overlay precedence panel");
+}
+
+{
+  const styleMatrixCases: Array<{
+    name: string;
+    spec: GraphSpec;
+    data: GraphData;
+    frame?: GraphDataFrame;
+    verify?: (option: Record<string, unknown>, series: Array<Record<string, unknown>>) => void;
+  }> = [
+    {
+      name: "boxplot",
+      spec: {
+        encoding: {
+          x: { name: "x", type: "continuous" },
+          y: { name: "y", type: "continuous" },
+          overlay: { name: "Build", type: "nominal" },
+          groupX: { name: "panel", type: "nominal" },
+        },
+        styles: STYLE_MATRIX_STYLES,
+        elements: [{ kind: "boxplot", enabled: true }],
+      },
+      data: frameBackedAggregateData(["x", "y", "Build"], 10),
+      frame: styleMatrixPointFrame([styleMatrixBoxPlotPacket()]),
+    },
+    {
+      name: "boxplot + points",
+      spec: {
+        encoding: {
+          x: { name: "x", type: "continuous" },
+          y: { name: "y", type: "continuous" },
+          overlay: { name: "Build", type: "nominal" },
+          groupX: { name: "panel", type: "nominal" },
+        },
+        styles: STYLE_MATRIX_STYLES,
+        elements: [
+          { kind: "boxplot", enabled: true },
+          { kind: "points", enabled: true, options: { summaryStat: "none" } },
+        ],
+      },
+      data: frameBackedAggregateData(["x", "y", "Build"], 10),
+      frame: styleMatrixPointFrame([styleMatrixBoxPlotPacket()]),
+    },
+    {
+      name: "points + boxplot",
+      spec: {
+        encoding: {
+          x: { name: "x", type: "continuous" },
+          y: { name: "y", type: "continuous" },
+          overlay: { name: "Build", type: "nominal" },
+          groupX: { name: "panel", type: "nominal" },
+        },
+        styles: STYLE_MATRIX_STYLES,
+        elements: [
+          { kind: "points", enabled: true, options: { summaryStat: "none" } },
+          { kind: "boxplot", enabled: true },
+        ],
+      },
+      data: frameBackedAggregateData(["x", "y", "Build"], 10),
+      frame: styleMatrixPointFrame([styleMatrixBoxPlotPacket()]),
+    },
+    {
+      name: "line + bar + smoother + fitline",
+      spec: {
+        encoding: {
+          x: { name: "x", type: "continuous" },
+          y: { name: "y", type: "continuous" },
+          overlay: { name: "Build", type: "nominal" },
+          color: { name: "Shade", type: "nominal" },
+          groupX: { name: "panel", type: "nominal" },
+        },
+        styles: STYLE_MATRIX_STYLES,
+        elements: [
+          { kind: "line", enabled: true, options: { summaryStat: "none" } },
+          { kind: "bar", enabled: true },
+          { kind: "smoother", enabled: true },
+          { kind: "fitline", enabled: true, options: { degree: 1, showFitCI: true, showPredCI: true } },
+        ],
+      },
+      data: baseData(
+        ["panel", "x", "y", "Build", "Shade"],
+        [
+          ["Panel-A", 1, 1.1, "EV", "S-EV"],
+          ["Panel-A", 2, 1.8, "EV1", "S-EV1"],
+          ["Panel-A", 2, 2.4, "TC1.6", "S-TC"],
+          ["Panel-A", 3, 3.2, "TC1.6", "S-TC"],
+          ["Panel-A", 4, 4.1, "TC1.6", "S-TC"],
+          ["Panel-B", 1, 1.2, "EV", "S-EV"],
+          ["Panel-B", 2, 2.2, "EV2", "S-EV2"],
+          ["Panel-B", 2, 3.7, "TC1.6", "S-TC"],
+          ["Panel-B", 3, 4.8, "TC1.6", "S-TC"],
+          ["Panel-B", 4, 6.1, "TC1.6", "S-TC"],
+        ],
+      ),
+    },
+    {
+      name: "histogram + points",
+      spec: {
+        encoding: {
+          x: { name: "x", type: "continuous" },
+          y: { name: "y", type: "continuous" },
+          overlay: { name: "Build", type: "nominal" },
+          groupX: { name: "panel", type: "nominal" },
+        },
+        styles: STYLE_MATRIX_STYLES,
+        elements: [
+          { kind: "histogram", enabled: true, options: { histStyle: "bar" } },
+          { kind: "points", enabled: true, options: { summaryStat: "none" } },
+        ],
+      },
+      data: frameBackedAggregateData(["x", "y", "Build"], 10),
+      frame: styleMatrixAggregateOnlyFrame([styleMatrixHistogramPacket()]),
+    },
+    {
+      name: "heatmap",
+      spec: {
+        encoding: {
+          x: { name: "x", type: "continuous" },
+          y: { name: "y", type: "continuous" },
+          overlay: { name: "Build", type: "nominal" },
+          groupX: { name: "panel", type: "nominal" },
+        },
+        styles: STYLE_MATRIX_STYLES,
+        elements: [{ kind: "heatmap", enabled: true }],
+      },
+      data: frameBackedAggregateData(["x", "y", "Build"], 10),
+      frame: styleMatrixAggregateOnlyFrame([styleMatrixHeatmapPacket()]),
+      verify: (option) => {
+        assert.equal(
+          "visualMap" in option,
+          false,
+          "grouped heatmap should not expose an option-level visualMap that overrides group fill color",
+        );
+      },
+    },
+  ];
+
+  for (const testCase of styleMatrixCases) {
+    const built = buildGraph(testCase.spec, testCase.data, theme, STYLE_MATRIX_VALUE_ORDERS, testCase.frame);
+    assert.equal(built.panels.length, 2, `${testCase.name} should preserve both facet panels`);
+    const panel = built.panels[0];
+    const option = panel.option as Record<string, unknown>;
+    const series = panelSeries(option);
+    assertPanelKeepsMissingMiddleGap(series, testCase.name);
+    assertTargetGroupSeriesStyled(series, testCase.name);
+    testCase.verify?.(option, series);
+  }
+}
+
+{
+  const packetOverlays: Array<{
+    name: string;
+    element: GraphSpec["elements"][number];
+    packet: GraphDataFrame["aggregates"][number];
+    seriesType: string;
+  }> = [
+    {
+      name: "histogram",
+      element: { kind: "histogram", enabled: true, options: { histStyle: "bar" } },
+      packet: {
+        kind: "histogram",
+        xColumn: "x",
+        yColumn: "y",
+        binCount: 2,
+        minValue: 0,
+        maxValue: 12,
+        missingCount: 0,
+        binWidth: 6,
+        totalCount: 6,
+        bins: [
+          { category: "A", binStart: 0, binEnd: 6, count: 2 },
+          { category: "A", binStart: 6, binEnd: 12, count: 1 },
+          { category: "B", binStart: 0, binEnd: 6, count: 1 },
+          { category: "B", binStart: 6, binEnd: 12, count: 2 },
+        ],
+      },
+      seriesType: "custom",
+    },
+    {
+      name: "heatmap",
+      element: { kind: "heatmap", enabled: true },
+      packet: {
+        kind: "heatmap",
+        xColumn: "x",
+        yColumn: "y",
+        xBinCount: 1,
+        yBinCount: 1,
+        xMin: 1,
+        xMax: 6,
+        yMin: 2,
+        yMax: 12,
+        missingCount: 0,
+        xBinWidth: 5,
+        yBinWidth: 10,
+        totalCount: 6,
+        cells: [{
+          xBinIndex: 0,
+          yBinIndex: 0,
+          xBinStart: 1,
+          xBinEnd: 6,
+          yBinStart: 2,
+          yBinEnd: 12,
+          count: 6,
+        }],
+      },
+      seriesType: "heatmap",
+    },
+  ];
+  for (const overlay of packetOverlays) {
+    const histogramMode = overlay.name === "histogram";
+    const spec: GraphSpec = {
+      encoding: {
+        x: { name: "x", type: histogramMode ? "nominal" : "continuous" },
+        y: { name: "y", type: "continuous" },
+      },
+      elements: [
+        { kind: "points", enabled: true, options: { summaryStat: "none" } },
+        overlay.element,
+      ],
+    };
+    const numericFrame = typedNumericFrame([overlay.packet]);
+    const frame = histogramMode
+      ? {
+        ...numericFrame,
+        dictionaries: { ...numericFrame.dictionaries, x: ["A", "B"] },
+        rawChunks: numericFrame.rawChunks.map((chunk) => ({
+          ...chunk,
+          xValues: new Uint32Array([0, 0, 0, 1, 1, 1]),
+        })),
+      }
+      : numericFrame;
+    const panel = buildGraph(
+      spec,
+      frameBackedAggregateData(["x", "y"], 6),
+      theme,
+      undefined,
+      frame,
+    ).panels[0];
+    assert.ok(
+      panelSeries(panel.option as Record<string, unknown>).some(
+        (entry) => entry.type === "scatter" && Array.isArray(entry.data) && entry.data.length > 0,
+      ),
+      `points + ${overlay.name} must retain ECharts points; emitted: ${panelSeries(panel.option as Record<string, unknown>)
+        .map((entry) => `${String(entry.type)}:${Array.isArray(entry.data) ? entry.data.length : "?"}`)
+        .join(", ")}`,
+    );
+    assert.ok(
+      panelSeries(panel.option as Record<string, unknown>).some(
+        (entry) => entry.type === overlay.seriesType && Array.isArray(entry.data) && entry.data.length > 0,
+      ),
+      `points + ${overlay.name} must emit the packet overlay`,
+    );
+    const xAxis = panel.option.xAxis as { min?: number; max?: number };
+    const yAxis = panel.option.yAxis as { min?: number; max?: number };
+    if (!histogramMode) {
+      assert.deepEqual(
+        { min: xAxis.min, max: xAxis.max },
+        { min: 1, max: 6 },
+        `points + ${overlay.name} must preserve the complete frame X extent`,
+      );
+    }
+    if (overlay.name === "heatmap") {
+      assert.deepEqual(
+        { min: yAxis.min, max: yAxis.max },
+        { min: 2, max: 12 },
+        "points + heatmap must preserve the complete frame Y extent",
+      );
+    }
+  }
+}
+
 {
   const throwingRows = new Proxy([] as unknown[][], {
     get(_target, prop) {
@@ -160,13 +1386,13 @@ function frameBackedAggregateFrame(aggregates: GraphDataFrame["aggregates"], sou
   const wrapPanel = built.panels.find((panel) => panel.title.includes("W2"));
   assert.ok(wrapPanel, "expected wrapped panel for W2 facet value");
 
-  const sourceByRowId = wrapPanel?.rawPoints?.sourceByRowId;
-  assert.equal(sourceByRowId?.get(101n), "m1");
-  assert.equal(sourceByRowId?.get(102n), undefined, "invalid source rows must not receive melt provenance");
-
-  const facetMask = wrapPanel?.rawPoints?.chunks[0]?.facetMask;
-  assert.ok(facetMask, "facet mask must be emitted for wrapped panel");
-  assert.equal(facetMask?.[0], 0b00000010);
+  const scatter = panelSeries(wrapPanel?.option as Record<string, unknown>)
+    .find((entry) => entry.type === "scatter");
+  assert.ok(scatter);
+  const scatterItems = scatter.data as Array<{ __pick?: { rowId: number; colName: string } }>;
+  assert.deepEqual(scatterItems.map((item) => item.__pick), [
+    { rowId: 102, colName: "y" },
+  ]);
 }
 
 {
@@ -226,13 +1452,14 @@ function frameBackedAggregateFrame(aggregates: GraphDataFrame["aggregates"], sou
   const wrapPanel = built.panels.find((panel) => panel.title.includes("W2"));
   assert.ok(wrapPanel, "expected wrapped panel for cross-byte wrap value");
 
-  const sourceByRowId = wrapPanel?.rawPoints?.sourceByRowId;
-  assert.equal(sourceByRowId?.get(9n), "m2");
-  assert.equal(sourceByRowId?.get(10n), undefined);
-
-  const facetMask = wrapPanel?.rawPoints?.chunks[0]?.facetMask;
-  assert.ok(facetMask);
-  assert.equal(facetMask?.[1] & 0b00000001, 0b00000001);
+  const scatter = panelSeries(wrapPanel?.option as Record<string, unknown>)
+    .find((entry) => entry.type === "scatter");
+  assert.ok(scatter);
+  const picks = (scatter.data as Array<{ __pick?: { rowId: number; colName: string } }>)
+    .map((item) => item.__pick);
+  assert.deepEqual(picks, [
+    { rowId: 9, colName: "m2" },
+  ]);
 }
 
 {
@@ -730,7 +1957,6 @@ function frameBackedAggregateFrame(aggregates: GraphDataFrame["aggregates"], sou
               stddev: 1,
               min: 2,
               max: 12,
-              sum: 14,
               intervalLow: null,
               intervalHigh: null,
             },
@@ -740,7 +1966,67 @@ function frameBackedAggregateFrame(aggregates: GraphDataFrame["aggregates"], sou
       verify: (series) => {
         const summary = series.find((entry) => String(entry.id ?? "").endsWith("__summary"));
         assert.ok(summary, "frame-backed Sum must produce a summary series");
-        assert.deepEqual(summary.data, [["USA", 14]], "Sum must use the server summary packet value");
+        assert.deepEqual(summary.data, [["USA", 14]], "Sum must derive from the server mean and count");
+        },
+          },
+          {
+      name: "grouped boxplot packet",
+      data: frameBackedAggregateData(["event_date", "cost", "region"], 300_000),
+      spec: {
+        encoding: {
+          x: { name: "event_date", type: "datetime" },
+          y: { name: "cost", type: "continuous" },
+          color: { name: "region", type: "nominal" },
+        },
+        elements: [{ kind: "boxplot", enabled: true }],
+      },
+      frame: {
+        ...frameBackedAggregateFrame([
+          {
+            kind: "boxPlot",
+            xColumn: "event_date",
+            yColumn: "cost",
+            groupColumn: "region",
+            entries: [
+              {
+                group: "East",
+                category: "2026-01-01",
+                count: 10,
+                min: 1,
+                q1: 2,
+                median: 3,
+                q3: 4,
+                max: 5,
+                whiskerLow: 1,
+                whiskerHigh: 5,
+                outliers: [],
+              },
+              {
+                group: "West",
+                category: "2026-01-01",
+                count: 8,
+                min: 2,
+                q1: 3,
+                median: 4,
+                q3: 5,
+                max: 6,
+                whiskerLow: 2,
+                whiskerHigh: 6,
+                outliers: [],
+              },
+            ],
+          },
+        ], 300_000),
+        dictionaries: { group: ["East", "West"] },
+      },
+      verify: (series) => {
+        const boxes = series.filter((entry) => entry.type === "boxplot");
+        assert.equal(boxes.length, 2, "packet groups must each produce a boxplot series");
+        assert.deepEqual(boxes.map((entry) => entry.name), ["East", "West"]);
+        assert.deepEqual(boxes.map((entry) => entry.data), [
+          [[1, 2, 3, 4, 5]],
+          [[2, 3, 4, 5, 6]],
+        ]);
       },
     },
     {
@@ -817,17 +2103,14 @@ function frameBackedAggregateFrame(aggregates: GraphDataFrame["aggregates"], sou
   };
 
   const built = buildGraph(spec, data, theme, undefined, frame);
-  const descriptor = built.panels[0].rawPoints;
-  assert.ok(descriptor, "raw descriptor should exist for non-summary points");
-
-  const drawn = drawRawPoints(descriptor!, {
-    plotRect: { x: 0, y: 0, width: 64, height: 64 },
-    x: { kind: "categorical", pixelsByCategory: new Float64Array([10]) },
-    y: { kind: "numeric", scale: -1, offset: 32 },
-  });
-
-  const colNames = new Set(drawn.points.map((point) => point.colName));
-  assert.deepEqual(colNames, new Set(["m1", "m2"]), "raw point picks must preserve typed melted source identity from source codes");
+  const scatter = panelSeries(built.panels[0].option as Record<string, unknown>)
+    .find((entry) => entry.type === "scatter");
+  assert.ok(scatter);
+  const colNames = new Set(
+    (scatter.data as Array<{ __pick?: { colName: string } }>)
+      .map((item) => item.__pick?.colName),
+  );
+  assert.deepEqual(colNames, new Set(["m1", "m2"]), "ECharts point picks must preserve typed melted source identity from source codes");
 }
 
 {
@@ -901,14 +2184,986 @@ function frameBackedAggregateFrame(aggregates: GraphDataFrame["aggregates"], sou
   assert.equal(built.cols, 2);
   assert.equal(built.rows, 2);
   for (const panel of built.panels) {
-    assert.ok(panel.rawPoints, "frame-backed faceted panel should expose a panel-local raw descriptor");
-    const drawn = drawRawPoints(panel.rawPoints!, {
-      plotRect: { x: 0, y: 0, width: 64, height: 64 },
-      x: { kind: "categorical", pixelsByCategory: new Float64Array([10]) },
-      y: { kind: "numeric", scale: -1, offset: 32 },
-    });
-    assert.equal(drawn.points.length, 1, "each facet panel should keep only its local typed rows via facet mask");
     const series = panelSeries(panel.option as Record<string, unknown>);
     assert.ok(series.length > 0, "facet panel should render packet-backed series");
+    const scatter = series.find((entry) => entry.type === "scatter");
+    assert.ok(scatter);
+    assert.equal((scatter.data as unknown[]).length, 1, "each facet panel should keep only its local typed points");
   }
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      groupX: { name: "columnFacet", type: "nominal" },
+      groupY: { name: "rowFacet", type: "nominal" },
+    },
+    elements: [{ kind: "points", enabled: true }],
+    transpose: true,
+  };
+  const data = baseData(
+    ["x", "y", "columnFacet", "rowFacet"],
+    [
+      [1, 10, "Left", "Top"],
+      [2, 20, "Right", "Top"],
+      [3, 30, "Left", "Middle"],
+      [4, 40, "Right", "Middle"],
+      [5, 50, "Left", "Bottom"],
+      [6, 60, "Right", "Bottom"],
+    ],
+  );
+
+  const built = buildGraph(spec, data, theme);
+  assert.equal(built.cols, 3);
+  assert.equal(built.rows, 2);
+  assert.deepEqual(
+    built.panels.map((panel) => [panel.groupXValue, panel.groupYValue, panel.title]),
+    [
+      ["Top", "Left", "columnFacet=Left | rowFacet=Top"],
+      ["Middle", "Left", "columnFacet=Left | rowFacet=Middle"],
+      ["Bottom", "Left", "columnFacet=Left | rowFacet=Bottom"],
+      ["Top", "Right", "columnFacet=Right | rowFacet=Top"],
+      ["Middle", "Right", "columnFacet=Right | rowFacet=Middle"],
+      ["Bottom", "Right", "columnFacet=Right | rowFacet=Bottom"],
+    ],
+  );
+}
+
+{
+  const transposed = transposeOption({
+    xAxis: { type: "value" },
+    yAxis: { type: "value" },
+    series: [{
+      type: "scatter",
+      data: [[1, 2]],
+      markPoint: {
+        data: [
+          { xAxis: 3, yAxis: 4 },
+          { coord: [5, 6], name: "peak" },
+        ],
+      },
+    }],
+  });
+  const series = (transposed.series as Array<Record<string, unknown>>)[0];
+  assert.deepEqual((series.markPoint as { data: unknown[] }).data, [
+    { xAxis: 4, yAxis: 3 },
+    { coord: [6, 5], name: "peak" },
+  ]);
+}
+
+{
+  const data = frameBackedAggregateData(["alpha", "beta", "gamma"]);
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "alpha", type: "continuous" },
+      y: { name: "beta", type: "continuous" },
+    },
+    elements: [{ kind: "correlationMatrix", enabled: true }],
+  };
+
+  const frame = frameBackedAggregateFrame([
+    {
+      kind: "correlationMatrix",
+      method: "spearman",
+      columns: ["alpha", "beta", "gamma"],
+      cells: [
+        { xIndex: 0, yIndex: 0, coefficient: 1, sampleCount: 24 },
+        { xIndex: 1, yIndex: 0, coefficient: 0, sampleCount: 24 },
+        { xIndex: 2, yIndex: 0, coefficient: -0.4321, sampleCount: 24 },
+        { xIndex: 0, yIndex: 1, coefficient: 0, sampleCount: 24 },
+        { xIndex: 1, yIndex: 1, coefficient: 1, sampleCount: 24 },
+        { xIndex: 2, yIndex: 1, coefficient: null, sampleCount: 24, unavailableReason: "zeroVariance" },
+        { xIndex: 0, yIndex: 2, coefficient: -0.4321, sampleCount: 24 },
+        { xIndex: 1, yIndex: 2, coefficient: null, sampleCount: 24, unavailableReason: "insufficientData" },
+        { xIndex: 2, yIndex: 2, coefficient: 1, sampleCount: 24 },
+      ],
+    },
+  ]);
+
+  const built = buildGraph(spec, data, theme, undefined, frame);
+  assert.equal(built.panels.length, 1, "correlation matrix must render as a dedicated single panel");
+
+  const option = built.panels[0].option as Record<string, unknown>;
+  const xAxis = option.xAxis as Record<string, unknown>;
+  const yAxis = option.yAxis as Record<string, unknown>;
+  assert.deepEqual(xAxis.data, ["alpha", "beta", "gamma"]);
+  assert.deepEqual(yAxis.data, ["alpha", "beta", "gamma"]);
+
+  const series = panelSeries(option);
+  assert.equal(series.length > 0, true, "correlation matrix should emit at least one series");
+  const matrixSeries = series[0];
+  assert.equal(matrixSeries.type, "heatmap");
+
+  const visualMap = option.visualMap as Record<string, unknown>;
+  assert.deepEqual(visualMap.min, -1);
+  assert.deepEqual(visualMap.max, 1);
+
+  const matrixData = Array.isArray(matrixSeries.data)
+    ? (matrixSeries.data as Array<Record<string, unknown>>)
+    : [];
+  assert.equal(matrixData.length, 9);
+
+  const zeroCell = matrixData.find((entry) => {
+    const value = Array.isArray(entry.value) ? entry.value : [];
+    return Number(value[0]) === 1 && Number(value[1]) === 0;
+  });
+  assert.ok(zeroCell, "zero coefficient cell should exist");
+  assert.equal(Array.isArray(zeroCell?.value) ? Number((zeroCell?.value as unknown[])[2]) : NaN, 0);
+
+  const unavailableCell = matrixData.find((entry) => {
+    const value = Array.isArray(entry.value) ? entry.value : [];
+    return Number(value[0]) === 2 && Number(value[1]) === 1;
+  });
+  assert.ok(unavailableCell, "unavailable coefficient cell should exist");
+  assert.ok(
+    typeof unavailableCell?.itemStyle === "object" && unavailableCell?.itemStyle !== null,
+    "unavailable cell should carry explicit unavailable styling",
+  );
+  assert.equal(
+    (unavailableCell?.label as Record<string, unknown> | undefined)?.show,
+    false,
+    "unavailable cell label should be hidden",
+  );
+
+  const tooltip = option.tooltip as Record<string, unknown>;
+  const formatter = tooltip.formatter as ((params: unknown) => string);
+  assert.equal(typeof formatter, "function");
+
+  const tooltipText = formatter({ data: unavailableCell });
+  assert.match(tooltipText, /alpha|beta|gamma/);
+  assert.match(tooltipText, /Method\s*[:=]\s*Spearman/i);
+  assert.match(tooltipText, /n\s*[:=]\s*24/i);
+  assert.match(tooltipText, /Pair\s*[:=]\s*gamma\s*×\s*beta/i);
+  assert.match(tooltipText, /Unavailable\s*[:=]\s*Zero variance/i);
+  assert.doesNotMatch(tooltipText, /graph\.correlation\./i);
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true, options: { histStyle: "bar" } },
+      { kind: "normalCurve", enabled: true },
+    ],
+  };
+  const frame = baseFrame([
+    {
+      kind: "histogram",
+      yColumn: "measurement",
+      binCount: 8,
+      minValue: -4,
+      maxValue: 4,
+      missingCount: 0,
+      binWidth: 1,
+      totalCount: 100,
+      bins: Array.from({ length: 8 }, (_, index) => ({
+        binStart: index - 4,
+        binEnd: index - 3,
+        count: [0, 2, 14, 34, 34, 14, 2, 0][index],
+      })),
+    },
+    {
+      kind: "summary",
+      yColumn: "measurement",
+      summaries: [{
+        count: 100,
+        mean: 0,
+        median: 0,
+        stddev: 1,
+        min: -4,
+        max: 4,
+      }],
+    },
+  ]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  assert.ok(series.some((entry) => entry.type === "bar"), "histogram bars should remain visible");
+  const normal = series.find((entry) => String(entry.id ?? "").startsWith("__normal_curve_"));
+  assert.ok(normal, "Normal layer should emit an independent series");
+  assert.equal(normal.type, "line");
+  assert.equal(normal.smooth, true);
+  const points = normal.data as Array<[number, number]>;
+  assert.equal(points.length, 201);
+  assert.ok(points[100][1] > points[0][1], "the fitted density must peak above its left tail");
+  assert.ok(points[100][1] > points[200][1], "the fitted density must peak above its right tail");
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [{ kind: "normalCurve", enabled: true, options: { showSigmaBands: true } }],
+  };
+  const frame = baseFrame([{
+    kind: "summary",
+    yColumn: "measurement",
+    summaries: [{
+      count: 100,
+      mean: 10,
+      median: 10,
+      stddev: 2,
+      min: 2,
+      max: 18,
+    }],
+  }]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const bands = series.filter((entry) => String(entry.id ?? "").startsWith("__normal_sigma_band_"));
+  assert.equal(bands.length, 6, "sigma shading should emit one area for each interval inside +/-3 sigma");
+  assert.deepEqual(
+    bands.map((entry) => {
+      const points = entry.data as Array<[number, number]>;
+      return [points[0][0], points.at(-1)![0]];
+    }),
+    [[4, 6], [6, 8], [8, 10], [10, 12], [12, 14], [14, 16]],
+  );
+  for (const band of bands) {
+    assert.equal(band.type, "line");
+    assert.equal(band.silent, true);
+    assert.equal((band.lineStyle as Record<string, unknown>).opacity, 0);
+    assert.ok(Number((band.areaStyle as Record<string, unknown>).opacity) > 0);
+  }
+  const normalIndex = series.findIndex((entry) => String(entry.id ?? "").startsWith("__normal_curve_"));
+  const lastBandIndex = series.findLastIndex((entry) => String(entry.id ?? "").startsWith("__normal_sigma_band_"));
+  assert.ok(normalIndex > lastBandIndex, "the fitted curve must remain visible above its sigma shading");
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true, options: { histStyle: "bar" } },
+      { kind: "line", enabled: true, options: { elementId: "rust-normal-fit" } },
+      {
+        kind: "boxplot",
+        enabled: true,
+        options: {
+          boxType: "range",
+          outliers: true,
+          fiveNumberSummary: true,
+          widthProportion: 0.5,
+        },
+      },
+    ],
+  };
+  const frame = baseFrame([
+    {
+      kind: "histogram",
+      xColumn: "measurement",
+      totalCount: 10,
+      bins: [
+        { binStart: 0, binEnd: 1, count: 3 },
+        { binStart: 1, binEnd: 2, count: 7 },
+      ],
+    },
+    {
+      kind: "precomputedCurve",
+      elementId: "rust-normal-fit",
+      interpolation: "linear",
+      points: [{ x: 0, y: 0.2 }, { x: 1, y: 7 }, { x: 2, y: 0.2 }],
+    },
+    {
+      kind: "boxPlot",
+      yColumn: "measurement",
+      entries: [{
+        count: 10,
+        min: 0,
+        q1: 0.8,
+        median: 1.3,
+        q3: 1.6,
+        max: 2,
+        whiskerLow: 0,
+        whiskerHigh: 2,
+        outliers: [{ value: 2.4, rowIndex: 9 }],
+      }],
+    },
+  ]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const xAxes = option.xAxis as Array<Record<string, unknown>>;
+
+  assert.equal(xAxes.length, 2, "the fixed composition must expose one aligned X axis per grid");
+  assert.ok(xAxes.every((axis) => axis.type === "value"), "the shared distribution axes must remain continuous");
+  assert.ok(series.some((entry) => entry.type === "bar"), "the composite must include histogram bars");
+  assert.ok(
+    series.some((entry) => entry.id === "rust-normal-fit" && entry.type === "line"),
+    "the composite must include the Rust-computed fitted curve",
+  );
+  const compositeBoxPlot = series.find((entry) => entry.type === "boxplot");
+  assert.ok(compositeBoxPlot, "the composite must include a box plot");
+  assert.deepEqual(compositeBoxPlot.data, [[0, 0.8, 1.3, 1.6, 2]], "range mode must use min/max");
+  assert.deepEqual(compositeBoxPlot.boxWidth, [12, 34], "width proportion must affect composite box width");
+  assert.ok(
+    series.some((entry) => entry.type === "scatter" && entry.name === "Outliers"),
+    "enabled outliers must render in the composite",
+  );
+  assert.ok(
+    series.some((entry) => entry.type === "scatter" && entry.name === "5-Number"),
+    "enabled five-number labels must render in the composite",
+  );
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "__sp_value__", type: "continuous" },
+      y: { name: "__sp_variable__", type: "nominal" },
+    },
+    elements: [
+      { kind: "histogram", enabled: true },
+      {
+        kind: "normalCurve",
+        enabled: true,
+        options: { elementId: "distribution.overview.fittedCurves" },
+      },
+      { kind: "boxplot", enabled: true },
+    ],
+  };
+  const overview = baseFrame([
+    {
+      kind: "histogram",
+      yColumn: "distribution.overview.histogram",
+      sourceColumn: "responseColumn",
+      binCount: 2,
+      minValue: 4.2,
+      maxValue: 4.6,
+      missingCount: 0,
+      binWidth: 0.2,
+      totalCount: 10,
+      bins: [
+        { group: "203-A1", category: "Overall", sourceColumn: "203-A1", binStart: 4.2, binEnd: 4.4, count: 4 },
+        { group: "203-A1", category: "Overall", sourceColumn: "203-A1", binStart: 4.4, binEnd: 4.6, count: 6 },
+      ],
+    },
+    {
+      kind: "precomputedCurve",
+      elementId: "distribution.overview.fittedCurves",
+      seriesId: "203-A1:fit:normal",
+      seriesName: "203-A1 - Normal",
+      group: "203-A1",
+      category: "203-A1",
+      sourceColumn: "203-A1",
+      interpolation: "linear",
+      points: [{ x: 4.2, y: 0.2 }, { x: 4.4, y: 6 }, { x: 4.6, y: 0.2 }],
+    },
+  ]);
+  const boxPlot = baseFrame([{
+    kind: "boxPlot",
+    yColumn: "distribution.boxPlot",
+    sourceColumn: "responseColumn",
+    entries: [{
+      group: "203-A1",
+      category: "Overall",
+      sourceColumn: "203-A1",
+      count: 10,
+      min: 4.2,
+      q1: 4.36,
+      median: 4.4,
+      q3: 4.45,
+      max: 4.56,
+      whiskerLow: 4.2,
+      whiskerHigh: 4.56,
+      outliers: [],
+    }],
+  }]);
+  const graphFrames = {
+    overview,
+    boxPlot,
+    ecdf: baseFrame([]),
+    normalQuantile: baseFrame([]),
+  } satisfies DistributionReportResponse["graphFrames"];
+  const frame = getDistributionCompositeGraphFrame({ graphFrames });
+
+  const option = buildGraph(
+    spec,
+    baseData(["__sp_variable__", "__sp_value__"], []),
+    theme,
+    { __sp_variable__: ["203-A1"] },
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const histogram = series.find((entry) => String(entry.id ?? "").startsWith("__hist_cat_"));
+  const normal = series.find((entry) => String(entry.id ?? "").startsWith("__normal_cat_"));
+  const box = series.find((entry) => entry.type === "boxplot");
+
+  assert.ok(Array.isArray(histogram?.data) && histogram.data.length > 0, "production packets must render histogram bars");
+  assert.ok(Array.isArray(normal?.data) && normal.data.length > 0, "production packets must render the fitted normal curve");
+  assert.ok(Array.isArray(box?.data) && box.data.length > 0, "production packets must render the box plot");
+
+  const canonicalMultiXOption = buildGraph(
+    {
+      ...spec,
+      encoding: {
+        x: { name: "__sp_variable__", type: "nominal" },
+        y: { name: "__sp_value__", type: "continuous" },
+      },
+    },
+    baseData(["__sp_variable__", "__sp_value__"], []),
+    theme,
+    { __sp_variable__: ["203-A1"] },
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const canonicalSeries = panelSeries(canonicalMultiXOption);
+  const canonicalBox = canonicalSeries.find((entry) => entry.type === "boxplot");
+  assert.ok(canonicalSeries.some((entry) => String(entry.id ?? "").startsWith("__hist_cat_")));
+  assert.ok(canonicalSeries.some((entry) => String(entry.id ?? "").startsWith("__normal_cat_")));
+  assert.ok(canonicalBox, "canonical multiX distribution must include the box plot");
+  assert.equal(Array.isArray(canonicalMultiXOption.grid), false, "canonical multiX distribution must use one grid");
+  assert.equal(Array.isArray(canonicalMultiXOption.xAxis), false, "canonical multiX distribution must use one X axis");
+  assert.equal(Array.isArray(canonicalMultiXOption.yAxis), false, "canonical multiX distribution must use one Y axis");
+  assert.equal(canonicalBox.xAxisIndex ?? 0, 0);
+  assert.equal(canonicalBox.yAxisIndex ?? 0, 0);
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [{ kind: "normalCurve", enabled: true }],
+  };
+  const frame = baseFrame([{
+    kind: "summary",
+    yColumn: "measurement",
+    summaries: [{
+      count: 40,
+      mean: 10,
+      median: 10,
+      stddev: 2,
+      min: 2,
+      max: 18,
+    }],
+  }]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  assert.equal(series.some((entry) => entry.type === "bar"), false);
+  assert.ok(
+    series.some((entry) => String(entry.id ?? "").startsWith("__normal_curve_")),
+    "Normal layer must render without a Histogram layer",
+  );
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+    },
+    elements: [{ kind: "normalCurve", enabled: true, options: { showSigmaBands: true } }],
+  };
+  const frame: GraphDataFrame = {
+    ...baseFrame([{
+      kind: "summary",
+      xColumn: "category",
+      yColumn: "measurement",
+      summaries: [
+        { category: "A", count: 50, mean: 0, median: 0, stddev: 1, min: -4, max: 4 },
+        { category: "B", count: 12, mean: 3, median: 3, stddev: 0, min: 3, max: 3 },
+      ],
+    }]),
+    dictionaries: { x: ["A", "B"] },
+  };
+
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["category", "measurement"], 62),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const normalSeries = panelSeries(option).filter((entry) =>
+    String(entry.id ?? "").startsWith("__normal_cat_")
+  );
+  assert.equal(normalSeries.length, 1, "zero-variance categories must be skipped");
+  assert.equal(normalSeries[0].type, "custom");
+  assert.equal(normalSeries[0].clip, true);
+  const sigmaBands = panelSeries(option).filter((entry) =>
+    String(entry.id ?? "").startsWith("__normal_sigma_cat_")
+  );
+  assert.equal(sigmaBands.length, 6, "categorical Normal curves should retain all six sigma bands");
+  assert.ok(sigmaBands.every((entry) => entry.type === "custom" && entry.clip === true && entry.silent === true));
+  const bandShape = (sigmaBands[0].renderItem as (params: unknown, api: unknown) => {
+    type: string;
+    shape: { points: number[][] };
+  })(
+    { dataIndex: 0, seriesId: "__normal_sigma_cat___default___0" },
+    {
+      coord: ([, value]: [string, number]) => [50, 100 - value * 10],
+      size: () => [100, 100],
+    },
+  );
+  assert.equal(bandShape.type, "polygon");
+  assert.ok(bandShape.shape.points.length > 3);
+  const yAxis = option.yAxis as Record<string, unknown>;
+  assert.ok(Number(yAxis.min) <= -4);
+  assert.ok(Number(yAxis.max) >= 4);
+  const renderItem = normalSeries[0].renderItem as (params: unknown, api: unknown) => {
+    type: string;
+    shape: { points: number[][] };
+  };
+  const shape = renderItem(
+    { dataIndex: 0, seriesId: "__normal_cat___default__" },
+    {
+      coord: ([, value]: [string, number]) => [50, 100 - value * 10],
+      size: () => [100, 100],
+    },
+  );
+  assert.equal(shape.type, "polyline");
+  const middle = shape.shape.points[Math.floor(shape.shape.points.length / 2)];
+  assert.ok(middle[0] > shape.shape.points[0][0]);
+  assert.ok(middle[0] > shape.shape.points.at(-1)![0]);
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+    },
+    elements: [{ kind: "normalCurve", enabled: true }],
+  };
+  const mean = 4.43;
+  const stddev = 0.05;
+  const expectedCurveMin = mean - 4 * stddev;
+  const expectedCurveMax = mean + 4 * stddev;
+  const frame: GraphDataFrame = {
+    ...baseFrame([{
+      kind: "summary",
+      xColumn: "category",
+      yColumn: "measurement",
+      summaries: [{
+        category: "A",
+        count: 50,
+        mean,
+        median: mean,
+        stddev,
+        min: 4.28,
+        max: 4.57,
+      }],
+    }]),
+    dictionaries: { x: ["A"] },
+    extents: { y: { min: 4.28, max: 4.57 } },
+  };
+
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["category", "measurement"], 50),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const yAxis = option.yAxis as Record<string, unknown>;
+  assert.ok(
+    Number(yAxis.min) <= expectedCurveMin,
+    "the value axis must include the fitted normal curve's lower tail",
+  );
+  assert.ok(
+    Number(yAxis.max) >= expectedCurveMax,
+    "the value axis must include the fitted normal curve's upper tail",
+  );
+
+  const pinnedOption = buildGraph(
+    { ...spec, yAxis: { min: 4.3, max: 4.55 } },
+    frameBackedAggregateData(["category", "measurement"], 50),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const pinnedYAxis = pinnedOption.yAxis as Record<string, unknown>;
+  assert.equal(pinnedYAxis.min, 4.3, "an explicit lower axis pin must override automatic tail expansion");
+  assert.equal(pinnedYAxis.max, 4.55, "an explicit upper axis pin must override automatic tail expansion");
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+    },
+    elements: [
+      { kind: "histogram", enabled: true },
+      { kind: "normalCurve", enabled: true },
+    ],
+  };
+  const frame: GraphDataFrame = {
+    ...baseFrame([
+      {
+        kind: "histogram",
+        xColumn: "category",
+        yColumn: "measurement",
+        binCount: 20,
+        minValue: -4,
+        maxValue: 4,
+        missingCount: 0,
+        binWidth: 0.4,
+        totalCount: 100,
+        bins: [{ category: "A", binStart: -0.2, binEnd: 0.2, count: 40 }],
+      },
+      {
+        kind: "summary",
+        xColumn: "category",
+        yColumn: "measurement",
+        summaries: [{ category: "A", count: 100, mean: 0, median: 0, stddev: 1, min: -4, max: 4 }],
+      },
+    ]),
+    dictionaries: { x: ["A"] },
+    extents: { y: { min: -4, max: 4 } },
+  };
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["category", "measurement"], 100),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const normal = panelSeries(option).find((entry) => String(entry.id ?? "").startsWith("__normal_cat_"))!;
+  const shape = (normal.renderItem as (params: unknown, api: unknown) => { shape: { points: number[][] } })(
+    { dataIndex: 0, seriesId: "__normal_cat___default__" },
+    {
+      coord: ([, value]: [string, number]) => [50, 100 - value * 10],
+      size: () => [100, 100],
+    },
+  );
+  const peakX = Math.max(...shape.shape.points.map((point) => point[0]));
+  assert.ok(peakX > 30 && peakX < 45, `count-scaled peak should occupy about 40% of the slot, got ${peakX}`);
+}
+
+{
+  const transposed = transposeOption({
+    xAxis: { type: "category" },
+    yAxis: { type: "value" },
+    series: [
+      {
+        id: "__normal_cat___default__",
+        type: "custom",
+        data: [["A", 0]],
+      },
+      {
+        id: "__normal_sigma_cat___default___0",
+        type: "custom",
+        data: [["A", 0]],
+      },
+    ],
+  });
+  const [normal, sigmaBand] = transposed.series as Array<Record<string, unknown>>;
+  assert.equal(normal.id, "__normal_cat___default____t");
+  assert.deepEqual(normal.data, [[0, "A"]]);
+  assert.equal(sigmaBand.id, "__normal_sigma_cat___default___0__t");
+  assert.deepEqual(sigmaBand.data, [[0, "A"]]);
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true },
+      { kind: "normalCurve", enabled: true },
+    ],
+    autoSpecX: { lsl: 4.23, target: 4.38, usl: 4.53 },
+    transpose: true,
+  };
+  const frame = frameBackedAggregateFrame([
+    {
+      kind: "histogram",
+      xColumn: "measurement",
+      binCount: 3,
+      minValue: 4.2,
+      maxValue: 4.5,
+      missingCount: 0,
+      binWidth: 0.1,
+      totalCount: 9,
+      bins: [
+        { binStart: 4.2, binEnd: 4.3, count: 2 },
+        { binStart: 4.3, binEnd: 4.4, count: 5 },
+        { binStart: 4.4, binEnd: 4.5, count: 2 },
+      ],
+    },
+    {
+      kind: "summary",
+      xColumn: "measurement",
+      summaries: [{ count: 9, mean: 4.35, median: 4.35, stddev: 0.08, min: 4.2, max: 4.5 }],
+    },
+  ], 9);
+
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["measurement"], 9),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const histogram = panelSeries(option).find((entry) => String(entry.id ?? "").startsWith("__hist_mode_a_"));
+  assert.equal(histogram?.type, "custom", "Y-only histogram bars must use horizontal rectangle geometry");
+  const renderItem = histogram?.renderItem as ((params: unknown, api: unknown) => { shape: Record<string, number> }) | undefined;
+  assert.ok(renderItem);
+  const histogramData = histogram!.data as number[][];
+  const populatedBinIndex = histogramData.findIndex(([countEnd, , countStart]) => countEnd > countStart);
+  assert.ok(populatedBinIndex >= 0);
+  const populatedBin = histogramData[populatedBinIndex];
+  const shape = renderItem(
+    { dataIndex: populatedBinIndex, coordSys: { x: 10, y: 20, width: 200, height: 300 } },
+    {
+      value: (dimension: number) => populatedBin[dimension],
+      coord: ([count, value]: [number, number]) => [10 + count * 20, 320 - (value - 4.2) * 1_000],
+      size: ([, span]: [number, number]) => [0, span * 1_000],
+      style: () => ({}),
+    },
+  ).shape;
+  assert.equal(
+    shape.width,
+    (populatedBin[0] - populatedBin[2]) * 20,
+    "count must control bar width after a 90-degree rotation",
+  );
+  const renderedBinWidth = Math.abs(histogramData[1][1] - histogramData[0][1]);
+  assert.ok(Math.abs(shape.height - renderedBinWidth * 1_000 * 0.99) < 1e-9);
+  assert.equal(shape.x, 10, "horizontal bars must start at the count-axis baseline");
+  const normal = panelSeries(option).find((entry) => String(entry.id ?? "").startsWith("__normal_curve_"));
+  const normalData = normal?.data as number[][];
+  assert.ok(normalData.every(([count, value]) => count >= 0 && Number.isFinite(value)));
+  assert.ok(normalData.some(([, value]) => value < 4.35));
+  assert.ok(normalData.some(([, value]) => value > 4.35));
+  const specLineCarrier = panelSeries(option).find((entry) => entry.markLine != null);
+  const specLineData = (specLineCarrier?.markLine as { data: Array<Record<string, unknown>> }).data;
+  assert.deepEqual(specLineData.map((entry) => entry.yAxis), [4.23, 4.38, 4.53]);
+  assert.ok(specLineData.every((entry) => !("xAxis" in entry)));
+
+  const analysisOption = buildGraph(
+    {
+      ...spec,
+      encoding: { y: { name: "measurement", type: "continuous" } },
+      autoSpecX: undefined,
+      autoSpecY: spec.autoSpecX,
+      transpose: false,
+    },
+    frameBackedAggregateData(["measurement"], 9),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  assert.equal(
+    panelSeries(analysisOption).find((entry) => String(entry.id ?? "").startsWith("__hist_mode_a_"))?.type,
+    "custom",
+    "Analysis Y-only Distribution must use the same rotated histogram geometry",
+  );
+  const swappedAnalysisOption = buildGraph(
+    {
+      ...spec,
+      encoding: { y: { name: "measurement", type: "continuous" } },
+      autoSpecX: undefined,
+      autoSpecY: spec.autoSpecX,
+      transpose: true,
+    },
+    frameBackedAggregateData(["measurement"], 9),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const swappedAnalysisHistogram = panelSeries(swappedAnalysisOption)
+    .find((entry) => String(entry.id ?? "").startsWith("__hist_mode_a_"));
+  assert.equal(
+    swappedAnalysisHistogram?.type,
+    "bar",
+    "swapping an already rotated Analysis histogram must restore vertical bars",
+  );
+  assert.ok(
+    (swappedAnalysisHistogram?.data as number[][]).some(([value, count]) => value > 4 && count > 0),
+  );
+
+  const stacked = transposeOption({
+    xAxis: { type: "value" },
+    yAxis: { type: "value" },
+    series: [
+      {
+        id: "__hist_mode_a_0",
+        type: "bar",
+        stack: "build",
+        __histBinWidth: 0.1,
+        data: [[4.35, 2]],
+      },
+      {
+        id: "__hist_mode_a_1",
+        type: "bar",
+        stack: "build",
+        __histBinWidth: 0.1,
+        data: [[4.35, 3]],
+      },
+    ],
+  });
+  const [firstBuild, secondBuild] = stacked.series as Array<Record<string, unknown>>;
+  assert.deepEqual(firstBuild.data, [[2, 4.35, 0]]);
+  assert.deepEqual(secondBuild.data, [[5, 4.35, 2]]);
+  const restored = transposeOption(stacked);
+  const [restoredFirstBuild, restoredSecondBuild] = restored.series as Array<Record<string, unknown>>;
+  assert.equal(restoredFirstBuild.type, "bar");
+  assert.equal(restoredSecondBuild.type, "bar");
+  assert.equal(restoredFirstBuild.stack, "build");
+  assert.equal(restoredSecondBuild.stack, "build");
+  assert.deepEqual(restoredFirstBuild.data, [[4.35, 2]]);
+  assert.deepEqual(restoredSecondBuild.data, [[4.35, 3]]);
+}
+
+{
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "category", type: "nominal" },
+      y: { name: "measurement", type: "continuous" },
+      groupX: { name: "side", type: "nominal" },
+      groupY: { name: "zone", type: "nominal" },
+    },
+    elements: [{ kind: "normalCurve", enabled: true }],
+  };
+  const summaries = [
+    ["L", "Top", 0],
+    ["R", "Top", 1],
+    ["L", "Bottom", 2],
+    ["R", "Bottom", 3],
+  ].map(([facetX, facetY, mean]) => ({
+    category: "A",
+    facetX: String(facetX),
+    facetY: String(facetY),
+    count: 20,
+    mean: Number(mean),
+    median: Number(mean),
+    stddev: 1,
+    min: Number(mean) - 4,
+    max: Number(mean) + 4,
+  }));
+  const frame = baseFrame([{
+    kind: "summary",
+    xColumn: "category",
+    yColumn: "measurement",
+    summaries,
+  }]);
+
+  const built = buildGraph(
+    spec,
+    frameBackedAggregateData(["category", "measurement", "side", "zone"], 80),
+    theme,
+    undefined,
+    frame,
+  );
+  assert.equal(built.cols, 2);
+  assert.equal(built.rows, 2);
+  assert.deepEqual(
+    built.panels.map((panel) => [panel.groupXValue, panel.groupYValue]),
+    [["L", "Top"], ["R", "Top"], ["L", "Bottom"], ["R", "Bottom"]],
+  );
+  for (const panel of built.panels) {
+    assert.ok(
+      panelSeries(panel.option as Record<string, unknown>)
+        .some((entry) => String(entry.id ?? "").startsWith("__normal_cat_")),
+      "each Summary-only facet should render its Normal curve",
+    );
+  }
+}
+
+{
+  const responses = ["203-A1", "203-A2", "203-A3", "203-A4"];
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "__sp_value__", type: "continuous" },
+      y: { name: "__sp_variable__", type: "nominal" },
+    },
+    elements: [
+      { kind: "histogram", enabled: true },
+      {
+        kind: "normalCurve",
+        enabled: true,
+        options: { elementId: "distribution.overview.fittedCurves" },
+      },
+      { kind: "boxplot", enabled: true },
+    ],
+  };
+  const frame = frameBackedAggregateFrame([
+    {
+      kind: "histogram",
+      yColumn: "__sp_y",
+      sourceColumn: "__sp_variable__",
+      binCount: 2,
+      minValue: 0,
+      maxValue: 4,
+      missingCount: 0,
+      binWidth: 2,
+      totalCount: 40,
+      bins: responses.flatMap((sourceColumn, responseIndex) => [
+        { sourceColumn, binStart: 0, binEnd: 2, count: 4 + responseIndex },
+        { sourceColumn, binStart: 2, binEnd: 4, count: 6 - responseIndex },
+      ]),
+    },
+    ...responses.map((sourceColumn, responseIndex) => ({
+      kind: "precomputedCurve" as const,
+      elementId: "distribution.overview.fittedCurves",
+      seriesId: `fit-${sourceColumn}`,
+      seriesName: `${sourceColumn} - Normal`,
+      category: sourceColumn,
+      sourceColumn,
+      interpolation: "linear" as const,
+      points: [
+        { x: 0, y: 0.1 },
+        { x: 1.5 + responseIndex * 0.2, y: 12 },
+        { x: 4, y: 0.1 },
+      ],
+    })),
+    {
+      kind: "boxPlot",
+      yColumn: "__sp_y",
+      sourceColumn: "__sp_variable__",
+      entries: responses.map((sourceColumn, responseIndex) => ({
+        sourceColumn,
+        count: 10,
+        min: 0,
+        q1: 1 + responseIndex * 0.1,
+        median: 1.5 + responseIndex * 0.2,
+        q3: 2 + responseIndex * 0.1,
+        max: 4,
+        whiskerLow: 0,
+        whiskerHigh: 4,
+        outliers: [],
+      })),
+    },
+  ], 40);
+
+  const option = buildGraph(
+    spec,
+    frameBackedAggregateData(["__sp_variable__", "__sp_value__"], 40),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const yAxis = (Array.isArray(option.yAxis) ? option.yAxis[0] : option.yAxis) as Record<string, unknown>;
+  assert.deepEqual(yAxis.data, responses, "multiY source columns must become ordered category labels");
+  const series = panelSeries(option);
+  const categoriesInCustomSeries = (idPrefix: string) => Array.from(new Set(
+    series
+      .filter((entry) => String(entry.id ?? "").startsWith(idPrefix))
+      .flatMap((entry) => Array.isArray(entry.data) ? entry.data : [])
+      .map((point) => Array.isArray(point) ? String(point[1] ?? "") : "")
+      .filter(Boolean),
+  ));
+  assert.deepEqual(categoriesInCustomSeries("__hist_cat_"), responses);
+  assert.deepEqual(categoriesInCustomSeries("__normal_cat_"), responses);
+  const normalSeries = series.find((entry) => String(entry.id ?? "").startsWith("__normal_cat_"))!;
+  const normalShape = (normalSeries.renderItem as (params: unknown, api: unknown) => {
+    shape: { points: number[][] };
+  })(
+    { dataIndex: 0, seriesId: normalSeries.id },
+    {
+      coord: ([value]: [number, string]) => [value * 10, 50],
+      size: () => [100, 100],
+    },
+  );
+  assert.ok(
+    normalShape.shape.points.every((point) => point[1] >= 14 && point[1] <= 99),
+    "precomputed curves must stay within their category slot",
+  );
+  const boxplotSeries = series.find((entry) => entry.type === "boxplot");
+  assert.ok(boxplotSeries);
+  assert.equal((boxplotSeries.data as unknown[]).length, responses.length);
 }

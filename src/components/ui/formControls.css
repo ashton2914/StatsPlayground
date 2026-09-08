@@ -1,0 +1,212 @@
+.ui-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.ui-field-label {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.ui-field-description {
+  color: var(--fg-hint);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.ui-field-error {
+  color: var(--fg-error, #c4314b);
+}
+
+.ui-input,
+.ui-select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  outline: none;
+  background-color: var(--bg-input);
+  color: var(--fg-primary);
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+
+.ui-input {
+  padding: 0 10px;
+}
+
+.ui-input[type="search"]::-webkit-search-cancel-button {
+  opacity: 0.65;
+}
+
+.ui-select {
+  padding: 0 30px 0 10px;
+  cursor: pointer;
+}
+
+.ui-input:hover:not(:disabled),
+.ui-select:hover:not(:disabled) {
+  border-color: var(--fg-muted);
+}
+
+.ui-input:focus-visible,
+.ui-select:focus-visible,
+.ui-checkbox input:focus-visible + .ui-checkbox-indicator,
+.ui-button:focus-visible {
+  border-color: var(--border-input-focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--border-input-focus) 25%, transparent);
+}
+
+.ui-input:disabled,
+.ui-select:disabled {
+  cursor: not-allowed;
+  background-color: var(--bg-header);
+  color: var(--fg-disabled, var(--fg-hint));
+  opacity: 0.72;
+}
+
+.ui-input[aria-invalid="true"],
+.ui-select[aria-invalid="true"] {
+  border-color: var(--fg-error, #c4314b);
+}
+
+.ui-checkbox-field {
+  display: grid;
+  gap: 4px;
+}
+
+.ui-checkbox {
+  display: inline-grid;
+  grid-template-columns: 16px minmax(0, auto);
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  gap: 8px;
+  color: var(--fg-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ui-checkbox input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.ui-checkbox-indicator {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  place-items: center;
+  border: 1px solid var(--border-input);
+  border-radius: 3px;
+  background-color: var(--bg-input);
+}
+
+.ui-checkbox input:checked + .ui-checkbox-indicator {
+  border-color: var(--fg-accent);
+  background-color: var(--fg-accent);
+}
+
+.ui-checkbox input:checked + .ui-checkbox-indicator::after {
+  width: 7px;
+  height: 4px;
+  border-bottom: 2px solid #fff;
+  border-left: 2px solid #fff;
+  content: "";
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+.ui-checkbox:has(input:disabled) {
+  cursor: not-allowed;
+  color: var(--fg-disabled, var(--fg-hint));
+  opacity: 0.72;
+}
+
+.ui-checkbox-description {
+  padding-left: 24px;
+}
+
+.ui-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.ui-button-medium {
+  min-width: 72px;
+  height: 32px;
+  padding: 0 14px;
+}
+
+.ui-button-small {
+  min-width: 30px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.ui-button-primary {
+  border-color: var(--fg-accent);
+  background-color: var(--fg-accent);
+  color: #fff;
+}
+
+.ui-button-primary:hover:not(:disabled) {
+  border-color: var(--fg-accent-hover);
+  background-color: var(--fg-accent-hover);
+}
+
+.ui-button-secondary {
+  border-color: var(--border-input);
+  background-color: var(--bg-btn-secondary);
+  color: var(--fg-primary);
+}
+
+.ui-button-secondary:hover:not(:disabled),
+.ui-button-ghost:hover:not(:disabled),
+.ui-button-icon:hover:not(:disabled) {
+  background-color: var(--bg-btn-secondary-hover);
+}
+
+.ui-button-ghost,
+.ui-button-icon {
+  background-color: transparent;
+  color: var(--fg-accent);
+}
+
+.ui-button-icon {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--fg-muted);
+}
+
+.ui-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}

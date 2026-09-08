@@ -81,6 +81,18 @@ Follow every step; skipping registration or the TS type is the usual failure.
    `git add -A; git commit -m "<conventional message>"`. Do **not** push unless
    explicitly asked. Working branch: `dev`.
 
+## Add an Analysis Kind
+
+Follow [docs/analysis-development-standard.md](../../../docs/analysis-development-standard.md).
+
+1. Add the manifest identity and discriminated `AnalysisDocument` union member.
+2. Register descriptors, execution, synchronous view rendering, editor adaptation,
+   graph persistence, and report policy exhaustively.
+3. Keep Rust as the compute authority and preserve the full Analysis stale fence.
+4. Add an explicit Rust archive validator selected by kind and definition identity.
+5. Declare unsupported graph/report capabilities as `false` with a `null` policy.
+6. Extend the registration contract and focused kind suite, then run the Analysis gate.
+
 ## ECharts / graphCore Work
 Chart specs are built in [src/graphCore/transform.ts](../../../src/graphCore/transform.ts).
 Custom series and histogram bin math have bitten this repo repeatedly. **Before

@@ -2,21 +2,24 @@ use std::collections::{BTreeMap, HashSet};
 use std::mem;
 use std::time::Instant;
 
-use duckdb::types::{OrderedMap, TimeUnit, Value};
+use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
 use duckdb::{appender_params_from_iter, params, params_from_iter, Config, Connection};
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
+use crate::engine::correlation::{correlate, CorrelationFailure, StatisticalMethod};
 use crate::engine::sql_query::{normalize_identifier, validate_read_only_query};
 use crate::error::AppError;
 use crate::models::data_link::SourceObjectRef;
+use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRow, FitYByXRows};
 use crate::models::graph_data::{
-    BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, GraphAggregatePacket, GraphDataRequest,
+    BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, CorrelationMatrixCell, CorrelationMatrixPacket,
+    CorrelationMethod, CorrelationUnavailableReason, GraphAggregatePacket, GraphDataRequest,
     GraphSampling, HeatmapCell, HeatmapPacket, HistogramBin, HistogramPacket, SummaryEntry,
     SummaryPacket, GRAPH_VIRTUAL_SOURCE_COLUMN, GRAPH_VIRTUAL_VALUE_COLUMN,
 };
 use crate::models::table::{
-    CellPosition, CellUpdate, DatasetMeta, SqlQueryResult, TableQueryResult, TableWindowFilterRule,
-    TableWindowRequest, TableWindowResult,
+    CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
+    TableQueryResult, TableWindowFilterRule, TableWindowRequest, TableWindowResult,
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
@@ -26,10 +29,31 @@ pub struct DuckDbEngine {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValuedColumn {
+    pub name: String,
+    pub column_type: String,
+    pub values: Vec<(u64, Option<f64>)>,
+}
+
 pub struct GraphProjectionStats {
     pub source_rows: u64,
     pub projected_columns: Vec<String>,
     pub projected_column_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FitModelDataRow {
+    pub row_index: u64,
+    pub response: f64,
+    pub predictors: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FitModelDataSet {
+    pub predictor_names: Vec<String>,
+    pub used_rows: Vec<FitModelDataRow>,
+    pub excluded_rows: u64,
 }
 
 struct GraphQueryPlan {
@@ -49,6 +73,35 @@ struct MaterializedQuery {
 }
 type GroupedStatisticValues = std::collections::HashMap<(String, String), Vec<Option<f64>>>;
 
+struct CorrelationRequestBinding {
+    suffix: u32,
+    column: String,
+}
+
+struct CorrelationRequestPlan {
+    method: CorrelationMethod,
+    columns: Vec<String>,
+}
+
+impl From<CorrelationMethod> for StatisticalMethod {
+    fn from(value: CorrelationMethod) -> Self {
+        match value {
+            CorrelationMethod::Pearson => Self::Pearson,
+            CorrelationMethod::Spearman => Self::Spearman,
+            CorrelationMethod::Kendall => Self::Kendall,
+        }
+    }
+}
+
+impl From<CorrelationFailure> for CorrelationUnavailableReason {
+    fn from(value: CorrelationFailure) -> Self {
+        match value {
+            CorrelationFailure::InsufficientData => Self::InsufficientData,
+            CorrelationFailure::ZeroVariance => Self::ZeroVariance,
+        }
+    }
+}
+
 fn role_column(request: &GraphDataRequest, role_name: &str) -> Option<String> {
     request
         .fields
@@ -67,7 +120,7 @@ fn is_sampling_strata_role(role: &str) -> bool {
 
 pub(crate) struct ArchiveKeysetReadPlan {
     select_sql: String,
-    pub columns: Vec<(String, String)>,
+    pub columns: Vec<(String, String, String)>,
 }
 
 pub(crate) struct ArchiveBatchRow {
@@ -209,12 +262,14 @@ impl DuckDbEngine {
 
             CREATE TABLE IF NOT EXISTS _meta_columns (
                 dataset_id  TEXT,
+                column_id   TEXT NOT NULL DEFAULT (CAST(uuid() AS VARCHAR)),
                 col_index   INTEGER,
                 col_name    TEXT,
                 col_type    TEXT,
                 role        TEXT DEFAULT 'continuous',
                 missing_count BIGINT DEFAULT 0,
-                PRIMARY KEY (dataset_id, col_index)
+                PRIMARY KEY (dataset_id, col_index),
+                UNIQUE (column_id)
             );
 
             CREATE TABLE IF NOT EXISTS _history_change_sets (
@@ -674,7 +729,7 @@ impl DuckDbEngine {
     /// Get metadata for a single dataset
     pub fn get_dataset_meta(&self, id: &str) -> Result<DatasetMeta, AppError> {
         let meta = self.conn.query_row(
-            "SELECT id, name, source_path, source_type, row_count, col_count, created_at, updated_at FROM _meta_datasets WHERE id = $1",
+            "SELECT id, name, source_path, source_type, row_count, col_count, generation, created_at, updated_at FROM _meta_datasets WHERE id = $1",
             params![id],
             |row| {
                 Ok(DatasetMeta {
@@ -684,18 +739,24 @@ impl DuckDbEngine {
                     source_type: row.get(3)?,
                     row_count: row.get(4)?,
                     col_count: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    generation: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             },
-        )?;
+        ).map_err(|error| match error {
+            duckdb::Error::QueryReturnedNoRows => {
+                AppError::InvalidParam(format!("unknown dataset: {id}"))
+            }
+            other => AppError::from(other),
+        })?;
         Ok(meta)
     }
 
     /// List all datasets
     pub fn list_datasets(&self) -> Result<Vec<DatasetMeta>, AppError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, source_path, source_type, row_count, col_count, created_at, updated_at FROM _meta_datasets ORDER BY created_at DESC",
+            "SELECT id, name, source_path, source_type, row_count, col_count, generation, created_at, updated_at FROM _meta_datasets ORDER BY created_at DESC",
         )?;
 
         let datasets = stmt
@@ -707,8 +768,9 @@ impl DuckDbEngine {
                     source_type: row.get(3)?,
                     row_count: row.get(4)?,
                     col_count: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    generation: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -862,6 +924,209 @@ impl DuckDbEngine {
                 let _ = self.conn.execute_batch("ROLLBACK");
                 Err(error)
             }
+        }
+    }
+
+    pub fn create_table_from_rows(
+        &self,
+        id: &str,
+        request: &CreateTableFromRowsRequest,
+    ) -> Result<DatasetMeta, AppError> {
+        if request.column_names.is_empty() {
+            return Err(AppError::InvalidParam(
+                "Column names and types must not be empty".into(),
+            ));
+        }
+        if request.column_names.len() != request.column_types.len() {
+            return Err(AppError::InvalidParam(
+                "Column names and types length mismatch".into(),
+            ));
+        }
+        for (row_index, row) in request.rows.iter().enumerate() {
+            if row.len() != request.column_names.len() {
+                return Err(AppError::InvalidParam(format!(
+                    "row {} has width {}, expected {}",
+                    row_index + 1,
+                    row.len(),
+                    request.column_names.len()
+                )));
+            }
+            for (column_index, value) in row.iter().enumerate() {
+                if !matches!(
+                    value,
+                    serde_json::Value::Null
+                        | serde_json::Value::Bool(_)
+                        | serde_json::Value::Number(_)
+                        | serde_json::Value::String(_)
+                ) {
+                    return Err(AppError::InvalidParam(format!(
+                        "row {} column {} must be a scalar JSON value",
+                        row_index + 1,
+                        column_index + 1
+                    )));
+                }
+            }
+        }
+
+        self.validate_dataset_name(&request.name, None)?;
+        Self::validate_result_column_names(&request.column_names)?;
+        let canonical_types = request
+            .column_types
+            .iter()
+            .map(|column_type| self.canonicalize_column_type(column_type))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (row_index, row) in request.rows.iter().enumerate() {
+            for (column_index, (value, column_type)) in
+                row.iter().zip(canonical_types.iter()).enumerate()
+            {
+                let duckdb_value =
+                    Self::json_scalar_to_duckdb_value(value, row_index + 1, column_index + 1)?;
+                let validation_sql =
+                    format!("SELECT {}", Self::typed_parameter_expression(column_type));
+                self.conn
+                    .query_row(&validation_sql, params![duckdb_value], |_| Ok(()))
+                    .map_err(|error| {
+                        AppError::InvalidParam(format!(
+                            "row {} column {} is incompatible with {}: {}",
+                            row_index + 1,
+                            column_index + 1,
+                            column_type,
+                            error
+                        ))
+                    })?;
+            }
+        }
+
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+
+        let outcome = (|| -> Result<DatasetMeta, AppError> {
+            let table_name = Self::internal_table_name(id);
+            let quoted_table = Self::quote_identifier(&table_name);
+            let column_defs = request
+                .column_names
+                .iter()
+                .zip(canonical_types.iter())
+                .map(|(column_name, column_type)| {
+                    format!("{} {}", Self::quote_identifier(column_name), column_type)
+                })
+                .collect::<Vec<_>>();
+
+            let create_sql = format!(
+                "CREATE TABLE {} (\"_row_id\" INTEGER, {})",
+                quoted_table,
+                column_defs.join(", ")
+            );
+            self.conn.execute(&create_sql, [])?;
+
+            for (col_index, (col_name, col_type)) in request
+                .column_names
+                .iter()
+                .zip(canonical_types.iter())
+                .enumerate()
+            {
+                self.conn.execute(
+                    "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+                    params![id, col_index as i32, col_name, col_type],
+                )?;
+            }
+
+            let insert_columns = std::iter::once(Self::quote_identifier("_row_id"))
+                .chain(
+                    request
+                        .column_names
+                        .iter()
+                        .map(|column_name| Self::quote_identifier(column_name)),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
+            let placeholders = std::iter::once("?".to_string())
+                .chain(
+                    canonical_types
+                        .iter()
+                        .map(|column_type| Self::typed_parameter_expression(column_type)),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                quoted_table, insert_columns, placeholders
+            );
+            let mut insert_stmt = self.conn.prepare(&insert_sql)?;
+
+            for (row_index, row) in request.rows.iter().enumerate() {
+                let row_id = i64::try_from(row_index + 1).map_err(|_| {
+                    AppError::InvalidParam("row count exceeds supported limits".into())
+                })?;
+                let mut values = Vec::with_capacity(row.len() + 1);
+                values.push(Value::BigInt(row_id));
+                for (column_index, value) in row.iter().enumerate() {
+                    values.push(Self::json_scalar_to_duckdb_value(
+                        value,
+                        row_index + 1,
+                        column_index + 1,
+                    )?);
+                }
+                insert_stmt.execute(params_from_iter(values))?;
+            }
+
+            self.conn.execute(
+                "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, NULL, 'manual', $3, $4)",
+                params![id, request.name, request.rows.len() as i64, request.column_names.len() as i32],
+            )?;
+            self.conn.execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                params![request.rows.len() as i64, id],
+            )?;
+
+            self.get_dataset_meta(id)
+        })();
+
+        match outcome {
+            Ok(meta) => {
+                Self::finalize_transaction(
+                    || {
+                        self.conn.execute_batch("COMMIT")?;
+                        Ok(())
+                    },
+                    || {
+                        let _ = self.conn.execute_batch("ROLLBACK");
+                    },
+                )?;
+                Ok(meta)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    fn json_scalar_to_duckdb_value(
+        value: &serde_json::Value,
+        row_index: usize,
+        column_index: usize,
+    ) -> Result<Value, AppError> {
+        match value {
+            serde_json::Value::Null => Ok(Value::Null),
+            serde_json::Value::Bool(value) => Ok(Value::Boolean(*value)),
+            serde_json::Value::Number(value) => {
+                if let Some(integer) = value.as_i64() {
+                    Ok(Value::BigInt(integer))
+                } else if let Some(integer) = value.as_u64() {
+                    Ok(Value::UBigInt(integer))
+                } else if let Some(float) = value.as_f64() {
+                    Ok(Value::Double(float))
+                } else {
+                    Err(AppError::InvalidParam(format!(
+                        "row {row_index} column {column_index} number is not representable"
+                    )))
+                }
+            }
+            serde_json::Value::String(value) => Ok(Value::Text(value.clone())),
+            _ => Err(AppError::InvalidParam(format!(
+                "row {row_index} column {column_index} must be a scalar JSON value"
+            ))),
         }
     }
 
@@ -1161,10 +1426,7 @@ impl DuckDbEngine {
             })
             .collect::<std::collections::HashMap<_, _>>();
 
-        let y_column = role_to_column
-            .get("y")
-            .ok_or_else(|| AppError::InvalidParam("graph request is missing role y".into()))?
-            .clone();
+        let y_column = role_to_column.get("y").cloned();
 
         let x_column = role_to_column.get("x").cloned();
         let group_column = role_to_column.get("group").cloned();
@@ -1175,6 +1437,15 @@ impl DuckDbEngine {
         let group_z_column = role_to_column.get("groupz").cloned();
         let wrap_column = role_to_column.get("wrap").cloned();
 
+        let mut multi_x_columns = request
+            .fields
+            .iter()
+            .filter(|field| field.role.to_ascii_lowercase().starts_with("multix"))
+            .map(|field| field.column.trim().to_string())
+            .collect::<Vec<_>>();
+        multi_x_columns.sort();
+        multi_x_columns.dedup();
+
         let mut multi_y_columns = request
             .fields
             .iter()
@@ -1183,6 +1454,12 @@ impl DuckDbEngine {
             .collect::<Vec<_>>();
         multi_y_columns.sort();
         multi_y_columns.dedup();
+
+        if y_column.is_none() && multi_x_columns.is_empty() && multi_y_columns.is_empty() {
+            return Err(AppError::InvalidParam(
+                "graph request is missing role y".into(),
+            ));
+        }
 
         let validate_column = |column_name: &str| -> Result<(), AppError> {
             if column_name.is_empty() {
@@ -1198,7 +1475,9 @@ impl DuckDbEngine {
             Ok(())
         };
 
-        validate_column(&y_column)?;
+        if let Some(column) = &y_column {
+            validate_column(column)?;
+        }
         if let Some(column) = &x_column {
             validate_column(column)?;
         }
@@ -1221,6 +1500,9 @@ impl DuckDbEngine {
             validate_column(column)?;
         }
         if let Some(column) = &wrap_column {
+            validate_column(column)?;
+        }
+        for column in &multi_x_columns {
             validate_column(column)?;
         }
         for column in &multi_y_columns {
@@ -1320,7 +1602,33 @@ impl DuckDbEngine {
             format!(", {}", sampling_strata_select_sql.join(", "))
         };
 
-        let (source_sql, source_values, source_column_type) = if multi_y_columns.len() >= 2 {
+        let (source_sql, source_values, source_column_type) = if !multi_x_columns.is_empty() {
+            let mut branches = Vec::with_capacity(multi_x_columns.len());
+            let mut values = Vec::new();
+            for column in &multi_x_columns {
+                if let Some(bound_y) = &y_column {
+                    branches.push(format!(
+                        "SELECT \"_row_id\", CAST({x_col} AS DOUBLE) AS __sp_x, CAST({y_col} AS DOUBLE) AS __sp_y, {group_expr} AS __sp_group, {size_expr} AS __sp_size, CAST({z_expr} AS DOUBLE) AS __sp_z, {group_x_expr} AS __sp_groupx, {group_y_expr} AS __sp_groupy, {group_z_expr} AS __sp_groupz, {wrap_expr} AS __sp_wrap{strata_select}, ? AS {source_col} FROM {table_name} {where_clause}",
+                        x_col = Self::quote_identifier(column),
+                        y_col = Self::quote_identifier(bound_y),
+                        source_col = Self::quote_identifier(GRAPH_VIRTUAL_SOURCE_COLUMN),
+                        strata_select = strata_select_sql,
+                    ));
+                    values.push(Value::Text(column.clone()));
+                } else {
+                    branches.push(format!(
+                        "SELECT \"_row_id\", ? AS __sp_x, CAST({y_col} AS DOUBLE) AS __sp_y, {group_expr} AS __sp_group, {size_expr} AS __sp_size, CAST({z_expr} AS DOUBLE) AS __sp_z, {group_x_expr} AS __sp_groupx, {group_y_expr} AS __sp_groupy, {group_z_expr} AS __sp_groupz, {wrap_expr} AS __sp_wrap{strata_select}, ? AS {source_col} FROM {table_name} {where_clause}",
+                        y_col = Self::quote_identifier(column),
+                        source_col = Self::quote_identifier(GRAPH_VIRTUAL_SOURCE_COLUMN),
+                        strata_select = strata_select_sql,
+                    ));
+                    values.push(Value::Text(column.clone()));
+                    values.push(Value::Text(column.clone()));
+                }
+                values.extend(filter_values.iter().cloned());
+            }
+            (branches.join(" UNION ALL "), values, "VARCHAR".to_string())
+        } else if !multi_y_columns.is_empty() {
             let mut branches = Vec::with_capacity(multi_y_columns.len());
             let mut values = Vec::with_capacity(
                 filter_values.len() * multi_y_columns.len() + multi_y_columns.len(),
@@ -1341,7 +1649,9 @@ impl DuckDbEngine {
             let source_col = if multi_y_columns.len() == 1 {
                 multi_y_columns[0].clone()
             } else {
-                y_column.clone()
+                y_column.clone().ok_or_else(|| {
+                    AppError::InvalidParam("graph request is missing role y".into())
+                })?
             };
             let sql = format!(
                 "SELECT \"_row_id\", {x_expr} AS __sp_x, CAST({y_col} AS DOUBLE) AS __sp_y, {group_expr} AS __sp_group, {size_expr} AS __sp_size, CAST({z_expr} AS DOUBLE) AS __sp_z, {group_x_expr} AS __sp_groupx, {group_y_expr} AS __sp_groupy, {group_z_expr} AS __sp_groupz, {wrap_expr} AS __sp_wrap{strata_select}, ? AS {source_col} FROM {table_name} {where_clause}",
@@ -1397,7 +1707,11 @@ impl DuckDbEngine {
 
         let projection_values = source_values.clone();
 
-        let melt_active = multi_y_columns.len() >= 2;
+        let multi_x_active = !multi_x_columns.is_empty();
+        let multi_x_axis_mode = multi_x_active && y_column.is_none();
+        let multi_x_merge_mode = multi_x_active && y_column.is_some();
+        let multi_y_active = !multi_y_columns.is_empty();
+        let melt_active = multi_x_active || multi_y_active;
         let mut projection_select_items = Vec::new();
         let mut projected_columns = Vec::new();
         let mut projected_column_types = Vec::new();
@@ -1411,21 +1725,35 @@ impl DuckDbEngine {
             projected_column_types.push(column_type);
         };
 
-        let x_public = x_column.clone().unwrap_or_else(|| "__sp_x".to_string());
+        let x_public = if multi_x_axis_mode {
+            GRAPH_VIRTUAL_SOURCE_COLUMN.to_string()
+        } else if multi_x_merge_mode {
+            GRAPH_VIRTUAL_VALUE_COLUMN.to_string()
+        } else {
+            x_column.clone().unwrap_or_else(|| "__sp_x".to_string())
+        };
         push_projected(
             format!("__sp_x AS {}", Self::quote_identifier(&x_public)),
             x_public,
-            x_column
-                .as_ref()
-                .and_then(|column| allowed_columns.get(column.as_str()).copied())
-                .unwrap_or("VARCHAR")
-                .to_string(),
+            if multi_x_axis_mode {
+                "VARCHAR".to_string()
+            } else if multi_x_merge_mode {
+                "DOUBLE".to_string()
+            } else {
+                x_column
+                    .as_ref()
+                    .and_then(|column| allowed_columns.get(column.as_str()).copied())
+                    .unwrap_or("VARCHAR")
+                    .to_string()
+            },
         );
 
-        let y_public = if melt_active {
+        let y_public = if multi_x_axis_mode || multi_y_active {
             GRAPH_VIRTUAL_VALUE_COLUMN.to_string()
         } else {
-            y_column.clone()
+            y_column
+                .clone()
+                .ok_or_else(|| AppError::InvalidParam("graph request is missing role y".into()))?
         };
         push_projected(
             format!("__sp_y AS {}", Self::quote_identifier(&y_public)),
@@ -1544,11 +1872,62 @@ impl DuckDbEngine {
         &self,
         request: &GraphDataRequest,
     ) -> Result<Vec<GraphAggregatePacket>, AppError> {
+        let (packets, _cancelled) =
+            self.collect_graph_aggregate_packets_with_cancel(request, || Ok(false))?;
+        Ok(packets)
+    }
+
+    pub fn collect_graph_aggregate_packets_with_cancel<F>(
+        &self,
+        request: &GraphDataRequest,
+        mut should_cancel: F,
+    ) -> Result<(Vec<GraphAggregatePacket>, bool), AppError>
+    where
+        F: FnMut() -> Result<bool, AppError>,
+    {
+        if should_cancel()? {
+            return Ok((Vec::new(), true));
+        }
+
+        let current_generation = self.get_dataset_generation(&request.dataset_id)?;
+        if current_generation != request.generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {}",
+                request.generation
+            )));
+        }
+
         let user_columns = self.get_user_columns(&request.dataset_id)?;
         let allowed_columns = user_columns
             .iter()
             .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
             .collect::<std::collections::HashMap<_, _>>();
+
+        let correlation_plan = self.resolve_correlation_request_plan(request, &allowed_columns)?;
+        let exclusive_correlation = correlation_plan.is_some()
+            && request
+                .elements
+                .iter()
+                .all(|element| element.kind.eq_ignore_ascii_case("correlationMatrix"));
+
+        if exclusive_correlation {
+            let correlation_plan = correlation_plan.as_ref().ok_or_else(|| {
+                AppError::InvalidParam(
+                    "correlation matrix request is missing resolved bindings".to_string(),
+                )
+            })?;
+            let packet = self.query_correlation_matrix_packet(
+                request,
+                &allowed_columns,
+                correlation_plan,
+                &mut should_cancel,
+            )?;
+            let Some(packet) = packet else {
+                return Ok((Vec::new(), true));
+            };
+            return Ok((vec![GraphAggregatePacket::CorrelationMatrix(packet)], false));
+        }
+
         let plan = self.compile_graph_query_plan(request, &allowed_columns)?;
 
         let mut want_histogram = false;
@@ -1561,13 +1940,25 @@ impl DuckDbEngine {
                 "histogram" => want_histogram = true,
                 "heatmap" => want_heatmap = true,
                 "boxplot" => want_boxplot = true,
-                "summary" | "points" | "line" => want_summary = true,
+                "summary" | "points" | "line" | "normalcurve" => want_summary = true,
                 _ => {}
             }
         }
 
         if !(want_histogram || want_heatmap || want_boxplot || want_summary) {
-            return Ok(Vec::new());
+            if let Some(correlation_plan) = &correlation_plan {
+                let packet = self.query_correlation_matrix_packet(
+                    request,
+                    &allowed_columns,
+                    correlation_plan,
+                    &mut should_cancel,
+                )?;
+                let Some(packet) = packet else {
+                    return Ok((Vec::new(), true));
+                };
+                return Ok((vec![GraphAggregatePacket::CorrelationMatrix(packet)], false));
+            }
+            return Ok((Vec::new(), false));
         }
 
         let mut packets = Vec::new();
@@ -1593,7 +1984,244 @@ impl DuckDbEngine {
             ));
         }
 
-        Ok(packets)
+        if let Some(correlation_plan) = &correlation_plan {
+            let packet = self.query_correlation_matrix_packet(
+                request,
+                &allowed_columns,
+                correlation_plan,
+                &mut should_cancel,
+            )?;
+            let Some(packet) = packet else {
+                return Ok((Vec::new(), true));
+            };
+            packets.push(GraphAggregatePacket::CorrelationMatrix(packet));
+        }
+
+        if should_cancel()? {
+            return Ok((Vec::new(), true));
+        }
+
+        Ok((packets, false))
+    }
+
+    fn resolve_correlation_request_plan(
+        &self,
+        request: &GraphDataRequest,
+        allowed_columns: &std::collections::HashMap<&str, &str>,
+    ) -> Result<Option<CorrelationRequestPlan>, AppError> {
+        let mut correlation_elements = request
+            .elements
+            .iter()
+            .filter(|element| element.kind.eq_ignore_ascii_case("correlationMatrix"));
+        let Some(correlation_element) = correlation_elements.next() else {
+            return Ok(None);
+        };
+        if correlation_elements.next().is_some() {
+            return Err(AppError::InvalidParam(
+                "graph request can include only one correlationMatrix element".to_string(),
+            ));
+        }
+
+        let mut prefix: Option<&str> = None;
+        let mut bindings = Vec::<CorrelationRequestBinding>::new();
+        for field in &request.fields {
+            let role = field.role.trim().to_ascii_lowercase();
+            let parsed_prefix = if role.starts_with("multix") {
+                Some("multix")
+            } else if role.starts_with("multiy") {
+                Some("multiy")
+            } else {
+                None
+            };
+            let Some(parsed_prefix) = parsed_prefix else {
+                continue;
+            };
+
+            match prefix {
+                None => prefix = Some(parsed_prefix),
+                Some(existing) if existing != parsed_prefix => {
+                    return Err(AppError::InvalidParam(
+                        "correlation matrix request cannot mix multiX* and multiY* roles"
+                            .to_string(),
+                    ));
+                }
+                _ => {}
+            }
+
+            let suffix_text = &role[parsed_prefix.len()..];
+            let suffix = suffix_text.parse::<u32>().map_err(|_| {
+                AppError::InvalidParam(format!(
+                    "correlation role {} must end with a numeric suffix",
+                    field.role
+                ))
+            })?;
+            let column = field.column.trim();
+            if column.is_empty() {
+                return Err(AppError::InvalidParam(format!(
+                    "graph field column must not be blank for role {}",
+                    field.role
+                )));
+            }
+            bindings.push(CorrelationRequestBinding {
+                suffix,
+                column: column.to_string(),
+            });
+        }
+
+        if bindings.is_empty() {
+            return Err(AppError::InvalidParam(
+                "correlation matrix request requires multiX* or multiY* field bindings".to_string(),
+            ));
+        }
+
+        bindings.sort_by_key(|binding| binding.suffix);
+
+        for index in 1..bindings.len() {
+            if bindings[index].suffix == bindings[index - 1].suffix {
+                return Err(AppError::InvalidParam(format!(
+                    "duplicate correlation binding index {}",
+                    bindings[index].suffix
+                )));
+            }
+        }
+
+        for (expected, binding) in bindings.iter().enumerate() {
+            let expected = u32::try_from(expected)
+                .map_err(|_| AppError::InvalidParam("too many correlation bindings".to_string()))?;
+            if binding.suffix != expected {
+                return Err(AppError::InvalidParam(format!(
+                    "correlation bindings must be contiguous starting at 0 (missing index {})",
+                    expected
+                )));
+            }
+        }
+
+        if bindings.len() < 2 {
+            return Err(AppError::InvalidParam(
+                "correlation matrix requires at least 2 selected columns".to_string(),
+            ));
+        }
+        if bindings.len() > 20 {
+            return Err(AppError::InvalidParam(
+                "correlation matrix supports at most 20 selected columns".to_string(),
+            ));
+        }
+
+        let mut columns = Vec::with_capacity(bindings.len());
+        let mut unique = std::collections::HashSet::with_capacity(bindings.len());
+        for binding in bindings {
+            if !unique.insert(binding.column.clone()) {
+                return Err(AppError::InvalidParam(format!(
+                    "duplicate correlation column binding: {}",
+                    binding.column
+                )));
+            }
+
+            let Some(column_type) = allowed_columns.get(binding.column.as_str()) else {
+                return Err(AppError::InvalidParam(format!(
+                    "unknown graph column: {}",
+                    binding.column
+                )));
+            };
+            if !is_numeric_type(column_type) {
+                return Err(AppError::InvalidParam(format!(
+                    "correlation matrix requires numeric columns: {}",
+                    binding.column
+                )));
+            }
+            columns.push(binding.column);
+        }
+
+        let method = correlation_element.correlation_method.ok_or_else(|| {
+            AppError::InvalidParam(
+                "correlationMatrix element must include correlationMethod".to_string(),
+            )
+        })?;
+
+        Ok(Some(CorrelationRequestPlan { method, columns }))
+    }
+
+    fn query_correlation_matrix_packet<F>(
+        &self,
+        request: &GraphDataRequest,
+        allowed_columns: &std::collections::HashMap<&str, &str>,
+        correlation_plan: &CorrelationRequestPlan,
+        should_cancel: &mut F,
+    ) -> Result<Option<CorrelationMatrixPacket>, AppError>
+    where
+        F: FnMut() -> Result<bool, AppError>,
+    {
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let (where_clause, filter_values) =
+            Self::compile_table_window_filters(&request.filters, allowed_columns)?;
+
+        let select_columns = correlation_plan
+            .columns
+            .iter()
+            .map(|column| {
+                let quoted = Self::quote_identifier(column);
+                format!("CAST({quoted} AS DOUBLE) AS {quoted}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query_sql = format!(
+            "SELECT {select_columns} FROM {table_name} {where_clause} ORDER BY \"_row_id\" ASC"
+        );
+
+        let mut per_column = vec![Vec::<Option<f64>>::new(); correlation_plan.columns.len()];
+        let mut stmt = self.conn.prepare(&query_sql)?;
+        let mut rows = stmt.query(params_from_iter(filter_values.iter()))?;
+        while let Some(row) = rows.next()? {
+            if should_cancel()? {
+                return Ok(None);
+            }
+            for (index, values) in per_column.iter_mut().enumerate() {
+                let value = row.get::<_, Value>(index)?;
+                let numeric = numeric_cell_value(value)?;
+                values.push(numeric.filter(|value| value.is_finite()));
+            }
+        }
+
+        let method: StatisticalMethod = correlation_plan.method.into();
+        let column_count = correlation_plan.columns.len();
+        let mut pair_results = std::collections::HashMap::<
+            (usize, usize),
+            crate::engine::correlation::CorrelationResult,
+        >::new();
+        for left in 0..column_count {
+            for right in left..column_count {
+                if should_cancel()? {
+                    return Ok(None);
+                }
+                let result = correlate(&per_column[left], &per_column[right], method);
+                pair_results.insert((left, right), result);
+            }
+        }
+
+        let mut cells = Vec::with_capacity(column_count * column_count);
+        for y_index in 0..column_count {
+            for x_index in 0..column_count {
+                let key = (x_index.min(y_index), x_index.max(y_index));
+                let result = pair_results.get(&key).ok_or_else(|| {
+                    AppError::Database("missing pairwise correlation result".to_string())
+                })?;
+                cells.push(CorrelationMatrixCell {
+                    x_index: u32::try_from(x_index)
+                        .map_err(|_| AppError::InvalidParam("x index overflows u32".to_string()))?,
+                    y_index: u32::try_from(y_index)
+                        .map_err(|_| AppError::InvalidParam("y index overflows u32".to_string()))?,
+                    coefficient: result.coefficient,
+                    sample_count: result.sample_count,
+                    unavailable_reason: result.failure.map(Into::into),
+                });
+            }
+        }
+
+        Ok(Some(CorrelationMatrixPacket {
+            method: correlation_plan.method,
+            columns: correlation_plan.columns.clone(),
+            cells,
+        }))
     }
 
     fn query_histogram_packet(
@@ -5067,6 +5695,219 @@ impl DuckDbEngine {
         }
     }
 
+    pub fn add_valued_columns_with_change_set(
+        &self,
+        dataset_id: &str,
+        columns: &[ValuedColumn],
+        expected_generation: u64,
+    ) -> Result<(String, u64), AppError> {
+        const MAX_COLUMNS: usize = 1_000;
+        if columns.is_empty() || columns.len() > MAX_COLUMNS {
+            return Err(AppError::InvalidParam(format!(
+                "column count must be between 1 and {MAX_COLUMNS}"
+            )));
+        }
+        let mut names = std::collections::HashSet::new();
+        let canonical_columns = columns
+            .iter()
+            .map(|column| {
+                if column.name.trim().is_empty()
+                    || !names.insert(column.name.to_ascii_lowercase())
+                    || column
+                        .values
+                        .iter()
+                        .any(|(_, value)| value.is_some_and(|value| !value.is_finite()))
+                {
+                    return Err(AppError::InvalidParam(
+                        "valued columns contain an invalid name or value".into(),
+                    ));
+                }
+                let mut row_ids = std::collections::HashSet::new();
+                if column
+                    .values
+                    .iter()
+                    .any(|(row_id, _)| !row_ids.insert(*row_id))
+                {
+                    return Err(AppError::InvalidParam(format!(
+                        "valued column contains duplicate row IDs: {}",
+                        column.name
+                    )));
+                }
+                self.canonicalize_column_type(&column.column_type)
+                    .map(|column_type| (column, column_type))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let resolved_names = self.resolve_valued_column_names(
+            dataset_id,
+            &columns
+                .iter()
+                .map(|column| column.name.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let generation = self.get_dataset_generation(dataset_id)?;
+        if generation != expected_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {generation}, received {expected_generation}"
+            )));
+        }
+        let next_generation = generation
+            .checked_add(1)
+            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
+        let first_index: i32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        let added_count = i32::try_from(canonical_columns.len())
+            .map_err(|_| AppError::InvalidParam("too many columns".into()))?;
+        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let change_set_id = uuid::Uuid::new_v4().to_string();
+        let suffix = change_set_id.replace('-', "_");
+        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
+        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
+        let replacement_name = format!("_valued_columns_{suffix}");
+        let replacement_table = Self::quote_identifier(&replacement_name);
+
+        self.conn.execute_batch("BEGIN TRANSACTION;")?;
+        let result = (|| -> Result<(), AppError> {
+            self.conn.execute(
+                &format!(
+                    "CREATE TABLE {before_table} AS SELECT \"_row_id\" FROM {dataset_table} WHERE FALSE"
+                ),
+                [],
+            )?;
+            let added_select = canonical_columns
+                .iter()
+                .enumerate()
+                .map(|(ordinal, (_, column_type))| {
+                    format!(
+                        "NULL::{column_type} AS {}",
+                        Self::quote_identifier(&resolved_names[ordinal])
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.conn.execute(
+                &format!(
+                    "CREATE TABLE {replacement_table} AS SELECT *, {added_select} FROM {dataset_table}"
+                ),
+                [],
+            )?;
+            for (ordinal, (column, column_type)) in canonical_columns.iter().enumerate() {
+                let column_index = first_index + ordinal as i32;
+                let resolved_name = &resolved_names[ordinal];
+                let column_identifier = Self::quote_identifier(resolved_name);
+                self.conn.execute(
+                    "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
+                    params![dataset_id, column_index, resolved_name, column_type],
+                )?;
+                let mut update = self.conn.prepare(&format!(
+                    "UPDATE {replacement_table} SET {column_identifier} = ? WHERE \"_row_id\" = ?"
+                ))?;
+                for (row_id, value) in &column.values {
+                    if update.execute(params![value, row_id])? != 1 {
+                        return Err(AppError::InvalidParam(format!(
+                            "valued column references unknown row ID: {row_id}"
+                        )));
+                    }
+                }
+            }
+            let after_select = std::iter::once("\"_row_id\"".to_string())
+                .chain(canonical_columns.iter().enumerate().map(|(ordinal, _)| {
+                    format!(
+                        "{} AS {}",
+                        Self::quote_identifier(&resolved_names[ordinal]),
+                        Self::quote_identifier(&format!("c{ordinal}"))
+                    )
+                }))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.conn.execute(
+                &format!(
+                    "CREATE TABLE {after_table} AS SELECT {after_select} FROM {replacement_table}"
+                ),
+                [],
+            )?;
+            self.conn
+                .execute(&format!("DROP TABLE {dataset_table}"), [])?;
+            self.conn.execute(
+                &format!(
+                    "ALTER TABLE {replacement_table} RENAME TO {}",
+                    Self::quote_identifier(&Self::internal_table_name(dataset_id))
+                ),
+                [],
+            )?;
+            self.conn.execute(
+                "UPDATE _meta_datasets SET col_count = col_count + ?, generation = ? WHERE id = ?",
+                params![added_count, next_generation, dataset_id],
+            )?;
+            self.conn.execute(
+                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
+                params![&change_set_id, dataset_id, next_generation],
+            )?;
+            for (ordinal, (_, column_type)) in canonical_columns.iter().enumerate() {
+                let column_index = first_index + ordinal as i32;
+                self.conn.execute(
+                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, ?, ?, NULL, NULL, ?, ?)",
+                    params![&change_set_id, ordinal as i32, column_index, &resolved_names[ordinal], column_type],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => match self.conn.execute_batch("COMMIT;") {
+                Ok(()) => Ok((change_set_id, next_generation)),
+                Err(error) => {
+                    let _ = self.conn.execute_batch("ROLLBACK;");
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(error)
+            }
+        }
+    }
+
+    pub fn resolve_valued_column_names(
+        &self,
+        dataset_id: &str,
+        requested_names: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        if requested_names.is_empty() || requested_names.iter().any(|name| name.trim().is_empty()) {
+            return Err(AppError::InvalidParam(
+                "valued column names must not be empty".into(),
+            ));
+        }
+        let existing = self
+            .get_user_columns(dataset_id)?
+            .into_iter()
+            .map(|(name, _)| name.to_ascii_lowercase())
+            .collect::<std::collections::HashSet<_>>();
+        for suffix in 1usize.. {
+            let candidates = requested_names
+                .iter()
+                .map(|name| {
+                    if suffix == 1 {
+                        name.clone()
+                    } else {
+                        format!("{name}-{suffix}")
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut group_names = std::collections::HashSet::new();
+            if candidates.iter().all(|candidate| {
+                let canonical = candidate.to_ascii_lowercase();
+                !existing.contains(&canonical) && group_names.insert(canonical)
+            }) {
+                return Ok(candidates);
+            }
+        }
+        Err(AppError::InvalidParam(
+            "valued column name suffix space is exhausted".into(),
+        ))
+    }
+
     pub fn delete_columns_with_change_set(
         &self,
         dataset_id: &str,
@@ -6876,12 +7717,322 @@ impl DuckDbEngine {
         Ok(cols)
     }
 
+    pub fn get_distribution_columns(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<crate::models::distribution::DistributionColumnDescriptorV1>, AppError> {
+        self.get_dataset_meta(dataset_id)?;
+        let mut statement = self.conn.prepare(
+            "SELECT column_id, col_name, col_type, role, col_index
+             FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+        )?;
+        statement
+            .query_map(params![dataset_id], |row| {
+                Ok(
+                    crate::models::distribution::DistributionColumnDescriptorV1 {
+                        column_id: row.get(0)?,
+                        name: row.get(1)?,
+                        sql_type: row.get(2)?,
+                        role: row.get(3)?,
+                        index: row.get(4)?,
+                    },
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)
+    }
+
+    pub fn read_fit_model_rows(
+        &self,
+        dataset_id: &str,
+        generation: u64,
+        response_column: &str,
+        predictor_columns: &[String],
+    ) -> Result<FitModelDataSet, AppError> {
+        self.get_dataset_meta(dataset_id)?;
+
+        let current_generation = self.get_dataset_generation(dataset_id)?;
+        if current_generation != generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {generation}"
+            )));
+        }
+
+        if predictor_columns.is_empty() {
+            return Err(AppError::InvalidParam(
+                "fit model requires at least one predictor column".into(),
+            ));
+        }
+
+        let user_columns = self.get_user_columns(dataset_id)?;
+        let column_types = user_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let response_type = column_types.get(response_column).copied().ok_or_else(|| {
+            AppError::InvalidParam(format!("unknown response column: {response_column}"))
+        })?;
+        if !is_numeric_type(response_type) {
+            return Err(AppError::InvalidParam(format!(
+                "response column must be numeric: {response_column}"
+            )));
+        }
+        let response_role = self.fit_model_column_role(dataset_id, response_column)?;
+        if !response_role.eq_ignore_ascii_case("continuous") {
+            return Err(AppError::InvalidParam(format!(
+                "response column must be continuous: {response_column}"
+            )));
+        }
+
+        let mut predictor_names = Vec::new();
+        for predictor in predictor_columns {
+            let predictor_type =
+                column_types
+                    .get(predictor.as_str())
+                    .copied()
+                    .ok_or_else(|| {
+                        AppError::InvalidParam(format!("unknown predictor column: {predictor}"))
+                    })?;
+            if predictor == response_column {
+                return Err(AppError::InvalidParam(
+                    "response and predictor columns must be distinct".into(),
+                ));
+            }
+            if !is_numeric_type(predictor_type) {
+                return Err(AppError::InvalidParam(format!(
+                    "predictor column must be numeric: {predictor}"
+                )));
+            }
+            let predictor_role = self.fit_model_column_role(dataset_id, predictor)?;
+            if !predictor_role.eq_ignore_ascii_case("continuous") {
+                return Err(AppError::InvalidParam(format!(
+                    "predictor column must be continuous: {predictor}"
+                )));
+            }
+            if !predictor_names.contains(predictor) {
+                predictor_names.push(predictor.clone());
+            }
+        }
+
+        if predictor_names.is_empty() {
+            return Err(AppError::InvalidParam(
+                "fit model requires at least one predictor column".into(),
+            ));
+        }
+
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let response_identifier = Self::quote_identifier(response_column);
+        let predictor_projection = predictor_names
+            .iter()
+            .map(|column| Self::quote_identifier(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query_sql = format!(
+            "SELECT \"_row_id\", {response_identifier}, {predictor_projection} FROM {table_name}"
+        );
+
+        let mut stmt = self.conn.prepare(&query_sql)?;
+        let mut query_rows = stmt.query([])?;
+        let mut source_rows = 0_u64;
+        let mut used_rows = Vec::new();
+
+        while let Some(row) = query_rows.next()? {
+            source_rows += 1;
+
+            let row_index_value = row.get::<_, Value>(0)?;
+            let Some(row_index) = fit_model_row_index(row_index_value) else {
+                continue;
+            };
+
+            let Some(response) =
+                fit_y_by_x_numeric_value(row.get::<_, Value>(1)?).filter(|value| value.is_finite())
+            else {
+                continue;
+            };
+
+            let mut predictors = Vec::with_capacity(predictor_names.len());
+            let mut valid_row = true;
+            for offset in 0..predictor_names.len() {
+                let Some(value) = fit_y_by_x_numeric_value(row.get::<_, Value>(offset + 2)?)
+                    .filter(|numeric| numeric.is_finite())
+                else {
+                    valid_row = false;
+                    break;
+                };
+                predictors.push(value);
+            }
+            if !valid_row {
+                continue;
+            }
+
+            used_rows.push(FitModelDataRow {
+                row_index,
+                response,
+                predictors,
+            });
+        }
+
+        let excluded_rows = source_rows
+            .checked_sub(used_rows.len() as u64)
+            .ok_or_else(|| AppError::Stats("fit model row accounting underflowed".into()))?;
+        Ok(FitModelDataSet {
+            predictor_names,
+            used_rows,
+            excluded_rows,
+        })
+    }
+
+    pub fn read_fit_y_by_x_rows(
+        &self,
+        dataset_id: &str,
+        response_column: &str,
+        factor_column: &str,
+        personality: FitYByXPersonality,
+    ) -> Result<FitYByXRows, AppError> {
+        self.get_dataset_meta(dataset_id)?;
+
+        let user_columns = self.get_user_columns(dataset_id)?;
+        let response_type = user_columns
+            .iter()
+            .find(|(name, _)| name == response_column)
+            .map(|(_, column_type)| column_type.clone())
+            .ok_or_else(|| {
+                AppError::InvalidParam(format!("unknown response column: {response_column}"))
+            })?;
+        let factor_type = user_columns
+            .iter()
+            .find(|(name, _)| name == factor_column)
+            .map(|(_, column_type)| column_type.clone())
+            .ok_or_else(|| {
+                AppError::InvalidParam(format!("unknown factor column: {factor_column}"))
+            })?;
+
+        if response_column == factor_column {
+            return Err(AppError::InvalidParam(
+                "response and factor columns must not be the same".into(),
+            ));
+        }
+        if !is_numeric_type(&response_type) {
+            return Err(AppError::InvalidParam(format!(
+                "response column must be numeric: {response_column}"
+            )));
+        }
+
+        let factor_role = self.fit_y_by_x_column_role(dataset_id, factor_column)?;
+        match personality {
+            FitYByXPersonality::Oneway => {
+                if is_numeric_type(&factor_type) && factor_role.eq_ignore_ascii_case("continuous") {
+                    return Err(AppError::InvalidParam(format!(
+                        "oneway requires a categorical factor column: {factor_column}"
+                    )));
+                }
+            }
+            FitYByXPersonality::Bivariate => {
+                if !is_numeric_type(&factor_type) || !factor_role.eq_ignore_ascii_case("continuous")
+                {
+                    return Err(AppError::InvalidParam(format!(
+                        "bivariate requires a continuous numeric factor column: {factor_column}"
+                    )));
+                }
+            }
+        }
+
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let response_identifier = Self::quote_identifier(response_column);
+        let factor_identifier = Self::quote_identifier(factor_column);
+        let query_sql =
+            format!("SELECT {response_identifier}, {factor_identifier} FROM {table_name}");
+
+        let mut stmt = self.conn.prepare(&query_sql)?;
+        let mut source_rows = 0_u64;
+        let mut rows = Vec::new();
+        let mut query_rows = stmt.query([])?;
+        while let Some(row) = query_rows.next()? {
+            source_rows += 1;
+
+            let response_value = row.get::<_, Value>(0)?;
+            let factor_value = row.get::<_, Value>(1)?;
+            let response_numeric = fit_y_by_x_numeric_value(response_value);
+
+            match personality {
+                FitYByXPersonality::Oneway => {
+                    let Some(y) = response_numeric.filter(|value| value.is_finite()) else {
+                        continue;
+                    };
+                    let Some(group) = fit_y_by_x_display_value(factor_value) else {
+                        continue;
+                    };
+                    rows.push(FitYByXRow::Oneway { y, group });
+                }
+                FitYByXPersonality::Bivariate => {
+                    let Some(y) = response_numeric.filter(|value| value.is_finite()) else {
+                        continue;
+                    };
+                    let Some(x) =
+                        fit_y_by_x_numeric_value(factor_value).filter(|value| value.is_finite())
+                    else {
+                        continue;
+                    };
+                    rows.push(FitYByXRow::Bivariate { x, y });
+                }
+            }
+        }
+
+        Ok(FitYByXRows { source_rows, rows })
+    }
+
+    fn fit_y_by_x_column_role(
+        &self,
+        dataset_id: &str,
+        column_name: &str,
+    ) -> Result<String, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT role FROM _meta_columns WHERE dataset_id = $1 AND col_name = $2")?;
+        let mut rows = stmt.query(params![dataset_id, column_name])?;
+        let Some(row) = rows.next()? else {
+            return Err(AppError::InvalidParam(format!(
+                "unknown column role metadata: {column_name}"
+            )));
+        };
+        row.get(0).map_err(AppError::from)
+    }
+
+    fn fit_model_column_role(
+        &self,
+        dataset_id: &str,
+        column_name: &str,
+    ) -> Result<String, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT role FROM _meta_columns WHERE dataset_id = $1 AND col_name = $2")?;
+        let mut rows = stmt.query(params![dataset_id, column_name])?;
+        let Some(row) = rows.next()? else {
+            return Err(AppError::InvalidParam(format!(
+                "unknown column role metadata: {column_name}"
+            )));
+        };
+        row.get(0).map_err(AppError::from)
+    }
+
     pub(crate) fn prepare_archive_keyset_read(
         &self,
         dataset_id: &str,
     ) -> Result<ArchiveKeysetReadPlan, AppError> {
         self.get_dataset_meta(dataset_id)?;
-        let columns = self.get_user_columns(dataset_id)?;
+        let mut statement = self.conn.prepare(
+            "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+        )?;
+        let columns: Vec<(String, String, String)> = statement
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
 
         let select_projection = if columns.is_empty() {
@@ -6891,7 +8042,7 @@ impl DuckDbEngine {
                 ", {}",
                 columns
                     .iter()
-                    .map(|(name, column_type)| archive_export_expression(name, column_type))
+                    .map(|(_, name, column_type)| archive_export_expression(name, column_type))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -7165,6 +8316,83 @@ fn numeric_cell_value(value: Value) -> Result<Option<f64>, AppError> {
             "Unexpected non-numeric aggregate value: {:?}",
             other
         ))),
+    }
+}
+
+fn fit_y_by_x_numeric_value(value: Value) -> Option<f64> {
+    match value {
+        Value::Null => None,
+        Value::TinyInt(inner) => Some(inner as f64),
+        Value::SmallInt(inner) => Some(inner as f64),
+        Value::Int(inner) => Some(inner as f64),
+        Value::BigInt(inner) => Some(inner as f64),
+        Value::HugeInt(inner) => Some(inner as f64),
+        Value::UHugeInt(inner) => Some(inner as f64),
+        Value::UTinyInt(inner) => Some(inner as f64),
+        Value::USmallInt(inner) => Some(inner as f64),
+        Value::UInt(inner) => Some(inner as f64),
+        Value::UBigInt(inner) => Some(inner as f64),
+        Value::Float(inner) => Some(inner as f64),
+        Value::Double(inner) => Some(inner),
+        Value::Decimal(inner) => fit_y_by_x_decimal_value(inner),
+        _ => None,
+    }
+}
+
+fn fit_model_row_index(value: Value) -> Option<u64> {
+    match value {
+        Value::TinyInt(inner) if inner > 0 => Some(inner as u64),
+        Value::SmallInt(inner) if inner > 0 => Some(inner as u64),
+        Value::Int(inner) if inner > 0 => Some(inner as u64),
+        Value::BigInt(inner) if inner > 0 => Some(inner as u64),
+        Value::UTinyInt(inner) if inner > 0 => Some(inner as u64),
+        Value::USmallInt(inner) if inner > 0 => Some(inner as u64),
+        Value::UInt(inner) if inner > 0 => Some(inner as u64),
+        Value::UBigInt(inner) if inner > 0 => Some(inner as u64),
+        _ => None,
+    }
+}
+
+fn fit_y_by_x_decimal_value(value: Decimal) -> Option<f64> {
+    let scale_factor = 10_f64.powi(i32::from(value.scale()));
+    Some((value.value() as f64) / scale_factor)
+}
+
+fn fit_y_by_x_display_value(value: Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Boolean(inner) => Some(inner.to_string()),
+        Value::TinyInt(inner) => Some(inner.to_string()),
+        Value::SmallInt(inner) => Some(inner.to_string()),
+        Value::Int(inner) => Some(inner.to_string()),
+        Value::BigInt(inner) => Some(inner.to_string()),
+        Value::HugeInt(inner) => Some(inner.to_string()),
+        Value::UTinyInt(inner) => Some(inner.to_string()),
+        Value::USmallInt(inner) => Some(inner.to_string()),
+        Value::UInt(inner) => Some(inner.to_string()),
+        Value::UBigInt(inner) => Some(inner.to_string()),
+        Value::UHugeInt(inner) => Some(inner.to_string()),
+        Value::Float(inner) if inner.is_finite() => Some(inner.to_string()),
+        Value::Double(inner) if inner.is_finite() => Some(inner.to_string()),
+        Value::Text(inner) => Some(inner),
+        Value::Decimal(inner) => Some(inner.to_string()),
+        Value::Date32(inner) => Some(inner.to_string()),
+        Value::Time64(_, inner) => Some(inner.to_string()),
+        Value::Timestamp(_, inner) => Some(inner.to_string()),
+        Value::Blob(inner) => Some(
+            inner
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        ),
+        Value::List(inner) => Some(format!("{:?}", inner)),
+        Value::Enum(inner) => Some(format!("{:?}", inner)),
+        Value::Struct(inner) => Some(format!("{:?}", inner)),
+        Value::Map(inner) => Some(format!("{:?}", inner)),
+        Value::Array(inner) => Some(format!("{:?}", inner)),
+        Value::Union(inner) => Some(format!("{:?}", inner)),
+        Value::Float(_) | Value::Double(_) => None,
+        other => Some(format!("{:?}", other)),
     }
 }
 
@@ -7515,11 +8743,14 @@ fn dedupe_sqlite_table_name(base: &str, used: &mut std::collections::HashSet<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::fit_model::{FitModelTerm, FitModelTermKind};
+    use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRow};
     use crate::models::graph_data::{
         GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphSampling, GraphViewport,
     };
     use crate::models::table::{
-        TableWindowFilter, TableWindowFilterRule, TableWindowRequest, TableWindowSort,
+        CreateTableFromRowsRequest, TableWindowFilter, TableWindowFilterRule, TableWindowRequest,
+        TableWindowSort,
     };
     use crate::services::archive_cell::{
         archive_cell_to_json_call_count, reset_archive_cell_to_json_call_count,
@@ -8040,6 +9271,61 @@ mod tests {
         assert_eq!(page.columns.len(), 21);
     }
 
+    #[test]
+    fn normal_curve_requests_summary_statistics() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "normal-curve-id",
+            "Normal Curve",
+            &["measurement".into()],
+            &["DOUBLE".into()],
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_normal_curve_id\" (_row_id, measurement)
+                 VALUES (1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0)",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                params![4i64, "normal-curve-id"],
+            )
+            .unwrap();
+
+        let request = GraphDataRequest {
+            request_id: "req-normal-curve".into(),
+            dataset_id: "normal-curve-id".into(),
+            generation: 0,
+            fields: vec![GraphFieldBinding {
+                role: "y".into(),
+                column: "measurement".into(),
+            }],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "normalCurve".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let packets = db.collect_graph_aggregate_packets(&request).unwrap();
+        let [GraphAggregatePacket::Summary(summary)] = packets.as_slice() else {
+            panic!("normal curve must request exactly one summary packet");
+        };
+        assert_eq!(summary.summaries.len(), 1);
+        assert_eq!(summary.summaries[0].count, 4);
+        assert!((summary.summaries[0].mean - 2.5).abs() < f64::EPSILON);
+    }
+
     fn benchmark_window_request(start: usize, count: usize) -> TableWindowRequest {
         TableWindowRequest {
             dataset_id: "benchmark-id".into(),
@@ -8049,6 +9335,468 @@ mod tests {
             filters: Vec::new(),
             generation: 0,
         }
+    }
+
+    fn seed_fit_y_by_x_dataset(
+        engine: &DuckDbEngine,
+        dataset_id: &str,
+        column_names: &[&str],
+        column_types: &[&str],
+        insert_sql: &str,
+        row_count: i64,
+    ) {
+        engine
+            .create_empty_table(
+                dataset_id,
+                dataset_id,
+                &column_names
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect::<Vec<_>>(),
+                &column_types
+                    .iter()
+                    .map(|column_type| (*column_type).to_string())
+                    .collect::<Vec<_>>(),
+            )
+            .expect("fit y by x fixture metadata");
+        engine
+            .conn()
+            .execute_batch(insert_sql)
+            .expect("fit y by x fixture rows");
+        engine
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                params![row_count, dataset_id],
+            )
+            .expect("fit y by x fixture row count");
+    }
+
+    fn seed_fit_model_dataset(
+        engine: &DuckDbEngine,
+        dataset_id: &str,
+        column_names: &[&str],
+        column_types: &[&str],
+        insert_sql: &str,
+        row_count: i64,
+    ) {
+        engine
+            .create_empty_table(
+                dataset_id,
+                dataset_id,
+                &column_names
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect::<Vec<_>>(),
+                &column_types
+                    .iter()
+                    .map(|column_type| (*column_type).to_string())
+                    .collect::<Vec<_>>(),
+            )
+            .expect("fit model fixture metadata");
+        engine
+            .conn()
+            .execute_batch(insert_sql)
+            .expect("fit model fixture rows");
+        engine
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                params![row_count, dataset_id],
+            )
+            .expect("fit model fixture row count");
+    }
+
+    #[test]
+    fn read_fit_model_rows_filters_non_finite_and_preserves_row_indexes() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-rows",
+            &["Y", "A", "B", "C"],
+            &["DOUBLE", "DOUBLE", "DOUBLE", "VARCHAR"],
+            r#"
+            INSERT INTO "dataset_fit_model_rows" (_row_id, Y, A, B, C) VALUES
+                (1, 10.0, 1.0, 2.0, 'ok'),
+                (2, 20.0, 2.0, 3.0, 'ok'),
+                (3, NULL, 3.0, 4.0, 'missing-response'),
+                (4, 40.0, NULL, 5.0, 'missing-predictor'),
+                (5, 50.0, CAST('NaN' AS DOUBLE), 6.0, 'nan-predictor'),
+                (6, 60.0, 6.0, CAST('inf' AS DOUBLE), 'infinite-predictor');
+            "#,
+            6,
+        );
+
+        let result = engine
+            .read_fit_model_rows(
+                "fit-model-rows",
+                0,
+                "Y",
+                &["A".to_string(), "B".to_string(), "A".to_string()],
+            )
+            .expect("reader should succeed");
+
+        assert_eq!(result.predictor_names, vec!["A", "B"]);
+        assert_eq!(result.used_rows.len(), 2);
+        assert_eq!(result.excluded_rows, 4);
+        assert_eq!(result.used_rows[0].row_index, 1);
+        assert_eq!(result.used_rows[1].row_index, 2);
+    }
+
+    #[test]
+    fn read_fit_model_rows_rejects_stale_generation_before_query() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-stale-generation",
+            &["Y", "A"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_fit_model_stale_generation" (_row_id, Y, A) VALUES
+                (1, 1.0, 2.0);
+            "#,
+            1,
+        );
+        engine
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = 1 WHERE id = $1",
+                params!["fit-model-stale-generation"],
+            )
+            .expect("set generation");
+
+        let error = engine
+            .read_fit_model_rows("fit-model-stale-generation", 0, "Y", &["A".to_string()])
+            .expect_err("stale generation must fail");
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("generation")));
+    }
+
+    #[test]
+    fn read_fit_model_rows_rejects_missing_dataset() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+
+        let error = engine
+            .read_fit_model_rows("missing-dataset", 0, "Y", &["A".to_string()])
+            .expect_err("unknown dataset must fail");
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("unknown dataset"))
+        );
+    }
+
+    #[test]
+    fn read_fit_model_rows_rejects_unknown_column() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-unknown-column",
+            &["Y", "A"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_fit_model_unknown_column" (_row_id, Y, A) VALUES
+                (1, 1.0, 2.0);
+            "#,
+            1,
+        );
+
+        let error = engine
+            .read_fit_model_rows(
+                "fit-model-unknown-column",
+                0,
+                "Y",
+                &["A".to_string(), "missing".to_string()],
+            )
+            .expect_err("unknown predictor must fail");
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("unknown predictor"))
+        );
+    }
+
+    #[test]
+    fn read_fit_model_rows_rejects_unknown_response_column() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-unknown-response",
+            &["Y", "A"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_fit_model_unknown_response" (_row_id, Y, A) VALUES
+                (1, 1.0, 2.0);
+            "#,
+            1,
+        );
+
+        let error = engine
+            .read_fit_model_rows(
+                "fit-model-unknown-response",
+                0,
+                "missing_response",
+                &["A".to_string()],
+            )
+            .expect_err("unknown response must fail");
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("unknown response"))
+        );
+    }
+
+    #[test]
+    fn read_fit_model_rows_rejects_duplicate_response_and_predictor_column() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-duplicate-response",
+            &["Y", "A"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_fit_model_duplicate_response" (_row_id, Y, A) VALUES
+                (1, 1.0, 2.0);
+            "#,
+            1,
+        );
+
+        let error = engine
+            .read_fit_model_rows(
+                "fit-model-duplicate-response",
+                0,
+                "Y",
+                &["Y".to_string(), "A".to_string()],
+            )
+            .expect_err("response reuse must fail");
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("response") && message.contains("predictor"))
+        );
+    }
+
+    #[test]
+    fn read_fit_model_rows_rejects_non_continuous_modeling_columns() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-non-continuous",
+            &["Y", "A"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_fit_model_non_continuous" (_row_id, Y, A) VALUES
+                (1, 1.0, 2.0);
+            "#,
+            1,
+        );
+        engine
+            .conn()
+            .execute(
+                "UPDATE _meta_columns SET role = $1 WHERE dataset_id = $2 AND col_name = $3",
+                params!["nominal", "fit-model-non-continuous", "A"],
+            )
+            .expect("set role");
+
+        let error = engine
+            .read_fit_model_rows("fit-model-non-continuous", 0, "Y", &["A".to_string()])
+            .expect_err("non-continuous predictor must fail");
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("continuous")));
+    }
+
+    #[test]
+    fn read_fit_model_rows_rejects_non_continuous_response_column() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-non-continuous-response",
+            &["Y", "A"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_fit_model_non_continuous_response" (_row_id, Y, A) VALUES
+                (1, 1.0, 2.0);
+            "#,
+            1,
+        );
+        engine
+            .conn()
+            .execute(
+                "UPDATE _meta_columns SET role = $1 WHERE dataset_id = $2 AND col_name = $3",
+                params!["nominal", "fit-model-non-continuous-response", "Y"],
+            )
+            .expect("set role");
+
+        let error = engine
+            .read_fit_model_rows(
+                "fit-model-non-continuous-response",
+                0,
+                "Y",
+                &["A".to_string()],
+            )
+            .expect_err("non-continuous response must fail");
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("response") && message.contains("continuous"))
+        );
+    }
+
+    #[test]
+    fn fit_model_reader_selector_executes() {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_model_dataset(
+            &engine,
+            "fit-model-selector-smoke",
+            &["Y", "A"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_fit_model_selector_smoke" (_row_id, Y, A) VALUES
+                (1, 1.0, 2.0);
+            "#,
+            1,
+        );
+
+        let result = engine
+            .read_fit_model_rows("fit-model-selector-smoke", 0, "Y", &["A".to_string()])
+            .expect("selector smoke read should succeed");
+        assert_eq!(result.used_rows.len(), 1);
+    }
+
+    #[test]
+    fn read_fit_model_rows_term_projection_dedup_happens_after_term_resolution() {
+        let terms = vec![
+            FitModelTerm {
+                kind: FitModelTermKind::Main,
+                column_names: vec!["A".into()],
+                exponent: None,
+            },
+            FitModelTerm {
+                kind: FitModelTermKind::Main,
+                column_names: vec!["B".into()],
+                exponent: None,
+            },
+            FitModelTerm {
+                kind: FitModelTermKind::Interaction,
+                column_names: vec!["A".into(), "B".into()],
+                exponent: None,
+            },
+        ];
+        let resolved = crate::engine::fit_model::terms::resolve_terms(&terms).expect("terms");
+        let mut names = Vec::new();
+        for term in &resolved {
+            for name in term.column_names() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+        }
+        assert_eq!(names, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn read_fit_y_by_x_rows_maps_unknown_dataset_to_invalid_param() {
+        let engine = DuckDbEngine::new_in_memory().unwrap();
+
+        let error = engine
+            .read_fit_y_by_x_rows(
+                "missing-dataset",
+                "response",
+                "factor",
+                FitYByXPersonality::Oneway,
+            )
+            .expect_err("unknown dataset must fail");
+
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("unknown dataset"))
+        );
+    }
+
+    #[test]
+    fn read_fit_y_by_x_rows_keeps_decimal_and_hugeint_bivariate_rows() {
+        let engine = DuckDbEngine::new_in_memory().unwrap();
+        seed_fit_y_by_x_dataset(
+            &engine,
+            "fit-wide-bivariate",
+            &["response", "factor"],
+            &["DECIMAL(18,2)", "HUGEINT"],
+            r#"
+            INSERT INTO "dataset_fit_wide_bivariate" (_row_id, response, factor) VALUES
+                (1, CAST(12.50 AS DECIMAL(18,2)), CAST(9223372036854775808 AS HUGEINT)),
+                (2, CAST(15.75 AS DECIMAL(18,2)), CAST(9223372036854775810 AS HUGEINT)),
+                (3, NULL, CAST(9223372036854775812 AS HUGEINT)),
+                (4, CAST(18.00 AS DECIMAL(18,2)), NULL);
+            "#,
+            4,
+        );
+
+        let result = engine
+            .read_fit_y_by_x_rows(
+                "fit-wide-bivariate",
+                "response",
+                "factor",
+                FitYByXPersonality::Bivariate,
+            )
+            .expect("fit y by x rows");
+
+        assert_eq!(result.source_rows, 4);
+        assert_eq!(
+            result.rows,
+            vec![
+                FitYByXRow::Bivariate {
+                    x: 9_223_372_036_854_775_808.0,
+                    y: 12.5,
+                },
+                FitYByXRow::Bivariate {
+                    x: 9_223_372_036_854_775_810.0,
+                    y: 15.75,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn read_fit_y_by_x_rows_uses_plain_wide_integer_labels_for_nominal_oneway() {
+        let engine = DuckDbEngine::new_in_memory().unwrap();
+        seed_fit_y_by_x_dataset(
+            &engine,
+            "fit-signed-wide-oneway",
+            &["response", "factor"],
+            &["DOUBLE", "HUGEINT"],
+            r#"
+            INSERT INTO "dataset_fit_signed_wide_oneway" (_row_id, response, factor) VALUES
+                (1, CAST(10.25 AS DOUBLE), CAST(-9223372036854775809 AS HUGEINT)),
+                (2, CAST(12.50 AS DOUBLE), CAST(9223372036854775808 AS HUGEINT)),
+                (3, NULL, CAST(-9223372036854775809 AS HUGEINT)),
+                (4, CAST(8.75 AS DOUBLE), NULL),
+                (5, CAST(9.50 AS DOUBLE), CAST(9223372036854775808 AS HUGEINT));
+            "#,
+            5,
+        );
+        engine
+            .conn()
+            .execute(
+                "UPDATE _meta_columns SET role = $1 WHERE dataset_id = $2 AND col_name = $3",
+                params!["nominal", "fit-signed-wide-oneway", "factor"],
+            )
+            .expect("set nominal role");
+
+        let result = engine
+            .read_fit_y_by_x_rows(
+                "fit-signed-wide-oneway",
+                "response",
+                "factor",
+                FitYByXPersonality::Oneway,
+            )
+            .expect("fit y by x rows");
+
+        assert_eq!(result.source_rows, 5);
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(
+            result.rows,
+            vec![
+                FitYByXRow::Oneway {
+                    y: 10.25,
+                    group: "-9223372036854775809".into(),
+                },
+                FitYByXRow::Oneway {
+                    y: 12.5,
+                    group: "9223372036854775808".into(),
+                },
+                FitYByXRow::Oneway {
+                    y: 9.5,
+                    group: "9223372036854775808".into(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -8125,8 +9873,10 @@ mod tests {
             elements: vec![GraphElementRequest {
                 kind: "points".into(),
                 summary_stat: "none".into(),
+                correlation_method: None,
             }],
             sampling: GraphSampling::Sample { size: 32, seed: 7 },
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
             viewport: GraphViewport {
                 width: 1280,
                 height: 720,
@@ -8209,8 +9959,10 @@ mod tests {
             elements: vec![GraphElementRequest {
                 kind: "points".into(),
                 summary_stat: "none".into(),
+                correlation_method: None,
             }],
             sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
             viewport: GraphViewport {
                 width: 1280,
                 height: 720,
@@ -8281,6 +10033,141 @@ mod tests {
                 serde_json::json!(20)
             ]
         );
+    }
+
+    #[test]
+    fn correlation_matrix_cancellation_during_row_scan_returns_no_partial_packet() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "corr-cancel-row-scan",
+            "Correlation Cancel Row Scan",
+            &["a".into(), "b".into()],
+            &["DOUBLE".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_corr_cancel_row_scan\" (_row_id, a, b)
+                 VALUES
+                 (1, 1.0, 2.0),
+                 (2, 2.0, 4.0),
+                 (3, 3.0, 6.0),
+                 (4, 4.0, 8.0)",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 4 WHERE id = $1",
+                params!["corr-cancel-row-scan"],
+            )
+            .unwrap();
+
+        let request = GraphDataRequest {
+            request_id: "request-corr-cancel-row-scan".into(),
+            dataset_id: "corr-cancel-row-scan".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "multiX0".into(),
+                    column: "a".into(),
+                },
+                GraphFieldBinding {
+                    role: "multiX1".into(),
+                    column: "b".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "correlationMatrix".into(),
+                summary_stat: "none".into(),
+                correlation_method: Some(crate::models::graph_data::CorrelationMethod::Pearson),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1200,
+                height: 700,
+            },
+        };
+
+        let mut checks = 0usize;
+        let (packets, cancelled) = db
+            .collect_graph_aggregate_packets_with_cancel(&request, || {
+                checks = checks.saturating_add(1);
+                Ok(checks >= 2)
+            })
+            .unwrap();
+
+        assert!(cancelled);
+        assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn collect_graph_aggregate_packets_with_cancel_rejects_stale_generation_for_correlation_only() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "corr-stale-aggregate-only",
+            "Correlation Stale Aggregate Only",
+            &["a".into(), "b".into()],
+            &["DOUBLE".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_corr_stale_aggregate_only\" (_row_id, a, b)
+                 VALUES
+                 (1, 1.0, 2.0),
+                 (2, 2.0, 4.0),
+                 (3, 3.0, 6.0),
+                 (4, 4.0, 8.0)",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 4, generation = 1 WHERE id = $1",
+                params!["corr-stale-aggregate-only"],
+            )
+            .unwrap();
+
+        let request = GraphDataRequest {
+            request_id: "request-corr-stale-aggregate-only".into(),
+            dataset_id: "corr-stale-aggregate-only".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "multiX0".into(),
+                    column: "a".into(),
+                },
+                GraphFieldBinding {
+                    role: "multiX1".into(),
+                    column: "b".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "correlationMatrix".into(),
+                summary_stat: "none".into(),
+                correlation_method: Some(crate::models::graph_data::CorrelationMethod::Pearson),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1200,
+                height: 700,
+            },
+        };
+
+        let error = db
+            .collect_graph_aggregate_packets_with_cancel(&request, || Ok(false))
+            .expect_err("stale generation must fail");
+        assert!(matches!(
+            error,
+            AppError::InvalidParam(message) if message.contains("stale dataset generation")
+        ));
     }
 
     #[test]
@@ -8403,9 +10290,11 @@ mod tests {
         db.seed_benchmark_table("benchmark-id", "Benchmark", 10, 2)
             .unwrap();
         assert_eq!(db.get_dataset_generation("benchmark-id").unwrap(), 0);
+        assert_eq!(db.get_dataset_meta("benchmark-id").unwrap().generation, 0);
 
         db.update_cell("benchmark-id", 1, "value_1", "99").unwrap();
         assert_eq!(db.get_dataset_generation("benchmark-id").unwrap(), 1);
+        assert_eq!(db.get_dataset_meta("benchmark-id").unwrap().generation, 1);
         assert!(matches!(
             db.get_dataset_generation("missing").unwrap_err(),
             AppError::InvalidParam(_)
@@ -8903,6 +10792,220 @@ mod tests {
             db.get_dataset_generation("history-add-columns-id").unwrap(),
             3
         );
+    }
+
+    #[test]
+    fn valued_columns_change_set_restores_values_as_one_history_action() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-columns-id",
+            "History Valued Columns",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO dataset_history_valued_columns_id VALUES
+                    (1, 'one'), (2, 'two'), (3, 'three');
+                 UPDATE _meta_datasets SET row_count = 3 WHERE id = 'history-valued-columns-id';",
+            )
+            .unwrap();
+
+        let columns = vec![
+            ValuedColumn {
+                name: "Predicted".into(),
+                column_type: "DOUBLE".into(),
+                values: vec![(1, Some(10.0)), (3, Some(30.0))],
+            },
+            ValuedColumn {
+                name: "Residual".into(),
+                column_type: "DOUBLE".into(),
+                values: vec![(1, Some(-1.0)), (3, Some(1.0))],
+            },
+        ];
+        let (change_set_id, generation) = db
+            .add_valued_columns_with_change_set("history-valued-columns-id", &columns, 0)
+            .unwrap();
+
+        assert_eq!(generation, 1);
+        assert_eq!(
+            db.get_dataset_generation("history-valued-columns-id")
+                .unwrap(),
+            1
+        );
+        let values: Vec<(u64, Option<f64>, Option<f64>)> = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, Predicted, Residual
+                 FROM dataset_history_valued_columns_id ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![
+                (1, Some(10.0), Some(-1.0)),
+                (2, None, None),
+                (3, Some(30.0), Some(1.0))
+            ]
+        );
+
+        db.apply_change_set(&change_set_id, true).unwrap();
+        assert_eq!(
+            db.get_user_columns("history-valued-columns-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+
+        db.apply_change_set(&change_set_id, false).unwrap();
+        let restored: (Option<f64>, Option<f64>) = db
+            .conn()
+            .query_row(
+                "SELECT Predicted, Residual FROM dataset_history_valued_columns_id WHERE _row_id = 3",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(restored, (Some(30.0), Some(1.0)));
+        assert_eq!(
+            db.get_dataset_generation("history-valued-columns-id")
+                .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn valued_columns_reject_stale_generation_without_mutation() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-stale-id",
+            "History Valued Stale",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+
+        let error = db
+            .add_valued_columns_with_change_set(
+                "history-valued-stale-id",
+                &[ValuedColumn {
+                    name: "Predicted".into(),
+                    column_type: "DOUBLE".into(),
+                    values: vec![],
+                }],
+                1,
+            )
+            .expect_err("stale generation must fail");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("generation")));
+        assert_eq!(
+            db.get_user_columns("history-valued-stale-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+        assert_eq!(
+            db.get_dataset_generation("history-valued-stale-id")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn valued_columns_apply_one_suffix_to_the_whole_conflicting_group() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-suffix-id",
+            "History Valued Suffix",
+            &["Predicted".into()],
+            &["DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.add_valued_columns_with_change_set(
+            "history-valued-suffix-id",
+            &[
+                ValuedColumn {
+                    name: "Predicted".into(),
+                    column_type: "DOUBLE".into(),
+                    values: vec![],
+                },
+                ValuedColumn {
+                    name: "Residual".into(),
+                    column_type: "DOUBLE".into(),
+                    values: vec![],
+                },
+            ],
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.get_user_columns("history-valued-suffix-id")
+                .unwrap()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["Predicted", "Predicted-2", "Residual-2"]
+        );
+    }
+
+    #[test]
+    fn valued_columns_roll_back_all_changes_when_a_row_is_missing() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-rollback-id",
+            "History Valued Rollback",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO dataset_history_valued_rollback_id VALUES (1, 'kept')",
+                [],
+            )
+            .unwrap();
+
+        let error = db
+            .add_valued_columns_with_change_set(
+                "history-valued-rollback-id",
+                &[
+                    ValuedColumn {
+                        name: "Predicted".into(),
+                        column_type: "DOUBLE".into(),
+                        values: vec![(1, Some(10.0))],
+                    },
+                    ValuedColumn {
+                        name: "Residual".into(),
+                        column_type: "DOUBLE".into(),
+                        values: vec![(99, Some(1.0))],
+                    },
+                ],
+                0,
+            )
+            .expect_err("unknown row must roll back");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("row ID")));
+        assert_eq!(
+            db.get_user_columns("history-valued-rollback-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+        assert_eq!(
+            db.get_dataset_generation("history-valued-rollback-id")
+                .unwrap(),
+            0
+        );
+        let history_count: u64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _history_change_sets WHERE dataset_id = 'history-valued-rollback-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_count, 0);
     }
 
     #[test]
@@ -10452,6 +12555,118 @@ mod tests {
             .unwrap();
 
         assert!(db.get_dataset_meta(dataset_id).is_err());
+        assert!(!dataset_table_exists(
+            &db,
+            &format!("dataset_{}", dataset_id.replace('-', "_"))
+        ));
+    }
+
+    #[test]
+    fn create_table_from_rows_persists_manual_dataset_and_typed_values() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        let request = CreateTableFromRowsRequest {
+            name: "Rows Typed".to_string(),
+            column_names: vec!["label".to_string(), "value".to_string()],
+            column_types: vec!["VARCHAR".to_string(), "DOUBLE".to_string()],
+            rows: vec![
+                vec![json!("alpha"), json!(1.5)],
+                vec![serde_json::Value::Null, json!(2.25)],
+                vec![json!("gamma"), serde_json::Value::Null],
+            ],
+        };
+
+        let meta = db
+            .create_table_from_rows("rows-typed-id", &request)
+            .unwrap();
+
+        assert_eq!(meta.source_type, "manual");
+        assert_eq!(meta.row_count, 3);
+        assert_eq!(meta.col_count, 2);
+
+        let table = db.query_table("rows-typed-id", 0, 10, None, None).unwrap();
+        assert_eq!(table.columns, vec!["_row_id", "label", "value"]);
+        assert_eq!(
+            table.column_types,
+            vec![
+                "INTEGER".to_string(),
+                "VARCHAR".to_string(),
+                "DOUBLE".to_string()
+            ]
+        );
+        assert_eq!(table.rows.len(), 3);
+        assert_eq!(
+            table.rows,
+            vec![
+                vec![json!(1), json!("alpha"), json!(1.5)],
+                vec![json!(2), serde_json::Value::Null, json!(2.25)],
+                vec![json!(3), json!("gamma"), serde_json::Value::Null],
+            ]
+        );
+    }
+
+    #[test]
+    fn create_table_from_rows_rejects_mismatched_row_width_without_metadata_residue() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        let request = CreateTableFromRowsRequest {
+            name: "Width Reject".to_string(),
+            column_names: vec!["left".to_string(), "right".to_string()],
+            column_types: vec!["VARCHAR".to_string(), "DOUBLE".to_string()],
+            rows: vec![vec![json!("ok"), json!(1.0)], vec![json!("missing")]],
+        };
+
+        let dataset_id = "rows-width-reject-id";
+        let error = db.create_table_from_rows(dataset_id, &request).unwrap_err();
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(metadata_row_count(&db, dataset_id), 0);
+        assert!(!dataset_table_exists(
+            &db,
+            &format!("dataset_{}", dataset_id.replace('-', "_"))
+        ));
+    }
+
+    #[test]
+    fn create_table_from_rows_rejects_nested_json_values_without_metadata_residue() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+
+        let request = CreateTableFromRowsRequest {
+            name: "Nested Reject".to_string(),
+            column_names: vec!["label".to_string(), "value".to_string()],
+            column_types: vec!["VARCHAR".to_string(), "DOUBLE".to_string()],
+            rows: vec![
+                vec![json!("ok"), json!(1.0)],
+                vec![json!({ "nested": true }), json!(2.0)],
+            ],
+        };
+
+        let dataset_id = "rows-nested-reject-id";
+        let error = db.create_table_from_rows(dataset_id, &request).unwrap_err();
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(metadata_row_count(&db, dataset_id), 0);
+        assert!(!dataset_table_exists(
+            &db,
+            &format!("dataset_{}", dataset_id.replace('-', "_"))
+        ));
+    }
+
+    #[test]
+    fn create_table_from_rows_rejects_type_incompatible_scalar_without_metadata_residue() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        let request = CreateTableFromRowsRequest {
+            name: "Type Reject".to_string(),
+            column_names: vec!["value".to_string()],
+            column_types: vec!["DOUBLE".to_string()],
+            rows: vec![vec![json!("not-a-number")]],
+        };
+
+        let dataset_id = "rows-type-reject-id";
+        let error = db.create_table_from_rows(dataset_id, &request).unwrap_err();
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(metadata_row_count(&db, dataset_id), 0);
         assert!(!dataset_table_exists(
             &db,
             &format!("dataset_{}", dataset_id.replace('-', "_"))

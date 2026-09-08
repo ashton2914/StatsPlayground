@@ -5,6 +5,10 @@ import { EXTRA_DEFS, EXTRA_KINDS, extraKindLabel, extraFieldLabel, type ExtraKin
 import { useDataStore } from "@/stores/useDataStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { dataService } from "@/services/dataService";
+import {
+  resolveProjectBasenameForKind,
+  type ProjectBasenameValidationError,
+} from "@/utils/projectFileNaming";
 
 /**
  * Per-column "additional properties" bag (same shape as ColumnDisplayProps.extras).
@@ -73,14 +77,30 @@ function buildHeaderIndex(t: TFunction): Map<string, FlatField> {
   return idx;
 }
 
-/** Suffix `name` with " (n)" until it doesn't collide with `existing`. */
-function uniqueName(name: string, existing: string[]): string {
-  if (!existing.includes(name)) return name;
-  for (let i = 2; i < 1000; i++) {
-    const cand = `${name} (${i})`;
-    if (!existing.includes(cand)) return cand;
+function invalidNameMessage(t: TFunction, code: ProjectBasenameValidationError): string {
+  if (code === "empty") {
+    return t("alert.invalidName.empty", {
+      defaultValue: "Name cannot be empty.",
+    });
   }
-  return name;
+  if (code === "invalidChars") {
+    return t("alert.invalidName.invalidChars", {
+      defaultValue: "Name contains invalid characters: / \\ : * ? \" < > |",
+    });
+  }
+  if (code === "edgeDots") {
+    return t("alert.invalidName.edgeDots", {
+      defaultValue: "Name cannot start or end with a dot or space.",
+    });
+  }
+  if (code === "controlChars") {
+    return t("alert.invalidName.controlChars", {
+      defaultValue: "Name contains control characters.",
+    });
+  }
+  return t("alert.invalidName.reserved", {
+    defaultValue: "Name is reserved by Windows and cannot be used.",
+  });
 }
 
 /**
@@ -198,28 +218,50 @@ export function ManageExtrasDialog({
     const baseName = sourceDatasetName
       ? t("extras.exportBaseName", { name: sourceDatasetName })
       : t("extras.exportBaseNameDefault");
-    const proposed = window.prompt(t("extras.exportPromptTitle"), uniqueName(baseName, datasets.map((d) => d.name)));
+    const suggested = resolveProjectBasenameForKind(baseName, "table", datasets.map((dataset) => dataset.name));
+    const proposed = window.prompt(t("extras.exportPromptTitle"), suggested.error ? baseName : suggested.basename);
     if (!proposed) return;
-    const name = proposed.trim();
-    if (!name) return;
-    if (datasets.some((d) => d.name === name)) {
-      setStatusMsg({ text: t("extras.exportNameTaken", { name }), tone: "error" });
+    const resolved = resolveProjectBasenameForKind(proposed, "table", datasets.map((dataset) => dataset.name));
+    if (resolved.error === "wrongExtension") {
+      setStatusMsg({
+        text: t("extras.exportWrongExtension", {
+          defaultValue: "Use the {{expected}} extension for table names (not {{actual}}).",
+          expected: resolved.expectedExtension,
+          actual: resolved.actualExtension,
+        }),
+        tone: "error",
+      });
       return;
     }
+    if (resolved.error) {
+      setStatusMsg({ text: invalidNameMessage(t, resolved.error), tone: "error" });
+      return;
+    }
+    const name = resolved.basename;
     try {
       const colNames = [t("extras.columnNameHeader"), ...flatFields.map((f) => f.header)];
       const colTypes = ["VARCHAR", ...flatFields.map((f) => (f.type === "number" ? "DOUBLE" : "VARCHAR"))];
-      const rows: string[][] = selectedColIndices.map((ci) => [
-        cols[ci],
-        ...flatFields.map((f) => getCellValue(ci, f)),
-      ]);
-      await dataService.createTable(name, colNames, colTypes);
-      const meta = (await dataService.listDatasets()).find((d) => d.name === name);
-      if (!meta) throw new Error(t("extras.createdMissing"));
-      // Bulk insert via paste — startRow=0 / startCol=0 / no header row.
-      await dataService.pasteAtPosition(meta.id, 0, 0, rows, null, colTypes);
+      const rows = selectedColIndices.map((ci) => {
+        const payload: Array<string | number | null> = [cols[ci]];
+        for (const field of flatFields) {
+          const raw = getCellValue(ci, field);
+          if (field.type === "number") {
+            const numeric = raw === "" ? null : Number(raw);
+            payload.push(Number.isFinite(numeric) ? numeric : null);
+          } else {
+            payload.push(raw);
+          }
+        }
+        return payload;
+      });
+      const created = await dataService.createTableFromRows({
+        name,
+        columnNames: colNames,
+        columnTypes: colTypes,
+        rows,
+      });
       await refreshDatasets();
-      setStatusMsg({ text: t("extras.exportSuccess", { name, rows: rows.length }), tone: "info" });
+      setStatusMsg({ text: t("extras.exportSuccess", { name: created.name, rows: rows.length }), tone: "info" });
     } catch (e) {
       setStatusMsg({ text: t("extras.exportFailed", { err: String(e) }), tone: "error" });
     }

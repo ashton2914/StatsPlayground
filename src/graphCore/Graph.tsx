@@ -5,19 +5,28 @@
  * 自动响应窗口尺寸变化与主题变化。
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
 import type { GraphSpec, GraphData } from "./types";
 import { withoutGraphAnimation } from "./animation";
 import { getGraphTheme } from "./theme";
 import { buildGraph, type ScatterPointPick } from "./transform";
-import { RawPointsLayer } from "./RawPointsLayer";
-import { hitTestBrush as hitTestRawBrush, hitTestPoint as hitTestRawPoint, type RawPointPixelIndex } from "./rawPoints";
-import { bigintToScatterPointPick } from "./rawPoints";
-import { applyZrenderCanvasZIndices, withInterleavedGraphLayers } from "./layers";
+import { withInterleavedGraphLayers } from "./layers";
 import { Chart3D } from "./Chart3D";
+import { build3DPanels } from "./threeD";
+import { buildLinkedAxisRangePatch, type LinkedAxisRangePatch } from "./linkedAxisRange";
 import type { GraphDataFrame } from "@/types/graphData";
 import { useThemeStore } from "@/stores/useThemeStore";
+
+export interface GraphPanelSeriesContext {
+  panelIndex: number;
+  title: string;
+  option: Readonly<Record<string, unknown>>;
+}
+
+export type GraphPanelOptionFactory = (
+  context: GraphPanelSeriesContext,
+) => Record<string, unknown>;
 
 interface GraphProps {
   spec: GraphSpec;
@@ -28,6 +37,7 @@ interface GraphProps {
   minPanelWidth?: number;
   /** 单个面板最小高 */
   minPanelHeight?: number;
+  panelLayout?: "scroll" | "fit";
   /**
    * Optional per-column user-defined value ordering. Keyed by column name;
    * each entry lists the categorical values in the order they should appear
@@ -101,9 +111,10 @@ interface GraphProps {
    * treated as "clear"). Only fired when `brushMode` is true.
    */
   onBrushSelect?: (picks: ScatterPointPick[]) => void;
+  optionFactory?: GraphPanelOptionFactory;
 }
 
-export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPanelHeight = 240, valueOrders, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect }: GraphProps) {
+export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPanelHeight = 240, panelLayout = "scroll", valueOrders, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect, optionFactory }: GraphProps) {
   // 订阅主题变化以触发重渲染
   const themeMode = useThemeStore((s) => s.mode);
 
@@ -111,20 +122,63 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
   // 3D 模式只显示 3D 图层（surface / scatter3d）；无 3D 图层时由
   // Chart3D 显示提示。
   const use3DScene = !!spec.threeD;
+  const fitPanels = panelLayout === "fit";
+  const gridMinPanelWidth = fitPanels ? 0 : minPanelWidth;
+  const gridMinPanelHeight = fitPanels ? 0 : minPanelHeight;
 
   const built = useMemo(() => {
-    // 3D 场景走独立的自绘渲染器，跳过昂贵的 2D 面板构建。
     if (use3DScene) return { cols: 1, rows: 1, panels: [] as ReturnType<typeof buildGraph>["panels"] };
     const theme = getGraphTheme();
-    return buildGraph(spec, data, theme, valueOrders, frame ?? undefined);
+    const graph = buildGraph(spec, data, theme, valueOrders, frame ?? undefined);
+    if (!optionFactory) return graph;
+    return {
+      ...graph,
+      panels: graph.panels.map((panel, panelIndex) => ({
+        ...panel,
+        option: optionFactory({
+          panelIndex,
+          title: panel.title,
+          option: panel.option,
+        }),
+      })),
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec, data, themeMode, valueOrders, frame]);
+  }, [spec, data, themeMode, valueOrders, frame, optionFactory]);
+
+  const built3D = useMemo(
+    () => use3DScene
+      ? build3DPanels(spec, data, getGraphTheme(), frame ?? undefined, valueOrders)
+      : null,
+    [spec, data, frame, themeMode, use3DScene, valueOrders],
+  );
 
   // 3D 场景：hooks 之后再分支返回，保证 hooks 调用顺序稳定。
   if (use3DScene) {
     return (
-      <div className={`gc-graph${className ? " " + className : ""}`} style={{ width: "100%", height: "100%" }}>
-        <Chart3D spec={spec} data={data} frame={frame ?? undefined} />
+      <div
+        className={`gc-graph${className ? " " + className : ""}`}
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${built3D?.cols ?? 1}, minmax(${gridMinPanelWidth}px, 1fr))`,
+          gridTemplateRows: `repeat(${built3D?.rows ?? 1}, minmax(${gridMinPanelHeight}px, 1fr))`,
+          gap: 8,
+          boxSizing: "border-box",
+          width: "100%",
+          height: "100%",
+          overflow: fitPanels ? "visible" : "auto",
+          padding: 4,
+        }}
+      >
+        {built3D?.panels.map((panel) => (
+          <Chart3D
+            key={JSON.stringify([panel.groupXValue, panel.groupYValue])}
+            spec={spec}
+            data={data}
+            built={panel}
+            title={panel.title}
+            minHeight={gridMinPanelHeight}
+          />
+        ))}
       </div>
     );
   }
@@ -134,18 +188,19 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
       className={`gc-graph${className ? " " + className : ""}`}
       style={{
         display: "grid",
-        gridTemplateColumns: `repeat(${built.cols}, minmax(${minPanelWidth}px, 1fr))`,
+        gridTemplateColumns: `repeat(${built.cols}, minmax(${gridMinPanelWidth}px, 1fr))`,
         // Explicit row count is required so Group Y (vertical faceting)
         // actually stacks panels into N rows — without this, the grid
         // falls back to a single implicit row and panels reflow into the
         // X axis only. minmax() keeps each row from collapsing below the
         // per-panel minimum height while still letting the grid grow to
         // fill the available space.
-        gridTemplateRows: `repeat(${built.rows}, minmax(${minPanelHeight}px, 1fr))`,
+        gridTemplateRows: `repeat(${built.rows}, minmax(${gridMinPanelHeight}px, 1fr))`,
         gap: 8,
+        boxSizing: "border-box",
         width: "100%",
         height: "100%",
-        overflow: "auto",
+        overflow: fitPanels ? "visible" : "auto",
         padding: 4,
       }}
     >
@@ -154,8 +209,7 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
           key={i}
           title={p.title}
           option={p.option}
-          rawPoints={p.rawPoints}
-          minHeight={minPanelHeight}
+          minHeight={gridMinPanelHeight}
           onYAxisDblClick={onYAxisDblClick}
           onXAxisDblClick={onXAxisDblClick}
           onAxisRangeChange={onAxisRangeChange}
@@ -172,7 +226,6 @@ export function Graph({ spec, data, frame, className, minPanelWidth = 320, minPa
 interface GraphPanelProps {
   title: string;
   option: Record<string, unknown>;
-  rawPoints: ReturnType<typeof buildGraph>["panels"][number]["rawPoints"];
   minHeight: number;
   onYAxisDblClick?: () => void;
   onXAxisDblClick?: () => void;
@@ -183,12 +236,10 @@ interface GraphPanelProps {
   onBrushSelect?: (picks: ScatterPointPick[]) => void;
 }
 
-function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect }: GraphPanelProps) {
+function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick, onAxisRangeChange, onAxisContextMenu, onPointClick, brushMode, onBrushSelect }: GraphPanelProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const chartHostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
-  const rawIndexRef = useRef<RawPointPixelIndex | null>(null);
-  const [chart, setChart] = useState<echarts.ECharts | null>(null);
   // Keep the latest callbacks in refs so the Zrender dblclick handler
   // (which we register exactly once on mount) always sees the freshest
   // closure without forcing a re-bind on every prop change.
@@ -218,15 +269,8 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
     if (!panelRef.current || !chartHostRef.current) return;
     const inst = echarts.init(chartHostRef.current, undefined, { renderer: "canvas" });
     chartRef.current = inst;
-    setChart(inst);
     const ro = new ResizeObserver(() => inst.resize());
     ro.observe(panelRef.current);
-    const syncLayerZIndices = () => {
-      const painter = (inst as unknown as { getZr?: () => { painter?: { _layers?: Record<string, { dom?: { style?: { zIndex?: string } } }> } } })
-        .getZr?.()
-        ?.painter;
-      applyZrenderCanvasZIndices(painter?._layers);
-    };
 
     // ----- Rubber-band brush overlay ---------------------------------
     // A transparent abs-positioned div painted over the ECharts canvas
@@ -297,7 +341,6 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
     // first; only fall back to the geometric strip if both axis hit
     // tests fail — then prefer Y (the historical default).
     const zr = inst.getZr();
-    zr.on("rendered", syncLayerZIndices);
     const zrHandler = (e: { offsetX: number; offsetY: number }) => {
       const yCb = onYAxisDblClickRef.current;
       const xCb = onXAxisDblClickRef.current;
@@ -359,19 +402,6 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
     const onSeriesClick = (params: any) => {
       const cb = onPointClickRef.current;
       if (!cb) return;
-      const rawIndex = rawIndexRef.current;
-      const offsetX = Number(params?.event?.offsetX);
-      const offsetY = Number(params?.event?.offsetY);
-      if (rawIndex && Number.isFinite(offsetX) && Number.isFinite(offsetY)) {
-        const hit = hitTestRawPoint(rawIndex, offsetX, offsetY);
-        if (hit) {
-          const pick = bigintToScatterPointPick(hit.topmost.rowId, hit.topmost.colName);
-          if (pick) {
-            cb(pick);
-            return;
-          }
-        }
-      }
       if (params?.componentType !== "series") return;
       if (params?.seriesType !== "scatter") return;
       const item = params?.data as { __pick?: ScatterPointPick } | unknown;
@@ -612,7 +642,7 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
     // bounds. `lazyUpdate` + `silent` skip the dispatch/render work
     // ECharts does for tooltip events we don't care about during a
     // drag.
-    let pendingPatch: { xAxis?: Record<string, unknown>; yAxis?: Record<string, unknown> } | null = null;
+    let pendingPatch: { xAxis?: LinkedAxisRangePatch; yAxis?: LinkedAxisRangePatch } | null = null;
     let scheduledFrame = 0;
     const flushPatch = () => {
       scheduledFrame = 0;
@@ -635,7 +665,7 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
         { lazyUpdate: true, silent: true },
       );
     };
-    const schedulePatch = (p: { xAxis?: Record<string, unknown>; yAxis?: Record<string, unknown> }) => {
+    const schedulePatch = (p: { xAxis?: LinkedAxisRangePatch; yAxis?: LinkedAxisRangePatch }) => {
       pendingPatch = p;
       if (!scheduledFrame) scheduledFrame = requestAnimationFrame(flushPatch);
     };
@@ -753,7 +783,7 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
       // OPPOSITE end stays anchored. This is what makes outward drag
       // feel like "拉大 / stretch the graph outward" → fewer units
       // visible → zoom in.
-      const patch: { xAxis?: Record<string, unknown>; yAxis?: Record<string, unknown> } = {};
+      const patch: { xAxis?: LinkedAxisRangePatch; yAxis?: LinkedAxisRangePatch } = {};
       const isYMode = st.mode === "y-min" || st.mode === "y-max" || st.mode === "y-pan" || st.mode === "xy-pan";
       const isXMode = st.mode === "x-min" || st.mode === "x-max" || st.mode === "x-pan" || st.mode === "xy-pan";
       if (isYMode && st.startYMin !== undefined && st.startYMax !== undefined && st.yPxRange) {
@@ -779,11 +809,7 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
         // within [min, max] regardless of whether min lands on a
         // round grid line. This removes the snap-to-grid stepped feel
         // and gives smooth cursor-following motion.
-        patch.yAxis = {
-          min: newYMin,
-          max: newYMax,
-          scale: false,
-        };
+        patch.yAxis = buildLinkedAxisRangePatch(option, "y", newYMin, newYMax, { scale: false });
       }
       if (isXMode && st.startXMin !== undefined && st.startXMax !== undefined && st.xPxRange) {
         const xSpan = st.startXMax - st.startXMin;
@@ -801,11 +827,7 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
         }
         st.lastXMin = newXMin;
         st.lastXMax = newXMax;
-        patch.xAxis = {
-          min: newXMin,
-          max: newXMax,
-          scale: false,
-        };
+        patch.xAxis = buildLinkedAxisRangePatch(option, "x", newXMin, newXMax, { scale: false });
       }
       if (patch.xAxis || patch.yAxis) schedulePatch(patch);
     };
@@ -851,22 +873,9 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
         const maxX = Math.max(st.startPx, st.curPx);
         const minY = Math.min(st.startPy, st.curPy);
         const maxY = Math.max(st.startPy, st.curPy);
-        let picks: ScatterPointPick[];
-        if (maxX - minX < 2 && maxY - minY < 2) {
-          picks = [];
-        } else if (rawIndexRef.current) {
-          const raw = hitTestRawBrush(rawIndexRef.current, {
-            x1: st.startPx,
-            y1: st.startPy,
-            x2: st.curPx,
-            y2: st.curPy,
-          });
-          picks = raw
-            .map((pick) => bigintToScatterPointPick(pick.rowId, pick.colName))
-            .filter((pick): pick is ScatterPointPick => !!pick);
-        } else {
-          picks = legacyHitTestBrush(st.startPx, st.startPy, st.curPx, st.curPy);
-        }
+        const picks = maxX - minX < 2 && maxY - minY < 2
+          ? []
+          : legacyHitTestBrush(st.startPx, st.startPy, st.curPx, st.curPy);
         onBrushSelectRef.current?.(picks);
         return;
       }
@@ -959,10 +968,10 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
       // Apply live (rAF-coalesced), and remember the latest bounds so
       // the debounced commit can fire onAxisRangeChange once idle.
       if (which === "y") {
-        schedulePatch({ yAxis: { min: newMin, max: newMax } });
+        schedulePatch({ yAxis: buildLinkedAxisRangePatch(option, "y", newMin, newMax) });
         wheelLastBounds.y = { min: newMin, max: newMax };
       } else {
-        schedulePatch({ xAxis: { min: newMin, max: newMax } });
+        schedulePatch({ xAxis: buildLinkedAxisRangePatch(option, "x", newMin, newMax) });
         wheelLastBounds.x = { min: newMin, max: newMax };
       }
       if (wheelCommitTimer) window.clearTimeout(wheelCommitTimer);
@@ -989,7 +998,6 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
     window.addEventListener("mouseup", onWindowMouseUpSafety);
 
     return () => {
-      zr.off("rendered", syncLayerZIndices);
       zr.off("dblclick", zrHandler);
       inst.off("click", onSeriesClick);
       el.removeEventListener("pointerdown", onPointerDown);
@@ -1008,8 +1016,6 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
       ro.disconnect();
       inst.dispose();
       chartRef.current = null;
-      setChart(null);
-      rawIndexRef.current = null;
     };
   }, []);
 
@@ -1023,10 +1029,6 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
       ),
       true,
     );
-    const painter = (inst as unknown as { getZr?: () => { painter?: { _layers?: Record<string, { dom?: { style?: { zIndex?: string } } }> } } })
-      .getZr?.()
-      ?.painter;
-    applyZrenderCanvasZIndices(painter?._layers);
   }, [option]);
 
   // Right-click on an axis strip → open the axis context menu. Handled
@@ -1098,13 +1100,6 @@ function GraphPanel({ title, option, rawPoints, minHeight, onYAxisDblClick, onXA
       )}
       <div ref={panelRef} style={{ flex: 1, minHeight: 0, position: "relative" }} onContextMenu={handleAxisContextMenu}>
         <div ref={chartHostRef} style={{ position: "absolute", inset: 0 }} />
-        <RawPointsLayer
-          chart={chart}
-          descriptor={rawPoints}
-          onIndexChange={(index) => {
-            rawIndexRef.current = index;
-          }}
-        />
       </div>
     </div>
   );

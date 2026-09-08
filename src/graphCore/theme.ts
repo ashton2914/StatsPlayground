@@ -129,3 +129,16 @@ export function buildAxisCommon(theme: GraphTheme) {
     minorSplitLine: { show: false, lineStyle: { color: theme.gridLine, type: "dashed" as const } },
   };
 }
+
+export function buildCorrelationDivergingPalette(theme: GraphTheme): {
+  negative: string;
+  neutral: string;
+  positive: string;
+  unavailable: string;
+} {
+  const negative = theme.categorical[3] || "#d73027";
+  const neutral = theme.bgCanvas || "#f5f5f5";
+  const positive = theme.categorical[0] || theme.accent || "#4575b4";
+  const unavailable = theme.gridLineMajor || theme.gridLine || "#c9c9c9";
+  return { negative, neutral, positive, unavailable };
+}

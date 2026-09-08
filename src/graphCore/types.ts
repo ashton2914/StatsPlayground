@@ -17,6 +17,8 @@ export type FieldType =
 
 /** 数据字段引用 */
 export interface FieldRef {
+  /** Stable dataset-scoped identity. Missing only in legacy project files. */
+  columnId?: string;
   /** 列名，必须存在于数据源中 */
   name: string;
   /** 字段类型，用于决定坐标轴/编码方式 */
@@ -29,30 +31,20 @@ export type ElementKind =
   | "line"         // 折线
   | "bar"          // 柱状（含分组均值）
   | "heatmap"      // 热力图
+  | "correlationMatrix" // 相关矩阵热力图
   | "histogram"    // 直方图
+  | "normalCurve"  // 正态分布拟合曲线
   | "boxplot"      // 箱线
   | "smoother"     // 平滑曲线
   | "fitline"      // 拟合线（多项式 / 稳健 Cauchy + 置信区间 + 统计量）
   | "surface"      // 3D 曲面（仅 3D 模式；由 X/Y/Z 三通道构建）
+  | "contour3d"    // 3D 等高线（仅 3D 模式；由 X/Y/Z 三通道构建）
   | "scatter3d";   // 3D 散点（仅 3D 模式；由 X/Y/Z 三通道构建）
 
 /** 平滑器配置 */
 export interface SmootherOptions {
   /** 平滑窗口比例 0~1 */
   lambda?: number;
-}
-
-/** Optional typed-buffer raw-point overlay jitter controls.
- *
- * Default is `none` so every valid row maps directly through the affine/
- * category projector with no implicit random perturbation. When enabled,
- * jitter must be explicit and deterministic (`seeded`) so redraws, hit tests,
- * and regression digests stay stable.
- */
-export interface RawPointJitterOptions {
-  rawPointJitter?: "none" | "seeded";
-  rawPointJitterSeed?: number;
-  rawPointJitterAmplitudePx?: number;
 }
 
 /** 点的符号形状 */
@@ -289,7 +281,7 @@ export interface ChartElement {
   /** 元素是否启用 */
   enabled?: boolean;
   /** 元素特有选项 */
-  options?: SmootherOptions & RawPointJitterOptions & Record<string, unknown>;
+  options?: SmootherOptions & Record<string, unknown>;
 }
 
 /** 编码通道：将数据字段映射到视觉属性 */
@@ -322,6 +314,8 @@ export interface GraphSpec {
   datasetId?: string;
   /** 数据集名称（标题用） */
   datasetName?: string;
+  /** Transpose the completed chart visually without changing data roles. */
+  transpose?: boolean;
   /** 编码 */
   encoding: Encoding;
   /** 图形元素列表（按层叠绘） */

@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnDisplayProps,
+  ColumnDescriptor,
   CellPosition,
   CellUpdate,
   DatasetMeta,
+  CreateTableFromRowsRequest,
   SqlQueryResult,
   TableQueryParams,
   TableQueryResult,
@@ -69,6 +71,10 @@ export const dataService = {
   /** 创建空数据表 */
   createTable: (name: string, columnNames: string[], columnTypes: string[]) =>
     invoke<DatasetMeta>("create_table", { name, columnNames, columnTypes }),
+
+  /** 通过类型化行数据原子创建数据表 */
+  createTableFromRows: (request: CreateTableFromRowsRequest) =>
+    invoke<DatasetMeta>("create_table_from_rows", { request }),
 
   /** 添加空行 */
   addRow: (datasetId: string) => invoke<number>("add_row", { datasetId }),
@@ -246,6 +252,10 @@ export const dataService = {
   /** 获取列信息 */
   getColumns: (datasetId: string) =>
     invoke<[string, string][]>("get_columns", { datasetId }),
+
+  /** 获取带稳定 ID 的列描述符 */
+  getColumnDescriptors: (datasetId: string) =>
+    invoke<ColumnDescriptor[]>("get_column_descriptors", { datasetId }),
 
   /** 排序 */
   sortTable: (sourceId: string, sortCols: string[], sortOrders: string[], newName: string) =>

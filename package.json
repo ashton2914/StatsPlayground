@@ -7,8 +7,25 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "benchmark:scatter": "node scripts/runScatterBudget.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:analysis:typecheck": "tsc -p tests/tsconfig.analysis-typecheck.json",
+    "test:analysis:contracts": "tsx --tsconfig tsconfig.app.json tests/analysisKindRegistry.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisDocument.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisStore.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisSample.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisProjectContracts.test.ts && tsx --tsconfig tsconfig.app.json tests/folderStore.analysis.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysis.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysisLifecycle.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysisSample.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisExecution.test.ts",
+    "test:analysis:ui": "playwright test -c playwright-ct.config.ts tests/analysisShell.spec.tsx tests/analysisPresentation.spec.tsx tests/analysisView.spec.tsx",
+    "test:analysis:kinds": "tsx --tsconfig tsconfig.app.json tests/distributionAnalysisMigration.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionAnalysisAdapter.test.ts && tsx --tsconfig tsconfig.app.json tests/sampleAnalysisGraphExamples.test.ts && tsx --tsconfig tsconfig.app.json tests/transformAggregatePackets.test.ts",
+    "test:analysis": "npm run test:analysis:typecheck && npm run test:analysis:contracts && npm run test:analysis:kinds && npm run test:analysis:ui",
+    "test:fit-model": "tsx --tsconfig tsconfig.app.json tests/fitModelConstruct.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelConfig.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelDialog.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelStore.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelArchive.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelReportState.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelEquation.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelPrediction.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelProfiler.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelGraphAdapter.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelReport.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelSaveColumns.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelPrefill.test.ts && tsx --tsconfig tsconfig.app.json tests/fitModelLocaleParity.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceFitModel.test.ts && tsx --tsconfig tsconfig.app.json tests/folderStore.fitModel.test.ts",
+    "test:fit-model:ui": "playwright test -c playwright-ct.config.ts tests/e2e/FitModelReport.spec.tsx tests/e2e/FitModelProfiler.spec.tsx tests/e2e/FitModelSaveColumns.spec.tsx",
+    "test:distribution:typecheck": "tsc -p tests/tsconfig.contracts.json",
+    "test:distribution:contracts": "tsx --tsconfig tsconfig.app.json tests/distributionContracts.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionRunContract.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionArchive.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionIsolation.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionSnapshot.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionConfig.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionStore.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionReportState.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionLocale.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceDistribution.test.ts && tsx --tsconfig tsconfig.app.json tests/folderStore.distribution.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionGraphEmbedding.test.ts && tsx --tsconfig tsconfig.app.json tests/distributionAxisInteractions.test.ts",
+    "test:distribution:adapter": "tsx --tsconfig tsconfig.app.json tests/distributionGraphAdapter.test.ts",
+    "test:distribution:compatibility": "tsx --tsconfig tsconfig.app.json tests/distributionVisualCompatibility.test.ts",
+    "test:distribution:report": "tsx --tsconfig tsconfig.app.json tests/distributionReportWiring.test.ts",
+    "test:distribution:golden": "tsx --tsconfig tsconfig.app.json tests/distributionGolden.test.ts",
+    "test:distribution:blackbox": "tsx --tsconfig tsconfig.app.json tests/distributionBlackBox.test.ts",
+    "test:distribution:ui": "playwright test -c playwright-ct.config.ts tests/e2e/DistributionDialog.spec.tsx tests/e2e/DistributionWorkspace.spec.tsx tests/e2e/DistributionCharts.spec.tsx tests/e2e/DistributionDirectory.spec.tsx tests/e2e/ContinuousFitReport.spec.tsx",
+    "test:distribution": "npm run test:distribution:typecheck && npm run test:distribution:contracts && npm run test:distribution:compatibility && npm run test:distribution:adapter && npm run test:distribution:report && npm run test:distribution:golden && npm run test:distribution:blackbox && npm run test:distribution:ui"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "file:vendor/fortawesome-fontawesome-free-6.7.2.tgz",
@@ -22,15 +39,20 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-i18next": "^17.0.6",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zrender": "file:vendor/zrender-5.6.1.tgz",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@playwright/experimental-ct-react": "1.55.0",
+    "@playwright/test": "1.55.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^25.5.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.0.0",
+    "tsx": "4.20.5",
     "typescript": "~5.7.0",
     "vite": "^6.0.0"
   }

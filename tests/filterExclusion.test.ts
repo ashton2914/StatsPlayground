@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 
-import { applyFilters } from "../src/components/filter/filterEngine.ts";
+import {
+  applyFilters,
+  createInitialCategoricalRule,
+} from "../src/components/filter/filterEngine.ts";
 
 const data = {
   columns: ["category"],
@@ -24,6 +27,21 @@ assert.deepEqual(
     rule: { kind: "categorical", field, selected: ["A"], exclude: true },
   }])?.rows,
   [["B"], [null]],
+);
+
+assert.deepEqual(
+  createInitialCategoricalRule(
+    { name: "Build", type: "nominal" },
+    { columns: ["Build"], rows: [] },
+    "include",
+  ),
+  {
+    kind: "categorical",
+    field: { name: "Build", type: "nominal" },
+    selected: [],
+    exclude: true,
+  },
+  "schema-only graph data must seed a pass-through categorical filter",
 );
 
 console.log("filter-exclusion regression passed");

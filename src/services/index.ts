@@ -1,5 +1,8 @@
 export { dataService } from "./dataService";
 export { dataLinkService } from "./dataLinkService";
+export { fitModelService } from "./fitModelService";
+export { distributionService } from "./distributionService";
+export { fitYByXService } from "./fitYByXService";
 export { graphDataService } from "./graphDataService";
 export { statsService } from "./statsService";
 export { ioService } from "./ioService";

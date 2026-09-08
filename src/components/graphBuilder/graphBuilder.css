@@ -173,6 +173,10 @@
   overflow: hidden;
 }
 
+.gb-body-correlation {
+  overflow: auto;
+}
+
 /* Vertical splitter between gb-body columns. Mirror sp-cols-panel-splitter
    so all draggable dividers across the workspace look identical. */
 .gb-splitter {
@@ -538,12 +542,21 @@
   gap: 4px;
 }
 
+.gb-center-correlation {
+  min-width: 560px;
+}
+
 .gb-canvas-row {
   display: grid;
   grid-template-columns: 28px 1fr 28px;
   gap: 6px;
   min-height: 0;
   min-width: 0;
+}
+
+.gb-canvas-row-correlation {
+  min-width: 520px;
+  min-height: 420px;
 }
 
 .gb-canvas {
@@ -557,6 +570,11 @@
   min-height: 0;
   overflow: hidden;
   position: relative;
+}
+
+.gb-canvas-correlation {
+  min-width: 520px;
+  min-height: 420px;
 }
 
 .gb-canvas-overlay {
@@ -574,6 +592,61 @@
 .gb-canvas-overlay-error {
   color: var(--fg-danger);
   border: 1px solid color-mix(in srgb, var(--fg-danger) 40%, transparent);
+}
+
+.gb-canvas-overlay-warn {
+  color: var(--fg-accent);
+  border: 1px solid color-mix(in srgb, var(--fg-accent) 40%, transparent);
+}
+
+.gb-point-budget-notice {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 9px;
+  background-color: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--fg-primary) 14%, transparent);
+  color: var(--fg-primary);
+  font-size: 11px;
+}
+
+.gb-point-budget-notice > i {
+  color: var(--fg-accent);
+}
+
+.gb-point-budget-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.gb-point-budget-copy span {
+  color: var(--fg-muted);
+}
+
+.gb-point-budget-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 8px;
+  background-color: var(--fg-accent);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+.gb-point-budget-action:hover {
+  background-color: var(--fg-accent-hover);
 }
 
 .gb-empty {
@@ -1986,7 +2059,7 @@
    switch, but with text options ("2D" / "3D") so it needs wider slots. */
 .gb-dim-mode {
   --gb-dm-pad: 3px;
-  --gb-dm-opt-w: 30px;
+  --gb-dm-opt-w: 86px;
   position: relative;
   display: inline-flex;
   align-items: stretch;
@@ -2012,6 +2085,7 @@
 
 .gb-dim-mode-thumb-2d { left: var(--gb-dm-pad); }
 .gb-dim-mode-thumb-3d { left: calc(var(--gb-dm-pad) + var(--gb-dm-opt-w)); }
+.gb-dim-mode-thumb-multivariate { left: calc(var(--gb-dm-pad) + (var(--gb-dm-opt-w) * 2)); }
 
 .gb-dim-mode-opt {
   position: relative;
@@ -2038,5 +2112,23 @@
 .gb-dim-mode-opt:focus-visible {
   outline: 2px solid var(--fg-accent);
   outline-offset: 1px;
+}
+
+.gb-multivariate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gb-multivariate-chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--fg-primary);
+  font-size: 12px;
+  padding: 6px 10px;
 }
 

@@ -2,10 +2,18 @@
 node_modules/
 dist/
 *.local
+playwright/.cache/
+playwright-report/
+test-results/
 
 # ----- Rust / Cargo -----
-src-tauri/target/
+src-tauri/target*/
 .superpowers/
+
+# ----- Local test artifacts -----
+playwright/.cache/
+test-results/
+xumax-test/
 
 # ----- Tauri -----
 # DuckDB database files (user data, not version-controlled)
