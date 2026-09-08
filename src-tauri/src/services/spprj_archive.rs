@@ -4862,6 +4862,12 @@ mod tests {
             output_bindings: vec![],
             errors: vec![],
             parent_folder_id: parent_folder_id.map(str::to_string),
+            seed: None,
+            engine_version: None,
+            configuration_hash: None,
+            input_fingerprints: vec![],
+            output_fingerprints: vec![],
+            determinism_baseline_run_id: None,
         }
     }
 

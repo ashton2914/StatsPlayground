@@ -21,6 +21,7 @@ use crate::models::table::{
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
+use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprintColumn};
 
 /// DuckDB engine wrapper
 pub struct DuckDbEngine {
@@ -162,6 +163,56 @@ impl DuckDbEngine {
             .get(0)?;
         u64::try_from(generation)
             .map_err(|_| AppError::Database("dataset generation is negative".into()))
+    }
+
+    pub(crate) fn workflow_table_content_hash(
+        &self,
+        dataset_id: &str,
+        expected_generation: u64,
+    ) -> Result<String, AppError> {
+        let generation = self.get_dataset_generation(dataset_id)?;
+        if generation != expected_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {expected_generation}, found {generation}"
+            )));
+        }
+
+        let columns = self.get_user_columns(dataset_id)?;
+        let fingerprint_columns = columns
+            .iter()
+            .map(|(name, canonical_type)| TableFingerprintColumn {
+                name: name.clone(),
+                canonical_type: canonical_type.clone(),
+            })
+            .collect::<Vec<_>>();
+        let select_columns = columns
+            .iter()
+            .map(|(name, _)| Self::quote_identifier(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let query = if select_columns.is_empty() {
+            format!("SELECT \"_row_id\" FROM {table_name} ORDER BY \"_row_id\" ASC")
+        } else {
+            format!("SELECT {select_columns} FROM {table_name} ORDER BY \"_row_id\" ASC")
+        };
+        let mut statement = self.conn.prepare(&query)?;
+        let mut query_rows = statement.query([])?;
+        let mut rows = Vec::new();
+        while let Some(row) = query_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        if self.get_dataset_generation(dataset_id)? != expected_generation {
+            return Err(AppError::InvalidParam(format!(
+                "dataset {dataset_id} changed while fingerprinting"
+            )));
+        }
+        table_content_hash(&fingerprint_columns, &rows)
     }
 
     fn with_row_mutation<T>(
@@ -11763,6 +11814,46 @@ mod tests {
                 vec![json!(3), json!("gamma"), serde_json::Value::Null],
             ]
         );
+    }
+
+    #[test]
+    fn workflow_table_hash_uses_stable_rows_and_rejects_stale_generations() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        let dataset_id = "workflow-hash-id";
+        db.create_table_from_rows(
+            dataset_id,
+            &CreateTableFromRowsRequest {
+                name: "Workflow Hash".to_string(),
+                column_names: vec!["value".to_string()],
+                column_types: vec!["DOUBLE".to_string()],
+                rows: vec![vec![json!(2.0)], vec![json!(1.0)]],
+            },
+        )
+        .unwrap();
+        let generation = db.get_dataset_generation(dataset_id).unwrap();
+
+        let first = db
+            .workflow_table_content_hash(dataset_id, generation)
+            .unwrap();
+        assert_eq!(
+            first,
+            db.workflow_table_content_hash(dataset_id, generation)
+                .unwrap()
+        );
+
+        db.update_cells(
+            dataset_id,
+            &[CellUpdate {
+                row_id: 1,
+                column_name: "value".to_string(),
+                value: Some("3.0".to_string()),
+            }],
+        )
+        .unwrap();
+        let error = db
+            .workflow_table_content_hash(dataset_id, generation)
+            .unwrap_err();
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("stale dataset generation")));
     }
 
     #[test]

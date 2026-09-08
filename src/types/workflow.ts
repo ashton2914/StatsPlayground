@@ -259,6 +259,20 @@ export interface WorkflowOutputBinding {
   artifactDocumentId: string;
 }
 
+export interface WorkflowInputFingerprint {
+  slotId: string;
+  tableDocumentId: string;
+  generation: number;
+  schemaFingerprint: string;
+  contentHash: string;
+}
+
+export interface WorkflowOutputFingerprint {
+  declarationId: string;
+  artifactDocumentId: string;
+  contentHash: string;
+}
+
 export type WorkflowRunStatus =
   | "pending"
   | "running"
@@ -291,6 +305,12 @@ export interface WorkflowRun {
   outputBindings: WorkflowOutputBinding[];
   errors: WorkflowRunError[];
   parentFolderId?: string;
+  seed?: number;
+  engineVersion?: string;
+  configurationHash?: string;
+  inputFingerprints?: WorkflowInputFingerprint[];
+  outputFingerprints?: WorkflowOutputFingerprint[];
+  determinismBaselineRunId?: string;
 }
 
 export interface WorkflowEntryRef {

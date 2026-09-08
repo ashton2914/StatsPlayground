@@ -71,6 +71,20 @@ const run: WorkflowRun = {
   outputBindings: [],
   errors: [],
   parentFolderId: "folder-run-1",
+  seed: 142,
+  engineVersion: "stats-playground/1",
+  configurationHash: "configuration-hash",
+  inputFingerprints: [
+    {
+      slotId: "workflow-input-1",
+      tableDocumentId: "table-1",
+      generation: 7,
+      schemaFingerprint: "schema-hash",
+      contentHash: "input-content-hash",
+    },
+  ],
+  outputFingerprints: [],
+  determinismBaselineRunId: "run-0",
 };
 
 const manifestFields: ProjectWorkflowManifestFields = {
@@ -115,6 +129,8 @@ assert.equal(serialized.lineageGraph.nodes[0].nodeType, "artifact");
 assert.equal(serialized.workflowFiles[0].file, "workflow/workflow-1.spwf");
 assert.equal(serialized.logicalFolders[0].parentFolderId, "folder-workflow-1");
 assert.equal(serialized.workflowRuns[0].parentFolderId, "folder-run-1");
+assert.equal(serialized.workflowRuns[0].inputFingerprints[0].generation, 7);
+assert.equal(serialized.workflowRuns[0].configurationHash, "configuration-hash");
 assert.equal(
   serialized.workflow.inputSlots[0].schemaContract.schemaFingerprint,
   "5f21e7b9",

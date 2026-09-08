@@ -451,6 +451,24 @@ pub struct WorkflowOutputBinding {
     pub artifact_document_id: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowInputFingerprint {
+    pub slot_id: String,
+    pub table_document_id: String,
+    pub generation: u64,
+    pub schema_fingerprint: String,
+    pub content_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowOutputFingerprint {
+    pub declaration_id: String,
+    pub artifact_document_id: String,
+    pub content_hash: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowNodeRunRecord {
@@ -492,6 +510,54 @@ pub struct WorkflowRun {
     pub errors: Vec<WorkflowRunError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_hash: Option<String>,
+    #[serde(default)]
+    pub input_fingerprints: Vec<WorkflowInputFingerprint>,
+    #[serde(default)]
+    pub output_fingerprints: Vec<WorkflowOutputFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub determinism_baseline_run_id: Option<String>,
+}
+
+impl WorkflowRun {
+    pub fn is_determinism_comparable(&self) -> bool {
+        if self.seed.is_none()
+            || self.engine_version.as_deref().is_none_or(str::is_empty)
+            || self.configuration_hash.as_deref().is_none_or(str::is_empty)
+            || self.input_bindings.len() != self.input_fingerprints.len()
+            || self.output_bindings.len() != self.output_fingerprints.len()
+        {
+            return false;
+        }
+
+        self.input_bindings.iter().all(|binding| {
+            self.input_fingerprints
+                .iter()
+                .filter(|fingerprint| {
+                    fingerprint.slot_id == binding.slot_id
+                        && fingerprint.table_document_id == binding.table_document_id
+                        && !fingerprint.schema_fingerprint.is_empty()
+                        && !fingerprint.content_hash.is_empty()
+                })
+                .count()
+                == 1
+        }) && self.output_bindings.iter().all(|binding| {
+            self.output_fingerprints
+                .iter()
+                .filter(|fingerprint| {
+                    fingerprint.declaration_id == binding.declaration_id
+                        && fingerprint.artifact_document_id == binding.artifact_document_id
+                        && !fingerprint.content_hash.is_empty()
+                })
+                .count()
+                == 1
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
@@ -3856,6 +3922,12 @@ mod tests {
             output_bindings: vec![],
             errors: vec![],
             parent_folder_id: Some("folder-a".to_string()),
+            seed: None,
+            engine_version: None,
+            configuration_hash: None,
+            input_fingerprints: vec![],
+            output_fingerprints: vec![],
+            determinism_baseline_run_id: None,
         }];
 
         let err = validate_workflow_runs(&runs, &workflows, &[]).unwrap_err();
@@ -3899,6 +3971,12 @@ mod tests {
             output_bindings: vec![],
             errors: vec![],
             parent_folder_id: None,
+            seed: None,
+            engine_version: None,
+            configuration_hash: None,
+            input_fingerprints: vec![],
+            output_fingerprints: vec![],
+            determinism_baseline_run_id: None,
         };
 
         let workflow_json = serde_json::to_value(&workflow).unwrap();
@@ -3916,5 +3994,24 @@ mod tests {
         assert_eq!(run_json["nodeResults"], json!([]));
         assert_eq!(run_json["outputBindings"], json!([]));
         assert_eq!(run_json["errors"], json!([]));
+    }
+
+    #[test]
+    fn legacy_workflow_runs_deserialize_as_non_comparable() {
+        let run: WorkflowRun = serde_json::from_value(json!({
+            "id": "run-legacy",
+            "workflowId": "workflow-1",
+            "workflowRevision": 1,
+            "status": "succeeded"
+        }))
+        .unwrap();
+
+        assert_eq!(run.seed, None);
+        assert_eq!(run.engine_version, None);
+        assert_eq!(run.configuration_hash, None);
+        assert!(run.input_fingerprints.is_empty());
+        assert!(run.output_fingerprints.is_empty());
+        assert_eq!(run.determinism_baseline_run_id, None);
+        assert!(!run.is_determinism_comparable());
     }
 }

@@ -11,6 +11,8 @@ pub mod normal_capability;
 pub mod project_service;
 pub mod save_coordinator;
 pub mod workflow_domain;
+pub mod workflow_fingerprint;
+pub mod workflow_planner;
 pub mod spprj_archive;
 pub mod stats_service;
 pub mod streaming_project_writer;

@@ -1798,6 +1798,12 @@ mod tests {
             output_bindings: vec![],
             errors: vec![],
             parent_folder_id: Some("folder-run".to_string()),
+            seed: None,
+            engine_version: None,
+            configuration_hash: None,
+            input_fingerprints: vec![],
+            output_fingerprints: vec![],
+            determinism_baseline_run_id: None,
         }];
 
         let guard = state.save_coordinator.begin_save().unwrap();
