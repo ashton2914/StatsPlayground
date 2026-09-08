@@ -7,6 +7,7 @@ pub mod distribution_service;
 pub mod fit_model_service;
 pub mod fit_y_by_x_service;
 pub mod graph_data_service;
+pub mod hypothesis_test_service;
 pub mod io_service;
 pub mod normal_capability;
 pub mod project_service;

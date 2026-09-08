@@ -27,6 +27,15 @@
         "schemaVersion": 1,
         "layout": "fit-model-v1"
       }
+    },
+    {
+      "analysisKind": "hypothesisTest",
+      "documentSchemaVersion": 1,
+      "definitionKind": "hypothesisTest",
+      "presentation": {
+        "schemaVersion": 1,
+        "layout": "hypothesis-test-v1"
+      }
     }
   ]
 }

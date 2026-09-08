@@ -18,4 +18,8 @@ export const analysisViewContracts = {
     presentationSchemaVersion: 1,
     presentationLayout: "fit-model-v1",
   },
+  hypothesisTest: {
+    presentationSchemaVersion: 1,
+    presentationLayout: "hypothesis-test-v1",
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisViewContract<Kind> };

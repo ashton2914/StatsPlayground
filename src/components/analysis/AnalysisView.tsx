@@ -98,6 +98,18 @@ export function AnalysisView({
     );
   }
 
+  if (item.analysisKind === "hypothesisTest") {
+    return (
+      <analysisViewRegistry.hypothesisTest
+        item={item}
+        dataset={dataset}
+        runtime={runtime}
+        canEditInputs={canEditInputs}
+        onEditInputs={onEditInputs}
+      />
+    );
+  }
+
   return (
     <analysisViewRegistry.fitYByX
       item={item}

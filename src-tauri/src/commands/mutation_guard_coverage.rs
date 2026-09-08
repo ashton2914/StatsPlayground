@@ -275,6 +275,10 @@ mod tests {
                 "commands::distribution_commands::compute_distribution_report",
                 CommandClass::ReadOnly,
             ),
+            (
+                "commands::hypothesis_test_commands::run_hypothesis_test",
+                CommandClass::ReadOnly,
+            ),
             ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
             (

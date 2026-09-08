@@ -3,14 +3,21 @@ import {
   createDistributionAnalysisPatch,
   createFitModelAnalysisPatch,
   createFitYByXAnalysisPatch,
+  createHypothesisTestAnalysisPatch,
   describeDistributionAnalysis,
   describeFitModelAnalysis,
   describeFitYByXAnalysis,
+  describeHypothesisTestAnalysis,
   toFitModelEditorItem,
   toDistributionEditorItem,
   toFitYByXEditorItem,
+  toHypothesisTestEditorItem,
 } from "@/components/analysis/adapters";
-import type { FitModelAnalysisEditorItem, FitYByXAnalysisEditorItem } from "@/components/analysis/adapters";
+import type {
+  FitModelAnalysisEditorItem,
+  FitYByXAnalysisEditorItem,
+  HypothesisTestAnalysisEditorItem,
+} from "@/components/analysis/adapters";
 import type { AnalysisDocumentByKind, AnalysisDocumentPatch, AnalysisKind } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { DistributionItem } from "@/types/distribution";
@@ -21,6 +28,7 @@ export type AnalysisEditorItemByKind = {
   distribution: DistributionItem;
   fitYByX: FitYByXAnalysisEditorItem;
   fitModel: FitModelAnalysisEditorItem;
+  hypothesisTest: HypothesisTestAnalysisEditorItem;
 };
 
 interface AnalysisEditorPolicy<Kind extends AnalysisKind> {
@@ -53,8 +61,18 @@ export const analysisEditorRegistry = {
     toEditor: toFitModelEditorItem,
     createPatch: createFitModelAnalysisPatch,
   },
+  hypothesisTest: {
+    describe: describeHypothesisTestAnalysis,
+    toEditor: toHypothesisTestEditorItem,
+    createPatch: createHypothesisTestAnalysisPatch,
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisEditorPolicy<Kind> | null };
 
+export function describeAnalysisDocument(
+  document: AnalysisDocumentByKind["hypothesisTest"],
+  dataset: DatasetMeta | null,
+  translate: Translate,
+): AnalysisSummaryEntry[];
 export function describeAnalysisDocument(
   document: AnalysisDocumentByKind["fitYByX"],
   dataset: DatasetMeta | null,
@@ -81,9 +99,15 @@ export function describeAnalysisDocument(
   if (document.analysisKind === "fitYByX") {
     return analysisEditorRegistry.fitYByX.describe(document, dataset, translate);
   }
-  return analysisEditorRegistry.fitModel.describe(document, dataset, translate);
+  if (document.analysisKind === "fitModel") {
+    return analysisEditorRegistry.fitModel.describe(document, dataset, translate);
+  }
+  return analysisEditorRegistry.hypothesisTest.describe(document, dataset, translate);
 }
 
+export function toAnalysisEditorItem(
+  document: AnalysisDocumentByKind["hypothesisTest"],
+): HypothesisTestAnalysisEditorItem;
 export function toAnalysisEditorItem(
   document: AnalysisDocumentByKind["fitYByX"],
 ): FitYByXAnalysisEditorItem;
@@ -102,9 +126,17 @@ export function toAnalysisEditorItem(
   if (document.analysisKind === "fitYByX") {
     return analysisEditorRegistry.fitYByX.toEditor(document);
   }
-  return analysisEditorRegistry.fitModel.toEditor(document);
+  if (document.analysisKind === "fitModel") {
+    return analysisEditorRegistry.fitModel.toEditor(document);
+  }
+  return analysisEditorRegistry.hypothesisTest.toEditor(document);
 }
 
+export function createAnalysisEditorPatch(
+  document: AnalysisDocumentByKind["hypothesisTest"],
+  submitted: HypothesisTestAnalysisEditorItem,
+  updatedAt: string,
+): AnalysisDocumentPatch;
 export function createAnalysisEditorPatch(
   document: AnalysisDocumentByKind["fitYByX"],
   submitted: FitYByXAnalysisEditorItem,
@@ -131,5 +163,12 @@ export function createAnalysisEditorPatch(
   if (document.analysisKind === "fitYByX") {
     return analysisEditorRegistry.fitYByX.createPatch(document, submitted as FitYByXAnalysisEditorItem, updatedAt);
   }
-  return analysisEditorRegistry.fitModel.createPatch(document, submitted as FitModelAnalysisEditorItem, updatedAt);
+  if (document.analysisKind === "fitModel") {
+    return analysisEditorRegistry.fitModel.createPatch(document, submitted as FitModelAnalysisEditorItem, updatedAt);
+  }
+  return analysisEditorRegistry.hypothesisTest.createPatch(
+    document,
+    submitted as HypothesisTestAnalysisEditorItem,
+    updatedAt,
+  );
 }

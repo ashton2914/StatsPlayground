@@ -1,4 +1,21 @@
 {
+  "hypothesisTest": {
+    "title": "Kiểm định giả thuyết",
+    "analysisName": "Tên phân tích",
+    "response": "Biến phản hồi",
+    "condition": "Điều kiện",
+    "measurements": "Các phép đo",
+    "subject": "ID đối tượng / khối",
+    "method": "Phương pháp",
+    "chooseMethod": "Chọn phương pháp",
+    "alternative": "Giả thuyết đối",
+    "postHoc": "So sánh hậu nghiệm",
+    "levelOrder": "Thứ tự mức (phân cách bằng dấu phẩy)",
+    "layout": { "label": "Bố cục dữ liệu", "long": "Dạng dài", "wide": "Dạng rộng" },
+    "studyDesign": { "label": "Thiết kế nghiên cứu", "independent": "Độc lập", "pairedOrBlocked": "Ghép cặp hoặc khối" },
+    "selectionMode": { "label": "Chọn phương pháp", "automatic": "Tự động", "guided": "Có hướng dẫn", "manual": "Thủ công" },
+    "graph": { "dataAndEstimates": "Dữ liệu và ước lượng", "diagnosticValues": "Giá trị chẩn đoán", "normalQq": "Biểu đồ Q-Q chuẩn", "distribution": "Tóm tắt phân phối", "observations": "Quan sát", "meanInterval": "Khoảng trung bình", "subjectProfile": "Hồ sơ đối tượng", "responseAxis": "Biến phản hồi", "observationOrderAxis": "Thứ tự quan sát", "groupResiduals": "Phần dư trong nhóm", "pairedDifferences": "Chênh lệch ghép cặp", "additiveResiduals": "Phần dư mô hình cộng", "theoreticalQuantileAxis": "Phân vị lý thuyết", "observedDiagnosticAxis": "Giá trị chẩn đoán quan sát", "reference": "Đường tham chiếu" }
+  },
   "common": {
     "ok": "OK",
     "cancel": "Hủy",
@@ -56,6 +73,7 @@
     "tabulate": "Tabulate",
     "fitYByX": "Khớp Y theo X",
     "distribution": "Phân phối",
+    "hypothesisTest": "Kiểm định giả thuyết",
     "ops": "Thao tác",
     "opSummary": "Tổng hợp",
     "opSubset": "Tập con",

@@ -22,6 +22,7 @@ interface ReportViewProps {
   tableOptions: readonly ReportLinkOption[];
   graphOptions: readonly ReportLinkOption[];
   fitYByXOptions: readonly ReportLinkOption[];
+  hypothesisTestOptions: readonly ReportLinkOption[];
   tabulateOptions: readonly ReportLinkOption[];
   distributionOptions: readonly ReportLinkOption[];
   onMarkdownChange: (markdown: string) => void;
@@ -34,6 +35,7 @@ export function ReportView({
   tableOptions,
   graphOptions,
   fitYByXOptions,
+  hypothesisTestOptions,
   tabulateOptions,
   distributionOptions,
   onMarkdownChange,
@@ -96,6 +98,7 @@ export function ReportView({
           tableOptions={tableOptions}
           graphOptions={graphOptions}
           fitYByXOptions={fitYByXOptions}
+          hypothesisTestOptions={hypothesisTestOptions}
           tabulateOptions={tabulateOptions}
           distributionOptions={distributionOptions}
         />

@@ -11,6 +11,7 @@ interface ReportToolbarProps {
   tableOptions: readonly ReportLinkOption[];
   graphOptions: readonly ReportLinkOption[];
   fitYByXOptions: readonly ReportLinkOption[];
+  hypothesisTestOptions: readonly ReportLinkOption[];
   tabulateOptions: readonly ReportLinkOption[];
   distributionOptions: readonly ReportLinkOption[];
 }
@@ -42,6 +43,7 @@ export function ReportToolbar({
   tableOptions,
   graphOptions,
   fitYByXOptions,
+  hypothesisTestOptions,
   tabulateOptions,
   distributionOptions,
 }: ReportToolbarProps) {
@@ -88,9 +90,10 @@ export function ReportToolbar({
     { kind: "table" as const, label: t("report.group.table", { defaultValue: "Tables" }), items: tableOptions },
     { kind: "graph" as const, label: t("report.group.graph", { defaultValue: "Graphs" }), items: graphOptions },
     { kind: "fitYByX" as const, label: t("report.group.fitYByX", { defaultValue: "Fit Y by X" }), items: fitYByXOptions },
+    { kind: "hypothesisTest" as const, label: t("report.group.hypothesisTest", { defaultValue: "Hypothesis Test" }), items: hypothesisTestOptions },
     { kind: "tabulate" as const, label: t("report.group.tabulate", { defaultValue: "Tabulate" }), items: tabulateOptions },
     { kind: "distribution" as const, label: t("report.group.distribution", { defaultValue: "Distributions" }), items: distributionOptions },
-  ].filter((group) => group.items.length > 0), [distributionOptions, fitYByXOptions, graphOptions, t, tableOptions, tabulateOptions]);
+  ].filter((group) => group.items.length > 0), [distributionOptions, fitYByXOptions, graphOptions, hypothesisTestOptions, t, tableOptions, tabulateOptions]);
 
   const setTextStyle = (value: string) => {
     if (value === "paragraph") {

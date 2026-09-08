@@ -8,12 +8,15 @@ import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
 import type { DatasetMeta } from "../src/types/data.ts";
 import type { DistributionReportResponse } from "../src/types/distribution.ts";
 import type { FitYByXResponse } from "../src/types/fitYByX.ts";
+import type { HypothesisTestAnalysisDocument } from "../src/types/analysis.ts";
+import type { HypothesisTestResponse } from "../src/types/hypothesisTest.ts";
 import {
   createAnalysisExecutionController,
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
   fitModelAnalysisDefinitionFingerprint,
   fitYByXAnalysisDefinitionFingerprint,
+  hypothesisTestAnalysisDefinitionFingerprint,
   type AnalysisExecutionState,
 } from "../src/components/analysis/useAnalysisExecution.ts";
 
@@ -83,6 +86,64 @@ function fitModelAnalysis() {
     confidenceLevel: 0.95,
     updatedAt: "2026-09-03T00:00:00.000Z",
   });
+}
+
+function hypothesisAnalysis(): HypothesisTestAnalysisDocument {
+  return {
+    schemaVersion: 1,
+    documentType: "analysis",
+    id: "hypothesis-1",
+    name: "Strength by Site",
+    analysisKind: "hypothesisTest",
+    configRevision: 1,
+    source: { datasetId: "dataset-1" },
+    definition: {
+      kind: "hypothesisTest",
+      roles: {
+        layout: "long",
+        response: { name: "Strength", type: "continuous" },
+        condition: { name: "Site", type: "nominal" },
+        subject: null,
+      },
+      studyDesign: "independent",
+      selectionMode: "automatic",
+      manualSelection: null,
+      alternative: "twoSided",
+      alpha: 0.05,
+      confidenceLevel: 0.95,
+      levelOrder: [],
+      referenceLevel: null,
+      postHoc: "automatic",
+      selectorVersion: "1",
+    },
+    presentation: {
+      schemaVersion: 1,
+      layout: "hypothesis-test-v1",
+      activeResultTab: "results",
+      collapsedSections: [],
+      graphs: { showRawData: true, showIntervals: true, showDiagnostics: true },
+      tableSort: null,
+    },
+    createdAt: "2026-09-03T00:00:00.000Z",
+    updatedAt: "2026-09-03T00:00:00.000Z",
+  };
+}
+
+function hypothesisResponse(
+  request: ReturnType<typeof createAnalysisExecutionRequest>,
+  overrides: Partial<HypothesisTestResponse> = {},
+): HypothesisTestResponse {
+  return {
+    analysisKind: "hypothesisTest",
+    analysisId: "hypothesis-1",
+    datasetId: "dataset-1",
+    generation: 7,
+    configRevision: 1,
+    selectorVersion: "1",
+    requestFingerprint: "",
+    ...request,
+    ...overrides,
+  } as HypothesisTestResponse;
 }
 
 function fitResponse(datasetId = "dataset-1", generation = 7): FitYByXResponse {
@@ -172,6 +233,23 @@ assert.deepEqual(fitModelRequest, {
   centeringMethod: "mean",
   confidenceLevel: 0.95,
 });
+
+const hypothesisRequest = createAnalysisExecutionRequest(hypothesisAnalysis(), 7);
+assert.equal(hypothesisRequest.analysisKind, "hypothesisTest");
+assert.equal(hypothesisRequest.analysisId, "hypothesis-1");
+assert.equal(hypothesisRequest.datasetId, "dataset-1");
+assert.equal(hypothesisRequest.generation, 7);
+assert.equal(hypothesisRequest.configRevision, 1);
+assert.equal(hypothesisRequest.requestFingerprint, hypothesisTestAnalysisDefinitionFingerprint(hypothesisAnalysis()));
+
+const hypothesisFingerprint = hypothesisTestAnalysisDefinitionFingerprint(hypothesisAnalysis());
+assert.notEqual(
+  hypothesisTestAnalysisDefinitionFingerprint({
+    ...hypothesisAnalysis(),
+    definition: { ...hypothesisAnalysis().definition, alpha: 0.01 },
+  }),
+  hypothesisFingerprint,
+);
 
 const fitModelFingerprint = fitModelAnalysisDefinitionFingerprint(fitModelAnalysis());
 for (const changed of [
@@ -335,6 +413,41 @@ async function testFitModelMigrationIssueDoesNotExecute(): Promise<void> {
   assert.equal(controller.getState().status, "error");
 }
 
+async function testHypothesisTestIdentityAndStaleFences(): Promise<void> {
+  const item = hypothesisAnalysis();
+  const expectedRequest = createAnalysisExecutionRequest(item, 7);
+  const success = createAnalysisExecutionController({
+    getDatasetGeneration: async () => 7,
+    runHypothesisTest: async (nextRequest) => hypothesisResponse(nextRequest),
+  });
+  await success.load(item, dataset());
+  assert.equal(success.getState().status, "success");
+
+  const mismatch = createAnalysisExecutionController({
+    getDatasetGeneration: async () => 7,
+    runHypothesisTest: async (nextRequest) => hypothesisResponse(nextRequest, {
+      requestFingerprint: `${nextRequest.requestFingerprint}-stale`,
+    }),
+  });
+  await mismatch.load(item, dataset());
+  assert.equal(mismatch.getState().status, "error");
+
+  let currentAnalysis = item;
+  const pending = deferred<HypothesisTestResponse>();
+  const stale = createAnalysisExecutionController({
+    getDatasetGeneration: async () => 7,
+    runHypothesisTest: async () => pending.promise,
+    getCurrentAnalysis: () => currentAnalysis,
+    getCurrentDataset: () => dataset(),
+  });
+  const loading = stale.load(item, dataset());
+  await flush();
+  currentAnalysis = { ...currentAnalysis, configRevision: 2 };
+  pending.resolve(hypothesisResponse(expectedRequest));
+  await loading;
+  assert.notEqual(stale.getState().status, "success");
+}
+
 async function testAnalysisAndDatasetFenceChecks(): Promise<void> {
   let currentAnalysis = analysis();
   let currentDataset = dataset({ generation: 8, updatedAt: "2026-09-03T10:00:00.000Z" });
@@ -416,6 +529,7 @@ await testLoadingSuccessAndError();
 await testLatestRequestAndEchoFences();
 await testFitYByXEchoFence();
 await testFitModelMigrationIssueDoesNotExecute();
+await testHypothesisTestIdentityAndStaleFences();
 await testAnalysisAndDatasetFenceChecks();
 
 const hookSource = readFileSync(

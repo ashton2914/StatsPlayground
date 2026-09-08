@@ -20,3 +20,10 @@ export {
   toFitModelEditorItem,
 } from "./fitModelAnalysisAdapter";
 export type { FitModelAnalysisEditorItem } from "./fitModelAnalysisAdapter";
+export {
+  createHypothesisTestAnalysisDocument,
+  createHypothesisTestAnalysisPatch,
+  describeHypothesisTestAnalysis,
+  toHypothesisTestEditorItem,
+} from "./hypothesisTestAnalysisAdapter";
+export type { HypothesisTestAnalysisEditorItem } from "./hypothesisTestAnalysisAdapter";

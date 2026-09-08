@@ -5,6 +5,7 @@ export type AnalysisGraphRoleByKind = {
   distribution: "overview";
   fitYByX: "main";
   fitModel: never;
+  hypothesisTest: never;
 };
 
 export interface AnalysisGraphPersistenceResult {
@@ -47,6 +48,7 @@ export const analysisGraphPolicies = {
     }),
   },
   fitModel: null,
+  hypothesisTest: null,
 } satisfies { [Kind in AnalysisKind]: AnalysisGraphPolicy<Kind> | null };
 
 export function createAnalysisGraphPersistencePatch(

@@ -84,6 +84,7 @@ pub fn run() {
             commands::fit_model_commands::fit_model,
             commands::fit_model_commands::save_fit_model_columns,
             commands::fit_y_by_x_commands::fit_y_by_x,
+            commands::hypothesis_test_commands::run_hypothesis_test,
             commands::tabulate_commands::tabulate,
             commands::io_commands::export_csv,
             commands::io_commands::import_sqlite,

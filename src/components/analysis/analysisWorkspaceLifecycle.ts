@@ -131,6 +131,9 @@ export function createWorkspaceAnalysisGraphConfigPatch(
   if (document.analysisKind === "fitModel") {
     throw new Error("Fit Model graphs are not editable");
   }
+  if (document.analysisKind === "hypothesisTest") {
+    throw new Error("Hypothesis Test graphs are not editable");
+  }
   if (role !== "main") throw new Error(`Unsupported Fit Y by X graph role: ${role}`);
   return createAnalysisGraphPersistencePatch(document, role, graph, updatedAt);
 }

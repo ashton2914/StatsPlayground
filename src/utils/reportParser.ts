@@ -1,6 +1,6 @@
 import type { ReportDependency, ReportEmbedKind, ReportToken } from "@/types/report";
 
-const REPORT_EMBED_RE = /^\{\{sp-embed kind="(table|graph|fitYByX|tabulate|distribution)" id="([^"{}\s\x00-\x1f\x7f]+)"\}\}$/;
+const REPORT_EMBED_RE = /^\{\{sp-embed kind="(table|graph|fitYByX|tabulate|distribution|hypothesisTest)" id="([^"{}\s\x00-\x1f\x7f]+)"\}\}$/;
 
 interface FenceState {
   marker: "`" | "~";

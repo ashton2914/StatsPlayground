@@ -24,6 +24,7 @@ import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
 import { TableOpsDialog, type TableOpType } from "./TableOpsDialog";
 import { GraphBuilderView } from "./graphBuilder";
 import { FitYByXRoleDialog } from "./fitYByX";
+import { HypothesisTestDialog } from "./hypothesisTest";
 import {
   FitModelRoleDialog,
   createFitModelItem,
@@ -36,7 +37,9 @@ import {
   createDistributionAnalysisDocument,
   createFitModelAnalysisDocument,
   createFitYByXAnalysisDocument,
+  createHypothesisTestAnalysisDocument,
   type FitYByXAnalysisEditorItem,
+  type HypothesisTestAnalysisEditorItem,
 } from "./analysis/adapters";
 import {
   createAnalysisEditorPatch,
@@ -76,7 +79,7 @@ import {
   createDefaultGraph3DState,
   createDefaultMultivariateGraphState,
 } from "@/components/graphBuilder/graphBuilderMode";
-import type { AnalysisDocument, FitModelAnalysisDocument, FitYByXAnalysisDocument } from "@/types/analysis";
+import type { AnalysisDocument, FitModelAnalysisDocument, FitYByXAnalysisDocument, HypothesisTestAnalysisDocument } from "@/types/analysis";
 import type { FitYByXItem } from "@/types/fitYByX";
 import type { FitModelPrefill } from "@/types/fitModel";
 import type { ReportItem } from "@/types/report";
@@ -129,6 +132,16 @@ function nextFitYByXAnalysisName(items: readonly AnalysisDocument[]): string {
     if (match) maximum = Math.max(maximum, Number(match[1]));
   }
   return `Fit Y by X ${maximum + 1}`;
+}
+
+function nextHypothesisTestAnalysisName(items: readonly AnalysisDocument[]): string {
+  let maximum = 0;
+  for (const item of items) {
+    if (item.analysisKind !== "hypothesisTest") continue;
+    const match = /^Hypothesis Test (\d+)$/.exec(item.name);
+    if (match) maximum = Math.max(maximum, Number(match[1]));
+  }
+  return `Hypothesis Test ${maximum + 1}`;
 }
 
 function isFitYByXAnalysisDocument(item: AnalysisDocument): item is FitYByXAnalysisDocument {
@@ -277,6 +290,7 @@ export function Workspace() {
   const nextReportName = useReportStore((s) => s.nextName);
   const analysisItems = useAnalysisStore((s) => s.items);
   const fitYByXAnalysisItems = analysisItems.filter(isFitYByXAnalysisDocument);
+  const hypothesisTestAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "hypothesisTest");
   const distributionAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "distribution");
   const addAnalysis = useAnalysisStore((s) => s.addAnalysis);
   const updateAnalysis = useAnalysisStore((s) => s.updateAnalysis);
@@ -313,6 +327,7 @@ export function Workspace() {
   const [tableOp, setTableOp] = useState<TableOpType | null>(null);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
   const [showFitModelDialog, setShowFitModelDialog] = useState(false);
+  const [showHypothesisTestDialog, setShowHypothesisTestDialog] = useState(false);
   const [fitModelPrefill, setFitModelPrefill] = useState<FitModelPrefill | null>(null);
   const [showDistributionDialog, setShowDistributionDialog] = useState(false);
   const [distributionColumns, setDistributionColumns] = useState<DistributionFieldInfo[]>([]);
@@ -752,6 +767,40 @@ export function Workspace() {
     setShowFitYByXDialog(true);
   };
 
+  const handleCreateHypothesisTest = () => {
+    if (readOnly) return;
+    if (!activeDatasetId) {
+      alert(t("alert.selectDatasetFirst"));
+      return;
+    }
+    setShowHypothesisTestDialog(true);
+  };
+
+  const handleCreateHypothesisTestItem = (name: string, submitted: HypothesisTestAnalysisEditorItem) => {
+    if (!activeDatasetId) return;
+    const resolved = resolveProjectBasename(name || nextHypothesisTestAnalysisName(analysisItems), "analysis");
+    if (resolved.error) {
+      alert(resolved.error);
+      return;
+    }
+    if (resolved.basename === null) return;
+    const timestamp = new Date().toISOString();
+    const created = createHypothesisTestAnalysisDocument({
+      id: crypto.randomUUID(),
+      name: resolved.basename,
+      sourceDatasetId: activeDatasetId,
+      definition: submitted.definition,
+      createdAt: timestamp,
+    });
+    addAnalysis(created);
+    activateWorkspaceDocument("analysis", created.id);
+    setShowHypothesisTestDialog(false);
+    markDirty();
+    recordAction(t("history.newAnalysis", { defaultValue: "Created {{name}}", name: created.name }));
+    setRenamingId(created.id);
+    setRenameValue(created.name);
+  };
+
   const openFitModel = (prefill?: FitModelPrefill) => {
     if (readOnly) return;
     const sourceDatasetId = prefill?.sourceDatasetId ?? activeDatasetId;
@@ -944,7 +993,7 @@ export function Workspace() {
     if (!analysis) return;
     const dataset = datasets.find((item) => item.id === analysis.source.datasetId);
     if (!dataset) return;
-    if (analysis.analysisKind === "fitYByX") {
+    if (analysis.analysisKind === "fitYByX" || analysis.analysisKind === "hypothesisTest") {
       setEditingAnalysisId(id);
       return;
     }
@@ -1002,6 +1051,21 @@ export function Workspace() {
     updateAnalysis(editing.id, createAnalysisEditorPatch(
       editing,
       { ...editorItem, ...submitted },
+      new Date().toISOString(),
+    ));
+    setEditingAnalysisId(null);
+    markDirty();
+    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+  };
+
+  const handleUpdateHypothesisTestAnalysisInputs = (
+    editing: HypothesisTestAnalysisDocument,
+    submitted: HypothesisTestAnalysisEditorItem,
+  ) => {
+    if (readOnly) return;
+    updateAnalysis(editing.id, createAnalysisEditorPatch(
+      editing,
+      submitted,
       new Date().toISOString(),
     ));
     setEditingAnalysisId(null);
@@ -2363,6 +2427,12 @@ export function Workspace() {
               >
                 {t("menu.distribution")}
               </div>
+              <div
+                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId && !readOnly ? handleCreateHypothesisTest : undefined}
+              >
+                {t("menu.hypothesisTest", { defaultValue: "Hypothesis Test" })}
+              </div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.report")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateReport}>{t("menu.newReport")}</div>
@@ -2589,6 +2659,7 @@ export function Workspace() {
                   tableOptions={datasets.map((dataset) => ({ id: dataset.id, name: dataset.name }))}
                   graphOptions={graphBuilders.map((graph) => ({ id: graph.id, name: graph.name }))}
                   fitYByXOptions={fitYByXAnalysisItems.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
+                  hypothesisTestOptions={hypothesisTestAnalysisItems.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
                   tabulateOptions={tabulates.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
                   distributionOptions={distributionAnalysisItems.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
                   onMarkdownChange={(markdown) => handleReportMarkdownChange(item.id, markdown)}
@@ -2753,6 +2824,16 @@ export function Workspace() {
         />
       )}
 
+      {showHypothesisTestDialog && activeDatasetId && (
+        <HypothesisTestDialog
+          mode="create"
+          dataset={datasets.find((dataset) => dataset.id === activeDatasetId)!}
+          defaultName={nextHypothesisTestAnalysisName(analysisItems)}
+          onCancel={() => setShowHypothesisTestDialog(false)}
+          onSubmit={handleCreateHypothesisTestItem}
+        />
+      )}
+
       {showDistributionDialog && activeDatasetId && (
         <DistributionDialog
           open={showDistributionDialog}
@@ -2790,6 +2871,18 @@ export function Workspace() {
               initialDefinition={editorItem}
               onCancel={() => setEditingAnalysisId(null)}
               onCreateDefinition={(submitted) => handleUpdateFitModelAnalysisInputs(editingAnalysis, submitted)}
+            />
+          );
+        }
+        if (editingAnalysis.analysisKind === "hypothesisTest") {
+          return (
+            <HypothesisTestDialog
+              mode="edit"
+              dataset={dataset}
+              defaultName={editingAnalysis.name}
+              initialValue={toAnalysisEditorItem(editingAnalysis)}
+              onCancel={() => setEditingAnalysisId(null)}
+              onSubmit={(_name, submitted) => handleUpdateHypothesisTestAnalysisInputs(editingAnalysis, submitted)}
             />
           );
         }
