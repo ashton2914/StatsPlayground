@@ -22,6 +22,7 @@ StatsPlayground/
 │   ├── services/                       #   Tauri IPC 调用封装层
 │   │   ├── index.ts                    #     统一导出
 │   │   ├── dataService.ts              #     数据操作 (import, query, list, delete)
+│   │   ├── dataLinkService.ts          #     DataLink 发现、预览、导入和取消
 │   │   ├── statsService.ts             #     统计分析 (column stats, descriptive)
 │   │   └── ioService.ts                #     文件导出 (export CSV)
 │   ├── stores/                         #   Zustand 全局状态管理
@@ -57,8 +58,12 @@ StatsPlayground/
 │       ├── lib.rs                      #     模块注册 + Tauri Builder + Command 注册
 │       ├── state.rs                    #     全局状态 (AppState: Mutex<DuckDbEngine>)
 │       ├── error.rs                    #     统一错误类型 (AppError) + From 实现
+│       ├── connectors/                 #     外部数据源统一读取层
+│       │   ├── connector.rs            #       DataConnector + ConnectorValue
+│       │   └── sqlite_connector.rs     #       SQLite 发现、预览和流式读取
 │       ├── commands/                   #     Tauri Command 层（前端调用入口）
 │       │   ├── mod.rs                  #       模块注册
+│       │   ├── data_link_commands.rs   #       SQLite DataLink IPC + 取消
 │       │   ├── data_commands.rs        #       import_file, list_datasets, delete_dataset, query_table
 │       │   ├── stats_commands.rs       #       get_column_stats, get_descriptive_stats
 │       │   └── io_commands.rs          #       export_csv

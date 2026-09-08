@@ -19,6 +19,9 @@ pub enum AppError {
 
     #[error("Read-only: {0}")]
     ReadOnly(String),
+
+    #[error("Cancelled: {0}")]
+    Cancelled(String),
 }
 
 // Tauri commands require errors to be serializable

@@ -1,4 +1,5 @@
 pub mod data_commands;
+pub mod data_link_commands;
 pub mod distribution_commands;
 pub mod fit_model_commands;
 pub mod fit_y_by_x_commands;

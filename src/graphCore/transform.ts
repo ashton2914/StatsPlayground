@@ -89,7 +89,7 @@ interface PanelFacetContext {
 }
 
 function matchesPanelFacet(
-  value: { facetX?: string; facetY?: string; wrap?: string },
+  value: { facetX?: string | null; facetY?: string | null; wrap?: string | null },
   panelFacet: PanelFacetContext,
 ): boolean {
   if (panelFacet.groupXValue !== null && value.facetX !== panelFacet.groupXValue) {
@@ -3741,6 +3741,16 @@ function buildSingleOption(
         ),
       )
       : [];
+  const summaryPacketCats =
+    frameBackedAggregateMode && summaryPacket && xIsCategory
+      ? Array.from(
+        new Set(
+          summaryPacket.summaries
+            .map((entry) => (entry.category == null ? "" : String(entry.category)))
+            .filter((value) => value.length > 0),
+        ),
+      )
+      : [];
   const rawXCats =
     useRowIdxX
       ? [""]
@@ -3751,7 +3761,9 @@ function buildSingleOption(
             ? histogramPacketCats
             : normalSummaryPacketMode
               ? normalPacketCats
-              : collectCategories(data, xIdx, yIdx)
+              : summaryPacketCats.length > 0
+                ? summaryPacketCats
+                : collectCategories(data, xIdx, yIdx)
         : [];
   const localXCats = xField ? applyValueOrder(rawXCats, valueOrders?.[xField.name]) : rawXCats;
   let xCats: string[] = xIsCategory && sharedRanges?.xCats
@@ -6168,6 +6180,11 @@ function buildSingleOption(
       dataMin = framePointExtents.y.min;
       dataMax = framePointExtents.y.max;
     } else if (normalSummaryPacketMode && summaryPacket) {
+      for (const entry of summaryPacket.summaries) {
+        if (Number.isFinite(entry.min) && entry.min < dataMin) dataMin = entry.min;
+        if (Number.isFinite(entry.max) && entry.max > dataMax) dataMax = entry.max;
+      }
+    } else if (frameBackedAggregateMode && summaryPacket) {
       for (const entry of summaryPacket.summaries) {
         if (Number.isFinite(entry.min) && entry.min < dataMin) dataMin = entry.min;
         if (Number.isFinite(entry.max) && entry.max > dataMax) dataMax = entry.max;

@@ -6,6 +6,7 @@ import {
   calculateTableWindow,
   RequestEpoch,
   serializeTableWindowFilters,
+  shouldReloadDatasetRevision,
   windowRowAt,
 } from "../src/utils/tableViewport.ts";
 
@@ -127,5 +128,20 @@ const olderViewport = epochs.track("0:500");
 const latestViewport = epochs.track("500:500");
 assert.equal(epochs.isLatest(olderViewport), false);
 assert.equal(epochs.isLatest(latestViewport), true);
+
+const originalRevision = { datasetId: "track", rowCount: 3_503, updatedAt: "before" };
+assert.equal(shouldReloadDatasetRevision(null, originalRevision), false);
+assert.equal(
+  shouldReloadDatasetRevision(originalRevision, { ...originalRevision, rowCount: 7_006 }),
+  true,
+);
+assert.equal(
+  shouldReloadDatasetRevision(originalRevision, { ...originalRevision, updatedAt: "after" }),
+  true,
+);
+assert.equal(
+  shouldReloadDatasetRevision(originalRevision, { ...originalRevision, datasetId: "album" }),
+  false,
+);
 
 console.log("table-viewport regression passed");

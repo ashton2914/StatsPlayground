@@ -1,0 +1,625 @@
+.datalink-dialog {
+  width: min(1080px, calc(100vw - 48px));
+  max-width: none;
+  height: min(720px, calc(100vh - 48px));
+}
+
+.datalink-header,
+.datalink-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-color: var(--border-main);
+}
+
+.datalink-header {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-main);
+}
+
+.datalink-header h2,
+.datalink-preview-heading h3 {
+  margin: 0;
+  color: var(--fg-primary);
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.datalink-header p {
+  margin: 3px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.datalink-close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.datalink-content {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.datalink-objects {
+  overflow: auto;
+  border-right: 1px solid var(--border-main);
+  background: var(--bg-main);
+}
+
+.datalink-section-title {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.datalink-object {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-height: 36px;
+  padding-left: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-primary);
+  text-align: left;
+}
+
+.datalink-object-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 12px 7px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.datalink-object:hover,
+.datalink-object.active {
+  background: var(--bg-menu-hover);
+}
+
+.datalink-object.active {
+  box-shadow: inset 3px 0 var(--fg-accent);
+}
+
+.datalink-object span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.datalink-object input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--fg-accent);
+}
+
+.datalink-object em {
+  padding: 1px 4px;
+  border: 1px solid var(--border-input);
+  border-radius: 3px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 14px;
+}
+
+.datalink-object small,
+.datalink-object i {
+  color: var(--fg-muted);
+}
+
+.datalink-preview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+}
+
+.datalink-conflicts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-header);
+  color: var(--fg-primary);
+  font-size: 12px;
+}
+
+.datalink-strategy {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.datalink-strategy button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-btn-secondary);
+  color: var(--fg-primary);
+  cursor: pointer;
+}
+
+.datalink-strategy button + button {
+  border-left: 0;
+}
+
+.datalink-strategy button.active {
+  background: var(--bg-header-selected);
+  color: var(--fg-primary);
+}
+
+.datalink-preview-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.datalink-preview-heading div span {
+  display: block;
+  margin-top: 3px;
+}
+
+.datalink-type-policy {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--fg-accent);
+  background: var(--bg-header);
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.datalink-type-policy i {
+  margin-top: 2px;
+  color: var(--fg-accent);
+}
+
+.datalink-target-name {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 320px);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.datalink-target-name small {
+  grid-column: 2;
+  color: var(--fg-muted);
+}
+
+.datalink-target-name input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg-primary);
+}
+
+.datalink-target-name input:focus {
+  border-color: var(--border-input-focus);
+  outline: none;
+}
+
+.datalink-schema {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 10px;
+}
+
+.datalink-schema > span {
+  display: grid;
+  gap: 2px;
+  min-width: 120px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-main);
+  border-radius: 4px;
+  color: var(--fg-primary);
+  font-size: 12px;
+}
+
+.datalink-schema small {
+  color: var(--fg-muted);
+}
+
+.datalink-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-main);
+}
+
+.datalink-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  color: var(--fg-primary);
+  font-size: 12px;
+}
+
+.datalink-table th,
+.datalink-table td {
+  max-width: 280px;
+  padding: 7px 10px;
+  overflow: hidden;
+  border-right: 1px solid var(--border-main);
+  border-bottom: 1px solid var(--border-main);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.datalink-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-header);
+  z-index: 1;
+}
+
+.datalink-table .is-null {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.datalink-state,
+.datalink-error {
+  padding: 18px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.datalink-error {
+  margin-bottom: 12px;
+  border: 1px solid var(--fg-danger);
+  color: var(--fg-danger);
+}
+
+.datalink-summary {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+  padding: 20px;
+  border-left: 3px solid var(--fg-muted);
+  background: var(--bg-secondary);
+}
+
+.datalink-summary > i {
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: 22px;
+}
+
+.datalink-summary.is-completed {
+  border-left-color: var(--fg-success, #4f9d69);
+}
+
+.datalink-summary.is-completed > i {
+  color: var(--fg-success, #4f9d69);
+}
+
+.datalink-summary.is-failed {
+  border-left-color: var(--fg-danger);
+}
+
+.datalink-summary.is-failed > i {
+  color: var(--fg-danger);
+}
+
+.datalink-summary h3,
+.datalink-summary p {
+  margin: 0 0 8px;
+}
+
+.datalink-summary pre {
+  margin: 12px 0;
+  padding: 10px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-main);
+  color: var(--fg-danger);
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.datalink-summary ul {
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.datalink-summary li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-main);
+}
+
+.datalink-summary li span {
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.datalink-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-main);
+}
+
+.datalink-actions > span {
+  margin-right: auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.postgres-datalink-dialog {
+  height: min(790px, calc(100vh - 32px));
+}
+
+.postgres-datalink-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.postgres-connection-panel {
+  border-bottom: 1px solid var(--border-main);
+  background: var(--bg-main);
+}
+
+.postgres-connection-panel .datalink-section-title {
+  padding-bottom: 6px;
+}
+
+.postgres-connection-panel .datalink-section-title span {
+  color: var(--fg-muted);
+  text-transform: none;
+}
+
+.postgres-connection-panel .datalink-section-title span.is-connected {
+  color: var(--fg-success, #4f9d69);
+}
+
+.postgres-connection-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.4fr) minmax(90px, .6fr) minmax(150px, 1.2fr) minmax(150px, 1fr);
+  gap: 10px;
+  padding: 0 14px 12px;
+}
+
+.postgres-connection-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.postgres-connection-grid input,
+.postgres-connection-grid textarea,
+.postgres-connection-grid select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg-primary);
+}
+
+.postgres-connection-grid input:focus,
+.postgres-connection-grid textarea:focus,
+.postgres-connection-grid select:focus {
+  border-color: var(--border-input-focus);
+  outline: none;
+}
+
+.postgres-password-field {
+  grid-column: span 2;
+}
+
+.postgres-ca-field {
+  grid-column: 1 / -1;
+}
+
+.postgres-ca-field textarea {
+  height: 62px;
+  resize: none;
+  font-family: monospace;
+}
+
+.postgres-connection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 14px 12px;
+}
+
+.postgres-connection-actions > span {
+  margin-right: auto;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.postgres-browser {
+  flex: 1;
+}
+
+.postgres-error {
+  display: flex;
+  gap: 10px;
+  margin: 10px 14px 0;
+  padding: 9px 10px;
+}
+
+.postgres-error strong {
+  text-transform: capitalize;
+}
+
+.postgres-object {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.postgres-object > i {
+  text-align: center;
+}
+
+.server-batch-select-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--fg-primary);
+  font-size: 12px;
+}
+
+.server-batch-select-all > span { margin-left: auto; }
+
+.server-batch-object {
+  grid-template-columns: 18px 18px minmax(0, 1fr);
+  column-gap: 4px;
+}
+
+.server-batch-object .datalink-object-preview {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.server-batch-object .datalink-object-preview span,
+.server-batch-object .datalink-object-preview small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.server-batch-result {
+  grid-column: 2 / -1;
+  min-width: 0;
+  padding: 0 10px 5px 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.server-batch-result:empty { display: none; }
+.server-batch-result small { display: block; overflow-wrap: anywhere; }
+.server-batch-failure { color: var(--fg-danger); }
+
+.server-batch-queue {
+  flex: 0 0 auto;
+  max-height: 140px;
+  overflow: auto;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border-main);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.server-batch-queue label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.server-batch-queue label > span { overflow-wrap: anywhere; }
+.server-batch-queue input {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg-primary);
+}
+
+.postgres-datalink-body { overflow: auto; }
+.postgres-browser { min-height: 190px; }
+.postgres-datalink-dialog .datalink-actions { flex-wrap: wrap; flex-shrink: 0; }
+
+@media (max-width: 600px) {
+  .postgres-datalink-dialog { width: calc(100vw - 16px); }
+  .postgres-browser { grid-template-columns: minmax(120px, 38%) minmax(0, 1fr); }
+  .postgres-datalink-dialog .datalink-preview { padding: 8px; }
+  .postgres-datalink-dialog .datalink-target-name { grid-template-columns: minmax(0, 1fr); }
+  .postgres-datalink-dialog .datalink-preview-heading { flex-wrap: wrap; }
+  .postgres-connection-actions { flex-wrap: wrap; }
+  .postgres-connection-actions > span { flex-basis: 100%; }
+}
+
+@media (max-width: 850px) {
+  .postgres-connection-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .postgres-password-field {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 700px) {
+  .datalink-dialog {
+    width: calc(100vw - 20px);
+    height: calc(100vh - 20px);
+  }
+
+  .datalink-content {
+    grid-template-columns: 140px minmax(0, 1fr);
+  }
+
+  .datalink-actions > span {
+    display: none;
+  }
+
+  .postgres-datalink-dialog .datalink-actions > span {
+    display: block;
+    flex-basis: 100%;
+  }
+
+  .datalink-conflicts,
+  .datalink-target-name {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .datalink-target-name small {
+    grid-column: 1;
+  }
+}

@@ -1,4 +1,5 @@
 pub mod archive_cell;
+pub mod data_link_service;
 pub mod data_service;
 pub mod distribution_fit;
 pub mod distribution_kernel;

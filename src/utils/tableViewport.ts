@@ -23,6 +23,21 @@ interface TableRenderRange {
 const MAX_WINDOW_ROWS = 2_000;
 export const MAX_MATERIALIZED_SELECTION_ITEMS = 100_000;
 
+export interface DatasetRevision {
+  datasetId: string;
+  rowCount: number;
+  updatedAt: string;
+}
+
+export function shouldReloadDatasetRevision(
+  previous: DatasetRevision | null,
+  current: DatasetRevision,
+): boolean {
+  return previous !== null
+    && previous.datasetId === current.datasetId
+    && (previous.rowCount !== current.rowCount || previous.updatedAt !== current.updatedAt);
+}
+
 export function canMaterializeSelection(
   firstRow: number,
   lastRow: number,

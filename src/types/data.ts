@@ -3,7 +3,7 @@ export interface DatasetMeta {
   id: string;
   name: string;
   sourcePath: string | null;
-  sourceType: "csv" | "excel" | "parquet" | "json" | "manual" | "query";
+  sourceType: "csv" | "excel" | "parquet" | "json" | "sqlite" | "sptb" | "manual" | "query";
   rowCount: number;
   colCount: number;
   generation: number;

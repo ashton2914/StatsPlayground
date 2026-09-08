@@ -106,13 +106,13 @@ export interface GraphChunkMessage {
 }
 
 export interface HistogramBin {
-  group?: string;
-  category?: string;
-  sourceColumn?: string;
-  facetX?: string;
-  facetY?: string;
-  facetZ?: string;
-  wrap?: string;
+  group?: string | null;
+  category?: string | null;
+  sourceColumn?: string | null;
+  facetX?: string | null;
+  facetY?: string | null;
+  facetZ?: string | null;
+  wrap?: string | null;
   binStart: number;
   binEnd: number;
   count: number;
@@ -120,13 +120,13 @@ export interface HistogramBin {
 
 export interface HistogramPacket {
   kind: "histogram";
-  xColumn?: string;
+  xColumn?: string | null;
   yColumn: string;
-  groupColumn?: string;
-  sourceColumn?: string;
+  groupColumn?: string | null;
+  sourceColumn?: string | null;
   binCount: number;
-  minValue?: number;
-  maxValue?: number;
+  minValue?: number | null;
+  maxValue?: number | null;
   missingCount: number;
   binWidth: number;
   totalCount: number;
@@ -134,13 +134,13 @@ export interface HistogramPacket {
 }
 
 export interface HeatmapCell {
-  group?: string;
-  category?: string;
-  sourceColumn?: string;
-  facetX?: string;
-  facetY?: string;
-  facetZ?: string;
-  wrap?: string;
+  group?: string | null;
+  category?: string | null;
+  sourceColumn?: string | null;
+  facetX?: string | null;
+  facetY?: string | null;
+  facetZ?: string | null;
+  wrap?: string | null;
   xBinIndex: number;
   yBinIndex: number;
   xBinStart: number;
@@ -154,14 +154,14 @@ export interface HeatmapPacket {
   kind: "heatmap";
   xColumn: string;
   yColumn: string;
-  groupColumn?: string;
-  sourceColumn?: string;
+  groupColumn?: string | null;
+  sourceColumn?: string | null;
   xBinCount: number;
   yBinCount: number;
-  xMin?: number;
-  xMax?: number;
-  yMin?: number;
-  yMax?: number;
+  xMin?: number | null;
+  xMax?: number | null;
+  yMin?: number | null;
+  yMax?: number | null;
   missingCount: number;
   xBinWidth: number;
   yBinWidth: number;
@@ -171,18 +171,18 @@ export interface HeatmapPacket {
 
 export interface BoxPlotOutlier {
   value: number;
-  rowId?: number;
-  sourceColumn?: string;
+  rowId?: number | null;
+  sourceColumn?: string | null;
 }
 
 export interface BoxPlotEntry {
-  group?: string;
-  category?: string;
-  sourceColumn?: string;
-  facetX?: string;
-  facetY?: string;
-  facetZ?: string;
-  wrap?: string;
+  group?: string | null;
+  category?: string | null;
+  sourceColumn?: string | null;
+  facetX?: string | null;
+  facetY?: string | null;
+  facetZ?: string | null;
+  wrap?: string | null;
   count: number;
   min: number;
   q1: number;
@@ -196,10 +196,10 @@ export interface BoxPlotEntry {
 
 export interface BoxPlotPacket {
   kind: "boxPlot";
-  xColumn?: string;
+  xColumn?: string | null;
   yColumn: string;
-  groupColumn?: string;
-  sourceColumn?: string;
+  groupColumn?: string | null;
+  sourceColumn?: string | null;
   entries: BoxPlotEntry[];
 }
 
@@ -238,29 +238,29 @@ export interface PrecomputedCurvePacket {
 }
 
 export interface SummaryEntry {
-  group?: string;
-  category?: string;
-  sourceColumn?: string;
-  facetX?: string;
-  facetY?: string;
-  facetZ?: string;
-  wrap?: string;
+  group?: string | null;
+  category?: string | null;
+  sourceColumn?: string | null;
+  facetX?: string | null;
+  facetY?: string | null;
+  facetZ?: string | null;
+  wrap?: string | null;
   count: number;
   mean: number;
   median: number;
   stddev: number;
   min: number;
   max: number;
-  intervalLow?: number;
-  intervalHigh?: number;
+  intervalLow?: number | null;
+  intervalHigh?: number | null;
 }
 
 export interface SummaryPacket {
   kind: "summary";
-  xColumn?: string;
+  xColumn?: string | null;
   yColumn: string;
-  groupColumn?: string;
-  sourceColumn?: string;
+  groupColumn?: string | null;
+  sourceColumn?: string | null;
   summaries: SummaryEntry[];
 }
 
@@ -300,8 +300,8 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === "string";
+function isOptionalString(value: unknown): value is string | null | undefined {
+  return value == null || typeof value === "string";
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -310,6 +310,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function isOptionalFiniteNumber(value: unknown): value is number | null | undefined {
+  return value == null || isFiniteNumber(value);
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -376,7 +380,7 @@ function isHeatmapCell(value: unknown): value is HeatmapCell {
 function isBoxPlotOutlier(value: unknown): value is BoxPlotOutlier {
   if (!isRecord(value)) return false;
   return isFiniteNumber(value.value)
-    && (value.rowId === undefined || Number.isInteger(value.rowId))
+    && (value.rowId == null || Number.isInteger(value.rowId))
     && isOptionalString(value.sourceColumn);
 }
 
@@ -416,8 +420,8 @@ function isSummaryEntry(value: unknown): value is SummaryEntry {
     && isFiniteNumber(value.stddev)
     && isFiniteNumber(value.min)
     && isFiniteNumber(value.max)
-    && (value.intervalLow === undefined || isFiniteNumber(value.intervalLow))
-    && (value.intervalHigh === undefined || isFiniteNumber(value.intervalHigh));
+    && isOptionalFiniteNumber(value.intervalLow)
+    && isOptionalFiniteNumber(value.intervalHigh);
 }
 
 function isCorrelationMatrixPacket(value: unknown): value is CorrelationMatrixPacket {
@@ -513,8 +517,8 @@ export function isGraphAggregatePacket(value: unknown): value is GraphAggregateP
       && isOptionalString(value.groupColumn)
       && isOptionalString(value.sourceColumn)
       && isNonNegativeInteger(value.binCount)
-      && (value.minValue === undefined || isFiniteNumber(value.minValue))
-      && (value.maxValue === undefined || isFiniteNumber(value.maxValue))
+      && isOptionalFiniteNumber(value.minValue)
+      && isOptionalFiniteNumber(value.maxValue)
       && isNonNegativeInteger(value.missingCount)
       && isFiniteNumber(value.binWidth)
       && isNonNegativeInteger(value.totalCount)
@@ -528,10 +532,10 @@ export function isGraphAggregatePacket(value: unknown): value is GraphAggregateP
       && isOptionalString(value.sourceColumn)
       && isNonNegativeInteger(value.xBinCount)
       && isNonNegativeInteger(value.yBinCount)
-      && (value.xMin === undefined || isFiniteNumber(value.xMin))
-      && (value.xMax === undefined || isFiniteNumber(value.xMax))
-      && (value.yMin === undefined || isFiniteNumber(value.yMin))
-      && (value.yMax === undefined || isFiniteNumber(value.yMax))
+      && isOptionalFiniteNumber(value.xMin)
+      && isOptionalFiniteNumber(value.xMax)
+      && isOptionalFiniteNumber(value.yMin)
+      && isOptionalFiniteNumber(value.yMax)
       && isNonNegativeInteger(value.missingCount)
       && isFiniteNumber(value.xBinWidth)
       && isFiniteNumber(value.yBinWidth)
