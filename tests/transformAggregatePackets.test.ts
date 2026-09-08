@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter.ts";
 import type { GraphTheme } from "../src/graphCore/theme.ts";
+import { DEFAULT_GROUP_KEY } from "../src/graphCore/types.ts";
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
 import type { DistributionReportResponse } from "../src/types/distribution.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
@@ -1273,6 +1274,12 @@ for (const element of [
         x: { name: "x", type: histogramMode ? "nominal" : "continuous" },
         y: { name: "y", type: "continuous" },
       },
+      styles: {
+        [DEFAULT_GROUP_KEY]: {
+          fill: { color: "#123456" },
+        },
+      },
+      yAxis: { minorTickCount: 0 },
       elements: [
         { kind: "points", enabled: true, options: { summaryStat: "none" } },
         overlay.element,
@@ -1311,7 +1318,16 @@ for (const element of [
       `points + ${overlay.name} must emit the packet overlay`,
     );
     const xAxis = panel.option.xAxis as { min?: number; max?: number };
-    const yAxis = panel.option.yAxis as { min?: number; max?: number };
+    const yAxis = panel.option.yAxis as {
+      min?: number;
+      max?: number;
+      minorTick?: { show?: boolean };
+    };
+    assert.equal(
+      yAxis.minorTick?.show,
+      false,
+      `points + ${overlay.name} must honor an explicit request to hide minor ticks`,
+    );
     if (!histogramMode) {
       assert.deepEqual(
         { min: xAxis.min, max: xAxis.max },
@@ -1320,6 +1336,13 @@ for (const element of [
       );
     }
     if (overlay.name === "heatmap") {
+      const heatmapSeries = panelSeries(panel.option as Record<string, unknown>)
+        .find((entry) => entry.type === "heatmap");
+      assert.equal(
+        (heatmapSeries?.itemStyle as { color?: string } | undefined)?.color,
+        "#123456",
+        "an ungrouped heatmap must consume the same automatic fill theme as every other filled graph",
+      );
       assert.deepEqual(
         { min: yAxis.min, max: yAxis.max },
         { min: 2, max: 12 },

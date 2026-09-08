@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { buildGraph } from "../src/graphCore/transform.ts";
-import { getGraphTheme } from "../src/graphCore/theme.ts";
+import { buildAxisCommon, getGraphTheme } from "../src/graphCore/theme.ts";
 
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
 
@@ -27,6 +27,17 @@ const spec: GraphSpec = {
 
 const built = buildGraph(spec, data, getGraphTheme());
 const grid = built.panels[0].option.grid as { bottom?: number };
+const axisDefaults = buildAxisCommon(getGraphTheme());
+
+assert.deepEqual(
+  axisDefaults.minorTick,
+  {
+    show: true,
+    splitNumber: 5,
+    lineStyle: { color: getGraphTheme().axisLine, width: 0.5 },
+  },
+  "all Graph Builder value axes must receive visible automatic minor ticks from the shared theme",
+);
 
 assert.ok(
   (grid.bottom ?? 0) >= 28,
