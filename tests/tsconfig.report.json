@@ -4,5 +4,5 @@
     "composite": false,
     "types": ["node"]
   },
-  "include": ["./reportProjectContracts.test.ts"]
+  "include": ["./reportEditorCodec.test.ts", "./reportProjectContracts.test.ts"]
 }

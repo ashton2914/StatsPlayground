@@ -35,7 +35,7 @@ export const analysisKindDescriptors = {
     },
     capabilities: {
       graphEditing: true,
-      reportEmbedding: false,
+      reportEmbedding: true,
     },
   },
   fitYByX: {

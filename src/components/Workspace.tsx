@@ -277,6 +277,7 @@ export function Workspace() {
   const nextReportName = useReportStore((s) => s.nextName);
   const analysisItems = useAnalysisStore((s) => s.items);
   const fitYByXAnalysisItems = analysisItems.filter(isFitYByXAnalysisDocument);
+  const distributionAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "distribution");
   const addAnalysis = useAnalysisStore((s) => s.addAnalysis);
   const updateAnalysis = useAnalysisStore((s) => s.updateAnalysis);
   const deleteAnalysis = useAnalysisStore((s) => s.removeAnalysis);
@@ -2589,7 +2590,7 @@ export function Workspace() {
                   graphOptions={graphBuilders.map((graph) => ({ id: graph.id, name: graph.name }))}
                   fitYByXOptions={fitYByXAnalysisItems.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
                   tabulateOptions={tabulates.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
-                  distributionOptions={[]}
+                  distributionOptions={distributionAnalysisItems.map((analysis) => ({ id: analysis.id, name: analysis.name }))}
                   onMarkdownChange={(markdown) => handleReportMarkdownChange(item.id, markdown)}
                   readOnly={readOnly}
                 />

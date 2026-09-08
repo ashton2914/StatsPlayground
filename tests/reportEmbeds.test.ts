@@ -137,11 +137,18 @@ function assertResolved(
   dependency: ReportDependency,
   expectedName: string,
   expectedDatasetName: string,
+  expectedDistributionOrigin?: "analysis" | "legacy",
 ): void {
   const resolved = resolveReportDependency(dependency);
   assert.equal(resolved.status, "resolved", `${dependency.kind}:${dependency.documentId} should resolve`);
   assert.equal(resolved.source.name, expectedName);
   assert.equal(resolved.source.dataset.name, expectedDatasetName);
+  if (expectedDistributionOrigin) {
+    assert.equal(resolved.source.kind, "distribution");
+    if (resolved.source.kind === "distribution") {
+      assert.equal(resolved.source.origin, expectedDistributionOrigin);
+    }
+  }
 }
 
 resetStores();
@@ -156,7 +163,11 @@ const fitYByXAnalysis = createFitYByXAnalysisDocument({
   confidenceLevel: 0.95,
   updatedAt: "2026-09-02T00:00:00.000Z",
 });
-useAnalysisStore.getState().loadAnalyses([fitYByXAnalysis]);
+const distributionAnalysis = createDistributionAnalysisDocument(
+  createDistribution("distribution-analysis-1", "Analysis Distribution", dataset.id),
+  "2026-09-02T00:00:00.000Z",
+);
+useAnalysisStore.getState().loadAnalyses([fitYByXAnalysis, distributionAnalysis]);
 useTabulateStore.getState().loadFromProject([
   createTabulate({ id: "tab-1", name: "Grouped Summary", sourceDatasetId: dataset.id }),
 ]);
@@ -168,7 +179,23 @@ assertResolved({ kind: "table", documentId: "table-1" }, "Incoming Data", "Incom
 assertResolved({ kind: "graph", documentId: "graph-1" }, "Scatter Plot", "Incoming Data");
 assertResolved({ kind: "fitYByX", documentId: "fit-1" }, "Strength vs Time", "Incoming Data");
 assertResolved({ kind: "tabulate", documentId: "tab-1" }, "Grouped Summary", "Incoming Data");
-assertResolved({ kind: "distribution", documentId: "distribution-1" }, "Strength Distribution", "Incoming Data");
+assertResolved(
+  { kind: "distribution", documentId: "distribution-1" },
+  "Strength Distribution",
+  "Incoming Data",
+  "legacy",
+);
+
+useDistributionStore.getState().reset();
+assertResolved(
+  { kind: "distribution", documentId: "distribution-analysis-1" },
+  "Analysis Distribution",
+  "Incoming Data",
+  "analysis",
+);
+useDistributionStore.getState().loadFromProject([
+  createDistribution("distribution-1", "Strength Distribution", dataset.id),
+]);
 
 useDataStore.setState({
   activeDatasetId: null,

@@ -9,7 +9,11 @@ import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import type { DatasetMeta } from "@/types/data";
-import type { AnalysisDocument, FitYByXAnalysisDocument } from "@/types/analysis";
+import type {
+  AnalysisDocument,
+  DistributionAnalysisDocument,
+  FitYByXAnalysisDocument,
+} from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import type { ReportDependency } from "@/types/report";
@@ -46,10 +50,9 @@ type ReportResolvedItemByKind = {
   graph: GraphBuilderItem;
   fitYByX: FitYByXAnalysisDocument;
   tabulate: TabulateItem;
-  distribution: DistributionItem;
 };
 
-export type ReportResolvedSource = {
+type StandardReportResolvedSource = {
   [Kind in keyof ReportResolvedItemByKind]: {
     kind: Kind;
     name: string;
@@ -57,6 +60,24 @@ export type ReportResolvedSource = {
     dataset: DatasetMeta;
   };
 }[keyof ReportResolvedItemByKind];
+
+type DistributionReportResolvedSource =
+  | {
+      kind: "distribution";
+      origin: "analysis";
+      name: string;
+      item: DistributionAnalysisDocument;
+      dataset: DatasetMeta;
+    }
+  | {
+      kind: "distribution";
+      origin: "legacy";
+      name: string;
+      item: DistributionItem;
+      dataset: DatasetMeta;
+    };
+
+export type ReportResolvedSource = StandardReportResolvedSource | DistributionReportResolvedSource;
 
 export type ReportDependencyResolution =
   | {
@@ -154,13 +175,34 @@ export function resolveReportDependency(
   }
 
   if (dependency.kind === "distribution") {
-    const item = distributions.find((candidate) => candidate.id === dependency.documentId);
+    const candidate = analyses.find((document) => document.id === dependency.documentId);
+    const analysis = candidate && analysisReportPolicies.distribution.accepts(candidate)
+      ? candidate
+      : undefined;
+    if (analysis) {
+      const dataset = findDataset(analysis.source.datasetId, datasets);
+      return dataset
+        ? {
+            status: "resolved",
+            source: {
+              kind: "distribution",
+              origin: "analysis",
+              name: analysis.name,
+              item: analysis,
+              dataset,
+            },
+          }
+        : { status: "missing", dependency };
+    }
+
+    const item = distributions.find((legacyItem) => legacyItem.id === dependency.documentId);
     const dataset = item ? findDataset(item.sourceDatasetId, datasets) : undefined;
     return item && dataset
       ? {
           status: "resolved",
           source: {
             kind: "distribution",
+            origin: "legacy",
             name: item.name,
             item,
             dataset,
