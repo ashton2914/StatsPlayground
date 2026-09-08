@@ -117,7 +117,14 @@ export function buildProjectDependencyGraph(snapshot: ProjectDocumentSnapshot): 
   const edges = projected.flatMap(operationEdges).sort(compareEdges);
   assertUniqueIds(nodes, edges);
   assertResolvedEdges(nodes, edges);
-  return { id: "project-lineage", name: "Project lineage", nodes, edges };
+  return {
+    id: "project-lineage",
+    name: "Project lineage",
+    graphVersion: 2,
+    graphHash: "",
+    nodes,
+    edges,
+  };
 }
 
 export type { ProjectDocumentSnapshot } from "./operationAdapters";

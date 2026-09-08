@@ -92,6 +92,8 @@ const openResult = {
   lineageGraph: {
     id: "project-lineage",
     name: "Project Lineage",
+    graphVersion: 2,
+    graphHash: "a".repeat(64),
     nodes: [],
     edges: [],
   },

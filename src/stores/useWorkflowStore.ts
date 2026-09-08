@@ -24,6 +24,8 @@ interface WorkflowStore {
 const EMPTY_LINEAGE: ProjectLineageGraph = {
   id: "project-lineage",
   name: "Project lineage",
+  graphVersion: 0,
+  graphHash: "",
   nodes: [],
   edges: [],
 };

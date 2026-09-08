@@ -1664,6 +1664,8 @@ export function Workspace() {
           lineageGraph: result.lineageGraph ?? {
             id: "project-lineage",
             name: "Project lineage",
+            graphVersion: 0,
+            graphHash: "",
             nodes: [],
             edges: [],
           },

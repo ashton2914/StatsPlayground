@@ -612,7 +612,10 @@ pub fn validate_archive_manifest_and_entries(
     }
     for entry in &expected_manifest.analyses {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
-            AppError::FileIO(format!("Archive missing analysis entry {}: {e}", entry.file))
+            AppError::FileIO(format!(
+                "Archive missing analysis entry {}: {e}",
+                entry.file
+            ))
         })?;
         let value: Value = serde_json::from_reader(&mut doc_entry).map_err(|e| {
             AppError::FileIO(format!(
@@ -1083,7 +1086,9 @@ fn read_indexed_workflows<R: Read + Seek>(
         let bytes = read_entry_bytes(zip, &entry.file)
             .ok_or_else(|| AppError::FileIO(format!("Missing workflow entry: {}", entry.file)))?;
         let workflow: workflow_domain::WorkflowDefinition = serde_json::from_slice(&bytes)
-            .map_err(|e| AppError::FileIO(format!("Invalid workflow file {}: {}", entry.file, e)))?;
+            .map_err(|e| {
+                AppError::FileIO(format!("Invalid workflow file {}: {}", entry.file, e))
+            })?;
         if workflow.id != entry.id {
             return Err(AppError::FileIO(format!(
                 "Mismatched workflow id in {}: manifest={}, body={}",
@@ -1694,21 +1699,31 @@ pub fn build_bundle_with_workflows_and_fit_models(
         &table_refs,
         &graph_refs,
         &fit_y_by_x_refs,
+        &analysis_refs,
+        &distribution_refs,
         &tabulate_refs,
+        &report_refs,
         &snapshot_refs,
     );
     let lineage_graph = if is_format_v4(&version) {
-        let lineage_graph = build_project_lineage_graph(
+        let mut lineage_graph = build_project_lineage_graph(
             &table_refs,
             &graph_refs,
             &graphs,
             &fit_y_by_x_refs,
             &fit_y_by_x,
+            &analysis_refs,
+            &analyses,
+            &distribution_refs,
+            &distributions,
             &tabulate_refs,
             &tabulates,
+            &report_refs,
+            &reports,
             &snapshot_refs,
             &known_documents,
         )?;
+        workflow_domain::seal_project_lineage_graph(&mut lineage_graph)?;
         workflow_domain::validate_lineage_graph(&lineage_graph, &known_documents)?;
         lineage_graph
     } else {
@@ -1781,7 +1796,10 @@ fn collect_known_document_refs(
     table_refs: &[TableEntryRef],
     graph_refs: &[GraphEntryRef],
     fit_refs: &[DocumentEntryRef],
+    analysis_refs: &[DocumentEntryRef],
+    distribution_refs: &[DocumentEntryRef],
     tabulate_refs: &[DocumentEntryRef],
+    report_refs: &[DocumentEntryRef],
     snapshot_refs: &[SnapshotEntryRef],
 ) -> HashSet<ProjectDocumentRef> {
     let mut known_documents = HashSet::new();
@@ -1804,9 +1822,27 @@ fn collect_known_document_refs(
             id: entry.id.clone(),
         });
     }
+    for entry in analysis_refs {
+        known_documents.insert(ProjectDocumentRef {
+            kind: ProjectDocumentKind::Analysis,
+            id: entry.id.clone(),
+        });
+    }
+    for entry in distribution_refs {
+        known_documents.insert(ProjectDocumentRef {
+            kind: ProjectDocumentKind::Distribution,
+            id: entry.id.clone(),
+        });
+    }
     for entry in tabulate_refs {
         known_documents.insert(ProjectDocumentRef {
             kind: ProjectDocumentKind::Tabulate,
+            id: entry.id.clone(),
+        });
+    }
+    for entry in report_refs {
+        known_documents.insert(ProjectDocumentRef {
+            kind: ProjectDocumentKind::Report,
             id: entry.id.clone(),
         });
     }
@@ -1826,33 +1862,45 @@ fn build_project_lineage_graph(
     graphs: &[GraphDoc],
     fit_refs: &[DocumentEntryRef],
     fit_y_by_x: &[Value],
+    analysis_refs: &[DocumentEntryRef],
+    analyses: &[Value],
+    distribution_refs: &[DocumentEntryRef],
+    distributions: &[Value],
     tabulate_refs: &[DocumentEntryRef],
     tabulates: &[Value],
+    report_refs: &[DocumentEntryRef],
+    reports: &[Value],
     snapshot_refs: &[SnapshotEntryRef],
     known_documents: &HashSet<ProjectDocumentRef>,
 ) -> Result<workflow_domain::ProjectLineageGraph, AppError> {
     let mut lineage_graph = workflow_domain::ProjectLineageGraph::default();
 
-    let mut artifact_nodes = table_refs
-        .iter()
-        .map(|entry| build_artifact_node(ProjectDocumentKind::Table, &entry.id, &entry.name))
-        .chain(
-            graph_refs
-                .iter()
-                .map(|entry| build_artifact_node(ProjectDocumentKind::Graph, &entry.id, &entry.name)),
-        )
-        .chain(
-            fit_refs
-                .iter()
-                .map(|entry| build_artifact_node(ProjectDocumentKind::FitYByX, &entry.id, &entry.name)),
-        )
-        .chain(tabulate_refs.iter().map(|entry| {
-            build_artifact_node(ProjectDocumentKind::Tabulate, &entry.id, &entry.name)
-        }))
-        .chain(snapshot_refs.iter().map(|entry| {
-            build_artifact_node(ProjectDocumentKind::Snapshot, &entry.id, &entry.name)
-        }))
-        .collect::<Vec<_>>();
+    let mut artifact_nodes =
+        table_refs
+            .iter()
+            .map(|entry| build_artifact_node(ProjectDocumentKind::Table, &entry.id, &entry.name))
+            .chain(graph_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Graph, &entry.id, &entry.name)
+            }))
+            .chain(fit_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::FitYByX, &entry.id, &entry.name)
+            }))
+            .chain(analysis_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Analysis, &entry.id, &entry.name)
+            }))
+            .chain(distribution_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Distribution, &entry.id, &entry.name)
+            }))
+            .chain(tabulate_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Tabulate, &entry.id, &entry.name)
+            }))
+            .chain(report_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Report, &entry.id, &entry.name)
+            }))
+            .chain(snapshot_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Snapshot, &entry.id, &entry.name)
+            }))
+            .collect::<Vec<_>>();
     artifact_nodes.sort_by(|left, right| left.id.cmp(&right.id));
     lineage_graph.nodes.extend(
         artifact_nodes
@@ -1870,12 +1918,11 @@ fn build_project_lineage_graph(
                 kind: ProjectDocumentKind::Graph,
                 id: graph_doc.id.clone(),
             };
-            let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(
-                    source_id,
-                    &target_ref,
-                    Value::Object(graph_doc.body.clone()),
-                )?;
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(Value::Object(graph_doc.body.clone())),
+            )?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
@@ -1898,8 +1945,65 @@ fn build_project_lineage_graph(
                 kind: ProjectDocumentKind::FitYByX,
                 id: fit_ref.id.clone(),
             };
-            let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref, fit_value.clone())?;
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(fit_value.clone()),
+            )?;
+            operation_nodes.push(operation_node);
+            edges.push(consume_edge);
+            edges.push(produce_edge);
+        }
+    }
+
+    for analysis_ref in analysis_refs {
+        let analysis = document_payload(analyses, analysis_ref, "analysis")?;
+        if let Some(source_id) = analysis
+            .get("source")
+            .and_then(|source| source.get("datasetId"))
+            .and_then(Value::as_str)
+        {
+            let source_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Table,
+                id: source_id.to_string(),
+            };
+            if !known_documents.contains(&source_ref) {
+                continue;
+            }
+            let target_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Analysis,
+                id: analysis_ref.id.clone(),
+            };
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(analysis.clone()),
+            )?;
+            operation_nodes.push(operation_node);
+            edges.push(consume_edge);
+            edges.push(produce_edge);
+        }
+    }
+
+    for distribution_ref in distribution_refs {
+        let distribution = document_payload(distributions, distribution_ref, "distribution")?;
+        if let Some(source_id) = non_blank_string(distribution.get("sourceDatasetId")) {
+            let source_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Table,
+                id: source_id.to_string(),
+            };
+            if !known_documents.contains(&source_ref) {
+                continue;
+            }
+            let target_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Distribution,
+                id: distribution_ref.id.clone(),
+            };
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(distribution.clone()),
+            )?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
@@ -1928,12 +2032,32 @@ fn build_project_lineage_graph(
                 kind: ProjectDocumentKind::Tabulate,
                 id: tabulate_ref.id.clone(),
             };
-            let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref, tabulate_value.clone())?;
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(tabulate_value.clone()),
+            )?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
         }
+    }
+
+    for report_ref in report_refs {
+        let report = document_payload(reports, report_ref, "report")?;
+        let markdown = report.get("markdown").and_then(Value::as_str).unwrap_or("");
+        let target_ref = ProjectDocumentRef {
+            kind: ProjectDocumentKind::Report,
+            id: report_ref.id.clone(),
+        };
+        let (operation_node, mut report_edges) = build_report_lineage_operation(
+            &target_ref,
+            normalized_lineage_configuration(report.clone()),
+            markdown,
+            known_documents,
+        )?;
+        operation_nodes.push(operation_node);
+        edges.append(&mut report_edges);
     }
 
     operation_nodes.sort_by(|left, right| left.id.cmp(&right.id));
@@ -1946,6 +2070,54 @@ fn build_project_lineage_graph(
     lineage_graph.edges = edges;
 
     Ok(lineage_graph)
+}
+
+pub fn refresh_project_lineage_graph(bundle: &mut ProjectBundle) -> Result<bool, AppError> {
+    if !is_format_v4(&bundle.manifest.version) {
+        return Ok(false);
+    }
+
+    let known_documents = collect_known_document_refs(
+        &bundle.manifest.tables,
+        &bundle.manifest.graphs,
+        &bundle.manifest.fit_y_by_x_files,
+        &bundle.manifest.analyses,
+        &bundle.manifest.distributions,
+        &bundle.manifest.tabulate_files,
+        &bundle.manifest.report_files,
+        &bundle.manifest.snapshot_files,
+    );
+    let mut rebuilt = build_project_lineage_graph(
+        &bundle.manifest.tables,
+        &bundle.manifest.graphs,
+        &bundle.graphs,
+        &bundle.manifest.fit_y_by_x_files,
+        &bundle.fit_y_by_x,
+        &bundle.manifest.analyses,
+        &bundle.analyses,
+        &bundle.manifest.distributions,
+        &bundle.distributions,
+        &bundle.manifest.tabulate_files,
+        &bundle.tabulates,
+        &bundle.manifest.report_files,
+        &bundle.reports,
+        &bundle.manifest.snapshot_files,
+        &known_documents,
+    )?;
+    workflow_domain::seal_project_lineage_graph(&mut rebuilt)?;
+    workflow_domain::validate_lineage_graph(&rebuilt, &known_documents)?;
+
+    let persisted = &bundle.manifest.lineage_graph;
+    let persisted_body_hash = workflow_domain::project_lineage_graph_hash(persisted)?;
+    let requires_migration = persisted.graph_version
+        != workflow_domain::PROJECT_LINEAGE_GRAPH_VERSION
+        || persisted.graph_hash != persisted_body_hash
+        || persisted.graph_hash != rebuilt.graph_hash;
+
+    bundle.manifest.lineage_graph = rebuilt;
+    bundle.manifest.relationships =
+        build_data_source_relationships(&bundle.manifest.lineage_graph)?;
+    Ok(requires_migration)
 }
 
 fn build_artifact_node(
@@ -2067,6 +2239,200 @@ fn build_project_lineage_operation(
     Ok((operation_node, consume_edge, produce_edge))
 }
 
+fn document_payload<'a>(
+    documents: &'a [Value],
+    entry: &DocumentEntryRef,
+    label: &str,
+) -> Result<&'a Value, AppError> {
+    documents
+        .iter()
+        .find(|value| value.get("id").and_then(Value::as_str) == Some(entry.id.as_str()))
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "missing {label} payload for manifest reference {}",
+                entry.id
+            ))
+        })
+}
+
+fn normalized_lineage_configuration(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            for key in ["id", "name", "createdAt", "updatedAt"] {
+                object.remove(key);
+            }
+            Value::Object(object)
+        }
+        scalar => scalar,
+    }
+}
+
+fn build_report_lineage_operation(
+    target_ref: &ProjectDocumentRef,
+    configuration: Value,
+    markdown: &str,
+    known_documents: &HashSet<ProjectDocumentRef>,
+) -> Result<
+    (
+        workflow_domain::OperationNode,
+        Vec<workflow_domain::LineageEdge>,
+    ),
+    AppError,
+> {
+    let operation_id = format!("operation-report-{}", target_ref.id);
+    let output_port_id = format!("{operation_id}-output");
+    let mut input_ports = Vec::new();
+    let mut edges = Vec::new();
+
+    for source_ref in report_dependencies(markdown) {
+        if !known_documents.contains(&source_ref) {
+            return Err(AppError::InvalidParam(format!(
+                "report {} references unknown {} document {}",
+                target_ref.id,
+                document_kind_key(&source_ref.kind),
+                source_ref.id
+            )));
+        }
+        let source_kind_key = document_kind_key(&source_ref.kind);
+        let source_artifact_id = artifact_node_id(&source_ref.kind, &source_ref.id);
+        let input_port_id = format!("{operation_id}-input-{source_kind_key}-{}", source_ref.id);
+        input_ports.push(workflow_domain::LineagePort {
+            id: input_port_id.clone(),
+            name: format!("{source_kind_key}:{}", source_ref.id),
+            payload_kind: port_payload_kind(&source_ref.kind),
+        });
+        edges.push(workflow_domain::LineageEdge {
+            id: format!(
+                "consumes-{source_kind_key}-{}-to-report-{}",
+                source_ref.id, target_ref.id
+            ),
+            kind: workflow_domain::LineageEdgeKind::Consumes,
+            source: workflow_domain::LineageEndpoint {
+                node_id: source_artifact_id.clone(),
+                port_id: format!("{source_artifact_id}-output"),
+            },
+            target: workflow_domain::LineageEndpoint {
+                node_id: operation_id.clone(),
+                port_id: input_port_id,
+            },
+        });
+    }
+
+    let target_artifact_id = artifact_node_id(&target_ref.kind, &target_ref.id);
+    edges.push(workflow_domain::LineageEdge {
+        id: format!(
+            "produces-report-{}-to-report-{}",
+            target_ref.id, target_ref.id
+        ),
+        kind: workflow_domain::LineageEdgeKind::Produces,
+        source: workflow_domain::LineageEndpoint {
+            node_id: operation_id.clone(),
+            port_id: output_port_id.clone(),
+        },
+        target: workflow_domain::LineageEndpoint {
+            node_id: target_artifact_id.clone(),
+            port_id: format!("{target_artifact_id}-input"),
+        },
+    });
+
+    Ok((
+        workflow_domain::OperationNode {
+            id: operation_id,
+            kind: workflow_domain::OperationKind::ReportComposition,
+            schema_version: "1".to_string(),
+            configuration: Some(configuration),
+            document_ref: Some(target_ref.clone()),
+            input_ports,
+            output_ports: vec![workflow_domain::LineagePort {
+                id: output_port_id,
+                name: "result".to_string(),
+                payload_kind: workflow_domain::PortPayloadKind::Report,
+            }],
+        },
+        edges,
+    ))
+}
+
+fn report_dependencies(markdown: &str) -> Vec<ProjectDocumentRef> {
+    let mut dependencies = HashSet::new();
+    let mut fence: Option<(char, usize)> = None;
+
+    for line in markdown.lines() {
+        let line = line.trim_end_matches('\r');
+        let candidate = line.trim_start_matches(' ');
+        let indent = line.len() - candidate.len();
+        if indent <= 3 {
+            if let Some((marker, length)) = fence {
+                let marker_count = candidate
+                    .chars()
+                    .take_while(|value| *value == marker)
+                    .count();
+                if marker_count >= length
+                    && candidate[marker_count..].chars().all(char::is_whitespace)
+                {
+                    fence = None;
+                }
+                continue;
+            }
+
+            let marker = candidate
+                .chars()
+                .next()
+                .filter(|value| *value == '`' || *value == '~');
+            if let Some(marker) = marker {
+                let marker_count = candidate
+                    .chars()
+                    .take_while(|value| *value == marker)
+                    .count();
+                if marker_count >= 3 {
+                    fence = Some((marker, marker_count));
+                    continue;
+                }
+            }
+        }
+
+        if fence.is_none() {
+            if let Some(dependency) = parse_report_embed_line(line) {
+                dependencies.insert(dependency);
+            }
+        }
+    }
+
+    let mut dependencies = dependencies.into_iter().collect::<Vec<_>>();
+    dependencies.sort_by(|left, right| {
+        document_kind_key(&left.kind)
+            .cmp(document_kind_key(&right.kind))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    dependencies
+}
+
+fn parse_report_embed_line(line: &str) -> Option<ProjectDocumentRef> {
+    let body = line
+        .strip_prefix("{{sp-embed kind=\"")?
+        .strip_suffix("\"}}")?;
+    let (kind, id) = body.split_once("\" id=\"")?;
+    if id.is_empty()
+        || id.chars().any(|value| {
+            value.is_whitespace() || value.is_control() || matches!(value, '"' | '{' | '}')
+        })
+    {
+        return None;
+    }
+    let kind = match kind {
+        "table" => ProjectDocumentKind::Table,
+        "graph" => ProjectDocumentKind::Graph,
+        "fitYByX" => ProjectDocumentKind::Analysis,
+        "tabulate" => ProjectDocumentKind::Tabulate,
+        "distribution" => ProjectDocumentKind::Distribution,
+        _ => return None,
+    };
+    Some(ProjectDocumentRef {
+        kind,
+        id: id.to_string(),
+    })
+}
+
 fn build_data_source_relationships(
     lineage_graph: &workflow_domain::ProjectLineageGraph,
 ) -> Result<Vec<ProjectRelationship>, AppError> {
@@ -2141,8 +2507,10 @@ fn build_data_source_relationships(
         }
     }
 
-    relationships.sort_by(|left, right| relationship_sort_key(left).cmp(&relationship_sort_key(right)));
-    relationships.dedup_by(|left, right| relationship_sort_key(left) == relationship_sort_key(right));
+    relationships
+        .sort_by(|left, right| relationship_sort_key(left).cmp(&relationship_sort_key(right)));
+    relationships
+        .dedup_by(|left, right| relationship_sort_key(left) == relationship_sort_key(right));
     Ok(relationships)
 }
 
@@ -2219,7 +2587,9 @@ fn operation_kind(kind: &ProjectDocumentKind) -> Result<workflow_domain::Operati
 }
 
 fn non_blank_string(value: Option<&Value>) -> Option<&str> {
-    value.and_then(Value::as_str).filter(|value| !value.trim().is_empty())
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn data_source_relationship(
@@ -2254,7 +2624,15 @@ fn strip_transient_fit_y_by_x_fields(value: Value) -> Value {
 fn strip_transient_distribution_fields(value: Value) -> Value {
     match value {
         Value::Object(mut map) => {
-            for field in ["result", "reportResult", "graphFrames", "frames", "snapshot", "snapshots", "runState"] {
+            for field in [
+                "result",
+                "reportResult",
+                "graphFrames",
+                "frames",
+                "snapshot",
+                "snapshots",
+                "runState",
+            ] {
                 map.remove(field);
             }
             Value::Object(map)
@@ -2430,12 +2808,8 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
                     entry.id
                 ))
             })?;
-            let synced = indexed_payload_with_manifest_name(
-                doc,
-                &entry.id,
-                &entry.name,
-                "distribution",
-            )?;
+            let synced =
+                indexed_payload_with_manifest_name(doc, &entry.id, &entry.name, "distribution")?;
             write_zip_json_entry(&mut zip, &entry.file, &synced, opts)?;
         }
         for entry in &bundle.manifest.analyses {
@@ -2445,7 +2819,8 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
                     entry.id
                 ))
             })?;
-            let synced = indexed_payload_with_manifest_name(doc, &entry.id, &entry.name, "analysis")?;
+            let synced =
+                indexed_payload_with_manifest_name(doc, &entry.id, &entry.name, "analysis")?;
             write_zip_json_entry(&mut zip, &entry.file, &synced, opts)?;
         }
         for entry in &bundle.manifest.tabulate_files {
@@ -2904,10 +3279,9 @@ fn manifest_contains_document(manifest: &ProjectManifest, document: &ProjectDocu
         ProjectDocumentKind::Table => manifest.tables.iter().any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::TableTransform => false,
         ProjectDocumentKind::Graph => manifest.graphs.iter().any(|entry| contains_id(&entry.id)),
-        ProjectDocumentKind::Analysis => manifest
-            .analyses
-            .iter()
-            .any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::Analysis => {
+            manifest.analyses.iter().any(|entry| contains_id(&entry.id))
+        }
         ProjectDocumentKind::Distribution => manifest
             .distributions
             .iter()
@@ -3010,6 +3384,14 @@ fn validate_bundle_before_write(bundle: &ProjectBundle) -> Result<(), AppError> 
         &bundle.manifest.workflow_runs,
     )?;
     validate_manifest_entry_refs(&bundle.manifest)?;
+    if is_format_v4(&bundle.manifest.version) {
+        let mut canonical = bundle.clone();
+        if refresh_project_lineage_graph(&mut canonical)? {
+            return Err(AppError::InvalidParam(
+                "project lineage graph hash does not match current project documents".to_string(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3024,7 +3406,10 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
             &manifest.tables,
             &manifest.graphs,
             &manifest.fit_y_by_x_files,
+            &manifest.analyses,
+            &manifest.distributions,
             &manifest.tabulate_files,
+            &manifest.report_files,
             &manifest.snapshot_files,
         );
         workflow_domain::validate_lineage_graph(&manifest.lineage_graph, &known_documents)?;
@@ -3101,12 +3486,7 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
                 entry.file
             )));
         }
-        validate_indexed_path(
-            &entry.file,
-            "distributions",
-            ".spdist",
-            "distribution",
-        )?;
+        validate_indexed_path(&entry.file, "distributions", ".spdist", "distribution")?;
         validate_display_basename(&entry.name)?;
         if strict_v4_name_checks {
             validate_manifest_name_matches_file_basename(
@@ -3186,12 +3566,7 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
         };
         validate_indexed_path(&entry.file, root, extension, "workflow")?;
         validate_display_basename(&entry.id)?;
-        validate_manifest_id_matches_file_basename(
-            &entry.file,
-            &entry.id,
-            extension,
-            "workflow",
-        )?;
+        validate_manifest_id_matches_file_basename(&entry.file, &entry.id, extension, "workflow")?;
         ensure_unique_file(&mut seen_files, &entry.file)?;
     }
 
@@ -3457,10 +3832,14 @@ fn validate_fit_y_by_x_analysis_definition(
     validate_field_ref_value(factor, &format!("{context} analysis definition.factor"))?;
 
     let response_object = response.as_object().ok_or_else(|| {
-        AppError::FileIO(format!("{context} analysis definition.response must be an object"))
+        AppError::FileIO(format!(
+            "{context} analysis definition.response must be an object"
+        ))
     })?;
     let factor_object = factor.as_object().ok_or_else(|| {
-        AppError::FileIO(format!("{context} analysis definition.factor must be an object"))
+        AppError::FileIO(format!(
+            "{context} analysis definition.factor must be an object"
+        ))
     })?;
     if response_object.get("type").and_then(Value::as_str) != Some("continuous") {
         return Err(AppError::FileIO(format!(
@@ -3519,9 +3898,7 @@ fn validate_fit_y_by_x_analysis_presentation(
         .get("graph")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            AppError::FileIO(format!(
-                "{context} analysis presentation.graph is missing"
-            ))
+            AppError::FileIO(format!("{context} analysis presentation.graph is missing"))
         })?;
     validate_embedded_graph_config(graph, &format!("{context} analysis presentation.graph"))
 }
@@ -3551,9 +3928,7 @@ fn validate_distribution_analysis_definition(
         .get("analysis")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            AppError::FileIO(format!(
-                "{context} analysis definition.analysis is missing"
-            ))
+            AppError::FileIO(format!("{context} analysis definition.analysis is missing"))
         })?;
     validate_distribution_analysis_config(
         analysis,
@@ -3564,9 +3939,7 @@ fn validate_distribution_analysis_definition(
         .get("graphs")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            AppError::FileIO(format!(
-                "{context} analysis definition.graphs is missing"
-            ))
+            AppError::FileIO(format!("{context} analysis definition.graphs is missing"))
         })?;
     for key in ["overview", "boxPlot", "ecdf", "normalQuantile"] {
         let graph = graphs.get(key).and_then(Value::as_object).ok_or_else(|| {
@@ -3599,11 +3972,15 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
     let definition = object
         .get("definition")
         .and_then(Value::as_object)
-        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required definition")))?;
+        .ok_or_else(|| {
+            AppError::FileIO(format!("{context} analysis is missing required definition"))
+        })?;
     let definition_kind = definition
         .get("kind")
         .and_then(Value::as_str)
-        .ok_or_else(|| AppError::FileIO(format!("{context} analysis definition is missing kind")))?;
+        .ok_or_else(|| {
+            AppError::FileIO(format!("{context} analysis definition is missing kind"))
+        })?;
     let contract = ANALYSIS_VALIDATOR_CONTRACTS
         .iter()
         .find(|contract| {
@@ -3614,14 +3991,17 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
                 "{context} analysis uses unsupported analysisKind/definition kind {analysis_kind}/{definition_kind}"
             ))
         })?;
-    if object.get("schemaVersion").and_then(Value::as_i64)
-        != Some(contract.document_schema_version)
+    if object.get("schemaVersion").and_then(Value::as_i64) != Some(contract.document_schema_version)
     {
         return Err(AppError::FileIO(format!(
             "{context} analysis is missing required schemaVersion"
         )));
     }
-    if object.get("configRevision").and_then(Value::as_u64).is_none() {
+    if object
+        .get("configRevision")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
         return Err(AppError::FileIO(format!(
             "{context} analysis is missing required configRevision"
         )));
@@ -3640,15 +4020,24 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
     let source = object
         .get("source")
         .and_then(Value::as_object)
-        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required source")))?;
-    require_non_empty_string(source.get("datasetId"), &format!("{context} analysis source.datasetId"))?;
+        .ok_or_else(|| {
+            AppError::FileIO(format!("{context} analysis is missing required source"))
+        })?;
+    require_non_empty_string(
+        source.get("datasetId"),
+        &format!("{context} analysis source.datasetId"),
+    )?;
 
     (contract.validate_definition)(definition, context)?;
 
     let presentation = object
         .get("presentation")
         .and_then(Value::as_object)
-        .ok_or_else(|| AppError::FileIO(format!("{context} analysis is missing required presentation")))?;
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis is missing required presentation"
+            ))
+        })?;
     if presentation.get("schemaVersion").and_then(Value::as_i64)
         != Some(contract.presentation_schema_version)
     {
@@ -3663,8 +4052,14 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
         )));
     }
     (contract.validate_presentation)(presentation, context)?;
-    require_non_empty_string(object.get("createdAt"), &format!("{context} analysis createdAt"))?;
-    require_non_empty_string(object.get("updatedAt"), &format!("{context} analysis updatedAt"))?;
+    require_non_empty_string(
+        object.get("createdAt"),
+        &format!("{context} analysis createdAt"),
+    )?;
+    require_non_empty_string(
+        object.get("updatedAt"),
+        &format!("{context} analysis updatedAt"),
+    )?;
     Ok(())
 }
 
@@ -3691,7 +4086,10 @@ fn validate_field_ref_value(value: &Value, context: &str) -> Result<(), AppError
         .ok_or_else(|| AppError::FileIO(format!("{context} must contain objects")))?;
     require_non_empty_string(object.get("name"), &format!("{context}.name"))?;
     let field_type = require_non_empty_string(object.get("type"), &format!("{context}.type"))?;
-    if !matches!(field_type, "continuous" | "nominal" | "ordinal" | "datetime" | "id") {
+    if !matches!(
+        field_type,
+        "continuous" | "nominal" | "ordinal" | "datetime" | "id"
+    ) {
         return Err(AppError::FileIO(format!(
             "{context}.type must be a supported field type"
         )));
@@ -3732,7 +4130,10 @@ fn validate_distribution_analysis_config(
                 "{context}.fitDistributions must contain known distribution ids"
             ))
         })?;
-        if !matches!(fit_id, "normal" | "lognormal" | "exponential" | "gamma" | "weibull") {
+        if !matches!(
+            fit_id,
+            "normal" | "lognormal" | "exponential" | "gamma" | "weibull"
+        ) {
             return Err(AppError::FileIO(format!(
                 "{context}.fitDistributions contains unsupported distribution id {fit_id}"
             )));
@@ -3777,8 +4178,14 @@ fn validate_embedded_graph_config(
         .get("modeStates")
         .and_then(Value::as_object)
         .ok_or_else(|| AppError::FileIO(format!("{context}.modeStates is missing")))?;
-    validate_graph_2d_state(mode_states.get("twoD"), &format!("{context}.modeStates.twoD"))?;
-    validate_graph_3d_state(mode_states.get("threeD"), &format!("{context}.modeStates.threeD"))?;
+    validate_graph_2d_state(
+        mode_states.get("twoD"),
+        &format!("{context}.modeStates.twoD"),
+    )?;
+    validate_graph_3d_state(
+        mode_states.get("threeD"),
+        &format!("{context}.modeStates.threeD"),
+    )?;
     validate_multivariate_graph_state(
         mode_states.get("multivariate"),
         &format!("{context}.modeStates.multivariate"),
@@ -3794,7 +4201,10 @@ fn validate_graph_2d_state(value: Option<&Value>, context: &str) -> Result<(), A
     validate_field_ref_array(object.get("multiX"), &format!("{context}.multiX"))?;
     validate_field_ref_array(object.get("multiY"), &format!("{context}.multiY"))?;
     validate_graph_elements(object.get("elements"), &format!("{context}.elements"))?;
-    require_finite_number(object.get("smootherLambda"), &format!("{context}.smootherLambda"))?;
+    require_finite_number(
+        object.get("smootherLambda"),
+        &format!("{context}.smootherLambda"),
+    )?;
     Ok(())
 }
 
@@ -3804,7 +4214,10 @@ fn validate_graph_3d_state(value: Option<&Value>, context: &str) -> Result<(), A
         .ok_or_else(|| AppError::FileIO(format!("{context} is missing")))?;
     validate_field_ref_record(object.get("encoding"), &format!("{context}.encoding"))?;
     validate_graph_elements(object.get("elements"), &format!("{context}.elements"))?;
-    require_finite_number(object.get("smootherLambda"), &format!("{context}.smootherLambda"))?;
+    require_finite_number(
+        object.get("smootherLambda"),
+        &format!("{context}.smootherLambda"),
+    )?;
     Ok(())
 }
 
@@ -3874,7 +4287,10 @@ fn require_finite_number(value: Option<&Value>, context: &str) -> Result<f64, Ap
         .ok_or_else(|| AppError::FileIO(format!("{context} must be a finite number")))
 }
 
-fn require_non_empty_string<'a>(value: Option<&'a Value>, context: &str) -> Result<&'a str, AppError> {
+fn require_non_empty_string<'a>(
+    value: Option<&'a Value>,
+    context: &str,
+) -> Result<&'a str, AppError> {
     value
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
@@ -3889,7 +4305,7 @@ fn validate_manifest_relationship_projection(manifest: &ProjectManifest) -> Resu
         ));
     }
     Ok(())
-        }
+}
 
 fn set_value_name(value: &mut Value, name: &str, kind: &str) -> Result<(), AppError> {
     let Some(map) = value.as_object_mut() else {
@@ -4411,7 +4827,11 @@ mod tests {
         }
     }
 
-    fn logical_folder(id: &str, name: &str, parent_folder_id: Option<&str>) -> workflow_domain::LogicalFolder {
+    fn logical_folder(
+        id: &str,
+        name: &str,
+        parent_folder_id: Option<&str>,
+    ) -> workflow_domain::LogicalFolder {
         workflow_domain::LogicalFolder {
             id: id.to_string(),
             name: name.to_string(),
@@ -4420,7 +4840,12 @@ mod tests {
         }
     }
 
-    fn workflow_run(id: &str, workflow_id: &str, workflow_revision: u64, parent_folder_id: Option<&str>) -> workflow_domain::WorkflowRun {
+    fn workflow_run(
+        id: &str,
+        workflow_id: &str,
+        workflow_revision: u64,
+        parent_folder_id: Option<&str>,
+    ) -> workflow_domain::WorkflowRun {
         workflow_domain::WorkflowRun {
             id: id.to_string(),
             workflow_id: workflow_id.to_string(),
@@ -4519,7 +4944,10 @@ mod tests {
         assert_eq!(loaded.manifest.workflow_files.len(), 1);
         assert_eq!(loaded.manifest.workflow_files[0].id, "workflow-1");
         assert_eq!(loaded.manifest.workflow_files[0].revision, 3);
-        assert_eq!(loaded.manifest.workflow_files[0].file, "workflow/workflow-1.spwf");
+        assert_eq!(
+            loaded.manifest.workflow_files[0].file,
+            "workflow/workflow-1.spwf"
+        );
 
         let _ = std::fs::remove_file(path);
     }
@@ -4557,7 +4985,9 @@ mod tests {
             Ok(_) => panic!("expected missing workflow entry read to fail"),
             Err(error) => error,
         };
-        assert!(matches!(error, AppError::FileIO(message) if message.contains("Missing workflow entry")));
+        assert!(
+            matches!(error, AppError::FileIO(message) if message.contains("Missing workflow entry"))
+        );
 
         let _ = std::fs::remove_file(path);
     }
@@ -4598,7 +5028,9 @@ mod tests {
             Ok(_) => panic!("expected workflow revision mismatch read to fail"),
             Err(error) => error,
         };
-        assert!(matches!(error, AppError::FileIO(message) if message.contains("Mismatched workflow revision")));
+        assert!(
+            matches!(error, AppError::FileIO(message) if message.contains("Mismatched workflow revision"))
+        );
 
         let _ = std::fs::remove_file(path);
     }
@@ -4636,7 +5068,9 @@ mod tests {
             Ok(_) => panic!("expected duplicate workflow ids to fail"),
             Err(error) => error,
         };
-        assert!(matches!(duplicate_workflow_error, AppError::InvalidParam(message) if message.contains("duplicate workflow")));
+        assert!(
+            matches!(duplicate_workflow_error, AppError::InvalidParam(message) if message.contains("duplicate workflow"))
+        );
 
         let invalid_run_folder_error = match build_bundle_with_workflows(
             "Project".to_string(),
@@ -4661,12 +5095,19 @@ mod tests {
             vec![],
             vec![workflow_doc("workflow-1", "Workflow 1", 1)],
             vec![logical_folder("folder-workflow", "Workflow 1", None)],
-            vec![workflow_run("run-1", "workflow-1", 1, Some("missing-folder"))],
+            vec![workflow_run(
+                "run-1",
+                "workflow-1",
+                1,
+                Some("missing-folder"),
+            )],
         ) {
             Ok(_) => panic!("expected invalid workflow folder refs to fail"),
             Err(error) => error,
         };
-        assert!(matches!(invalid_run_folder_error, AppError::InvalidParam(message) if message.contains("missing parent folder") || message.contains("missing workflow") || message.contains("folder")));
+        assert!(
+            matches!(invalid_run_folder_error, AppError::InvalidParam(message) if message.contains("missing parent folder") || message.contains("missing workflow") || message.contains("folder"))
+        );
     }
 
     #[test]
@@ -4842,11 +5283,8 @@ mod tests {
         assert_eq!(bundle.manifest.relationships.len(), 2);
 
         let mut stale_manifest = bundle.manifest.clone();
-        stale_manifest.relationships[1] = data_source_relationship(
-            "table-1",
-            ProjectDocumentKind::Graph,
-            "graph-c",
-        );
+        stale_manifest.relationships[1] =
+            data_source_relationship("table-1", ProjectDocumentKind::Graph, "graph-c");
         assert!(validate_manifest_entry_refs(&stale_manifest).is_err());
 
         let mut missing_manifest = bundle.manifest.clone();
@@ -4898,9 +5336,7 @@ mod tests {
     #[test]
     fn build_bundle_ignores_blank_data_source_ids() {
         let mut graph = graph_doc("graph-1", "Graph");
-        graph
-            .body
-            .insert("sourceDatasetId".into(), json!("   "));
+        graph.body.insert("sourceDatasetId".into(), json!("   "));
 
         let bundle = build_bundle(
             "Project".into(),
@@ -5265,7 +5701,10 @@ mod tests {
         let loaded = read_project_file(path.to_str().unwrap()).unwrap();
 
         assert_eq!(loaded.manifest.analyses.len(), 1);
-        assert_eq!(loaded.manifest.analyses[0].file, "analyses/DIM1 Analysis.span");
+        assert_eq!(
+            loaded.manifest.analyses[0].file,
+            "analyses/DIM1 Analysis.span"
+        );
         assert_eq!(loaded.manifest.analyses[0].kind, DocumentKind::Analysis);
         assert_eq!(loaded.manifest.analysis_folders, folders);
         assert_eq!(loaded.analyses.len(), 1);
@@ -5312,7 +5751,9 @@ mod tests {
             .map(|index| zip.by_index(index).unwrap().name().to_string())
             .collect::<Vec<_>>();
 
-        assert!(entries.iter().any(|entry| entry == "analyses/Strength by Site.span"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry == "analyses/Strength by Site.span"));
         assert!(entries.iter().all(|entry| !entry.ends_with(".spf")));
         assert!(bundle.manifest.fit_y_by_x_files.is_empty());
         assert!(bundle.fit_y_by_x.is_empty());
@@ -5322,11 +5763,13 @@ mod tests {
 
     #[test]
     fn analysis_kind_manifest_matches_validator_contracts() {
-        let manifest: Value = serde_json::from_str(include_str!(
-            "../../../contracts/analysis/kinds.v1.json"
-        ))
-        .expect("parse Analysis kind manifest");
-        assert_eq!(manifest.get("schemaVersion").and_then(Value::as_i64), Some(1));
+        let manifest: Value =
+            serde_json::from_str(include_str!("../../../contracts/analysis/kinds.v1.json"))
+                .expect("parse Analysis kind manifest");
+        assert_eq!(
+            manifest.get("schemaVersion").and_then(Value::as_i64),
+            Some(1)
+        );
 
         let kinds = manifest
             .get("kinds")
@@ -5337,12 +5780,18 @@ mod tests {
         for (entry, contract) in kinds.iter().zip(ANALYSIS_VALIDATOR_CONTRACTS) {
             let entry = entry.as_object().expect("Analysis kind manifest entry");
             assert_eq!(entry.len(), 4);
-            assert_eq!(entry.get("analysisKind").and_then(Value::as_str), Some(contract.analysis_kind));
+            assert_eq!(
+                entry.get("analysisKind").and_then(Value::as_str),
+                Some(contract.analysis_kind)
+            );
             assert_eq!(
                 entry.get("documentSchemaVersion").and_then(Value::as_i64),
                 Some(contract.document_schema_version)
             );
-            assert_eq!(entry.get("definitionKind").and_then(Value::as_str), Some(contract.definition_kind));
+            assert_eq!(
+                entry.get("definitionKind").and_then(Value::as_str),
+                Some(contract.definition_kind)
+            );
 
             let presentation = entry
                 .get("presentation")
@@ -5361,7 +5810,8 @@ mod tests {
     }
 
     #[test]
-    fn analysis_document_validation_rejects_persisted_runtime_keys_and_malformed_nested_definition() {
+    fn analysis_document_validation_rejects_persisted_runtime_keys_and_malformed_nested_definition()
+    {
         let mut persisted_runtime = analysis_doc("analysis-1", "DIM1 Analysis");
         persisted_runtime["result"] = json!({ "status": "ready" });
         assert!(matches!(
@@ -5370,7 +5820,8 @@ mod tests {
         ));
 
         let mut malformed = analysis_doc("analysis-1", "DIM1 Analysis");
-        malformed["definition"]["graphs"]["overview"]["modeStates"]["twoD"]["elements"] = json!("bad");
+        malformed["definition"]["graphs"]["overview"]["modeStates"]["twoD"]["elements"] =
+            json!("bad");
         assert!(matches!(
             validate_analysis_value(&malformed, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("elements")
@@ -6065,14 +6516,15 @@ mod tests {
         );
         assert_eq!(manifest["distributions"][0]["kind"], "distribution");
         assert!(zip.by_name("distributions/distribution.spdist").is_err());
-        let mut member = zip
-            .by_name("distributions/Distribution.spdist")
-            .unwrap();
+        let mut member = zip.by_name("distributions/Distribution.spdist").unwrap();
         let body: Value = serde_json::from_reader(&mut member).unwrap();
         assert_eq!(body["id"], "dist-1");
         assert_eq!(body["name"], "Distribution");
         for transient in ["result", "graphFrames", "snapshot", "runState"] {
-            assert!(body.get(transient).is_none(), "persisted transient field {transient}");
+            assert!(
+                body.get(transient).is_none(),
+                "persisted transient field {transient}"
+            );
         }
         drop(member);
         drop(zip);
@@ -6108,21 +6560,30 @@ mod tests {
                 json!([
                     { "id": "dist-1", "name": "Distribution", "file": "distributions/Distribution.spdist", "kind": "distribution" }
                 ]),
-                vec![("distributions/Distribution.spdist", br#"{"id":"dist-2","name":"Distribution"}"#.as_slice())],
+                vec![(
+                    "distributions/Distribution.spdist",
+                    br#"{"id":"dist-2","name":"Distribution"}"#.as_slice(),
+                )],
                 "Mismatched document id",
             ),
             (
                 json!([
                     { "id": "dist-1", "name": "distribution", "file": "distributions/Distribution.spdist", "kind": "distribution" }
                 ]),
-                vec![("distributions/Distribution.spdist", br#"{"id":"dist-1","name":"distribution"}"#.as_slice())],
+                vec![(
+                    "distributions/Distribution.spdist",
+                    br#"{"id":"dist-1","name":"distribution"}"#.as_slice(),
+                )],
                 "basename",
             ),
             (
                 json!([
                     { "id": "dist-1", "name": "Distribution", "file": "distributions/Distribution.spdist", "kind": "distribution" }
                 ]),
-                vec![("distributions/Distribution.spdist", br#"{"id":"dist-1","name":"distribution"}"#.as_slice())],
+                vec![(
+                    "distributions/Distribution.spdist",
+                    br#"{"id":"dist-1","name":"distribution"}"#.as_slice(),
+                )],
                 "document name",
             ),
             (
@@ -6306,6 +6767,158 @@ mod tests {
     }
 
     #[test]
+    fn workflow_graph_v2_persists_its_canonical_hash() {
+        let bundle = build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        let graph = &bundle.manifest.lineage_graph;
+        assert_eq!(graph.graph_version, 2);
+        assert_eq!(graph.graph_hash.len(), 64);
+        assert_eq!(
+            graph.graph_hash,
+            workflow_domain::project_lineage_graph_hash(graph).unwrap()
+        );
+    }
+
+    #[test]
+    fn workflow_graph_missing_or_stale_metadata_rebuilds_from_documents() {
+        let build = || {
+            build_bundle(
+                "Project".into(),
+                "4.0.0".into(),
+                "now".into(),
+                vec![table_doc("table-1", "Source Table")],
+                vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                vec![],
+                vec![],
+            )
+            .unwrap()
+        };
+
+        let mut missing = build();
+        missing.manifest.lineage_graph.graph_version = 0;
+        missing.manifest.lineage_graph.graph_hash.clear();
+        assert!(refresh_project_lineage_graph(&mut missing).unwrap());
+        assert_eq!(
+            missing.manifest.lineage_graph.graph_hash,
+            workflow_domain::project_lineage_graph_hash(&missing.manifest.lineage_graph).unwrap()
+        );
+
+        let mut stale = build();
+        stale.manifest.lineage_graph.graph_hash = "0".repeat(64);
+        assert!(refresh_project_lineage_graph(&mut stale).unwrap());
+        assert_ne!(stale.manifest.lineage_graph.graph_hash, "0".repeat(64));
+
+        let mut current = build();
+        assert!(!refresh_project_lineage_graph(&mut current).unwrap());
+    }
+
+    #[test]
+    fn workflow_graph_write_rejects_stale_hash() {
+        let mut bundle = build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        bundle.manifest.lineage_graph.graph_hash = "0".repeat(64);
+
+        let error = validate_bundle_before_write(&bundle).unwrap_err();
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("graph hash")));
+    }
+
+    #[test]
+    fn workflow_graph_round_trip_covers_analysis_tabulate_and_report_dependencies() {
+        let report = report_doc(
+            "report-1",
+            "Report 1",
+            concat!(
+                "{{sp-embed kind=\"graph\" id=\"graph-1\"}}\n",
+                "{{sp-embed kind=\"fitYByX\" id=\"analysis-1\"}}\n",
+                "{{sp-embed kind=\"distribution\" id=\"distribution-1\"}}\n",
+                "{{sp-embed kind=\"tabulate\" id=\"tabulate-1\"}}",
+            ),
+        );
+        let bundle = super::build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+            vec![],
+            vec![report],
+            vec![distribution_doc("distribution-1", "Distribution 1")],
+            vec![fit_y_by_x_analysis_doc("analysis-1", "Analysis 1")],
+            vec![tabulate_doc_with_source(
+                "tabulate-1",
+                "Tabulate 1",
+                "table-1",
+            )],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(bundle.manifest.lineage_graph.nodes.len(), 11);
+        assert_eq!(bundle.manifest.lineage_graph.edges.len(), 13);
+        validate_bundle_before_write(&bundle).unwrap();
+
+        let expected_graph = bundle.manifest.lineage_graph.clone();
+        let path = temp_project_path("workflow-graph-round-trip");
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let reopened = read_project_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.manifest.lineage_graph, expected_graph);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn build_bundle_v4_rejects_dangling_lineage_source_document_refs() {
         let error = match build_bundle(
             "Project".into(),
@@ -6329,7 +6942,9 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("unknown") && message.contains("missing-table")));
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("unknown") && message.contains("missing-table"))
+        );
     }
 
     #[test]

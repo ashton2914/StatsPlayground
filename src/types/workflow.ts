@@ -98,6 +98,8 @@ export interface LineageEdge {
 export interface ProjectLineageGraph {
   id: string;
   name: string;
+  graphVersion: number;
+  graphHash: string;
   nodes: LineageNode[];
   edges: LineageEdge[];
 }

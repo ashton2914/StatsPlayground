@@ -203,7 +203,9 @@ impl<'a> ProjectService<'a> {
                 bundle.manifest.version
             )));
         }
-        let requires_migration = requires_archive_migration(&bundle.manifest.version);
+        let graph_requires_migration = spprj_archive::refresh_project_lineage_graph(&mut bundle)?;
+        let requires_migration =
+            requires_archive_migration(&bundle.manifest.version) || graph_requires_migration;
         let document_name_migrations = if requires_migration {
             normalize_visible_document_names(&mut bundle)
         } else {
@@ -1868,9 +1870,7 @@ mod tests {
         );
         request.distributions = distributions;
         request.distribution_folders = distribution_folders.clone();
-        service
-            .save_project(request, None)
-            .unwrap();
+        service.save_project(request, None).unwrap();
 
         let reopened_state = AppState::new().unwrap();
         let reopened = ProjectService::new(&reopened_state)
