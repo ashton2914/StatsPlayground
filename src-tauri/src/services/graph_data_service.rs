@@ -3093,6 +3093,48 @@ mod tests {
         }
 
         #[test]
+        fn raw_chunks_project_single_multi_x_column_as_categorical_axis_value() {
+            let state = AppState::new().expect("state");
+            let dataset_id = "single-multi-x-axis";
+            seed_faceted_dataset(&state, dataset_id);
+
+            let service = GraphDataService::new(&state);
+            let mut request = multi_x_axis_request(dataset_id, 0);
+            request.fields.truncate(1);
+            let chunks = service.collect_for_test(&request).expect("chunks");
+
+            assert_eq!(
+                chunks
+                    .iter()
+                    .map(|chunk| chunk.header.row_count)
+                    .sum::<usize>(),
+                4,
+            );
+            assert!(chunks
+                .iter()
+                .all(|chunk| chunk.header.x_encoding == GraphAxisEncoding::Categorical));
+            let x_values = chunks
+                .iter()
+                .flat_map(|chunk| chunk.header.dictionaries.get("x").into_iter().flatten())
+                .cloned()
+                .collect::<HashSet<_>>();
+            assert_eq!(x_values, HashSet::from(["m1".to_string()]));
+
+            let packets = service
+                .collect_aggregates_for_test(&request)
+                .expect("aggregate packets");
+            let boxplot = packets
+                .iter()
+                .find_map(|packet| match packet {
+                    GraphAggregatePacket::BoxPlot(value) => Some(value),
+                    _ => None,
+                })
+                .expect("boxplot packet");
+            assert_eq!(boxplot.entries.len(), 1);
+            assert_eq!(boxplot.entries[0].count, 4);
+        }
+
+        #[test]
         fn raw_chunks_project_multi_x_columns_as_categorical_axis_values() {
             let state = AppState::new().expect("state");
             let dataset_id = "multi-x-axis";

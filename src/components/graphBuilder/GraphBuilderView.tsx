@@ -34,6 +34,7 @@ import { AddPaletteDialog } from "./AddPaletteDialog";
 import { AxisSettingsDialog, isAxisConfigEmpty } from "./AxisSettingsDialog";
 import { prepareAxisBinding } from "./axisBinding";
 import { updateGraphBuilder2D } from "./graphBuilderAxisInteractions";
+import { decideGraphBuilderDropRoute } from "./graphBuilderDropRouting";
 import { resolveVisualGraphSlots } from "./graphBuilderSlotLayout";
 import {
   clampSampleSize,
@@ -775,10 +776,9 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   );
 
   /** Replace a slot's multi-mode list. Length 0 / undefined exits
-   *  multi-mode (also clears `encoding[slot]`). Length 1 is
-   *  auto-collapsed back to single-field encoding on `encoding[slot]`
-   *  so multi-mode never holds exactly one column. Length 2+
-   *  enters / stays in multi-mode and clears `encoding[slot]`.
+   *  multi-mode. X keeps one or more continuous columns in multi-mode
+   *  so column labels remain X attributes and values remain Y variables.
+   *  Y retains its legacy single-field encoding behavior.
    *  Atomic via a single `updateItem` so the rendered state stays
    *  consistent during transitions. At most one axis can be in
    *  multi-mode at a time — entering multi-mode on one axis also
@@ -811,7 +811,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         }));
         return;
       }
-      if (list.length === 1) {
+      if (list.length === 1 && slot === "y") {
         const only = list[0];
         setTwoDState((prev) => ({
           ...prev,
@@ -822,7 +822,8 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         }));
         return;
       }
-      // ≥2 columns: stay in multi-mode. Clear `encoding[slot]` so the
+      // X with 1+ columns or Y with 2+ columns stays in multi-mode.
+      // Clear `encoding[slot]` so the
       // single-field chip doesn't shadow the multi list. Also clear
       // any multi on the OTHER axis — only one axis can be in
       // multi-mode at a time.
@@ -839,14 +840,6 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
     },
     [item.mode, xAxisConfig, yAxisConfig, twoD.encoding, setTwoDState],
   );
-
-  /** Are all the given fields numeric (continuous)? Multi-mode is
-   *  restricted to numeric columns because the "names → axis, values
-   *  → other axis" semantics only makes sense for comparable scales. */
-  const allNumeric = useCallback((fields: FieldRef[]): boolean => {
-    if (fields.length === 0) return false;
-    return fields.every((f) => f.type === "continuous");
-  }, []);
 
   const handleDropOnSlot = (slot: SlotKey, e: React.DragEvent) => {
     e.preventDefault();
@@ -871,10 +864,11 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
     routeDropToSlot(slot, fields);
   };
 
-  /** Centralized drop-router for one slot. Single field → existing
-   *  single-bind logic (replace). Multi-field on x/y → multi-mode
-   *  (axis or merge, derived at render time). Multi-field on any
-   *  other slot → first field only (multi-mode is X/Y-only).
+  /** Centralized drop-router for one slot. Continuous fields on X
+   *  always use multi-mode so column labels are X attributes and
+   *  values are Y variables. Y keeps direct single-field binding and
+   *  uses multi-mode for multiple numeric fields. Multi-field drops on
+   *  other slots use the first field only.
    *  Drop while already in multi-mode on x/y → APPEND.
    *  Any drop that would mix numeric + non-numeric columns in multi
    *  is rejected with a brief visual flash; the existing multi list
@@ -899,46 +893,29 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         return;
       }
 
-      const isAxis = slot === "x" || slot === "y";
       const multiKey: "multiX" | "multiY" | null =
         slot === "x" ? "multiX" : slot === "y" ? "multiY" : null;
       const existingMulti = multiKey ? (slot === "x" ? multiX : multiY) : undefined;
-      const inMulti = !!existingMulti && existingMulti.length >= 2;
+      const inMulti = !!existingMulti && existingMulti.length >= 1;
+      const route = decideGraphBuilderDropRoute(slot, fields, inMulti);
 
-      // Already in multi-mode → all drops APPEND (single or multi).
-      if (isAxis && inMulti && multiKey) {
-        if (!allNumeric(fields)) {
-          flashRejectOnSlot(slot);
-          return;
-        }
-        const merged = [...(existingMulti ?? []), ...fields];
-        setMultiAtSlot(slot, merged);
-        return;
-      }
-
-      // Single field drop, NOT in multi-mode → existing replace logic.
-      if (fields.length === 1) {
-        bindFieldToSlot(slot, fields[0]);
-        return;
-      }
-
-      // Multi-field drop on a non-axis slot: take the first field
-      // (Color / Overlay / Group X / Group Y / Wrap / Size are single-
-      // value channels — multi-binding wouldn't make sense there).
-      if (!isAxis) {
-        bindFieldToSlot(slot, fields[0]);
-        return;
-      }
-
-      // Multi-field drop on x/y, NOT in multi-mode yet.
-      if (!allNumeric(fields)) {
+      if (route === "reject") {
         flashRejectOnSlot(slot);
         return;
       }
-      // Enter multi-mode with the dropped fields.
-      setMultiAtSlot(slot, fields);
+
+      if (route === "multi" && multiKey) {
+        const merged = [...(existingMulti ?? []), ...fields];
+        setMultiAtSlot(multiKey === "multiX" ? "x" : "y", merged);
+        return;
+      }
+
+      if (route === "single") {
+        bindFieldToSlot(slot, fields[0]);
+        return;
+      }
     },
-    [item.mode, item.modeStates.multivariate.columns, setMultivariateState, multiX, multiY, bindFieldToSlot, setMultiAtSlot, allNumeric, flashRejectOnSlot, setCorrelationNotice],
+    [item.mode, item.modeStates.multivariate.columns, setMultivariateState, multiX, multiY, bindFieldToSlot, setMultiAtSlot, flashRejectOnSlot, setCorrelationNotice],
   );
 
   const clearSlot = (slot: SlotKey) => {

@@ -69,7 +69,7 @@ function deriveMeltInfo(item: GraphBuilderItem): GraphRuntimeMeltInfo | null {
   if (item.mode !== "2d") return null;
   const multiX = item.modeStates.twoD.multiX ?? [];
   const multiY = item.modeStates.twoD.multiY ?? [];
-  const xActive = multiX.length >= 2;
+  const xActive = multiX.length >= 1;
   const yActive = multiY.length >= 1;
   if (!xActive && !yActive) return null;
   const slot: "x" | "y" = xActive ? "x" : "y";
