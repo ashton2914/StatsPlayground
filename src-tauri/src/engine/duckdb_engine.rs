@@ -170,6 +170,20 @@ impl DuckDbEngine {
             .map_err(|_| AppError::Database("dataset generation is negative".into()))
     }
 
+    fn get_dataset_generation_if_exists(&self, dataset_id: &str) -> Result<Option<u64>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT generation FROM _meta_datasets WHERE id = $1")?;
+        let mut rows = stmt.query(params![dataset_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let generation: i64 = row.get(0)?;
+        u64::try_from(generation)
+            .map(Some)
+            .map_err(|_| AppError::Database("dataset generation is negative".into()))
+    }
+
     fn with_row_mutation<T>(
         &self,
         dataset_id: &str,
@@ -7656,6 +7670,208 @@ impl DuckDbEngine {
         })
     }
 
+    /// Create an updated copy of the left dataset without mutating either input.
+    pub fn copy_and_update_table(
+        &self,
+        new_id: &str,
+        new_name: &str,
+        left_id: &str,
+        right_id: &str,
+        match_column: &str,
+        update_columns: &[String],
+    ) -> Result<DatasetMeta, AppError> {
+        if new_id == left_id || new_id == right_id {
+            return Err(AppError::InvalidParam(
+                "derived update output must have a distinct dataset id".into(),
+            ));
+        }
+        if match_column.trim().is_empty() {
+            return Err(AppError::InvalidParam(
+                "update match column is required".into(),
+            ));
+        }
+        if update_columns.is_empty() || update_columns.iter().any(|column| column.trim().is_empty())
+        {
+            return Err(AppError::InvalidParam(
+                "at least one non-blank update column is required".into(),
+            ));
+        }
+        let unique_update_columns = update_columns.iter().collect::<HashSet<_>>();
+        if unique_update_columns.len() != update_columns.len() {
+            return Err(AppError::InvalidParam(
+                "update columns must be unique".into(),
+            ));
+        }
+
+        let left_columns = self.get_user_columns(left_id)?;
+        let right_columns = self.get_user_columns(right_id)?;
+        let left_names = left_columns
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<HashSet<_>>();
+        let right_names = right_columns
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<HashSet<_>>();
+        for column in std::iter::once(match_column).chain(update_columns.iter().map(String::as_str))
+        {
+            if !left_names.contains(column) {
+                return Err(AppError::InvalidParam(format!(
+                    "column {column} does not exist in left dataset"
+                )));
+            }
+            if !right_names.contains(column) {
+                return Err(AppError::InvalidParam(format!(
+                    "column {column} does not exist in right dataset"
+                )));
+            }
+        }
+
+        let left_table = Self::quote_identifier(&Self::internal_table_name(left_id));
+        let select_columns = left_columns
+            .iter()
+            .map(|(name, _)| Self::quote_identifier(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.create_table_from_query(
+            new_id,
+            new_name,
+            "update",
+            &format!("SELECT {select_columns} FROM {left_table}"),
+        )?;
+
+        let output_table = Self::quote_identifier(&Self::internal_table_name(new_id));
+        let right_table = Self::quote_identifier(&Self::internal_table_name(right_id));
+        let match_identifier = Self::quote_identifier(match_column);
+        let update_result = self.with_row_mutation(new_id, || {
+            for column in update_columns {
+                let column_identifier = Self::quote_identifier(column);
+                self.conn.execute(
+                    &format!(
+                        "UPDATE {output_table} SET {column_identifier} = source.{column_identifier} \
+                         FROM {right_table} AS source \
+                         WHERE {output_table}.{match_identifier} = source.{match_identifier}"
+                    ),
+                    [],
+                )?;
+            }
+            Ok(())
+        });
+        if let Err(error) = update_result {
+            let _ = self.delete_dataset(new_id);
+            return Err(error);
+        }
+
+        self.get_dataset_meta(new_id)
+    }
+
+    /// Promote a temporary dataset or replace an existing stable dataset atomically.
+    pub fn replace_dataset_atomically(
+        &self,
+        stable_id: &str,
+        temporary_id: &str,
+        stable_name: &str,
+        expected_generation: u64,
+    ) -> Result<DatasetMeta, AppError> {
+        if stable_id.trim().is_empty() || temporary_id.trim().is_empty() {
+            return Err(AppError::InvalidParam(
+                "stable and temporary dataset ids are required".into(),
+            ));
+        }
+        if stable_id == temporary_id {
+            return Err(AppError::InvalidParam(
+                "stable and temporary dataset ids must differ".into(),
+            ));
+        }
+        self.validate_dataset_name(stable_name, Some(stable_id))?;
+        let temporary_meta = self.get_dataset_meta(temporary_id)?;
+        let stable_table = Self::quote_identifier(&Self::internal_table_name(stable_id));
+        let temporary_table = Self::quote_identifier(&Self::internal_table_name(temporary_id));
+
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<(), AppError> {
+            let stable_generation = self.get_dataset_generation_if_exists(stable_id)?;
+            match stable_generation {
+                Some(generation) if generation != expected_generation => {
+                    return Err(AppError::InvalidParam(format!(
+                        "stale dataset generation: expected {generation}, received {expected_generation}"
+                    )));
+                }
+                None if expected_generation != 0 => {
+                    return Err(AppError::InvalidParam(format!(
+                        "stale dataset generation: expected 0, received {expected_generation}"
+                    )));
+                }
+                _ => {}
+            }
+
+            if let Some(generation) = stable_generation {
+                let next_generation = generation.checked_add(1).ok_or_else(|| {
+                    AppError::InvalidParam("dataset generation is exhausted".into())
+                })?;
+                self.conn
+                    .execute(&format!("DROP TABLE {stable_table}"), [])?;
+                self.conn.execute(
+                    "DELETE FROM _meta_columns WHERE dataset_id = $1",
+                    params![stable_id],
+                )?;
+                self.conn.execute(
+                    "UPDATE _meta_columns SET dataset_id = $1 WHERE dataset_id = $2",
+                    params![stable_id, temporary_id],
+                )?;
+                self.conn.execute(
+                    "UPDATE _meta_datasets SET name = $1, source_path = $2, source_type = $3, \
+                     row_count = $4, col_count = $5, generation = $6, \
+                     updated_at = CAST(current_timestamp AS VARCHAR) WHERE id = $7",
+                    params![
+                        stable_name,
+                        temporary_meta.source_path,
+                        temporary_meta.source_type,
+                        temporary_meta.row_count,
+                        temporary_meta.col_count,
+                        next_generation,
+                        stable_id,
+                    ],
+                )?;
+                self.conn.execute(
+                    "DELETE FROM _meta_datasets WHERE id = $1",
+                    params![temporary_id],
+                )?;
+            } else {
+                self.conn.execute(
+                    "UPDATE _meta_columns SET dataset_id = $1 WHERE dataset_id = $2",
+                    params![stable_id, temporary_id],
+                )?;
+                self.conn.execute(
+                    "UPDATE _meta_datasets SET id = $1, name = $2, generation = 0, \
+                     updated_at = CAST(current_timestamp AS VARCHAR) WHERE id = $3",
+                    params![stable_id, stable_name, temporary_id],
+                )?;
+            }
+
+            self.conn.execute(
+                &format!("ALTER TABLE {temporary_table} RENAME TO {stable_table}"),
+                [],
+            )?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                if let Err(error) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+
+        self.get_dataset_meta(stable_id)
+    }
+
     /// Concatenate: vertically stack multiple tables
     pub fn concatenate_tables(
         &self,
@@ -8899,6 +9115,168 @@ mod tests {
         archive_cell_to_json_call_count, reset_archive_cell_to_json_call_count,
     };
     use duckdb::types::Decimal;
+
+    fn seed_transform_value_table(engine: &DuckDbEngine, id: &str, name: &str, values: &[i64]) {
+        engine
+            .create_empty_table(id, name, &["value".to_string()], &["BIGINT".to_string()])
+            .expect("create transform fixture");
+        for value in values {
+            let row_id = engine.add_row(id).expect("add transform fixture row");
+            engine
+                .update_cell(id, row_id, "value", &value.to_string())
+                .expect("write transform fixture value");
+        }
+    }
+
+    fn read_transform_values(engine: &DuckDbEngine, id: &str) -> Vec<i64> {
+        let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(id));
+        let mut statement = engine
+            .conn
+            .prepare(&format!("SELECT value FROM {table} ORDER BY _row_id"))
+            .expect("prepare transform fixture read");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("query transform fixture values")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect transform fixture values")
+    }
+
+    fn read_transform_table(
+        engine: &DuckDbEngine,
+        id: &str,
+    ) -> (Vec<String>, Vec<Vec<serde_json::Value>>) {
+        let result = engine
+            .query_table(id, 0, 100, None, None)
+            .expect("read transform table");
+        (result.columns, result.rows)
+    }
+
+    #[test]
+    fn replace_dataset_atomically_promotes_initial_output() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        seed_transform_value_table(&engine, "temporary", "Temporary", &[2, 3]);
+
+        let result = engine
+            .replace_dataset_atomically("stable", "temporary", "Output", 0)
+            .expect("promote initial output");
+
+        assert_eq!(result.id, "stable");
+        assert_eq!(result.name, "Output");
+        assert_eq!(result.generation, 0);
+        assert_eq!(read_transform_values(&engine, "stable"), vec![2, 3]);
+        assert!(engine.get_dataset_meta("temporary").is_err());
+    }
+
+    #[test]
+    fn replace_dataset_atomically_preserves_stable_identity_and_replaces_schema() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        seed_transform_value_table(&engine, "stable", "Output", &[1]);
+        engine
+            .create_empty_table(
+                "temporary",
+                "Temporary",
+                &["replacement".to_string()],
+                &["VARCHAR".to_string()],
+            )
+            .expect("create replacement fixture");
+        let row_id = engine.add_row("temporary").expect("add replacement row");
+        engine
+            .update_cell("temporary", row_id, "replacement", "new")
+            .expect("write replacement value");
+        let generation = engine
+            .get_dataset_generation("stable")
+            .expect("stable generation");
+
+        let result = engine
+            .replace_dataset_atomically("stable", "temporary", "Output refreshed", generation)
+            .expect("replace output");
+
+        assert_eq!(result.id, "stable");
+        assert_eq!(result.name, "Output refreshed");
+        assert_eq!(result.generation, generation + 1);
+        assert_eq!(
+            engine.get_user_columns("stable").expect("stable columns"),
+            vec![("replacement".to_string(), "VARCHAR".to_string())],
+        );
+        assert!(engine.get_dataset_meta("temporary").is_err());
+    }
+
+    #[test]
+    fn replace_dataset_atomically_rolls_back_on_stale_generation() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        seed_transform_value_table(&engine, "stable", "Output", &[1]);
+        seed_transform_value_table(&engine, "temporary", "Temporary", &[2]);
+        let generation = engine
+            .get_dataset_generation("stable")
+            .expect("stable generation");
+
+        let error = engine
+            .replace_dataset_atomically("stable", "temporary", "Output refreshed", generation + 1)
+            .expect_err("stale replacement must fail");
+
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("stale dataset generation"))
+        );
+        assert_eq!(read_transform_values(&engine, "stable"), vec![1]);
+        assert_eq!(read_transform_values(&engine, "temporary"), vec![2]);
+        assert_eq!(
+            engine
+                .get_dataset_generation("stable")
+                .expect("unchanged stable generation"),
+            generation,
+        );
+    }
+
+    #[test]
+    fn copy_and_update_table_leaves_both_inputs_unchanged() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        for (id, name, rows) in [
+            ("left", "Left", [(1, "old"), (2, "keep")]),
+            ("right", "Right", [(1, "new"), (3, "unused")]),
+        ] {
+            engine
+                .create_empty_table(
+                    id,
+                    name,
+                    &["id".to_string(), "status".to_string()],
+                    &["BIGINT".to_string(), "VARCHAR".to_string()],
+                )
+                .expect("create update fixture");
+            for (key, status) in rows {
+                let row_id = engine.add_row(id).expect("add update fixture row");
+                engine
+                    .update_cell(id, row_id, "id", &key.to_string())
+                    .expect("write update key");
+                engine
+                    .update_cell(id, row_id, "status", status)
+                    .expect("write update value");
+            }
+        }
+        let before_left = read_transform_table(&engine, "left");
+        let before_right = read_transform_table(&engine, "right");
+
+        let result = engine
+            .copy_and_update_table(
+                "temporary",
+                "Updated copy",
+                "left",
+                "right",
+                "id",
+                &["status".to_string()],
+            )
+            .expect("derive updated copy");
+
+        assert_eq!(result.id, "temporary");
+        assert_eq!(read_transform_table(&engine, "left"), before_left);
+        assert_eq!(read_transform_table(&engine, "right"), before_right);
+        let (output_columns, output_rows) = read_transform_table(&engine, "temporary");
+        let status_index = output_columns
+            .iter()
+            .position(|column| column == "status")
+            .expect("status output column");
+        assert_eq!(output_rows[0][status_index], serde_json::json!("new"));
+        assert_eq!(output_rows[1][status_index], serde_json::json!("keep"));
+    }
 
     #[test]
     fn imports_selected_sqlite_table_and_appends_compatible_rows() {
