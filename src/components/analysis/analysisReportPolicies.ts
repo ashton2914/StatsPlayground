@@ -17,4 +17,5 @@ export const analysisReportPolicies = {
     dependencyKind: "fitYByX",
     accepts: isFitYByXAnalysisDocument,
   },
+  fitModel: null,
 } satisfies { [Kind in AnalysisKind]: AnalysisReportPolicy<Kind> | null };

@@ -4,11 +4,6 @@ export {
 } from "./FitModelRoleDialog";
 
 export {
-  FitModelReport,
-  type FitModelReportProps,
-} from "./FitModelReport";
-
-export {
   FitModelProfiler,
   type FitModelProfilerProps,
 } from "./FitModelProfiler";
@@ -38,10 +33,6 @@ export {
   type FitModelUndoTransitionResult,
 } from "./fitModelReportModel";
 
-export {
-  FitModelView,
-  type FitModelViewProps,
-} from "./FitModelView";
 
 export {
   useFitModelReport,

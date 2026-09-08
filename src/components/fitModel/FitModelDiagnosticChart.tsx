@@ -59,17 +59,10 @@ export function FitModelDiagnosticChart({ option, title, chartKind }: FitModelDi
   return (
     <div
       ref={containerRef}
+      className={`sp-fit-model-diagnostic-chart sp-fit-model-diagnostic-chart-${chartKind}`}
       role="img"
       aria-label={title}
       data-chart-kind={chartKind}
-      style={{
-        width: "100%",
-        minWidth: 0,
-        boxSizing: "border-box",
-        height: "clamp(220px, 30vw, 260px)",
-        minHeight: "220px",
-        maxHeight: "260px",
-      }}
     />
   );
 }

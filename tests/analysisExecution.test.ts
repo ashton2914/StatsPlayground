@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample.ts";
 import { createFitYByXAnalysisDocument } from "../src/components/analysis/adapters/fitYByXAnalysisAdapter.ts";
+import { createFitModelAnalysisDocument } from "../src/components/analysis/adapters/fitModelAnalysisAdapter.ts";
 import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
 import type { DatasetMeta } from "../src/types/data.ts";
 import type { DistributionReportResponse } from "../src/types/distribution.ts";
@@ -11,6 +12,7 @@ import {
   createAnalysisExecutionController,
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
+  fitModelAnalysisDefinitionFingerprint,
   fitYByXAnalysisDefinitionFingerprint,
   type AnalysisExecutionState,
 } from "../src/components/analysis/useAnalysisExecution.ts";
@@ -58,6 +60,26 @@ function fitAnalysis() {
       factor: { name: "Site", type: "nominal" },
       createdAt: "2026-09-03T00:00:00.000Z",
     }),
+    confidenceLevel: 0.95,
+    updatedAt: "2026-09-03T00:00:00.000Z",
+  });
+}
+
+function fitModelAnalysis() {
+  return createFitModelAnalysisDocument({
+    item: {
+      id: "fit-model-1",
+      name: "Strength Model",
+      sourceDatasetId: "dataset-1",
+      response: { name: "Strength", type: "continuous" },
+      construct: { kind: "responseSurface" },
+      terms: [
+        { kind: "main", columnNames: ["Temperature"] },
+        { kind: "power", columnNames: ["Temperature"], exponent: 2 },
+      ],
+      centeringMethod: "mean",
+      createdAt: "2026-09-03T00:00:00.000Z",
+    },
     confidenceLevel: 0.95,
     updatedAt: "2026-09-03T00:00:00.000Z",
   });
@@ -137,6 +159,31 @@ assert.deepEqual(fitRequest, {
   personality: "oneway",
   confidenceLevel: 0.95,
 });
+
+const fitModelRequest = createAnalysisExecutionRequest(fitModelAnalysis(), 7);
+assert.deepEqual(fitModelRequest, {
+  datasetId: "dataset-1",
+  generation: 7,
+  responseColumn: "Strength",
+  terms: [
+    { kind: "main", columnNames: ["Temperature"] },
+    { kind: "power", columnNames: ["Temperature"], exponent: 2 },
+  ],
+  centeringMethod: "mean",
+  confidenceLevel: 0.95,
+});
+
+const fitModelFingerprint = fitModelAnalysisDefinitionFingerprint(fitModelAnalysis());
+for (const changed of [
+  { ...fitModelAnalysis(), configRevision: 2 },
+  { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, response: { name: "Yield", type: "continuous" as const } } },
+  { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, construct: { kind: "manual" as const } } },
+  { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, terms: [{ kind: "main" as const, columnNames: ["Pressure"] as [string] }] } },
+  { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, centeringMethod: "none" as const } },
+  { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, confidenceLevel: 0.9 } },
+]) {
+  assert.notEqual(fitModelAnalysisDefinitionFingerprint(changed), fitModelFingerprint);
+}
 
 const fitFingerprint = fitYByXAnalysisDefinitionFingerprint(fitAnalysis());
 assert.equal(
@@ -264,6 +311,30 @@ async function testFitYByXEchoFence(): Promise<void> {
   assert.equal(mismatch.getState().status, "error");
 }
 
+async function testFitModelMigrationIssueDoesNotExecute(): Promise<void> {
+  let generationCalls = 0;
+  let runCalls = 0;
+  const item = fitModelAnalysis();
+  item.definition.migrationIssue = {
+    code: "invalidPersistedDefinition",
+    detail: "missingMainEffect",
+  };
+  const controller = createAnalysisExecutionController({
+    getDatasetGeneration: async () => {
+      generationCalls += 1;
+      return 7;
+    },
+    runFitModel: async () => {
+      runCalls += 1;
+      return { kind: "notComputable", reason: "insufficientRows", usedRows: 0, excludedRows: 0 };
+    },
+  });
+  await controller.load(item, dataset());
+  assert.equal(generationCalls, 0);
+  assert.equal(runCalls, 0);
+  assert.equal(controller.getState().status, "error");
+}
+
 async function testAnalysisAndDatasetFenceChecks(): Promise<void> {
   let currentAnalysis = analysis();
   let currentDataset = dataset({ generation: 8, updatedAt: "2026-09-03T10:00:00.000Z" });
@@ -344,6 +415,7 @@ async function testAnalysisAndDatasetFenceChecks(): Promise<void> {
 await testLoadingSuccessAndError();
 await testLatestRequestAndEchoFences();
 await testFitYByXEchoFence();
+await testFitModelMigrationIssueDoesNotExecute();
 await testAnalysisAndDatasetFenceChecks();
 
 const hookSource = readFileSync(

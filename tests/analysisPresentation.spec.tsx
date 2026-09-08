@@ -10,6 +10,7 @@ import {
   AnalysisGraphHarness,
   AnalysisGraphStrategiesHarness,
   AnalysisGraphWidthHarness,
+  AnalysisInteractiveTableHarness,
 } from "./AnalysisPresentationHarness";
 
 test("AnalysisFrame supports recursive hierarchy and independent disclosure", async ({ mount }) => {
@@ -57,6 +58,22 @@ test("AnalysisTable owns one framed table with width and numeric alignment", asy
   await expect(component.locator(".analysis-ui-frame")).toHaveCount(1);
   await expect(component.locator("table")).toHaveCount(1);
   await expect(component.getByRole("cell", { name: "99.44" })).toHaveCSS("text-align", "right");
+  await expect(component.getByRole("columnheader")).toHaveCount(2);
+});
+
+test("AnalysisTable supports controlled selection and typed row actions", async ({ mount }) => {
+  const component = await mount(<AnalysisInteractiveTableHarness />);
+  const predicted = component.getByRole("checkbox", { name: "Select Predicted" });
+  const residual = component.getByRole("checkbox", { name: "Select Residual" });
+  await expect(predicted).toBeChecked();
+  await predicted.uncheck();
+  await expect(predicted).not.toBeChecked();
+  await expect(residual).toBeDisabled();
+  await component.getByRole("button", { name: "Remove Predicted" }).click();
+  await expect(component.getByTestId("last-action")).toHaveText("predicted");
+  await expect(component.getByRole("button", { name: "Remove Residual" })).toBeDisabled();
+  await expect(component.getByRole("button", { name: "Saving" })).toBeDisabled();
+  await expect(component.getByRole("columnheader")).toHaveCount(4);
 });
 
 test("AnalysisGraph forwards GraphRuntime configuration and interactions", async ({ mount }) => {

@@ -35,11 +35,12 @@ import {
 export interface FitModelRoleDialogProps {
   dataset: DatasetMeta;
   prefill?: FitModelPrefill | null;
+  initialDefinition?: FitModelCreateDefinition | null;
   onCreateDefinition: (definition: FitModelCreateDefinition) => void | Promise<void>;
   onCancel: () => void;
 }
 
-export function FitModelRoleDialog({ dataset, prefill, onCreateDefinition, onCancel }: FitModelRoleDialogProps) {
+export function FitModelRoleDialog({ dataset, prefill, initialDefinition, onCreateDefinition, onCancel }: FitModelRoleDialogProps) {
   const { t } = useTranslation();
   const titleId = useId();
   const validationId = `${titleId}-validation`;
@@ -73,7 +74,7 @@ export function FitModelRoleDialog({ dataset, prefill, onCreateDefinition, onCan
   useEffect(() => {
     setDraft(createFitModelDraft());
     setSubmitState(createFitModelSubmitState());
-  }, [dataset.id, prefill]);
+  }, [dataset.id, initialDefinition, prefill]);
 
   useEffect(() => {
     let active = true;
@@ -98,7 +99,25 @@ export function FitModelRoleDialog({ dataset, prefill, onCreateDefinition, onCan
           generation,
           nextFields,
         ));
-        setDraft(createValidatedFitModelDraft(prefill, dataset.id, nextFields));
+        if (initialDefinition) {
+          const predictorNames = new Set(initialDefinition.terms.flatMap((term) => term.columnNames));
+          predictorNames.delete(initialDefinition.response.name);
+          setDraft({
+            response: { ...initialDefinition.response },
+            predictors: nextFields
+              .filter((field) => predictorNames.has(field.name))
+              .map((field) => ({ ...field.field })),
+            construct: { ...initialDefinition.construct },
+            terms: initialDefinition.terms.map((term) => ({
+              ...term,
+              columnNames: [...term.columnNames],
+            })) as FitModelTerm[],
+            centeringMethod: initialDefinition.centeringMethod,
+            validationMessage: null,
+          });
+        } else {
+          setDraft(createValidatedFitModelDraft(prefill, dataset.id, nextFields));
+        }
       })
       .catch((reason: unknown) => {
         if (!active) {
@@ -110,7 +129,7 @@ export function FitModelRoleDialog({ dataset, prefill, onCreateDefinition, onCan
     return () => {
       active = false;
     };
-  }, [dataset.id, prefill, retryGeneration]);
+  }, [dataset.id, initialDefinition, prefill, retryGeneration]);
 
   const visibleFields = useMemo(
     () => filterFitModelFields(fields, search),

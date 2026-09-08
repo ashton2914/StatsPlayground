@@ -47,6 +47,8 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
   ]));
   const currentPrediction = predictFitModelPoint(snapshot, effectiveValues);
   const notEstimable = t("fitModel.report.profiler.notEstimable", { defaultValue: "Not estimable" });
+  const columnCount = Math.max(1, Math.min(snapshot.predictorRanges.length, 2));
+  const profilerMaxWidth = columnCount * 520 + (columnCount - 1) * 12;
 
   const updateValue = (columnName: string, value: number) => {
     if (!Number.isFinite(value)) return;
@@ -56,7 +58,7 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
   };
 
   return (
-    <div className="sp-fit-model-profiler">
+    <div className="sp-fit-model-profiler" style={{ maxWidth: `${profilerMaxWidth}px` }}>
       {snapshot.predictorRanges.map((range, index) => {
         const value = effectiveValues[range.columnName];
         const numberInputId = `${inputIdPrefix}-number-${index}`;

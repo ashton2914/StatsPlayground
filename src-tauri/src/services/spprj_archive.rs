@@ -3385,6 +3385,15 @@ const ANALYSIS_VALIDATOR_CONTRACTS: &[AnalysisValidatorContract] = &[
         validate_definition: validate_fit_y_by_x_analysis_definition,
         validate_presentation: validate_fit_y_by_x_analysis_presentation,
     },
+    AnalysisValidatorContract {
+        analysis_kind: "fitModel",
+        document_schema_version: 1,
+        definition_kind: "fitModel",
+        presentation_schema_version: 1,
+        presentation_layout: "fit-model-v1",
+        validate_definition: validate_fit_model_analysis_definition,
+        validate_presentation: validate_fit_model_analysis_presentation,
+    },
 ];
 
 fn validate_distribution_analysis_presentation(
@@ -3475,6 +3484,112 @@ fn validate_fit_y_by_x_analysis_presentation(
             ))
         })?;
     validate_embedded_graph_config(graph, &format!("{context} analysis presentation.graph"))
+}
+
+fn validate_fit_model_analysis_presentation(
+    _presentation: &Map<String, Value>,
+    _context: &str,
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+fn validate_fit_model_analysis_definition(
+    definition: &Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    let response = definition.get("response").ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.response is missing"))
+    })?;
+    validate_field_ref_value(response, &format!("{context} analysis definition.response"))?;
+    let migration_issue = match definition.get("migrationIssue") {
+        None => false,
+        Some(issue) => {
+            let issue = issue.as_object().ok_or_else(|| {
+                AppError::FileIO(format!("{context} analysis definition.migrationIssue must be an object"))
+            })?;
+            require_non_empty_string(issue.get("code"), &format!("{context} analysis definition.migrationIssue.code"))?;
+            require_non_empty_string(issue.get("detail"), &format!("{context} analysis definition.migrationIssue.detail"))?;
+            true
+        }
+    };
+    let response_object = response.as_object().ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.response must be an object"))
+    })?;
+    if !migration_issue && response_object.get("type").and_then(Value::as_str) != Some("continuous") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.response must be continuous"
+        )));
+    }
+    let response_name = response_object.get("name").and_then(Value::as_str).unwrap_or_default();
+
+    let construct = definition.get("construct").and_then(Value::as_object).ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.construct must be an object"))
+    })?;
+    match construct.get("kind").and_then(Value::as_str) {
+        Some("manual" | "fullFactorial" | "responseSurface") => {}
+        Some("factorialToDegree") if construct.get("degree").and_then(Value::as_u64).is_some_and(|degree| degree >= 1) => {}
+        _ => return Err(AppError::FileIO(format!("{context} analysis definition.construct is invalid"))),
+    }
+
+    let centering_method = definition.get("centeringMethod").and_then(Value::as_str);
+    if !matches!(centering_method, Some("none" | "mean")) {
+        return Err(AppError::FileIO(format!("{context} analysis definition.centeringMethod is invalid")));
+    }
+    definition.get("confidenceLevel").and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0 && *value < 1.0)
+        .ok_or_else(|| AppError::FileIO(format!(
+            "{context} analysis definition.confidenceLevel must be a finite number between 0 and 1"
+        )))?;
+
+    let terms = definition.get("terms").and_then(Value::as_array).ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.terms must be an array"))
+    })?;
+    if terms.is_empty() && !migration_issue {
+        return Err(AppError::FileIO(format!("{context} analysis definition.terms must not be empty")));
+    }
+    let mut main_effects = HashSet::new();
+    let mut required_main_effects = HashSet::new();
+    let mut identities = HashSet::new();
+    for (index, term) in terms.iter().enumerate() {
+        let term = term.as_object().ok_or_else(|| {
+            AppError::FileIO(format!("{context} analysis definition.terms[{index}] must be an object"))
+        })?;
+        let kind = term.get("kind").and_then(Value::as_str).ok_or_else(|| {
+            AppError::FileIO(format!("{context} analysis definition.terms[{index}].kind is invalid"))
+        })?;
+        let columns = term.get("columnNames").and_then(Value::as_array).ok_or_else(|| {
+            AppError::FileIO(format!("{context} analysis definition.terms[{index}].columnNames must be an array"))
+        })?;
+        let columns = columns.iter().map(Value::as_str).collect::<Option<Vec<_>>>().ok_or_else(|| {
+            AppError::FileIO(format!("{context} analysis definition.terms[{index}].columnNames must contain strings"))
+        })?;
+        let valid_arity = match kind {
+            "main" => columns.len() == 1,
+            "interaction" => columns.len() >= 2 && columns.iter().collect::<HashSet<_>>().len() == columns.len(),
+            "power" => columns.len() == 1 && term.get("exponent").and_then(Value::as_u64) == Some(2),
+            _ => false,
+        };
+        if !valid_arity {
+            return Err(AppError::FileIO(format!("{context} analysis definition.terms[{index}] is invalid")));
+        }
+        let mut canonical_columns = columns.clone();
+        if kind == "interaction" { canonical_columns.sort_unstable(); }
+        let identity = format!("{kind}:{}", canonical_columns.join("\u{0}"));
+        if !migration_issue && !identities.insert(identity) {
+            return Err(AppError::FileIO(format!("{context} analysis definition.terms contains duplicates")));
+        }
+        for column in &columns {
+            if !migration_issue && *column == response_name {
+                return Err(AppError::FileIO(format!("{context} analysis definition.terms contains the response")));
+            }
+        }
+        if kind == "main" { main_effects.insert(columns[0]); }
+        if kind == "interaction" || kind == "power" { required_main_effects.extend(columns); }
+    }
+    if !migration_issue && !required_main_effects.is_subset(&main_effects) {
+        return Err(AppError::FileIO(format!("{context} analysis definition.terms is missing a main effect")));
+    }
+    Ok(())
 }
 
 fn validate_distribution_analysis_definition(
@@ -4212,6 +4327,35 @@ mod tests {
             },
             "createdAt": "2026-09-07T00:00:00Z",
             "updatedAt": "2026-09-07T00:00:00Z"
+        })
+    }
+
+    fn fit_model_analysis_doc(id: &str, name: &str) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "documentType": "analysis",
+            "id": id,
+            "name": name,
+            "analysisKind": "fitModel",
+            "configRevision": 1,
+            "source": { "datasetId": "table-1" },
+            "definition": {
+                "kind": "fitModel",
+                "response": { "name": "Strength", "type": "continuous" },
+                "construct": { "kind": "manual" },
+                "terms": [
+                    { "kind": "main", "columnNames": ["Temperature"] },
+                    { "kind": "power", "columnNames": ["Temperature"], "exponent": 2 }
+                ],
+                "centeringMethod": "mean",
+                "confidenceLevel": 0.95
+            },
+            "presentation": {
+                "schemaVersion": 1,
+                "layout": "fit-model-v1"
+            },
+            "createdAt": "2026-09-08T00:00:00Z",
+            "updatedAt": "2026-09-08T00:00:00Z"
         })
     }
 
@@ -5406,6 +5550,44 @@ mod tests {
             validate_analysis_value(&invalid_fit_graph, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("mode")
         ));
+
+        let fit_model = fit_model_analysis_doc("fit-model-1", "Fit Model 1");
+        assert!(validate_analysis_value(&fit_model, "analysis validation").is_ok());
+
+        let mut invalid_fit_model_kind = fit_model.clone();
+        invalid_fit_model_kind["definition"]["kind"] = json!("fitYByX");
+        assert!(validate_analysis_value(&invalid_fit_model_kind, "analysis validation").is_err());
+
+        let mut invalid_fit_model_response = fit_model.clone();
+        invalid_fit_model_response["definition"]["response"]["type"] = json!("nominal");
+        assert!(validate_analysis_value(&invalid_fit_model_response, "analysis validation").is_err());
+
+        let mut invalid_fit_model_construct = fit_model.clone();
+        invalid_fit_model_construct["definition"]["construct"] = json!({ "kind": "factorialToDegree", "degree": 0 });
+        assert!(validate_analysis_value(&invalid_fit_model_construct, "analysis validation").is_err());
+
+        let mut invalid_fit_model_terms = fit_model.clone();
+        invalid_fit_model_terms["definition"]["terms"] = json!([{ "kind": "power", "columnNames": ["Temperature"], "exponent": 3 }]);
+        assert!(validate_analysis_value(&invalid_fit_model_terms, "analysis validation").is_err());
+
+        let mut invalid_fit_model_confidence = fit_model.clone();
+        invalid_fit_model_confidence["definition"]["confidenceLevel"] = json!(1.0);
+        assert!(validate_analysis_value(&invalid_fit_model_confidence, "analysis validation").is_err());
+
+        let mut invalid_fit_model_presentation = fit_model.clone();
+        invalid_fit_model_presentation["presentation"]["layout"] = json!("fit-y-by-x-v1");
+        assert!(validate_analysis_value(&invalid_fit_model_presentation, "analysis validation").is_err());
+
+        let mut valid_migration_issue = fit_model.clone();
+        valid_migration_issue["definition"]["migrationIssue"] = json!({
+            "code": "invalidPersistedDefinition",
+            "detail": "invalidConstruct"
+        });
+        assert!(validate_analysis_value(&valid_migration_issue, "analysis validation").is_ok());
+
+        let mut invalid_migration_issue = fit_model;
+        invalid_migration_issue["definition"]["migrationIssue"] = json!({ "code": 7, "detail": "bad" });
+        assert!(validate_analysis_value(&invalid_migration_issue, "analysis validation").is_err());
     }
 
     #[test]

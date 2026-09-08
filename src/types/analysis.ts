@@ -2,9 +2,15 @@ import type { FieldRef } from "../graphCore/types";
 
 import type { DistributionAnalysisConfig, DistributionItem } from "./distribution";
 import type { EmbeddedGraphConfig } from "./graphBuilder";
+import type {
+  FitModelCenteringMethod,
+  FitModelConstruct,
+  FitModelLoadIssue,
+  FitModelTerm,
+} from "./fitModel";
 import type { FitYByXPersonality } from "./fitYByX";
 
-export type AnalysisKind = "distribution" | "fitYByX";
+export type AnalysisKind = "distribution" | "fitYByX" | "fitModel";
 
 export interface DistributionAnalysisPresentation {
   schemaVersion: 1;
@@ -17,7 +23,15 @@ export interface FitYByXAnalysisPresentation {
   graph: EmbeddedGraphConfig;
 }
 
-export type AnalysisPresentation = DistributionAnalysisPresentation | FitYByXAnalysisPresentation;
+export interface FitModelAnalysisPresentation {
+  schemaVersion: 1;
+  layout: "fit-model-v1";
+}
+
+export type AnalysisPresentation =
+  | DistributionAnalysisPresentation
+  | FitYByXAnalysisPresentation
+  | FitModelAnalysisPresentation;
 
 export interface DistributionAnalysisDefinition {
   kind: "distribution";
@@ -35,6 +49,16 @@ export interface FitYByXAnalysisDefinition {
   factor: FieldRef;
   personality: FitYByXPersonality;
   confidenceLevel: number;
+}
+
+export interface FitModelAnalysisDefinition {
+  kind: "fitModel";
+  response: FieldRef;
+  construct: FitModelConstruct;
+  terms: FitModelTerm[];
+  centeringMethod: FitModelCenteringMethod;
+  confidenceLevel: number;
+  migrationIssue?: FitModelLoadIssue;
 }
 
 export interface DistributionAnalysisDocument {
@@ -65,7 +89,24 @@ export interface FitYByXAnalysisDocument {
   updatedAt: string;
 }
 
-export type AnalysisDocument = DistributionAnalysisDocument | FitYByXAnalysisDocument;
+export interface FitModelAnalysisDocument {
+  schemaVersion: 1;
+  documentType: "analysis";
+  id: string;
+  name: string;
+  analysisKind: "fitModel";
+  configRevision: number;
+  source: { datasetId: string };
+  definition: FitModelAnalysisDefinition;
+  presentation: FitModelAnalysisPresentation;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AnalysisDocument =
+  | DistributionAnalysisDocument
+  | FitYByXAnalysisDocument
+  | FitModelAnalysisDocument;
 
 export type AnalysisDocumentByKind = {
   [Document in AnalysisDocument as Document["analysisKind"]]: Document;

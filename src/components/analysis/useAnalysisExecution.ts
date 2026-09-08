@@ -5,12 +5,14 @@ import type {
   DistributionRequest,
 } from "@/types/distribution";
 import type { FitYByXRequest } from "@/types/fitYByX";
+import type { FitModelRequest } from "@/types/fitModel";
 
 import {
   analysisExecutors,
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
   fitYByXAnalysisDefinitionFingerprint,
+  fitModelAnalysisDefinitionFingerprint,
   type AnalysisExecutionDependencies,
   type AnalysisExecutionRequestByKind,
   type AnalysisExecutionResponseByKind,
@@ -20,6 +22,7 @@ export {
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
   fitYByXAnalysisDefinitionFingerprint,
+  fitModelAnalysisDefinitionFingerprint,
 };
 export type { AnalysisExecutionDependencies };
 
@@ -105,15 +108,19 @@ function analysisExecutionRequestIdentity(
   item: AnalysisDocument,
   request: AnalysisExecutionRequestByKind[AnalysisKind] | null,
 ): string | null {
-  return item.analysisKind === "distribution"
-    ? analysisExecutors.distribution.requestIdentity(request as DistributionRequest | null)
-    : analysisExecutors.fitYByX.requestIdentity(request as FitYByXRequest | null);
+  if (item.analysisKind === "distribution") {
+    return analysisExecutors.distribution.requestIdentity(request as DistributionRequest | null);
+  }
+  if (item.analysisKind === "fitYByX") {
+    return analysisExecutors.fitYByX.requestIdentity(request as FitYByXRequest | null);
+  }
+  return analysisExecutors.fitModel.requestIdentity(request as FitModelRequest | null);
 }
 
 function analysisDefinitionFingerprint(item: AnalysisDocument): string {
-  return item.analysisKind === "distribution"
-    ? analysisExecutors.distribution.fingerprint(item)
-    : analysisExecutors.fitYByX.fingerprint(item);
+  if (item.analysisKind === "distribution") return analysisExecutors.distribution.fingerprint(item);
+  if (item.analysisKind === "fitYByX") return analysisExecutors.fitYByX.fingerprint(item);
+  return analysisExecutors.fitModel.fingerprint(item);
 }
 
 function createAnalysisExecutionFence(
@@ -225,6 +232,19 @@ export function createAnalysisExecutionController(
       invalidate();
     },
     load: async (item, dataset) => {
+      if (item.analysisKind === "fitModel" && item.definition.migrationIssue) {
+        invalidate();
+        emit({
+          status: "error",
+          analysisKind: "fitModel",
+          analysisId: item.id,
+          datasetId: dataset.id,
+          configRevision: item.configRevision,
+          request: null,
+          error: item.definition.migrationIssue.detail,
+        }, createAnalysisExecutionFence(item, dataset, null));
+        return;
+      }
       const pendingFence = createAnalysisExecutionFence(item, dataset, null);
       const pending: ActiveAnalysisRequest = {
         token: ++nextToken,
@@ -271,7 +291,9 @@ export function createAnalysisExecutionController(
 
         const result = item.analysisKind === "distribution"
           ? await analysisExecutors.distribution.compute(options, request as DistributionRequest)
-          : await analysisExecutors.fitYByX.compute(options, request as FitYByXRequest);
+          : item.analysisKind === "fitYByX"
+            ? await analysisExecutors.fitYByX.compute(options, request as FitYByXRequest)
+            : await analysisExecutors.fitModel.compute(options, request as FitModelRequest);
         if (!isActive(running)) return;
 
         const currentAnalysis = options.getCurrentAnalysis?.();
@@ -311,10 +333,15 @@ export function createAnalysisExecutionController(
             result as AnalysisExecutionResponseByKind["distribution"],
             request as DistributionRequest,
           )
-          : analysisExecutors.fitYByX.responseMatches(
-            result as AnalysisExecutionResponseByKind["fitYByX"],
-            request as FitYByXRequest,
-          );
+          : item.analysisKind === "fitYByX"
+            ? analysisExecutors.fitYByX.responseMatches(
+              result as AnalysisExecutionResponseByKind["fitYByX"],
+              request as FitYByXRequest,
+            )
+            : analysisExecutors.fitModel.responseMatches(
+              result as AnalysisExecutionResponseByKind["fitModel"],
+              request as FitModelRequest,
+            );
         if (!responseMatches) {
           active = null;
           emit({
@@ -326,7 +353,9 @@ export function createAnalysisExecutionController(
             request,
             error: item.analysisKind === "distribution"
               ? analysisExecutors.distribution.responseIdentityError
-              : analysisExecutors.fitYByX.responseIdentityError,
+              : item.analysisKind === "fitYByX"
+                ? analysisExecutors.fitYByX.responseIdentityError
+                : analysisExecutors.fitModel.responseIdentityError,
               } as AnalysisExecutionState, createAnalysisExecutionFence(item, dataset, request));
           return;
         }
@@ -353,7 +382,9 @@ export function createAnalysisExecutionController(
           request,
           error: item.analysisKind === "distribution"
             ? analysisExecutors.distribution.normalizeError(error)
-            : analysisExecutors.fitYByX.normalizeError(error),
+            : item.analysisKind === "fitYByX"
+              ? analysisExecutors.fitYByX.normalizeError(error)
+              : analysisExecutors.fitModel.normalizeError(error),
         } as AnalysisExecutionState, createAnalysisExecutionFence(item, dataset, request));
       }
     },
@@ -373,6 +404,7 @@ export function useAnalysisExecution(
   });
   const compute = dependencies?.compute;
   const computeFitYByX = dependencies?.computeFitYByX;
+  const runFitModel = dependencies?.runFitModel;
   const getCurrentAnalysis = dependencies?.getCurrentAnalysis;
   const getCurrentDataset = dependencies?.getCurrentDataset;
   const getDatasetGeneration = dependencies?.getDatasetGeneration;
@@ -392,7 +424,9 @@ export function useAnalysisExecution(
       try {
         const resolved = item.analysisKind === "distribution"
           ? await analysisExecutors.distribution.resolveDependencies({ compute, getDatasetGeneration })
-          : await analysisExecutors.fitYByX.resolveDependencies({ computeFitYByX, getDatasetGeneration });
+          : item.analysisKind === "fitYByX"
+            ? await analysisExecutors.fitYByX.resolveDependencies({ computeFitYByX, getDatasetGeneration })
+            : await analysisExecutors.fitModel.resolveDependencies({ runFitModel, getDatasetGeneration });
         if (!mounted) return;
 
         controller = createAnalysisExecutionController({
@@ -416,7 +450,9 @@ export function useAnalysisExecution(
             request: null,
             error: item.analysisKind === "distribution"
               ? analysisExecutors.distribution.normalizeError(error)
-              : analysisExecutors.fitYByX.normalizeError(error),
+              : item.analysisKind === "fitYByX"
+                ? analysisExecutors.fitYByX.normalizeError(error)
+                : analysisExecutors.fitModel.normalizeError(error),
           },
           fence: createAnalysisExecutionFence(item, dataset, null),
         });
@@ -430,6 +466,7 @@ export function useAnalysisExecution(
   }, [
     compute,
     computeFitYByX,
+    runFitModel,
     datasetSignal,
     fingerprint,
     getCurrentAnalysis,

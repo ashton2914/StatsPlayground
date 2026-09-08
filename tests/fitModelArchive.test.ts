@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 
 import { createFitModelItem } from "../src/components/fitModel/fitModelConfig.ts";
 import { createFitModelRequest } from "../src/components/fitModel/useFitModelReport.ts";
-import { useFitModelStore } from "../src/stores/useFitModelStore.ts";
+import {
+  normalizeLegacyFitModelAnalysis,
+  toFitModelEditorItem,
+} from "../src/components/analysis/adapters/fitModelAnalysisAdapter.ts";
 import { useFolderStore } from "../src/stores/useFolderStore.ts";
 
 const fitModel = createFitModelItem({
@@ -116,15 +119,16 @@ assert.deepEqual(invokeCalls[0], {
 assert.deepEqual(reopened.fitModels, [fitModelWithTransient]);
 assert.deepEqual(reopened.fitModelFolders, { "fit-model-1": "Analyses/Fit Models" });
 
-useFitModelStore.getState().loadFromProject(reopened.fitModels ?? []);
-const normalized = useFitModelStore.getState().items[0] as Record<string, unknown>;
+const normalizedDocument = normalizeLegacyFitModelAnalysis(reopened.fitModels?.[0]).document;
+assert.ok(normalizedDocument);
+const normalized = toFitModelEditorItem(normalizedDocument) as unknown as Record<string, unknown>;
 assert.equal(normalized.id, "fit-model-1");
 assert.deepEqual(normalized.construct, { kind: "manual" });
 assert.equal(Object.hasOwn(normalized, "result"), false);
 assert.equal(Object.hasOwn(normalized, "plotRows"), false);
 assert.equal(Object.hasOwn(normalized, "reportState"), false);
 
-const generatedRequest = createFitModelRequest(useFitModelStore.getState().items[0]!, 3);
+const generatedRequest = createFitModelRequest(toFitModelEditorItem(normalizedDocument), 3);
 assert.deepEqual(generatedRequest, {
   datasetId: "table-1",
   generation: 3,
@@ -151,6 +155,5 @@ assert.deepEqual(useFolderStore.getState().fitModelFolders, {
   "fit-model-1": "Analyses/Fit Models",
 });
 
-useFitModelStore.getState().reset();
 useFolderStore.getState().reset();
 console.log("fit model archive contracts OK");

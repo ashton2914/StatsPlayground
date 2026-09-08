@@ -1,4 +1,6 @@
-import { AnalysisGraph } from "../src/components/analysis/presentation";
+import { useState } from "react";
+
+import { AnalysisButton, AnalysisGraph, AnalysisTable } from "../src/components/analysis/presentation";
 import type { GraphRuntimeProps } from "../src/components/graphBuilder/GraphRuntime";
 
 export function AnalysisGraphHarness() {
@@ -96,6 +98,45 @@ export function AnalysisGraphWidthHarness() {
         strategy={{ mode: "builder", runtimeProps: { item, dataset } }}
         renderGraph={() => <div style={{ width: 320, height: 100 }}>Graph content</div>}
       />
+    </div>
+  );
+}
+
+export function AnalysisInteractiveTableHarness() {
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set(["predicted"]));
+  const [action, setAction] = useState("none");
+  const rows = [
+    { key: "predicted", cells: ["Predicted", "Ready"] },
+    { key: "residual", cells: ["Residual", "Unavailable"] },
+  ];
+  return (
+    <div>
+      <AnalysisTable
+        title="Saved columns"
+        ariaLabel="Saved columns"
+        columns={[{ key: "metric", label: "Metric" }, { key: "status", label: "Status" }]}
+        rows={rows}
+        selection={{
+          selectedRowKeys: selected,
+          getLabel: (row) => `Select ${row.cells[0]}`,
+          isDisabled: (row) => row.key === "residual",
+          onToggle: (rowKey, checked) => setSelected((current) => {
+            const next = new Set(current);
+            if (checked) next.add(rowKey);
+            else next.delete(rowKey);
+            return next;
+          }),
+        }}
+        getRowActions={(row) => [{
+          key: "remove",
+          label: `Remove ${row.cells[0]}`,
+          disabled: row.key === "residual",
+          tone: "danger",
+          onInvoke: () => setAction(row.key),
+        }]}
+      />
+      <output data-testid="last-action">{action}</output>
+      <AnalysisButton pending pendingLabel="Saving">Save columns</AnalysisButton>
     </div>
   );
 }

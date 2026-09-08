@@ -1,13 +1,16 @@
 import type { AnalysisSummaryEntry } from "@/components/analysis/presentation";
 import {
   createDistributionAnalysisPatch,
+  createFitModelAnalysisPatch,
   createFitYByXAnalysisPatch,
   describeDistributionAnalysis,
+  describeFitModelAnalysis,
   describeFitYByXAnalysis,
+  toFitModelEditorItem,
   toDistributionEditorItem,
   toFitYByXEditorItem,
 } from "@/components/analysis/adapters";
-import type { FitYByXAnalysisEditorItem } from "@/components/analysis/adapters";
+import type { FitModelAnalysisEditorItem, FitYByXAnalysisEditorItem } from "@/components/analysis/adapters";
 import type { AnalysisDocumentByKind, AnalysisDocumentPatch, AnalysisKind } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { DistributionItem } from "@/types/distribution";
@@ -17,6 +20,7 @@ type Translate = (key: string, values?: Record<string, unknown>) => string;
 export type AnalysisEditorItemByKind = {
   distribution: DistributionItem;
   fitYByX: FitYByXAnalysisEditorItem;
+  fitModel: FitModelAnalysisEditorItem;
 };
 
 interface AnalysisEditorPolicy<Kind extends AnalysisKind> {
@@ -44,6 +48,11 @@ export const analysisEditorRegistry = {
     toEditor: toFitYByXEditorItem,
     createPatch: createFitYByXAnalysisPatch,
   },
+  fitModel: {
+    describe: describeFitModelAnalysis,
+    toEditor: toFitModelEditorItem,
+    createPatch: createFitModelAnalysisPatch,
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisEditorPolicy<Kind> | null };
 
 export function describeAnalysisDocument(
@@ -52,34 +61,48 @@ export function describeAnalysisDocument(
   translate: Translate,
 ): AnalysisSummaryEntry[];
 export function describeAnalysisDocument(
+  document: AnalysisDocumentByKind["fitModel"],
+  dataset: DatasetMeta | null,
+  translate: Translate,
+): AnalysisSummaryEntry[];
+export function describeAnalysisDocument(
   document: AnalysisDocumentByKind["distribution"],
   dataset: DatasetMeta | null,
   translate: Translate,
 ): AnalysisSummaryEntry[];
 export function describeAnalysisDocument(
-  document: AnalysisDocumentByKind["distribution"] | AnalysisDocumentByKind["fitYByX"],
+  document: AnalysisDocumentByKind[AnalysisKind],
   dataset: DatasetMeta | null,
   translate: Translate,
 ): AnalysisSummaryEntry[] {
   if (document.analysisKind === "distribution") {
     return analysisEditorRegistry.distribution.describe(document, dataset, translate);
   }
-  return analysisEditorRegistry.fitYByX.describe(document, dataset, translate);
+  if (document.analysisKind === "fitYByX") {
+    return analysisEditorRegistry.fitYByX.describe(document, dataset, translate);
+  }
+  return analysisEditorRegistry.fitModel.describe(document, dataset, translate);
 }
 
 export function toAnalysisEditorItem(
   document: AnalysisDocumentByKind["fitYByX"],
 ): FitYByXAnalysisEditorItem;
 export function toAnalysisEditorItem(
+  document: AnalysisDocumentByKind["fitModel"],
+): FitModelAnalysisEditorItem;
+export function toAnalysisEditorItem(
   document: AnalysisDocumentByKind["distribution"],
 ): DistributionItem;
 export function toAnalysisEditorItem(
-  document: AnalysisDocumentByKind["distribution"] | AnalysisDocumentByKind["fitYByX"],
-): DistributionItem | FitYByXAnalysisEditorItem {
+  document: AnalysisDocumentByKind[AnalysisKind],
+): AnalysisEditorItemByKind[AnalysisKind] {
   if (document.analysisKind === "distribution") {
     return analysisEditorRegistry.distribution.toEditor(document);
   }
-  return analysisEditorRegistry.fitYByX.toEditor(document);
+  if (document.analysisKind === "fitYByX") {
+    return analysisEditorRegistry.fitYByX.toEditor(document);
+  }
+  return analysisEditorRegistry.fitModel.toEditor(document);
 }
 
 export function createAnalysisEditorPatch(
@@ -88,17 +111,25 @@ export function createAnalysisEditorPatch(
   updatedAt: string,
 ): AnalysisDocumentPatch;
 export function createAnalysisEditorPatch(
+  document: AnalysisDocumentByKind["fitModel"],
+  submitted: FitModelAnalysisEditorItem,
+  updatedAt: string,
+): AnalysisDocumentPatch;
+export function createAnalysisEditorPatch(
   document: AnalysisDocumentByKind["distribution"],
   submitted: DistributionItem,
   updatedAt: string,
 ): AnalysisDocumentPatch;
 export function createAnalysisEditorPatch(
-  document: AnalysisDocumentByKind["distribution"] | AnalysisDocumentByKind["fitYByX"],
-  submitted: DistributionItem | FitYByXAnalysisEditorItem,
+  document: AnalysisDocumentByKind[AnalysisKind],
+  submitted: AnalysisEditorItemByKind[AnalysisKind],
   updatedAt: string,
 ): AnalysisDocumentPatch {
   if (document.analysisKind === "distribution") {
     return analysisEditorRegistry.distribution.createPatch(document, submitted as DistributionItem, updatedAt);
   }
-  return analysisEditorRegistry.fitYByX.createPatch(document, submitted as FitYByXAnalysisEditorItem, updatedAt);
+  if (document.analysisKind === "fitYByX") {
+    return analysisEditorRegistry.fitYByX.createPatch(document, submitted as FitYByXAnalysisEditorItem, updatedAt);
+  }
+  return analysisEditorRegistry.fitModel.createPatch(document, submitted as FitModelAnalysisEditorItem, updatedAt);
 }

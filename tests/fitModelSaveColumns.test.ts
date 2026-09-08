@@ -94,15 +94,15 @@ assert.equal(committedAfterFailure, false);
 const serviceSource = readSource("src/services/fitModelService.ts");
 assert.match(serviceSource, /invoke<SaveFitModelColumnsResult>\("save_fit_model_columns", \{ request \}\)/);
 
-const viewSource = readSource("src/components/fitModel/FitModelView.tsx");
+const viewSource = readSource("src/components/analysis/renderers/FitModelAnalysisResults.tsx");
 assert.match(viewSource, /tryBeginTableMutation\(\)/);
 assert.match(viewSource, /fitModelService\.saveColumns\(/);
 assert.match(viewSource, /recordTable\([\s\S]*kind: "changeSet"[\s\S]*changeSetId: result\.changeSetId/);
-assert.match(viewSource, /await onDatasetChanged\(\)/);
+assert.match(viewSource, /await onDatasetChanged\?\.\(\)/);
 assert.match(viewSource, /outcome\.postCommitError[\s\S]*setSaveNotice\(/);
 
 const workspaceSource = readSource("src/components/Workspace.tsx");
-assert.match(workspaceSource, /<FitModelView[\s\S]*readOnly=\{readOnly\}/);
+assert.match(workspaceSource, /<AnalysisView item=\{item\}[\s\S]*canEditInputs=\{!readOnly && ds != null\}/);
 assert.match(workspaceSource, /onDatasetChanged=\{async \(\) => \{[\s\S]*markDirty\(\);[\s\S]*await refreshDatasets\(\);/);
 
 console.log("fitModelSaveColumns tests passed");
