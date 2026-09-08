@@ -1,4 +1,6 @@
 import type { SchemaContract } from "./workflow";
+import type { DatasetMeta } from "./data";
+import type { ProjectLineageGraph, SchemaValidationReport } from "./workflow";
 
 export interface TableTransformDefinition {
   id: string;
@@ -10,6 +12,13 @@ export interface TableTransformDefinition {
   output: TableTransformOutput;
 }
 
+export interface TableTransformDraft {
+  name: string;
+  outputName: string;
+  operation: TableTransformOperation;
+  inputBindings: TableTransformInputBinding[];
+}
+
 export interface TableTransformInputSlot {
   role: string;
   schemaContract: SchemaContract;
@@ -18,6 +27,58 @@ export interface TableTransformInputSlot {
 export interface TableTransformOutput {
   tableDocumentId: string;
   name: string;
+}
+
+export interface TableTransformInputBinding {
+  role: string;
+  tableDocumentId: string;
+}
+
+export interface TableTransformProjectBinding {
+  definitionId: string;
+  definitionRevision: number;
+  inputs: TableTransformInputBinding[];
+  outputGeneration: number;
+}
+
+export type TableTransformRunStatus = "succeeded" | "failed" | "blocked";
+
+export interface TableTransformRoleSchemaReport {
+  role: string;
+  report: SchemaValidationReport;
+}
+
+export interface TableTransformRunState {
+  definitionRevision: number;
+  status: TableTransformRunStatus;
+  outputGeneration?: number;
+  error?: string;
+}
+
+export interface TableTransformExecutionResult {
+  definitionId: string;
+  status: TableTransformRunStatus;
+  output?: DatasetMeta;
+  schemaReports: TableTransformRoleSchemaReport[];
+  error?: string;
+  binding: TableTransformProjectBinding;
+  runState: TableTransformRunState;
+}
+
+export interface TableTransformCommandResult {
+  definition: TableTransformDefinition;
+  execution: TableTransformExecutionResult;
+  lineageGraph: ProjectLineageGraph;
+}
+
+export interface ImportedTableTransform {
+  definition: TableTransformDefinition;
+  binding: TableTransformProjectBinding;
+}
+
+export interface TableTransformBindingState extends TableTransformProjectBinding {
+  lastRun?: TableTransformRunState;
+  schemaReports?: TableTransformRoleSchemaReport[];
 }
 
 export type SortDirection = "ascending" | "descending";

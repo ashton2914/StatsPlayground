@@ -1,6 +1,6 @@
-export type ProjectFileExtension = ".sptb" | ".spgh" | ".spf" | ".sprp" | ".spdist" | ".span" | ".json";
+export type ProjectFileExtension = ".sptb" | ".sptbtf" | ".spgh" | ".spf" | ".sprp" | ".spdist" | ".span" | ".json";
 
-export type ProjectDocumentKind = "table" | "graph" | "fitYByX" | "tabulate" | "report" | "distribution" | "analysis" | "snapshot";
+export type ProjectDocumentKind = "table" | "tableTransform" | "graph" | "fitYByX" | "tabulate" | "report" | "distribution" | "analysis" | "snapshot";
 
 export type ProjectBasenameValidationError =
   | "empty"
@@ -29,10 +29,11 @@ const WINDOWS_RESERVED_STEM = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const INVALID_CHARS_RE = /[/\\:*?"<>|]/;
 const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/;
 
-const KNOWN_EXTENSIONS: ProjectFileExtension[] = [".sptb", ".spgh", ".spf", ".sprp", ".spdist", ".span", ".json"];
+const KNOWN_EXTENSIONS: ProjectFileExtension[] = [".sptbtf", ".sptb", ".spgh", ".spf", ".sprp", ".spdist", ".span", ".json"];
 
 export function projectFileExtension(kind: ProjectDocumentKind): ProjectFileExtension {
   if (kind === "table") return ".sptb";
+  if (kind === "tableTransform") return ".sptbtf";
   if (kind === "graph") return ".spgh";
   if (kind === "report") return ".sprp";
   if (kind === "distribution") return ".spdist";

@@ -13,6 +13,7 @@ import { migrateLegacyFitYByX } from "./fitYByXAnalysisMigration";
 
 export interface WorkspaceDocumentSelection {
   activeDatasetId: string | null;
+  activeTableTransformId: string | null;
   activeGraphBuilderId: string | null;
   activeFitModelId: string | null;
   activeReportId: string | null;
@@ -22,6 +23,7 @@ export interface WorkspaceDocumentSelection {
 
 export type WorkspaceDocumentKind =
   | "dataset"
+  | "tableTransform"
   | "graph"
   | "fitModel"
   | "report"
@@ -31,6 +33,7 @@ export type WorkspaceDocumentKind =
 export function createEmptyWorkspaceDocumentSelection(): WorkspaceDocumentSelection {
   return {
     activeDatasetId: null,
+    activeTableTransformId: null,
     activeGraphBuilderId: null,
     activeFitModelId: null,
     activeReportId: null,
@@ -42,6 +45,7 @@ export function createEmptyWorkspaceDocumentSelection(): WorkspaceDocumentSelect
 export function selectWorkspaceDocument(kind: WorkspaceDocumentKind, id: string): WorkspaceDocumentSelection {
   const next = createEmptyWorkspaceDocumentSelection();
   if (kind === "dataset") next.activeDatasetId = id;
+  if (kind === "tableTransform") next.activeTableTransformId = id;
   if (kind === "graph") next.activeGraphBuilderId = id;
   if (kind === "fitModel") next.activeFitModelId = id;
   if (kind === "report") next.activeReportId = id;

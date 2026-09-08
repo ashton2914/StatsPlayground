@@ -11,6 +11,8 @@ use crate::services::spprj_archive::{
     self, GraphDoc, ProjectBundle, TableColumn, TableColumnFormat, TableDoc,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
+use crate::services::table_transform_domain::TableTransformDefinition;
+use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{
     LogicalFolder, ProjectLineageGraph, WorkflowDefinition, WorkflowRun,
 };
@@ -20,6 +22,13 @@ use duckdb::types::Value as DuckValue;
 
 pub struct ProjectService<'a> {
     state: &'a AppState,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedTableTransform {
+    pub definition: TableTransformDefinition,
+    pub binding: TableTransformProjectBinding,
 }
 
 /// Result of opening a project, including restored history/snapshot data,
@@ -83,6 +92,10 @@ pub struct OpenProjectResult {
     pub workflow_runs: Vec<WorkflowRun>,
     #[serde(default)]
     pub lineage_graph: ProjectLineageGraph,
+    #[serde(default)]
+    pub table_transforms: Vec<TableTransformDefinition>,
+    #[serde(default)]
+    pub table_transform_bindings: Vec<TableTransformProjectBinding>,
 }
 
 const SPPRJ_VERSION: &str = "4.0.0";
@@ -341,6 +354,8 @@ impl<'a> ProjectService<'a> {
             logical_folders,
             workflow_runs,
             lineage_graph,
+            table_transforms: bundle.table_transforms,
+            table_transform_bindings: bundle.manifest.table_transform_bindings,
         })
     }
 
@@ -811,6 +826,33 @@ impl<'a> ProjectService<'a> {
         }
         Ok(serde_json::Value::Object(body))
     }
+
+    pub fn export_table_transform(
+        &self,
+        definition: &TableTransformDefinition,
+        file_path: &str,
+    ) -> Result<(), AppError> {
+        spprj_archive::write_table_transform_file(definition, file_path)
+    }
+
+    pub fn import_table_transform(
+        &self,
+        file_path: &str,
+    ) -> Result<ImportedTableTransform, AppError> {
+        let mut definition = spprj_archive::read_table_transform_file(file_path)?;
+        definition.id = uuid::Uuid::new_v4().to_string();
+        definition.output.table_document_id = uuid::Uuid::new_v4().to_string();
+        let binding = TableTransformProjectBinding {
+            definition_id: definition.id.clone(),
+            definition_revision: definition.revision,
+            inputs: Vec::new(),
+            output_generation: 0,
+        };
+        Ok(ImportedTableTransform {
+            definition,
+            binding,
+        })
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -1261,6 +1303,7 @@ mod tests {
     use crate::services::spprj_archive::{
         self, GraphEntryRef, ProjectManifest, TableColumn, TableDoc, TableEntryRef,
     };
+    use crate::services::table_transform_domain::TableTransformDefinition;
     use crate::state::AppState;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, HashMap};
@@ -1328,6 +1371,8 @@ mod tests {
             workflows: Vec::new(),
             logical_folders: Vec::new(),
             workflow_runs: Vec::new(),
+            table_transforms: Vec::new(),
+            table_transform_bindings: Vec::new(),
         }
     }
 
@@ -1349,6 +1394,51 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
         )
+    }
+
+    #[test]
+    fn imported_table_transform_gets_fresh_project_identity() {
+        let state = AppState::new().expect("create state");
+        let path = std::env::temp_dir().join(format!(
+            "stats-playground-import-transform-{}.sptbtf",
+            uuid::Uuid::new_v4()
+        ));
+        let original = TableTransformDefinition {
+            id: "original-transform".to_string(),
+            name: "Transpose".to_string(),
+            format_version: "1".to_string(),
+            revision: 1,
+            operation: crate::services::table_transform_domain::TableTransformOperation::Transpose,
+            input_slots: vec![
+                crate::services::table_transform_domain::TableTransformInputSlot {
+                    role: "source".to_string(),
+                    schema_contract: crate::services::workflow_domain::SchemaContract {
+                        schema_fingerprint: crate::services::workflow_domain::schema_fingerprint(
+                            &[],
+                        ),
+                        columns: vec![],
+                    },
+                },
+            ],
+            output: crate::services::table_transform_domain::TableTransformOutput {
+                table_document_id: "original-output".to_string(),
+                name: "Output".to_string(),
+            },
+        };
+        spprj_archive::write_table_transform_file(&original, path.to_str().unwrap())
+            .expect("write transform");
+
+        let imported = ProjectService::new(&state)
+            .import_table_transform(path.to_str().unwrap())
+            .expect("import transform");
+
+        assert_ne!(imported.definition.id, original.id);
+        assert_ne!(
+            imported.definition.output.table_document_id,
+            original.output.table_document_id
+        );
+        assert!(imported.binding.inputs.is_empty());
+        let _ = std::fs::remove_file(path);
     }
 
     fn write_zip_entry(zip: &mut zip::ZipWriter<std::fs::File>, path: &str, bytes: &[u8]) {
@@ -2371,6 +2461,8 @@ mod tests {
             tabulate_files: vec![],
             snapshot_files: vec![],
             workflow_files: vec![],
+            table_transform_files: vec![],
+            table_transform_bindings: vec![],
             logical_folders: vec![],
             workflow_runs: vec![],
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
@@ -2590,6 +2682,8 @@ mod tests {
             tabulate_files: vec![],
             snapshot_files: vec![],
             workflow_files: vec![],
+            table_transform_files: vec![],
+            table_transform_bindings: vec![],
             logical_folders: vec![],
             workflow_runs: vec![],
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
@@ -2721,6 +2815,8 @@ mod tests {
             tabulate_files: vec![],
             snapshot_files: vec![],
             workflow_files: vec![],
+            table_transform_files: vec![],
+            table_transform_bindings: vec![],
             logical_folders: vec![],
             workflow_runs: vec![],
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),

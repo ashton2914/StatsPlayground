@@ -5,7 +5,6 @@ import { dataService } from "@/services/dataService";
 import type { TableQueryResult, ColumnDisplayProps } from "@/types/data";
 import { EXTRA_DEFS, EXTRA_KINDS, type ExtraKind, summarizeExtraKinds, extraKindLabel, extraFieldLabel } from "@/types/columnExtras";
 import { ManageExtrasDialog } from "./ManageExtrasDialog";
-import type { TableOpType } from "./TableOpsDialog";
 import { useDataStore } from "@/stores/useDataStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
@@ -23,14 +22,6 @@ import type { FilterRuleItem } from "@/types/filter";
 interface DataTableViewProps {
   datasetId: string;
   onColumnRenamed?: (oldName: string, newName: string, sqlType: string) => void;
-  /**
-   * Open one of the JMP-style table operations (Summary / Subset / Sort /
-   * Stack / Split / Transpose / Join / Update / Concatenate). Wired by the
-   * Workspace so that the top-of-table toolbar can launch the same dialog
-   * the legacy `Operations` menu used to launch. Optional so unit tests
-   * and standalone renders still work without it.
-   */
-  onTableOp?: (op: TableOpType) => void;
 }
 
 const COLUMN_TYPE_VALUES = ["VARCHAR", "INTEGER", "BIGINT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"] as const;
@@ -699,7 +690,7 @@ const FormulaBar = React.memo(function FormulaBar({
   );
 });
 
-export function DataTableView({ datasetId, onColumnRenamed, onTableOp }: DataTableViewProps) {
+export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps) {
   const { t } = useTranslation();
   const labelOf = useMemo(() => typeLabelOf(t), [t]);
   const [data, setData] = useState<TableQueryResult | null>(null);
@@ -4075,10 +4066,7 @@ export function DataTableView({ datasetId, onColumnRenamed, onTableOp }: DataTab
       style={{ ["--sp-zoom" as string]: String(zoom) } as React.CSSProperties}
     >
 
-      {/* Table operations toolbar (formerly the menu-bar `Operations`
-          menu) + the local-data Filter toggle. The Filter button is
-          always rendered because it doesn't depend on `onTableOp`; the
-          ops buttons only render when the host wired the callback. */}
+      {/* Table-local filter and column property controls. */}
       <div className="sp-table-toolbar">
         {/* Local Data Filter toggle — opens the shared FilterPanel as a
             left sidebar (same component the Graph Builder uses). */}
@@ -4093,50 +4081,13 @@ export function DataTableView({ datasetId, onColumnRenamed, onTableOp }: DataTab
             <span className="sp-tb-badge">{tableFilters.length}</span>
           )}
         </button>
-        {onTableOp && (
-          <>
-            <div className="sp-tb-sep" />
-            <button className="sp-tb-btn" onClick={() => onTableOp("summary")} disabled={readOnly}>
-              {t("menu.opSummary")}
-            </button>
-            <div className="sp-tb-sep" />
-            <button className="sp-tb-btn" onClick={() => onTableOp("subset")} disabled={readOnly}>
-              {t("menu.opSubset")}
-            </button>
-            <button className="sp-tb-btn" onClick={() => onTableOp("sort")} disabled={readOnly}>
-              {t("menu.opSort")}
-            </button>
-            <div className="sp-tb-sep" />
-            <button className="sp-tb-btn" onClick={() => onTableOp("stack")} disabled={readOnly}>
-              {t("menu.opStack")}
-            </button>
-            <button className="sp-tb-btn" onClick={() => onTableOp("split")}>
-              {t("menu.opSplit")}
-            </button>
-            <button className="sp-tb-btn" onClick={() => onTableOp("transpose")}>
-              {t("menu.opTranspose")}
-            </button>
-            <div className="sp-tb-sep" />
-            <button className="sp-tb-btn" onClick={() => onTableOp("join")}>
-              {t("menu.opJoin")}
-            </button>
-            <button className="sp-tb-btn" onClick={() => onTableOp("update")}>
-              {t("menu.opUpdate")}
-            </button>
-            <button className="sp-tb-btn" onClick={() => onTableOp("concatenate")}>
-              {t("menu.opConcatenate")}
-            </button>
-            <div className="sp-tb-sep" />
-            {/* Column-level admin (not a row-level transform), so it lives
-                in its own trailing group separated by a divider. */}
-            <button
-              className="sp-tb-btn"
-              onClick={() => setShowManageExtras(true)}
-            >
-              {t("menu.manageExtras")}
-            </button>
-          </>
-        )}
+        <div className="sp-tb-sep" />
+        <button
+          className="sp-tb-btn"
+          onClick={() => setShowManageExtras(true)}
+        >
+          {t("menu.manageExtras")}
+        </button>
       </div>
 
       {/* Add column inline form */}

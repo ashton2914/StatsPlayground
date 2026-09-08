@@ -26,6 +26,20 @@
     "noContent": "暂无内容",
     "preparing": "准备中..."
   },
+  "tableTransform": {
+    "definition": "表转换",
+    "notRun": "尚未运行",
+    "inputs": "输入绑定",
+    "applyBindings": "应用绑定",
+    "chooseTable": "选择输入表",
+    "missingColumn": "缺少列：{{column}}",
+    "typeMismatch": "{{column}} 需要 {{expected}}，实际为 {{actual}}",
+    "output": "稳定输出",
+    "outputGeneration": "第 {{generation}} 代",
+    "openOutput": "打开输出",
+    "rerun": "重新运行",
+    "missing": "表转换已不存在"
+  },
   "menu": {
     "file": "文件",
     "save": "保存",
@@ -34,6 +48,7 @@
     "closeProject": "关闭项目",
     "table": "表格",
     "newTable": "新建数据表",
+    "transform": "转换...",
     "importCsv": "导入 CSV",
     "importSqlite": "导入 SQLite",
     "exportSqlite": "导出为 SQLite",
@@ -638,6 +653,8 @@
     "close": "关闭"
   },
   "tableOp": {
+    "transformTitle": "转换数据表",
+    "transformType": "转换类型",
     "summary": "汇总",
     "subset": "子集",
     "sort": "排序",

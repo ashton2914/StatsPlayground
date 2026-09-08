@@ -26,6 +26,20 @@
     "noContent": "Không có nội dung",
     "preparing": "Đang chuẩn bị..."
   },
+  "tableTransform": {
+    "definition": "Phép biến đổi bảng",
+    "notRun": "Chưa chạy",
+    "inputs": "Liên kết đầu vào",
+    "applyBindings": "Áp dụng liên kết",
+    "chooseTable": "Chọn bảng đầu vào",
+    "missingColumn": "Thiếu cột: {{column}}",
+    "typeMismatch": "{{column}} yêu cầu {{expected}}, hiện có {{actual}}",
+    "output": "Đầu ra ổn định",
+    "outputGeneration": "Thế hệ {{generation}}",
+    "openOutput": "Mở đầu ra",
+    "rerun": "Chạy lại",
+    "missing": "Phép biến đổi bảng không còn tồn tại"
+  },
   "menu": {
     "file": "Tệp",
     "save": "Lưu",
@@ -34,6 +48,7 @@
     "closeProject": "Đóng dự án",
     "table": "Bảng",
     "newTable": "Bảng dữ liệu mới",
+    "transform": "Biến đổi...",
     "importCsv": "Nhập CSV",
     "importSqlite": "Nhập SQLite",
     "exportSqlite": "Xuất sang SQLite",
@@ -632,6 +647,8 @@
     "close": "Đóng"
   },
   "tableOp": {
+    "transformTitle": "Biến đổi bảng",
+    "transformType": "Loại biến đổi",
     "summary": "Tổng hợp",
     "subset": "Tập con",
     "sort": "Sắp xếp",

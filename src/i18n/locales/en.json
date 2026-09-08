@@ -26,6 +26,20 @@
     "noContent": "No content",
     "preparing": "Preparing..."
   },
+  "tableTransform": {
+    "definition": "Table transform",
+    "notRun": "Not run",
+    "inputs": "Input bindings",
+    "applyBindings": "Apply bindings",
+    "chooseTable": "Choose input table",
+    "missingColumn": "Missing column: {{column}}",
+    "typeMismatch": "{{column}} requires {{expected}}, found {{actual}}",
+    "output": "Stable output",
+    "outputGeneration": "Generation {{generation}}",
+    "openOutput": "Open output",
+    "rerun": "Rerun",
+    "missing": "Table transform no longer exists"
+  },
   "menu": {
     "file": "File",
     "save": "Save",
@@ -34,6 +48,7 @@
     "closeProject": "Close Project",
     "table": "Table",
     "newTable": "New Data Table",
+    "transform": "Transform...",
     "importCsv": "Import CSV",
     "importSqlite": "Import SQLite",
     "exportSqlite": "Export as SQLite",
@@ -763,6 +778,8 @@
     "close": "Close"
   },
   "tableOp": {
+    "transformTitle": "Transform Table",
+    "transformType": "Transform type",
     "summary": "Summary",
     "subset": "Subset",
     "sort": "Sort",

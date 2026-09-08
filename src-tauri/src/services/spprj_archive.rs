@@ -181,6 +181,11 @@ pub struct ProjectManifest {
     #[serde(default)]
     pub workflow_files: Vec<WorkflowEntryRef>,
     #[serde(default)]
+    pub table_transform_files: Vec<TableTransformEntryRef>,
+    #[serde(default)]
+    pub table_transform_bindings:
+        Vec<crate::services::table_transform_service::TableTransformProjectBinding>,
+    #[serde(default)]
     pub logical_folders: Vec<workflow_domain::LogicalFolder>,
     #[serde(default)]
     pub workflow_runs: Vec<workflow_domain::WorkflowRun>,
@@ -258,6 +263,15 @@ pub struct SnapshotEntryRef {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowEntryRef {
+    pub id: String,
+    pub name: String,
+    pub revision: u64,
+    pub file: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TableTransformEntryRef {
     pub id: String,
     pub name: String,
     pub revision: u64,
@@ -372,6 +386,7 @@ pub struct ProjectBundle {
     pub history: Vec<Value>,
     pub snapshots: Vec<Value>,
     pub workflows: Vec<workflow_domain::WorkflowDefinition>,
+    pub table_transforms: Vec<crate::services::table_transform_domain::TableTransformDefinition>,
 }
 
 // ----------------------------------------------------------------------------
@@ -971,6 +986,11 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
     } else {
         Vec::new()
     };
+    let table_transforms = read_indexed_table_transforms(
+        &mut zip,
+        &manifest.table_transform_files,
+        strict_v4_name_checks,
+    )?;
 
     validate_workflow_collections(
         &workflows,
@@ -991,7 +1011,48 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         history,
         snapshots,
         workflows,
+        table_transforms,
     })
+}
+
+fn read_indexed_table_transforms<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    refs: &[TableTransformEntryRef],
+    strict_name_checks: bool,
+) -> Result<Vec<crate::services::table_transform_domain::TableTransformDefinition>, AppError> {
+    let mut definitions = Vec::with_capacity(refs.len());
+    for entry in refs {
+        let bytes = read_entry_bytes(zip, &entry.file).ok_or_else(|| {
+            AppError::FileIO(format!("Missing table transform entry: {}", entry.file))
+        })?;
+        let definition = serde_json::from_slice::<
+            crate::services::table_transform_domain::TableTransformDefinition,
+        >(&bytes)
+        .map_err(|error| {
+            AppError::FileIO(format!(
+                "Invalid table transform file {}: {error}",
+                entry.file
+            ))
+        })?;
+        crate::services::table_transform_domain::validate_table_transform_definition(&definition)
+            .map_err(|error| {
+            AppError::FileIO(format!(
+                "Invalid table transform file {}: {error}",
+                entry.file
+            ))
+        })?;
+        if definition.id != entry.id
+            || definition.revision != entry.revision
+            || (strict_name_checks && definition.name != entry.name)
+        {
+            return Err(AppError::FileIO(format!(
+                "Mismatched table transform index in {}",
+                entry.file
+            )));
+        }
+        definitions.push(definition);
+    }
+    Ok(definitions)
 }
 
 fn read_indexed_values<R: Read + Seek>(
@@ -1204,6 +1265,8 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         tabulate_files: Vec::new(),
         snapshot_files: Vec::new(),
         workflow_files: Vec::new(),
+        table_transform_files: Vec::new(),
+        table_transform_bindings: Vec::new(),
         logical_folders: Vec::new(),
         workflow_runs: Vec::new(),
         lineage_graph: workflow_domain::ProjectLineageGraph::default(),
@@ -1223,6 +1286,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         history: legacy.history.unwrap_or_default(),
         snapshots: legacy.snapshots.unwrap_or_default(),
         workflows: Vec::new(),
+        table_transforms: Vec::new(),
     })
 }
 
@@ -1366,6 +1430,8 @@ pub fn build_bundle_with_fit_models(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        Vec::new(),
     )
 }
 
@@ -1420,6 +1486,8 @@ pub fn build_bundle_with_workflows(
         workflows,
         logical_folders,
         workflow_runs,
+        Vec::new(),
+        Vec::new(),
     )
 }
 
@@ -1449,6 +1517,10 @@ pub fn build_bundle_with_workflows_and_fit_models(
     workflows: Vec<workflow_domain::WorkflowDefinition>,
     logical_folders: Vec<workflow_domain::LogicalFolder>,
     workflow_runs: Vec<workflow_domain::WorkflowRun>,
+    table_transforms: Vec<crate::services::table_transform_domain::TableTransformDefinition>,
+    table_transform_bindings: Vec<
+        crate::services::table_transform_service::TableTransformProjectBinding,
+    >,
 ) -> Result<ProjectBundle, AppError> {
     let mut tables = tables;
     let mut graphs = graphs;
@@ -1679,6 +1751,15 @@ pub fn build_bundle_with_workflows_and_fit_models(
             file: format!("workflow/{}.spwf", workflow.id),
         })
         .collect::<Vec<_>>();
+    let table_transform_refs = table_transforms
+        .iter()
+        .map(|definition| TableTransformEntryRef {
+            id: definition.id.clone(),
+            name: definition.name.clone(),
+            revision: definition.revision,
+            file: format!("transforms/{}.sptbtf", definition.id),
+        })
+        .collect::<Vec<_>>();
 
     // Collapse `folders` to a sorted, deduplicated, normalized list. Includes
     // any implicit ancestor folders for completeness so an extractor sees the
@@ -1704,6 +1785,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
         &tabulate_refs,
         &report_refs,
         &snapshot_refs,
+        &table_transform_refs,
     );
     let lineage_graph = if is_format_v4(&version) {
         let mut lineage_graph = build_project_lineage_graph(
@@ -1761,6 +1843,8 @@ pub fn build_bundle_with_workflows_and_fit_models(
             tabulate_files: tabulate_refs,
             snapshot_files: snapshot_refs,
             workflow_files: workflow_refs,
+            table_transform_files: table_transform_refs,
+            table_transform_bindings,
             logical_folders,
             workflow_runs,
             lineage_graph,
@@ -1777,6 +1861,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
         history,
         snapshots,
         workflows,
+        table_transforms,
     })
 }
 
@@ -1801,6 +1886,7 @@ fn collect_known_document_refs(
     tabulate_refs: &[DocumentEntryRef],
     report_refs: &[DocumentEntryRef],
     snapshot_refs: &[SnapshotEntryRef],
+    table_transform_refs: &[TableTransformEntryRef],
 ) -> HashSet<ProjectDocumentRef> {
     let mut known_documents = HashSet::new();
 
@@ -1852,6 +1938,12 @@ fn collect_known_document_refs(
             id: entry.id.clone(),
         });
     }
+    for entry in table_transform_refs {
+        known_documents.insert(ProjectDocumentRef {
+            kind: ProjectDocumentKind::TableTransform,
+            id: entry.id.clone(),
+        });
+    }
 
     known_documents
 }
@@ -1875,7 +1967,8 @@ fn build_project_lineage_graph(
 ) -> Result<workflow_domain::ProjectLineageGraph, AppError> {
     let mut lineage_graph = workflow_domain::ProjectLineageGraph::default();
 
-    let mut artifact_nodes = table_refs
+    let mut artifact_nodes =
+        table_refs
         .iter()
         .map(|entry| build_artifact_node(ProjectDocumentKind::Table, &entry.id, &entry.name))
         .chain(
@@ -2089,6 +2182,7 @@ pub fn refresh_project_lineage_graph(bundle: &mut ProjectBundle) -> Result<bool,
         &bundle.manifest.tabulate_files,
         &bundle.manifest.report_files,
         &bundle.manifest.snapshot_files,
+        &bundle.manifest.table_transform_files,
     );
     let mut rebuilt = build_project_lineage_graph(
         &bundle.manifest.tables,
@@ -2773,6 +2867,14 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
             .iter()
             .map(|workflow| (workflow.id.as_str(), workflow))
             .collect();
+        let transform_by_id: HashMap<
+            &str,
+            &crate::services::table_transform_domain::TableTransformDefinition,
+        > = bundle
+            .table_transforms
+            .iter()
+            .map(|definition| (definition.id.as_str(), definition))
+            .collect();
 
         for entry in &bundle.manifest.tables {
             let doc = table_by_id.get(entry.id.as_str()).ok_or_else(|| {
@@ -2865,6 +2967,15 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
             })?;
             let synced = workflow_with_manifest_fields(workflow, &entry.name, entry.revision);
             write_zip_json_entry(&mut zip, &entry.file, &synced, opts)?;
+        }
+        for entry in &bundle.manifest.table_transform_files {
+            let definition = transform_by_id.get(entry.id.as_str()).ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing table transform payload for manifest reference {}",
+                    entry.id
+                ))
+            })?;
+            write_zip_json_entry(&mut zip, &entry.file, definition, opts)?;
         }
         if !bundle.history.is_empty() {
             write_zip_json_entry(&mut zip, ".history.json", &bundle.history, opts)?;
@@ -3003,6 +3114,30 @@ pub fn write_graph_file(doc: &GraphDoc, path: &str) -> Result<(), AppError> {
 pub fn read_graph_file(path: &str) -> Result<GraphDoc, AppError> {
     let bytes = std::fs::read(path)?;
     parse_graph_doc(&bytes, "").map_err(|e| AppError::FileIO(format!("Invalid .spgh file: {}", e)))
+}
+
+/// Write one validated reusable Table Transform definition to `.sptbtf` JSON.
+pub fn write_table_transform_file(
+    definition: &crate::services::table_transform_domain::TableTransformDefinition,
+    path: &str,
+) -> Result<(), AppError> {
+    crate::services::table_transform_domain::validate_table_transform_definition(definition)?;
+    let bytes = serde_json::to_vec_pretty(definition)
+        .map_err(|error| AppError::FileIO(format!("Invalid .sptbtf file: {error}")))?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Read and validate one reusable Table Transform definition from `.sptbtf` JSON.
+pub fn read_table_transform_file(
+    path: &str,
+) -> Result<crate::services::table_transform_domain::TableTransformDefinition, AppError> {
+    let bytes = std::fs::read(path)?;
+    let definition = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::FileIO(format!("Invalid .sptbtf file: {error}")))?;
+    crate::services::table_transform_domain::validate_table_transform_definition(&definition)
+        .map_err(|error| AppError::FileIO(format!("Invalid .sptbtf file: {error}")))?;
+    Ok(definition)
 }
 
 /// Tolerant `.spgh` parser. Reads the bytes into a generic `serde_json::Value`
@@ -3229,6 +3364,10 @@ fn validate_manifest_stable_ids(manifest: &ProjectManifest) -> Result<(), AppErr
     for entry in &manifest.workflow_files {
         ensure_unique_manifest_id(&mut workflow_ids, &entry.id, "workflow")?;
     }
+    let mut transform_ids = HashSet::new();
+    for entry in &manifest.table_transform_files {
+        ensure_unique_manifest_id(&mut transform_ids, &entry.id, "table transform")?;
+    }
 
     Ok(())
 }
@@ -3394,6 +3533,10 @@ fn validate_bundle_before_write(bundle: &ProjectBundle) -> Result<(), AppError> 
         &bundle.manifest.logical_folders,
         &bundle.manifest.workflow_runs,
     )?;
+    for definition in &bundle.table_transforms {
+        crate::services::table_transform_domain::validate_table_transform_definition(definition)?;
+    }
+    validate_table_transform_bindings(&bundle.manifest)?;
     validate_manifest_entry_refs(&bundle.manifest)?;
     if is_format_v4(&bundle.manifest.version) {
         let mut canonical = bundle.clone();
@@ -3422,6 +3565,7 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
             &manifest.tabulate_files,
             &manifest.report_files,
             &manifest.snapshot_files,
+            &manifest.table_transform_files,
         );
         workflow_domain::validate_lineage_graph(&manifest.lineage_graph, &known_documents)?;
         validate_workflow_manifest_refs(manifest)?;
@@ -3580,7 +3724,64 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
         validate_manifest_id_matches_file_basename(&entry.file, &entry.id, extension, "workflow")?;
         ensure_unique_file(&mut seen_files, &entry.file)?;
     }
+    for entry in &manifest.table_transform_files {
+        validate_indexed_path(&entry.file, "transforms", ".sptbtf", "table transform")?;
+        validate_display_basename(&entry.id)?;
+        validate_manifest_id_matches_file_basename(
+            &entry.file,
+            &entry.id,
+            ".sptbtf",
+            "table transform",
+        )?;
+        ensure_unique_file(&mut seen_files, &entry.file)?;
+    }
+    validate_table_transform_bindings(manifest)?;
 
+    Ok(())
+}
+
+fn validate_table_transform_bindings(manifest: &ProjectManifest) -> Result<(), AppError> {
+    let definitions = manifest
+        .table_transform_files
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry.revision))
+        .collect::<HashMap<_, _>>();
+    let tables = manifest
+        .tables
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    for binding in &manifest.table_transform_bindings {
+        if !seen.insert(binding.definition_id.as_str()) {
+            return Err(AppError::FileIO(format!(
+                "Duplicate table transform binding: {}",
+                binding.definition_id
+            )));
+        }
+        let revision = definitions
+            .get(binding.definition_id.as_str())
+            .ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "Unknown table transform binding: {}",
+                    binding.definition_id
+                ))
+            })?;
+        if *revision != binding.definition_revision {
+            return Err(AppError::FileIO(format!(
+                "Stale table transform binding revision: {}",
+                binding.definition_id
+            )));
+        }
+        for input in &binding.inputs {
+            if !tables.contains(input.table_document_id.as_str()) {
+                return Err(AppError::FileIO(format!(
+                    "Unknown table transform input: {}",
+                    input.table_document_id
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -5598,6 +5799,8 @@ mod tests {
             tabulate_files: vec![],
             snapshot_files: vec![],
             workflow_files: vec![],
+            table_transform_files: vec![],
+            table_transform_bindings: vec![],
             logical_folders: vec![],
             workflow_runs: vec![],
             lineage_graph: workflow_domain::ProjectLineageGraph::default(),
@@ -8414,6 +8617,105 @@ mod tests {
         assert_eq!(bundle.tabulates.len(), 1);
         assert_eq!(bundle.snapshots, vec![snapshot]);
 
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn table_transform_file_round_trip() {
+        let path = std::env::temp_dir().join(format!(
+            "stats-playground-transform-{}.sptbtf",
+            uuid::Uuid::new_v4()
+        ));
+        let definition = crate::services::table_transform_domain::TableTransformDefinition {
+            id: "transform-1".to_string(),
+            name: "Transpose data".to_string(),
+            format_version: "1".to_string(),
+            revision: 3,
+            operation: crate::services::table_transform_domain::TableTransformOperation::Transpose,
+            input_slots: vec![
+                crate::services::table_transform_domain::TableTransformInputSlot {
+                    role: "source".to_string(),
+                    schema_contract: workflow_domain::SchemaContract {
+                        schema_fingerprint: workflow_domain::schema_fingerprint(&[]),
+                        columns: vec![],
+                    },
+                },
+            ],
+            output: crate::services::table_transform_domain::TableTransformOutput {
+                table_document_id: "output-1".to_string(),
+                name: "Transposed data".to_string(),
+            },
+        };
+
+        write_table_transform_file(&definition, path.to_str().unwrap()).unwrap();
+        let loaded = read_table_transform_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded, definition);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn table_transform_round_trip_persists_indexed_body_and_binding() {
+        let path = temp_project_path("table-transform-round-trip");
+        let definition = crate::services::table_transform_domain::TableTransformDefinition {
+            id: "transform-1".to_string(),
+            name: "Transpose data".to_string(),
+            format_version: "1".to_string(),
+            revision: 3,
+            operation: crate::services::table_transform_domain::TableTransformOperation::Transpose,
+            input_slots: vec![
+                crate::services::table_transform_domain::TableTransformInputSlot {
+                    role: "source".to_string(),
+                    schema_contract: workflow_domain::SchemaContract {
+                        schema_fingerprint: workflow_domain::schema_fingerprint(&[]),
+                        columns: vec![],
+                    },
+                },
+            ],
+            output: crate::services::table_transform_domain::TableTransformOutput {
+                table_document_id: "output-1".to_string(),
+                name: "Transposed data".to_string(),
+            },
+        };
+        let binding = crate::services::table_transform_service::TableTransformProjectBinding {
+            definition_id: definition.id.clone(),
+            definition_revision: definition.revision,
+            inputs: vec![],
+            output_generation: 2,
+        };
+        let empty = HashMap::new();
+        let mut bundle = build_bundle(
+            "Transforms".to_string(),
+            "4.0.0".to_string(),
+            "now".to_string(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &empty,
+            &empty,
+            &empty,
+            &empty,
+            &empty,
+            vec![],
+            vec![],
+        )
+        .expect("build empty bundle");
+        bundle.manifest.table_transform_files = vec![TableTransformEntryRef {
+            id: definition.id.clone(),
+            name: definition.name.clone(),
+            revision: definition.revision,
+            file: "transforms/transform-1.sptbtf".to_string(),
+        }];
+        bundle.manifest.table_transform_bindings = vec![binding.clone()];
+        bundle.table_transforms = vec![definition.clone()];
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded.table_transforms, vec![definition]);
+        assert_eq!(loaded.manifest.table_transform_bindings, vec![binding]);
         let _ = std::fs::remove_file(path);
     }
 }

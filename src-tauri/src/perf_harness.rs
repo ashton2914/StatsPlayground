@@ -688,6 +688,8 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
                         workflows: Vec::new(),
                         logical_folders: Vec::new(),
                         workflow_runs: Vec::new(),
+                        table_transforms: Vec::new(),
+                        table_transform_bindings: Vec::new(),
                     },
                     None,
                 )

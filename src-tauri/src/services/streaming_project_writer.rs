@@ -371,6 +371,8 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             snapshot.request.workflows.clone(),
             snapshot.request.logical_folders.clone(),
             snapshot.request.workflow_runs.clone(),
+            snapshot.request.table_transforms.clone(),
+            snapshot.request.table_transform_bindings.clone(),
         )?;
 
         thread::scope(|scope| {
@@ -399,6 +401,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 &bundle.tabulates,
                 &bundle.snapshots,
                 &bundle.workflows,
+                &bundle.table_transforms,
                 &temp_path,
                 temp_file,
                 total_rows,
@@ -455,6 +458,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         tabulate_docs: &[serde_json::Value],
         snapshot_docs: &[serde_json::Value],
         workflow_docs: &[workflow_domain::WorkflowDefinition],
+        table_transform_docs: &[crate::services::table_transform_domain::TableTransformDefinition],
         temp_path: &Path,
         temp_file: std::fs::File,
         total_rows: usize,
@@ -476,6 +480,10 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             .iter()
             .map(|doc| (doc.id.as_str(), doc))
             .collect();
+        let table_transform_by_id = table_transform_docs
+            .iter()
+            .map(|definition| (definition.id.as_str(), definition))
+            .collect::<HashMap<_, _>>();
         let fit_by_id: HashMap<&str, &serde_json::Value> = fit_docs
             .iter()
             .filter_map(|value| {
@@ -779,7 +787,9 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         }
 
         for analysis_ref in &manifest.analyses {
-            let analysis_doc = analysis_by_id.get(analysis_ref.id.as_str()).ok_or_else(|| {
+            let analysis_doc = analysis_by_id
+                .get(analysis_ref.id.as_str())
+                .ok_or_else(|| {
                 AppError::FileIO(format!(
                     "missing analysis payload for manifest reference {}",
                     analysis_ref.id
@@ -835,8 +845,22 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             synced.revision = workflow_ref.revision;
             zip.start_file(&workflow_ref.file, file_opts)
                 .map_err(|e| AppError::FileIO(e.to_string()))?;
-            serde_json::to_writer(&mut zip, &synced).map_err(|e| {
-                AppError::FileIO(format!("failed to serialize workflow doc: {e}"))
+            serde_json::to_writer(&mut zip, &synced)
+                .map_err(|e| AppError::FileIO(format!("failed to serialize workflow doc: {e}")))?;
+        }
+        for transform_ref in &manifest.table_transform_files {
+            let definition = table_transform_by_id
+                .get(transform_ref.id.as_str())
+                .ok_or_else(|| {
+                    AppError::FileIO(format!(
+                        "missing table transform payload for manifest reference {}",
+                        transform_ref.id
+                    ))
+                })?;
+            zip.start_file(&transform_ref.file, file_opts)
+                .map_err(|error| AppError::FileIO(error.to_string()))?;
+            serde_json::to_writer(&mut zip, definition).map_err(|error| {
+                AppError::FileIO(format!("failed to serialize table transform: {error}"))
             })?;
         }
 
@@ -1415,6 +1439,8 @@ mod tests {
                 workflows: vec![],
                 logical_folders: vec![],
                 workflow_runs: vec![],
+                table_transforms: vec![],
+                table_transform_bindings: vec![],
             },
         }
     }
@@ -1679,6 +1705,8 @@ mod tests {
                 workflows: vec![],
                 logical_folders: vec![],
                 workflow_runs: vec![],
+                table_transforms: vec![],
+                table_transform_bindings: vec![],
             },
         }
     }
@@ -1774,7 +1802,8 @@ mod tests {
         let state = AppState::new().unwrap();
         let dataset = seed_named_dataset(&state, "table_1", "data");
         let destination = temp_path("workflow-indexed-save");
-        let mut snapshot = save_snapshot_with_named_docs_and_nested_folders(&destination, vec![dataset]);
+        let mut snapshot =
+            save_snapshot_with_named_docs_and_nested_folders(&destination, vec![dataset]);
         snapshot.request.workflows = vec![workflow_doc("workflow-1", "Workflow 1", 2)];
         snapshot.request.logical_folders = vec![workflow_domain::LogicalFolder {
             id: "folder-run".to_string(),
