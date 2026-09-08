@@ -1,4 +1,4 @@
-import type { TableWindowFilter } from "@/types/data";
+import type { TableWindowFilter, TableWindowRequest, TableWindowResult } from "@/types/data";
 import type { FilterRuleItem } from "@/types/filter";
 
 interface TableViewportInput {
@@ -25,6 +25,7 @@ export const MAX_MATERIALIZED_SELECTION_ITEMS = 100_000;
 
 export interface DatasetRevision {
   datasetId: string;
+  generation: number;
   rowCount: number;
   updatedAt: string;
 }
@@ -35,7 +36,31 @@ export function shouldReloadDatasetRevision(
 ): boolean {
   return previous !== null
     && previous.datasetId === current.datasetId
-    && (previous.rowCount !== current.rowCount || previous.updatedAt !== current.updatedAt);
+    && (
+      previous.generation !== current.generation
+      || previous.rowCount !== current.rowCount
+      || previous.updatedAt !== current.updatedAt
+    );
+}
+
+export function isStaleDatasetGenerationError(error: unknown): boolean {
+  return String(error).includes("stale dataset generation:");
+}
+
+export async function queryTableWindowWithFreshGeneration(
+  request: Omit<TableWindowRequest, "generation">,
+  getGeneration: () => Promise<number>,
+  queryWindow: (request: TableWindowRequest) => Promise<TableWindowResult>,
+): Promise<TableWindowResult> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const generation = await getGeneration();
+    try {
+      return await queryWindow({ ...request, generation });
+    } catch (error) {
+      if (attempt > 0 || !isStaleDatasetGenerationError(error)) throw error;
+    }
+  }
+  throw new Error("table window generation retry exhausted");
 }
 
 export function canMaterializeSelection(
@@ -64,15 +89,29 @@ export function canMaterializeSelection(
 export class RequestEpoch {
   private value = 0;
   private latestKey: string | null = null;
+  private mutationDepth = 0;
 
   get current(): number {
     return this.value;
+  }
+
+  get canIssueViewportRequest(): boolean {
+    return this.mutationDepth === 0;
   }
 
   advance(): number {
     this.value += 1;
     this.latestKey = null;
     return this.value;
+  }
+
+  beginMutation(): void {
+    this.mutationDepth += 1;
+    this.advance();
+  }
+
+  endMutation(): void {
+    this.mutationDepth = Math.max(0, this.mutationDepth - 1);
   }
 
   isCurrent(epoch: number): boolean {
