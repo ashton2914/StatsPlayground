@@ -5,6 +5,10 @@ import type { GraphBuilderItem } from "@/types/graphBuilder";
 import type { ReportDependency, ReportItem } from "@/types/report";
 import type { TabulateItem } from "@/types/tabulate";
 import type {
+  TableTransformDefinition,
+  TableTransformProjectBinding,
+} from "@/types/tableTransform";
+import type {
   ArtifactKind,
   LineagePort,
   OperationKind,
@@ -18,6 +22,8 @@ import { extractReportDependencies } from "@/utils/reportParser";
 
 export interface ProjectDocumentSnapshot {
   datasets: readonly DatasetMeta[];
+  tableTransforms?: readonly TableTransformDefinition[];
+  tableTransformBindings?: readonly TableTransformProjectBinding[];
   graphs: readonly GraphBuilderItem[];
   analyses: readonly AnalysisDocument[];
   distributions?: readonly DistributionItem[];
@@ -161,6 +167,76 @@ export const graphOperationAdapter: WorkflowOperationAdapter<GraphBuilderItem> =
       },
       inputs: [{ sourceDocumentRef, port: sourcePort }],
       output: { documentRef: { kind: "graph", id: graph.id }, artifactKind: "graph", name: graph.name },
+    };
+  },
+};
+
+interface BoundTableTransform {
+  definition: TableTransformDefinition;
+  binding: TableTransformProjectBinding;
+}
+
+function transformTableRequirement(
+  definition: TableTransformDefinition,
+  role: string,
+): TableInputRequirement {
+  const slot = definition.inputSlots.find((candidate) => candidate.role === role);
+  if (!slot) throw new Error(`Missing Table Transform input contract: ${definition.id}:${role}`);
+  return {
+    columns: slot.schemaContract.columns.map((column) => ({
+      name: column.name,
+      requiredExtraKinds: Object.keys(column.requiredExtras ?? {})
+        .filter((kind): kind is TableColumnConsumption["requiredExtraKinds"][number] => (
+          kind === "spec" || kind === "valueOrder"
+        ))
+        .sort(),
+    })),
+    completeSchema: definition.operation.kind === "transpose",
+  };
+}
+
+export const tableTransformOperationAdapter: WorkflowOperationAdapter<BoundTableTransform> = {
+  operationKind: "tableTransform",
+  schemaVersion: "1",
+  documentKind: "tableTransform",
+  normalizeConfiguration: ({ definition }) => definition,
+  project: ({ definition, binding }) => {
+    if (binding.definitionId !== definition.id || binding.definitionRevision !== definition.revision) {
+      throw new Error(`Stale Table Transform binding: ${definition.id}`);
+    }
+    const operationId = operationNodeId("tableTransform", definition.id);
+    const bindingByRole = new Map(binding.inputs.map((input) => [input.role, input]));
+    const inputs = definition.inputSlots.map((slot) => {
+      const input = bindingByRole.get(slot.role);
+      if (!input) throw new Error(`Missing Table Transform input binding: ${definition.id}:${slot.role}`);
+      const sourceDocumentRef: ProjectDocumentRef = { kind: "table", id: input.tableDocumentId };
+      return {
+        sourceDocumentRef,
+        port: inputPort(
+          operationId,
+          slot.role,
+          "table",
+          transformTableRequirement(definition, slot.role),
+        ),
+      };
+    });
+    return {
+      operation: {
+        nodeType: "operation",
+        id: operationId,
+        kind: "tableTransform",
+        schemaVersion: "1",
+        configuration: definition,
+        documentRef: { kind: "tableTransform", id: definition.id },
+        inputPorts: inputs.map((input) => input.port),
+        outputPorts: [outputPort(operationId, "table")],
+      },
+      inputs,
+      output: {
+        documentRef: { kind: "table", id: definition.output.tableDocumentId },
+        artifactKind: "table",
+        name: definition.output.name,
+      },
     };
   },
 };
@@ -365,7 +441,15 @@ export const reportOperationAdapter: WorkflowOperationAdapter<ReportItem> = {
 };
 
 export function projectDocumentOperations(snapshot: ProjectDocumentSnapshot): ProjectedOperation[] {
+  const tableTransformBindings = new Map(
+    (snapshot.tableTransformBindings ?? []).map((binding) => [binding.definitionId, binding]),
+  );
   return [
+    ...(snapshot.tableTransforms ?? []).map((definition) => {
+      const binding = tableTransformBindings.get(definition.id);
+      if (!binding) throw new Error(`Missing Table Transform binding: ${definition.id}`);
+      return tableTransformOperationAdapter.project({ definition, binding });
+    }),
     ...snapshot.graphs.map((document) => graphOperationAdapter.project(document)),
     ...snapshot.analyses.map((document) => analysisOperationAdapter.project(document)),
     ...(snapshot.distributions ?? []).map((document) => distributionOperationAdapter.project(document)),

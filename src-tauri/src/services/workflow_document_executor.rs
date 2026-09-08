@@ -443,7 +443,7 @@ fn remap_document_commit(
     }
 }
 
-fn report_dependency_ids(markdown: &str) -> Result<Vec<String>, AppError> {
+pub(crate) fn report_dependency_ids(markdown: &str) -> Result<Vec<String>, AppError> {
     Ok(remap_report_markdown(markdown, &HashMap::new())?.1)
 }
 

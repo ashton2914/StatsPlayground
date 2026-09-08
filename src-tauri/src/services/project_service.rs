@@ -16,6 +16,7 @@ use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{
     LogicalFolder, ProjectLineageGraph, WorkflowDefinition, WorkflowRun,
 };
+use crate::services::workflow_executor::{document_commit_id, WorkflowRunCommitPacket};
 use crate::state::AppState;
 use duckdb::appender_params_from_iter;
 use duckdb::types::Value as DuckValue;
@@ -96,6 +97,8 @@ pub struct OpenProjectResult {
     pub table_transforms: Vec<TableTransformDefinition>,
     #[serde(default)]
     pub table_transform_bindings: Vec<TableTransformProjectBinding>,
+    #[serde(default)]
+    pub recovered_workflow_packets: Vec<WorkflowRunCommitPacket>,
 }
 
 const SPPRJ_VERSION: &str = "4.0.0";
@@ -234,6 +237,58 @@ impl<'a> ProjectService<'a> {
             })
             .collect();
 
+        let recovery_entries = self
+            .state
+            .workflow_run_journal
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .values()
+            .filter(|entry| entry.project_path == file_path)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut recovered_workflow_packets = recovery_entries
+            .iter()
+            .filter_map(|entry| entry.packet.clone())
+            .collect::<Vec<_>>();
+        recovered_workflow_packets.sort_by(|left, right| {
+            left.run
+                .completed_at
+                .cmp(&right.run.completed_at)
+                .then_with(|| left.run.id.cmp(&right.run.id))
+        });
+        let recovered_table_ids = recovered_workflow_packets
+            .iter()
+            .flat_map(|packet| {
+                let document_ids = packet
+                    .documents
+                    .iter()
+                    .map(|document| document_commit_id(document).to_string())
+                    .collect::<std::collections::HashSet<_>>();
+                packet
+                    .run
+                    .output_bindings
+                    .iter()
+                    .filter(move |binding| !document_ids.contains(&binding.artifact_document_id))
+                    .map(|binding| binding.artifact_document_id.clone())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let recovered_tables = recovered_table_ids
+            .iter()
+            .map(|table_id| self.compose_table_doc(table_id))
+            .collect::<Result<Vec<_>, AppError>>()?;
+        {
+            let engine = self
+                .state
+                .db
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            for entry in &recovery_entries {
+                for staging_id in &entry.staging_ids {
+                    let _ = engine.delete_dataset(staging_id);
+                }
+            }
+        }
+
         let staged_state = AppState::new()?;
         let total = bundle.tables.len();
         {
@@ -248,6 +303,14 @@ impl<'a> ProjectService<'a> {
                     }
                 };
                 staged_service.restore_table_doc_with_progress(doc, Some(&row_progress))?;
+            }
+            for doc in &recovered_tables {
+                let _ = staged_state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                    .delete_dataset(&doc.id);
+                staged_service.restore_table_doc(doc)?;
             }
         }
 
@@ -356,6 +419,7 @@ impl<'a> ProjectService<'a> {
             lineage_graph,
             table_transforms: bundle.table_transforms,
             table_transform_bindings: bundle.manifest.table_transform_bindings,
+            recovered_workflow_packets,
         })
     }
 

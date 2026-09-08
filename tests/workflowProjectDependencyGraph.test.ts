@@ -6,6 +6,10 @@ import type { DatasetMeta } from "../src/types/data.ts";
 import type { GraphBuilderItem } from "../src/types/graphBuilder.ts";
 import type { ReportItem } from "../src/types/report.ts";
 import type { TabulateItem } from "../src/types/tabulate.ts";
+import type {
+  TableTransformDefinition,
+  TableTransformProjectBinding,
+} from "../src/types/tableTransform.ts";
 
 const dataset: DatasetMeta = {
   id: "table-1",
@@ -110,6 +114,34 @@ const report: ReportItem = {
   ].join("\n"),
   createdAt: "2026-09-08T00:00:00.000Z",
   updatedAt: "2026-09-08T00:00:00.000Z",
+};
+
+const transform: TableTransformDefinition = {
+  id: "transform-1",
+  name: "Sort measurements",
+  formatVersion: "1",
+  revision: 1,
+  operation: { kind: "sort", sortColumns: [{ column: "yield", direction: "ascending" }] },
+  inputSlots: [{
+    role: "source",
+    schemaContract: {
+      schemaFingerprint: "source-schema",
+      columns: [{
+        name: "yield",
+        canonicalDuckdbType: "DOUBLE",
+        required: true,
+        requiredByOperationIds: ["table-transform"],
+      }],
+    },
+  }],
+  output: { tableDocumentId: "table-sorted", name: "Sorted measurements" },
+};
+
+const transformBinding: TableTransformProjectBinding = {
+  definitionId: transform.id,
+  definitionRevision: transform.revision,
+  inputs: [{ role: "source", tableDocumentId: dataset.id }],
+  outputGeneration: 1,
 };
 
 const first = buildProjectDependencyGraph({
@@ -237,5 +269,34 @@ assert.throws(
   }),
   /Duplicate project dependency node: artifact:graph:graph-1/,
 );
+
+const transformed = buildProjectDependencyGraph({
+  datasets: [
+    dataset,
+    { ...dataset, id: "table-sorted", name: "Sorted measurements" },
+  ],
+  tableTransforms: [transform],
+  tableTransformBindings: [transformBinding],
+  graphs: [],
+  analyses: [],
+  tabulates: [],
+  reports: [],
+});
+assert.deepEqual(
+  transformed.edges.map((edge) => [edge.kind, edge.source.nodeId, edge.target.nodeId]),
+  [
+    ["consumes", "artifact:table:table-1", "operation:tableTransform:transform-1"],
+    ["produces", "operation:tableTransform:transform-1", "artifact:table:table-sorted"],
+  ],
+);
+const transformOperation = transformed.nodes.find(
+  (node) => node.id === "operation:tableTransform:transform-1",
+);
+assert.equal(transformOperation?.nodeType, "operation");
+assert.deepEqual(transformOperation.inputPorts[0]?.tableRequirement, {
+  columns: [{ name: "yield", requiredExtraKinds: [] }],
+  completeSchema: false,
+});
+assert.deepEqual(transformOperation.configuration, transform);
 
 console.log("Workflow project dependency graph contract passed");

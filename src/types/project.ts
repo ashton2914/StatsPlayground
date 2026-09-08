@@ -9,6 +9,7 @@ import type {
   LogicalFolder,
   ProjectLineageGraph,
   WorkflowDefinition,
+  WorkflowRunCommitPacket,
   WorkflowRun,
 } from "./workflow";
 
@@ -68,6 +69,7 @@ export interface OpenProjectResult {
   lineageGraph: ProjectLineageGraph;
   tableTransforms: TableTransformDefinition[];
   tableTransformBindings: TableTransformProjectBinding[];
+  recoveredWorkflowPackets?: WorkflowRunCommitPacket[];
 }
 
 /** 导入 .sptb 的返回值。

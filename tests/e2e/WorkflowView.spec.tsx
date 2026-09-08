@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/experimental-ct-react";
 
 import { WorkflowPanel } from "../../src/components/workflow/WorkflowPanel";
 import { WorkflowView } from "../../src/components/workflow/WorkflowView";
+import { WorkflowRunHarness } from "../WorkflowRunHarness";
 import type { DatasetMeta } from "../../src/types/data";
 import type { ProjectLineageGraph, WorkflowDefinition } from "../../src/types/workflow";
 
@@ -270,6 +271,66 @@ test("ignores a stale schema response after changing the input table", async ({ 
   await expect(component.locator(".workflow-schema-status .valid")).toContainText("Schema compatible");
   await page.waitForTimeout(150);
   await expect(component.locator(".workflow-schema-status .valid")).toContainText("Schema compatible");
+});
+
+test("runs a compatible saved workflow and reports success", async ({ mount, page }) => {
+  await page.evaluate(() => {
+    Object.assign(window, {
+      __TAURI_INTERNALS__: {
+        metadata: { currentWindow: { label: "main" } },
+        invoke: async (command: string) => {
+          if (command === "get_columns") return [["yield", "DOUBLE"]];
+          if (command === "get_column_display_props") return [];
+          throw new Error(`Unexpected command: ${command}`);
+        },
+        transformCallback: () => 1,
+      },
+    });
+  });
+  const component = await mount(
+    <WorkflowRunHarness
+      lineageGraph={lineageGraph}
+      workflow={workflow}
+      dataset={dataset}
+      outcome="success"
+    />,
+  );
+
+  await component.getByLabel("Measurements").selectOption(dataset.id);
+  const runButton = component.getByRole("button", { name: "Run workflow" });
+  await expect(runButton).toBeEnabled();
+  await runButton.click();
+  await expect(component.getByRole("button", { name: "Running" })).toBeDisabled();
+  await expect(component.getByRole("status")).toContainText("Workflow completed");
+});
+
+test("keeps the saved workflow visible when a run fails", async ({ mount, page }) => {
+  await page.evaluate(() => {
+    Object.assign(window, {
+      __TAURI_INTERNALS__: {
+        metadata: { currentWindow: { label: "main" } },
+        invoke: async (command: string) => {
+          if (command === "get_columns") return [["yield", "DOUBLE"]];
+          if (command === "get_column_display_props") return [];
+          throw new Error(`Unexpected command: ${command}`);
+        },
+        transformCallback: () => 1,
+      },
+    });
+  });
+  const component = await mount(
+    <WorkflowRunHarness
+      lineageGraph={lineageGraph}
+      workflow={workflow}
+      dataset={dataset}
+      outcome="failure"
+    />,
+  );
+
+  await component.getByLabel("Measurements").selectOption(dataset.id);
+  await component.getByRole("button", { name: "Run workflow" }).click();
+  await expect(component.getByRole("alert")).toContainText("Downstream analysis failed");
+  await expect(component.getByRole("heading", { name: "Analyze yield" })).toBeVisible();
 });
 
 test("blocks a table whose required column extras do not match", async ({ mount, page }) => {

@@ -101,10 +101,13 @@ function assertResolvedEdges(nodes: readonly LineageNode[], edges: readonly Line
 }
 
 export function buildProjectDependencyGraph(snapshot: ProjectDocumentSnapshot): ProjectLineageGraph {
-  const tableArtifacts = snapshot.datasets.map((dataset) => (
+  const projected = projectDocumentOperations(snapshot);
+  const projectedOutputs = new Set(projected.map((item) => artifactNodeId(item.output.documentRef)));
+  const tableArtifacts = snapshot.datasets
+    .filter((dataset) => !projectedOutputs.has(artifactNodeId({ kind: "table", id: dataset.id })))
+    .map((dataset) => (
     artifactNode({ kind: "table", id: dataset.id }, dataset.name, "table")
   ));
-  const projected = projectDocumentOperations(snapshot);
   const nodes: LineageNode[] = [
     ...tableArtifacts,
     ...projected.map((item) => artifactNode(

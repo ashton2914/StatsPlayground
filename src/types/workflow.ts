@@ -302,6 +302,20 @@ export type WorkflowDocumentCommit =
       dependencyIds: string[];
     });
 
+export interface WorkflowRunCommitPacket {
+  commitId: string;
+  documents: WorkflowDocumentCommit[];
+  run: WorkflowRun;
+}
+
+export interface WorkflowRunRequest {
+  workflow: WorkflowDefinition;
+  inputBindings: WorkflowInputBinding[];
+  outputBindings: WorkflowOutputBinding[];
+  seed: number;
+  previousRuns: WorkflowRun[];
+}
+
 export type WorkflowRunStatus =
   | "pending"
   | "running"

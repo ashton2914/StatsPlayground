@@ -33,6 +33,7 @@ interface WorkflowViewProps {
   datasets: DatasetMeta[];
   suggestedWorkflowName?: string;
   onSaveSelection?: (name: string, nodeIds: string[]) => void | Promise<void>;
+  onRun?: (bindings: Record<string, string>) => Promise<void>;
 }
 
 interface SelectionMarquee {
@@ -100,6 +101,7 @@ export function WorkflowView({
   datasets,
   suggestedWorkflowName = "Workflow 1",
   onSaveSelection,
+  onRun,
 }: WorkflowViewProps) {
   const { t } = useTranslation();
   const [bindings, setBindings] = useState<Record<string, string>>({});
@@ -111,6 +113,8 @@ export function WorkflowView({
   const [selectionName, setSelectionName] = useState<string | null>(null);
   const [inspectedSlotId, setInspectedSlotId] = useState<string | null>(null);
   const [savingSelection, setSavingSelection] = useState(false);
+  const [runStatus, setRunStatus] = useState<"idle" | "running" | "succeeded" | "failed">("idle");
+  const [runError, setRunError] = useState<string | null>(null);
   const schemaRequestIds = useRef<Record<string, number>>({});
   const visuals = useMemo(
     () => workflow ? workflowVisuals(workflow) : lineageVisuals(lineageGraph),
@@ -161,6 +165,8 @@ export function WorkflowView({
     setSelectedNodeIds(new Set());
     setSelectionName(null);
     setInspectedSlotId(null);
+    setRunStatus("idle");
+    setRunError(null);
   }, [workflow?.id]);
 
   useEffect(() => {
@@ -311,6 +317,29 @@ export function WorkflowView({
   const title = workflow?.name
     ?? t("workflow.projectLineage", { defaultValue: "Project lineage" });
   const inspectedSlot = workflow?.inputSlots.find((slot) => slot.id === inspectedSlotId);
+  const canRun = Boolean(workflow && onRun)
+    && workflow!.inputSlots.every((slot) => {
+      const report = reports[slot.id];
+      return Boolean(bindings[slot.id])
+        && Boolean(report)
+        && !isSchemaValidationBlocking(report)
+        && !checkError[slot.id];
+    })
+    && checkingSlotId === null
+    && runStatus !== "running";
+
+  const runWorkflow = async () => {
+    if (!onRun || !canRun) return;
+    setRunStatus("running");
+    setRunError(null);
+    try {
+      await onRun(bindings);
+      setRunStatus("succeeded");
+    } catch (error) {
+      setRunStatus("failed");
+      setRunError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return (
     <div className="workflow-view">
@@ -338,8 +367,32 @@ export function WorkflowView({
               {t("workflow.saveSelection", { defaultValue: "Save as workflow" })}
             </button>
           )}
+          {workflow && onRun && (
+            <button
+              type="button"
+              className="workflow-save-selection"
+              disabled={!canRun}
+              onClick={() => void runWorkflow()}
+            >
+              <i className={`fa-solid ${runStatus === "running" ? "fa-spinner fa-spin" : "fa-play"}`} aria-hidden="true" />
+              {runStatus === "running"
+                ? t("workflow.running", { defaultValue: "Running" })
+                : t("workflow.run", { defaultValue: "Run workflow" })}
+            </button>
+          )}
         </div>
       </header>
+
+      {runStatus === "succeeded" && (
+        <div className="workflow-run-status valid" role="status">
+          {t("workflow.runSucceeded", { defaultValue: "Workflow completed" })}
+        </div>
+      )}
+      {runStatus === "failed" && (
+        <div className="workflow-run-status invalid" role="alert">
+          {runError ?? t("workflow.runFailed", { defaultValue: "Workflow failed" })}
+        </div>
+      )}
 
       {workflow && workflow.inputSlots.length > 0 && (
         <section className="workflow-inputs" aria-label={t("workflow.inputs", { defaultValue: "Workflow inputs" })}>

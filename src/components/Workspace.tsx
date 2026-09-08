@@ -43,6 +43,7 @@ import {
 import { DistributionDialog, type DistributionFieldInfo } from "./distribution";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
+import { applyWorkflowRunCommit } from "./workflow/workflowRunCommit";
 import {
   ANALYSIS_SAMPLE_COLUMN,
   createAnalysisSample,
@@ -298,11 +299,13 @@ export function Workspace() {
   const loadTabulatesFromProject = useTabulateStore((s) => s.loadFromProject);
   const projectLineageGraph = useMemo(() => buildProjectDependencyGraph({
     datasets,
+    tableTransforms,
+    tableTransformBindings,
     graphs: graphBuilders,
     analyses: analysisItems,
     tabulates,
     reports: reportItems,
-  }), [analysisItems, datasets, graphBuilders, reportItems, tabulates]);
+  }), [analysisItems, datasets, graphBuilders, reportItems, tableTransformBindings, tableTransforms, tabulates]);
   const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
   /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
@@ -1514,6 +1517,8 @@ export function Workspace() {
     try {
       const currentLineageGraph = buildProjectDependencyGraph({
         datasets: useDataStore.getState().datasets,
+        tableTransforms: useTableTransformStore.getState().definitions,
+        tableTransformBindings: useTableTransformStore.getState().bindings,
         graphs: useGraphBuilderStore.getState().items,
         analyses: useAnalysisStore.getState().items,
         tabulates: useTabulateStore.getState().items,
@@ -1576,6 +1581,57 @@ export function Workspace() {
         defaultValue: "Failed to save workflow: {{message}}",
         message: String(error),
       }));
+    }
+  };
+
+  const handleRunWorkflow = async (
+    workflow: (typeof workflows)[number],
+    bindings: Record<string, string>,
+  ) => {
+    const previousRuns = useWorkflowStore.getState().workflowRuns
+      .filter((run) => run.workflowId === workflow.id);
+    const latestBindings = [...previousRuns]
+      .reverse()
+      .find((run) => run.workflowRevision === workflow.revision)
+      ?.outputBindings;
+    const outputBindings = workflow.outputDeclarations.map((declaration) => ({
+      declarationId: declaration.id,
+      artifactDocumentId: latestBindings
+        ?.find((binding) => binding.declarationId === declaration.id)
+        ?.artifactDocumentId
+        ?? `${workflow.id}-${declaration.id}`,
+    }));
+    const inputBindings = workflow.inputSlots.map((slot) => ({
+      slotId: slot.id,
+      tableDocumentId: bindings[slot.id] ?? "",
+    }));
+    setBusyMessage(t("workflow.running", { defaultValue: "Running workflow..." }));
+    try {
+      const packet = await projectService.runWorkflow({
+        workflow,
+        inputBindings,
+        outputBindings,
+        seed: 0,
+        previousRuns,
+      });
+      const tableOutputIds = workflow.outputDeclarations
+        .filter((declaration) => declaration.artifactKind === "table")
+        .map((declaration) => outputBindings
+          .find((binding) => binding.declarationId === declaration.id)!
+          .artifactDocumentId);
+      await applyWorkflowRunCommit(packet, {
+        datasetIds: [
+          ...useDataStore.getState().datasets.map((dataset) => dataset.id),
+          ...tableOutputIds,
+        ],
+        refreshDatasets,
+        markDirty,
+      });
+      if (packet.run.status === "succeeded") {
+        await projectService.acknowledgeWorkflowCommit(packet.commitId);
+      }
+    } finally {
+      setBusyMessage(null);
     }
   };
 
@@ -1692,6 +1748,14 @@ export function Workspace() {
           result.tableTransforms ?? [],
           result.tableTransformBindings ?? [],
         );
+        for (const packet of result.recoveredWorkflowPackets ?? []) {
+          await applyWorkflowRunCommit(packet, {
+            datasetIds: useDataStore.getState().datasets.map((dataset) => dataset.id),
+            refreshDatasets,
+            markDirty,
+          });
+          await projectService.acknowledgeWorkflowCommit(packet.commitId);
+        }
         // Restore folder tree + table/graph→folder assignments. We do this
         // after datasets/graphs are loaded so a subsequent prune pass keeps
         // assignments in sync with currently-existing items.
@@ -2747,6 +2811,11 @@ export function Workspace() {
               datasets={datasets}
               suggestedWorkflowName={`Workflow ${workflows.length + 1}`}
               onSaveSelection={readOnly ? undefined : handleSaveWorkflowSelection}
+              onRun={readOnly ? undefined : (bindings) => {
+                const workflow = workflows.find((entry) => entry.id === activeWorkflowViewId);
+                if (!workflow) throw new Error("Workflow is not available");
+                return handleRunWorkflow(workflow, bindings);
+              }}
             />
           ) : activeAnalysisId ? (
             (() => {
