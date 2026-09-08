@@ -273,6 +273,35 @@ export interface WorkflowOutputFingerprint {
   contentHash: string;
 }
 
+interface WorkflowDocumentCommitBase {
+  id: string;
+  name: string;
+  validationResultHash: string;
+}
+
+export type WorkflowDocumentCommit =
+  | (WorkflowDocumentCommitBase & {
+      kind: "graph";
+      sourceTableId: string;
+      document: unknown;
+    })
+  | (WorkflowDocumentCommitBase & {
+      kind: "analysis";
+      sourceTableId: string;
+      document: unknown;
+    })
+  | (WorkflowDocumentCommitBase & {
+      kind: "tabulate";
+      sourceTableId: string;
+      document: unknown;
+      result: unknown;
+    })
+  | (WorkflowDocumentCommitBase & {
+      kind: "report";
+      markdown: string;
+      dependencyIds: string[];
+    });
+
 export type WorkflowRunStatus =
   | "pending"
   | "running"
