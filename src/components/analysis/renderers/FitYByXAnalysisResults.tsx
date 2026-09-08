@@ -74,15 +74,19 @@ export function FitYByXAnalysisResults({
   }, [axisContextMenu]);
 
   return (
-    <div data-analysis-kind="fitYByX">
-      <AnalysisShell
-        title={item.name}
-        sourceName={dataset?.name ?? t("workspace.analysisSourceMissing")}
-        summary={summary}
-        canEditInputs={canEditInputs && dataset != null}
-        onEditInputs={onEditInputs}
+    <AnalysisShell
+      title={item.name}
+      sourceName={dataset?.name ?? t("workspace.analysisSourceMissing")}
+      summary={summary}
+      canEditInputs={canEditInputs && dataset != null}
+      onEditInputs={onEditInputs}
+    >
+      <AnalysisFrame
+        title={item.definition.response.name}
+        contentPadding="compact"
+        data-analysis-document
+        data-analysis-kind="fitYByX"
       >
-        <AnalysisFrame title={item.definition.response.name} contentPadding="compact" data-analysis-document>
           <AnalysisStack>
             {dataset == null ? (
               <AnalysisFrame title={t("fitYByX.graph")} data-analysis-block="graph">
@@ -93,6 +97,7 @@ export function FitYByXAnalysisResults({
                 title={t("fitYByX.graph")}
                 graphRole="main"
                 data-analysis-block="graph"
+                contentClassName="analysis-graph-fit-y-by-x"
                 strategy={{
                   mode: "builder",
                   runtimeProps: {
@@ -175,7 +180,6 @@ export function FitYByXAnalysisResults({
             </div>
           );
         })()}
-      </AnalysisShell>
-    </div>
+    </AnalysisShell>
   );
 }

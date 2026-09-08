@@ -2,6 +2,13 @@
 
 .analysis-graph-distribution > [data-graph-role] { width: 100%; height: 100%; }
 
+.analysis-graph-fit-y-by-x {
+  box-sizing: border-box;
+  height: clamp(320px, 52vh, 620px);
+}
+
+.analysis-graph-fit-y-by-x > [data-graph-role] { width: 100%; height: 100%; }
+
 .analysis-sample-range {
   display: grid;
   align-content: center;

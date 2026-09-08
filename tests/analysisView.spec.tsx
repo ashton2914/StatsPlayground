@@ -215,6 +215,20 @@ test("Fit Y by X renders through the synchronous Analysis view", async ({ mount 
   await expect(component.getByRole("button", { name: "Effect Size" })).toBeVisible();
 });
 
+test("Fit Y by X keeps its graph visible and report reachable in the Analysis shell", async ({ mount }) => {
+  const component = await mount(<FitYByXAnalysisViewHarness />);
+  const host = component.getByTestId("fit-analysis-host");
+  const shell = host.locator(".analysis-shell");
+  const results = host.locator(".analysis-shell-results");
+  const graphRuntime = host.locator("[data-graph-role='main']");
+
+  await expect(shell).toHaveCount(1);
+  await expect.poll(() => shell.evaluate((node) => node.clientHeight)).toBe(480);
+  await expect.poll(() => graphRuntime.evaluate((node) => node.clientHeight)).toBeGreaterThan(300);
+  await expect(results).toHaveCSS("overflow-y", "auto");
+  await expect.poll(() => results.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+});
+
 test("Fit Y by X persists axis edits and reset zoom without recomputing", async ({ mount }) => {
   const component = await mount(<FitYByXAnalysisViewHarness />);
 

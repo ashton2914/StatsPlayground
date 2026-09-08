@@ -354,6 +354,7 @@ export function FitYByXAnalysisViewHarness({
 }: {
   mode?: "success" | "loading" | "error" | "notComputable" | "sourceMissing";
 }) {
+  const [dataset] = useState(createDataset);
   const [item, setItem] = useState(createFitYByXAnalysisDocument);
   const [editInputsCalls, setEditInputsCalls] = useState(0);
   const [computeCalls, setComputeCalls] = useState(0);
@@ -408,17 +409,19 @@ export function FitYByXAnalysisViewHarness({
       <output data-testid="fit-edit-inputs-calls">{editInputsCalls}</output>
       <output data-testid="fit-compute-calls">{computeCalls}</output>
       <output data-testid="fit-main-x-min">{item.presentation.graph.modeStates.twoD.xAxis?.min ?? "auto"}</output>
-      <AnalysisView
-        item={item}
-        dataset={mode === "sourceMissing" ? undefined : createDataset()}
-        runtime={runtimeRef.current}
-        canEditInputs
-        onEditInputs={() => setEditInputsCalls((count) => count + 1)}
-        onGraphConfigChange={(_role, graph) => setItem((previous) => ({
-          ...previous,
-          presentation: { ...previous.presentation, graph },
-        }))}
-      />
+      <div data-testid="fit-analysis-host" style={{ height: 480, minHeight: 0, overflow: "hidden" }}>
+        <AnalysisView
+          item={item}
+          dataset={mode === "sourceMissing" ? undefined : dataset}
+          runtime={runtimeRef.current}
+          canEditInputs
+          onEditInputs={() => setEditInputsCalls((count) => count + 1)}
+          onGraphConfigChange={(_role, graph) => setItem((previous) => ({
+            ...previous,
+            presentation: { ...previous.presentation, graph },
+          }))}
+        />
+      </div>
     </>
   );
 }
