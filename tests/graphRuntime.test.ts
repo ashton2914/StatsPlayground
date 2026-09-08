@@ -131,6 +131,41 @@ assert.deepEqual(
   "synthetic melt categories must retain the user's multi-column order across frame rebuilds",
 );
 
+const singleXVariableItem: GraphBuilderItem = {
+  ...interactiveItem,
+  modeStates: {
+    ...interactiveItem.modeStates,
+    twoD: {
+      ...interactiveItem.modeStates.twoD,
+      encoding: {},
+      multiX: [{ name: "height", type: "continuous" }],
+      multiY: [],
+    },
+  },
+};
+const multipleXVariableItem: GraphBuilderItem = {
+  ...singleXVariableItem,
+  modeStates: {
+    ...singleXVariableItem.modeStates,
+    twoD: {
+      ...singleXVariableItem.modeStates.twoD,
+      multiX: [
+        { name: "height", type: "continuous" },
+        { name: "width", type: "continuous" },
+      ],
+    },
+  },
+};
+for (const xVariableItem of [singleXVariableItem, multipleXVariableItem]) {
+  const model = buildGraphRuntimeModel(xVariableItem, metadata);
+  assert.deepEqual(model.effectiveEncoding.x, { name: "__sp_variable__", type: "nominal" });
+  assert.deepEqual(model.effectiveEncoding.y, { name: "__sp_value__", type: "continuous" });
+}
+assert.deepEqual(
+  deriveValueOrders(metadata, buildGraphRuntimeModel(singleXVariableItem, metadata).meltInfo).__sp_variable__,
+  ["height"],
+);
+
 const colorOnlyItem: GraphBuilderItem = {
   ...interactiveItem,
   modeStates: {

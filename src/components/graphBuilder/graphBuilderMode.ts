@@ -154,32 +154,48 @@ function collapseSingleContinuousAxisField(
 }
 
 function normalizeTwoDEncodingAndMultiAxes(
+  itemId: string,
   encoding: Partial<Graph2DState["encoding"]>,
   multiXInput: unknown,
   multiYInput: unknown,
   elements: ChartElement[] = [],
 ): Pick<Graph2DState, "encoding" | "multiX" | "multiY"> {
-  const multiX = toFieldRefArray(multiXInput);
+  let multiX = toFieldRefArray(multiXInput);
   const multiY = toFieldRefArray(multiYInput);
 
-  const xCollapsed = collapseSingleContinuousAxisField(encoding, multiX, "x");
   const enabledKinds = new Set(
     elements.filter((element) => element.enabled !== false).map((element) => element.kind),
   );
+  const isInternalGraph = itemId.startsWith("analysis-graph:")
+    || itemId.startsWith("fit-y-by-x-graph:");
+  const continuousX = encoding.x?.type === "continuous" ? encoding.x : undefined;
+  const isValueOnlyDistribution = enabledKinds.has("histogram")
+    || enabledKinds.has("normalCurve")
+    || enabledKinds.has("boxplot");
+  if (!isInternalGraph && multiX.length === 0 && continuousX && !encoding.y && isValueOnlyDistribution) {
+    multiX = [continuousX];
+  }
+
+  const xNormalized = multiX.length > 0
+    ? (() => {
+        const { x: _x, ...encodingWithoutX } = encoding;
+        return { encoding: encodingWithoutX, multiFields: multiX };
+      })()
+    : { encoding, multiFields: multiX };
   const preserveDistributionMultiY = multiY.length === 1
     && enabledKinds.has("histogram")
     && enabledKinds.has("normalCurve")
     && enabledKinds.has("boxplot");
   const yCollapsed = preserveDistributionMultiY
     ? (() => {
-        const { y: _y, ...encodingWithoutY } = xCollapsed.encoding;
+        const { y: _y, ...encodingWithoutY } = xNormalized.encoding;
         return { encoding: encodingWithoutY, multiFields: multiY };
       })()
-    : collapseSingleContinuousAxisField(xCollapsed.encoding, multiY, "y");
+    : collapseSingleContinuousAxisField(xNormalized.encoding, multiY, "y");
 
   return {
     encoding: yCollapsed.encoding,
-    multiX: xCollapsed.multiFields,
+    multiX: xNormalized.multiFields,
     multiY: yCollapsed.multiFields,
   };
 }
@@ -271,6 +287,7 @@ function normalizeCurrentModeItem(item: GraphBuilderItem): GraphBuilderItem {
   const multivariateInput = item.modeStates.multivariate as unknown as Record<string, unknown>;
   const twoDElements = toElements(twoDInput.elements).filter((element) => getLayerMode(element.kind) === "2d");
   const normalizedTwoDAxes = normalizeTwoDEncodingAndMultiAxes(
+    item.id,
     pickEncoding(twoDInput.encoding, TWO_D_KEYS),
     twoDInput.multiX,
     twoDInput.multiY,
@@ -413,6 +430,7 @@ export function normalizeGraphBuilderItem(item: unknown): GraphBuilderItem {
   const shared3D = pickEncoding(encoding, SHARED_CARTESIAN_KEYS as unknown as Graph3DSlotKey[]);
   const only3D = pickEncoding(encoding, THREE_D_ONLY_KEYS as unknown as Graph3DSlotKey[]);
   const normalizedLegacyTwoDAxes = normalizeTwoDEncodingAndMultiAxes(
+    toStringOr(source.id, "graph-unknown"),
     { ...shared2D },
     source.multiX,
     source.multiY,

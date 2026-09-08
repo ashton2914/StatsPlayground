@@ -2428,7 +2428,7 @@ function makeProgressedChunk(
     }),
   );
 
-  assert.deepEqual(roleColumns(activeMultiX, "x"), ["x_stale"]);
+  assert.deepEqual(roleColumns(activeMultiX, "x"), []);
   assert.deepEqual(roleColumns(activeMultiX, "multiX0"), ["mx0"]);
   assert.deepEqual(roleColumns(activeMultiX, "multiX1"), ["mx1"]);
   assert.deepEqual(roleColumns(activeMultiX, "multiX2"), ["mx2"]);
@@ -2451,6 +2451,30 @@ function makeProgressedChunk(
     canExecuteGraphRequest(multiXAxisItem, multiXAxisParts.fields, multiXAxisParts.elements),
     true,
     "multi-X axis mode must issue a graph data request",
+  );
+
+  const singleMultiXAxisItem = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        encoding: {},
+        multiX: [continuous("measurement")],
+        elements: [
+          { kind: "histogram", enabled: true },
+          { kind: "normalCurve", enabled: true },
+          { kind: "boxplot", enabled: true },
+        ],
+      },
+    },
+  });
+  const singleMultiXParts = deriveGraphRequestParts(singleMultiXAxisItem);
+  assert.deepEqual(singleMultiXParts.fields, [{ role: "multiX0", column: "measurement" }]);
+  assert.equal(
+    canExecuteGraphRequest(singleMultiXAxisItem, singleMultiXParts.fields, singleMultiXParts.elements),
+    true,
+    "one X variable must use the same executable request path as multiple X variables",
   );
 
   const activeMultiY = deriveFields(
@@ -2517,7 +2541,7 @@ function makeProgressedChunk(
     }),
   );
 
-  assert.deepEqual(roleColumns(staleInactiveMulti, "multiX0"), []);
+  assert.deepEqual(roleColumns(staleInactiveMulti, "multiX0"), ["only_one"]);
   assert.deepEqual(roleColumns(staleInactiveMulti, "multiY0"), []);
 }
 

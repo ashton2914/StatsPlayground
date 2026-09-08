@@ -68,9 +68,9 @@ const legacy2d = normalizeGraphBuilderItem({
   threeD: false,
 });
 assert.equal(legacy2d.mode, "2d");
-assert.deepEqual(legacy2d.modeStates.twoD.encoding.x, continuous("mx0"));
+assert.equal(legacy2d.modeStates.twoD.encoding.x, undefined);
 assert.deepEqual(legacy2d.modeStates.twoD.encoding.y, continuous("my0"));
-assert.deepEqual(legacy2d.modeStates.twoD.multiX, []);
+assert.deepEqual(legacy2d.modeStates.twoD.multiX, [continuous("mx0")]);
 assert.deepEqual(legacy2d.modeStates.twoD.multiY, []);
 assert.deepEqual(legacy2d.modeStates.threeD.encoding.x, legacyBase.encoding.x);
 assert.deepEqual(legacy2d.modeStates.threeD.encoding.y, legacyBase.encoding.y);
@@ -89,9 +89,9 @@ const legacySingleMultiWinsOverStaleEncoding = normalizeGraphBuilderItem({
   multiY: [continuous("active-y")],
   threeD: false,
 });
-assert.deepEqual(legacySingleMultiWinsOverStaleEncoding.modeStates.twoD.encoding.x, continuous("active-x"));
+assert.equal(legacySingleMultiWinsOverStaleEncoding.modeStates.twoD.encoding.x, undefined);
 assert.deepEqual(legacySingleMultiWinsOverStaleEncoding.modeStates.twoD.encoding.y, continuous("active-y"));
-assert.deepEqual(legacySingleMultiWinsOverStaleEncoding.modeStates.twoD.multiX, []);
+assert.deepEqual(legacySingleMultiWinsOverStaleEncoding.modeStates.twoD.multiX, [continuous("active-x")]);
 assert.deepEqual(legacySingleMultiWinsOverStaleEncoding.modeStates.twoD.multiY, []);
 
 const legacySingleMultiIdempotent = normalizeGraphBuilderItem(legacySingleMultiWinsOverStaleEncoding);
@@ -202,7 +202,7 @@ assert.deepEqual(
   ["a", "b", "c"],
 );
 
-const currentTwoDSingleMultiCollapse = normalizeGraphBuilderItem({
+const currentTwoDSingleMultiX = normalizeGraphBuilderItem({
   ...legacy2d,
   mode: "2d",
   modeStates: {
@@ -212,20 +212,93 @@ const currentTwoDSingleMultiCollapse = normalizeGraphBuilderItem({
       encoding: {
         ...legacy2d.modeStates.twoD.encoding,
         x: continuous("stale-current-x"),
-        y: continuous("stale-current-y"),
       },
       multiX: [continuous("current-active-x")],
-      multiY: [continuous("current-active-y")],
+      multiY: [],
     },
   },
 });
-assert.deepEqual(currentTwoDSingleMultiCollapse.modeStates.twoD.encoding.x, continuous("current-active-x"));
-assert.deepEqual(currentTwoDSingleMultiCollapse.modeStates.twoD.encoding.y, continuous("current-active-y"));
-assert.deepEqual(currentTwoDSingleMultiCollapse.modeStates.twoD.multiX, []);
-assert.deepEqual(currentTwoDSingleMultiCollapse.modeStates.twoD.multiY, []);
+assert.equal(currentTwoDSingleMultiX.modeStates.twoD.encoding.x, undefined);
+assert.deepEqual(currentTwoDSingleMultiX.modeStates.twoD.multiX, [continuous("current-active-x")]);
 
-const currentTwoDSingleMultiIdempotent = normalizeGraphBuilderItem(currentTwoDSingleMultiCollapse);
-assert.deepEqual(currentTwoDSingleMultiIdempotent, currentTwoDSingleMultiCollapse);
+const currentTwoDSingleMultiIdempotent = normalizeGraphBuilderItem(currentTwoDSingleMultiX);
+assert.deepEqual(currentTwoDSingleMultiIdempotent, currentTwoDSingleMultiX);
+
+const distributionElements = [
+  { kind: "histogram" as const, enabled: true },
+  { kind: "normalCurve" as const, enabled: true },
+  { kind: "boxplot" as const, enabled: true },
+];
+const legacyInteractiveDistribution = normalizeGraphBuilderItem({
+  ...legacy2d,
+  id: "graph-builder-1",
+  modeStates: {
+    ...legacy2d.modeStates,
+    twoD: {
+      ...legacy2d.modeStates.twoD,
+      encoding: { x: continuous("measurement") },
+      multiX: [],
+      multiY: [],
+      elements: distributionElements,
+    },
+  },
+});
+assert.deepEqual(legacyInteractiveDistribution.modeStates.twoD.encoding, {});
+assert.deepEqual(legacyInteractiveDistribution.modeStates.twoD.multiX, [continuous("measurement")]);
+assert.deepEqual(normalizeGraphBuilderItem(legacyInteractiveDistribution), legacyInteractiveDistribution);
+
+const analysisContinuousX = normalizeGraphBuilderItem({
+  ...legacy2d,
+  id: "analysis-graph:analysis-1:distributionPreview",
+  modeStates: {
+    ...legacy2d.modeStates,
+    twoD: {
+      ...legacy2d.modeStates.twoD,
+      encoding: { x: continuous("measurement") },
+      multiX: [],
+      multiY: [],
+      elements: distributionElements,
+    },
+  },
+});
+assert.deepEqual(analysisContinuousX.modeStates.twoD.encoding.x, continuous("measurement"));
+assert.deepEqual(analysisContinuousX.modeStates.twoD.multiX, []);
+
+const categoricalXWithVariableY = normalizeGraphBuilderItem({
+  ...legacy2d,
+  id: "graph-builder-categorical",
+  modeStates: {
+    ...legacy2d.modeStates,
+    twoD: {
+      ...legacy2d.modeStates.twoD,
+      encoding: { x: nominal("site"), y: continuous("measurement") },
+      multiX: [],
+      multiY: [],
+      elements: [{ kind: "boxplot", enabled: true }],
+    },
+  },
+});
+assert.deepEqual(categoricalXWithVariableY.modeStates.twoD.encoding, {
+  x: nominal("site"),
+  y: continuous("measurement"),
+});
+assert.deepEqual(categoricalXWithVariableY.modeStates.twoD.multiX, []);
+
+const analysisDistributionComposite = normalizeGraphBuilderItem({
+  ...legacy2d,
+  id: "analysis-graph:analysis-1:distributionComposite",
+  modeStates: {
+    ...legacy2d.modeStates,
+    twoD: {
+      ...legacy2d.modeStates.twoD,
+      encoding: {},
+      multiY: [continuous("measurement")],
+      elements: distributionElements,
+    },
+  },
+});
+assert.deepEqual(analysisDistributionComposite.modeStates.twoD.encoding, {});
+assert.deepEqual(analysisDistributionComposite.modeStates.twoD.multiY, [continuous("measurement")]);
 
 const currentTransposed = normalizeGraphBuilderItem({
   ...legacy2d,
@@ -245,7 +318,7 @@ const idempotenceCases: GraphBuilderItem[] = [
   legacy3d,
   legacyCorrelation,
   legacySingleMultiWinsOverStaleEncoding,
-  currentTwoDSingleMultiCollapse,
+  currentTwoDSingleMultiX,
 ];
 for (const item of idempotenceCases) {
   assert.deepEqual(normalizeGraphBuilderItem(item), item);

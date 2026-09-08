@@ -2505,6 +2505,30 @@ for (const element of [
   assert.ok(Array.isArray(histogram?.data) && histogram.data.length > 0, "production packets must render histogram bars");
   assert.ok(Array.isArray(normal?.data) && normal.data.length > 0, "production packets must render the fitted normal curve");
   assert.ok(Array.isArray(box?.data) && box.data.length > 0, "production packets must render the box plot");
+
+  const canonicalMultiXOption = buildGraph(
+    {
+      ...spec,
+      encoding: {
+        x: { name: "__sp_variable__", type: "nominal" },
+        y: { name: "__sp_value__", type: "continuous" },
+      },
+    },
+    baseData(["__sp_variable__", "__sp_value__"], []),
+    theme,
+    { __sp_variable__: ["203-A1"] },
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const canonicalSeries = panelSeries(canonicalMultiXOption);
+  const canonicalBox = canonicalSeries.find((entry) => entry.type === "boxplot");
+  assert.ok(canonicalSeries.some((entry) => String(entry.id ?? "").startsWith("__hist_cat_")));
+  assert.ok(canonicalSeries.some((entry) => String(entry.id ?? "").startsWith("__normal_cat_")));
+  assert.ok(canonicalBox, "canonical multiX distribution must include the box plot");
+  assert.equal(Array.isArray(canonicalMultiXOption.grid), false, "canonical multiX distribution must use one grid");
+  assert.equal(Array.isArray(canonicalMultiXOption.xAxis), false, "canonical multiX distribution must use one X axis");
+  assert.equal(Array.isArray(canonicalMultiXOption.yAxis), false, "canonical multiX distribution must use one Y axis");
+  assert.equal(canonicalBox.xAxisIndex ?? 0, 0);
+  assert.equal(canonicalBox.yAxisIndex ?? 0, 0);
 }
 
 {
