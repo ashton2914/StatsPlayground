@@ -78,9 +78,15 @@ export interface ProjectLineageGraph {
   edges: LineageEdge[];
 }
 
+export interface WorkflowTableColumn {
+  name: string;
+  colType: string;
+  extras?: Record<string, unknown>;
+}
+
 export interface WorkflowSourceTable {
   artifactNodeId: string;
-  columns: Array<{ name: string; colType: string }>;
+  columns: WorkflowTableColumn[];
 }
 
 export interface WorkflowOperationInputSchema {
@@ -123,6 +129,7 @@ export interface SchemaColumnRequirement {
   canonicalDuckdbType: string;
   required: boolean;
   requiredByOperationIds: string[];
+  requiredExtras?: Record<string, unknown>;
 }
 
 export interface SchemaContract {
@@ -200,9 +207,18 @@ export interface SchemaValidationIssue {
   affectedOperationIds: string[];
 }
 
+export interface SchemaAttributeMismatch {
+  columnName: string;
+  attributeName: string;
+  expectedValue: unknown;
+  actualValue?: unknown;
+  affectedOperationIds: string[];
+}
+
 export interface SchemaValidationReport {
   missingColumns: SchemaValidationIssue[];
   typeMismatches: SchemaValidationIssue[];
+  attributeMismatches: SchemaAttributeMismatch[];
   extraColumns: string[];
 }
 

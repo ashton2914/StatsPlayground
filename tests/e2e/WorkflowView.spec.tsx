@@ -152,6 +152,7 @@ test("checks the selected input table schema", async ({ mount, page }) => {
         metadata: { currentWindow: { label: "main" } },
         invoke: async (command: string) => {
           if (command === "get_columns") return [["yield", "INTEGER"]];
+          if (command === "get_column_display_props") return [];
           throw new Error(`Unexpected command: ${command}`);
         },
         transformCallback: () => 1,
@@ -176,6 +177,7 @@ test("ignores a stale schema response after changing the input table", async ({ 
       __TAURI_INTERNALS__: {
         metadata: { currentWindow: { label: "main" } },
         invoke: async (command: string, args: { datasetId?: string }) => {
+          if (command === "get_column_display_props") return [];
           if (command !== "get_columns") throw new Error(`Unexpected command: ${command}`);
           if (args.datasetId === "dataset-slow") {
             await new Promise((resolve) => window.setTimeout(resolve, 100));
@@ -204,6 +206,51 @@ test("ignores a stale schema response after changing the input table", async ({ 
   await expect(component.locator(".workflow-schema-status .valid")).toContainText("Schema compatible");
   await page.waitForTimeout(150);
   await expect(component.locator(".workflow-schema-status .valid")).toContainText("Schema compatible");
+});
+
+test("blocks a table whose required column extras do not match", async ({ mount, page }) => {
+  await page.evaluate(() => {
+    Object.assign(window, {
+      __TAURI_INTERNALS__: {
+        metadata: { currentWindow: { label: "main" } },
+        invoke: async (command: string) => {
+          if (command === "get_columns") return [["yield", "DOUBLE"]];
+          if (command === "get_column_display_props") {
+            return [{ colIndex: 0, extras: { spec: { lsl: 80, usl: 120 } } }];
+          }
+          throw new Error(`Unexpected command: ${command}`);
+        },
+        transformCallback: () => 1,
+      },
+    });
+  });
+  const workflowWithRequiredSpec: WorkflowDefinition = {
+    ...workflow,
+    inputSlots: [{
+      ...workflow.inputSlots[0],
+      schemaContract: {
+        schemaFingerprint: "schema-with-spec",
+        columns: [{
+          ...workflow.inputSlots[0].schemaContract.columns[0],
+          requiredExtras: { spec: { lsl: 90, usl: 110 } },
+        }],
+      },
+    }],
+  };
+  const component = await mount(
+    <div style={{ width: 800, height: 600 }}>
+      <WorkflowView
+        lineageGraph={lineageGraph}
+        workflow={workflowWithRequiredSpec}
+        datasets={[dataset]}
+      />
+    </div>,
+  );
+
+  await component.getByLabel("Measurements").selectOption(dataset.id);
+  await expect(component.locator(".workflow-schema-status .invalid")).toContainText(
+    "0 missing, 0 wrong type, 1 wrong properties",
+  );
 });
 
 test("selects all upstream and downstream nodes", async ({ mount, page }) => {

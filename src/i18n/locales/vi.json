@@ -177,7 +177,7 @@
     "chooseTable": "Chọn bảng đầu vào",
     "checkingSchema": "Đang kiểm tra schema",
     "schemaCheckFailed": "Kiểm tra schema thất bại",
-    "schemaIncompatible": "Thiếu {{missing}}, {{mismatch}} sai kiểu",
+    "schemaIncompatible": "Thiếu {{missing}}, {{mismatch}} sai kiểu, {{attributes}} sai thuộc tính",
     "schemaCompatible": "Schema tương thích",
     "namePrompt": "Tên quy trình",
     "saveSelection": "Lưu thành quy trình",

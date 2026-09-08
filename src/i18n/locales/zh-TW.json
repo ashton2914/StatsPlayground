@@ -177,7 +177,7 @@
     "chooseTable": "選擇輸入資料表",
     "checkingSchema": "正在檢查 schema",
     "schemaCheckFailed": "Schema 檢查失敗",
-    "schemaIncompatible": "缺少 {{missing}} 欄，{{mismatch}} 欄類型不符",
+    "schemaIncompatible": "缺少 {{missing}} 欄，{{mismatch}} 欄類型不符，{{attributes}} 欄屬性不符",
     "schemaCompatible": "Schema 相容",
     "namePrompt": "工作流程名稱",
     "saveSelection": "儲存為工作流程",

@@ -10,6 +10,7 @@ import type {
 import { layoutWorkflowGraph, WORKFLOW_NODE_SIZE } from "@/utils/workflowLayout";
 import {
   isSchemaValidationBlocking,
+  mergeWorkflowTableColumns,
   validateWorkflowInputSchema,
 } from "@/utils/workflowSchema";
 
@@ -274,11 +275,17 @@ export function WorkflowView({
 
     setCheckingSlotId(slotId);
     try {
-      const columns = await dataService.getColumns(datasetId);
+      const [columns, displayProps] = await Promise.all([
+        dataService.getColumns(datasetId),
+        dataService.getColumnDisplayProps(datasetId),
+      ]);
       if (schemaRequestIds.current[slotId] !== requestId) return;
       setReports((current) => ({
         ...current,
-        [slotId]: validateWorkflowInputSchema(slot.schemaContract, columns),
+        [slotId]: validateWorkflowInputSchema(
+          slot.schemaContract,
+          mergeWorkflowTableColumns(columns, displayProps),
+        ),
       }));
     } catch (error) {
       if (schemaRequestIds.current[slotId] !== requestId) return;
@@ -350,9 +357,10 @@ export function WorkflowView({
                         <i className={`fa-solid ${blocking ? "fa-circle-xmark" : "fa-circle-check"}`} aria-hidden="true" />
                         {blocking
                           ? t("workflow.schemaIncompatible", {
-                              defaultValue: "{{missing}} missing, {{mismatch}} wrong type",
+                              defaultValue: "{{missing}} missing, {{mismatch}} wrong type, {{attributes}} wrong properties",
                               missing: report.missingColumns.length,
                               mismatch: report.typeMismatches.length,
+                              attributes: report.attributeMismatches.length,
                             })
                           : t("workflow.schemaCompatible", { defaultValue: "Schema compatible" })}
                       </span>

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -279,6 +279,8 @@ pub struct SchemaColumnRequirement {
     pub required: bool,
     #[serde(default)]
     pub required_by_operation_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub required_extras: BTreeMap<String, Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -289,6 +291,8 @@ pub struct SchemaValidationReport {
     #[serde(default)]
     pub type_mismatches: Vec<SchemaValidationIssue>,
     #[serde(default)]
+    pub attribute_mismatches: Vec<SchemaAttributeMismatch>,
+    #[serde(default)]
     pub extra_columns: Vec<String>,
 }
 
@@ -298,6 +302,18 @@ pub struct SchemaValidationIssue {
     pub column_name: String,
     pub expected_type: String,
     pub actual_type: String,
+    #[serde(default)]
+    pub affected_operation_ids: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaAttributeMismatch {
+    pub column_name: String,
+    pub attribute_name: String,
+    pub expected_value: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_value: Option<Value>,
     #[serde(default)]
     pub affected_operation_ids: Vec<String>,
 }
@@ -598,30 +614,29 @@ pub fn canonical_duckdb_type(raw_type: &str) -> String {
 }
 
 pub fn schema_fingerprint(columns: &[SchemaColumnRequirement]) -> String {
-    let mut pairs = columns
+    let mut entries = columns
         .iter()
         .map(|column| {
             (
                 column.name.clone(),
                 canonical_duckdb_type(column.canonical_duckdb_type.as_str()),
+                serde_json::to_string(&column.required_extras).unwrap_or_default(),
             )
         })
         .collect::<Vec<_>>();
-    pairs.sort_by(|left, right| left.cmp(right));
+    entries.sort_by(|left, right| left.cmp(right));
 
     const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x100000001b3;
 
     let mut hash = OFFSET_BASIS;
-    for (name, data_type) in pairs {
-        for byte in name.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(PRIME);
-        }
-        hash ^= u64::from(0u8);
-        hash = hash.wrapping_mul(PRIME);
-        for byte in data_type.as_bytes() {
-            hash ^= u64::from(*byte);
+    for (name, data_type, required_extras) in entries {
+        for value in [name, data_type, required_extras] {
+            for byte in value.as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
+            hash ^= u64::from(0u8);
             hash = hash.wrapping_mul(PRIME);
         }
     }
@@ -635,11 +650,12 @@ pub fn validate_schema_contract(
 ) -> SchemaValidationReport {
     let mut actual_by_name = HashMap::new();
     for column in actual_columns {
-        actual_by_name.insert(column.name.clone(), canonical_duckdb_type(column.col_type.as_str()));
+        actual_by_name.insert(column.name.clone(), column);
     }
 
     let mut missing_columns = Vec::new();
     let mut type_mismatches = Vec::new();
+    let mut attribute_mismatches = Vec::new();
     let required_names = contract
         .columns
         .iter()
@@ -660,15 +676,32 @@ pub fn validate_schema_contract(
                 actual_type: String::new(),
                 affected_operation_ids: column.required_by_operation_ids.clone(),
             }),
-            Some(actual_type) if actual_type != &expected_type => {
+            Some(actual_column)
+                if canonical_duckdb_type(actual_column.col_type.as_str()) != expected_type => {
                 type_mismatches.push(SchemaValidationIssue {
                     column_name: column.name.clone(),
                     expected_type,
-                    actual_type: actual_type.clone(),
+                    actual_type: canonical_duckdb_type(actual_column.col_type.as_str()),
                     affected_operation_ids: column.required_by_operation_ids.clone(),
                 });
             }
-            Some(_) => {}
+            Some(actual_column) => {
+                for (kind, expected_value) in &column.required_extras {
+                    let actual_value = actual_column
+                        .extras
+                        .as_ref()
+                        .and_then(|extras| extras.get(kind));
+                    if actual_value != Some(expected_value) {
+                        attribute_mismatches.push(SchemaAttributeMismatch {
+                            column_name: column.name.clone(),
+                            attribute_name: format!("extras.{kind}"),
+                            expected_value: expected_value.clone(),
+                            actual_value: actual_value.cloned(),
+                            affected_operation_ids: column.required_by_operation_ids.clone(),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -681,6 +714,7 @@ pub fn validate_schema_contract(
     SchemaValidationReport {
         missing_columns,
         type_mismatches,
+        attribute_mismatches,
         extra_columns,
     }
 }
@@ -795,6 +829,55 @@ fn build_requirement_map(
     map
 }
 
+fn required_extra_kinds(operation: &OperationNode, column_name: &str) -> Vec<&'static str> {
+    match operation.kind {
+        OperationKind::GraphGeneration => {
+            let mut kinds = vec!["valueOrder"];
+            if graph_uses_spec_for_column(operation.configuration.as_ref(), column_name) {
+                kinds.push("spec");
+            }
+            kinds
+        }
+        OperationKind::FitYByX => vec!["valueOrder"],
+        OperationKind::Import | OperationKind::SqlQuery | OperationKind::Tabulate => Vec::new(),
+    }
+}
+
+fn graph_uses_spec_for_column(configuration: Option<&Value>, column_name: &str) -> bool {
+    let Some(two_d) = configuration.and_then(|value| value.pointer("/modeStates/twoD")) else {
+        return false;
+    };
+    let legacy = two_d.get("autoSpecLines").and_then(Value::as_bool).unwrap_or(false);
+    let auto_x = two_d.get("autoSpecLinesX").and_then(Value::as_bool).unwrap_or(legacy);
+    let auto_y = two_d.get("autoSpecLinesY").and_then(Value::as_bool).unwrap_or(legacy);
+
+    (auto_x && graph_axis_contains_column(two_d, "x", "multiX", column_name))
+        || (auto_y && graph_axis_contains_column(two_d, "y", "multiY", column_name))
+}
+
+fn graph_axis_contains_column(
+    two_d: &Value,
+    encoding_key: &str,
+    multi_key: &str,
+    column_name: &str,
+) -> bool {
+    let encoded = two_d
+        .get("encoding")
+        .and_then(|value| value.get(encoding_key))
+        .and_then(|value| value.get("name"))
+        .and_then(Value::as_str)
+        == Some(column_name);
+    let in_multi = two_d
+        .get(multi_key)
+        .and_then(Value::as_array)
+        .is_some_and(|fields| {
+            fields.iter().any(|field| {
+                field.get("name").and_then(Value::as_str) == Some(column_name)
+            })
+        });
+    encoded || in_multi
+}
+
 fn collect_external_dependencies<'a>(
     graph: &'a ProjectLineageGraph,
     selected_node_ids: &HashSet<String>,
@@ -879,7 +962,8 @@ fn build_input_slots(
         let required_column_names = requirements_by_binding
             .get(&(dependency.target_operation.id.clone(), dependency.edge.target.port_id.clone()))
             .cloned()
-            .unwrap_or_default();
+            .filter(|column_names| !column_names.is_empty())
+            .unwrap_or_else(|| schema.iter().map(|column| column.name.clone()).collect());
 
         for required_column_name in required_column_names {
             let source_column = schema
@@ -892,6 +976,18 @@ fn build_input_slots(
                     ))
                 })?;
             let canonical_type = canonical_duckdb_type(source_column.col_type.as_str());
+            let required_extras = source_column
+                .extras
+                .as_ref()
+                .map(|extras| {
+                    required_extra_kinds(dependency.target_operation, required_column_name.as_str())
+                        .iter()
+                        .filter_map(|kind| {
+                            extras.get(*kind).cloned().map(|value| ((*kind).to_string(), value))
+                        })
+                        .collect::<BTreeMap<_, _>>()
+                })
+                .unwrap_or_default();
             let operation_local_id = operation_local_ids
                 .get(dependency.target_operation.id.as_str())
                 .cloned()
@@ -909,6 +1005,7 @@ fn build_input_slots(
                 .or_insert_with(|| SchemaColumnAccumulator {
                     canonical_duckdb_type: canonical_type.clone(),
                     required_by_operation_ids: HashSet::new(),
+                    required_extras: BTreeMap::new(),
                 });
 
             if column_entry.canonical_duckdb_type != canonical_type {
@@ -920,6 +1017,7 @@ fn build_input_slots(
             column_entry
                 .required_by_operation_ids
                 .insert(operation_local_id);
+            column_entry.required_extras.extend(required_extras);
         }
     }
 
@@ -956,6 +1054,7 @@ fn build_input_slots(
                     canonical_duckdb_type: accumulator.canonical_duckdb_type,
                     required: true,
                     required_by_operation_ids,
+                    required_extras: accumulator.required_extras,
                 }
             })
             .collect::<Vec<_>>();
@@ -1585,6 +1684,7 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
 struct SchemaColumnAccumulator {
     canonical_duckdb_type: String,
     required_by_operation_ids: HashSet<String>,
+    required_extras: BTreeMap<String, Value>,
 }
 
 pub fn validate_lineage_graph(
@@ -2729,6 +2829,72 @@ mod tests {
     }
 
     #[test]
+    fn extract_workflow_falls_back_to_all_source_columns_when_requirements_are_unknown() {
+        let workflow = extract_workflow(extraction_request(
+            workflow_extraction_graph(),
+            &["operation-sql-1", "artifact-table-joined"],
+            &["edge-sql-table"],
+            vec![WorkflowSourceTable {
+                artifact_node_id: "artifact-table-source-a".to_string(),
+                columns: vec![
+                    table_column("height", "INTEGER"),
+                    table_column("weight", "DOUBLE"),
+                    table_column("batch", "VARCHAR"),
+                ],
+            }],
+            vec![],
+        ))
+        .expect("workflow extracts with conservative schema fallback");
+
+        let columns = &workflow.input_slots[0].schema_contract.columns;
+        assert_eq!(
+            columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
+            vec!["batch", "height", "weight"]
+        );
+        assert!(columns.iter().all(|column| {
+            column.required_by_operation_ids == vec!["workflow-operation-1".to_string()]
+        }));
+    }
+
+    #[test]
+    fn extract_workflow_persists_only_operation_required_column_extras() {
+        let mut height = table_column("height", "INTEGER");
+        height.extras = Some(std::collections::BTreeMap::from([
+            ("valueOrder".to_string(), json!({"values": ["short", "tall"]})),
+            ("notes".to_string(), json!({"value": "display only"})),
+        ]));
+        let workflow = extract_workflow(extraction_request(
+            workflow_extraction_graph(),
+            &["operation-fit-1", "artifact-fit-1"],
+            &["edge-fit-output"],
+            vec![WorkflowSourceTable {
+                artifact_node_id: "artifact-table-joined".to_string(),
+                columns: vec![height, table_column("weight", "DOUBLE")],
+            }],
+            vec![WorkflowOperationInputSchema {
+                operation_id: "operation-fit-1".to_string(),
+                input_port_id: "operation-fit-1-in-source".to_string(),
+                required_column_names: vec!["height".to_string(), "weight".to_string()],
+            }],
+        ))
+        .expect("workflow extracts with semantic column extras");
+
+        let height_requirement = workflow.input_slots[0]
+            .schema_contract
+            .columns
+            .iter()
+            .find(|column| column.name == "height")
+            .expect("height requirement");
+        assert_eq!(
+            height_requirement.required_extras,
+            std::collections::BTreeMap::from([(
+                "valueOrder".to_string(),
+                json!({"values": ["short", "tall"]}),
+            )])
+        );
+    }
+
+    #[test]
     fn extract_workflow_creates_two_input_slots_for_two_external_tables() {
         let workflow = extract_workflow(extraction_request(
             workflow_extraction_graph(),
@@ -3004,6 +3170,36 @@ mod tests {
     }
 
     #[test]
+    fn graph_spec_extra_requirement_is_limited_to_enabled_axes() {
+        let operation = OperationNode {
+            id: "operation-graph-1".to_string(),
+            kind: OperationKind::GraphGeneration,
+            schema_version: "1".to_string(),
+            configuration: Some(json!({
+                "mode": "2d",
+                "modeStates": {
+                    "twoD": {
+                        "encoding": {
+                            "x": {"name": "batch", "type": "nominal"},
+                            "y": {"name": "yield", "type": "continuous"}
+                        },
+                        "multiX": [],
+                        "multiY": [],
+                        "autoSpecLinesX": false,
+                        "autoSpecLinesY": true
+                    }
+                }
+            })),
+            document_ref: None,
+            input_ports: vec![],
+            output_ports: vec![],
+        };
+
+        assert_eq!(required_extra_kinds(&operation, "batch"), vec!["valueOrder"]);
+        assert_eq!(required_extra_kinds(&operation, "yield"), vec!["valueOrder", "spec"]);
+    }
+
+    #[test]
     fn schema_fingerprint_is_deterministic_independent_of_column_order() {
         let left = vec![
             SchemaColumnRequirement {
@@ -3011,17 +3207,51 @@ mod tests {
                 canonical_duckdb_type: "DOUBLE".to_string(),
                 required: true,
                 required_by_operation_ids: vec!["operation-fit-1".to_string()],
+                required_extras: BTreeMap::new(),
             },
             SchemaColumnRequirement {
                 name: "height".to_string(),
                 canonical_duckdb_type: "INTEGER".to_string(),
                 required: true,
                 required_by_operation_ids: vec!["operation-sql-1".to_string()],
+                required_extras: BTreeMap::new(),
             },
         ];
         let right = vec![left[1].clone(), left[0].clone()];
 
         assert_eq!(schema_fingerprint(&left), schema_fingerprint(&right));
+    }
+
+    #[test]
+    fn schema_fingerprint_is_deterministic_and_sensitive_to_required_extras() {
+        let requirement = SchemaColumnRequirement {
+            name: "yield".to_string(),
+            canonical_duckdb_type: "DOUBLE".to_string(),
+            required: true,
+            required_by_operation_ids: vec!["operation-graph-1".to_string()],
+            required_extras: BTreeMap::from([(
+                "spec".to_string(),
+                json!({"lsl": 90, "target": 100, "usl": 110}),
+            )]),
+        };
+        let equivalent = serde_json::from_value::<SchemaColumnRequirement>(json!({
+            "name": "yield",
+            "canonicalDuckdbType": "DOUBLE",
+            "required": true,
+            "requiredByOperationIds": ["operation-graph-1"],
+            "requiredExtras": {
+                "spec": {"usl": 110, "target": 100, "lsl": 90}
+            }
+        }))
+        .expect("equivalent requirement parses");
+        let mut changed = requirement.clone();
+        changed.required_extras.insert(
+            "spec".to_string(),
+            json!({"lsl": 80, "target": 100, "usl": 120}),
+        );
+
+        assert_eq!(schema_fingerprint(&[requirement.clone()]), schema_fingerprint(&[equivalent]));
+        assert_ne!(schema_fingerprint(&[requirement]), schema_fingerprint(&[changed]));
     }
 
     #[test]
@@ -3034,12 +3264,14 @@ mod tests {
                     canonical_duckdb_type: "INTEGER".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-sql-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
                 SchemaColumnRequirement {
                     name: "weight".to_string(),
                     canonical_duckdb_type: "DOUBLE".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-fit-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
             ],
         };
@@ -3067,12 +3299,14 @@ mod tests {
                     canonical_duckdb_type: "INTEGER".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-sql-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
                 SchemaColumnRequirement {
                     name: "weight".to_string(),
                     canonical_duckdb_type: "DOUBLE".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-fit-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
             ],
         };
@@ -3092,6 +3326,34 @@ mod tests {
         assert_eq!(report.type_mismatches.len(), 1);
         assert_eq!(report.type_mismatches[0].column_name, "height");
         assert_eq!(report.type_mismatches[0].affected_operation_ids, vec!["operation-sql-1".to_string()]);
+    }
+
+    #[test]
+    fn validate_schema_contract_reports_required_extras_mismatches() {
+        let contract = SchemaContract {
+            schema_fingerprint: "unused".to_string(),
+            columns: vec![SchemaColumnRequirement {
+                name: "yield".to_string(),
+                canonical_duckdb_type: "DOUBLE".to_string(),
+                required: true,
+                required_by_operation_ids: vec!["operation-graph-1".to_string()],
+                required_extras: BTreeMap::from([(
+                    "spec".to_string(),
+                    json!({"lsl": 90, "usl": 110}),
+                )]),
+            }],
+        };
+        let mut actual = table_column("yield", "DOUBLE");
+        actual.extras = Some(BTreeMap::from([(
+            "spec".to_string(),
+            json!({"lsl": 80, "usl": 120}),
+        )]));
+
+        let report = validate_schema_contract(&contract, &[actual]);
+
+        assert_eq!(report.attribute_mismatches.len(), 1);
+        assert_eq!(report.attribute_mismatches[0].column_name, "yield");
+        assert_eq!(report.attribute_mismatches[0].attribute_name, "extras.spec");
     }
 
     fn docs(ids: &[ProjectDocumentRef]) -> HashSet<ProjectDocumentRef> {

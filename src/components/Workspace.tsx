@@ -86,6 +86,10 @@ import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
 import {
+  deriveWorkflowOperationColumnRequirements,
+  mergeWorkflowTableColumns,
+} from "@/utils/workflowSchema";
+import {
   allocateProjectBasename,
   projectFileExtension,
   resolveProjectBasenameForKind,
@@ -1513,10 +1517,13 @@ export function Workspace() {
         if (!node || node.nodeType !== "artifact" || node.artifactKind !== "table") {
           throw new Error(`Workflow input ${artifactNodeId} is not a table`);
         }
-        const columns = await dataService.getColumns(node.documentRef.id);
+        const [columns, displayProps] = await Promise.all([
+          dataService.getColumns(node.documentRef.id),
+          dataService.getColumnDisplayProps(node.documentRef.id),
+        ]);
         return {
           artifactNodeId,
-          columns: columns.map(([columnName, colType]) => ({ name: columnName, colType })),
+          columns: mergeWorkflowTableColumns(columns, displayProps),
         };
       }));
       const workflow = await projectService.extractWorkflow({
@@ -1528,7 +1535,10 @@ export function Workspace() {
         selectedNodeIds,
         selectedEdgeIds,
         tableSchemas,
-        operationColumnRequirements: [],
+        operationColumnRequirements: deriveWorkflowOperationColumnRequirements(
+          lineageGraph,
+          selectedNodeIds,
+        ),
       });
       addWorkflow(workflow);
       setActiveWorkflowViewId(workflow.id);

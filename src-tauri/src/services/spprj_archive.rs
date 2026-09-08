@@ -1867,7 +1867,11 @@ fn build_project_lineage_graph(
                 id: graph_doc.id.clone(),
             };
             let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref)?;
+                build_project_lineage_operation(
+                    source_id,
+                    &target_ref,
+                    Value::Object(graph_doc.body.clone()),
+                )?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
@@ -1891,7 +1895,7 @@ fn build_project_lineage_graph(
                 id: fit_ref.id.clone(),
             };
             let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref)?;
+                build_project_lineage_operation(source_id, &target_ref, fit_value.clone())?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
@@ -1921,7 +1925,7 @@ fn build_project_lineage_graph(
                 id: tabulate_ref.id.clone(),
             };
             let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref)?;
+                build_project_lineage_operation(source_id, &target_ref, tabulate_value.clone())?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
@@ -1991,6 +1995,7 @@ fn ensure_known_source_table(
 fn build_project_lineage_operation(
     source_id: &str,
     target_ref: &ProjectDocumentRef,
+    configuration: Value,
 ) -> Result<
     (
         workflow_domain::OperationNode,
@@ -2010,7 +2015,7 @@ fn build_project_lineage_operation(
         id: operation_id.clone(),
         kind: operation_kind(&target_ref.kind)?,
         schema_version: "1".to_string(),
-        configuration: None,
+        configuration: Some(configuration),
         document_ref: Some(target_ref.clone()),
         input_ports: vec![workflow_domain::LineagePort {
             id: operation_input_port_id.clone(),
@@ -4302,6 +4307,7 @@ mod tests {
                         canonical_duckdb_type: "DOUBLE".to_string(),
                         required: true,
                         required_by_operation_ids: vec!["workflow-operation-1".to_string()],
+                        required_extras: BTreeMap::new(),
                     }],
                 },
                 source_document_ref: None,
@@ -6213,6 +6219,34 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(actual_node_ids, expected_node_ids);
+        let operation_configurations = lineage_graph
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                workflow_domain::LineageNode::Operation(operation) => {
+                    Some((operation.id.as_str(), operation.configuration.as_ref()))
+                }
+                workflow_domain::LineageNode::Artifact(_) => None,
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            operation_configurations["operation-graph-graph-1"]
+                .and_then(|value| value.get("sourceDatasetId"))
+                .and_then(Value::as_str),
+            Some("table-1")
+        );
+        assert_eq!(
+            operation_configurations["operation-fitYByX-fit-1"]
+                .and_then(|value| value.get("sourceDatasetId"))
+                .and_then(Value::as_str),
+            Some("table-1")
+        );
+        assert_eq!(
+            operation_configurations["operation-tabulate-tab-1"]
+                .and_then(|value| value.get("sourceDatasetId"))
+                .and_then(Value::as_str),
+            Some("table-1")
+        );
 
         let expected_edge_ids = vec![
             "consumes-table-table-1-to-fitYByX-fit-1",

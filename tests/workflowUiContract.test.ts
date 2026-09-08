@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  deriveWorkflowOperationColumnRequirements,
   isSchemaValidationBlocking,
+  mergeWorkflowTableColumns,
   validateWorkflowInputSchema,
 } from "../src/utils/workflowSchema.ts";
 import { layoutWorkflowGraph } from "../src/utils/workflowLayout.ts";
@@ -60,6 +62,66 @@ assert.deepEqual(incompatible.typeMismatches, [
 ]);
 assert.equal(isSchemaValidationBlocking(incompatible), true);
 
+const extrasContract: SchemaContract = {
+  schemaFingerprint: "contract-extras",
+  columns: [{
+    name: "batch",
+    canonicalDuckdbType: "VARCHAR",
+    required: true,
+    requiredByOperationIds: ["workflow-operation-1"],
+    requiredExtras: { valueOrder: { values: ["A", "B"] } },
+  }],
+};
+const extrasMismatch = validateWorkflowInputSchema(extrasContract, [{
+  name: "batch",
+  colType: "VARCHAR",
+  extras: { notes: { value: "not semantic" } },
+}]);
+assert.deepEqual(extrasMismatch.attributeMismatches, [{
+  columnName: "batch",
+  attributeName: "extras.valueOrder",
+  expectedValue: { values: ["A", "B"] },
+  affectedOperationIds: ["workflow-operation-1"],
+}]);
+assert.equal(isSchemaValidationBlocking(extrasMismatch), true);
+
+assert.deepEqual(
+  mergeWorkflowTableColumns(
+    [["batch", "VARCHAR"], ["yield", "DOUBLE"]],
+    [{ colIndex: 1, width: 180, extras: { spec: { lsl: 90 } } }],
+  ),
+  [
+    { name: "batch", colType: "VARCHAR" },
+    { name: "yield", colType: "DOUBLE", extras: { spec: { lsl: 90 } } },
+  ],
+);
+
+assert.deepEqual(
+  deriveWorkflowOperationColumnRequirements({
+    id: "lineage",
+    name: "Lineage",
+    nodes: [{
+      nodeType: "operation",
+      id: "fit-operation",
+      kind: "fitYByX",
+      schemaVersion: "1",
+      configuration: {
+        sourceDatasetId: "table-1",
+        response: { name: "yield", type: "continuous" },
+        factor: { name: "batch", type: "nominal" },
+      },
+      inputPorts: [{ id: "fit-input", name: "source", payloadKind: "table" }],
+      outputPorts: [],
+    }],
+    edges: [],
+  }, ["fit-operation"]),
+  [{
+    operationId: "fit-operation",
+    inputPortId: "fit-input",
+    requiredColumnNames: ["batch", "yield"],
+  }],
+);
+
 const layout = layoutWorkflowGraph(
   ["input", "operation", "output"],
   [
@@ -116,6 +178,9 @@ assert.match(projectCommands, /pub fn extract_workflow\(/);
 assert.match(tauriRegistry, /commands::project_commands::extract_workflow/);
 assert.match(workspace, /const handleSaveWorkflowSelection = async/);
 assert.match(workspace, /projectService\.extractWorkflow\(/);
+assert.match(workspace, /dataService\.getColumnDisplayProps\(node\.documentRef\.id\)/);
+assert.match(workspace, /columns:\s*mergeWorkflowTableColumns\(columns, displayProps\)/);
+assert.match(workspace, /operationColumnRequirements:\s*deriveWorkflowOperationColumnRequirements\(/);
 assert.match(workspace, /addWorkflow\(workflow\)/);
 assert.match(
   workspace,

@@ -178,7 +178,7 @@
     "chooseTable": "Choose input table",
     "checkingSchema": "Checking schema",
     "schemaCheckFailed": "Schema check failed",
-    "schemaIncompatible": "{{missing}} missing, {{mismatch}} wrong type",
+    "schemaIncompatible": "{{missing}} missing, {{mismatch}} wrong type, {{attributes}} wrong properties",
     "schemaCompatible": "Schema compatible",
     "namePrompt": "Workflow name",
     "saveSelection": "Save as workflow",
