@@ -1875,32 +1875,35 @@ fn build_project_lineage_graph(
 ) -> Result<workflow_domain::ProjectLineageGraph, AppError> {
     let mut lineage_graph = workflow_domain::ProjectLineageGraph::default();
 
-    let mut artifact_nodes =
-        table_refs
-            .iter()
-            .map(|entry| build_artifact_node(ProjectDocumentKind::Table, &entry.id, &entry.name))
-            .chain(graph_refs.iter().map(|entry| {
-                build_artifact_node(ProjectDocumentKind::Graph, &entry.id, &entry.name)
-            }))
-            .chain(fit_refs.iter().map(|entry| {
-                build_artifact_node(ProjectDocumentKind::FitYByX, &entry.id, &entry.name)
-            }))
-            .chain(analysis_refs.iter().map(|entry| {
-                build_artifact_node(ProjectDocumentKind::Analysis, &entry.id, &entry.name)
-            }))
-            .chain(distribution_refs.iter().map(|entry| {
-                build_artifact_node(ProjectDocumentKind::Distribution, &entry.id, &entry.name)
-            }))
-            .chain(tabulate_refs.iter().map(|entry| {
-                build_artifact_node(ProjectDocumentKind::Tabulate, &entry.id, &entry.name)
-            }))
-            .chain(report_refs.iter().map(|entry| {
-                build_artifact_node(ProjectDocumentKind::Report, &entry.id, &entry.name)
-            }))
-            .chain(snapshot_refs.iter().map(|entry| {
-                build_artifact_node(ProjectDocumentKind::Snapshot, &entry.id, &entry.name)
-            }))
-            .collect::<Vec<_>>();
+    let mut artifact_nodes = table_refs
+        .iter()
+        .map(|entry| build_artifact_node(ProjectDocumentKind::Table, &entry.id, &entry.name))
+        .chain(
+            graph_refs
+                .iter()
+                .map(|entry| build_artifact_node(ProjectDocumentKind::Graph, &entry.id, &entry.name)),
+        )
+        .chain(
+            fit_refs
+                .iter()
+                .map(|entry| build_artifact_node(ProjectDocumentKind::FitYByX, &entry.id, &entry.name)),
+        )
+        .chain(analysis_refs.iter().map(|entry| {
+            build_artifact_node(ProjectDocumentKind::Analysis, &entry.id, &entry.name)
+        }))
+        .chain(distribution_refs.iter().map(|entry| {
+            build_artifact_node(ProjectDocumentKind::Distribution, &entry.id, &entry.name)
+        }))
+        .chain(tabulate_refs.iter().map(|entry| {
+            build_artifact_node(ProjectDocumentKind::Tabulate, &entry.id, &entry.name)
+        }))
+        .chain(report_refs.iter().map(|entry| {
+            build_artifact_node(ProjectDocumentKind::Report, &entry.id, &entry.name)
+        }))
+        .chain(snapshot_refs.iter().map(|entry| {
+            build_artifact_node(ProjectDocumentKind::Snapshot, &entry.id, &entry.name)
+        }))
+        .collect::<Result<Vec<_>, AppError>>()?;
     artifact_nodes.sort_by(|left, right| left.id.cmp(&right.id));
     lineage_graph.nodes.extend(
         artifact_nodes
@@ -2124,11 +2127,11 @@ fn build_artifact_node(
     kind: ProjectDocumentKind,
     id: &str,
     name: &str,
-) -> workflow_domain::ArtifactNode {
+) -> Result<workflow_domain::ArtifactNode, AppError> {
     let node_id = artifact_node_id(&kind, id);
-    let payload_kind = port_payload_kind(&kind);
+    let payload_kind = port_payload_kind(&kind)?;
 
-    workflow_domain::ArtifactNode {
+    Ok(workflow_domain::ArtifactNode {
         id: node_id.clone(),
         document_ref: ProjectDocumentRef {
             kind: kind.clone(),
@@ -2136,7 +2139,7 @@ fn build_artifact_node(
         },
         name: name.to_string(),
         parent_folder_id: None,
-        artifact_kind: artifact_kind(&kind),
+        artifact_kind: artifact_kind(&kind)?,
         input_port: workflow_domain::LineagePort {
             id: format!("{node_id}-input"),
             name: "input".to_string(),
@@ -2148,7 +2151,7 @@ fn build_artifact_node(
             payload_kind,
         },
         materialized_by_workflow_run_id: None,
-    }
+    })
 }
 
 fn ensure_known_source_table(
@@ -2201,7 +2204,7 @@ fn build_project_lineage_operation(
         output_ports: vec![workflow_domain::LineagePort {
             id: operation_output_port_id.clone(),
             name: "result".to_string(),
-            payload_kind: port_payload_kind(&target_ref.kind),
+            payload_kind: port_payload_kind(&target_ref.kind)?,
         }],
     };
 
@@ -2541,31 +2544,39 @@ fn document_kind_key(kind: &ProjectDocumentKind) -> &'static str {
     }
 }
 
-fn artifact_kind(kind: &ProjectDocumentKind) -> workflow_domain::ArtifactKind {
+fn artifact_kind(
+    kind: &ProjectDocumentKind,
+) -> Result<workflow_domain::ArtifactKind, AppError> {
     match kind {
-        ProjectDocumentKind::Table => workflow_domain::ArtifactKind::Table,
-        ProjectDocumentKind::TableTransform => workflow_domain::ArtifactKind::TableTransform,
-        ProjectDocumentKind::Graph => workflow_domain::ArtifactKind::Graph,
-        ProjectDocumentKind::Analysis => workflow_domain::ArtifactKind::Analysis,
-        ProjectDocumentKind::Distribution => workflow_domain::ArtifactKind::Distribution,
-        ProjectDocumentKind::FitYByX => workflow_domain::ArtifactKind::FitYByX,
-        ProjectDocumentKind::Tabulate => workflow_domain::ArtifactKind::Tabulate,
-        ProjectDocumentKind::Report => workflow_domain::ArtifactKind::Report,
-        ProjectDocumentKind::Snapshot => workflow_domain::ArtifactKind::Snapshot,
+        ProjectDocumentKind::Table => Ok(workflow_domain::ArtifactKind::Table),
+        ProjectDocumentKind::Graph => Ok(workflow_domain::ArtifactKind::Graph),
+    ProjectDocumentKind::Analysis => Ok(workflow_domain::ArtifactKind::Analysis),
+    ProjectDocumentKind::Distribution => Ok(workflow_domain::ArtifactKind::Distribution),
+        ProjectDocumentKind::FitYByX => Ok(workflow_domain::ArtifactKind::FitYByX),
+        ProjectDocumentKind::Tabulate => Ok(workflow_domain::ArtifactKind::Tabulate),
+    ProjectDocumentKind::Report => Ok(workflow_domain::ArtifactKind::Report),
+        ProjectDocumentKind::Snapshot => Ok(workflow_domain::ArtifactKind::Snapshot),
+        ProjectDocumentKind::TableTransform => Err(AppError::InvalidParam(
+            "table transform definitions are operation documents, not artifacts".to_string(),
+        )),
     }
 }
 
-fn port_payload_kind(kind: &ProjectDocumentKind) -> workflow_domain::PortPayloadKind {
+fn port_payload_kind(
+    kind: &ProjectDocumentKind,
+) -> Result<workflow_domain::PortPayloadKind, AppError> {
     match kind {
-        ProjectDocumentKind::Table => workflow_domain::PortPayloadKind::Table,
-        ProjectDocumentKind::TableTransform => workflow_domain::PortPayloadKind::TableTransform,
-        ProjectDocumentKind::Graph => workflow_domain::PortPayloadKind::Graph,
-        ProjectDocumentKind::Analysis => workflow_domain::PortPayloadKind::Analysis,
-        ProjectDocumentKind::Distribution => workflow_domain::PortPayloadKind::Distribution,
-        ProjectDocumentKind::FitYByX => workflow_domain::PortPayloadKind::FitYByX,
-        ProjectDocumentKind::Tabulate => workflow_domain::PortPayloadKind::Tabulate,
-        ProjectDocumentKind::Report => workflow_domain::PortPayloadKind::Report,
-        ProjectDocumentKind::Snapshot => workflow_domain::PortPayloadKind::Snapshot,
+        ProjectDocumentKind::Table => Ok(workflow_domain::PortPayloadKind::Table),
+        ProjectDocumentKind::Graph => Ok(workflow_domain::PortPayloadKind::Graph),
+    ProjectDocumentKind::Analysis => Ok(workflow_domain::PortPayloadKind::Analysis),
+    ProjectDocumentKind::Distribution => Ok(workflow_domain::PortPayloadKind::Distribution),
+        ProjectDocumentKind::FitYByX => Ok(workflow_domain::PortPayloadKind::FitYByX),
+        ProjectDocumentKind::Tabulate => Ok(workflow_domain::PortPayloadKind::Tabulate),
+    ProjectDocumentKind::Report => Ok(workflow_domain::PortPayloadKind::Report),
+        ProjectDocumentKind::Snapshot => Ok(workflow_domain::PortPayloadKind::Snapshot),
+        ProjectDocumentKind::TableTransform => Err(AppError::InvalidParam(
+            "table transform definitions do not carry artifact payloads".to_string(),
+        )),
     }
 }
 
