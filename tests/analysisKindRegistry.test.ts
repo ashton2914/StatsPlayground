@@ -68,7 +68,7 @@ for (const entry of manifest.kinds) {
   );
 }
 
-assert.equal(analysisReportPolicies.distribution, null);
+assert.notEqual(analysisReportPolicies.distribution, null, "Distribution must register Report embedding");
 assert.notEqual(analysisReportPolicies.fitYByX, null, "Fit Y by X must register Report embedding");
 assert.deepEqual(analysisKindDescriptors.fitModel.capabilities, {
   graphEditing: false,

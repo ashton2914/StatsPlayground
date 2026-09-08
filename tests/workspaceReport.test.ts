@@ -113,6 +113,11 @@ assertSourceIncludes(workspaceSource, "markdown: \"\"", "New reports must start 
 const reportViewSource = readSource("../src/components/report/ReportView.tsx");
 assertSourceIncludes(reportViewSource, "ReportView", "ReportView component must exist");
 assertSourceIncludes(reportViewSource, "item: ReportItem", "ReportView must accept a ReportItem prop");
+assertSourceIncludes(
+  workspaceSource,
+  "distributionOptions={distributionAnalysisItems.map",
+  "Workspace must offer Distribution Analysis documents in the Report insert toolbar",
+);
 
 const projectNamingSource = readSource("../src/utils/projectFileNaming.ts");
 assertSourceIncludes(projectNamingSource, 'if (kind === "report") return ".sprp";', "Shared naming must map reports to .sprp");
