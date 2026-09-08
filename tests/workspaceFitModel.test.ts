@@ -31,9 +31,9 @@ function assertSourceIncludes(source: string, needle: string, message: string): 
 
 const workspaceSource = readSource("../src/components/Workspace.tsx");
 
-assertSourceIncludes(workspaceSource, "useFitModelStore", "Workspace must consume the Fit Model store");
+assert.equal(workspaceSource.includes("useFitModelStore"), false, "Workspace must not consume the legacy Fit Model store");
 assertSourceIncludes(workspaceSource, "FitModelRoleDialog", "Workspace must render the Fit Model role dialog");
-assertSourceIncludes(workspaceSource, "FitModelView", "Workspace must render the Fit Model main-pane view");
+assert.equal(workspaceSource.includes("FitModelView"), false, "Workspace must render Fit Model through AnalysisView");
 assertSourceIncludes(workspaceSource, "openFitModel", "Workspace must expose the shared Fit Model dialog entry point");
 assertSourceIncludes(workspaceSource, "prefill={fitModelPrefill}", "Workspace must pass optional DOE prefill to the Fit Model dialog");
 assertSourceIncludes(workspaceSource, "onCreateDefinition={handleCreateFitModelItem}", "Workspace must pass the async fit model creation callback directly for awaited error handling");
@@ -42,39 +42,28 @@ assertSourceIncludes(workspaceSource, "construct: definition.construct", "Worksp
 assertSourceIncludes(workspaceSource, "menu.fitModel", "Analysis menu must include menu.fitModel");
 assertSourceIncludes(workspaceSource, "handleCreateFitModel", "Fit Model menu entry must open the creation flow");
 
-assertSourceIncludes(workspaceSource, "fitModels: fitModelItems", "Project save payload must include Fit Model analyses");
-assertSourceIncludes(workspaceSource, "fitModelFolders", "Project save/open payloads must include Fit Model folder assignments");
-assertSourceIncludes(workspaceSource, "loadFitModelFromProject((result.fitModels ?? [])", "Project open must load saved Fit Model analyses");
-assertSourceIncludes(workspaceSource, "resetFitModels()", "Project close/open reset must clear the Fit Model store");
+assertSourceIncludes(workspaceSource, "createFitModelAnalysisDocument", "Workspace creation must produce an Analysis document");
+assertSourceIncludes(workspaceSource, "fitModels: result.fitModels ?? []", "Project open must migrate saved Fit Model analyses");
+assertSourceIncludes(workspaceSource, "analysisFolders: analysisProjectPayload.analysisFolders", "Migrated Fit Model folders must use Analysis folder assignments");
 
-assertSourceIncludes(workspaceSource, "activeFitModelId", "Workspace must track the active Fit Model analysis");
+assert.equal(workspaceSource.includes("activeFitModelId"), false, "Workspace selection must use activeAnalysisId");
 assertSourceIncludes(workspaceSource, "showFitModelDialog", "Workspace must track the Fit Model creation dialog");
-assertSourceIncludes(workspaceSource, "addFitModel", "Workspace must add newly created Fit Model analyses");
-assertSourceIncludes(workspaceSource, "renameFitModel", "Workspace must rename Fit Model analyses from the tree");
-assertSourceIncludes(workspaceSource, "deleteFitModel", "Workspace must delete Fit Model analyses from the tree");
-assertSourceIncludes(workspaceSource, "deleteFitModelByDataset", "Deleting a source table must cascade-delete dependent Fit Model analyses");
-assertSourceIncludes(workspaceSource, "fsSetFitModelFolder", "Workspace drag/drop must move Fit Model analyses into folders");
-assertSourceIncludes(workspaceSource, "Boolean(item.loadIssue)", "Fit Model tree rows must treat load-issue analyses as unavailable");
-assertSourceIncludes(workspaceSource, "fitModelUnavailable ? t(\"workspace.fitModelSourceMissing\") : sourceDs.name", "Fit Model tree rows must render unavailable text for load-issue analyses");
-
-assertSourceIncludes(workspaceSource, "| { kind: \"fitModel\"; id: string }", "Drag payload and context menu unions must include Fit Model items");
-assertSourceIncludes(workspaceSource, "fitModelByParent", "Tree grouping must include Fit Model documents by folder");
-assertSourceIncludes(workspaceSource, "setActiveFitModelId(null)", "Selecting tables, graphs, tabulates, Fit Y by X, distributions, or close/open must clear active Fit Model selection");
-assertSourceIncludes(workspaceSource, "setActiveFitModelId(id)", "Selecting or creating a Fit Model item must activate it");
-assertSourceIncludes(workspaceSource, "activeFitModelId === item.id", "Tree rows must show the active Fit Model document");
-assertSourceIncludes(workspaceSource, "sourceDatasetId === id", "Source-table deletion must recognize active dependent Fit Model analyses");
+assertSourceIncludes(workspaceSource, "addAnalysis(analysis)", "Workspace must add new Fit Model documents to the Analysis store");
+assertSourceIncludes(workspaceSource, "activateWorkspaceDocument(\"analysis\", id)", "Creating a Fit Model must activate its Analysis document");
+assertSourceIncludes(workspaceSource, "getRetainedActiveAnalysisIdAfterDatasetDeletion", "Source deletion must preserve the Analysis document for source-missing state");
 assertSourceIncludes(workspaceSource, "history.newFitModel", "Creation must record Fit Model history");
-assertSourceIncludes(workspaceSource, "history.renameFitModel", "Rename must record Fit Model history");
-assertSourceIncludes(workspaceSource, "history.deleteFitModel", "Delete must record Fit Model history");
-assertSourceIncludes(workspaceSource, "<FitModelView", "Main pane must dispatch to FitModelView");
+assertSourceIncludes(workspaceSource, "<AnalysisView item={item}", "Main pane must dispatch Fit Model through AnalysisView");
+assertSourceIncludes(workspaceSource, "initialDefinition={editorItem}", "Fit Model input editing must initialize from the persisted Analysis definition");
 assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Folder prune must preserve Fit Model IDs alongside Analysis IDs");
 
 const fitModelCssSource = readSource("../src/components/fitModel/fitModel.css");
 assertSourceIncludes(fitModelCssSource, ".sp-fit-model-dialog", "Fit Model CSS must style dialog sizing");
 assertSourceIncludes(fitModelCssSource, "grid-template-columns", "Fit Model CSS must define stable two-column layout");
-assertSourceIncludes(fitModelCssSource, ".sp-fit-model-report-shell", "Fit Model CSS must define report scroll container");
-assertSourceIncludes(fitModelCssSource, ".sp-fit-model-report-table-wrap", "Fit Model CSS must keep report tables compact and scrollable");
-assertSourceIncludes(fitModelCssSource, ".sp-fit-model-chart-shell", "Fit Model CSS must define stable chart height");
+assert.equal(fitModelCssSource.includes(".sp-fit-model-report-shell"), false, "AnalysisShell must own Fit Model report scrolling");
+assert.equal(fitModelCssSource.includes(".sp-fit-model-report-table"), false, "AnalysisTable must own Fit Model report table styling");
+assertSourceIncludes(fitModelCssSource, ".sp-fit-model-diagnostic-chart", "Fit Model CSS must size the mounted diagnostic charts");
+assertSourceIncludes(fitModelCssSource, ".sp-fit-model-diagnostic-chart-residualQq", "Fit Model CSS must give Q-Q a bounded square plot");
+assertSourceIncludes(fitModelCssSource, ".sp-fit-model-diagnostic-chart-predictionProfiler", "Fit Model CSS must size profiler charts independently");
 assertSourceIncludes(fitModelCssSource, "@media (max-width: 900px)", "Fit Model CSS must wrap layout for narrow viewports");
 
 const locales = [

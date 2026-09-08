@@ -8,6 +8,7 @@ import type {
   AnalysisDocumentByKind,
   AnalysisKind,
   DistributionAnalysisDocument,
+  FitModelAnalysisDocument,
   FitYByXAnalysisDocument,
 } from "@/types/analysis";
 import type {
@@ -16,6 +17,7 @@ import type {
   DistributionRequest,
 } from "@/types/distribution";
 import type { FitYByXRequest, FitYByXResponse } from "@/types/fitYByX";
+import type { FitModelRequest, FitModelResult } from "@/types/fitModel";
 
 function normalizeFitYByXReportError(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
@@ -31,16 +33,19 @@ export interface AnalysisExecutionDependencies {
   getDatasetGeneration: DistributionReportDependencies["getDatasetGeneration"];
   compute?: DistributionReportDependencies["compute"];
   computeFitYByX?: (request: FitYByXRequest) => Promise<FitYByXResponse>;
+  runFitModel?: (request: FitModelRequest) => Promise<FitModelResult>;
 }
 
 export type AnalysisExecutionRequestByKind = {
   distribution: DistributionRequest;
   fitYByX: FitYByXRequest;
+  fitModel: FitModelRequest;
 };
 
 export type AnalysisExecutionResponseByKind = {
   distribution: DistributionReportResponse;
   fitYByX: FitYByXResponse;
+  fitModel: FitModelResult;
 };
 
 interface AnalysisExecutor<Kind extends AnalysisKind> {
@@ -114,6 +119,22 @@ async function resolveFitYByXDependencies(
   };
 }
 
+async function resolveFitModelDependencies(
+  overrides?: Partial<AnalysisExecutionDependencies>,
+): Promise<AnalysisExecutionDependencies> {
+  if (overrides?.getDatasetGeneration && overrides.runFitModel) {
+    return overrides as AnalysisExecutionDependencies;
+  }
+  const [{ dataService }, { fitModelService }] = await Promise.all([
+    import("../../services/dataService"),
+    import("../../services/fitModelService"),
+  ]);
+  return {
+    getDatasetGeneration: overrides?.getDatasetGeneration ?? dataService.getDatasetGeneration,
+    runFitModel: overrides?.runFitModel ?? fitModelService.run,
+  };
+}
+
 const distributionExecutor = {
   createRequest: (document, generation) => createDistributionRequest(
     toDistributionItem(document),
@@ -175,9 +196,48 @@ const fitYByXExecutor = {
   normalizeError: normalizeFitYByXReportError,
 } satisfies AnalysisExecutor<"fitYByX">;
 
+const fitModelExecutor = {
+  createRequest: (document, generation) => ({
+    datasetId: document.source.datasetId,
+    generation,
+    responseColumn: document.definition.response.name,
+    terms: structuredClone(document.definition.terms),
+    centeringMethod: document.definition.centeringMethod,
+    confidenceLevel: 0.95,
+  }),
+  fingerprint: (document) => JSON.stringify(stableDistributionReportValue({
+    analysisKind: document.analysisKind,
+    configRevision: document.configRevision,
+    sourceDatasetId: document.source.datasetId,
+    response: document.definition.response,
+    construct: document.definition.construct,
+    terms: document.definition.terms,
+    centeringMethod: document.definition.centeringMethod,
+    confidenceLevel: document.definition.confidenceLevel,
+    migrationIssue: document.definition.migrationIssue ?? null,
+  })),
+  requestIdentity: (request) => request == null
+    ? null
+    : JSON.stringify(stableDistributionReportValue(request)),
+  resolveDependencies: resolveFitModelDependencies,
+  compute: (dependencies, request) => {
+    if (!dependencies.runFitModel) throw new Error("Fit Model compute dependency is unavailable.");
+    return dependencies.runFitModel(request);
+  },
+  responseMatches: (_response, _request) => true,
+  responseIdentityError: "Fit Model response identity did not match the request.",
+  normalizeError: (error) => {
+    if (error instanceof Error && error.message.trim()) return error.message;
+    if (typeof error === "string" && error.trim()) return error;
+    const message = typeof error === "object" && error !== null ? Reflect.get(error, "message") : null;
+    return typeof message === "string" && message.trim() ? message : "Failed to load Fit Model report.";
+  },
+} satisfies AnalysisExecutor<"fitModel">;
+
 export const analysisExecutors = {
   distribution: distributionExecutor,
   fitYByX: fitYByXExecutor,
+  fitModel: fitModelExecutor,
 } satisfies { [Kind in AnalysisKind]: AnalysisExecutor<Kind> };
 
 export function distributionAnalysisDefinitionFingerprint(
@@ -192,6 +252,12 @@ export function fitYByXAnalysisDefinitionFingerprint(
   return analysisExecutors.fitYByX.fingerprint(document);
 }
 
+export function fitModelAnalysisDefinitionFingerprint(
+  document: FitModelAnalysisDocument,
+): string {
+  return analysisExecutors.fitModel.fingerprint(document);
+}
+
 export function createAnalysisExecutionRequest(
   document: AnalysisDocumentByKind["distribution"],
   generation: number,
@@ -201,6 +267,10 @@ export function createAnalysisExecutionRequest(
   generation: number,
 ): AnalysisExecutionRequestByKind["fitYByX"];
 export function createAnalysisExecutionRequest(
+  document: AnalysisDocumentByKind["fitModel"],
+  generation: number,
+): AnalysisExecutionRequestByKind["fitModel"];
+export function createAnalysisExecutionRequest(
   document: AnalysisDocumentByKind[AnalysisKind],
   generation: number,
 ): AnalysisExecutionRequestByKind[AnalysisKind];
@@ -208,7 +278,11 @@ export function createAnalysisExecutionRequest(
   document: AnalysisDocumentByKind[AnalysisKind],
   generation: number,
 ): AnalysisExecutionRequestByKind[AnalysisKind] {
-  return document.analysisKind === "distribution"
-    ? analysisExecutors.distribution.createRequest(document, generation)
-    : analysisExecutors.fitYByX.createRequest(document, generation);
+  if (document.analysisKind === "distribution") {
+    return analysisExecutors.distribution.createRequest(document, generation);
+  }
+  if (document.analysisKind === "fitYByX") {
+    return analysisExecutors.fitYByX.createRequest(document, generation);
+  }
+  return analysisExecutors.fitModel.createRequest(document, generation);
 }

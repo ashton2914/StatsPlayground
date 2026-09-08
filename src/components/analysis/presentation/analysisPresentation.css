@@ -106,6 +106,7 @@
 
 .analysis-ui-table table {
   width: 100%;
+  min-width: max-content;
   table-layout: fixed;
   border-collapse: collapse;
   color: var(--fg-primary);
@@ -120,6 +121,7 @@
   border-bottom: 1px solid var(--border-main);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .analysis-ui-table th {
@@ -132,6 +134,27 @@
 .analysis-ui-table td:last-child { border-right: 0; }
 .analysis-ui-table tbody tr:last-child td { border-bottom: 0; }
 .analysis-ui-table-numeric { text-align: right !important; }
+.analysis-ui-table-selection { width: 42px; text-align: center !important; }
+.analysis-ui-table-actions { width: 112px; }
+
+.analysis-ui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border-main);
+  border-radius: 4px;
+  color: var(--fg-primary);
+  background: var(--bg-panel);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.analysis-ui-button:hover:not(:disabled) { background: var(--bg-hover); }
+.analysis-ui-button-primary { border-color: var(--accent); background: var(--accent); color: white; }
+.analysis-ui-button-danger { color: var(--danger, #b42318); }
+.analysis-ui-button:disabled { cursor: default; opacity: 0.55; }
 
 .analysis-ui-graph-content,
 .analysis-ui-graph-runtime { min-width: 0; min-height: 0; }

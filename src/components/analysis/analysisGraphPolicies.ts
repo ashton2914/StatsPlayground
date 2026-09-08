@@ -4,6 +4,7 @@ import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 export type AnalysisGraphRoleByKind = {
   distribution: "overview";
   fitYByX: "main";
+  fitModel: never;
 };
 
 export interface AnalysisGraphPersistenceResult {
@@ -45,6 +46,7 @@ export const analysisGraphPolicies = {
       statisticalInputsChanged: false,
     }),
   },
+  fitModel: null,
 } satisfies { [Kind in AnalysisKind]: AnalysisGraphPolicy<Kind> | null };
 
 export function createAnalysisGraphPersistencePatch(

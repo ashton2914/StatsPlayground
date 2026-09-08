@@ -56,4 +56,22 @@ export const analysisKindDescriptors = {
       reportEmbedding: true,
     },
   },
+  fitModel: {
+    identity: {
+      analysisKind: "fitModel",
+      definitionKind: "fitModel",
+    },
+    schema: {
+      document: 1,
+      presentation: 1,
+      layout: "fit-model-v1",
+    },
+    locale: {
+      title: "fitModel.title",
+    },
+    capabilities: {
+      graphEditing: false,
+      reportEmbedding: false,
+    },
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisKindDescriptor<Kind> };

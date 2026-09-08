@@ -48,7 +48,6 @@ function makeAnalysis(id: string, datasetId: string): AnalysisDocument {
 assert.deepEqual(createEmptyWorkspaceDocumentSelection(), {
   activeDatasetId: null,
   activeGraphBuilderId: null,
-  activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: null,
   activeTabulateId: null,
@@ -57,7 +56,6 @@ assert.deepEqual(createEmptyWorkspaceDocumentSelection(), {
 assert.deepEqual(selectWorkspaceDocument("analysis", "analysis-1"), {
   activeDatasetId: null,
   activeGraphBuilderId: null,
-  activeFitModelId: null,
   activeReportId: null,
   activeAnalysisId: "analysis-1",
   activeTabulateId: null,
@@ -66,16 +64,6 @@ assert.deepEqual(selectWorkspaceDocument("analysis", "analysis-1"), {
 assert.deepEqual(selectWorkspaceDocument("dataset", "dataset-1"), {
   activeDatasetId: "dataset-1",
   activeGraphBuilderId: null,
-  activeFitModelId: null,
-  activeReportId: null,
-  activeAnalysisId: null,
-  activeTabulateId: null,
-});
-
-assert.deepEqual(selectWorkspaceDocument("fitModel", "fit-model-1"), {
-  activeDatasetId: null,
-  activeGraphBuilderId: null,
-  activeFitModelId: "fit-model-1",
   activeReportId: null,
   activeAnalysisId: null,
   activeTabulateId: null,
@@ -103,6 +91,7 @@ assert.deepEqual(
     analyses: [],
     analysisFolders: {},
     migratedCount: 0,
+    migrationWarnings: [],
   },
   "open/reset hydration must default analysis payloads to empty collections",
 );
@@ -113,6 +102,7 @@ assert.deepEqual(
     analyses: analysisItems,
     analysisFolders,
     migratedCount: 0,
+    migrationWarnings: [],
   },
   "open hydration must preserve saved analyses and folder assignments",
 );

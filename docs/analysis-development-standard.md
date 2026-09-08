@@ -1,17 +1,18 @@
 # Analysis Development Standard
 
-This document defines the required path for adding or changing an Analysis kind. Distribution is the reference implementation and the only currently registered Analysis kind.
+This document defines the required path for adding or changing an Analysis kind. Distribution and Fit Y by X are the reference implementations for shared Analysis composition.
 
 ## Architecture Rules
 
 1. An Analysis document persists user-authored definitions and presentation configuration only. Never persist computed results, report blocks, graph frames, or generated markdown.
 2. Rust is the statistical authority. Frontend code constructs typed requests, presents responses, and rejects mismatched response identities; it must not provide a statistical fallback.
 3. Execution must fence every asynchronous result by Analysis kind, document ID, configuration revision, dataset ID, dataset generation, dataset update version, definition fingerprint, request identity, and request token. Stale results must be masked synchronously before paint.
-4. Analysis views use the shared shell and presentation primitives under `src/components/analysis/presentation/`. Kind renderers remain synchronous and own only kind-specific result composition.
+4. Analysis views use the shared shell and presentation primitives under `src/components/analysis/presentation/`. A kind renderer must directly compose its result hierarchy with `AnalysisFrame`, `AnalysisStack`, `AnalysisText`, `AnalysisTable`, `AnalysisButton`, and `AnalysisGraph` as applicable. It must not wrap or delegate to a legacy report or view surface. Result tables use `AnalysisTable`, and result actions use `AnalysisButton`; native `<table>` and native action `<button>` markup are reserved for implementation inside the shared primitives or controls with semantics those primitives do not support.
 5. Analysis documents use the common Zustand store, Workspace selection, project save/open, folder, rename, delete, source-retention, and history lifecycle. A kind must not introduce a parallel document lifecycle.
 6. Registration is layer-local and exhaustive. Every kind must be present in the descriptor, executor, view, editor, graph, and report policy records. Dispatch must not fall back to another kind.
 7. Unsupported capabilities are explicit. A missing implementation is represented by a `null` policy and a `false` descriptor capability, not placeholder syntax or a generic implementation.
 8. `contracts/analysis/kinds.v1.json` is the cross-language identity contract. TypeScript registration and Rust archive validation must match its kind, definition, document schema, presentation schema, and layout exactly.
+9. Analysis result typography, spacing, borders, disclosure headers, table cells, and action controls inherit from shared presentation tokens and classes. Kind CSS may size or arrange genuinely kind-specific content such as a chart canvas or profiler control, but it must not recreate the shared report shell, frame, table, button, or text system.
 
 ## Persisted Contract
 
@@ -29,6 +30,8 @@ The Rust archive validator must select an explicit validator by both `analysisKi
 6. Register graph persistence behavior or `null`, and state whether the patch changes statistical inputs. Register report embedding behavior or `null` independently.
 7. Add an explicit Rust validator contract and method-specific validator coverage.
 8. Extend the registration contract test and the kind's focused method suite without duplicating feature tests.
+9. Add a source or rendered-structure contract that rejects legacy report delegation and raw result table/action markup, and asserts the shared presentation primitives used by the kind.
+10. Add visual acceptance at desktop and narrow widths for frame nesting, typography, table scrolling, graph sizing, and the absence of page-level overflow.
 
 ## Required Gate
 
@@ -41,3 +44,5 @@ The Rust archive validator must select an explicit validator by both `analysisKi
 - `npm run build`
 
 The method suite must exercise each registered kind through meaningful existing tests. Distribution is currently the complete method suite; adding a future kind requires adding its focused tests to `test:analysis:kinds`.
+
+Passing automated gates is not a substitute for visual acceptance of a new or migrated Analysis kind. Compare the running desktop surface with the reference kinds before declaring the migration complete.

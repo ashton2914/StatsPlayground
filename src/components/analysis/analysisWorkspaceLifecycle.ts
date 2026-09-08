@@ -10,11 +10,11 @@ import {
 } from "./analysisGraphPolicies";
 import { migrateLegacyDistributions } from "./distributionAnalysisMigration";
 import { migrateLegacyFitYByX } from "./fitYByXAnalysisMigration";
+import { migrateLegacyFitModels } from "./fitModelProjectMigration";
 
 export interface WorkspaceDocumentSelection {
   activeDatasetId: string | null;
   activeGraphBuilderId: string | null;
-  activeFitModelId: string | null;
   activeReportId: string | null;
   activeAnalysisId: string | null;
   activeTabulateId: string | null;
@@ -23,7 +23,6 @@ export interface WorkspaceDocumentSelection {
 export type WorkspaceDocumentKind =
   | "dataset"
   | "graph"
-  | "fitModel"
   | "report"
   | "analysis"
   | "tabulate";
@@ -32,7 +31,6 @@ export function createEmptyWorkspaceDocumentSelection(): WorkspaceDocumentSelect
   return {
     activeDatasetId: null,
     activeGraphBuilderId: null,
-    activeFitModelId: null,
     activeReportId: null,
     activeAnalysisId: null,
     activeTabulateId: null,
@@ -43,7 +41,6 @@ export function selectWorkspaceDocument(kind: WorkspaceDocumentKind, id: string)
   const next = createEmptyWorkspaceDocumentSelection();
   if (kind === "dataset") next.activeDatasetId = id;
   if (kind === "graph") next.activeGraphBuilderId = id;
-  if (kind === "fitModel") next.activeFitModelId = id;
   if (kind === "report") next.activeReportId = id;
   if (kind === "analysis") next.activeAnalysisId = id;
   if (kind === "tabulate") next.activeTabulateId = id;
@@ -74,8 +71,13 @@ export function hydrateAnalysisProjectPayload(
   >> & {
     fitYByX?: FitYByXItem[];
     fitYByXFolders?: Record<string, string>;
+    fitModels?: unknown[];
+    fitModelFolders?: Record<string, string>;
   },
-): Pick<OpenProjectResult, "analyses" | "analysisFolders"> & { migratedCount: number } {
+): Pick<OpenProjectResult, "analyses" | "analysisFolders"> & {
+  migratedCount: number;
+  migrationWarnings: string[];
+} {
   const distributions = migrateLegacyDistributions({
     analyses: result.analyses ?? [],
     analysisFolders: result.analysisFolders ?? {},
@@ -88,10 +90,17 @@ export function hydrateAnalysisProjectPayload(
     fitYByX: result.fitYByX ?? [],
     fitYByXFolders: result.fitYByXFolders ?? {},
   });
-  return {
+  const fitModels = migrateLegacyFitModels({
     analyses: fitYByX.analyses,
     analysisFolders: fitYByX.analysisFolders,
-    migratedCount: distributions.migratedCount + fitYByX.migratedCount,
+    fitModels: result.fitModels ?? [],
+    fitModelFolders: result.fitModelFolders ?? {},
+  });
+  return {
+    analyses: fitModels.analyses,
+    analysisFolders: fitModels.analysisFolders,
+    migratedCount: distributions.migratedCount + fitYByX.migratedCount + fitModels.migratedCount,
+    migrationWarnings: fitModels.warnings,
   };
 }
 
@@ -118,6 +127,9 @@ export function createWorkspaceAnalysisGraphConfigPatch(
   if (document.analysisKind === "distribution") {
     if (role !== "overview") throw new Error(`Unsupported Distribution graph role: ${role}`);
     return createAnalysisGraphPersistencePatch(document, role, graph, updatedAt);
+  }
+  if (document.analysisKind === "fitModel") {
+    throw new Error("Fit Model graphs are not editable");
   }
   if (role !== "main") throw new Error(`Unsupported Fit Y by X graph role: ${role}`);
   return createAnalysisGraphPersistencePatch(document, role, graph, updatedAt);
