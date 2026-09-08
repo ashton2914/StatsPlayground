@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import type { ProjectInfo } from "../src/types/project";
 import type { SaveProgress, SaveProjectFolders, SaveProjectRequest } from "../src/services/projectService";
 import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
+import { createFitYByXAnalysisDocument } from "../src/components/analysis/adapters/fitYByXAnalysisAdapter.ts";
+import { buildAnalysisProjectPayload } from "../src/components/analysis/analysisWorkspaceLifecycle.ts";
 import { createFitModelItem } from "../src/components/fitModel/fitModelConfig.ts";
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
 import { createProjectStore } from "../src/stores/useProjectStore.ts";
@@ -445,10 +447,16 @@ function resetGraphBuilderStore() {
   };
   const fitRequest: SaveProjectRequest = {
     ...request,
-    fitYByX: [bivariateFit],
-    fitYByXFolders: { [bivariateFit.id]: "Analyses/Bivariate" },
+    ...buildAnalysisProjectPayload({
+      analyses: [createFitYByXAnalysisDocument({
+        item: bivariateFit,
+        confidenceLevel: 0.95,
+        updatedAt: bivariateFit.createdAt,
+      })],
+      analysisFolders: { [bivariateFit.id]: "Analyses/Bivariate" },
+    }),
   };
-  const fitBaseline = JSON.stringify(fitRequest.fitYByX);
+  const fitBaseline = JSON.stringify(fitRequest.analyses);
 
   let capturedSaveRequest: SaveProjectRequest | null = null;
 
@@ -483,23 +491,26 @@ function resetGraphBuilderStore() {
 
   await store.getState().saveProject(fitRequest);
 
-  assert.deepEqual(capturedSaveRequest?.fitYByX, [bivariateFit]);
-  assert.deepEqual(capturedSaveRequest?.fitYByXFolders, { [bivariateFit.id]: "Analyses/Bivariate" });
-  assert.equal(JSON.stringify(fitRequest.fitYByX), fitBaseline);
+  assert.deepEqual(capturedSaveRequest?.fitYByX, []);
+  assert.deepEqual(capturedSaveRequest?.fitYByXFolders, {});
+  assert.deepEqual(capturedSaveRequest?.analysisFolders, { [bivariateFit.id]: "Analyses/Bivariate" });
+  assert.equal(JSON.stringify(fitRequest.analyses), fitBaseline);
 
-  const savedFit = capturedSaveRequest?.fitYByX[0] as {
-    personality: string;
-    graph: {
+  const savedFit = capturedSaveRequest?.analyses[0] as {
+    analysisKind: string;
+    definition: { personality: string };
+    presentation: { graph: {
       modeStates: {
         twoD: {
           elements: unknown[];
         };
       };
-    };
+    } };
   } & Record<string, unknown>;
 
-  assert.equal(savedFit.personality, "bivariate");
-  assert.deepEqual(savedFit.graph.modeStates.twoD.elements, [
+  assert.equal(savedFit.analysisKind, "fitYByX");
+  assert.equal(savedFit.definition.personality, "bivariate");
+  assert.deepEqual(savedFit.presentation.graph.modeStates.twoD.elements, [
     { kind: "points", enabled: true },
     { kind: "fitline", enabled: true, options: { fitType: "polynomial", degree: 1, showFitCI: true } },
   ]);

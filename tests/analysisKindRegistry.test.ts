@@ -39,7 +39,7 @@ const registries = {
 };
 
 assert.equal(manifest.schemaVersion, 1);
-assert.deepEqual(manifestKinds, ["distribution"]);
+assert.deepEqual(manifestKinds, ["distribution", "fitYByX"]);
 
 for (const [layer, registry] of Object.entries(registries)) {
   assert.deepEqual(Object.keys(registry).sort(), manifestKinds, `${layer} registry must match the manifest`);
@@ -63,5 +63,8 @@ for (const entry of manifest.kinds) {
     `${entry.analysisKind} report capability must match its policy`,
   );
 }
+
+assert.equal(analysisReportPolicies.distribution, null);
+assert.notEqual(analysisReportPolicies.fitYByX, null, "Fit Y by X must register Report embedding");
 
 console.log("Analysis kind registry contract passed");

@@ -3,6 +3,7 @@ import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 
 export type AnalysisGraphRoleByKind = {
   distribution: "overview";
+  fitYByX: "main";
 };
 
 export interface AnalysisGraphPersistenceResult {
@@ -32,18 +33,40 @@ export const analysisGraphPolicies = {
       statisticalInputsChanged: false,
     }),
   },
+  fitYByX: {
+    createPersistencePatch: (document, _role, graph, updatedAt) => ({
+      patch: {
+        presentation: {
+          ...document.presentation,
+          graph: structuredClone(graph),
+        },
+        updatedAt,
+      },
+      statisticalInputsChanged: false,
+    }),
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisGraphPolicy<Kind> | null };
 
+export function createAnalysisGraphPersistencePatch(
+  document: AnalysisDocumentByKind["fitYByX"],
+  role: AnalysisGraphRoleByKind["fitYByX"],
+  graph: EmbeddedGraphConfig,
+  updatedAt: string,
+): AnalysisGraphPersistenceResult;
 export function createAnalysisGraphPersistencePatch(
   document: AnalysisDocumentByKind["distribution"],
   role: AnalysisGraphRoleByKind["distribution"],
   graph: EmbeddedGraphConfig,
   updatedAt: string,
+): AnalysisGraphPersistenceResult;
+export function createAnalysisGraphPersistencePatch(
+  document: AnalysisDocumentByKind["distribution"] | AnalysisDocumentByKind["fitYByX"],
+  role: "overview" | "main",
+  graph: EmbeddedGraphConfig,
+  updatedAt: string,
 ): AnalysisGraphPersistenceResult {
-  return analysisGraphPolicies[document.analysisKind].createPersistencePatch(
-    document,
-    role,
-    graph,
-    updatedAt,
-  );
+  if (document.analysisKind === "distribution") {
+    return analysisGraphPolicies.distribution.createPersistencePatch(document, role as "overview", graph, updatedAt);
+  }
+  return analysisGraphPolicies.fitYByX.createPersistencePatch(document, role as "main", graph, updatedAt);
 }

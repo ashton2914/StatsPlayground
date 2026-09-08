@@ -10,4 +10,8 @@ export const analysisViewContracts = {
     presentationSchemaVersion: 1,
     presentationLayout: "distribution-v1",
   },
+  fitYByX: {
+    presentationSchemaVersion: 1,
+    presentationLayout: "fit-y-by-x-v1",
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisViewContract<Kind> };

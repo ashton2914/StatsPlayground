@@ -5,7 +5,7 @@ import type { Locator } from "@playwright/test";
 
 import { AnalysisExecutionHarness } from "./AnalysisExecutionHarness";
 import { AnalysisGraphVisualHarness } from "./AnalysisGraphVisualHarness";
-import { AnalysisViewHarness } from "./AnalysisViewHarness";
+import { AnalysisViewHarness, FitYByXAnalysisViewHarness } from "./AnalysisViewHarness";
 
 async function paintedPixelCount(canvas: Locator) {
   return canvas.evaluate((node) => {
@@ -180,4 +180,81 @@ test("fits the painted Distribution graph without an internal vertical scroller"
   await expect(frames).toHaveCount(1);
   await expect(component.locator(".gc-graph")).toHaveCSS("overflow-y", "visible");
   await page.screenshot({ path: "test-results/analysis-distribution-fit-mobile.png", fullPage: true });
+});
+
+test("Fit Y by X presentation changes do not recompute and definition changes mask stale success", async ({ mount }) => {
+  const component = await mount(<AnalysisExecutionHarness analysisKind="fitYByX" />);
+
+  await expect(component.getByTestId("visible-state")).toContainText("1:success:notComputable");
+  await expect(component.getByText("compute-calls:1")).toBeVisible();
+
+  await component.getByRole("button", { name: "Change graph presentation" }).click();
+  await expect(component.getByTestId("visible-state")).toContainText("1:success:notComputable");
+  await expect(component.getByText("compute-calls:1")).toBeVisible();
+
+  await component.getByRole("button", { name: "Change confidence" }).click();
+  await expect(component.getByTestId("visible-state")).toContainText("2:loading:");
+  await expect(component.getByTestId("state-history")).not.toContainText("2:success:notComputable");
+  await expect(component.getByText("compute-calls:2")).toBeVisible();
+
+  await component.getByRole("button", { name: "Resolve pending response" }).click();
+  await expect(component.getByTestId("visible-state")).toContainText("2:success:notComputable");
+});
+
+test("Fit Y by X renders through the synchronous Analysis view", async ({ mount }) => {
+  const component = await mount(<FitYByXAnalysisViewHarness />);
+
+  await expect(component.locator('[data-analysis-kind="fitYByX"]')).toBeVisible();
+  await component.getByRole("button", { name: "Edit Inputs" }).click();
+  await expect(component.getByTestId("fit-edit-inputs-calls")).toHaveText("1");
+  await expect(component.locator('[data-analysis-block="graph"]')).toBeVisible();
+  await expect(component.locator('[data-analysis-block="report"]')).toBeVisible();
+  await expect(component.getByText("Fit Y by X graph:Strength by Site")).toBeVisible();
+  await expect(component.getByRole("button", { name: "Group Summary" })).toBeVisible();
+  await expect(component.getByRole("button", { name: "Analysis of Variance" })).toBeVisible();
+  await expect(component.getByRole("button", { name: "Effect Size" })).toBeVisible();
+});
+
+test("Fit Y by X persists axis edits and reset zoom without recomputing", async ({ mount }) => {
+  const component = await mount(<FitYByXAnalysisViewHarness />);
+
+  await expect(component.getByTestId("fit-compute-calls")).toHaveText("1");
+  for (const axis of ["X", "Y"] as const) {
+    await component.getByRole("button", { name: `Open main ${axis} axis`, exact: true }).click();
+    await expect(component.locator(".sp-dialog-title")).toHaveText(`${axis} Axis Settings`);
+    if (axis === "X") {
+      await component.getByLabel("Min").fill("6");
+      await expect(component.getByTestId("fit-main-x-min")).toHaveText("6");
+    }
+    await component.getByRole("button", { name: "Done" }).click();
+  }
+
+  await component.getByRole("button", { name: "Zoom main X axis" }).click();
+  await expect(component.getByTestId("fit-main-x-min")).toHaveText("4");
+  await component.getByRole("button", { name: "Open main X axis menu" }).click();
+  await component.getByText("Reset zoom", { exact: true }).click();
+  await expect(component.getByTestId("fit-main-x-min")).toHaveText("auto");
+  await expect(component.getByTestId("fit-compute-calls")).toHaveText("1");
+});
+
+test("Fit Y by X renders loading state", async ({ mount }) => {
+  const component = await mount(<FitYByXAnalysisViewHarness mode="loading" />);
+  await expect(component.getByText("Loading analysis results...")).toBeVisible();
+});
+
+test("Fit Y by X renders errors accessibly", async ({ mount }) => {
+  const component = await mount(<FitYByXAnalysisViewHarness mode="error" />);
+  await expect(component.getByRole("alert")).toContainText("fit failed");
+});
+
+test("Fit Y by X renders not-computable state", async ({ mount }) => {
+  const component = await mount(<FitYByXAnalysisViewHarness mode="notComputable" />);
+  await expect(component.getByText("Not computable")).toBeVisible();
+  await expect(component.getByText("At least two non-empty groups are required for Oneway analysis.")).toBeVisible();
+});
+
+test("Fit Y by X renders source-missing graph and report states", async ({ mount }) => {
+  const component = await mount(<FitYByXAnalysisViewHarness mode="sourceMissing" />);
+  await expect(component.locator('[data-analysis-block="graph"]')).toContainText(/unavailable/i);
+  await expect(component.locator('[data-analysis-block="report"]')).toContainText(/unavailable/i);
 });

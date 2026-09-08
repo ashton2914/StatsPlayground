@@ -5,9 +5,9 @@
     "types": ["node", "vite/client"]
   },
   "include": [
-    "../src/components/analysis/adapters/fitYByXAnalysisAdapter.ts",
-    "../src/components/analysis/fitYByXAnalysisMigration.ts",
+    "../src/components/analysis/**/*.ts",
+    "../src/components/analysis/**/*.tsx",
     "../src/types/analysis.ts",
-    "./fitYByXAnalysisMigration.test.ts"
+    "./analysisKindRegistry.test.ts"
   ]
 }

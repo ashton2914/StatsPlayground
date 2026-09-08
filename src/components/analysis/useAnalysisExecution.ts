@@ -1,21 +1,25 @@
 import { useEffect, useState } from "react";
-import type { AnalysisDocument } from "@/types/analysis";
+import type { AnalysisDocument, AnalysisKind } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type {
-  DistributionReportResponse,
   DistributionRequest,
 } from "@/types/distribution";
+import type { FitYByXRequest } from "@/types/fitYByX";
 
 import {
   analysisExecutors,
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
+  fitYByXAnalysisDefinitionFingerprint,
   type AnalysisExecutionDependencies,
+  type AnalysisExecutionRequestByKind,
+  type AnalysisExecutionResponseByKind,
 } from "./analysisExecutors";
 
 export {
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
+  fitYByXAnalysisDefinitionFingerprint,
 };
 export type { AnalysisExecutionDependencies };
 
@@ -24,31 +28,37 @@ interface AnalysisExecutionControllerDependencies extends AnalysisExecutionDepen
   getCurrentDataset?: () => DatasetMeta | null | undefined;
 }
 
-export type AnalysisExecutionState =
-  | { status: "idle" }
+type AnalysisExecutionActiveState<Kind extends AnalysisKind> =
   | {
       status: "loading";
+      analysisKind: Kind;
       analysisId: string;
       datasetId: string;
       configRevision: number;
-      request: DistributionRequest | null;
+      request: AnalysisExecutionRequestByKind[Kind] | null;
     }
   | {
       status: "success";
+      analysisKind: Kind;
       analysisId: string;
       datasetId: string;
       configRevision: number;
-      request: DistributionRequest;
-      result: DistributionReportResponse;
+      request: AnalysisExecutionRequestByKind[Kind];
+      result: AnalysisExecutionResponseByKind[Kind];
     }
   | {
       status: "error";
+      analysisKind: Kind;
       analysisId: string;
       datasetId: string;
       configRevision: number;
-      request: DistributionRequest | null;
+      request: AnalysisExecutionRequestByKind[Kind] | null;
       error: string;
     };
+
+export type AnalysisExecutionState = { status: "idle" } | {
+  [Kind in AnalysisKind]: AnalysisExecutionActiveState<Kind>;
+}[AnalysisKind];
 
 export const ANALYSIS_EXECUTION_IDLE_STATE: AnalysisExecutionState = { status: "idle" };
 
@@ -81,6 +91,7 @@ interface ActiveAnalysisRequest {
   sourceDataVersion: string;
   generation: number | null;
   fingerprint: string;
+  requestIdentity: string | null;
 }
 
 export interface AnalysisExecutionController {
@@ -92,19 +103,23 @@ export interface AnalysisExecutionController {
 
 function analysisExecutionRequestIdentity(
   item: AnalysisDocument,
-  request: DistributionRequest | null,
+  request: AnalysisExecutionRequestByKind[AnalysisKind] | null,
 ): string | null {
-  return analysisExecutors[item.analysisKind].requestIdentity(request);
+  return item.analysisKind === "distribution"
+    ? analysisExecutors.distribution.requestIdentity(request as DistributionRequest | null)
+    : analysisExecutors.fitYByX.requestIdentity(request as FitYByXRequest | null);
 }
 
 function analysisDefinitionFingerprint(item: AnalysisDocument): string {
-  return analysisExecutors[item.analysisKind].fingerprint(item);
+  return item.analysisKind === "distribution"
+    ? analysisExecutors.distribution.fingerprint(item)
+    : analysisExecutors.fitYByX.fingerprint(item);
 }
 
 function createAnalysisExecutionFence(
   item: AnalysisDocument,
   dataset: DatasetMeta,
-  request: DistributionRequest | null,
+  request: AnalysisExecutionRequestByKind[AnalysisKind] | null,
 ): AnalysisExecutionFence {
   return {
     analysisKind: item.analysisKind,
@@ -139,6 +154,7 @@ function createMaskedLoadingState(
 ): AnalysisExecutionState {
   return {
     status: "loading",
+    analysisKind: item.analysisKind,
     analysisId: item.id,
     datasetId: dataset.id,
     configRevision: item.configRevision,
@@ -189,7 +205,8 @@ export function createAnalysisExecutionController(
       && active.datasetId === candidate.datasetId
       && active.sourceDataVersion === candidate.sourceDataVersion
       && active.generation === candidate.generation
-      && active.fingerprint === candidate.fingerprint;
+      && active.fingerprint === candidate.fingerprint
+      && active.requestIdentity === candidate.requestIdentity;
 
   const invalidate = () => {
     nextToken += 1;
@@ -218,35 +235,43 @@ export function createAnalysisExecutionController(
         sourceDataVersion: dataset.updatedAt,
         generation: null,
         fingerprint: analysisDefinitionFingerprint(item),
+        requestIdentity: null,
       };
       active = pending;
       emit({
         status: "loading",
+        analysisKind: pending.analysisKind,
         analysisId: pending.analysisId,
         datasetId: pending.datasetId,
         configRevision: pending.configRevision,
         request: null,
       }, pendingFence);
 
-      let request: DistributionRequest | null = null;
+      let request: AnalysisExecutionRequestByKind[AnalysisKind] | null = null;
       try {
         const generation = await options.getDatasetGeneration(pending.datasetId);
         if (!isActive(pending)) return;
 
-        const running = { ...pending, generation };
-        active = running;
         request = createAnalysisExecutionRequest(item, generation);
+        const running = {
+          ...pending,
+          generation,
+          requestIdentity: analysisExecutionRequestIdentity(item, request),
+        };
+        active = running;
         const runningFence = createAnalysisExecutionFence(item, dataset, request);
         emit({
           status: "loading",
+          analysisKind: running.analysisKind,
           analysisId: running.analysisId,
           datasetId: running.datasetId,
           configRevision: running.configRevision,
           request,
-        }, runningFence);
+        } as AnalysisExecutionState, runningFence);
 
-        const executor = analysisExecutors[item.analysisKind];
-        const result = await executor.compute(options, request);
+        const result = item.analysisKind === "distribution"
+          ? await analysisExecutors.distribution.compute(options, request as DistributionRequest)
+          : await analysisExecutors.fitYByX.compute(options, request as FitYByXRequest);
         if (!isActive(running)) return;
 
         const currentAnalysis = options.getCurrentAnalysis?.();
@@ -281,39 +306,55 @@ export function createAnalysisExecutionController(
           return;
         }
 
-        if (!executor.responseMatches(result, request)) {
+        const responseMatches = item.analysisKind === "distribution"
+          ? analysisExecutors.distribution.responseMatches(
+            result as AnalysisExecutionResponseByKind["distribution"],
+            request as DistributionRequest,
+          )
+          : analysisExecutors.fitYByX.responseMatches(
+            result as AnalysisExecutionResponseByKind["fitYByX"],
+            request as FitYByXRequest,
+          );
+        if (!responseMatches) {
           active = null;
           emit({
             status: "error",
+            analysisKind: running.analysisKind,
             analysisId: running.analysisId,
             datasetId: running.datasetId,
             configRevision: running.configRevision,
             request,
-            error: executor.responseIdentityError,
-          }, createAnalysisExecutionFence(item, dataset, request));
+            error: item.analysisKind === "distribution"
+              ? analysisExecutors.distribution.responseIdentityError
+              : analysisExecutors.fitYByX.responseIdentityError,
+              } as AnalysisExecutionState, createAnalysisExecutionFence(item, dataset, request));
           return;
         }
 
         active = null;
         emit({
           status: "success",
+          analysisKind: running.analysisKind,
           analysisId: running.analysisId,
           datasetId: running.datasetId,
           configRevision: running.configRevision,
           request,
           result,
-        }, createAnalysisExecutionFence(item, dataset, request));
+        } as AnalysisExecutionState, createAnalysisExecutionFence(item, dataset, request));
       } catch (error) {
         if (disposed || active?.token !== pending.token) return;
         active = null;
         emit({
           status: "error",
+          analysisKind: pending.analysisKind,
           analysisId: pending.analysisId,
           datasetId: pending.datasetId,
           configRevision: pending.configRevision,
           request,
-          error: analysisExecutors[item.analysisKind].normalizeError(error),
-        }, createAnalysisExecutionFence(item, dataset, request));
+          error: item.analysisKind === "distribution"
+            ? analysisExecutors.distribution.normalizeError(error)
+            : analysisExecutors.fitYByX.normalizeError(error),
+        } as AnalysisExecutionState, createAnalysisExecutionFence(item, dataset, request));
       }
     },
   };
@@ -331,6 +372,7 @@ export function useAnalysisExecution(
     fence: null,
   });
   const compute = dependencies?.compute;
+  const computeFitYByX = dependencies?.computeFitYByX;
   const getCurrentAnalysis = dependencies?.getCurrentAnalysis;
   const getCurrentDataset = dependencies?.getCurrentDataset;
   const getDatasetGeneration = dependencies?.getDatasetGeneration;
@@ -348,10 +390,9 @@ export function useAnalysisExecution(
 
     void (async () => {
       try {
-        const resolved = await analysisExecutors[item.analysisKind].resolveDependencies({
-          compute,
-          getDatasetGeneration,
-        });
+        const resolved = item.analysisKind === "distribution"
+          ? await analysisExecutors.distribution.resolveDependencies({ compute, getDatasetGeneration })
+          : await analysisExecutors.fitYByX.resolveDependencies({ computeFitYByX, getDatasetGeneration });
         if (!mounted) return;
 
         controller = createAnalysisExecutionController({
@@ -368,11 +409,14 @@ export function useAnalysisExecution(
         setSnapshot({
           state: {
             status: "error",
+            analysisKind: item.analysisKind,
             analysisId: item.id,
             datasetId: dataset.id,
             configRevision: item.configRevision,
             request: null,
-            error: analysisExecutors[item.analysisKind].normalizeError(error),
+            error: item.analysisKind === "distribution"
+              ? analysisExecutors.distribution.normalizeError(error)
+              : analysisExecutors.fitYByX.normalizeError(error),
           },
           fence: createAnalysisExecutionFence(item, dataset, null),
         });
@@ -385,6 +429,7 @@ export function useAnalysisExecution(
     };
   }, [
     compute,
+    computeFitYByX,
     datasetSignal,
     fingerprint,
     getCurrentAnalysis,

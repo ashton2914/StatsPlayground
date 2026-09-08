@@ -1,17 +1,20 @@
 import { useEffect, useState } from "react";
 
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
+import { createFitYByXAnalysisDocument } from "../src/components/analysis/adapters/index.ts";
 import { ReportView, type ReportLinkOption } from "../src/components/report/ReportView";
 import type { ReportEmbedRuntime } from "../src/components/report/ReportEmbed.tsx";
 import { useDataStore } from "../src/stores/useDataStore.ts";
+import { useAnalysisStore } from "../src/stores/useAnalysisStore.ts";
 import { useDistributionStore } from "../src/stores/useDistributionStore.ts";
-import { useFitYByXStore } from "../src/stores/useFitYByXStore.ts";
 import { useGraphBuilderStore } from "../src/stores/useGraphBuilderStore.ts";
 import { useProjectStore } from "../src/stores/useProjectStore.ts";
 import { useTabulateStore } from "../src/stores/useTabulateStore.ts";
 import type { DatasetMeta } from "../src/types/data.ts";
 import type { DistributionItem } from "../src/types/distribution.ts";
+import type { AnalysisDocument } from "../src/types/analysis.ts";
 import type { FitYByXItem } from "../src/types/fitYByX.ts";
+import type { FitYByXRequest } from "../src/types/fitYByX.ts";
 import type { GraphBuilderItem } from "../src/types/graphBuilder.ts";
 import type { ReportItem } from "../src/types/report";
 import type { TabulateItem } from "../src/types/tabulate.ts";
@@ -38,6 +41,7 @@ const defaultDataset: DatasetMeta = {
   sourceType: "manual",
   rowCount: 24,
   colCount: 4,
+  generation: 11,
   createdAt: "2026-09-02T10:00:00.000Z",
   updatedAt: "2026-09-02T10:00:00.000Z",
 };
@@ -105,6 +109,12 @@ const defaultFitYByX: FitYByXItem = {
   createdAt: "2026-09-02T10:00:00.000Z",
 };
 
+const defaultFitYByXAnalysis = createFitYByXAnalysisDocument({
+  item: defaultFitYByX,
+  confidenceLevel: 0.95,
+  updatedAt: defaultFitYByX.createdAt,
+});
+
 const defaultTabulate: TabulateItem = {
   id: "tab-1",
   name: "Grouped Summary",
@@ -149,23 +159,27 @@ const LIVE_EMBED_RUNTIME: ReportEmbedRuntime = {
   },
   fitYByX: {
     getDatasetGeneration: async () => 11,
-    run: async () => ({
-      kind: "bivariate",
-      usedRows: 12,
-      excludedRows: 0,
-      confidenceLevel: 0.95,
-      intercept: 1.2,
-      slope: 0.7,
-      summaryOfFit: {
-        rSquared: 0.8,
-        adjustedRSquared: 0.78,
-        rootMeanSquareError: 1.1,
-        meanOfResponse: 10,
-        observationCount: 12,
+    computeFitYByX: async (request: FitYByXRequest) => ({
+      datasetId: request.datasetId,
+      generation: request.generation,
+      result: {
+        kind: "bivariate",
+        usedRows: 12,
+        excludedRows: 0,
+        confidenceLevel: 0.95,
+        intercept: 1.2,
+        slope: 0.7,
+        summaryOfFit: {
+          rSquared: 0.8,
+          adjustedRSquared: 0.78,
+          rootMeanSquareError: 1.1,
+          meanOfResponse: 10,
+          observationCount: 12,
+        },
+        lackOfFit: { state: "notIdentifiable" },
+        anova: [],
+        parameterEstimates: [],
       },
-      lackOfFit: { state: "notIdentifiable" },
-      anova: [],
-      parameterEstimates: [],
     }),
   },
   tabulate: {
@@ -201,13 +215,17 @@ const LIVE_EMBED_RUNTIME: ReportEmbedRuntime = {
 const NOT_COMPUTABLE_RUNTIME: ReportEmbedRuntime = {
   fitYByX: {
     getDatasetGeneration: async () => 11,
-    run: async () => ({
-      kind: "notComputable",
-      personality: "bivariate",
-      reason: "insufficientValidRows",
-      usedRows: 1,
-      excludedRows: 2,
-      confidenceLevel: 0.95,
+    computeFitYByX: async (request: FitYByXRequest) => ({
+      datasetId: request.datasetId,
+      generation: request.generation,
+      result: {
+        kind: "notComputable",
+        personality: "bivariate",
+        reason: "insufficientValidRows",
+        usedRows: 1,
+        excludedRows: 2,
+        confidenceLevel: 0.95,
+      },
     }),
   },
 };
@@ -217,7 +235,7 @@ interface ReportViewHarnessProps {
   embedRuntime?: ReportEmbedRuntime;
   datasets?: DatasetMeta[];
   graphs?: GraphBuilderItem[];
-  fitYByX?: FitYByXItem[];
+  analyses?: AnalysisDocument[];
   tabulates?: TabulateItem[];
   distributions?: DistributionItem[];
   graphMode?: "runtime" | "stub" | "error";
@@ -230,7 +248,7 @@ export function ReportViewHarness({
   embedRuntime,
   datasets = [defaultDataset],
   graphs = [defaultGraph],
-  fitYByX = [defaultFitYByX],
+  analyses = [defaultFitYByXAnalysis],
   tabulates = [defaultTabulate],
   distributions = [defaultDistribution],
   graphMode = "runtime",
@@ -243,10 +261,10 @@ export function ReportViewHarness({
     useProjectStore.setState({ readOnly: false });
     useDataStore.setState({ activeDatasetId: null, datasets, statusInfo: null });
     useGraphBuilderStore.getState().loadFromProject(graphs);
-    useFitYByXStore.getState().loadFromProject(fitYByX);
+    useAnalysisStore.getState().loadAnalyses(analyses);
     useTabulateStore.getState().loadFromProject(tabulates);
     useDistributionStore.getState().loadFromProject(distributions);
-  }, [datasets, distributions, fitYByX, graphs, tabulates]);
+  }, [analyses, datasets, distributions, graphs, tabulates]);
 
   const selectedRuntime = embedMode === "live"
     ? LIVE_EMBED_RUNTIME

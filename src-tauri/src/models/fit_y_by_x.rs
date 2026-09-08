@@ -20,6 +20,14 @@ pub struct FitYByXRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct FitYByXResponse {
+    pub dataset_id: String,
+    pub generation: u64,
+    pub result: FitYByXResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct FitYByXRows {
     pub source_rows: u64,
     pub rows: Vec<FitYByXRow>,
@@ -206,6 +214,22 @@ mod tests {
         assert_eq!(request.dataset_id, "ds1");
         assert_eq!(request.generation, 7);
         assert_eq!(request.personality, FitYByXPersonality::Oneway);
+
+        let response = FitYByXResponse {
+            dataset_id: request.dataset_id.clone(),
+            generation: request.generation,
+            result: FitYByXResult::NotComputable(NotComputableResult {
+                personality: FitYByXPersonality::Oneway,
+                reason: FitYByXNotComputableReason::InsufficientGroups,
+                used_rows: 1,
+                excluded_rows: 0,
+                confidence_level: 0.95,
+            }),
+        };
+        let response_value = serde_json::to_value(response).expect("response should serialize");
+        assert_eq!(response_value["datasetId"], "ds1");
+        assert_eq!(response_value["generation"], 7);
+        assert_eq!(response_value["result"]["kind"], "notComputable");
 
         let lack_of_fit = LackOfFitResult::Available(LackOfFitAvailable {
             rows: vec![AnovaRow {

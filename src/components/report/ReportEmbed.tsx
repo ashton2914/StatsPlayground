@@ -1,22 +1,22 @@
 import { Component, lazy, Suspense, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { FitYByXReportDependencies } from "@/components/fitYByX/useFitYByXReport";
+import { analysisReportPolicies } from "@/components/analysis/analysisReportPolicies";
+import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { useDistributionStore } from "@/stores/useDistributionStore";
-import { useFitYByXStore } from "@/stores/useFitYByXStore";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import type { DatasetMeta } from "@/types/data";
+import type { AnalysisDocument, FitYByXAnalysisDocument } from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
-import type { FitYByXItem } from "@/types/fitYByX";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import type { ReportDependency } from "@/types/report";
 import type { TabulateItem } from "@/types/tabulate";
 
 import type { DistributionReportEmbedRuntime } from "./DistributionReportEmbed";
-import type { FitYByXReportEmbedRuntime } from "./FitYByXReportEmbed";
+import type { FitYByXAnalysisReportEmbedRuntime } from "./FitYByXAnalysisReportEmbed";
 import type { GraphReportEmbedRuntime } from "./GraphReportEmbed";
 import type { TableReportEmbedRuntime } from "./TableReportEmbed";
 import type { TabulateReportEmbedRuntime } from "./TabulateReportEmbed";
@@ -24,8 +24,8 @@ import type { TabulateReportEmbedRuntime } from "./TabulateReportEmbed";
 const DistributionReportEmbed = lazy(async () => ({
   default: (await import("./DistributionReportEmbed")).DistributionReportEmbed,
 }));
-const FitYByXReportEmbed = lazy(async () => ({
-  default: (await import("./FitYByXReportEmbed")).FitYByXReportEmbed,
+const FitYByXAnalysisReportEmbed = lazy(async () => ({
+  default: (await import("./FitYByXAnalysisReportEmbed")).FitYByXAnalysisReportEmbed,
 }));
 const GraphReportEmbed = lazy(async () => ({
   default: (await import("./GraphReportEmbed")).GraphReportEmbed,
@@ -44,7 +44,7 @@ function renderLazyEmbed(children: ReactNode): ReactNode {
 type ReportResolvedItemByKind = {
   table: DatasetMeta;
   graph: GraphBuilderItem;
-  fitYByX: FitYByXItem;
+  fitYByX: FitYByXAnalysisDocument;
   tabulate: TabulateItem;
   distribution: DistributionItem;
 };
@@ -76,7 +76,7 @@ export interface ReportEmbedProps {
 export interface ReportEmbedRuntime {
   table?: TableReportEmbedRuntime;
   graph?: GraphReportEmbedRuntime;
-  fitYByX?: FitYByXReportEmbedRuntime & Partial<FitYByXReportDependencies>;
+  fitYByX?: FitYByXAnalysisReportEmbedRuntime;
   tabulate?: TabulateReportEmbedRuntime;
   distribution?: DistributionReportEmbedRuntime;
 }
@@ -84,7 +84,7 @@ export interface ReportEmbedRuntime {
 interface ReportDependencySnapshot {
   datasets: readonly DatasetMeta[];
   graphs: readonly GraphBuilderItem[];
-  fitYByX: readonly FitYByXItem[];
+  analyses: readonly AnalysisDocument[];
   tabulates: readonly TabulateItem[];
   distributions: readonly DistributionItem[];
 }
@@ -99,7 +99,7 @@ export function resolveReportDependency(
 ): ReportDependencyResolution {
   const datasets = snapshot?.datasets ?? useDataStore.getState().datasets;
   const graphs = snapshot?.graphs ?? useGraphBuilderStore.getState().items;
-  const fitYByX = snapshot?.fitYByX ?? useFitYByXStore.getState().items;
+  const analyses = snapshot?.analyses ?? useAnalysisStore.getState().items;
   const tabulates = snapshot?.tabulates ?? useTabulateStore.getState().items;
   const distributions = snapshot?.distributions ?? useDistributionStore.getState().items;
 
@@ -135,8 +135,11 @@ export function resolveReportDependency(
   }
 
   if (dependency.kind === "fitYByX") {
-    const item = fitYByX.find((candidate) => candidate.id === dependency.documentId);
-    const dataset = item ? findDataset(item.sourceDatasetId, datasets) : undefined;
+    const candidate = analyses.find((document) => document.id === dependency.documentId);
+    const item = candidate && analysisReportPolicies.fitYByX.accepts(candidate)
+      ? candidate
+      : undefined;
+    const dataset = item ? findDataset(item.source.datasetId, datasets) : undefined;
     return item && dataset
       ? {
           status: "resolved",
@@ -184,14 +187,14 @@ export function resolveReportDependency(
 function useReportDependencyResolution(dependency: ReportDependency): ReportDependencyResolution {
   const datasets = useDataStore((state) => state.datasets);
   const graphs = useGraphBuilderStore((state) => state.items);
-  const fitYByX = useFitYByXStore((state) => state.items);
+  const analyses = useAnalysisStore((state) => state.items);
   const tabulates = useTabulateStore((state) => state.items);
   const distributions = useDistributionStore((state) => state.items);
 
   return resolveReportDependency(dependency, {
     datasets,
     graphs,
-    fitYByX,
+    analyses,
     tabulates,
     distributions,
   });
@@ -257,7 +260,7 @@ function renderResolvedEmbed(source: ReportResolvedSource, runtime: ReportEmbedR
     return renderLazyEmbed(<GraphReportEmbed source={source} runtime={runtime?.graph} />);
   }
   if (source.kind === "fitYByX") {
-    return renderLazyEmbed(<FitYByXReportEmbed source={source} runtime={runtime?.fitYByX} />);
+    return renderLazyEmbed(<FitYByXAnalysisReportEmbed source={source} runtime={runtime?.fitYByX} />);
   }
   if (source.kind === "distribution") {
     return renderLazyEmbed(<DistributionReportEmbed source={source} runtime={runtime?.distribution} />);

@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample.ts";
+import { createFitYByXAnalysisDocument } from "../src/components/analysis/adapters/fitYByXAnalysisAdapter.ts";
+import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
 import type { DatasetMeta } from "../src/types/data.ts";
 import type { DistributionReportResponse } from "../src/types/distribution.ts";
+import type { FitYByXResponse } from "../src/types/fitYByX.ts";
 import {
   createAnalysisExecutionController,
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
+  fitYByXAnalysisDefinitionFingerprint,
   type AnalysisExecutionState,
 } from "../src/components/analysis/useAnalysisExecution.ts";
 
@@ -41,6 +45,36 @@ function analysis(overrides: Record<string, unknown> = {}) {
       createdAt: "2026-09-03T00:00:00.000Z",
     }),
     ...overrides,
+  };
+}
+
+function fitAnalysis() {
+  return createFitYByXAnalysisDocument({
+    item: createFitYByXItem({
+      id: "fit-1",
+      name: "Strength by Site",
+      sourceDatasetId: "dataset-1",
+      response: { name: "Strength", type: "continuous" },
+      factor: { name: "Site", type: "nominal" },
+      createdAt: "2026-09-03T00:00:00.000Z",
+    }),
+    confidenceLevel: 0.95,
+    updatedAt: "2026-09-03T00:00:00.000Z",
+  });
+}
+
+function fitResponse(datasetId = "dataset-1", generation = 7): FitYByXResponse {
+  return {
+    datasetId,
+    generation,
+    result: {
+      kind: "notComputable",
+      personality: "oneway",
+      reason: "insufficientGroups",
+      usedRows: 1,
+      excludedRows: 0,
+      confidenceLevel: 0.95,
+    },
   };
 }
 
@@ -93,6 +127,44 @@ assert.deepEqual(request, {
   },
   fitDistributions: ["normal"],
 });
+
+const fitRequest = createAnalysisExecutionRequest(fitAnalysis(), 7);
+assert.deepEqual(fitRequest, {
+  datasetId: "dataset-1",
+  generation: 7,
+  responseColumn: "Strength",
+  factorColumn: "Site",
+  personality: "oneway",
+  confidenceLevel: 0.95,
+});
+
+const fitFingerprint = fitYByXAnalysisDefinitionFingerprint(fitAnalysis());
+assert.equal(
+  fitYByXAnalysisDefinitionFingerprint({
+    ...fitAnalysis(),
+    presentation: {
+      ...fitAnalysis().presentation,
+      graph: {
+        ...fitAnalysis().presentation.graph,
+        modeStates: {
+          ...fitAnalysis().presentation.graph.modeStates,
+          twoD: {
+            ...fitAnalysis().presentation.graph.modeStates.twoD,
+            xAxis: { min: 1, max: 4 },
+          },
+        },
+      },
+    },
+  }),
+  fitFingerprint,
+);
+assert.notEqual(
+  fitYByXAnalysisDefinitionFingerprint({
+    ...fitAnalysis(),
+    definition: { ...fitAnalysis().definition, confidenceLevel: 0.9 },
+  }),
+  fitFingerprint,
+);
 
 const baseFingerprint = distributionAnalysisDefinitionFingerprint(analysis());
 assert.notEqual(
@@ -183,6 +255,15 @@ async function testLatestRequestAndEchoFences(): Promise<void> {
   assert.equal(echoMismatch.getState().status, "error");
 }
 
+async function testFitYByXEchoFence(): Promise<void> {
+  const mismatch = createAnalysisExecutionController({
+    getDatasetGeneration: async () => 7,
+    computeFitYByX: async () => fitResponse("other-dataset", 7),
+  });
+  await mismatch.load(fitAnalysis(), dataset());
+  assert.equal(mismatch.getState().status, "error");
+}
+
 async function testAnalysisAndDatasetFenceChecks(): Promise<void> {
   let currentAnalysis = analysis();
   let currentDataset = dataset({ generation: 8, updatedAt: "2026-09-03T10:00:00.000Z" });
@@ -262,6 +343,7 @@ async function testAnalysisAndDatasetFenceChecks(): Promise<void> {
 
 await testLoadingSuccessAndError();
 await testLatestRequestAndEchoFences();
+await testFitYByXEchoFence();
 await testAnalysisAndDatasetFenceChecks();
 
 const hookSource = readFileSync(

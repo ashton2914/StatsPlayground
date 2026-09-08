@@ -78,23 +78,27 @@ test("renders live table, graph, fit y by x, tabulate, and distribution embeds",
         },
         fitYByX: {
           getDatasetGeneration: async () => 11,
-          run: async () => ({
-            kind: "bivariate",
-            usedRows: 12,
-            excludedRows: 0,
-            confidenceLevel: 0.95,
-            intercept: 1.2,
-            slope: 0.7,
-            summaryOfFit: {
-              rSquared: 0.8,
-              adjustedRSquared: 0.78,
-              rootMeanSquareError: 1.1,
-              meanOfResponse: 10,
-              observationCount: 12,
+          computeFitYByX: async (request) => ({
+            datasetId: request.datasetId,
+            generation: request.generation,
+            result: {
+              kind: "bivariate",
+              usedRows: 12,
+              excludedRows: 0,
+              confidenceLevel: 0.95,
+              intercept: 1.2,
+              slope: 0.7,
+              summaryOfFit: {
+                rSquared: 0.8,
+                adjustedRSquared: 0.78,
+                rootMeanSquareError: 1.1,
+                meanOfResponse: 10,
+                observationCount: 12,
+              },
+              lackOfFit: { state: "notIdentifiable" },
+              anova: [],
+              parameterEstimates: [],
             },
-            lackOfFit: { state: "notIdentifiable" },
-            anova: [],
-            parameterEstimates: [],
           }),
         },
         tabulate: {
@@ -136,7 +140,9 @@ test("renders live table, graph, fit y by x, tabulate, and distribution embeds",
   await expect(preview.getByText("supplier").first()).toBeVisible();
   await expect(preview.getByText("12.3")).toBeVisible();
   await expect(preview.getByText("Graph:Scatter Plot:Incoming Data")).toBeVisible();
-  await expect(preview.getByText("Report", { exact: true })).toBeVisible();
+  await expect(preview.locator('.sp-report-embed-card[data-kind="fitYByX"]')).toBeVisible();
+  await expect(preview.locator('[data-analysis-report-kind="fitYByX"]')).toBeVisible();
+  await expect(preview.getByText("Strength vs Time")).toBeVisible();
   await expect(preview.getByText("Used rows")).toBeVisible();
   await expect(preview.getByText("Grouped Summary")).toBeVisible();
   await expect(preview.getByText("4").first()).toBeVisible();
@@ -164,13 +170,17 @@ test("keeps neighboring markdown and embeds visible when one embed is missing or
       embedRuntime={{
         fitYByX: {
           getDatasetGeneration: async () => 11,
-          run: async () => ({
-            kind: "notComputable",
-            personality: "bivariate",
-            reason: "insufficientValidRows",
-            usedRows: 1,
-            excludedRows: 2,
-            confidenceLevel: 0.95,
+          computeFitYByX: async (request) => ({
+            datasetId: request.datasetId,
+            generation: request.generation,
+            result: {
+              kind: "notComputable",
+              personality: "bivariate",
+              reason: "insufficientValidRows",
+              usedRows: 1,
+              excludedRows: 2,
+              confidenceLevel: 0.95,
+            },
           }),
         },
       }}

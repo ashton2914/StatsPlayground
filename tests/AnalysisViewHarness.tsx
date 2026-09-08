@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 
 import { AnalysisView } from "../src/components/analysis/AnalysisView";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample";
-import type { AnalysisDocument } from "../src/types/analysis";
+import { createDefaultFitYByXGraphConfig } from "../src/components/fitYByX/fitYByXConfig";
+import type { AnalysisDocument, FitYByXAnalysisDocument } from "../src/types/analysis";
 import type { DatasetMeta } from "../src/types/data";
 import type { DistributionReportResponse } from "../src/types/distribution";
+import type { FitYByXResponse } from "../src/types/fitYByX";
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "../src/types/graphData";
 import type { GraphAggregatePacket } from "../src/types/graphData";
 
@@ -282,6 +284,139 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
             ...previous.definition,
             graphs: { ...previous.definition.graphs, [role]: graph },
           },
+        }))}
+      />
+    </>
+  );
+}
+
+function createFitYByXAnalysisDocument(): FitYByXAnalysisDocument {
+  const response = { name: "Strength", type: "continuous" as const };
+  const factor = { name: "Site", type: "nominal" as const };
+  return {
+    schemaVersion: 1,
+    documentType: "analysis",
+    id: "fit-analysis-1",
+    name: "Strength by Site",
+    analysisKind: "fitYByX",
+    configRevision: 1,
+    source: { datasetId: "dataset-1" },
+    definition: {
+      kind: "fitYByX",
+      response,
+      factor,
+      personality: "oneway",
+      confidenceLevel: 0.95,
+    },
+    presentation: {
+      schemaVersion: 1,
+      layout: "fit-y-by-x-v1",
+      graph: createDefaultFitYByXGraphConfig({ response, factor }),
+    },
+    createdAt: "2026-09-07T00:00:00.000Z",
+    updatedAt: "2026-09-07T00:00:00.000Z",
+  };
+}
+
+function createFitYByXResponse(): FitYByXResponse {
+  return {
+    datasetId: "dataset-1",
+    generation: 4,
+    result: {
+      kind: "oneway",
+      usedRows: 30,
+      excludedRows: 2,
+      confidenceLevel: 0.95,
+      groupSummaries: [{
+        group: "A",
+        count: 15,
+        mean: 10.5,
+        standardDeviation: 1.2,
+        standardError: 0.31,
+        lowerConfidenceLimit: 9.84,
+        upperConfidenceLimit: 11.16,
+      }],
+      anova: [{
+        source: "BetweenGroups",
+        degreesOfFreedom: 1,
+        sumOfSquares: 12,
+        meanSquare: 12,
+        fRatio: 8,
+        pValue: 0.008,
+      }],
+      effectSizes: { etaSquared: 0.22, omegaSquared: 0.18 },
+    },
+  };
+}
+
+export function FitYByXAnalysisViewHarness({
+  mode = "success",
+}: {
+  mode?: "success" | "loading" | "error" | "notComputable" | "sourceMissing";
+}) {
+  const [item, setItem] = useState(createFitYByXAnalysisDocument);
+  const [editInputsCalls, setEditInputsCalls] = useState(0);
+  const [computeCalls, setComputeCalls] = useState(0);
+  const runtimeRef = useRef<NonNullable<Parameters<typeof AnalysisView>[0]["runtime"]>>(null);
+
+  if (runtimeRef.current == null) {
+    runtimeRef.current = {
+      getDatasetGeneration: async () => 4,
+      computeFitYByX: async () => {
+        setComputeCalls((count) => count + 1);
+        if (mode === "loading") return await new Promise<FitYByXResponse>(() => undefined);
+        if (mode === "error") throw new Error("fit failed");
+        if (mode === "notComputable") {
+          return {
+            datasetId: "dataset-1",
+            generation: 4,
+            result: {
+              kind: "notComputable",
+              personality: "oneway",
+              reason: "insufficientGroups",
+              usedRows: 4,
+              excludedRows: 2,
+              confidenceLevel: 0.95,
+            },
+          };
+        }
+        return createFitYByXResponse();
+      },
+      renderGraph: ({
+        item: graphItem,
+        onXAxisDblClick,
+        onYAxisDblClick,
+        onAxisRangeChange,
+        onAxisContextMenu,
+      }) => (
+        <div>
+          {`Fit Y by X graph:${graphItem.name}`}
+          <button type="button" onClick={onXAxisDblClick}>Open main X axis</button>
+          <button type="button" onClick={onYAxisDblClick}>Open main Y axis</button>
+          <button type="button" onClick={() => onAxisRangeChange?.("x", 4, 20)}>Zoom main X axis</button>
+          <button type="button" onClick={(event) => {
+            event.stopPropagation();
+            onAxisContextMenu?.("x", 10, 10);
+          }}>Open main X axis menu</button>
+        </div>
+      ),
+    };
+  }
+
+  return (
+    <>
+      <output data-testid="fit-edit-inputs-calls">{editInputsCalls}</output>
+      <output data-testid="fit-compute-calls">{computeCalls}</output>
+      <output data-testid="fit-main-x-min">{item.presentation.graph.modeStates.twoD.xAxis?.min ?? "auto"}</output>
+      <AnalysisView
+        item={item}
+        dataset={mode === "sourceMissing" ? undefined : createDataset()}
+        runtime={runtimeRef.current}
+        canEditInputs
+        onEditInputs={() => setEditInputsCalls((count) => count + 1)}
+        onGraphConfigChange={(_role, graph) => setItem((previous) => ({
+          ...previous,
+          presentation: { ...previous.presentation, graph },
         }))}
       />
     </>

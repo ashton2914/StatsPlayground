@@ -38,4 +38,22 @@ export const analysisKindDescriptors = {
       reportEmbedding: false,
     },
   },
+  fitYByX: {
+    identity: {
+      analysisKind: "fitYByX",
+      definitionKind: "fitYByX",
+    },
+    schema: {
+      document: 1,
+      presentation: 1,
+      layout: "fit-y-by-x-v1",
+    },
+    locale: {
+      title: "fitYByX.title",
+    },
+    capabilities: {
+      graphEditing: true,
+      reportEmbedding: true,
+    },
+  },
 } satisfies { [Kind in AnalysisKind]: AnalysisKindDescriptor<Kind> };

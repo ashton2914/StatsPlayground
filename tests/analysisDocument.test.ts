@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "../src/types/graphData.ts";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample.ts";
+import {
+  createAnalysisEditorPatch,
+  toAnalysisEditorItem,
+} from "../src/components/analysis/analysisEditorRegistry.ts";
 import { createDistributionGraphBuilderConfig } from "../src/components/analysis/distributionCompositeGraph.ts";
+import { createDefaultFitYByXGraphConfig } from "../src/components/fitYByX/fitYByXConfig.ts";
 import { createEmbeddedGraphItem } from "../src/components/graphBuilder/graphBuilderMode.ts";
 import { canExecuteGraphRequest, deriveGraphRequestParts } from "../src/components/graphBuilder/useGraphDataPipeline.ts";
+import type { FitYByXAnalysisDocument } from "../src/types/analysis.ts";
 
 const analysis = createAnalysisSampleDocument({
   datasetId: "dataset-112",
@@ -158,5 +164,75 @@ assert.deepEqual(requestParts.elements.map((element) => element.kind), ["histogr
 assert.equal(canExecuteGraphRequest(graphBuilderItem, requestParts.fields, requestParts.elements), true);
 assert.equal("reportBlocks" in analysis, false);
 assert.equal("graphFrames" in analysis, false);
+
+const response = { name: "Strength", type: "continuous" as const };
+const factor = { name: "Site", type: "nominal" as const };
+const createdAt = "2026-09-07T00:00:00.000Z";
+const fitYByXDocument: FitYByXAnalysisDocument = {
+  schemaVersion: 1,
+  documentType: "analysis",
+  id: "fit-1",
+  name: "Strength by Site",
+  analysisKind: "fitYByX",
+  configRevision: 1,
+  source: { datasetId: "dataset-1" },
+  definition: {
+    kind: "fitYByX",
+    response,
+    factor,
+    personality: "oneway",
+    confidenceLevel: 0.95,
+  },
+  presentation: {
+    schemaVersion: 1,
+    layout: "fit-y-by-x-v1",
+    graph: createDefaultFitYByXGraphConfig({ response, factor }),
+  },
+  createdAt,
+  updatedAt: createdAt,
+};
+assert.equal(fitYByXDocument.analysisKind, "fitYByX");
+assert.equal(fitYByXDocument.definition.confidenceLevel, 0.95);
+assert.equal(fitYByXDocument.presentation.layout, "fit-y-by-x-v1");
+
+const fitYByXEditorItem = toAnalysisEditorItem(fitYByXDocument);
+const changedFitYByXGraph = structuredClone(fitYByXEditorItem.graph);
+changedFitYByXGraph.modeStates.twoD.xAxis = { min: 5, max: 25 };
+const fitYByXPatch = createAnalysisEditorPatch(fitYByXDocument, {
+  ...fitYByXEditorItem,
+  name: "Ignored name",
+  response: { name: "Strength2", type: "continuous" },
+  factor: { name: "Temperature", type: "continuous" },
+  personality: "bivariate",
+  confidenceLevel: 0.9,
+  graph: changedFitYByXGraph,
+}, "2026-09-07T01:00:00.000Z");
+assert.equal(fitYByXPatch.configRevision, fitYByXDocument.configRevision + 1);
+assert.equal(fitYByXPatch.definition?.kind, "fitYByX");
+if (fitYByXPatch.definition?.kind === "fitYByX") {
+  assert.equal(fitYByXPatch.definition.response.name, "Strength2");
+  assert.equal(fitYByXPatch.definition.factor.name, "Temperature");
+  assert.equal(fitYByXPatch.definition.personality, "bivariate");
+  assert.equal(fitYByXPatch.definition.confidenceLevel, 0.9);
+}
+assert.equal(fitYByXPatch.presentation, undefined);
+assert.equal(fitYByXPatch.name, undefined);
+assert.deepEqual(fitYByXPatch.source, fitYByXDocument.source);
+const validFitYByXSnapshot = structuredClone(fitYByXDocument);
+assert.throws(
+  () => createAnalysisEditorPatch(fitYByXDocument, {
+    ...fitYByXEditorItem,
+    factor: structuredClone(fitYByXEditorItem.response),
+  }, "2026-09-07T01:00:00.000Z"),
+  /Invalid Fit Y by X roles/,
+);
+assert.throws(
+  () => createAnalysisEditorPatch(fitYByXDocument, {
+    ...fitYByXEditorItem,
+    confidenceLevel: 1,
+  }, "2026-09-07T01:00:00.000Z"),
+  /strictly between 0 and 1/,
+);
+assert.deepEqual(fitYByXDocument, validFitYByXSnapshot);
 
 console.log("Analysis document contract tests passed");

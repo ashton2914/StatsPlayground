@@ -57,9 +57,9 @@ assertSourceIncludes(workspaceSource, "workspace.analysisMissing", "Missing Anal
 assertSourceIncludes(workspaceSource, "workspace.analysisSourceMissing", "Analysis view must report when the source dataset is unavailable");
 assertSourceIncludes(workspaceSource, "<AnalysisView item={item} dataset={ds}", "AnalysisView must receive the document and optional dataset");
 assertSourceIncludes(workspaceSource, "editingAnalysisId", "Workspace must own the active Analysis editor session");
-assertSourceIncludes(workspaceSource, "toDistributionEditorItem", "Workspace must initialize the Analysis selector through its adapter");
-assertSourceIncludes(workspaceSource, "createDistributionAnalysisPatch", "Workspace must apply submitted inputs through a revisioned adapter patch");
-assertSourceIncludes(workspaceSource, "initialItem={toDistributionEditorItem(editingAnalysis)}", "The Distribution selector must open with committed Analysis inputs");
+assertSourceIncludes(workspaceSource, "toAnalysisEditorItem", "Workspace must initialize Analysis editors through the exhaustive registry");
+assertSourceIncludes(workspaceSource, "createAnalysisEditorPatch", "Workspace must apply submitted inputs through the exhaustive registry");
+assertSourceIncludes(workspaceSource, "initialItem={toAnalysisEditorItem(editingAnalysis)}", "The Distribution selector must open with committed Analysis inputs");
 assertSourceIncludes(workspaceSource, "setEditingAnalysisId(null)", "Cancel and Save must close the Analysis editor session");
 assertSourceIncludes(workspaceSource, "onEditInputs={() =>", "AnalysisView must expose the shared Shell edit command to Workspace");
 const distributionCreateHandler = workspaceSource.match(

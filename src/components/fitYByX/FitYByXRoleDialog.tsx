@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { inferFieldType, type FieldRef } from "@/graphCore/types";
 import { dataService } from "@/services/dataService";
+import type { FitYByXAnalysisEditorItem } from "@/components/analysis/adapters/fitYByXAnalysisAdapter";
 import type { ColumnDisplayProps, ColumnMeta, DatasetMeta } from "@/types/data";
 import type { FitYByXItem } from "@/types/fitYByX";
 
@@ -29,24 +30,35 @@ import {
 } from "./FitYByXRoleZone";
 
 export interface FitYByXRoleDialogProps {
+  mode: "create" | "edit";
   dataset: DatasetMeta;
   defaultName: string;
+  initialValue?: FitYByXAnalysisEditorItem;
   onCancel: () => void;
-  onCreate: (item: FitYByXItem) => void;
+  onCreate: (item: FitYByXAnalysisEditorItem) => void;
 }
 
-export function FitYByXRoleDialog({ dataset, defaultName, onCancel, onCreate }: FitYByXRoleDialogProps) {
+export function FitYByXRoleDialog({
+  mode,
+  dataset,
+  defaultName,
+  initialValue,
+  onCancel,
+  onCreate,
+}: FitYByXRoleDialogProps) {
   const { t } = useTranslation();
   const titleId = useId();
-  const [draft, setDraft] = useState(() => createFitYByXDialogState(defaultName));
+  const [draft, setDraft] = useState(() => createDialogState(defaultName, initialValue));
+  const [confidenceLevel, setConfidenceLevel] = useState(initialValue?.confidenceLevel ?? 0.95);
   const [fields, setFields] = useState<FitYByXFieldInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    setDraft(createFitYByXDialogState(defaultName));
-  }, [defaultName, dataset.id]);
+    setDraft(createDialogState(defaultName, initialValue));
+    setConfidenceLevel(initialValue?.confidenceLevel ?? 0.95);
+  }, [defaultName, dataset.id, initialValue]);
 
   useEffect(() => {
     let active = true;
@@ -101,7 +113,10 @@ export function FitYByXRoleDialog({ dataset, defaultName, onCancel, onCreate }: 
     : assignmentValidation.error === "missingResponse"
       ? t("fitYByX.assignResponseHelp", { defaultValue: "Assign a continuous response field for Y." })
       : t("fitYByX.assignFactorHelp", { defaultValue: "Assign a continuous, nominal, or ordinal field for X." });
-  const createDisabled = loading || !canCreateFitYByX(draft);
+  const confidenceValid = Number.isFinite(confidenceLevel)
+    && confidenceLevel > 0
+    && confidenceLevel < 1;
+  const createDisabled = loading || !canCreateFitYByX(draft) || !confidenceValid;
 
   const responseItem = toRoleZoneItem(draft.response, fieldsByName);
   const factorItem = toFactorRoleZoneItem(draft.factor, fieldsByName, t);
@@ -125,14 +140,22 @@ export function FitYByXRoleDialog({ dataset, defaultName, onCancel, onCreate }: 
     if (createDisabled || !draft.response || !draft.factor) {
       return;
     }
-    onCreate(createFitYByXItem({
-      id: crypto.randomUUID(),
-      name: draft.name.trim(),
-      sourceDatasetId: dataset.id,
-      response: draft.response,
-      factor: draft.factor,
-      createdAt: new Date().toISOString(),
-    }));
+    const item: FitYByXItem = mode === "edit" && initialValue
+      ? {
+          ...initialValue,
+          response: draft.response,
+          factor: draft.factor,
+          personality: deriveFitYByXPersonality(draft.factor),
+        }
+      : createFitYByXItem({
+          id: crypto.randomUUID(),
+          name: draft.name.trim(),
+          sourceDatasetId: dataset.id,
+          response: draft.response,
+          factor: draft.factor,
+          createdAt: new Date().toISOString(),
+        });
+    onCreate({ ...item, confidenceLevel });
   };
 
   return (
@@ -157,11 +180,29 @@ export function FitYByXRoleDialog({ dataset, defaultName, onCancel, onCreate }: 
               id={`${titleId}-name`}
               className="sp-dialog-input"
               value={draft.name}
+              disabled={mode === "edit"}
               onChange={(event) => {
                 const name = event.target.value;
                 setDraft((current) => ({ ...current, name }));
               }}
               placeholder={t("fitYByX.analysisNamePlaceholder", { defaultValue: "Fit Y by X" })}
+            />
+          </div>
+
+          <div className="sp-dialog-field">
+            <label className="sp-dialog-label" htmlFor={`${titleId}-confidence`}>
+              {t("distribution.confidenceLevel", { defaultValue: "Confidence level" })}
+            </label>
+            <input
+              id={`${titleId}-confidence`}
+              className="sp-dialog-input"
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              value={confidenceLevel}
+              onChange={(event) => setConfidenceLevel(Number(event.target.value))}
+              aria-invalid={!confidenceValid}
             />
           </div>
 
@@ -302,7 +343,9 @@ export function FitYByXRoleDialog({ dataset, defaultName, onCancel, onCreate }: 
             onClick={handleCreate}
             disabled={createDisabled}
           >
-            {t("fitYByX.create", { defaultValue: "Create" })}
+            {mode === "edit"
+              ? t("common.update", { defaultValue: "Update" })
+              : t("fitYByX.create", { defaultValue: "Create" })}
           </button>
           <button type="button" className="sp-dialog-btn" onClick={onCancel}>
             {t("common.cancel", { defaultValue: "Cancel" })}
@@ -419,4 +462,17 @@ function validationErrorText(
     case "missingResponse":
       return t("fitYByX.missingResponse", { defaultValue: "Choose a response field." });
   }
+}
+
+function createDialogState(
+  defaultName: string,
+  initialValue?: FitYByXAnalysisEditorItem,
+) {
+  if (!initialValue) return createFitYByXDialogState(defaultName);
+  return {
+    name: initialValue.name,
+    response: structuredClone(initialValue.response),
+    factor: structuredClone(initialValue.factor),
+    validationError: null,
+  };
 }

@@ -3355,7 +3355,7 @@ fn validate_report_value(value: &Value, context: &str) -> Result<(), AppError> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct AnalysisValidatorContract {
     analysis_kind: &'static str,
     document_schema_version: i64,
@@ -3363,16 +3363,119 @@ struct AnalysisValidatorContract {
     presentation_schema_version: i64,
     presentation_layout: &'static str,
     validate_definition: fn(&Map<String, Value>, &str) -> Result<(), AppError>,
+    validate_presentation: fn(&Map<String, Value>, &str) -> Result<(), AppError>,
 }
 
-const ANALYSIS_VALIDATOR_CONTRACTS: &[AnalysisValidatorContract] = &[AnalysisValidatorContract {
-    analysis_kind: "distribution",
-    document_schema_version: 1,
-    definition_kind: "distribution",
-    presentation_schema_version: 1,
-    presentation_layout: "distribution-v1",
-    validate_definition: validate_distribution_analysis_definition,
-}];
+const ANALYSIS_VALIDATOR_CONTRACTS: &[AnalysisValidatorContract] = &[
+    AnalysisValidatorContract {
+        analysis_kind: "distribution",
+        document_schema_version: 1,
+        definition_kind: "distribution",
+        presentation_schema_version: 1,
+        presentation_layout: "distribution-v1",
+        validate_definition: validate_distribution_analysis_definition,
+        validate_presentation: validate_distribution_analysis_presentation,
+    },
+    AnalysisValidatorContract {
+        analysis_kind: "fitYByX",
+        document_schema_version: 1,
+        definition_kind: "fitYByX",
+        presentation_schema_version: 1,
+        presentation_layout: "fit-y-by-x-v1",
+        validate_definition: validate_fit_y_by_x_analysis_definition,
+        validate_presentation: validate_fit_y_by_x_analysis_presentation,
+    },
+];
+
+fn validate_distribution_analysis_presentation(
+    _presentation: &Map<String, Value>,
+    _context: &str,
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+fn validate_fit_y_by_x_analysis_definition(
+    definition: &Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    let response = definition.get("response").ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.response is missing"))
+    })?;
+    validate_field_ref_value(response, &format!("{context} analysis definition.response"))?;
+    let factor = definition.get("factor").ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.factor is missing"))
+    })?;
+    validate_field_ref_value(factor, &format!("{context} analysis definition.factor"))?;
+
+    let response_object = response.as_object().ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.response must be an object"))
+    })?;
+    let factor_object = factor.as_object().ok_or_else(|| {
+        AppError::FileIO(format!("{context} analysis definition.factor must be an object"))
+    })?;
+    if response_object.get("type").and_then(Value::as_str) != Some("continuous") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.response must be continuous"
+        )));
+    }
+    let factor_type = factor_object.get("type").and_then(Value::as_str);
+    if !matches!(factor_type, Some("continuous" | "nominal" | "ordinal")) {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.factor has an unsupported type"
+        )));
+    }
+    if response_object.get("name") == factor_object.get("name") {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis response and factor must be different fields"
+        )));
+    }
+
+    let personality = definition
+        .get("personality")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "oneway" | "bivariate"))
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.personality must be oneway or bivariate"
+            ))
+        })?;
+    let expected_personality = if factor_type == Some("continuous") {
+        "bivariate"
+    } else {
+        "oneway"
+    };
+    if personality != expected_personality {
+        return Err(AppError::FileIO(format!(
+            "{context} analysis definition.personality does not match factor type"
+        )));
+    }
+
+    definition
+        .get("confidenceLevel")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0 && *value < 1.0)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.confidenceLevel must be a finite number between 0 and 1"
+            ))
+        })?;
+    Ok(())
+}
+
+fn validate_fit_y_by_x_analysis_presentation(
+    presentation: &Map<String, Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    let graph = presentation
+        .get("graph")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis presentation.graph is missing"
+            ))
+        })?;
+    validate_embedded_graph_config(graph, &format!("{context} analysis presentation.graph"))
+}
 
 fn validate_distribution_analysis_definition(
     definition: &Map<String, Value>,
@@ -3506,9 +3609,11 @@ fn validate_analysis_value(value: &Value, context: &str) -> Result<(), AppError>
     }
     if presentation.get("layout").and_then(Value::as_str) != Some(contract.presentation_layout) {
         return Err(AppError::FileIO(format!(
-            "{context} analysis presentation must use layout distribution-v1"
+            "{context} analysis presentation must use layout {}",
+            contract.presentation_layout
         )));
     }
+    (contract.validate_presentation)(presentation, context)?;
     require_non_empty_string(object.get("createdAt"), &format!("{context} analysis createdAt"))?;
     require_non_empty_string(object.get("updatedAt"), &format!("{context} analysis updatedAt"))?;
     Ok(())
@@ -4079,6 +4184,34 @@ mod tests {
             },
             "createdAt": "2026-09-03T00:00:00.000Z",
             "updatedAt": "2026-09-03T00:00:00.000Z"
+        })
+    }
+
+    fn fit_y_by_x_analysis_doc(id: &str, name: &str) -> Value {
+        let distribution = analysis_doc(id, name);
+        let graph = distribution["definition"]["graphs"]["overview"].clone();
+        json!({
+            "schemaVersion": 1,
+            "documentType": "analysis",
+            "id": id,
+            "name": name,
+            "analysisKind": "fitYByX",
+            "configRevision": 1,
+            "source": { "datasetId": "table-1" },
+            "definition": {
+                "kind": "fitYByX",
+                "response": { "name": "Strength", "type": "continuous" },
+                "factor": { "name": "Site", "type": "nominal" },
+                "personality": "oneway",
+                "confidenceLevel": 0.95
+            },
+            "presentation": {
+                "schemaVersion": 1,
+                "layout": "fit-y-by-x-v1",
+                "graph": graph
+            },
+            "createdAt": "2026-09-07T00:00:00Z",
+            "updatedAt": "2026-09-07T00:00:00Z"
         })
     }
 
@@ -5092,6 +5225,52 @@ mod tests {
     }
 
     #[test]
+    fn fit_y_by_x_analysis_save_writes_span_without_legacy_spf() {
+        let path = temp_project_path("fit-y-by-x-analysis-only");
+        let analysis = fit_y_by_x_analysis_doc("fit-1", "Strength by Site");
+        let bundle = super::build_bundle_with_workflows(
+            "Project".to_string(),
+            "4.0.0".to_string(),
+            "2026-09-07T00:00:00Z".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![analysis],
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let entries = (0..zip.len())
+            .map(|index| zip.by_index(index).unwrap().name().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(entries.iter().any(|entry| entry == "analyses/Strength by Site.span"));
+        assert!(entries.iter().all(|entry| !entry.ends_with(".spf")));
+        assert!(bundle.manifest.fit_y_by_x_files.is_empty());
+        assert!(bundle.fit_y_by_x.is_empty());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn analysis_kind_manifest_matches_validator_contracts() {
         let manifest: Value = serde_json::from_str(include_str!(
             "../../../contracts/analysis/kinds.v1.json"
@@ -5195,6 +5374,37 @@ mod tests {
         assert!(matches!(
             validate_analysis_value(&missing_multivariate, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("multivariate")
+        ));
+
+        let fit_y_by_x = fit_y_by_x_analysis_doc("fit-1", "Strength by Site");
+        assert!(validate_analysis_value(&fit_y_by_x, "analysis validation").is_ok());
+
+        let mut invalid_personality = fit_y_by_x.clone();
+        invalid_personality["definition"]["personality"] = json!("bivariate");
+        assert!(matches!(
+            validate_analysis_value(&invalid_personality, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("personality")
+        ));
+
+        let mut invalid_fit_confidence = fit_y_by_x.clone();
+        invalid_fit_confidence["definition"]["confidenceLevel"] = json!(0.0);
+        assert!(matches!(
+            validate_analysis_value(&invalid_fit_confidence, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("confidenceLevel")
+        ));
+
+        let mut invalid_response = fit_y_by_x.clone();
+        invalid_response["definition"]["response"]["type"] = json!("nominal");
+        assert!(matches!(
+            validate_analysis_value(&invalid_response, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("response")
+        ));
+
+        let mut invalid_fit_graph = fit_y_by_x;
+        invalid_fit_graph["presentation"]["graph"]["mode"] = json!("polar");
+        assert!(matches!(
+            validate_analysis_value(&invalid_fit_graph, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("mode")
         ));
     }
 

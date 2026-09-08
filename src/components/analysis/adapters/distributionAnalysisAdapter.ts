@@ -1,5 +1,9 @@
 import type { AnalysisSummaryEntry } from "../presentation";
-import type { AnalysisDocument, AnalysisDocumentPatch, DistributionAnalysisDefinition } from "../../../types/analysis";
+import type {
+  AnalysisDocumentPatch,
+  DistributionAnalysisDefinition,
+  DistributionAnalysisDocument,
+} from "../../../types/analysis";
 import type { DatasetMeta } from "../../../types/data";
 import type { DistributionItem, SpecLimitsOverride } from "../../../types/distribution";
 
@@ -11,7 +15,7 @@ function formatLimit(value: number | null): string {
   return value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 8 });
 }
 
-function formatSpecificationLimits(document: AnalysisDocument): string {
+function formatSpecificationLimits(document: DistributionAnalysisDocument): string {
   const entries = document.definition.responses
     .map((response) => [response.name, document.definition.analysis.specLimits[response.name]] as const)
     .filter((entry): entry is readonly [string, SpecLimitsOverride] => entry[1] !== undefined);
@@ -23,7 +27,7 @@ function formatSpecificationLimits(document: AnalysisDocument): string {
 }
 
 export function describeDistributionAnalysis(
-  document: AnalysisDocument,
+  document: DistributionAnalysisDocument,
   dataset: DatasetMeta | null,
   translate: Translate,
 ): AnalysisSummaryEntry[] {
@@ -62,7 +66,7 @@ export function describeDistributionAnalysis(
   ];
 }
 
-export function toDistributionEditorItem(document: AnalysisDocument): DistributionItem {
+export function toDistributionEditorItem(document: DistributionAnalysisDocument): DistributionItem {
   return {
     id: document.id,
     name: document.name,
@@ -78,7 +82,7 @@ export function toDistributionEditorItem(document: AnalysisDocument): Distributi
 }
 
 export function createDistributionAnalysisPatch(
-  document: AnalysisDocument,
+  document: DistributionAnalysisDocument,
   submitted: DistributionItem,
   updatedAt: string,
 ): AnalysisDocumentPatch {
