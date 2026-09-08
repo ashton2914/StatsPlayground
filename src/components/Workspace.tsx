@@ -89,6 +89,7 @@ import {
   deriveWorkflowOperationColumnRequirements,
   mergeWorkflowTableColumns,
 } from "@/utils/workflowSchema";
+import { buildProjectDependencyGraph } from "@/workflow/projectDependencyGraph";
 import {
   allocateProjectBasename,
   projectFileExtension,
@@ -255,7 +256,6 @@ export function Workspace() {
   const workflows = useWorkflowStore((s) => s.workflows);
   const logicalFolders = useWorkflowStore((s) => s.logicalFolders);
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
-  const lineageGraph = useWorkflowStore((s) => s.lineageGraph);
   const loadWorkflowsFromProject = useWorkflowStore((s) => s.loadFromProject);
   const addWorkflow = useWorkflowStore((s) => s.addWorkflow);
   const resetWorkflows = useWorkflowStore((s) => s.reset);
@@ -287,6 +287,13 @@ export function Workspace() {
   const deleteTabulate = useTabulateStore((s) => s.deleteItem);
   const resetTabulates = useTabulateStore((s) => s.reset);
   const loadTabulatesFromProject = useTabulateStore((s) => s.loadFromProject);
+  const projectLineageGraph = useMemo(() => buildProjectDependencyGraph({
+    datasets,
+    graphs: graphBuilders,
+    analyses: analysisItems,
+    tabulates,
+    reports: reportItems,
+  }), [analysisItems, datasets, graphBuilders, reportItems, tabulates]);
   const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
   /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
@@ -1489,31 +1496,37 @@ export function Workspace() {
 
   const handleSaveWorkflowSelection = async (name: string, nodeIds: string[]) => {
     if (readOnly) return;
-    const initiallySelected = new Set(nodeIds);
-    const selectedInputArtifactIds = new Set(
-      lineageGraph.edges
-        .filter((edge) => edge.kind === "consumes"
-          && initiallySelected.has(edge.source.nodeId)
-          && initiallySelected.has(edge.target.nodeId))
-        .map((edge) => edge.source.nodeId),
-    );
-    const selectedNodeIds = nodeIds.filter((nodeId) => !selectedInputArtifactIds.has(nodeId));
-    const selectedNodeIdSet = new Set(selectedNodeIds);
-    const selectedEdgeIds = lineageGraph.edges
-      .filter((edge) => selectedNodeIdSet.has(edge.source.nodeId)
-        && selectedNodeIdSet.has(edge.target.nodeId))
-      .map((edge) => edge.id);
-    const externalInputIds = new Set(
-      lineageGraph.edges
-        .filter((edge) => edge.kind === "consumes"
-          && selectedNodeIdSet.has(edge.target.nodeId)
-          && !selectedNodeIdSet.has(edge.source.nodeId))
-        .map((edge) => edge.source.nodeId),
-    );
-
     try {
+      const currentLineageGraph = buildProjectDependencyGraph({
+        datasets: useDataStore.getState().datasets,
+        graphs: useGraphBuilderStore.getState().items,
+        analyses: useAnalysisStore.getState().items,
+        tabulates: useTabulateStore.getState().items,
+        reports: useReportStore.getState().items,
+      });
+      const initiallySelected = new Set(nodeIds);
+      const selectedInputArtifactIds = new Set(
+        currentLineageGraph.edges
+          .filter((edge) => edge.kind === "consumes"
+            && initiallySelected.has(edge.source.nodeId)
+            && initiallySelected.has(edge.target.nodeId))
+          .map((edge) => edge.source.nodeId),
+      );
+      const selectedNodeIds = nodeIds.filter((nodeId) => !selectedInputArtifactIds.has(nodeId));
+      const selectedNodeIdSet = new Set(selectedNodeIds);
+      const selectedEdgeIds = currentLineageGraph.edges
+        .filter((edge) => selectedNodeIdSet.has(edge.source.nodeId)
+          && selectedNodeIdSet.has(edge.target.nodeId))
+        .map((edge) => edge.id);
+      const externalInputIds = new Set(
+        currentLineageGraph.edges
+          .filter((edge) => edge.kind === "consumes"
+            && selectedNodeIdSet.has(edge.target.nodeId)
+            && !selectedNodeIdSet.has(edge.source.nodeId))
+          .map((edge) => edge.source.nodeId),
+      );
       const tableSchemas = await Promise.all([...externalInputIds].map(async (artifactNodeId) => {
-        const node = lineageGraph.nodes.find((candidate) => candidate.id === artifactNodeId);
+        const node = currentLineageGraph.nodes.find((candidate) => candidate.id === artifactNodeId);
         if (!node || node.nodeType !== "artifact" || node.artifactKind !== "table") {
           throw new Error(`Workflow input ${artifactNodeId} is not a table`);
         }
@@ -1531,12 +1544,12 @@ export function Workspace() {
         name,
         formatVersion: "1",
         revision: 1,
-        graph: lineageGraph,
+        graph: currentLineageGraph,
         selectedNodeIds,
         selectedEdgeIds,
         tableSchemas,
         operationColumnRequirements: deriveWorkflowOperationColumnRequirements(
-          lineageGraph,
+          currentLineageGraph,
           selectedNodeIds,
         ),
       });
@@ -2662,7 +2675,7 @@ export function Workspace() {
             </>
           ) : activeTab === "workflow" ? (
             <WorkflowPanel
-              lineageGraph={lineageGraph}
+              lineageGraph={projectLineageGraph}
               workflows={workflows}
               workflowRuns={workflowRuns}
               selectedId={activeWorkflowViewId}
@@ -2681,7 +2694,7 @@ export function Workspace() {
         <div className="main-area">
           {activeTab === "workflow" ? (
             <WorkflowView
-              lineageGraph={lineageGraph}
+              lineageGraph={projectLineageGraph}
               workflow={workflows.find((workflow) => workflow.id === activeWorkflowViewId)}
               datasets={datasets}
               suggestedWorkflowName={`Workflow ${workflows.length + 1}`}

@@ -17,6 +17,7 @@ export interface ProjectDocumentRef {
 export type PortPayloadKind =
   | "any"
   | "table"
+  | "tableTransform"
   | "graph"
   | "analysis"
   | "distribution"
@@ -115,7 +116,8 @@ export interface WorkflowSourceTable {
 export interface WorkflowOperationInputSchema {
   operationId: string;
   inputPortId: string;
-  requiredColumnNames: string[];
+  columns: TableColumnConsumption[];
+  completeSchema: boolean;
 }
 
 export interface WorkflowExtractionRequest {

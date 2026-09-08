@@ -30,82 +30,25 @@ export function deriveWorkflowOperationColumnRequirements(
   return graph.nodes
     .flatMap((node) => {
       if (node.nodeType !== "operation" || !selected.has(node.id)) return [];
-      const requiredColumnNames = deriveRequiredColumnNames(node.kind, node.configuration);
       return node.inputPorts
         .filter((port) => port.payloadKind === "table" || port.payloadKind === "any")
-        .map((port) => ({
-          operationId: node.id,
-          inputPortId: port.id,
-          requiredColumnNames,
-        }));
+        .map((port) => {
+          if (!port.tableRequirement) {
+            throw new Error(`Cannot determine required columns for operation ${node.id} input ${port.id}`);
+          }
+          return {
+            operationId: node.id,
+            inputPortId: port.id,
+            columns: port.tableRequirement.columns.map((column) => ({
+              name: column.name,
+              requiredExtraKinds: [...column.requiredExtraKinds].sort(),
+            })),
+            completeSchema: port.tableRequirement.completeSchema,
+          };
+        });
     })
     .sort((left, right) => left.operationId.localeCompare(right.operationId)
       || left.inputPortId.localeCompare(right.inputPortId));
-}
-
-function deriveRequiredColumnNames(
-  operationKind: string,
-  configuration: unknown,
-): string[] {
-  const config = asRecord(configuration);
-  if (!config) return [];
-  const names = new Set<string>();
-  const addField = (value: unknown) => {
-    const name = asRecord(value)?.name;
-    if (typeof name === "string" && name.trim()) names.add(name);
-  };
-  const addStrings = (value: unknown) => {
-    if (!Array.isArray(value)) return;
-    for (const item of value) {
-      if (typeof item === "string" && item.trim()) names.add(item);
-    }
-  };
-
-  if (operationKind === "graphGeneration") {
-    collectGraphColumns(config, addField);
-  } else if (operationKind === "fitYByX") {
-    addField(config.response);
-    addField(config.factor);
-    const graph = asRecord(config.graph);
-    if (graph) collectGraphColumns(graph, addField);
-  } else if (operationKind === "tabulate") {
-    addStrings(config.rowFields);
-    addStrings(config.columnFields);
-    if (Array.isArray(config.statistics)) {
-      for (const statistic of config.statistics) {
-        const field = asRecord(statistic)?.field;
-        if (typeof field === "string" && field.trim()) names.add(field);
-      }
-    }
-  }
-
-  return [...names].sort();
-}
-
-function collectGraphColumns(
-  config: Record<string, unknown>,
-  addField: (value: unknown) => void,
-): void {
-  const modeStates = asRecord(config.modeStates);
-  const modeKey = config.mode === "3d"
-    ? "threeD"
-    : config.mode === "multivariate" ? "multivariate" : "twoD";
-  const state = asRecord(modeStates?.[modeKey]);
-  const encoding = asRecord(state?.encoding);
-  for (const field of Object.values(encoding ?? {})) addField(field);
-  for (const key of ["multiX", "multiY", "columns"] as const) {
-    const fields = state?.[key];
-    if (Array.isArray(fields)) fields.forEach(addField);
-  }
-  if (Array.isArray(config.filters)) {
-    for (const item of config.filters) addField(asRecord(asRecord(item)?.rule)?.field);
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
 }
 
 export function canonicalDuckdbType(rawType: string): string {

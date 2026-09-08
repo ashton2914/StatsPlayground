@@ -109,6 +109,7 @@ export function WorkflowView({
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarquee | null>(null);
   const [selectionName, setSelectionName] = useState<string | null>(null);
+  const [inspectedSlotId, setInspectedSlotId] = useState<string | null>(null);
   const [savingSelection, setSavingSelection] = useState(false);
   const schemaRequestIds = useRef<Record<string, number>>({});
   const visuals = useMemo(
@@ -159,7 +160,17 @@ export function WorkflowView({
     setCheckError({});
     setSelectedNodeIds(new Set());
     setSelectionName(null);
+    setInspectedSlotId(null);
   }, [workflow?.id]);
+
+  useEffect(() => {
+    if (!inspectedSlotId) return;
+    const closeInspector = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setInspectedSlotId(null);
+    };
+    document.addEventListener("keydown", closeInspector);
+    return () => document.removeEventListener("keydown", closeInspector);
+  }, [inspectedSlotId]);
 
   useEffect(() => {
     if (workflow) return;
@@ -299,6 +310,7 @@ export function WorkflowView({
 
   const title = workflow?.name
     ?? t("workflow.projectLineage", { defaultValue: "Project lineage" });
+  const inspectedSlot = workflow?.inputSlots.find((slot) => slot.id === inspectedSlotId);
 
   return (
     <div className="workflow-view">
@@ -403,19 +415,33 @@ export function WorkflowView({
             </svg>
             {visuals.nodes.map((node) => {
               const position = layout.positions[node.id];
+              const inspectableInput = Boolean(workflow && node.kind === "input");
               return (
                 <div
                   className={`workflow-node workflow-node-${node.kind}${selectedNodeIds.has(node.id) ? " selected" : ""}`}
                   key={node.id}
                   style={{ left: position.x, top: position.y }}
-                  role={workflow ? undefined : "button"}
-                  tabIndex={workflow ? undefined : 0}
+                  role={!workflow || inspectableInput ? "button" : undefined}
+                  tabIndex={!workflow || inspectableInput ? 0 : undefined}
                   aria-pressed={workflow ? undefined : selectedNodeIds.has(node.id)}
+                  title={inspectableInput
+                    ? t("workflow.inspectSchemaFor", {
+                        defaultValue: "View schema requirements for {{name}}",
+                        name: node.label,
+                      })
+                    : undefined}
                   onPointerDown={(event) => {
                     if (workflow || event.button !== 0) return;
                     event.stopPropagation();
                     selectNode(node.id, event.ctrlKey || event.metaKey);
                   }}
+                  onDoubleClick={inspectableInput ? () => setInspectedSlotId(node.id) : undefined}
+                  onKeyDown={inspectableInput ? (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setInspectedSlotId(node.id);
+                    }
+                  } : undefined}
                 >
                   <i className={`fa-solid ${node.kind === "operation" ? "fa-gears" : node.kind === "input" ? "fa-table" : "fa-file-lines"}`} aria-hidden="true" />
                   <span><strong>{node.label}</strong><small>{node.detail}</small></span>
@@ -483,6 +509,74 @@ export function WorkflowView({
               >
                 {t("common.save", { defaultValue: "Save" })}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inspectedSlot && (
+        <div
+          className="dialog-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setInspectedSlotId(null);
+          }}
+        >
+          <div
+            className="dialog workflow-schema-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="workflow-schema-dialog-title"
+          >
+            <div className="workflow-schema-dialog-header">
+              <div>
+                <h3 id="workflow-schema-dialog-title">
+                  {t("workflow.schemaRequirements", { defaultValue: "Schema requirements" })}
+                </h3>
+                <h4>{inspectedSlot.name}</h4>
+              </div>
+              <button
+                type="button"
+                className="workflow-schema-dialog-close"
+                aria-label={t("common.close", { defaultValue: "Close" })}
+                title={t("common.close", { defaultValue: "Close" })}
+                autoFocus
+                onClick={() => setInspectedSlotId(null)}
+              >
+                <i className="fa-solid fa-xmark" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="workflow-schema-table-scroll">
+              <table className="workflow-schema-table">
+                <thead>
+                  <tr>
+                    <th>{t("workflow.schemaColumn", { defaultValue: "Column" })}</th>
+                    <th>{t("workflow.schemaType", { defaultValue: "DuckDB type" })}</th>
+                    <th>{t("workflow.schemaProperties", { defaultValue: "Required properties" })}</th>
+                    <th>{t("workflow.schemaConsumers", { defaultValue: "Consumed by" })}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inspectedSlot.schemaContract.columns
+                    .filter((column) => column.required)
+                    .map((column) => {
+                      const extras = Object.entries(column.requiredExtras ?? {});
+                      return (
+                        <tr key={column.name}>
+                          <td><strong>{column.name}</strong></td>
+                          <td><code>{column.canonicalDuckdbType}</code></td>
+                          <td>
+                            {extras.length > 0
+                              ? extras.map(([name, value]) => (
+                                  <code key={name}>{name}: {JSON.stringify(value)}</code>
+                                ))
+                              : <span className="workflow-schema-none">{t("workflow.schemaNone", { defaultValue: "None" })}</span>}
+                          </td>
+                          <td>{column.requiredByOperationIds.join(", ")}</td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

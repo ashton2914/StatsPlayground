@@ -110,7 +110,18 @@ assert.deepEqual(
         response: { name: "yield", type: "continuous" },
         factor: { name: "batch", type: "nominal" },
       },
-      inputPorts: [{ id: "fit-input", name: "source", payloadKind: "table" }],
+      inputPorts: [{
+        id: "fit-input",
+        name: "source",
+        payloadKind: "table",
+        tableRequirement: {
+          columns: [
+            { name: "batch", requiredExtraKinds: [] },
+            { name: "yield", requiredExtraKinds: [] },
+          ],
+          completeSchema: false,
+        },
+      }],
       outputPorts: [],
     }],
     edges: [],
@@ -118,7 +129,72 @@ assert.deepEqual(
   [{
     operationId: "fit-operation",
     inputPortId: "fit-input",
-    requiredColumnNames: ["batch", "yield"],
+    columns: [
+      { name: "batch", requiredExtraKinds: [] },
+      { name: "yield", requiredExtraKinds: [] },
+    ],
+    completeSchema: false,
+  }],
+);
+
+assert.deepEqual(
+  deriveWorkflowOperationColumnRequirements({
+    id: "graph-lineage",
+    name: "Graph lineage",
+    nodes: [{
+      nodeType: "operation",
+      id: "graph-operation",
+      kind: "graphGeneration",
+      schemaVersion: "1",
+      configuration: {
+        sourceDatasetId: "wide-table",
+        mode: "2d",
+        modeStates: {
+          twoD: {
+            encoding: {
+              x: { name: "batch", type: "nominal" },
+              y: { name: "yield", type: "continuous" },
+            },
+            multiX: [],
+            multiY: [{ name: "temperature", type: "continuous" }],
+          },
+          threeD: {
+            encoding: {
+              z: { name: "inactive-z", type: "continuous" },
+            },
+          },
+          multivariate: {
+            columns: [{ name: "inactive-column", type: "continuous" }],
+          },
+        },
+        filters: [{ rule: { field: { name: "site", type: "nominal" } } }],
+      },
+      inputPorts: [{
+        id: "graph-input",
+        name: "source",
+        payloadKind: "table",
+        tableRequirement: {
+          columns: [
+            { name: "batch", requiredExtraKinds: [] },
+            { name: "live-yield", requiredExtraKinds: ["spec"] },
+            { name: "site", requiredExtraKinds: [] },
+          ],
+          completeSchema: false,
+        },
+      }],
+      outputPorts: [],
+    }],
+    edges: [],
+  }, ["graph-operation"]),
+  [{
+    operationId: "graph-operation",
+    inputPortId: "graph-input",
+    columns: [
+      { name: "batch", requiredExtraKinds: [] },
+      { name: "live-yield", requiredExtraKinds: ["spec"] },
+      { name: "site", requiredExtraKinds: [] },
+    ],
+    completeSchema: false,
   }],
 );
 

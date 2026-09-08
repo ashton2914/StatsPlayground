@@ -88,6 +88,30 @@ pub struct LineagePort {
     pub payload_kind: PortPayloadKind,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TableColumnConsumption {
+    pub name: String,
+    #[serde(default)]
+    pub required_extra_kinds: Vec<WorkflowSemanticExtraKind>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkflowSemanticExtraKind {
+    ValueOrder,
+    Spec,
+}
+
+impl WorkflowSemanticExtraKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ValueOrder => "valueOrder",
+            Self::Spec => "spec",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum LineageEdgeKind {
@@ -116,9 +140,13 @@ pub struct LineageEndpoint {
 pub enum PortPayloadKind {
     Any,
     Table,
+    TableTransform,
     Graph,
+    Analysis,
+    Distribution,
     FitYByX,
     Tabulate,
+    Report,
     Snapshot,
 }
 
@@ -126,9 +154,13 @@ pub enum PortPayloadKind {
 #[serde(rename_all = "camelCase")]
 pub enum ArtifactKind {
     Table,
+    TableTransform,
     Graph,
+    Analysis,
+    Distribution,
     FitYByX,
     Tabulate,
+    Report,
     Snapshot,
 }
 
@@ -137,9 +169,12 @@ pub enum ArtifactKind {
 pub enum OperationKind {
     Import,
     SqlQuery,
+    TableTransform,
     GraphGeneration,
+    AnalysisExecution,
     FitYByX,
     Tabulate,
+    ReportComposition,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -421,7 +456,9 @@ pub struct WorkflowOperationInputSchema {
     pub operation_id: String,
     pub input_port_id: String,
     #[serde(default)]
-    pub required_column_names: Vec<String>,
+    pub columns: Vec<TableColumnConsumption>,
+    #[serde(default)]
+    pub complete_schema: bool,
 }
 
 pub fn extract_workflow(request: WorkflowExtractionRequest) -> Result<WorkflowDefinition, AppError> {
@@ -500,7 +537,7 @@ pub fn extract_workflow(request: WorkflowExtractionRequest) -> Result<WorkflowDe
         .iter()
         .map(|table| (table.artifact_node_id.clone(), table.columns.clone()))
         .collect();
-    let requirements_by_binding = build_requirement_map(&request.operation_column_requirements);
+    let requirements_by_binding = build_requirement_map(&request.operation_column_requirements)?;
 
     let external_dependencies = collect_external_dependencies(
         &request.graph,
@@ -812,70 +849,21 @@ fn unique_non_empty_ids(values: &[String], label: &str) -> Result<Vec<String>, A
 
 fn build_requirement_map(
     requirements: &[WorkflowOperationInputSchema],
-) -> HashMap<(String, String), Vec<String>> {
+) -> Result<HashMap<(String, String), WorkflowOperationInputSchema>, AppError> {
     let mut map = HashMap::new();
     for requirement in requirements {
         let key = (
             requirement.operation_id.clone(),
             requirement.input_port_id.clone(),
         );
-        let entry = map.entry(key).or_insert_with(Vec::new);
-        for column_name in &requirement.required_column_names {
-            if !entry.contains(column_name) {
-                entry.push(column_name.clone());
-            }
+        if map.insert(key.clone(), requirement.clone()).is_some() {
+            return Err(invalid(format!(
+                "duplicate column requirement for operation {} input {}",
+                key.0, key.1
+            )));
         }
     }
-    map
-}
-
-fn required_extra_kinds(operation: &OperationNode, column_name: &str) -> Vec<&'static str> {
-    match operation.kind {
-        OperationKind::GraphGeneration => {
-            let mut kinds = vec!["valueOrder"];
-            if graph_uses_spec_for_column(operation.configuration.as_ref(), column_name) {
-                kinds.push("spec");
-            }
-            kinds
-        }
-        OperationKind::FitYByX => vec!["valueOrder"],
-        OperationKind::Import | OperationKind::SqlQuery | OperationKind::Tabulate => Vec::new(),
-    }
-}
-
-fn graph_uses_spec_for_column(configuration: Option<&Value>, column_name: &str) -> bool {
-    let Some(two_d) = configuration.and_then(|value| value.pointer("/modeStates/twoD")) else {
-        return false;
-    };
-    let legacy = two_d.get("autoSpecLines").and_then(Value::as_bool).unwrap_or(false);
-    let auto_x = two_d.get("autoSpecLinesX").and_then(Value::as_bool).unwrap_or(legacy);
-    let auto_y = two_d.get("autoSpecLinesY").and_then(Value::as_bool).unwrap_or(legacy);
-
-    (auto_x && graph_axis_contains_column(two_d, "x", "multiX", column_name))
-        || (auto_y && graph_axis_contains_column(two_d, "y", "multiY", column_name))
-}
-
-fn graph_axis_contains_column(
-    two_d: &Value,
-    encoding_key: &str,
-    multi_key: &str,
-    column_name: &str,
-) -> bool {
-    let encoded = two_d
-        .get("encoding")
-        .and_then(|value| value.get(encoding_key))
-        .and_then(|value| value.get("name"))
-        .and_then(Value::as_str)
-        == Some(column_name);
-    let in_multi = two_d
-        .get(multi_key)
-        .and_then(Value::as_array)
-        .is_some_and(|fields| {
-            fields.iter().any(|field| {
-                field.get("name").and_then(Value::as_str) == Some(column_name)
-            })
-        });
-    encoded || in_multi
+    Ok(map)
 }
 
 fn collect_external_dependencies<'a>(
@@ -935,7 +923,7 @@ fn collect_external_dependencies<'a>(
 fn build_input_slots(
     dependencies: &[ExternalDependency<'_>],
     table_schemas_by_artifact: &HashMap<String, Vec<TableColumn>>,
-    requirements_by_binding: &HashMap<(String, String), Vec<String>>,
+    requirements_by_binding: &HashMap<(String, String), WorkflowOperationInputSchema>,
     operation_local_ids: &HashMap<String, String>,
 ) -> Result<Vec<ExtractedInputSlot>, AppError> {
     let mut slot_ids_by_artifact = HashMap::new();
@@ -959,13 +947,39 @@ fn build_input_slots(
                 artifact_id
             ))
         })?;
-        let required_column_names = requirements_by_binding
-            .get(&(dependency.target_operation.id.clone(), dependency.edge.target.port_id.clone()))
-            .cloned()
-            .filter(|column_names| !column_names.is_empty())
-            .unwrap_or_else(|| schema.iter().map(|column| column.name.clone()).collect());
+        let requirement_key = (
+            dependency.target_operation.id.clone(),
+            dependency.edge.target.port_id.clone(),
+        );
+        let requirement = requirements_by_binding
+            .get(&requirement_key)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "cannot determine required columns for operation {} input {}",
+                    requirement_key.0, requirement_key.1
+                ))
+            })?;
+        if requirement.columns.is_empty() && !requirement.complete_schema {
+            return Err(invalid(format!(
+                "cannot determine required columns for operation {} input {}",
+                requirement_key.0, requirement_key.1
+            )));
+        }
+        let required_columns = if requirement.complete_schema {
+            schema
+                .iter()
+                .map(|column| TableColumnConsumption {
+                    name: column.name.clone(),
+                    required_extra_kinds: Vec::new(),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            requirement.columns.clone()
+        };
 
-        for required_column_name in required_column_names {
+        for required_column in required_columns {
+            let required_column_name = required_column.name;
+            let required_extra_kinds = required_column.required_extra_kinds;
             let source_column = schema
                 .iter()
                 .find(|column| column.name == required_column_name)
@@ -980,10 +994,13 @@ fn build_input_slots(
                 .extras
                 .as_ref()
                 .map(|extras| {
-                    required_extra_kinds(dependency.target_operation, required_column_name.as_str())
+                    required_extra_kinds
                         .iter()
                         .filter_map(|kind| {
-                            extras.get(*kind).cloned().map(|value| ((*kind).to_string(), value))
+                            extras
+                                .get(kind.as_str())
+                                .cloned()
+                                .map(|value| (kind.as_str().to_string(), value))
                         })
                         .collect::<BTreeMap<_, _>>()
                 })
@@ -2245,9 +2262,13 @@ fn workflow_output_output_port(output_id: &str, artifact_kind: &ArtifactKind) ->
 fn artifact_kind_to_payload_kind(kind: &ArtifactKind) -> PortPayloadKind {
     match kind {
         ArtifactKind::Table => PortPayloadKind::Table,
+        ArtifactKind::TableTransform => PortPayloadKind::TableTransform,
         ArtifactKind::Graph => PortPayloadKind::Graph,
+        ArtifactKind::Analysis => PortPayloadKind::Analysis,
+        ArtifactKind::Distribution => PortPayloadKind::Distribution,
         ArtifactKind::FitYByX => PortPayloadKind::FitYByX,
         ArtifactKind::Tabulate => PortPayloadKind::Tabulate,
+        ArtifactKind::Report => PortPayloadKind::Report,
         ArtifactKind::Snapshot => PortPayloadKind::Snapshot,
     }
 }
@@ -2427,6 +2448,16 @@ mod tests {
             format: None,
             extras: None,
         }
+    }
+
+    fn consumed_columns(names: &[&str]) -> Vec<TableColumnConsumption> {
+        names
+            .iter()
+            .map(|name| TableColumnConsumption {
+                name: (*name).to_string(),
+                required_extra_kinds: Vec::new(),
+            })
+            .collect()
     }
 
     fn valid_project_lineage_graph() -> ProjectLineageGraph {
@@ -2810,12 +2841,14 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-sql-1".to_string(),
                     input_port_id: "operation-sql-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -2829,8 +2862,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_workflow_falls_back_to_all_source_columns_when_requirements_are_unknown() {
-        let workflow = extract_workflow(extraction_request(
+    fn extract_workflow_rejects_unknown_operation_column_requirements() {
+        let error = extract_workflow(extraction_request(
             workflow_extraction_graph(),
             &["operation-sql-1", "artifact-table-joined"],
             &["edge-sql-table"],
@@ -2844,16 +2877,11 @@ mod tests {
             }],
             vec![],
         ))
-        .expect("workflow extracts with conservative schema fallback");
+        .expect_err("unknown column consumption must not expand to the full source schema");
 
-        let columns = &workflow.input_slots[0].schema_contract.columns;
-        assert_eq!(
-            columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
-            vec!["batch", "height", "weight"]
-        );
-        assert!(columns.iter().all(|column| {
-            column.required_by_operation_ids == vec!["workflow-operation-1".to_string()]
-        }));
+        assert!(error
+            .to_string()
+            .contains("cannot determine required columns for operation operation-sql-1 input operation-sql-1-in-source"));
     }
 
     #[test]
@@ -2874,7 +2902,17 @@ mod tests {
             vec![WorkflowOperationInputSchema {
                 operation_id: "operation-fit-1".to_string(),
                 input_port_id: "operation-fit-1-in-source".to_string(),
-                required_column_names: vec!["height".to_string(), "weight".to_string()],
+                columns: vec![
+                    TableColumnConsumption {
+                        name: "height".to_string(),
+                        required_extra_kinds: vec![WorkflowSemanticExtraKind::ValueOrder],
+                    },
+                    TableColumnConsumption {
+                        name: "weight".to_string(),
+                        required_extra_kinds: Vec::new(),
+                    },
+                ],
+                complete_schema: false,
             }],
         ))
         .expect("workflow extracts with semantic column extras");
@@ -2914,12 +2952,14 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-left".to_string(),
-                    required_column_names: vec!["left_key".to_string()],
+                    columns: consumed_columns(&["left_key"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-right".to_string(),
-                    required_column_names: vec!["right_key".to_string()],
+                    columns: consumed_columns(&["right_key"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -3020,17 +3060,20 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-left".to_string(),
-                    required_column_names: vec!["left_key".to_string()],
+                    columns: consumed_columns(&["left_key"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-right".to_string(),
-                    required_column_names: vec!["right_key".to_string()],
+                    columns: consumed_columns(&["right_key"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -3066,7 +3109,8 @@ mod tests {
             vec![WorkflowOperationInputSchema {
                 operation_id: "operation-sql-1".to_string(),
                 input_port_id: "operation-sql-1-in-source".to_string(),
-                required_column_names: vec!["height".to_string()],
+                columns: consumed_columns(&["height"]),
+                complete_schema: false,
             }],
         ))
         .unwrap_err();
@@ -3091,12 +3135,14 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-sql-1".to_string(),
                     input_port_id: "operation-sql-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -3128,12 +3174,14 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-sql-1".to_string(),
                     input_port_id: "operation-sql-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -3167,36 +3215,6 @@ mod tests {
         assert_eq!(canonical_duckdb_type("INT"), "INTEGER");
         assert_eq!(canonical_duckdb_type("integer"), "INTEGER");
         assert_eq!(canonical_duckdb_type(" double precision "), "DOUBLE");
-    }
-
-    #[test]
-    fn graph_spec_extra_requirement_is_limited_to_enabled_axes() {
-        let operation = OperationNode {
-            id: "operation-graph-1".to_string(),
-            kind: OperationKind::GraphGeneration,
-            schema_version: "1".to_string(),
-            configuration: Some(json!({
-                "mode": "2d",
-                "modeStates": {
-                    "twoD": {
-                        "encoding": {
-                            "x": {"name": "batch", "type": "nominal"},
-                            "y": {"name": "yield", "type": "continuous"}
-                        },
-                        "multiX": [],
-                        "multiY": [],
-                        "autoSpecLinesX": false,
-                        "autoSpecLinesY": true
-                    }
-                }
-            })),
-            document_ref: None,
-            input_ports: vec![],
-            output_ports: vec![],
-        };
-
-        assert_eq!(required_extra_kinds(&operation, "batch"), vec!["valueOrder"]);
-        assert_eq!(required_extra_kinds(&operation, "yield"), vec!["valueOrder", "spec"]);
     }
 
     #[test]

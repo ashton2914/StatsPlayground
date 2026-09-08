@@ -2846,6 +2846,99 @@
 .workflow-node-artifact > i { color: #6e7781; }
 .workflow-node-output > i { color: #bf8700; }
 
+.workflow-schema-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(620px, calc(100vh - 48px));
+  overflow: hidden;
+}
+
+.workflow-schema-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.workflow-schema-dialog-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.workflow-schema-dialog-header h4 {
+  margin: 4px 0 0;
+  color: var(--fg-hint);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workflow-schema-dialog-close {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+
+.workflow-schema-dialog-close:hover {
+  background: var(--bg-header-hover);
+  color: var(--fg-primary);
+}
+
+.workflow-schema-table-scroll {
+  margin-top: 16px;
+  overflow: auto;
+  border: 1px solid var(--border-main);
+  border-radius: 4px;
+}
+
+.workflow-schema-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  color: var(--fg-primary);
+  font-size: 11px;
+}
+
+.workflow-schema-table th,
+.workflow-schema-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-main);
+  text-align: left;
+  vertical-align: top;
+}
+
+.workflow-schema-table th {
+  background: var(--bg-header);
+  color: var(--fg-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.workflow-schema-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.workflow-schema-table td code {
+  display: block;
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.workflow-schema-table td code + code {
+  margin-top: 4px;
+}
+
+.workflow-schema-none {
+  color: var(--fg-hint);
+}
+
 @media (max-width: 760px) {
   .workflow-view-header {
     align-items: flex-start;

@@ -197,9 +197,13 @@ pub struct ProjectManifest {
 #[serde(rename_all = "camelCase")]
 pub enum ProjectDocumentKind {
     Table,
+    TableTransform,
     Graph,
+    Analysis,
+    Distribution,
     FitYByX,
     Tabulate,
+    Report,
     Snapshot,
 }
 
@@ -2158,9 +2162,13 @@ fn artifact_node_id(kind: &ProjectDocumentKind, id: &str) -> String {
 fn document_kind_key(kind: &ProjectDocumentKind) -> &'static str {
     match kind {
         ProjectDocumentKind::Table => "table",
+        ProjectDocumentKind::TableTransform => "tableTransform",
         ProjectDocumentKind::Graph => "graph",
+        ProjectDocumentKind::Analysis => "analysis",
+        ProjectDocumentKind::Distribution => "distribution",
         ProjectDocumentKind::FitYByX => "fitYByX",
         ProjectDocumentKind::Tabulate => "tabulate",
+        ProjectDocumentKind::Report => "report",
         ProjectDocumentKind::Snapshot => "snapshot",
     }
 }
@@ -2168,9 +2176,13 @@ fn document_kind_key(kind: &ProjectDocumentKind) -> &'static str {
 fn artifact_kind(kind: &ProjectDocumentKind) -> workflow_domain::ArtifactKind {
     match kind {
         ProjectDocumentKind::Table => workflow_domain::ArtifactKind::Table,
+        ProjectDocumentKind::TableTransform => workflow_domain::ArtifactKind::TableTransform,
         ProjectDocumentKind::Graph => workflow_domain::ArtifactKind::Graph,
+        ProjectDocumentKind::Analysis => workflow_domain::ArtifactKind::Analysis,
+        ProjectDocumentKind::Distribution => workflow_domain::ArtifactKind::Distribution,
         ProjectDocumentKind::FitYByX => workflow_domain::ArtifactKind::FitYByX,
         ProjectDocumentKind::Tabulate => workflow_domain::ArtifactKind::Tabulate,
+        ProjectDocumentKind::Report => workflow_domain::ArtifactKind::Report,
         ProjectDocumentKind::Snapshot => workflow_domain::ArtifactKind::Snapshot,
     }
 }
@@ -2178,18 +2190,27 @@ fn artifact_kind(kind: &ProjectDocumentKind) -> workflow_domain::ArtifactKind {
 fn port_payload_kind(kind: &ProjectDocumentKind) -> workflow_domain::PortPayloadKind {
     match kind {
         ProjectDocumentKind::Table => workflow_domain::PortPayloadKind::Table,
+        ProjectDocumentKind::TableTransform => workflow_domain::PortPayloadKind::TableTransform,
         ProjectDocumentKind::Graph => workflow_domain::PortPayloadKind::Graph,
+        ProjectDocumentKind::Analysis => workflow_domain::PortPayloadKind::Analysis,
+        ProjectDocumentKind::Distribution => workflow_domain::PortPayloadKind::Distribution,
         ProjectDocumentKind::FitYByX => workflow_domain::PortPayloadKind::FitYByX,
         ProjectDocumentKind::Tabulate => workflow_domain::PortPayloadKind::Tabulate,
+        ProjectDocumentKind::Report => workflow_domain::PortPayloadKind::Report,
         ProjectDocumentKind::Snapshot => workflow_domain::PortPayloadKind::Snapshot,
     }
 }
 
 fn operation_kind(kind: &ProjectDocumentKind) -> Result<workflow_domain::OperationKind, AppError> {
     match kind {
+        ProjectDocumentKind::TableTransform => Ok(workflow_domain::OperationKind::TableTransform),
         ProjectDocumentKind::Graph => Ok(workflow_domain::OperationKind::GraphGeneration),
+        ProjectDocumentKind::Analysis | ProjectDocumentKind::Distribution => {
+            Ok(workflow_domain::OperationKind::AnalysisExecution)
+        }
         ProjectDocumentKind::FitYByX => Ok(workflow_domain::OperationKind::FitYByX),
         ProjectDocumentKind::Tabulate => Ok(workflow_domain::OperationKind::Tabulate),
+        ProjectDocumentKind::Report => Ok(workflow_domain::OperationKind::ReportComposition),
         other => Err(AppError::InvalidParam(format!(
             "unsupported lineage operation target kind: {:?}",
             other
@@ -2881,13 +2902,26 @@ fn manifest_contains_document(manifest: &ProjectManifest, document: &ProjectDocu
 
     match document.kind {
         ProjectDocumentKind::Table => manifest.tables.iter().any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::TableTransform => false,
         ProjectDocumentKind::Graph => manifest.graphs.iter().any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::Analysis => manifest
+            .analyses
+            .iter()
+            .any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::Distribution => manifest
+            .distributions
+            .iter()
+            .any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::FitYByX => manifest
             .fit_y_by_x_files
             .iter()
             .any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::Tabulate => manifest
             .tabulate_files
+            .iter()
+            .any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::Report => manifest
+            .report_files
             .iter()
             .any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::Snapshot => manifest

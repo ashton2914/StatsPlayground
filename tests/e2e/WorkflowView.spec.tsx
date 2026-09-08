@@ -171,6 +171,43 @@ test("checks the selected input table schema", async ({ mount, page }) => {
   );
 });
 
+test("shows a saved workflow input schema when its initial node is double-clicked", async ({ mount, page }) => {
+  const workflowWithInspectableSchema: WorkflowDefinition = {
+    ...workflow,
+    inputSlots: [{
+      ...workflow.inputSlots[0],
+      schemaContract: {
+        schemaFingerprint: "schema-inspectable",
+        columns: [{
+          ...workflow.inputSlots[0].schemaContract.columns[0],
+          requiredExtras: { spec: { lsl: 90, usl: 110 } },
+        }],
+      },
+    }],
+  };
+  const component = await mount(
+    <div style={{ width: 800, height: 600 }}>
+      <WorkflowView
+        lineageGraph={lineageGraph}
+        workflow={workflowWithInspectableSchema}
+        datasets={[dataset]}
+      />
+    </div>,
+  );
+
+  await component.locator(".workflow-node-input").dblclick();
+  const dialog = component.getByRole("dialog", { name: "Schema requirements" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Measurements" })).toBeVisible();
+  await expect(dialog.getByRole("cell", { name: "yield" })).toBeVisible();
+  await expect(dialog.getByRole("cell", { name: "DOUBLE" })).toBeVisible();
+  await expect(dialog.getByText('spec: {"lsl":90,"usl":110}')).toBeVisible();
+  await expect(dialog.getByText("operation-1")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
 test("ignores a stale schema response after changing the input table", async ({ mount, page }) => {
   await page.evaluate(() => {
     Object.assign(window, {
