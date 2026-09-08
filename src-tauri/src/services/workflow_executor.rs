@@ -25,7 +25,7 @@ use crate::services::workflow_domain::{
     WorkflowInputFingerprint, WorkflowNodeRunRecord, WorkflowOutputBinding,
     WorkflowOutputFingerprint, WorkflowRun, WorkflowRunError, WorkflowRunStatus,
 };
-use crate::services::workflow_fingerprint::canonical_json_hash;
+use crate::services::workflow_fingerprint::{canonical_document_hash, canonical_json_hash};
 use crate::services::workflow_planner::plan_workflow;
 use crate::state::{AppState, WorkflowRunJournalEntry};
 
@@ -307,16 +307,16 @@ impl<'a> WorkflowExecutor<'a> {
                     }
                     OperationKind::ReportComposition => {
                         let (document, original_dependency_ids, reference_map) =
-                            report_document_and_references(
-                                &request.workflow,
+                            report_document_and_references(ReportDocumentRequest {
+                                workflow: &request.workflow,
                                 operation_id,
-                                stable_id,
-                                &declaration.name,
-                                operation.configuration.as_ref(),
-                                &input_bindings,
-                                &output_by_operation,
-                                &started_at,
-                            )?;
+                                id: stable_id,
+                                name: &declaration.name,
+                                configuration: operation.configuration.as_ref(),
+                                input_bindings: &input_bindings,
+                                output_by_operation: &output_by_operation,
+                                created_at: &started_at,
+                            })?;
                         let staged = document_executor.stage_report(
                             stable_id,
                             &declaration.name,
@@ -371,7 +371,7 @@ impl<'a> WorkflowExecutor<'a> {
                 .collect::<HashMap<_, _>>();
             let documents = remap_document_references(documents, &stable_references)?;
 
-            let output_fingerprints = request
+            let mut output_fingerprints = request
                 .workflow
                 .output_declarations
                 .iter()
@@ -396,14 +396,13 @@ impl<'a> WorkflowExecutor<'a> {
                                 ))
                             })?
                     } else {
-                        documents
+                        let commit = documents
                             .iter()
                             .find(|commit| document_commit_id(commit) == stable_id)
                             .ok_or_else(|| {
                                 AppError::InvalidParam(format!("missing staged output {stable_id}"))
-                            })?
-                            .validation_result_hash()
-                            .to_string()
+                            })?;
+                        document_output_hash(commit)?
                     };
                     Ok(WorkflowOutputFingerprint {
                         declaration_id: declaration.id.clone(),
@@ -412,8 +411,34 @@ impl<'a> WorkflowExecutor<'a> {
                     })
                 })
                 .collect::<Result<Vec<_>, AppError>>()?;
+            output_fingerprints.sort_by(|left, right| {
+                left.declaration_id
+                    .cmp(&right.declaration_id)
+                    .then_with(|| left.artifact_document_id.cmp(&right.artifact_document_id))
+            });
+            let mut input_fingerprints = frozen_inputs
+                .iter()
+                .map(|(slot_id, input)| WorkflowInputFingerprint {
+                    slot_id: slot_id.clone(),
+                    table_document_id: input.table_document_id.clone(),
+                    generation: input.generation,
+                    schema_fingerprint: request
+                        .workflow
+                        .input_slots
+                        .iter()
+                        .find(|slot| slot.id == *slot_id)
+                        .map(|slot| slot.schema_contract.schema_fingerprint.clone())
+                        .unwrap_or_default(),
+                    content_hash: input.content_hash.clone(),
+                })
+                .collect::<Vec<_>>();
+            input_fingerprints.sort_by(|left, right| {
+                left.slot_id
+                    .cmp(&right.slot_id)
+                    .then_with(|| left.table_document_id.cmp(&right.table_document_id))
+            });
             let completed_at = workflow_timestamp()?;
-            let run = WorkflowRun {
+            let mut run = WorkflowRun {
                 id: run_id.clone(),
                 workflow_id: plan.workflow_id,
                 workflow_revision: plan.workflow_revision,
@@ -429,25 +454,30 @@ impl<'a> WorkflowExecutor<'a> {
                 seed: Some(request.seed),
                 engine_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 configuration_hash: Some(configuration_hash),
-                input_fingerprints: frozen_inputs
-                    .iter()
-                    .map(|(slot_id, input)| WorkflowInputFingerprint {
-                        slot_id: slot_id.clone(),
-                        table_document_id: input.table_document_id.clone(),
-                        generation: input.generation,
-                        schema_fingerprint: request
-                            .workflow
-                            .input_slots
-                            .iter()
-                            .find(|slot| slot.id == *slot_id)
-                            .map(|slot| slot.schema_contract.schema_fingerprint.clone())
-                            .unwrap_or_default(),
-                        content_hash: input.content_hash.clone(),
-                    })
-                    .collect(),
+                input_fingerprints,
                 output_fingerprints,
                 determinism_baseline_run_id: None,
             };
+            if let Some(baseline) = determinism_baseline(&request.previous_runs, &run) {
+                run.determinism_baseline_run_id = Some(baseline.id.clone());
+                if normalized_output_fingerprints(&baseline.output_fingerprints)
+                    != normalized_output_fingerprints(&run.output_fingerprints)
+                {
+                    run.status = WorkflowRunStatus::Failed;
+                    run.errors.push(WorkflowRunError {
+                        code: "determinismViolation".to_string(),
+                        message: format!(
+                            "Workflow output fingerprints differ from deterministic baseline {}",
+                            baseline.id
+                        ),
+                    });
+                    return Ok(WorkflowRunCommitPacket {
+                        commit_id: run_id.clone(),
+                        documents: vec![],
+                        run,
+                    });
+                }
+            }
             Ok(WorkflowRunCommitPacket {
                 commit_id: run_id.clone(),
                 documents,
@@ -472,6 +502,21 @@ impl<'a> WorkflowExecutor<'a> {
                 return Err(error);
             }
         };
+        if packet.run.status != WorkflowRunStatus::Succeeded {
+            let engine = self
+                .state
+                .db
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            WorkflowTableExecutor::new(&engine, &self.state.save_coordinator)
+                .cleanup(&table_stage.staging_ids);
+            self.state
+                .workflow_run_journal
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?
+                .remove(&run_id);
+            return Ok(packet);
+        }
         {
             let engine = self
                 .state
@@ -526,6 +571,73 @@ impl<'a> WorkflowExecutor<'a> {
             })
             .collect()
     }
+}
+
+fn document_output_hash(commit: &WorkflowDocumentCommit) -> Result<String, AppError> {
+    match commit {
+        WorkflowDocumentCommit::Graph { document, .. } => canonical_document_hash(document),
+        _ => Ok(commit.validation_result_hash().to_string()),
+    }
+}
+
+fn normalized_input_fingerprints(
+    fingerprints: &[WorkflowInputFingerprint],
+) -> Vec<WorkflowInputFingerprint> {
+    let mut normalized = fingerprints.to_vec();
+    normalized.sort_by(|left, right| {
+        left.slot_id
+            .cmp(&right.slot_id)
+            .then_with(|| left.table_document_id.cmp(&right.table_document_id))
+    });
+    normalized
+}
+
+fn normalized_output_fingerprints(
+    fingerprints: &[WorkflowOutputFingerprint],
+) -> Vec<WorkflowOutputFingerprint> {
+    let mut normalized = fingerprints.to_vec();
+    normalized.sort_by(|left, right| {
+        left.declaration_id
+            .cmp(&right.declaration_id)
+            .then_with(|| left.artifact_document_id.cmp(&right.artifact_document_id))
+    });
+    normalized
+}
+
+fn normalized_output_bindings(bindings: &[WorkflowOutputBinding]) -> Vec<WorkflowOutputBinding> {
+    let mut normalized = bindings.to_vec();
+    normalized.sort_by(|left, right| {
+        left.declaration_id
+            .cmp(&right.declaration_id)
+            .then_with(|| left.artifact_document_id.cmp(&right.artifact_document_id))
+    });
+    normalized
+}
+
+fn determinism_baseline<'run>(
+    previous_runs: &'run [WorkflowRun],
+    candidate: &WorkflowRun,
+) -> Option<&'run WorkflowRun> {
+    previous_runs
+        .iter()
+        .filter(|run| {
+            run.status == WorkflowRunStatus::Succeeded
+                && run.is_determinism_comparable()
+                && run.workflow_id == candidate.workflow_id
+                && run.workflow_revision == candidate.workflow_revision
+                && run.seed == candidate.seed
+                && run.engine_version == candidate.engine_version
+                && run.configuration_hash == candidate.configuration_hash
+                && normalized_input_fingerprints(&run.input_fingerprints)
+                    == normalized_input_fingerprints(&candidate.input_fingerprints)
+                && normalized_output_bindings(&run.output_bindings)
+                    == normalized_output_bindings(&candidate.output_bindings)
+        })
+        .min_by(|left, right| {
+            left.completed_at
+                .cmp(&right.completed_at)
+                .then_with(|| left.id.cmp(&right.id))
+        })
 }
 
 fn exact_input_bindings(request: &WorkflowRunRequest) -> Result<HashMap<&str, String>, AppError> {
@@ -876,16 +988,32 @@ fn tabulate_document_and_request(
 }
 
 #[allow(clippy::too_many_arguments)]
+type ReportDocumentReferences = (Value, Vec<String>, HashMap<String, String>);
+
+struct ReportDocumentRequest<'a> {
+    workflow: &'a WorkflowDefinition,
+    operation_id: &'a str,
+    id: &'a str,
+    name: &'a str,
+    configuration: Option<&'a Value>,
+    input_bindings: &'a HashMap<&'a str, String>,
+    output_by_operation: &'a HashMap<&'a str, String>,
+    created_at: &'a str,
+}
+
 fn report_document_and_references(
-    workflow: &WorkflowDefinition,
-    operation_id: &str,
-    id: &str,
-    name: &str,
-    configuration: Option<&Value>,
-    input_bindings: &HashMap<&str, String>,
-    output_by_operation: &HashMap<&str, String>,
-    created_at: &str,
-) -> Result<(Value, Vec<String>, HashMap<String, String>), AppError> {
+    request: ReportDocumentRequest<'_>,
+) -> Result<ReportDocumentReferences, AppError> {
+    let ReportDocumentRequest {
+        workflow,
+        operation_id,
+        id,
+        name,
+        configuration,
+        input_bindings,
+        output_by_operation,
+        created_at,
+    } = request;
     let configuration = configuration.and_then(Value::as_object).ok_or_else(|| {
         AppError::InvalidParam("Workflow Report configuration is required".to_string())
     })?;
@@ -975,11 +1103,11 @@ pub(crate) fn document_commit_id(commit: &WorkflowDocumentCommit) -> &str {
 }
 
 fn workflow_timestamp() -> Result<String, AppError> {
-    let milliseconds = SystemTime::now()
+    let nanoseconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| AppError::Stats(format!("system clock precedes Unix epoch: {error}")))?
-        .as_millis();
-    Ok(milliseconds.to_string())
+        .as_nanos();
+    Ok(nanoseconds.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -1582,6 +1710,51 @@ mod tests {
         );
         assert_eq!(packet.commit_id, packet.run.id);
 
+        let rerun = WorkflowExecutor::new(&state)
+            .execute(WorkflowRunRequest {
+                workflow: workflow.clone(),
+                input_bindings: packet.run.input_bindings.clone(),
+                output_bindings: packet.run.output_bindings.clone(),
+                seed: 42,
+                previous_runs: vec![packet.run.clone()],
+            })
+            .expect("deterministic rerun");
+        assert_eq!(
+            rerun.run.status,
+            crate::services::workflow_domain::WorkflowRunStatus::Succeeded
+        );
+        assert_ne!(rerun.run.id, packet.run.id);
+        assert_eq!(
+            rerun.run.output_fingerprints,
+            packet.run.output_fingerprints
+        );
+        assert_eq!(
+            rerun.run.determinism_baseline_run_id.as_deref(),
+            Some(packet.run.id.as_str())
+        );
+
+        let mut unstable_baseline = packet.run.clone();
+        unstable_baseline.output_fingerprints[0].content_hash = "unstable-output".to_string();
+        let violation = WorkflowExecutor::new(&state)
+            .execute(WorkflowRunRequest {
+                workflow: workflow.clone(),
+                input_bindings: packet.run.input_bindings.clone(),
+                output_bindings: packet.run.output_bindings.clone(),
+                seed: 42,
+                previous_runs: vec![unstable_baseline],
+            })
+            .expect("determinism violation packet");
+        assert_eq!(
+            violation.run.status,
+            crate::services::workflow_domain::WorkflowRunStatus::Failed
+        );
+        assert!(violation.documents.is_empty());
+        assert_eq!(violation.run.errors[0].code, "determinismViolation");
+        assert_eq!(
+            violation.run.determinism_baseline_run_id.as_deref(),
+            Some(packet.run.id.as_str())
+        );
+
         let failed = WorkflowExecutor::new(&state)
             .execute(WorkflowRunRequest {
                 workflow,
@@ -1727,6 +1900,97 @@ mod tests {
                 .map(|committed| committed.commit_id.as_str()),
             Some(packet.commit_id.as_str()),
         );
+        let rerun = WorkflowExecutor::new(&state)
+            .execute(WorkflowRunRequest {
+                workflow: workflow.clone(),
+                input_bindings: packet.run.input_bindings.clone(),
+                output_bindings: packet.run.output_bindings.clone(),
+                seed: 42,
+                previous_runs: vec![packet.run.clone()],
+            })
+            .expect("deterministic Table rerun");
+        assert_eq!(
+            rerun.run.status,
+            crate::services::workflow_domain::WorkflowRunStatus::Succeeded
+        );
+        assert_ne!(rerun.run.id, packet.run.id);
+        assert_eq!(
+            rerun.run.output_fingerprints,
+            packet.run.output_fingerprints
+        );
+        assert_eq!(
+            rerun.run.determinism_baseline_run_id.as_deref(),
+            Some(packet.run.id.as_str())
+        );
+        assert_eq!(
+            state
+                .db
+                .lock()
+                .expect("test db lock")
+                .get_dataset_generation("stable-sorted")
+                .unwrap(),
+            1,
+        );
+        let source_row_id = {
+            let engine = state.db.lock().expect("test db lock");
+            engine
+                .query_table("source", 0, 1, None, None)
+                .expect("query source")
+                .rows[0][0]
+                .as_i64()
+                .expect("source row id")
+        };
+        state
+            .db
+            .lock()
+            .expect("test db lock")
+            .update_cell("source", source_row_id, "value", "4")
+            .expect("change source input");
+        let changed = WorkflowExecutor::new(&state)
+            .execute(WorkflowRunRequest {
+                workflow: workflow.clone(),
+                input_bindings: packet.run.input_bindings.clone(),
+                output_bindings: packet.run.output_bindings.clone(),
+                seed: 42,
+                previous_runs: vec![packet.run.clone(), rerun.run.clone()],
+            })
+            .expect("changed-input run");
+        assert_eq!(
+            changed.run.status,
+            crate::services::workflow_domain::WorkflowRunStatus::Succeeded
+        );
+        assert_eq!(changed.run.output_bindings, packet.run.output_bindings);
+        assert_ne!(
+            changed.run.output_fingerprints,
+            packet.run.output_fingerprints
+        );
+        assert_eq!(changed.run.determinism_baseline_run_id, None);
+
+        state
+            .db
+            .lock()
+            .expect("test db lock")
+            .update_cell("source", source_row_id, "value", "3")
+            .expect("restore source input");
+        let restored = WorkflowExecutor::new(&state)
+            .execute(WorkflowRunRequest {
+                workflow: workflow.clone(),
+                input_bindings: packet.run.input_bindings.clone(),
+                output_bindings: packet.run.output_bindings.clone(),
+                seed: 42,
+                previous_runs: vec![packet.run.clone(), rerun.run.clone(), changed.run.clone()],
+            })
+            .expect("restored-input run");
+        assert_eq!(
+            restored.run.status,
+            crate::services::workflow_domain::WorkflowRunStatus::Succeeded
+        );
+        assert_eq!(restored.run.output_bindings, packet.run.output_bindings);
+        assert_eq!(
+            restored.run.output_fingerprints,
+            packet.run.output_fingerprints
+        );
+        assert_eq!(restored.run.determinism_baseline_run_id, None);
         let (stable_generation, stable_hash) = {
             let engine = state.db.lock().expect("test db lock");
             let generation = engine.get_dataset_generation("stable-sorted").unwrap();
@@ -1789,10 +2053,22 @@ mod tests {
         let recovered = ProjectService::new(&state)
             .open_project(&project_path_string, None)
             .expect("recover committed Workflow run");
-        assert_eq!(recovered.recovered_workflow_packets.len(), 1);
+        assert_eq!(recovered.recovered_workflow_packets.len(), 4);
         assert_eq!(
             recovered.recovered_workflow_packets[0].commit_id,
             packet.commit_id
+        );
+        assert_eq!(
+            recovered.recovered_workflow_packets[1].commit_id,
+            rerun.commit_id
+        );
+        assert_eq!(
+            recovered.recovered_workflow_packets[2].commit_id,
+            changed.commit_id
+        );
+        assert_eq!(
+            recovered.recovered_workflow_packets[3].commit_id,
+            restored.commit_id
         );
         assert_eq!(
             state
@@ -1810,6 +2086,18 @@ mod tests {
         executor
             .acknowledge(&packet.commit_id)
             .expect("repeat acknowledgement");
+        executor
+            .acknowledge(&rerun.commit_id)
+            .expect("acknowledge rerun commit");
+        executor
+            .acknowledge(&rerun.commit_id)
+            .expect("repeat rerun acknowledgement");
+        executor
+            .acknowledge(&changed.commit_id)
+            .expect("acknowledge changed-input commit");
+        executor
+            .acknowledge(&restored.commit_id)
+            .expect("acknowledge restored-input commit");
         assert!(!state
             .workflow_run_journal
             .lock()

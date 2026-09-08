@@ -47,6 +47,7 @@ function makeAnalysis(id: string, datasetId: string): AnalysisDocument {
 
 assert.deepEqual(createEmptyWorkspaceDocumentSelection(), {
   activeDatasetId: null,
+  activeTableTransformId: null,
   activeGraphBuilderId: null,
   activeFitModelId: null,
   activeReportId: null,
@@ -56,6 +57,7 @@ assert.deepEqual(createEmptyWorkspaceDocumentSelection(), {
 
 assert.deepEqual(selectWorkspaceDocument("analysis", "analysis-1"), {
   activeDatasetId: null,
+  activeTableTransformId: null,
   activeGraphBuilderId: null,
   activeFitModelId: null,
   activeReportId: null,
@@ -65,6 +67,7 @@ assert.deepEqual(selectWorkspaceDocument("analysis", "analysis-1"), {
 
 assert.deepEqual(selectWorkspaceDocument("dataset", "dataset-1"), {
   activeDatasetId: "dataset-1",
+  activeTableTransformId: null,
   activeGraphBuilderId: null,
   activeFitModelId: null,
   activeReportId: null,
@@ -74,6 +77,7 @@ assert.deepEqual(selectWorkspaceDocument("dataset", "dataset-1"), {
 
 assert.deepEqual(selectWorkspaceDocument("fitModel", "fit-model-1"), {
   activeDatasetId: null,
+  activeTableTransformId: null,
   activeGraphBuilderId: null,
   activeFitModelId: "fit-model-1",
   activeReportId: null,

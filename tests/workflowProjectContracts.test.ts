@@ -44,6 +44,36 @@ const openResult = {
   workflows: [],
   logicalFolders: [],
   workflowRuns: [],
+  recoveredWorkflowPackets: [{
+    commitId: "run-2",
+    documents: [],
+    run: {
+      id: "run-2",
+      workflowId: "workflow-1",
+      workflowRevision: 1,
+      status: "succeeded",
+      inputBindings: [{ slotId: "source", tableDocumentId: "table-a" }],
+      nodeResults: [],
+      outputBindings: [{ declarationId: "table-output", artifactDocumentId: "table-c" }],
+      errors: [],
+      seed: 42,
+      engineVersion: "0.1.0",
+      configurationHash: "configuration-hash",
+      inputFingerprints: [{
+        slotId: "source",
+        tableDocumentId: "table-a",
+        generation: 0,
+        schemaFingerprint: "schema-hash",
+        contentHash: "input-hash",
+      }],
+      outputFingerprints: [{
+        declarationId: "table-output",
+        artifactDocumentId: "table-c",
+        contentHash: "output-hash",
+      }],
+      determinismBaselineRunId: "run-1",
+    },
+  }],
   lineageGraph: {
     id: "project-lineage",
     name: "Project lineage",
@@ -54,6 +84,10 @@ const openResult = {
   },
 } satisfies OpenProjectResult;
 assert.equal(openResult.lineageGraph.graphHash.length, 64);
+assert.equal(
+  openResult.recoveredWorkflowPackets[0]?.run.determinismBaselineRunId,
+  "run-1",
+);
 
 const projectServiceSource = readFileSync(
   new URL("../src-tauri/src/services/project_service.rs", import.meta.url),

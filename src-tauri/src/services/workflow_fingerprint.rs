@@ -112,6 +112,8 @@ fn strip_runtime_fields(value: Value) -> Value {
                         key.as_str(),
                         "startedAt"
                             | "completedAt"
+                            | "createdAt"
+                            | "updatedAt"
                             | "executionTimestamp"
                             | "elapsedTime"
                             | "elapsedMs"

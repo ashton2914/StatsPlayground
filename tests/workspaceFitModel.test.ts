@@ -60,7 +60,7 @@ assertSourceIncludes(workspaceSource, "fitModelUnavailable ? t(\"workspace.fitMo
 assertSourceIncludes(workspaceSource, "| { kind: \"fitModel\"; id: string }", "Drag payload and context menu unions must include Fit Model items");
 assertSourceIncludes(workspaceSource, "fitModelByParent", "Tree grouping must include Fit Model documents by folder");
 assertSourceIncludes(workspaceSource, "setActiveFitModelId(null)", "Selecting tables, graphs, tabulates, Fit Y by X, distributions, or close/open must clear active Fit Model selection");
-assertSourceIncludes(workspaceSource, "setActiveFitModelId(id)", "Selecting or creating a Fit Model item must activate it");
+assertSourceIncludes(workspaceSource, "activateWorkspaceDocument(\"fitModel\", id)", "Selecting or creating a Fit Model item must activate it");
 assertSourceIncludes(workspaceSource, "activeFitModelId === item.id", "Tree rows must show the active Fit Model document");
 assertSourceIncludes(workspaceSource, "sourceDatasetId === id", "Source-table deletion must recognize active dependent Fit Model analyses");
 assertSourceIncludes(workspaceSource, "history.newFitModel", "Creation must record Fit Model history");

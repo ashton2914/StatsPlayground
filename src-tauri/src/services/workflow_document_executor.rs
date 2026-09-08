@@ -11,7 +11,7 @@ use crate::services::distribution_service::DistributionService;
 use crate::services::fit_y_by_x_service::FitYByXService;
 use crate::services::tabulate_service::TabulateService;
 use crate::services::workflow_executor::FrozenTableInput;
-use crate::services::workflow_fingerprint::canonical_json_hash;
+use crate::services::workflow_fingerprint::{canonical_document_hash, canonical_json_hash};
 use crate::state::AppState;
 
 #[derive(Clone, Debug)]
@@ -131,7 +131,7 @@ impl<'a> WorkflowDocumentExecutor<'a> {
             name: name.to_string(),
             source_table_id: frozen_input.table_document_id.clone(),
             document,
-            validation_result_hash: canonical_json_hash(&result)?,
+            validation_result_hash: canonical_document_hash(&result)?,
         })
     }
 
@@ -157,7 +157,7 @@ impl<'a> WorkflowDocumentExecutor<'a> {
             name: name.to_string(),
             source_table_id: frozen_input.table_document_id.clone(),
             document,
-            validation_result_hash: canonical_json_hash(&result)?,
+            validation_result_hash: canonical_document_hash(&result)?,
             result,
         })
     }
@@ -185,7 +185,7 @@ impl<'a> WorkflowDocumentExecutor<'a> {
             id: id.to_string(),
             name: name.to_string(),
             source_table_id: frozen_input.table_document_id.clone(),
-            validation_result_hash: canonical_json_hash(&document)?,
+            validation_result_hash: canonical_document_hash(&document)?,
             document,
         })
     }
