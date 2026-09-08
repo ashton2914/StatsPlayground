@@ -1710,7 +1710,6 @@ function buildCorrelationMatrixOption(
   packet: CorrelationMatrixPacket,
   theme: GraphTheme,
   axis: ReturnType<typeof buildAxisCommon>,
-  aggregateMode: "legacyRows" | "frameBacked",
   spec: GraphSpec,
 ): EChartsOption {
   const { negative, neutral, positive, unavailable } = buildCorrelationDivergingPalette(theme);
@@ -1818,7 +1817,7 @@ function buildCorrelationMatrixOption(
         splitArea: { show: true },
         axisLabel: { ...axis.axisLabel, interval: 0, rotate: columns.length > 8 ? 45 : 0, showMinLabel: true, showMaxLabel: true },
       },
-      buildAxisOverrides(spec.xAxis, aggregateMode),
+      buildAxisOverrides(spec.xAxis),
     ),
     yAxis: mergeAxis(
       {
@@ -1829,7 +1828,7 @@ function buildCorrelationMatrixOption(
         inverse: true,
         axisLabel: { ...axis.axisLabel, interval: 0, showMinLabel: true, showMaxLabel: true },
       },
-      buildAxisOverrides(spec.yAxis, aggregateMode),
+      buildAxisOverrides(spec.yAxis),
     ),
     visualMap: {
       min: -1,
@@ -2653,7 +2652,6 @@ function buildXAxisRefLineExpand(refXs: number[]): EChartsOption {
  *  fragment only adds behavior, never silently removes it. */
 function buildAxisOverrides(
   cfg: YAxisConfig | undefined,
-  aggregateMode: "legacyRows" | "frameBacked",
 ): EChartsOption {
   if (!cfg) return {};
   const out: EChartsOption = {};
@@ -2733,7 +2731,7 @@ function buildAxisOverrides(
         show: true,
         splitNumber: visible + 1,
       };
-    } else if (aggregateMode === "legacyRows") {
+    } else {
       // Explicit 0 → suppress minor ticks (and minor gridlines via
       // the `hasMinorTicks` gate below).
       out.minorTick = { show: false };
@@ -3169,7 +3167,6 @@ function buildSingleOption(
       correlationMatrixPacket,
       theme,
       buildAxisCommon(theme),
-      aggregateMode,
       spec,
     );
   }
@@ -3826,7 +3823,7 @@ function buildSingleOption(
           pointSize: [Math.max(1, heatmapPacket.xBinWidth), Math.max(1, heatmapPacket.yBinWidth)],
           blurSize: 0,
           itemStyle: {
-            color: grouping ? heatStyle.fill.color : theme.categorical[0],
+            color: heatStyle.fill.color,
             opacity: grouping ? 0.55 : 0.7,
           },
           progressive: 2000,
@@ -3865,7 +3862,7 @@ function buildSingleOption(
             ...(sharedRanges?.xMin != null ? { min: sharedRanges.xMin } : {}),
             ...(sharedRanges?.xMax != null ? { max: sharedRanges.xMax } : {}),
           },
-          buildAxisOverrides(spec.xAxis, aggregateMode),
+          buildAxisOverrides(spec.xAxis),
         ),
         yAxis: mergeAxis(
           {
@@ -3874,7 +3871,7 @@ function buildSingleOption(
             ...(sharedRanges?.yMin != null ? { min: sharedRanges.yMin } : {}),
             ...(sharedRanges?.yMax != null ? { max: sharedRanges.yMax } : {}),
           },
-          buildAxisOverrides(spec.yAxis, aggregateMode),
+          buildAxisOverrides(spec.yAxis),
         ),
         ...(!grouping
           ? {
@@ -3898,8 +3895,8 @@ function buildSingleOption(
         backgroundColor: "transparent",
         textStyle: { color: theme.fgPrimary },
         grid: { left: 56, right: 24, top: 32, bottom: 48, show: true, borderColor: theme.axisLine, borderWidth: 0.5 },
-        xAxis: mergeAxis({ type: "value", ...axis }, buildAxisOverrides(spec.xAxis, aggregateMode)),
-        yAxis: mergeAxis({ type: "value", ...axis }, buildAxisOverrides(spec.yAxis, aggregateMode)),
+        xAxis: mergeAxis({ type: "value", ...axis }, buildAxisOverrides(spec.xAxis)),
+        yAxis: mergeAxis({ type: "value", ...axis }, buildAxisOverrides(spec.yAxis)),
         series,
       } as EChartsOption;
     }
@@ -4949,7 +4946,7 @@ function buildSingleOption(
                 hideOverlap: false,
               },
             },
-            buildAxisOverrides(spec.xAxis, aggregateMode),
+            buildAxisOverrides(spec.xAxis),
           ),
           yAxis: mergeAxis(
             {
@@ -4958,7 +4955,7 @@ function buildSingleOption(
               ...(Number.isFinite(yLo) ? { min: yLo } : {}),
               ...(Number.isFinite(yHi) ? { max: yHi } : {}),
             },
-            buildAxisOverrides(spec.yAxis, aggregateMode),
+            buildAxisOverrides(spec.yAxis),
           ),
           series,
           animationDuration: 250,
@@ -5394,7 +5391,7 @@ function buildSingleOption(
               ? buildXAxisRefLineExpand(collectRefLineXs(spec))
               : {}),
           },
-          buildAxisOverrides(spec.xAxis, aggregateMode),
+          buildAxisOverrides(spec.xAxis),
         ),
         yAxis: mergeAxis(
           {
@@ -5411,7 +5408,7 @@ function buildSingleOption(
             // `buildAxisOverrides` still wins via the merge spread.
             ...buildYAxisRefLineExpand(collectRefLineYs(spec)),
           },
-          buildAxisOverrides(spec.yAxis, aggregateMode),
+          buildAxisOverrides(spec.yAxis),
         ),
         series,
         animationDuration: 250,
@@ -6090,7 +6087,7 @@ function buildSingleOption(
   // survive instead of being clobbered by the user's `axisLine.show`.
   // The deep merge order is base → user, so user-pinned scalars (min,
   // max, interval) win over the auto-fit values baked into the base.
-  const xAxis = mergeAxis(xAxisBase, buildAxisOverrides(spec.xAxis, aggregateMode));
+  const xAxis = mergeAxis(xAxisBase, buildAxisOverrides(spec.xAxis));
 
   // Append user-defined reference line carriers. Two separate carriers
   // (one per axis) so each can be silently skipped when its axis isn't
@@ -6312,7 +6309,7 @@ function buildSingleOption(
         // via the merge spread below.
         ...yFinalBounds,
       },
-      buildAxisOverrides(spec.yAxis, aggregateMode),
+      buildAxisOverrides(spec.yAxis),
     ),
     series,
     animationDuration: 250,

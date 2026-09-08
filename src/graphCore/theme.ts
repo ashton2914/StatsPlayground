@@ -102,7 +102,11 @@ export function buildAxisCommon(theme: GraphTheme) {
     // as the majors, which reads as the minors being more prominent
     // than the majors they're subdividing. Color also matches the
     // major tick line so the two read as members of the same scale.
-    minorTick: { lineStyle: { color: theme.axisLine, width: 0.5 } },
+    minorTick: {
+      show: true,
+      splitNumber: 5,
+      lineStyle: { color: theme.axisLine, width: 0.5 },
+    },
     // Hide the bookend boundary labels on value-type axes — ECharts
     // otherwise stamps the EXACT min and max above/below the nice
     // round tick labels (e.g. `4.9100341933248375` on top of the

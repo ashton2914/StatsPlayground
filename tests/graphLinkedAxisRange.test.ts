@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { buildLinkedAxisRangePatch } from "../src/graphCore/linkedAxisRange.ts";
+
+const graphSource = readFileSync(new URL("../src/graphCore/Graph.tsx", import.meta.url), "utf8");
+
+assert.equal(
+  /const readAxisBounds[\s\S]*?getAxisType\(which\) === "category"[\s\S]*?return null/.test(graphSource),
+  true,
+  "the grab tool must not persist numeric min/max ranges for category axes",
+);
 
 const option = {
   xAxis: [{ type: "value" }, { type: "value" }],

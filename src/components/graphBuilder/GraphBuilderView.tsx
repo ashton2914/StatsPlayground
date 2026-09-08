@@ -35,7 +35,7 @@ import { AxisSettingsDialog, isAxisConfigEmpty } from "./AxisSettingsDialog";
 import { prepareAxisBinding } from "./axisBinding";
 import { updateGraphBuilder2D } from "./graphBuilderAxisInteractions";
 import { decideGraphBuilderDropRoute } from "./graphBuilderDropRouting";
-import { resolveVisualGraphSlots } from "./graphBuilderSlotLayout";
+import { resolveVisibleSlotField, resolveVisualGraphSlots } from "./graphBuilderSlotLayout";
 import {
   clampSampleSize,
   DEFAULT_GRAPH_SAMPLE_SIZE,
@@ -460,9 +460,8 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         groupingFieldName,
         groupStyles,
         customPalettes,
-        elements.some((e) => e.kind === "boxplot" && e.enabled !== false),
       ),
-    [groupKeys, resolvedThemeSlots, groupingFieldName, groupStyles, customPalettes, elements],
+    [groupKeys, resolvedThemeSlots, groupingFieldName, groupStyles, customPalettes],
   );
 
   useEffect(() => {
@@ -1835,9 +1834,8 @@ interface SlotProps {
   slot: SlotKey;
   label: string;
   field?: FieldRef;
-  /** Multi-mode columns. When present and length >= 2 the slot
-   *  renders as a multi-chip slot whose body click opens the manager
-   *  popover instead of showing a single-field chip. */
+  /** Multi-mode columns. One column renders as a regular chip; two or
+   *  more render as a summary chip that opens the manager. */
   fields?: FieldRef[];
   onDrop: (e: React.DragEvent) => void;
   onClear: () => void;
@@ -1862,12 +1860,10 @@ interface SlotProps {
 function Slot({ label, field, fields, onDrop, onClear, onOpenManager, onContextMenu, orientation, required, rejectFlash }: SlotProps) {
   const { t } = useTranslation();
   const [over, setOver] = useState(false);
-  // Multi-mode triggers when the parent passes 2+ fields. Length-1
-  // is auto-collapsed back to single mode on the write side, so we
-  // never need to handle that case here. */
   const isMulti = !!fields && fields.length >= 2;
+  const visibleField = resolveVisibleSlotField(field, fields);
   const canManage = !!fields && fields.length >= 1 && !!onOpenManager;
-  const filled = isMulti || !!field || !!(fields && fields.length > 0);
+  const filled = isMulti || !!visibleField;
   return (
     <div
       className={`gb-slot gb-slot-${orientation}${over ? " gb-slot-over" : ""}${filled ? " gb-slot-filled" : ""}${isMulti ? " gb-slot-multi" : ""}${rejectFlash ? " gb-slot-reject" : ""}`}
@@ -1916,9 +1912,9 @@ function Slot({ label, field, fields, onDrop, onClear, onOpenManager, onContextM
           </span>
         </span>
       )}
-      {!isMulti && field && (
+      {!isMulti && visibleField && (
         <span className="gb-slot-chip">
-          <span className="gb-slot-chip-name">{field.name}</span>
+          <span className="gb-slot-chip-name">{visibleField.name}</span>
           <button
             className="gb-slot-chip-x"
             onClick={(e) => {
@@ -1945,10 +1941,9 @@ function Slot({ label, field, fields, onDrop, onClear, onOpenManager, onContextM
 //     relative order, sails the selected block past unselected rows),
 //     Delete selection, Reset to dataset order. All disabled when no
 //     selection exists (except Reset which is always meaningful).
-//   - All edits write through onChange → setMultiAtSlot on the parent,
-//     which auto-collapses length-1 back to single-field encoding and
-//     clears the slot entirely on length-0. The manager never has to
-//     worry about those edge cases.
+//   - All edits write through onChange → setMultiAtSlot on the parent.
+//     Length-0 clears the slot; length-1 remains multiX for X and
+//     collapses to single-field encoding for Y.
 // Backdrop click and Esc both close.
 
 interface MultiColManagerProps {
