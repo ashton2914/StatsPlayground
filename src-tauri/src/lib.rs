@@ -105,7 +105,6 @@ pub fn run() {
             commands::project_commands::export_table,
             commands::project_commands::export_tables_sptb_zip,
             commands::project_commands::import_table,
-            commands::project_commands::export_graph,
             commands::project_commands::import_graph,
             commands::project_commands::create_table_transform,
             commands::project_commands::run_table_transform,

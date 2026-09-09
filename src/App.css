@@ -317,6 +317,215 @@
   margin: 4px 0;
 }
 
+/* ========= Dialog Shell ========= */
+.sp-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-dialog-overlay);
+  z-index: 2000;
+}
+
+.sp-dialog {
+  width: min(880px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-dialog);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-dialog);
+  border-radius: 14px;
+  box-shadow: var(--shadow-dialog);
+}
+
+.sp-dialog-header,
+.sp-dialog-actions {
+  padding: 20px 24px;
+}
+
+.sp-dialog-header {
+  border-bottom: 1px solid var(--border-main);
+}
+
+.sp-dialog-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.sp-dialog-subtitle {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+}
+
+.sp-dialog-body {
+  padding: 24px;
+}
+
+.sp-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid var(--border-main);
+}
+
+/* ========= Table Export Dialog ========= */
+.table-export-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr);
+  gap: 20px;
+  min-height: 0;
+}
+
+.table-export-panel {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--border-main);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+.table-export-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.table-export-panel-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.table-export-selection-count {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.table-export-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.table-export-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.table-export-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.table-export-row-leaf {
+  gap: 10px;
+}
+
+.table-export-toggle,
+.table-export-toggle-spacer {
+  width: 20px;
+  flex: 0 0 20px;
+}
+
+.table-export-toggle {
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.table-export-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.table-export-checkbox-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-export-segmented {
+  display: inline-flex;
+  width: 100%;
+  padding: 4px;
+  border: 1px solid var(--border-main);
+  border-radius: 999px;
+  background: var(--bg-main);
+}
+
+.table-export-segment {
+  flex: 1 1 0;
+  min-height: 36px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.table-export-segment[aria-pressed="true"] {
+  background: var(--fg-accent);
+  color: #fff;
+}
+
+.table-export-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--fg-muted);
+}
+
+.table-export-summary p {
+  margin: 0;
+}
+
+.table-export-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg-danger) 12%, var(--bg-card));
+  color: var(--fg-danger);
+}
+
+@media (max-width: 720px) {
+  .sp-dialog-overlay {
+    padding: 12px;
+  }
+
+  .sp-dialog {
+    max-height: calc(100vh - 24px);
+  }
+
+  .table-export-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .table-export-tree {
+    max-height: 280px;
+  }
+}
+
 /* ========= Workspace ========= */
 .workspace {
   display: flex;

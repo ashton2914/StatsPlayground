@@ -111,6 +111,8 @@
     "help": "Help",
     "about": "About",
     "license": "License",
+    "contributors": "Contributors",
+    "exportTables": "Export Tables",
     "fitModel": "Fit Model"
   },
   "alert": {
@@ -884,12 +886,42 @@
   "help": {
     "aboutTitle": "About StatsPlayground",
     "licenseTitle": "License",
+    "contributorsTitle": "Contributors",
+    "contributorsIntro": "StatsPlayground is shaped by the following contributors.",
     "version": "Version",
     "description": "An ultra-lightweight, open-source, and extensible data analysis tool.",
     "copyright": "Copyright © 2026 Ashton Huang. All rights reserved.",
     "acknowledgments": "Acknowledgments",
     "acknowledgmentsIntro": "StatsPlayground is built on top of the following open-source projects. Sincere thanks to their maintainers and contributors.",
     "close": "Close"
+  },
+  "tableExport": {
+    "title": "Export Tables",
+    "intro": "Select the tables and output format to export.",
+    "tablesTitle": "Tables",
+    "empty": "No tables available to export.",
+    "formatTitle": "Format",
+    "formatAriaLabel": "Export format",
+    "format": {
+      "csv": "CSV",
+      "sqlite": "SQLite",
+      "sptb": "SPTB"
+    },
+    "selectedCount": {
+      "one": "{{count}} table selected",
+      "other": "{{count}} tables selected"
+    },
+    "summarySelected": "Selected: {{count}}",
+    "summaryProject": "Project: {{projectName}}",
+    "cancel": "Cancel",
+    "export": "Export",
+    "exporting": "Exporting...",
+    "error": "Export failed",
+    "pickerTitle": {
+      "csv": "Export tables as CSV",
+      "sqlite": "Export tables as SQLite",
+      "sptb": "Export tables as SPTB"
+    }
   },
   "tableOp": {
     "transformTitle": "Transform Table",

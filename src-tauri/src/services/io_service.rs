@@ -16,6 +16,33 @@ pub struct IoService<'a> {
 mod tests {
     use super::*;
     use crate::models::data_link::{AuthenticationType, ConnectorKind, SourceObjectType, TlsMode};
+    use crate::models::table::CreateTableFromRowsRequest;
+    use crate::services::data_service::DataService;
+    use std::collections::{BTreeSet, HashMap};
+    use std::io::Read;
+
+    fn seed_export_dataset(
+        service: &DataService<'_>,
+        name: &str,
+        rows: Vec<Vec<serde_json::Value>>,
+    ) -> String {
+        service
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: name.to_string(),
+                column_names: vec!["label".to_string(), "value".to_string()],
+                column_types: vec!["VARCHAR".to_string(), "INTEGER".to_string()],
+                rows,
+            })
+            .expect("seed export dataset")
+            .id
+    }
+
+    fn seed_empty_export_dataset(service: &DataService<'_>, name: &str) -> String {
+        service
+            .create_table(name, &[], &[])
+            .expect("seed empty export dataset")
+            .id
+    }
 
     #[test]
     fn skip_only_sqlite_import_does_not_trigger_legacy_import_all() {
@@ -55,6 +82,188 @@ mod tests {
             .expect("list datasets")
             .is_empty());
 
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn export_sqlite_subset_uses_selected_names_only() {
+        let state = AppState::new().expect("create app state");
+        let data = DataService::new(&state);
+        let alpha_id = seed_export_dataset(
+            &data,
+            "Alpha",
+            vec![vec![serde_json::json!("ada"), serde_json::json!(1)]],
+        );
+        let beta_id = seed_export_dataset(
+            &data,
+            "Beta",
+            vec![vec![serde_json::json!("grace"), serde_json::json!(2)]],
+        );
+        let gamma_id = seed_export_dataset(
+            &data,
+            "Gamma",
+            vec![vec![serde_json::json!("linus"), serde_json::json!(3)]],
+        );
+        let path = std::env::temp_dir().join(format!(
+            "datalink-export-subset-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let overrides = HashMap::from([
+            (alpha_id.clone(), "Incoming-Alpha Share".to_string()),
+            (beta_id.clone(), "Nested-Beta Share".to_string()),
+        ]);
+
+        IoService::new(&state)
+            .export_sqlite_subset(
+                path.to_str().expect("fixture path"),
+                Some(&[alpha_id.clone(), beta_id.clone()]),
+                &overrides,
+            )
+            .expect("export sqlite subset");
+
+        let sqlite = rusqlite::Connection::open(&path).expect("open exported SQLite");
+        let names = sqlite
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .expect("prepare table list")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query table list")
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("collect table names");
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                "Incoming-Alpha Share".to_string(),
+                "Nested-Beta Share".to_string(),
+            ])
+        );
+        assert!(!names.contains("Gamma"));
+        let exported_label: String = sqlite
+            .query_row("SELECT label FROM \"Nested-Beta Share\"", [], |row| row.get(0))
+            .expect("read exported beta row");
+        assert_eq!(exported_label, "grace");
+        drop(sqlite);
+        let _ = gamma_id;
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn export_csv_zip_subset_writes_nested_entries_and_skips_unselected_tables() {
+        let state = AppState::new().expect("create app state");
+        let data = DataService::new(&state);
+        let alpha_id = seed_export_dataset(
+            &data,
+            "Alpha",
+            vec![vec![serde_json::json!("ada"), serde_json::json!(1)]],
+        );
+        let beta_id = seed_export_dataset(
+            &data,
+            "Beta",
+            vec![vec![serde_json::json!("grace"), serde_json::json!(2)]],
+        );
+        let _gamma_id = seed_export_dataset(
+            &data,
+            "Gamma",
+            vec![vec![serde_json::json!("linus"), serde_json::json!(3)]],
+        );
+        let path = std::env::temp_dir().join(format!(
+            "datalink-export-csv-{}.zip",
+            uuid::Uuid::new_v4()
+        ));
+        let archive_paths = HashMap::from([
+            (alpha_id.clone(), "Incoming/Alpha Share".to_string()),
+            (beta_id.clone(), "Nested/Review/Beta Share".to_string()),
+        ]);
+
+        IoService::new(&state)
+            .export_csv_zip_subset(
+                path.to_str().expect("fixture path"),
+                Some(&[alpha_id, beta_id]),
+                &archive_paths,
+            )
+            .expect("export csv zip subset");
+
+        let file = std::fs::File::open(&path).expect("open exported zip");
+        let mut zip = zip::ZipArchive::new(file).expect("read exported zip");
+        let names = (0..zip.len())
+            .map(|index| {
+                zip.by_index(index)
+                    .expect("read zip entry")
+                    .name()
+                    .to_string()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                "Incoming/Alpha Share.csv".to_string(),
+                "Nested/Review/Beta Share.csv".to_string(),
+            ])
+        );
+        assert!(!names.iter().any(|name| name.contains("Gamma")));
+
+        let mut beta_csv = String::new();
+        zip.by_name("Nested/Review/Beta Share.csv")
+            .expect("open beta csv")
+            .read_to_string(&mut beta_csv)
+            .expect("read beta csv");
+        assert!(beta_csv.contains("label,value"));
+        assert!(beta_csv.contains("grace,2"));
+
+        drop(zip);
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn export_csv_zip_subset_rejects_empty_schema_before_touching_output() {
+        let state = AppState::new().expect("create app state");
+        let empty_id = seed_empty_export_dataset(&DataService::new(&state), "Empty");
+        let path = std::env::temp_dir().join(format!(
+            "datalink-export-empty-{}.zip",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, b"keep existing output").expect("seed existing output");
+
+        let error = IoService::new(&state)
+            .export_csv_zip_subset(
+                path.to_str().expect("fixture path"),
+                Some(&[empty_id]),
+                &HashMap::new(),
+            )
+            .expect_err("empty schema must be rejected");
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(
+            std::fs::read(&path).expect("read existing output"),
+            b"keep existing output"
+        );
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn export_sqlite_subset_rejects_empty_schema_before_touching_output() {
+        let state = AppState::new().expect("create app state");
+        let empty_id = seed_empty_export_dataset(&DataService::new(&state), "Empty");
+        let path = std::env::temp_dir().join(format!(
+            "datalink-export-empty-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, b"keep existing output").expect("seed existing output");
+
+        let error = IoService::new(&state)
+            .export_sqlite_subset(
+                path.to_str().expect("fixture path"),
+                Some(&[empty_id]),
+                &HashMap::new(),
+            )
+            .expect_err("empty schema must be rejected");
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(
+            std::fs::read(&path).expect("read existing output"),
+            b"keep existing output"
+        );
         std::fs::remove_file(path).expect("remove fixture");
     }
 

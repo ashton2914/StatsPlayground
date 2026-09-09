@@ -92,6 +92,8 @@
     "help": "Trợ giúp",
     "about": "Giới thiệu",
     "license": "Giấy phép",
+    "contributors": "Người đóng góp",
+    "exportTables": "Xuất bảng",
     "fitModel": "Khớp Mô hình"
   },
   "alert": {
@@ -702,12 +704,42 @@
   "help": {
     "aboutTitle": "Giới thiệu StatsPlayground",
     "licenseTitle": "Giấy phép",
+    "contributorsTitle": "Người đóng góp",
+    "contributorsIntro": "StatsPlayground được xây dựng cùng với những người đóng góp sau đây.",
     "version": "Phiên bản",
     "description": "Công cụ phân tích dữ liệu siêu nhẹ, mã nguồn mở và có thể mở rộng.",
     "copyright": "Bản quyền © 2026 Ashton Huang. Bảo lưu mọi quyền.",
     "acknowledgments": "Lời cảm ơn",
     "acknowledgmentsIntro": "StatsPlayground được xây dựng trên các dự án mã nguồn mở dưới đây. Xin chân thành cảm ơn các nhà bảo trì và đóng góp của các dự án này.",
     "close": "Đóng"
+  },
+  "tableExport": {
+    "title": "Xuất bảng",
+    "intro": "Chọn các bảng và định dạng đầu ra để xuất.",
+    "tablesTitle": "Bảng",
+    "empty": "Không có bảng nào để xuất.",
+    "formatTitle": "Định dạng",
+    "formatAriaLabel": "Định dạng xuất",
+    "format": {
+      "csv": "CSV",
+      "sqlite": "SQLite",
+      "sptb": "SPTB"
+    },
+    "selectedCount": {
+      "one": "Đã chọn {{count}} bảng",
+      "other": "Đã chọn {{count}} bảng"
+    },
+    "summarySelected": "Đã chọn: {{count}}",
+    "summaryProject": "Dự án: {{projectName}}",
+    "cancel": "Hủy",
+    "export": "Xuất",
+    "exporting": "Đang xuất...",
+    "error": "Xuất thất bại",
+    "pickerTitle": {
+      "csv": "Xuất bảng sang CSV",
+      "sqlite": "Xuất bảng sang SQLite",
+      "sptb": "Xuất bảng sang SPTB"
+    }
   },
   "tableOp": {
     "transformTitle": "Biến đổi bảng",

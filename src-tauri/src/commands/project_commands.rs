@@ -276,16 +276,6 @@ pub fn import_table(
     Ok(ImportTableResult { id })
 }
 
-#[tauri::command]
-pub fn export_graph(
-    state: State<'_, AppState>,
-    graph: serde_json::Value,
-    file_path: String,
-) -> Result<(), AppError> {
-    let service = ProjectService::new(&state);
-    service.export_graph(graph, &file_path)
-}
-
 /// Returns the imported graph builder body (opaque JSON, frontend shape).
 #[tauri::command]
 pub fn import_graph(

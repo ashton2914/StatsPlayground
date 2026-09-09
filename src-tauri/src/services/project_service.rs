@@ -864,19 +864,6 @@ impl<'a> ProjectService<'a> {
         Ok(new_id)
     }
 
-    /// Export an arbitrary graph builder config (opaque to backend) as a
-    /// standalone `.spgh` file on disk. Per issue #7 the body is folder-free.
-    pub fn export_graph(&self, graph: serde_json::Value, file_path: &str) -> Result<(), AppError> {
-        let (id, name, body) = lift_graph_meta(graph);
-        let doc = GraphDoc {
-            id,
-            name,
-            version: "1".to_string(),
-            body,
-        };
-        spprj_archive::write_graph_file(&doc, file_path)
-    }
-
     /// Read a `.spgh` file off disk and return its body as the same opaque
     /// JSON shape the frontend uses for graph_builders. `id` and `name` are
     /// re-injected into the body for frontend convenience; folder is NOT
@@ -1363,15 +1350,17 @@ mod tests {
     use crate::error::AppError;
     use crate::models::project::ProjectInfo;
     use crate::models::save::SaveProjectRequest;
+    use crate::models::table::CreateTableFromRowsRequest;
     use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
+    use crate::services::data_service::DataService;
     use crate::services::spprj_archive::{
         self, GraphEntryRef, ProjectManifest, TableColumn, TableDoc, TableEntryRef,
     };
     use crate::services::table_transform_domain::TableTransformDefinition;
     use crate::state::AppState;
     use std::cell::RefCell;
-    use std::collections::{BTreeMap, HashMap};
-    use std::io::Write;
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use std::io::{Read, Write};
 
     fn source_between(source: &str, start: &str, end: &str) -> String {
         let start_idx = source
@@ -1460,6 +1449,22 @@ mod tests {
         )
     }
 
+    fn seed_export_dataset(
+        service: &DataService<'_>,
+        name: &str,
+        rows: Vec<Vec<serde_json::Value>>,
+    ) -> String {
+        service
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: name.to_string(),
+                column_names: vec!["label".to_string(), "value".to_string()],
+                column_types: vec!["VARCHAR".to_string(), "INTEGER".to_string()],
+                rows,
+            })
+            .expect("seed export dataset")
+            .id
+    }
+
     #[test]
     fn imported_table_transform_gets_fresh_project_identity() {
         let state = AppState::new().expect("create state");
@@ -1503,6 +1508,79 @@ mod tests {
         );
         assert!(imported.binding.inputs.is_empty());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn export_tables_sptb_zip_preserves_nested_paths_and_deserializes_entries() {
+        let state = AppState::new().expect("create state");
+        let data = DataService::new(&state);
+        let alpha_id = seed_export_dataset(
+            &data,
+            "Alpha",
+            vec![vec![serde_json::json!("ada"), serde_json::json!(1)]],
+        );
+        let beta_id = seed_export_dataset(
+            &data,
+            "Beta",
+            vec![vec![serde_json::json!("grace"), serde_json::json!(2)]],
+        );
+
+        let output = std::env::temp_dir().join(format!(
+            "stats-playground-export-tables-{}.zip",
+            uuid::Uuid::new_v4()
+        ));
+        let output_path = output.to_string_lossy().to_string();
+        let archive_paths = HashMap::from([
+            (alpha_id.clone(), "Incoming/Alpha Share".to_string()),
+            (beta_id.clone(), "Nested/Review/Beta Share".to_string()),
+        ]);
+
+        ProjectService::new(&state)
+            .export_tables_sptb_zip(&[alpha_id.clone(), beta_id.clone()], &archive_paths, &output_path)
+            .expect("export nested sptb zip");
+
+        let file = std::fs::File::open(&output).expect("open zip output");
+        let mut zip = zip::ZipArchive::new(file).expect("read zip output");
+        let names = (0..zip.len())
+            .map(|index| {
+                zip.by_index(index)
+                    .expect("read zip entry")
+                    .name()
+                    .to_string()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                "Incoming/Alpha Share.sptb".to_string(),
+                "Nested/Review/Beta Share.sptb".to_string(),
+            ])
+        );
+
+        let mut alpha_bytes = Vec::new();
+        zip.by_name("Incoming/Alpha Share.sptb")
+            .expect("open alpha entry")
+            .read_to_end(&mut alpha_bytes)
+            .expect("read alpha entry");
+        let alpha_doc: TableDoc =
+            serde_json::from_slice(&alpha_bytes).expect("deserialize alpha sptb entry");
+        assert_eq!(alpha_doc.id, alpha_id);
+        assert_eq!(alpha_doc.name, "Alpha");
+        assert_eq!(alpha_doc.rows.len(), 1);
+
+        let mut beta_bytes = Vec::new();
+        zip.by_name("Nested/Review/Beta Share.sptb")
+            .expect("open beta entry")
+            .read_to_end(&mut beta_bytes)
+            .expect("read beta entry");
+        let beta_doc: TableDoc =
+            serde_json::from_slice(&beta_bytes).expect("deserialize beta sptb entry");
+        assert_eq!(beta_doc.id, beta_id);
+        assert_eq!(beta_doc.name, "Beta");
+        assert_eq!(beta_doc.rows.len(), 1);
+
+        drop(zip);
+        std::fs::remove_file(output).expect("remove zip output");
     }
 
     fn write_zip_entry(zip: &mut zip::ZipWriter<std::fs::File>, path: &str, bytes: &[u8]) {
