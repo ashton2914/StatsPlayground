@@ -33,6 +33,7 @@ test("inserts canonical embeds from grouped menu choices", async ({ mount }) => 
   await expect(component.getByText("Tables")).toBeVisible();
   await expect(component.getByText("Graphs")).toBeVisible();
   await expect(component.getByText("Fit Y by X")).toBeVisible();
+  await expect(component.getByText("Hypothesis Test")).toBeVisible();
   await expect(component.getByText("Tabulate")).toBeVisible();
   await expect(component.getByText("Distributions")).toBeVisible();
 

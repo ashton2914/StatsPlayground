@@ -254,7 +254,7 @@ assert.match(fitYByXAnalysisEmbedSource, /FitYByXAnalysisReport/, "Fit Y by X em
 assert.doesNotMatch(fitYByXAnalysisEmbedSource, /useFitYByXReport|AnalysisShell/, "Fit Y by X embeds must not restore legacy execution or the Analysis shell");
 assert.match(dataTableSource, /setColumnDisplayProps[\s\S]*invalidateData\(\)/, "Display-property writes must invalidate embeds");
 assert.match(workspaceSource, /handleHistoryRestored[\s\S]*invalidateData\(\)/, "Snapshot restores must invalidate embeds");
-assert.match(workspaceSource, /onUpdated=\{async \(\) => \{[\s\S]*invalidateData\(\)/, "In-place table updates must invalidate embeds");
+assert.match(workspaceSource, /onSubmit=\{async \(draft\) => \{[\s\S]*invalidateData\(\)/, "Table Transform submissions must invalidate embeds");
 
 const initialDataRevision = useHistoryStore.getState().dataRevision;
 useHistoryStore.getState().recordTable("Edit cell", {

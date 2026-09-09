@@ -204,8 +204,11 @@ pub enum ProjectDocumentKind {
     Table,
     TableTransform,
     Graph,
+    Analysis,
+    Distribution,
     FitYByX,
     Tabulate,
+    Report,
     Snapshot,
 }
 
@@ -1745,7 +1748,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
             id: workflow.id.clone(),
             name: workflow.name.clone(),
             revision: workflow.revision,
-            file: format!("workflows/{}.json", workflow.id),
+            file: format!("workflow/{}.spwf", workflow.id),
         })
         .collect::<Vec<_>>();
     let table_transform_refs = table_transforms
@@ -1777,22 +1780,35 @@ pub fn build_bundle_with_workflows_and_fit_models(
         &table_refs,
         &graph_refs,
         &fit_y_by_x_refs,
+        &analysis_refs,
+        &distribution_refs,
         &tabulate_refs,
+        &report_refs,
         &snapshot_refs,
         &table_transform_refs,
     );
     let lineage_graph = if is_format_v4(&version) {
-        let lineage_graph = build_project_lineage_graph(
+        let mut lineage_graph = build_project_lineage_graph(
             &table_refs,
             &graph_refs,
             &graphs,
             &fit_y_by_x_refs,
             &fit_y_by_x,
+            &analysis_refs,
+            &analyses,
+            &distribution_refs,
+            &distributions,
             &tabulate_refs,
             &tabulates,
+            &report_refs,
+            &reports,
             &snapshot_refs,
+            &table_transform_refs,
+            &table_transforms,
+            &table_transform_bindings,
             &known_documents,
         )?;
+        workflow_domain::seal_project_lineage_graph(&mut lineage_graph)?;
         workflow_domain::validate_lineage_graph(&lineage_graph, &known_documents)?;
         lineage_graph
     } else {
@@ -1868,7 +1884,10 @@ fn collect_known_document_refs(
     table_refs: &[TableEntryRef],
     graph_refs: &[GraphEntryRef],
     fit_refs: &[DocumentEntryRef],
+    analysis_refs: &[DocumentEntryRef],
+    distribution_refs: &[DocumentEntryRef],
     tabulate_refs: &[DocumentEntryRef],
+    report_refs: &[DocumentEntryRef],
     snapshot_refs: &[SnapshotEntryRef],
     table_transform_refs: &[TableTransformEntryRef],
 ) -> HashSet<ProjectDocumentRef> {
@@ -1892,9 +1911,27 @@ fn collect_known_document_refs(
             id: entry.id.clone(),
         });
     }
+    for entry in analysis_refs {
+        known_documents.insert(ProjectDocumentRef {
+            kind: ProjectDocumentKind::Analysis,
+            id: entry.id.clone(),
+        });
+    }
+    for entry in distribution_refs {
+        known_documents.insert(ProjectDocumentRef {
+            kind: ProjectDocumentKind::Distribution,
+            id: entry.id.clone(),
+        });
+    }
     for entry in tabulate_refs {
         known_documents.insert(ProjectDocumentRef {
             kind: ProjectDocumentKind::Tabulate,
+            id: entry.id.clone(),
+        });
+    }
+    for entry in report_refs {
+        known_documents.insert(ProjectDocumentRef {
+            kind: ProjectDocumentKind::Report,
             id: entry.id.clone(),
         });
     }
@@ -1920,30 +1957,48 @@ fn build_project_lineage_graph(
     graphs: &[GraphDoc],
     fit_refs: &[DocumentEntryRef],
     fit_y_by_x: &[Value],
+    analysis_refs: &[DocumentEntryRef],
+    analyses: &[Value],
+    distribution_refs: &[DocumentEntryRef],
+    distributions: &[Value],
     tabulate_refs: &[DocumentEntryRef],
     tabulates: &[Value],
+    report_refs: &[DocumentEntryRef],
+    reports: &[Value],
     snapshot_refs: &[SnapshotEntryRef],
+    table_transform_refs: &[TableTransformEntryRef],
+    table_transforms: &[crate::services::table_transform_domain::TableTransformDefinition],
+    table_transform_bindings: &[crate::services::table_transform_service::TableTransformProjectBinding],
     known_documents: &HashSet<ProjectDocumentRef>,
 ) -> Result<workflow_domain::ProjectLineageGraph, AppError> {
     let mut lineage_graph = workflow_domain::ProjectLineageGraph::default();
 
     let mut artifact_nodes =
         table_refs
-        .iter()
-        .map(|entry| build_artifact_node(ProjectDocumentKind::Table, &entry.id, &entry.name))
+            .iter()
+            .map(|entry| build_artifact_node(ProjectDocumentKind::Table, &entry.id, &entry.name))
             .chain(graph_refs.iter().map(|entry| {
                 build_artifact_node(ProjectDocumentKind::Graph, &entry.id, &entry.name)
             }))
             .chain(fit_refs.iter().map(|entry| {
                 build_artifact_node(ProjectDocumentKind::FitYByX, &entry.id, &entry.name)
             }))
-        .chain(tabulate_refs.iter().map(|entry| {
-            build_artifact_node(ProjectDocumentKind::Tabulate, &entry.id, &entry.name)
-        }))
-        .chain(snapshot_refs.iter().map(|entry| {
-            build_artifact_node(ProjectDocumentKind::Snapshot, &entry.id, &entry.name)
-        }))
-        .collect::<Result<Vec<_>, AppError>>()?;
+            .chain(analysis_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Analysis, &entry.id, &entry.name)
+            }))
+            .chain(distribution_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Distribution, &entry.id, &entry.name)
+            }))
+            .chain(tabulate_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Tabulate, &entry.id, &entry.name)
+            }))
+            .chain(report_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Report, &entry.id, &entry.name)
+            }))
+            .chain(snapshot_refs.iter().map(|entry| {
+                build_artifact_node(ProjectDocumentKind::Snapshot, &entry.id, &entry.name)
+            }))
+            .collect::<Result<Vec<_>, AppError>>()?;
     artifact_nodes.sort_by(|left, right| left.id.cmp(&right.id));
     lineage_graph.nodes.extend(
         artifact_nodes
@@ -1954,6 +2009,94 @@ fn build_project_lineage_graph(
     let mut operation_nodes = Vec::new();
     let mut edges = Vec::new();
 
+    for transform_ref in table_transform_refs {
+        let definition = table_transforms
+            .iter()
+            .find(|definition| definition.id == transform_ref.id)
+            .ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing table transform payload for manifest reference {}",
+                    transform_ref.id
+                ))
+            })?;
+        let binding = table_transform_bindings
+            .iter()
+            .find(|binding| binding.definition_id == transform_ref.id)
+            .ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "missing table transform binding for manifest reference {}",
+                    transform_ref.id
+                ))
+            })?;
+        ensure_known_source_table(&definition.output.table_document_id, known_documents)?;
+        let operation_id = format!("operation-table-transform-{}", definition.id);
+        let output_port_id = format!("{operation_id}-output");
+        let mut input_ports = Vec::new();
+        for input in &binding.inputs {
+            ensure_known_source_table(&input.table_document_id, known_documents)?;
+            let input_port_id = format!("{operation_id}-input-{}", input.role);
+            input_ports.push(workflow_domain::LineagePort {
+                id: input_port_id.clone(),
+                name: input.role.clone(),
+                payload_kind: workflow_domain::PortPayloadKind::Table,
+            });
+            let source_artifact_id =
+                artifact_node_id(&ProjectDocumentKind::Table, &input.table_document_id);
+            edges.push(workflow_domain::LineageEdge {
+                id: format!(
+                    "consumes-table-{}-to-transform-{}-{}",
+                    input.table_document_id, definition.id, input.role
+                ),
+                kind: workflow_domain::LineageEdgeKind::Consumes,
+                source: workflow_domain::LineageEndpoint {
+                    node_id: source_artifact_id.clone(),
+                    port_id: format!("{source_artifact_id}-output"),
+                },
+                target: workflow_domain::LineageEndpoint {
+                    node_id: operation_id.clone(),
+                    port_id: input_port_id,
+                },
+            });
+        }
+        operation_nodes.push(workflow_domain::OperationNode {
+            id: operation_id.clone(),
+            kind: workflow_domain::OperationKind::TableTransform,
+            schema_version: definition.format_version.clone(),
+            configuration: Some(serde_json::to_value(definition).map_err(|error| {
+                AppError::FileIO(format!("failed to encode table transform lineage: {error}"))
+            })?),
+            document_ref: Some(ProjectDocumentRef {
+                kind: ProjectDocumentKind::TableTransform,
+                id: definition.id.clone(),
+            }),
+            input_ports,
+            output_ports: vec![workflow_domain::LineagePort {
+                id: output_port_id.clone(),
+                name: "output".to_string(),
+                payload_kind: workflow_domain::PortPayloadKind::Table,
+            }],
+        });
+        let output_artifact_id = artifact_node_id(
+            &ProjectDocumentKind::Table,
+            &definition.output.table_document_id,
+        );
+        edges.push(workflow_domain::LineageEdge {
+            id: format!(
+                "produces-transform-{}-to-table-{}",
+                definition.id, definition.output.table_document_id
+            ),
+            kind: workflow_domain::LineageEdgeKind::Produces,
+            source: workflow_domain::LineageEndpoint {
+                node_id: operation_id,
+                port_id: output_port_id,
+            },
+            target: workflow_domain::LineageEndpoint {
+                node_id: output_artifact_id.clone(),
+                port_id: format!("{output_artifact_id}-input"),
+            },
+        });
+    }
+
     for graph_doc in graphs {
         if let Some(source_id) = non_blank_string(graph_doc.body.get("sourceDatasetId")) {
             ensure_known_source_table(source_id, known_documents)?;
@@ -1961,8 +2104,11 @@ fn build_project_lineage_graph(
                 kind: ProjectDocumentKind::Graph,
                 id: graph_doc.id.clone(),
             };
-            let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref)?;
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(Value::Object(graph_doc.body.clone())),
+            )?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
@@ -1985,8 +2131,65 @@ fn build_project_lineage_graph(
                 kind: ProjectDocumentKind::FitYByX,
                 id: fit_ref.id.clone(),
             };
-            let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref)?;
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(fit_value.clone()),
+            )?;
+            operation_nodes.push(operation_node);
+            edges.push(consume_edge);
+            edges.push(produce_edge);
+        }
+    }
+
+    for analysis_ref in analysis_refs {
+        let analysis = document_payload(analyses, analysis_ref, "analysis")?;
+        if let Some(source_id) = analysis
+            .get("source")
+            .and_then(|source| source.get("datasetId"))
+            .and_then(Value::as_str)
+        {
+            let source_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Table,
+                id: source_id.to_string(),
+            };
+            if !known_documents.contains(&source_ref) {
+                continue;
+            }
+            let target_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Analysis,
+                id: analysis_ref.id.clone(),
+            };
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(analysis.clone()),
+            )?;
+            operation_nodes.push(operation_node);
+            edges.push(consume_edge);
+            edges.push(produce_edge);
+        }
+    }
+
+    for distribution_ref in distribution_refs {
+        let distribution = document_payload(distributions, distribution_ref, "distribution")?;
+        if let Some(source_id) = non_blank_string(distribution.get("sourceDatasetId")) {
+            let source_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Table,
+                id: source_id.to_string(),
+            };
+            if !known_documents.contains(&source_ref) {
+                continue;
+            }
+            let target_ref = ProjectDocumentRef {
+                kind: ProjectDocumentKind::Distribution,
+                id: distribution_ref.id.clone(),
+            };
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(distribution.clone()),
+            )?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
@@ -2015,12 +2218,32 @@ fn build_project_lineage_graph(
                 kind: ProjectDocumentKind::Tabulate,
                 id: tabulate_ref.id.clone(),
             };
-            let (operation_node, consume_edge, produce_edge) =
-                build_project_lineage_operation(source_id, &target_ref)?;
+            let (operation_node, consume_edge, produce_edge) = build_project_lineage_operation(
+                source_id,
+                &target_ref,
+                normalized_lineage_configuration(tabulate_value.clone()),
+            )?;
             operation_nodes.push(operation_node);
             edges.push(consume_edge);
             edges.push(produce_edge);
         }
+    }
+
+    for report_ref in report_refs {
+        let report = document_payload(reports, report_ref, "report")?;
+        let markdown = report.get("markdown").and_then(Value::as_str).unwrap_or("");
+        let target_ref = ProjectDocumentRef {
+            kind: ProjectDocumentKind::Report,
+            id: report_ref.id.clone(),
+        };
+        let (operation_node, mut report_edges) = build_report_lineage_operation(
+            &target_ref,
+            normalized_lineage_configuration(report.clone()),
+            markdown,
+            known_documents,
+        )?;
+        operation_nodes.push(operation_node);
+        edges.append(&mut report_edges);
     }
 
     operation_nodes.sort_by(|left, right| left.id.cmp(&right.id));
@@ -2033,6 +2256,58 @@ fn build_project_lineage_graph(
     lineage_graph.edges = edges;
 
     Ok(lineage_graph)
+}
+
+pub fn refresh_project_lineage_graph(bundle: &mut ProjectBundle) -> Result<bool, AppError> {
+    if !is_format_v4(&bundle.manifest.version) {
+        return Ok(false);
+    }
+
+    let known_documents = collect_known_document_refs(
+        &bundle.manifest.tables,
+        &bundle.manifest.graphs,
+        &bundle.manifest.fit_y_by_x_files,
+        &bundle.manifest.analyses,
+        &bundle.manifest.distributions,
+        &bundle.manifest.tabulate_files,
+        &bundle.manifest.report_files,
+        &bundle.manifest.snapshot_files,
+        &bundle.manifest.table_transform_files,
+    );
+    let mut rebuilt = build_project_lineage_graph(
+        &bundle.manifest.tables,
+        &bundle.manifest.graphs,
+        &bundle.graphs,
+        &bundle.manifest.fit_y_by_x_files,
+        &bundle.fit_y_by_x,
+        &bundle.manifest.analyses,
+        &bundle.analyses,
+        &bundle.manifest.distributions,
+        &bundle.distributions,
+        &bundle.manifest.tabulate_files,
+        &bundle.tabulates,
+        &bundle.manifest.report_files,
+        &bundle.reports,
+        &bundle.manifest.snapshot_files,
+        &bundle.manifest.table_transform_files,
+        &bundle.table_transforms,
+        &bundle.manifest.table_transform_bindings,
+        &known_documents,
+    )?;
+    workflow_domain::seal_project_lineage_graph(&mut rebuilt)?;
+    workflow_domain::validate_lineage_graph(&rebuilt, &known_documents)?;
+
+    let persisted = &bundle.manifest.lineage_graph;
+    let persisted_body_hash = workflow_domain::project_lineage_graph_hash(persisted)?;
+    let requires_migration = persisted.graph_version
+        != workflow_domain::PROJECT_LINEAGE_GRAPH_VERSION
+        || persisted.graph_hash != persisted_body_hash
+        || persisted.graph_hash != rebuilt.graph_hash;
+
+    bundle.manifest.lineage_graph = rebuilt;
+    bundle.manifest.relationships =
+        build_data_source_relationships(&bundle.manifest.lineage_graph)?;
+    Ok(requires_migration)
 }
 
 fn build_artifact_node(
@@ -2086,6 +2361,7 @@ fn ensure_known_source_table(
 fn build_project_lineage_operation(
     source_id: &str,
     target_ref: &ProjectDocumentRef,
+    configuration: Value,
 ) -> Result<
     (
         workflow_domain::OperationNode,
@@ -2105,7 +2381,7 @@ fn build_project_lineage_operation(
         id: operation_id.clone(),
         kind: operation_kind(&target_ref.kind)?,
         schema_version: "1".to_string(),
-        configuration: None,
+        configuration: Some(configuration),
         document_ref: Some(target_ref.clone()),
         input_ports: vec![workflow_domain::LineagePort {
             id: operation_input_port_id.clone(),
@@ -2151,6 +2427,201 @@ fn build_project_lineage_operation(
     };
 
     Ok((operation_node, consume_edge, produce_edge))
+}
+
+fn document_payload<'a>(
+    documents: &'a [Value],
+    entry: &DocumentEntryRef,
+    label: &str,
+) -> Result<&'a Value, AppError> {
+    documents
+        .iter()
+        .find(|value| value.get("id").and_then(Value::as_str) == Some(entry.id.as_str()))
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "missing {label} payload for manifest reference {}",
+                entry.id
+            ))
+        })
+}
+
+fn normalized_lineage_configuration(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            for key in ["id", "name", "createdAt", "updatedAt"] {
+                object.remove(key);
+            }
+            Value::Object(object)
+        }
+        scalar => scalar,
+    }
+}
+
+fn build_report_lineage_operation(
+    target_ref: &ProjectDocumentRef,
+    configuration: Value,
+    markdown: &str,
+    known_documents: &HashSet<ProjectDocumentRef>,
+) -> Result<
+    (
+        workflow_domain::OperationNode,
+        Vec<workflow_domain::LineageEdge>,
+    ),
+    AppError,
+> {
+    let operation_id = format!("operation-report-{}", target_ref.id);
+    let output_port_id = format!("{operation_id}-output");
+    let mut input_ports = Vec::new();
+    let mut edges = Vec::new();
+
+    for source_ref in report_dependencies(markdown) {
+        if !known_documents.contains(&source_ref) {
+            return Err(AppError::InvalidParam(format!(
+                "report {} references unknown {} document {}",
+                target_ref.id,
+                document_kind_key(&source_ref.kind),
+                source_ref.id
+            )));
+        }
+        let source_kind_key = document_kind_key(&source_ref.kind);
+        let source_artifact_id = artifact_node_id(&source_ref.kind, &source_ref.id);
+        let input_port_id = format!("{operation_id}-input-{source_kind_key}-{}", source_ref.id);
+        input_ports.push(workflow_domain::LineagePort {
+            id: input_port_id.clone(),
+            name: format!("{source_kind_key}:{}", source_ref.id),
+            payload_kind: port_payload_kind(&source_ref.kind)?,
+        });
+        edges.push(workflow_domain::LineageEdge {
+            id: format!(
+                "consumes-{source_kind_key}-{}-to-report-{}",
+                source_ref.id, target_ref.id
+            ),
+            kind: workflow_domain::LineageEdgeKind::Consumes,
+            source: workflow_domain::LineageEndpoint {
+                node_id: source_artifact_id.clone(),
+                port_id: format!("{source_artifact_id}-output"),
+            },
+            target: workflow_domain::LineageEndpoint {
+                node_id: operation_id.clone(),
+                port_id: input_port_id,
+            },
+        });
+    }
+
+    let target_artifact_id = artifact_node_id(&target_ref.kind, &target_ref.id);
+    edges.push(workflow_domain::LineageEdge {
+        id: format!(
+            "produces-report-{}-to-report-{}",
+            target_ref.id, target_ref.id
+        ),
+        kind: workflow_domain::LineageEdgeKind::Produces,
+        source: workflow_domain::LineageEndpoint {
+            node_id: operation_id.clone(),
+            port_id: output_port_id.clone(),
+        },
+        target: workflow_domain::LineageEndpoint {
+            node_id: target_artifact_id.clone(),
+            port_id: format!("{target_artifact_id}-input"),
+        },
+    });
+
+    Ok((
+        workflow_domain::OperationNode {
+            id: operation_id,
+            kind: workflow_domain::OperationKind::ReportComposition,
+            schema_version: "1".to_string(),
+            configuration: Some(configuration),
+            document_ref: Some(target_ref.clone()),
+            input_ports,
+            output_ports: vec![workflow_domain::LineagePort {
+                id: output_port_id,
+                name: "result".to_string(),
+                payload_kind: workflow_domain::PortPayloadKind::Report,
+            }],
+        },
+        edges,
+    ))
+}
+
+fn report_dependencies(markdown: &str) -> Vec<ProjectDocumentRef> {
+    let mut dependencies = HashSet::new();
+    let mut fence: Option<(char, usize)> = None;
+
+    for line in markdown.lines() {
+        let line = line.trim_end_matches('\r');
+        let candidate = line.trim_start_matches(' ');
+        let indent = line.len() - candidate.len();
+        if indent <= 3 {
+            if let Some((marker, length)) = fence {
+                let marker_count = candidate
+                    .chars()
+                    .take_while(|value| *value == marker)
+                    .count();
+                if marker_count >= length
+                    && candidate[marker_count..].chars().all(char::is_whitespace)
+                {
+                    fence = None;
+                }
+                continue;
+            }
+
+            let marker = candidate
+                .chars()
+                .next()
+                .filter(|value| *value == '`' || *value == '~');
+            if let Some(marker) = marker {
+                let marker_count = candidate
+                    .chars()
+                    .take_while(|value| *value == marker)
+                    .count();
+                if marker_count >= 3 {
+                    fence = Some((marker, marker_count));
+                    continue;
+                }
+            }
+        }
+
+        if fence.is_none() {
+            if let Some(dependency) = parse_report_embed_line(line) {
+                dependencies.insert(dependency);
+            }
+        }
+    }
+
+    let mut dependencies = dependencies.into_iter().collect::<Vec<_>>();
+    dependencies.sort_by(|left, right| {
+        document_kind_key(&left.kind)
+            .cmp(document_kind_key(&right.kind))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    dependencies
+}
+
+fn parse_report_embed_line(line: &str) -> Option<ProjectDocumentRef> {
+    let body = line
+        .strip_prefix("{{sp-embed kind=\"")?
+        .strip_suffix("\"}}")?;
+    let (kind, id) = body.split_once("\" id=\"")?;
+    if id.is_empty()
+        || id.chars().any(|value| {
+            value.is_whitespace() || value.is_control() || matches!(value, '"' | '{' | '}')
+        })
+    {
+        return None;
+    }
+    let kind = match kind {
+        "table" => ProjectDocumentKind::Table,
+        "graph" => ProjectDocumentKind::Graph,
+        "fitYByX" => ProjectDocumentKind::Analysis,
+        "hypothesisTest" => ProjectDocumentKind::Analysis,
+        "tabulate" => ProjectDocumentKind::Tabulate,
+        "distribution" => ProjectDocumentKind::Distribution,
+        _ => return None,
+    };
+    Some(ProjectDocumentRef {
+        kind,
+        id: id.to_string(),
+    })
 }
 
 fn build_data_source_relationships(
@@ -2252,8 +2723,11 @@ fn document_kind_key(kind: &ProjectDocumentKind) -> &'static str {
         ProjectDocumentKind::Table => "table",
         ProjectDocumentKind::TableTransform => "tableTransform",
         ProjectDocumentKind::Graph => "graph",
+        ProjectDocumentKind::Analysis => "analysis",
+        ProjectDocumentKind::Distribution => "distribution",
         ProjectDocumentKind::FitYByX => "fitYByX",
         ProjectDocumentKind::Tabulate => "tabulate",
+        ProjectDocumentKind::Report => "report",
         ProjectDocumentKind::Snapshot => "snapshot",
     }
 }
@@ -2262,8 +2736,11 @@ fn artifact_kind(kind: &ProjectDocumentKind) -> Result<workflow_domain::Artifact
     match kind {
         ProjectDocumentKind::Table => Ok(workflow_domain::ArtifactKind::Table),
         ProjectDocumentKind::Graph => Ok(workflow_domain::ArtifactKind::Graph),
+        ProjectDocumentKind::Analysis => Ok(workflow_domain::ArtifactKind::Analysis),
+        ProjectDocumentKind::Distribution => Ok(workflow_domain::ArtifactKind::Distribution),
         ProjectDocumentKind::FitYByX => Ok(workflow_domain::ArtifactKind::FitYByX),
         ProjectDocumentKind::Tabulate => Ok(workflow_domain::ArtifactKind::Tabulate),
+        ProjectDocumentKind::Report => Ok(workflow_domain::ArtifactKind::Report),
         ProjectDocumentKind::Snapshot => Ok(workflow_domain::ArtifactKind::Snapshot),
         ProjectDocumentKind::TableTransform => Err(AppError::InvalidParam(
             "table transform definitions are operation documents, not artifacts".to_string(),
@@ -2277,8 +2754,11 @@ fn port_payload_kind(
     match kind {
         ProjectDocumentKind::Table => Ok(workflow_domain::PortPayloadKind::Table),
         ProjectDocumentKind::Graph => Ok(workflow_domain::PortPayloadKind::Graph),
+        ProjectDocumentKind::Analysis => Ok(workflow_domain::PortPayloadKind::Analysis),
+        ProjectDocumentKind::Distribution => Ok(workflow_domain::PortPayloadKind::Distribution),
         ProjectDocumentKind::FitYByX => Ok(workflow_domain::PortPayloadKind::FitYByX),
         ProjectDocumentKind::Tabulate => Ok(workflow_domain::PortPayloadKind::Tabulate),
+        ProjectDocumentKind::Report => Ok(workflow_domain::PortPayloadKind::Report),
         ProjectDocumentKind::Snapshot => Ok(workflow_domain::PortPayloadKind::Snapshot),
         ProjectDocumentKind::TableTransform => Err(AppError::InvalidParam(
             "table transform definitions do not carry artifact payloads".to_string(),
@@ -2290,8 +2770,12 @@ fn operation_kind(kind: &ProjectDocumentKind) -> Result<workflow_domain::Operati
     match kind {
         ProjectDocumentKind::TableTransform => Ok(workflow_domain::OperationKind::TableTransform),
         ProjectDocumentKind::Graph => Ok(workflow_domain::OperationKind::GraphGeneration),
+        ProjectDocumentKind::Analysis | ProjectDocumentKind::Distribution => {
+            Ok(workflow_domain::OperationKind::AnalysisExecution)
+        }
         ProjectDocumentKind::FitYByX => Ok(workflow_domain::OperationKind::FitYByX),
         ProjectDocumentKind::Tabulate => Ok(workflow_domain::OperationKind::Tabulate),
+        ProjectDocumentKind::Report => Ok(workflow_domain::OperationKind::ReportComposition),
         other => Err(AppError::InvalidParam(format!(
             "unsupported lineage operation target kind: {:?}",
             other
@@ -3037,12 +3521,23 @@ fn manifest_contains_document(manifest: &ProjectManifest, document: &ProjectDocu
         ProjectDocumentKind::Table => manifest.tables.iter().any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::TableTransform => false,
         ProjectDocumentKind::Graph => manifest.graphs.iter().any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::Analysis => {
+            manifest.analyses.iter().any(|entry| contains_id(&entry.id))
+        }
+        ProjectDocumentKind::Distribution => manifest
+            .distributions
+            .iter()
+            .any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::FitYByX => manifest
             .fit_y_by_x_files
             .iter()
             .any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::Tabulate => manifest
             .tabulate_files
+            .iter()
+            .any(|entry| contains_id(&entry.id)),
+        ProjectDocumentKind::Report => manifest
+            .report_files
             .iter()
             .any(|entry| contains_id(&entry.id)),
         ProjectDocumentKind::Snapshot => manifest
@@ -3135,6 +3630,14 @@ fn validate_bundle_before_write(bundle: &ProjectBundle) -> Result<(), AppError> 
     }
     validate_table_transform_bindings(&bundle.manifest)?;
     validate_manifest_entry_refs(&bundle.manifest)?;
+    if is_format_v4(&bundle.manifest.version) {
+        let mut canonical = bundle.clone();
+        if refresh_project_lineage_graph(&mut canonical)? {
+            return Err(AppError::InvalidParam(
+                "project lineage graph hash does not match current project documents".to_string(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3149,7 +3652,10 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
             &manifest.tables,
             &manifest.graphs,
             &manifest.fit_y_by_x_files,
+            &manifest.analyses,
+            &manifest.distributions,
             &manifest.tabulate_files,
+            &manifest.report_files,
             &manifest.snapshot_files,
             &manifest.table_transform_files,
         );
@@ -3300,9 +3806,14 @@ fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppErr
     }
 
     for entry in &manifest.workflow_files {
-        validate_indexed_path(&entry.file, "workflows", ".json", "workflow")?;
+        let (root, extension) = if entry.file.to_ascii_lowercase().ends_with(".spwf") {
+            ("workflow", ".spwf")
+        } else {
+            ("workflows", ".json")
+        };
+        validate_indexed_path(&entry.file, root, extension, "workflow")?;
         validate_display_basename(&entry.id)?;
-        validate_manifest_id_matches_file_basename(&entry.file, &entry.id, ".json", "workflow")?;
+        validate_manifest_id_matches_file_basename(&entry.file, &entry.id, extension, "workflow")?;
         ensure_unique_file(&mut seen_files, &entry.file)?;
     }
     for entry in &manifest.table_transform_files {
@@ -3784,7 +4295,7 @@ fn validate_fit_model_analysis_definition(
             AppError::FileIO(format!(
                 "{context} analysis definition.construct must be an object"
             ))
-    })?;
+        })?;
     match construct.get("kind").and_then(Value::as_str) {
         Some("manual" | "fullFactorial" | "responseSurface") => {}
         Some("factorialToDegree")
@@ -3822,7 +4333,7 @@ fn validate_fit_model_analysis_definition(
             AppError::FileIO(format!(
                 "{context} analysis definition.terms must be an array"
             ))
-    })?;
+        })?;
     if terms.is_empty() && !migration_issue {
         return Err(AppError::FileIO(format!(
             "{context} analysis definition.terms must not be empty"
@@ -3849,7 +4360,7 @@ fn validate_fit_model_analysis_definition(
                 AppError::FileIO(format!(
                     "{context} analysis definition.terms[{index}].columnNames must be an array"
                 ))
-        })?;
+            })?;
         let columns = columns
             .iter()
             .map(Value::as_str)
@@ -3858,7 +4369,7 @@ fn validate_fit_model_analysis_definition(
                 AppError::FileIO(format!(
                     "{context} analysis definition.terms[{index}].columnNames must contain strings"
                 ))
-        })?;
+            })?;
         let valid_arity = match kind {
             "main" => columns.len() == 1,
             "interaction" => {
@@ -3893,7 +4404,7 @@ fn validate_fit_model_analysis_definition(
         }
         if kind == "main" {
             main_effects.insert(columns[0]);
-            }
+        }
         if kind == "interaction" || kind == "power" {
             required_main_effects.extend(columns);
         }
@@ -3910,27 +4421,41 @@ fn validate_hypothesis_test_analysis_definition(
     definition: &Map<String, Value>,
     context: &str,
 ) -> Result<(), AppError> {
-    let roles = definition.get("roles").and_then(Value::as_object).ok_or_else(|| {
-        AppError::FileIO(format!("{context} analysis definition.roles must be an object"))
-    })?;
+    let roles = definition
+        .get("roles")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.roles must be an object"
+            ))
+        })?;
     let layout = roles.get("layout").and_then(Value::as_str).ok_or_else(|| {
-        AppError::FileIO(format!("{context} analysis definition.roles.layout is missing"))
+        AppError::FileIO(format!(
+            "{context} analysis definition.roles.layout is missing"
+        ))
     })?;
     let subject = roles.get("subject");
     match layout {
         "long" => {
             let response = roles.get("response").ok_or_else(|| {
-                AppError::FileIO(format!("{context} analysis definition.roles.response is missing"))
+                AppError::FileIO(format!(
+                    "{context} analysis definition.roles.response is missing"
+                ))
             })?;
-            validate_hypothesis_test_field(response, "continuous", &format!(
-                "{context} analysis definition.roles.response"
-            ))?;
+            validate_hypothesis_test_field(
+                response,
+                "continuous",
+                &format!("{context} analysis definition.roles.response"),
+            )?;
             let condition = roles.get("condition").ok_or_else(|| {
-                AppError::FileIO(format!("{context} analysis definition.roles.condition is missing"))
+                AppError::FileIO(format!(
+                    "{context} analysis definition.roles.condition is missing"
+                ))
             })?;
-            validate_field_ref_value(condition, &format!(
-                "{context} analysis definition.roles.condition"
-            ))?;
+            validate_field_ref_value(
+                condition,
+                &format!("{context} analysis definition.roles.condition"),
+            )?;
             let condition_type = condition
                 .as_object()
                 .and_then(|value| value.get("type"))
@@ -3940,9 +4465,10 @@ fn validate_hypothesis_test_analysis_definition(
                     "{context} analysis definition.roles.condition must be nominal or ordinal"
                 )));
             }
-            validate_optional_field_ref(subject, &format!(
-                "{context} analysis definition.roles.subject"
-            ))?;
+            validate_optional_field_ref(
+                subject,
+                &format!("{context} analysis definition.roles.subject"),
+            )?;
             let response_name = response.as_object().and_then(|value| value.get("name"));
             let condition_name = condition.as_object().and_then(|value| value.get("name"));
             if response_name == condition_name {
@@ -3952,11 +4478,14 @@ fn validate_hypothesis_test_analysis_definition(
             }
         }
         "wide" => {
-            let measurements = roles.get("measurements").and_then(Value::as_array).ok_or_else(|| {
-                AppError::FileIO(format!(
-                    "{context} analysis definition.roles.measurements must be an array"
-                ))
-            })?;
+            let measurements = roles
+                .get("measurements")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    AppError::FileIO(format!(
+                        "{context} analysis definition.roles.measurements must be an array"
+                    ))
+                })?;
             if measurements.len() < 2 {
                 return Err(AppError::FileIO(format!(
                     "{context} analysis definition.roles.measurements must contain at least two fields"
@@ -3973,22 +4502,27 @@ fn validate_hypothesis_test_analysis_definition(
                     .as_object()
                     .and_then(|value| value.get("name"))
                     .and_then(Value::as_str)
-                    .ok_or_else(|| AppError::FileIO(format!(
+                    .ok_or_else(|| {
+                        AppError::FileIO(format!(
                         "{context} analysis definition.roles.measurements[{index}].name is missing"
-                    )))?;
+                    ))
+                    })?;
                 if !names.insert(name) {
                     return Err(AppError::FileIO(format!(
                         "{context} analysis definition.roles.measurements must be unique"
                     )));
                 }
             }
-            validate_optional_field_ref(subject, &format!(
-                "{context} analysis definition.roles.subject"
-            ))?;
+            validate_optional_field_ref(
+                subject,
+                &format!("{context} analysis definition.roles.subject"),
+            )?;
         }
-        _ => return Err(AppError::FileIO(format!(
-            "{context} analysis definition.roles.layout must be long or wide"
-        ))),
+        _ => {
+            return Err(AppError::FileIO(format!(
+                "{context} analysis definition.roles.layout must be long or wide"
+            )))
+        }
     }
 
     let study_design = definition.get("studyDesign").and_then(Value::as_str);
@@ -4016,7 +4550,8 @@ fn validate_hypothesis_test_analysis_definition(
         )));
     }
     let manual_selection = definition.get("manualSelection");
-    if selection_mode == Some("automatic") && manual_selection.is_some_and(|value| !value.is_null()) {
+    if selection_mode == Some("automatic") && manual_selection.is_some_and(|value| !value.is_null())
+    {
         return Err(AppError::FileIO(format!(
             "{context} automatic analysis definition.manualSelection must be null"
         )));
@@ -4027,54 +4562,78 @@ fn validate_hypothesis_test_analysis_definition(
         )));
     }
     if let Some(manual) = manual_selection.filter(|value| !value.is_null()) {
-        let manual = manual.as_object().ok_or_else(|| AppError::FileIO(format!(
-            "{context} analysis definition.manualSelection must be an object or null"
-        )))?;
+        let manual = manual.as_object().ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis definition.manualSelection must be an object or null"
+            ))
+        })?;
         validate_hypothesis_test_method_id(
             manual.get("methodId"),
             &format!("{context} analysis definition.manualSelection.methodId"),
         )?;
-        if !matches!(manual.get("reason"), None | Some(Value::Null) | Some(Value::String(_))) {
+        if !matches!(
+            manual.get("reason"),
+            None | Some(Value::Null) | Some(Value::String(_))
+        ) {
             return Err(AppError::FileIO(format!(
                 "{context} analysis definition.manualSelection.reason must be a string or null"
             )));
         }
     }
 
-    if !matches!(definition.get("alternative").and_then(Value::as_str), Some("twoSided" | "less" | "greater")) {
+    if !matches!(
+        definition.get("alternative").and_then(Value::as_str),
+        Some("twoSided" | "less" | "greater")
+    ) {
         return Err(AppError::FileIO(format!(
             "{context} analysis definition.alternative is invalid"
         )));
     }
-    validate_open_probability(definition.get("alpha"), &format!(
-        "{context} analysis definition.alpha"
-    ))?;
-    validate_open_probability(definition.get("confidenceLevel"), &format!(
-        "{context} analysis definition.confidenceLevel"
-    ))?;
+    validate_open_probability(
+        definition.get("alpha"),
+        &format!("{context} analysis definition.alpha"),
+    )?;
+    validate_open_probability(
+        definition.get("confidenceLevel"),
+        &format!("{context} analysis definition.confidenceLevel"),
+    )?;
 
-    let level_order = definition.get("levelOrder").and_then(Value::as_array).ok_or_else(|| {
-        AppError::FileIO(format!("{context} analysis definition.levelOrder must be an array"))
-    })?;
-    let mut levels = HashSet::new();
-    for level in level_order {
-        let level = level.as_str().filter(|value| !value.is_empty()).ok_or_else(|| {
+    let level_order = definition
+        .get("levelOrder")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
             AppError::FileIO(format!(
-                "{context} analysis definition.levelOrder must contain non-empty strings"
+                "{context} analysis definition.levelOrder must be an array"
             ))
         })?;
+    let mut levels = HashSet::new();
+    for level in level_order {
+        let level = level
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::FileIO(format!(
+                    "{context} analysis definition.levelOrder must contain non-empty strings"
+                ))
+            })?;
         if !levels.insert(level) {
             return Err(AppError::FileIO(format!(
                 "{context} analysis definition.levelOrder must be unique"
             )));
         }
     }
-    if !matches!(definition.get("referenceLevel"), Some(Value::Null) | Some(Value::String(_))) {
+    if !matches!(
+        definition.get("referenceLevel"),
+        Some(Value::Null) | Some(Value::String(_))
+    ) {
         return Err(AppError::FileIO(format!(
             "{context} analysis definition.referenceLevel must be a string or null"
         )));
     }
-    if !matches!(definition.get("postHoc").and_then(Value::as_str), Some("automatic" | "off")) {
+    if !matches!(
+        definition.get("postHoc").and_then(Value::as_str),
+        Some("automatic" | "off")
+    ) {
         return Err(AppError::FileIO(format!(
             "{context} analysis definition.postHoc is invalid"
         )));
@@ -4093,7 +4652,10 @@ fn validate_hypothesis_test_field(
     context: &str,
 ) -> Result<(), AppError> {
     validate_field_ref_value(value, context)?;
-    if value.as_object().and_then(|field| field.get("type")).and_then(Value::as_str)
+    if value
+        .as_object()
+        .and_then(|field| field.get("type"))
+        .and_then(Value::as_str)
         != Some(expected_type)
     {
         return Err(AppError::FileIO(format!(
@@ -4103,10 +4665,13 @@ fn validate_hypothesis_test_field(
     Ok(())
 }
 
-fn validate_hypothesis_test_method_id(value: Option<&Value>, context: &str) -> Result<(), AppError> {
-    let method_id = value.and_then(Value::as_str).ok_or_else(|| {
-        AppError::FileIO(format!("{context} is missing"))
-    })?;
+fn validate_hypothesis_test_method_id(
+    value: Option<&Value>,
+    context: &str,
+) -> Result<(), AppError> {
+    let method_id = value
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::FileIO(format!("{context} is missing")))?;
     if !HYPOTHESIS_TEST_METHOD_IDS.contains(&method_id) {
         return Err(AppError::FileIO(format!("{context} is invalid")));
     }
@@ -4117,9 +4682,9 @@ fn validate_open_probability(value: Option<&Value>, context: &str) -> Result<(),
     value
         .and_then(Value::as_f64)
         .filter(|value| value.is_finite() && *value > 0.0 && *value < 1.0)
-        .ok_or_else(|| AppError::FileIO(format!(
-            "{context} must be a finite number between 0 and 1"
-        )))?;
+        .ok_or_else(|| {
+            AppError::FileIO(format!("{context} must be a finite number between 0 and 1"))
+        })?;
     Ok(())
 }
 
@@ -4127,32 +4692,47 @@ fn validate_hypothesis_test_analysis_presentation(
     presentation: &Map<String, Value>,
     context: &str,
 ) -> Result<(), AppError> {
-    if !matches!(presentation.get("activeResultTab").and_then(Value::as_str), Some("results" | "diagnostics" | "audit")) {
+    if !matches!(
+        presentation.get("activeResultTab").and_then(Value::as_str),
+        Some("results" | "diagnostics" | "audit")
+    ) {
         return Err(AppError::FileIO(format!(
             "{context} analysis presentation.activeResultTab is invalid"
         )));
     }
-    let collapsed = presentation.get("collapsedSections").and_then(Value::as_array).ok_or_else(|| {
-        AppError::FileIO(format!(
-            "{context} analysis presentation.collapsedSections must be an array"
-        ))
-    })?;
+    let collapsed = presentation
+        .get("collapsedSections")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis presentation.collapsedSections must be an array"
+            ))
+        })?;
     let mut sections = HashSet::new();
     for section in collapsed {
-        let section = section.as_str().ok_or_else(|| AppError::FileIO(format!(
-            "{context} analysis presentation.collapsedSections is invalid"
-        )))?;
-        if !matches!(section, "methodEvidence" | "sensitivity" | "postHoc" | "exclusions" | "audit")
-            || !sections.insert(section)
+        let section = section.as_str().ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis presentation.collapsedSections is invalid"
+            ))
+        })?;
+        if !matches!(
+            section,
+            "methodEvidence" | "sensitivity" | "postHoc" | "exclusions" | "audit"
+        ) || !sections.insert(section)
         {
             return Err(AppError::FileIO(format!(
                 "{context} analysis presentation.collapsedSections is invalid"
             )));
         }
     }
-    let graphs = presentation.get("graphs").and_then(Value::as_object).ok_or_else(|| {
-        AppError::FileIO(format!("{context} analysis presentation.graphs must be an object"))
-    })?;
+    let graphs = presentation
+        .get("graphs")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis presentation.graphs must be an object"
+            ))
+        })?;
     for key in ["showRawData", "showIntervals", "showDiagnostics"] {
         if graphs.get(key).and_then(Value::as_bool).is_none() {
             return Err(AppError::FileIO(format!(
@@ -4160,14 +4740,23 @@ fn validate_hypothesis_test_analysis_presentation(
             )));
         }
     }
-    if let Some(sort) = presentation.get("tableSort").filter(|value| !value.is_null()) {
-        let sort = sort.as_object().ok_or_else(|| AppError::FileIO(format!(
-            "{context} analysis presentation.tableSort must be an object or null"
-        )))?;
-        require_non_empty_string(sort.get("key"), &format!(
-            "{context} analysis presentation.tableSort.key"
-        ))?;
-        if !matches!(sort.get("direction").and_then(Value::as_str), Some("ascending" | "descending")) {
+    if let Some(sort) = presentation
+        .get("tableSort")
+        .filter(|value| !value.is_null())
+    {
+        let sort = sort.as_object().ok_or_else(|| {
+            AppError::FileIO(format!(
+                "{context} analysis presentation.tableSort must be an object or null"
+            ))
+        })?;
+        require_non_empty_string(
+            sort.get("key"),
+            &format!("{context} analysis presentation.tableSort.key"),
+        )?;
+        if !matches!(
+            sort.get("direction").and_then(Value::as_str),
+            Some("ascending" | "descending")
+        ) {
             return Err(AppError::FileIO(format!(
                 "{context} analysis presentation.tableSort.direction is invalid"
             )));
@@ -4578,7 +5167,7 @@ fn validate_manifest_relationship_projection(manifest: &ProjectManifest) -> Resu
         ));
     }
     Ok(())
-        }
+}
 
 fn set_value_name(value: &mut Value, name: &str, kind: &str) -> Result<(), AppError> {
     let Some(map) = value.as_object_mut() else {
@@ -5104,6 +5693,7 @@ mod tests {
                         canonical_duckdb_type: "DOUBLE".to_string(),
                         required: true,
                         required_by_operation_ids: vec!["workflow-operation-1".to_string()],
+                        required_extras: BTreeMap::new(),
                     }],
                 },
                 source_document_ref: None,
@@ -5208,6 +5798,12 @@ mod tests {
             output_bindings: vec![],
             errors: vec![],
             parent_folder_id: parent_folder_id.map(str::to_string),
+            seed: None,
+            engine_version: None,
+            configuration_hash: None,
+            input_fingerprints: vec![],
+            output_fingerprints: vec![],
+            determinism_baseline_run_id: None,
         }
     }
 
@@ -5292,7 +5888,7 @@ mod tests {
         assert_eq!(loaded.manifest.workflow_files[0].revision, 3);
         assert_eq!(
             loaded.manifest.workflow_files[0].file,
-            "workflows/workflow-1.json"
+            "workflow/workflow-1.spwf"
         );
 
         let _ = std::fs::remove_file(path);
@@ -6113,7 +6709,7 @@ mod tests {
     fn analysis_kind_manifest_matches_validator_contracts() {
         let manifest: Value =
             serde_json::from_str(include_str!("../../../contracts/analysis/kinds.v1.json"))
-        .expect("parse Analysis kind manifest");
+                .expect("parse Analysis kind manifest");
         assert_eq!(
             manifest.get("schemaVersion").and_then(Value::as_i64),
             Some(1)
@@ -7143,6 +7739,34 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(actual_node_ids, expected_node_ids);
+        let operation_configurations = lineage_graph
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                workflow_domain::LineageNode::Operation(operation) => {
+                    Some((operation.id.as_str(), operation.configuration.as_ref()))
+                }
+                workflow_domain::LineageNode::Artifact(_) => None,
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            operation_configurations["operation-graph-graph-1"]
+                .and_then(|value| value.get("sourceDatasetId"))
+                .and_then(Value::as_str),
+            Some("table-1")
+        );
+        assert_eq!(
+            operation_configurations["operation-fitYByX-fit-1"]
+                .and_then(|value| value.get("sourceDatasetId"))
+                .and_then(Value::as_str),
+            Some("table-1")
+        );
+        assert_eq!(
+            operation_configurations["operation-tabulate-tab-1"]
+                .and_then(|value| value.get("sourceDatasetId"))
+                .and_then(Value::as_str),
+            Some("table-1")
+        );
 
         let expected_edge_ids = vec![
             "consumes-table-table-1-to-fitYByX-fit-1",
@@ -7165,6 +7789,162 @@ mod tests {
             data_source_relationship("table-1", ProjectDocumentKind::Tabulate, "tab-1"),
         ];
         assert_eq!(bundle.manifest.relationships, expected_relationships);
+    }
+
+    #[test]
+    fn workflow_graph_v2_persists_its_canonical_hash() {
+        let bundle = build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        let graph = &bundle.manifest.lineage_graph;
+        assert_eq!(graph.graph_version, 2);
+        assert_eq!(graph.graph_hash.len(), 64);
+        assert_eq!(
+            graph.graph_hash,
+            workflow_domain::project_lineage_graph_hash(graph).unwrap()
+        );
+    }
+
+    #[test]
+    fn workflow_graph_missing_or_stale_metadata_rebuilds_from_documents() {
+        let build = || {
+            build_bundle(
+                "Project".into(),
+                "4.0.0".into(),
+                "now".into(),
+                vec![table_doc("table-1", "Source Table")],
+                vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                vec![],
+                vec![],
+            )
+            .unwrap()
+        };
+
+        let mut missing = build();
+        missing.manifest.lineage_graph.graph_version = 0;
+        missing.manifest.lineage_graph.graph_hash.clear();
+        assert!(refresh_project_lineage_graph(&mut missing).unwrap());
+        assert_eq!(
+            missing.manifest.lineage_graph.graph_hash,
+            workflow_domain::project_lineage_graph_hash(&missing.manifest.lineage_graph).unwrap()
+        );
+
+        let mut stale = build();
+        stale.manifest.lineage_graph.graph_hash = "0".repeat(64);
+        assert!(refresh_project_lineage_graph(&mut stale).unwrap());
+        assert_ne!(stale.manifest.lineage_graph.graph_hash, "0".repeat(64));
+
+        let mut current = build();
+        assert!(!refresh_project_lineage_graph(&mut current).unwrap());
+    }
+
+    #[test]
+    fn workflow_graph_write_rejects_stale_hash() {
+        let mut bundle = build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        bundle.manifest.lineage_graph.graph_hash = "0".repeat(64);
+
+        let error = validate_bundle_before_write(&bundle).unwrap_err();
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("graph hash")));
+    }
+
+    #[test]
+    fn workflow_graph_round_trip_covers_analysis_tabulate_and_report_dependencies() {
+        let report = report_doc(
+            "report-1",
+            "Report 1",
+            concat!(
+                "{{sp-embed kind=\"graph\" id=\"graph-1\"}}\n",
+                "{{sp-embed kind=\"fitYByX\" id=\"analysis-1\"}}\n",
+                "{{sp-embed kind=\"hypothesisTest\" id=\"hypothesis-1\"}}\n",
+                "{{sp-embed kind=\"distribution\" id=\"distribution-1\"}}\n",
+                "{{sp-embed kind=\"tabulate\" id=\"tabulate-1\"}}",
+            ),
+        );
+        let bundle = super::build_bundle(
+            "Project".into(),
+            "4.0.0".into(),
+            "now".into(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph_doc_with_source("graph-1", "Graph 1", "table-1")],
+            vec![],
+            vec![report],
+            vec![distribution_doc("distribution-1", "Distribution 1")],
+            vec![
+                fit_y_by_x_analysis_doc("analysis-1", "Analysis 1"),
+                hypothesis_test_analysis_doc("hypothesis-1", "Hypothesis 1"),
+            ],
+            vec![tabulate_doc_with_source(
+                "tabulate-1",
+                "Tabulate 1",
+                "table-1",
+            )],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(bundle.manifest.lineage_graph.nodes.len(), 13);
+        assert_eq!(bundle.manifest.lineage_graph.edges.len(), 16);
+        validate_bundle_before_write(&bundle).unwrap();
+
+        let expected_graph = bundle.manifest.lineage_graph.clone();
+        let path = temp_project_path("workflow-graph-round-trip");
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let reopened = read_project_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.manifest.lineage_graph, expected_graph);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -8708,7 +9488,12 @@ mod tests {
         let binding = crate::services::table_transform_service::TableTransformProjectBinding {
             definition_id: definition.id.clone(),
             definition_revision: definition.revision,
-            inputs: vec![],
+            inputs: vec![
+                crate::services::table_transform_service::TableTransformInputBinding {
+                    role: "source".to_string(),
+                    table_document_id: "source-1".to_string(),
+                },
+            ],
             output_generation: 2,
         };
         let empty = HashMap::new();
@@ -8716,7 +9501,10 @@ mod tests {
             "Transforms".to_string(),
             "4.0.0".to_string(),
             "now".to_string(),
-            vec![],
+            vec![
+                table_doc("source-1", "Source data"),
+                table_doc("output-1", "Transposed data"),
+            ],
             vec![],
             vec![],
             vec![],
@@ -8740,11 +9528,35 @@ mod tests {
         bundle.manifest.table_transform_bindings = vec![binding.clone()];
         bundle.table_transforms = vec![definition.clone()];
 
+        assert!(refresh_project_lineage_graph(&mut bundle).unwrap());
         write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
         let loaded = read_project_file(path.to_str().unwrap()).unwrap();
 
         assert_eq!(loaded.table_transforms, vec![definition]);
         assert_eq!(loaded.manifest.table_transform_bindings, vec![binding]);
+        assert!(loaded
+            .manifest
+            .lineage_graph
+            .nodes
+            .iter()
+            .any(|node| matches!(
+                node,
+                workflow_domain::LineageNode::Operation(operation)
+                    if operation.document_ref.as_ref().is_some_and(|reference|
+                        reference.kind == ProjectDocumentKind::TableTransform
+                            && reference.id == "transform-1")
+            )));
+        assert_eq!(
+            loaded
+                .manifest
+                .lineage_graph
+                .edges
+                .iter()
+                .filter(|edge| edge.source.node_id.contains("transform-1")
+                    || edge.target.node_id.contains("transform-1"))
+                .count(),
+            2
+        );
         let _ = std::fs::remove_file(path);
     }
 }

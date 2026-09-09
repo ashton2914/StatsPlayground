@@ -371,3 +371,18 @@ export function createAnalysisExecutionRequest(
   }
   return analysisExecutors.hypothesisTest.createRequest(document, generation);
 }
+
+export function createWorkflowAnalysisExecutionRequest(
+  document: AnalysisDocumentByKind[AnalysisKind],
+  sourceDatasetId: string,
+  generation: number,
+): AnalysisExecutionRequestByKind[AnalysisKind] {
+  if (sourceDatasetId.trim().length === 0) {
+    throw new Error("Workflow Analysis source dataset ID is required.");
+  }
+  const boundDocument = {
+    ...document,
+    source: { datasetId: sourceDatasetId },
+  } as AnalysisDocumentByKind[AnalysisKind];
+  return createAnalysisExecutionRequest(boundDocument, generation);
+}

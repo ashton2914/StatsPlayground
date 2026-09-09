@@ -11,7 +11,12 @@ use crate::services::table_transform_service::{
     TableTransformExecutionResult, TableTransformInputBinding, TableTransformProjectBinding,
     TableTransformService,
 };
-use crate::services::workflow_domain::ProjectLineageGraph;
+use crate::services::workflow_domain::{
+    self, ProjectLineageGraph, WorkflowDefinition, WorkflowExtractionRequest,
+};
+use crate::services::workflow_executor::{
+    WorkflowExecutor, WorkflowRunCommitPacket, WorkflowRunRequest,
+};
 use crate::state::AppState;
 
 #[derive(serde::Serialize)]
@@ -189,6 +194,34 @@ pub async fn save_project(
 #[tauri::command]
 pub fn get_current_project(state: State<'_, AppState>) -> Result<Option<ProjectInfo>, AppError> {
     get_current_project_entry(state.inner())
+}
+
+#[tauri::command]
+pub fn extract_workflow(
+    request: WorkflowExtractionRequest,
+) -> Result<WorkflowDefinition, AppError> {
+    workflow_domain::extract_workflow(request)
+}
+
+#[tauri::command(async)]
+pub async fn run_workflow(
+    app: AppHandle,
+    request: WorkflowRunRequest,
+) -> Result<WorkflowRunCommitPacket, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = Manager::state::<AppState>(&app);
+        WorkflowExecutor::new(&state).execute(request)
+    })
+    .await
+    .map_err(|error| AppError::Stats(format!("workflow worker join failure: {error}")))?
+}
+
+#[tauri::command]
+pub fn acknowledge_workflow_commit(
+    state: State<'_, AppState>,
+    commit_id: String,
+) -> Result<(), AppError> {
+    WorkflowExecutor::new(&state).acknowledge(&commit_id)
 }
 
 // ----------------------------------------------------------------------------

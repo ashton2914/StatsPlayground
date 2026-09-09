@@ -27,10 +27,18 @@ use crate::models::table::{
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
+use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprintColumn};
 
 /// DuckDB engine wrapper
 pub struct DuckDbEngine {
     conn: Connection,
+}
+
+pub(crate) struct DatasetReplacement {
+    pub stable_id: String,
+    pub temporary_id: String,
+    pub stable_name: String,
+    pub expected_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -168,6 +176,56 @@ impl DuckDbEngine {
             .get(0)?;
         u64::try_from(generation)
             .map_err(|_| AppError::Database("dataset generation is negative".into()))
+    }
+
+    pub(crate) fn workflow_table_content_hash(
+        &self,
+        dataset_id: &str,
+        expected_generation: u64,
+    ) -> Result<String, AppError> {
+        let generation = self.get_dataset_generation(dataset_id)?;
+        if generation != expected_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {expected_generation}, found {generation}"
+            )));
+        }
+
+        let columns = self.get_user_columns(dataset_id)?;
+        let fingerprint_columns = columns
+            .iter()
+            .map(|(name, canonical_type)| TableFingerprintColumn {
+                name: name.clone(),
+                canonical_type: canonical_type.clone(),
+            })
+            .collect::<Vec<_>>();
+        let select_columns = columns
+            .iter()
+            .map(|(name, _)| Self::quote_identifier(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let query = if select_columns.is_empty() {
+            format!("SELECT \"_row_id\" FROM {table_name} ORDER BY \"_row_id\" ASC")
+        } else {
+            format!("SELECT {select_columns} FROM {table_name} ORDER BY \"_row_id\" ASC")
+        };
+        let mut statement = self.conn.prepare(&query)?;
+        let mut query_rows = statement.query([])?;
+        let mut rows = Vec::new();
+        while let Some(row) = query_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        if self.get_dataset_generation(dataset_id)? != expected_generation {
+            return Err(AppError::InvalidParam(format!(
+                "dataset {dataset_id} changed while fingerprinting"
+            )));
+        }
+        table_content_hash(&fingerprint_columns, &rows)
     }
 
     fn get_dataset_generation_if_exists(&self, dataset_id: &str) -> Result<Option<u64>, AppError> {
@@ -774,7 +832,8 @@ impl DuckDbEngine {
     /// List all datasets
     pub fn list_datasets(&self) -> Result<Vec<DatasetMeta>, AppError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, source_path, source_type, row_count, col_count, generation, created_at, updated_at FROM _meta_datasets ORDER BY created_at DESC",
+            "SELECT id, name, source_path, source_type, row_count, col_count, generation, created_at, updated_at
+             FROM _meta_datasets WHERE substr(id, 1, 17) <> '__workflow_stage_' ORDER BY created_at DESC",
         )?;
 
         let datasets = stmt
@@ -7872,6 +7931,131 @@ impl DuckDbEngine {
         self.get_dataset_meta(stable_id)
     }
 
+    pub(crate) fn replace_datasets_atomically(
+        &self,
+        replacements: &[DatasetReplacement],
+    ) -> Result<Vec<DatasetMeta>, AppError> {
+        let mut stable_ids = HashSet::new();
+        let mut temporary_ids = HashSet::new();
+        let mut temporary_meta = Vec::with_capacity(replacements.len());
+        for replacement in replacements {
+            if replacement.stable_id.trim().is_empty()
+                || replacement.temporary_id.trim().is_empty()
+                || replacement.stable_id == replacement.temporary_id
+            {
+                return Err(AppError::InvalidParam(
+                    "distinct stable and temporary dataset ids are required".into(),
+                ));
+            }
+            if !stable_ids.insert(replacement.stable_id.as_str())
+                || !temporary_ids.insert(replacement.temporary_id.as_str())
+            {
+                return Err(AppError::InvalidParam(
+                    "workflow dataset replacement ids must be unique".into(),
+                ));
+            }
+            self.validate_dataset_name(&replacement.stable_name, Some(&replacement.stable_id))?;
+            temporary_meta.push(self.get_dataset_meta(&replacement.temporary_id)?);
+        }
+
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = replacements.iter().zip(&temporary_meta).try_for_each(
+            |(replacement, meta)| -> Result<(), AppError> {
+                let stable_generation =
+                    self.get_dataset_generation_if_exists(&replacement.stable_id)?;
+                match stable_generation {
+                    Some(generation) if generation != replacement.expected_generation => {
+                        return Err(AppError::InvalidParam(format!(
+                            "stale dataset generation: expected {generation}, received {}",
+                            replacement.expected_generation
+                        )));
+                    }
+                    None if replacement.expected_generation != 0 => {
+                        return Err(AppError::InvalidParam(format!(
+                            "stale dataset generation: expected 0, received {}",
+                            replacement.expected_generation
+                        )));
+                    }
+                    _ => {}
+                }
+
+                let stable_table =
+                    Self::quote_identifier(&Self::internal_table_name(&replacement.stable_id));
+                let temporary_table =
+                    Self::quote_identifier(&Self::internal_table_name(&replacement.temporary_id));
+                if let Some(generation) = stable_generation {
+                    let next_generation = generation.checked_add(1).ok_or_else(|| {
+                        AppError::InvalidParam("dataset generation is exhausted".into())
+                    })?;
+                    self.conn
+                        .execute(&format!("DROP TABLE {stable_table}"), [])?;
+                    self.conn.execute(
+                        "DELETE FROM _meta_columns WHERE dataset_id = $1",
+                        params![replacement.stable_id],
+                    )?;
+                    self.conn.execute(
+                        "UPDATE _meta_columns SET dataset_id = $1 WHERE dataset_id = $2",
+                        params![replacement.stable_id, replacement.temporary_id],
+                    )?;
+                    self.conn.execute(
+                        "UPDATE _meta_datasets SET name = $1, source_path = $2, source_type = $3,
+                         row_count = $4, col_count = $5, generation = $6,
+                         updated_at = CAST(current_timestamp AS VARCHAR) WHERE id = $7",
+                        params![
+                            replacement.stable_name,
+                            meta.source_path,
+                            meta.source_type,
+                            meta.row_count,
+                            meta.col_count,
+                            next_generation,
+                            replacement.stable_id,
+                        ],
+                    )?;
+                    self.conn.execute(
+                        "DELETE FROM _meta_datasets WHERE id = $1",
+                        params![replacement.temporary_id],
+                    )?;
+                } else {
+                    self.conn.execute(
+                        "UPDATE _meta_columns SET dataset_id = $1 WHERE dataset_id = $2",
+                        params![replacement.stable_id, replacement.temporary_id],
+                    )?;
+                    self.conn.execute(
+                        "UPDATE _meta_datasets SET id = $1, name = $2, generation = 0,
+                         updated_at = CAST(current_timestamp AS VARCHAR) WHERE id = $3",
+                        params![
+                            replacement.stable_id,
+                            replacement.stable_name,
+                            replacement.temporary_id
+                        ],
+                    )?;
+                }
+                self.conn.execute(
+                    &format!("ALTER TABLE {temporary_table} RENAME TO {stable_table}"),
+                    [],
+                )?;
+                Ok(())
+            },
+        );
+
+        match result {
+            Ok(()) => {
+                if let Err(error) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+        replacements
+            .iter()
+            .map(|replacement| self.get_dataset_meta(&replacement.stable_id))
+            .collect()
+    }
+
     /// Concatenate: vertically stack multiple tables
     pub fn concatenate_tables(
         &self,
@@ -13165,6 +13349,48 @@ mod tests {
                 vec![json!(2), serde_json::Value::Null, json!(2.25)],
                 vec![json!(3), json!("gamma"), serde_json::Value::Null],
             ]
+        );
+    }
+
+    #[test]
+    fn workflow_table_hash_uses_stable_rows_and_rejects_stale_generations() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        let dataset_id = "workflow-hash-id";
+        db.create_table_from_rows(
+            dataset_id,
+            &CreateTableFromRowsRequest {
+                name: "Workflow Hash".to_string(),
+                column_names: vec!["value".to_string()],
+                column_types: vec!["DOUBLE".to_string()],
+                rows: vec![vec![json!(2.0)], vec![json!(1.0)]],
+            },
+        )
+        .unwrap();
+        let generation = db.get_dataset_generation(dataset_id).unwrap();
+
+        let first = db
+            .workflow_table_content_hash(dataset_id, generation)
+            .unwrap();
+        assert_eq!(
+            first,
+            db.workflow_table_content_hash(dataset_id, generation)
+                .unwrap()
+        );
+
+        db.update_cells(
+            dataset_id,
+            &[CellUpdate {
+                row_id: 1,
+                column_name: "value".to_string(),
+                value: Some("3.0".to_string()),
+            }],
+        )
+        .unwrap();
+        let error = db
+            .workflow_table_content_hash(dataset_id, generation)
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("stale dataset generation"))
         );
     }
 

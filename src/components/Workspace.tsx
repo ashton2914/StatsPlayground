@@ -49,6 +49,7 @@ import {
 import { DistributionDialog, type DistributionFieldInfo } from "./distribution";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
+import { applyWorkflowRunCommit } from "./workflow/workflowRunCommit";
 import {
   ANALYSIS_SAMPLE_COLUMN,
   createAnalysisSample,
@@ -92,6 +93,11 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { modKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
+import {
+  deriveWorkflowOperationColumnRequirements,
+  mergeWorkflowTableColumns,
+} from "@/utils/workflowSchema";
+import { buildProjectDependencyGraph } from "@/workflow/projectDependencyGraph";
 import {
   allocateProjectBasename,
   projectFileExtension,
@@ -271,7 +277,6 @@ export function Workspace() {
   const workflows = useWorkflowStore((s) => s.workflows);
   const logicalFolders = useWorkflowStore((s) => s.logicalFolders);
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
-  const lineageGraph = useWorkflowStore((s) => s.lineageGraph);
   const createAndRunTableTransform = useTableTransformStore((s) => s.createAndRun);
   const tableTransforms = useTableTransformStore((s) => s.definitions);
   const tableTransformBindings = useTableTransformStore((s) => s.bindings);
@@ -280,6 +285,7 @@ export function Workspace() {
   const loadTableTransforms = useTableTransformStore((s) => s.loadFromProject);
   const resetTableTransforms = useTableTransformStore((s) => s.reset);
   const loadWorkflowsFromProject = useWorkflowStore((s) => s.loadFromProject);
+  const addWorkflow = useWorkflowStore((s) => s.addWorkflow);
   const resetWorkflows = useWorkflowStore((s) => s.reset);
   const addGraphBuilder = useGraphBuilderStore((s) => s.addItem);
   const renameGraphBuilder = useGraphBuilderStore((s) => s.renameItem);
@@ -311,6 +317,15 @@ export function Workspace() {
   const deleteTabulate = useTabulateStore((s) => s.deleteItem);
   const resetTabulates = useTabulateStore((s) => s.reset);
   const loadTabulatesFromProject = useTabulateStore((s) => s.loadFromProject);
+  const projectLineageGraph = useMemo(() => buildProjectDependencyGraph({
+    datasets,
+    tableTransforms,
+    tableTransformBindings,
+    graphs: graphBuilders,
+    analyses: analysisItems,
+    tabulates,
+    reports: reportItems,
+  }), [analysisItems, datasets, graphBuilders, reportItems, tableTransformBindings, tableTransforms, tabulates]);
   const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
   /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
@@ -1518,6 +1533,129 @@ export function Workspace() {
   };
   handleSaveRef.current = handleSave;
 
+  const handleSaveWorkflowSelection = async (name: string, nodeIds: string[]) => {
+    if (readOnly) return;
+    try {
+      const currentLineageGraph = buildProjectDependencyGraph({
+        datasets: useDataStore.getState().datasets,
+        tableTransforms: useTableTransformStore.getState().definitions,
+        tableTransformBindings: useTableTransformStore.getState().bindings,
+        graphs: useGraphBuilderStore.getState().items,
+        analyses: useAnalysisStore.getState().items,
+        tabulates: useTabulateStore.getState().items,
+        reports: useReportStore.getState().items,
+      });
+      const initiallySelected = new Set(nodeIds);
+      const selectedInputArtifactIds = new Set(
+        currentLineageGraph.edges
+          .filter((edge) => edge.kind === "consumes"
+            && initiallySelected.has(edge.source.nodeId)
+            && initiallySelected.has(edge.target.nodeId))
+          .map((edge) => edge.source.nodeId),
+      );
+      const selectedNodeIds = nodeIds.filter((nodeId) => !selectedInputArtifactIds.has(nodeId));
+      const selectedNodeIdSet = new Set(selectedNodeIds);
+      const selectedEdgeIds = currentLineageGraph.edges
+        .filter((edge) => selectedNodeIdSet.has(edge.source.nodeId)
+          && selectedNodeIdSet.has(edge.target.nodeId))
+        .map((edge) => edge.id);
+      const externalInputIds = new Set(
+        currentLineageGraph.edges
+          .filter((edge) => edge.kind === "consumes"
+            && selectedNodeIdSet.has(edge.target.nodeId)
+            && !selectedNodeIdSet.has(edge.source.nodeId))
+          .map((edge) => edge.source.nodeId),
+      );
+      const tableSchemas = await Promise.all([...externalInputIds].map(async (artifactNodeId) => {
+        const node = currentLineageGraph.nodes.find((candidate) => candidate.id === artifactNodeId);
+        if (!node || node.nodeType !== "artifact" || node.artifactKind !== "table") {
+          throw new Error(`Workflow input ${artifactNodeId} is not a table`);
+        }
+        const [columns, displayProps] = await Promise.all([
+          dataService.getColumns(node.documentRef.id),
+          dataService.getColumnDisplayProps(node.documentRef.id),
+        ]);
+        return {
+          artifactNodeId,
+          columns: mergeWorkflowTableColumns(columns, displayProps),
+        };
+      }));
+      const workflow = await projectService.extractWorkflow({
+        workflowId: `workflow-${crypto.randomUUID()}`,
+        name,
+        formatVersion: "1",
+        revision: 1,
+        graph: currentLineageGraph,
+        selectedNodeIds,
+        selectedEdgeIds,
+        tableSchemas,
+        operationColumnRequirements: deriveWorkflowOperationColumnRequirements(
+          currentLineageGraph,
+          selectedNodeIds,
+        ),
+      });
+      addWorkflow(workflow);
+      setActiveWorkflowViewId(workflow.id);
+      markDirty();
+    } catch (error) {
+      alert(t("workflow.saveFailed", {
+        defaultValue: "Failed to save workflow: {{message}}",
+        message: String(error),
+      }));
+    }
+  };
+
+  const handleRunWorkflow = async (
+    workflow: (typeof workflows)[number],
+    bindings: Record<string, string>,
+  ) => {
+    const previousRuns = useWorkflowStore.getState().workflowRuns
+      .filter((run) => run.workflowId === workflow.id);
+    const latestBindings = [...previousRuns]
+      .reverse()
+      .find((run) => run.workflowRevision === workflow.revision)
+      ?.outputBindings;
+    const outputBindings = workflow.outputDeclarations.map((declaration) => ({
+      declarationId: declaration.id,
+      artifactDocumentId: latestBindings
+        ?.find((binding) => binding.declarationId === declaration.id)
+        ?.artifactDocumentId
+        ?? `${workflow.id}-${declaration.id}`,
+    }));
+    const inputBindings = workflow.inputSlots.map((slot) => ({
+      slotId: slot.id,
+      tableDocumentId: bindings[slot.id] ?? "",
+    }));
+    setBusyMessage(t("workflow.running", { defaultValue: "Running workflow..." }));
+    try {
+      const packet = await projectService.runWorkflow({
+        workflow,
+        inputBindings,
+        outputBindings,
+        seed: 0,
+        previousRuns,
+      });
+      const tableOutputIds = workflow.outputDeclarations
+        .filter((declaration) => declaration.artifactKind === "table")
+        .map((declaration) => outputBindings
+          .find((binding) => binding.declarationId === declaration.id)!
+          .artifactDocumentId);
+      await applyWorkflowRunCommit(packet, {
+        datasetIds: [
+          ...useDataStore.getState().datasets.map((dataset) => dataset.id),
+          ...tableOutputIds,
+        ],
+        refreshDatasets,
+        markDirty,
+      });
+      if (packet.run.status === "succeeded") {
+        await projectService.acknowledgeWorkflowCommit(packet.commitId);
+      }
+    } finally {
+      setBusyMessage(null);
+    }
+  };
+
   const showToast = (message: string, durationMs: number) => {
     setToastMessage(message);
     if (toastTimerRef.current !== null) {
@@ -1619,6 +1757,8 @@ export function Workspace() {
           lineageGraph: result.lineageGraph ?? {
             id: "project-lineage",
             name: "Project lineage",
+            graphVersion: 0,
+            graphHash: "",
             nodes: [],
             edges: [],
           },
@@ -1627,6 +1767,14 @@ export function Workspace() {
           result.tableTransforms ?? [],
           result.tableTransformBindings ?? [],
         );
+        for (const packet of result.recoveredWorkflowPackets ?? []) {
+          await applyWorkflowRunCommit(packet, {
+            datasetIds: useDataStore.getState().datasets.map((dataset) => dataset.id),
+            refreshDatasets,
+            markDirty,
+          });
+          await projectService.acknowledgeWorkflowCommit(packet.commitId);
+        }
         // Restore folder tree + table/graph→folder assignments. We do this
         // after datasets/graphs are loaded so a subsequent prune pass keeps
         // assignments in sync with currently-existing items.
@@ -2607,7 +2755,7 @@ export function Workspace() {
             </>
           ) : activeTab === "workflow" ? (
             <WorkflowPanel
-              lineageGraph={lineageGraph}
+              lineageGraph={projectLineageGraph}
               workflows={workflows}
               workflowRuns={workflowRuns}
               selectedId={activeWorkflowViewId}
@@ -2626,9 +2774,16 @@ export function Workspace() {
         <div className="main-area">
           {activeTab === "workflow" ? (
             <WorkflowView
-              lineageGraph={lineageGraph}
+              lineageGraph={projectLineageGraph}
               workflow={workflows.find((workflow) => workflow.id === activeWorkflowViewId)}
               datasets={datasets}
+              suggestedWorkflowName={`Workflow ${workflows.length + 1}`}
+              onSaveSelection={readOnly ? undefined : handleSaveWorkflowSelection}
+              onRun={readOnly ? undefined : (bindings) => {
+                const workflow = workflows.find((entry) => entry.id === activeWorkflowViewId);
+                if (!workflow) throw new Error("Workflow is not available");
+                return handleRunWorkflow(workflow, bindings);
+              }}
             />
           ) : activeAnalysisId ? (
             (() => {
@@ -2852,6 +3007,7 @@ export function Workspace() {
             const execution = await createAndRunTableTransform(draft);
             await refreshDatasets();
             if (execution.output) activateWorkspaceDocument("dataset", execution.output.id);
+            invalidateData();
             markDirty();
           }}
         />

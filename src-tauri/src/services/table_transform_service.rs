@@ -245,6 +245,34 @@ impl<'a> TableTransformService<'a> {
         ))
     }
 
+    pub(crate) fn stage_for_workflow(
+        &self,
+        definition: &TableTransformDefinition,
+        binding: &TableTransformProjectBinding,
+        staging_id: &str,
+    ) -> Result<DatasetMeta, AppError> {
+        validate_table_transform_definition(definition)?;
+        self.validate_binding(definition, binding)?;
+        let inputs = binding
+            .inputs
+            .iter()
+            .map(|input| (input.role.as_str(), input.table_document_id.as_str()))
+            .collect::<HashMap<_, _>>();
+        let reports = self.validate_schemas(definition, &inputs)?;
+        if let Some(report) = reports.iter().find(|item| !compatible(&item.report)) {
+            return Err(invalid(format!(
+                "workflow transform {} input {} does not satisfy its schema contract",
+                definition.id, report.role
+            )));
+        }
+        self.dispatch(
+            staging_id,
+            &format!("__workflow_stage_{}", definition.id),
+            &definition.operation,
+            &inputs,
+        )
+    }
+
     fn validate_binding(
         &self,
         definition: &TableTransformDefinition,

@@ -338,6 +338,18 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::project_commands::extract_workflow",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::project_commands::run_workflow",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::acknowledge_workflow_commit",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::project_commands::export_table",
                 CommandClass::ReadOnly,
             ),

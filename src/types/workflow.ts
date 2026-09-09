@@ -2,8 +2,11 @@ export type ProjectDocumentKind =
   | "table"
   | "tableTransform"
   | "graph"
+  | "analysis"
+  | "distribution"
   | "fitYByX"
   | "tabulate"
+  | "report"
   | "snapshot";
 
 export interface ProjectDocumentRef {
@@ -14,9 +17,13 @@ export interface ProjectDocumentRef {
 export type PortPayloadKind =
   | "any"
   | "table"
+  | "tableTransform"
   | "graph"
+  | "analysis"
+  | "distribution"
   | "fitYByX"
   | "tabulate"
+  | "report"
   | "snapshot";
 
 export type ArtifactKind = Exclude<PortPayloadKind, "any">;
@@ -26,13 +33,28 @@ export type OperationKind =
   | "sqlQuery"
   | "tableTransform"
   | "graphGeneration"
+  | "analysisExecution"
   | "fitYByX"
-  | "tabulate";
+  | "tabulate"
+  | "reportComposition";
+
+export type WorkflowSemanticExtraKind = "valueOrder" | "spec";
+
+export interface TableColumnConsumption {
+  name: string;
+  requiredExtraKinds: WorkflowSemanticExtraKind[];
+}
+
+export interface TableInputRequirement {
+  columns: TableColumnConsumption[];
+  completeSchema: boolean;
+}
 
 export interface LineagePort {
   id: string;
   name: string;
   payloadKind: PortPayloadKind;
+  tableRequirement?: TableInputRequirement;
 }
 
 export interface ArtifactNode {
@@ -76,8 +98,42 @@ export interface LineageEdge {
 export interface ProjectLineageGraph {
   id: string;
   name: string;
+  graphVersion: number;
+  graphHash: string;
   nodes: LineageNode[];
   edges: LineageEdge[];
+}
+
+export interface WorkflowTableColumn {
+  name: string;
+  colType: string;
+  extras?: Record<string, unknown>;
+}
+
+export interface WorkflowSourceTable {
+  artifactNodeId: string;
+  columns: WorkflowTableColumn[];
+}
+
+export interface WorkflowOperationInputSchema {
+  operationId: string;
+  inputPortId: string;
+  columns: TableColumnConsumption[];
+  completeSchema: boolean;
+}
+
+export interface WorkflowExtractionRequest {
+  workflowId: string;
+  name: string;
+  description?: string;
+  formatVersion: string;
+  revision: number;
+  graph: ProjectLineageGraph;
+  selectedNodeIds: string[];
+  selectedEdgeIds: string[];
+  tableSchemas: WorkflowSourceTable[];
+  operationColumnRequirements: WorkflowOperationInputSchema[];
+  layout?: WorkflowLayout;
 }
 
 export type LogicalFolderKind = "project" | "workflow" | "workflowRun";
@@ -100,6 +156,7 @@ export interface SchemaColumnRequirement {
   canonicalDuckdbType: string;
   required: boolean;
   requiredByOperationIds: string[];
+  requiredExtras?: Record<string, unknown>;
 }
 
 export interface SchemaContract {
@@ -177,9 +234,18 @@ export interface SchemaValidationIssue {
   affectedOperationIds: string[];
 }
 
+export interface SchemaAttributeMismatch {
+  columnName: string;
+  attributeName: string;
+  expectedValue: unknown;
+  actualValue?: unknown;
+  affectedOperationIds: string[];
+}
+
 export interface SchemaValidationReport {
   missingColumns: SchemaValidationIssue[];
   typeMismatches: SchemaValidationIssue[];
+  attributeMismatches: SchemaAttributeMismatch[];
   extraColumns: string[];
 }
 
@@ -191,6 +257,68 @@ export interface WorkflowInputBinding {
 export interface WorkflowOutputBinding {
   declarationId: string;
   artifactDocumentId: string;
+}
+
+export interface WorkflowInputFingerprint {
+  slotId: string;
+  tableDocumentId: string;
+  generation: number;
+  schemaFingerprint: string;
+  contentHash: string;
+}
+
+export interface WorkflowOutputFingerprint {
+  declarationId: string;
+  artifactDocumentId: string;
+  contentHash: string;
+}
+
+interface WorkflowDocumentCommitBase {
+  id: string;
+  name: string;
+  validationResultHash: string;
+}
+
+export interface WorkflowReportDependency {
+  kind: "table" | "graph" | "fitYByX" | "hypothesisTest" | "tabulate" | "distribution";
+  documentId: string;
+}
+
+export type WorkflowDocumentCommit =
+  | (WorkflowDocumentCommitBase & {
+      kind: "graph";
+      sourceTableId: string;
+      document: unknown;
+    })
+  | (WorkflowDocumentCommitBase & {
+      kind: "analysis";
+      sourceTableId: string;
+      document: unknown;
+    })
+  | (WorkflowDocumentCommitBase & {
+      kind: "tabulate";
+      sourceTableId: string;
+      document: unknown;
+      result: unknown;
+    })
+  | (WorkflowDocumentCommitBase & {
+      kind: "report";
+      markdown: string;
+      dependencyIds: WorkflowReportDependency[];
+    });
+
+export interface WorkflowRunCommitPacket {
+  commitId: string;
+  documents: WorkflowDocumentCommit[];
+  run: WorkflowRun;
+}
+
+export interface WorkflowRunRequest {
+  workflow: WorkflowDefinition;
+  inputBindings: WorkflowInputBinding[];
+  outputBindings: WorkflowOutputBinding[];
+  seed: number;
+  previousRuns: WorkflowRun[];
 }
 
 export type WorkflowRunStatus =
@@ -225,6 +353,12 @@ export interface WorkflowRun {
   outputBindings: WorkflowOutputBinding[];
   errors: WorkflowRunError[];
   parentFolderId?: string;
+  seed?: number;
+  engineVersion?: string;
+  configurationHash?: string;
+  inputFingerprints?: WorkflowInputFingerprint[];
+  outputFingerprints?: WorkflowOutputFingerprint[];
+  determinismBaselineRunId?: string;
 }
 
 export interface WorkflowEntryRef {

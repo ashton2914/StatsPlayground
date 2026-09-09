@@ -665,6 +665,15 @@ StatsPlayground/
 - 禁止在前端暴露文件系统的绝对路径
 - 用户输入在传入 DuckDB 前必须经过类型校验
 
+### 11.5 Workflow 确定性与原子提交
+
+- Workflow 从当前 Table、Table Transform、Graph、Analysis、Tabulate、Report 文档投影依赖图；保存的依赖图带版本和 SHA-256 校验，不能覆盖当前文档。
+- 输入 contract 只包含下游端口实际消费的列与列属性。空 contract、未知 operation/schema version、悬空引用或不兼容绑定会在执行前阻止发布。
+- 每次执行冻结 Workflow revision、输入 Table ID/generation/schema/content hash、规范化配置 hash、seed 与 engine version。满足这些条件的成功历史 run 是确定性 baseline。
+- 可比较的 rerun 必须产生相同的规范化 output fingerprints。审计时间与 runtime cache 不进入 fingerprint；stable output IDs 在同一 Workflow revision 内不变。
+- fingerprint 不一致返回 `determinismViolation`。候选 staging Table 和 document bundle 不会发布，上一轮成功输出保持可见，失败 run 作为审计记录保留。
+- 成功执行先由 backend 原子发布全部 Table，再返回一个 document commit packet。frontend 完整应用并 acknowledge 前，backend journal 保留 packet；重新打开同一项目会恢复 stable Table 并重放未确认 packet。
+
 ---
 
 ## 12. 构建与发布

@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  deriveWorkflowOperationColumnRequirements,
   isSchemaValidationBlocking,
+  mergeWorkflowTableColumns,
   validateWorkflowInputSchema,
 } from "../src/utils/workflowSchema.ts";
 import { layoutWorkflowGraph } from "../src/utils/workflowLayout.ts";
+import { useWorkflowStore } from "../src/stores/useWorkflowStore.ts";
 import type { SchemaContract } from "../src/types/workflow.ts";
 
 const contract: SchemaContract = {
@@ -59,6 +62,142 @@ assert.deepEqual(incompatible.typeMismatches, [
 ]);
 assert.equal(isSchemaValidationBlocking(incompatible), true);
 
+const extrasContract: SchemaContract = {
+  schemaFingerprint: "contract-extras",
+  columns: [{
+    name: "batch",
+    canonicalDuckdbType: "VARCHAR",
+    required: true,
+    requiredByOperationIds: ["workflow-operation-1"],
+    requiredExtras: { valueOrder: { values: ["A", "B"] } },
+  }],
+};
+const extrasMismatch = validateWorkflowInputSchema(extrasContract, [{
+  name: "batch",
+  colType: "VARCHAR",
+  extras: { notes: { value: "not semantic" } },
+}]);
+assert.deepEqual(extrasMismatch.attributeMismatches, [{
+  columnName: "batch",
+  attributeName: "extras.valueOrder",
+  expectedValue: { values: ["A", "B"] },
+  affectedOperationIds: ["workflow-operation-1"],
+}]);
+assert.equal(isSchemaValidationBlocking(extrasMismatch), true);
+
+assert.deepEqual(
+  mergeWorkflowTableColumns(
+    [["batch", "VARCHAR"], ["yield", "DOUBLE"]],
+    [{ colIndex: 1, width: 180, extras: { spec: { lsl: 90 } } }],
+  ),
+  [
+    { name: "batch", colType: "VARCHAR" },
+    { name: "yield", colType: "DOUBLE", extras: { spec: { lsl: 90 } } },
+  ],
+);
+
+assert.deepEqual(
+  deriveWorkflowOperationColumnRequirements({
+    id: "lineage",
+    name: "Lineage",
+    nodes: [{
+      nodeType: "operation",
+      id: "fit-operation",
+      kind: "fitYByX",
+      schemaVersion: "1",
+      configuration: {
+        sourceDatasetId: "table-1",
+        response: { name: "yield", type: "continuous" },
+        factor: { name: "batch", type: "nominal" },
+      },
+      inputPorts: [{
+        id: "fit-input",
+        name: "source",
+        payloadKind: "table",
+        tableRequirement: {
+          columns: [
+            { name: "batch", requiredExtraKinds: [] },
+            { name: "yield", requiredExtraKinds: [] },
+          ],
+          completeSchema: false,
+        },
+      }],
+      outputPorts: [],
+    }],
+    edges: [],
+  }, ["fit-operation"]),
+  [{
+    operationId: "fit-operation",
+    inputPortId: "fit-input",
+    columns: [
+      { name: "batch", requiredExtraKinds: [] },
+      { name: "yield", requiredExtraKinds: [] },
+    ],
+    completeSchema: false,
+  }],
+);
+
+assert.deepEqual(
+  deriveWorkflowOperationColumnRequirements({
+    id: "graph-lineage",
+    name: "Graph lineage",
+    nodes: [{
+      nodeType: "operation",
+      id: "graph-operation",
+      kind: "graphGeneration",
+      schemaVersion: "1",
+      configuration: {
+        sourceDatasetId: "wide-table",
+        mode: "2d",
+        modeStates: {
+          twoD: {
+            encoding: {
+              x: { name: "batch", type: "nominal" },
+              y: { name: "yield", type: "continuous" },
+            },
+            multiX: [],
+            multiY: [{ name: "temperature", type: "continuous" }],
+          },
+          threeD: {
+            encoding: {
+              z: { name: "inactive-z", type: "continuous" },
+            },
+          },
+          multivariate: {
+            columns: [{ name: "inactive-column", type: "continuous" }],
+          },
+        },
+        filters: [{ rule: { field: { name: "site", type: "nominal" } } }],
+      },
+      inputPorts: [{
+        id: "graph-input",
+        name: "source",
+        payloadKind: "table",
+        tableRequirement: {
+          columns: [
+            { name: "batch", requiredExtraKinds: [] },
+            { name: "live-yield", requiredExtraKinds: ["spec"] },
+            { name: "site", requiredExtraKinds: [] },
+          ],
+          completeSchema: false,
+        },
+      }],
+      outputPorts: [],
+    }],
+    edges: [],
+  }, ["graph-operation"]),
+  [{
+    operationId: "graph-operation",
+    inputPortId: "graph-input",
+    columns: [
+      { name: "batch", requiredExtraKinds: [] },
+      { name: "live-yield", requiredExtraKinds: ["spec"] },
+      { name: "site", requiredExtraKinds: [] },
+    ],
+    completeSchema: false,
+  }],
+);
+
 const layout = layoutWorkflowGraph(
   ["input", "operation", "output"],
   [
@@ -95,3 +234,45 @@ for (const field of ["workflows", "logical_folders", "workflow_runs", "lineage_g
 for (const field of ["workflows", "logicalFolders", "workflowRuns"]) {
   assert.match(projectClient, new RegExp(`\\b${field}:`));
 }
+
+const projectCommands = readFileSync(
+  new URL("../src-tauri/src/commands/project_commands.rs", import.meta.url),
+  "utf8",
+);
+const tauriRegistry = readFileSync(
+  new URL("../src-tauri/src/lib.rs", import.meta.url),
+  "utf8",
+);
+const workspace = readFileSync(
+  new URL("../src/components/Workspace.tsx", import.meta.url),
+  "utf8",
+);
+
+assert.match(projectClient, /extractWorkflow:\s*\(request: WorkflowExtractionRequest\)/);
+assert.match(projectClient, /invoke<WorkflowDefinition>\("extract_workflow", \{ request \}\)/);
+assert.match(projectCommands, /pub fn extract_workflow\(/);
+assert.match(tauriRegistry, /commands::project_commands::extract_workflow/);
+assert.match(workspace, /const handleSaveWorkflowSelection = async/);
+assert.match(workspace, /projectService\.extractWorkflow\(/);
+assert.match(workspace, /dataService\.getColumnDisplayProps\(node\.documentRef\.id\)/);
+assert.match(workspace, /columns:\s*mergeWorkflowTableColumns\(columns, displayProps\)/);
+assert.match(workspace, /operationColumnRequirements:\s*deriveWorkflowOperationColumnRequirements\(/);
+assert.match(workspace, /addWorkflow\(workflow\)/);
+assert.match(
+  workspace,
+  /onSaveSelection=\{readOnly \? undefined : handleSaveWorkflowSelection\}/,
+);
+
+useWorkflowStore.getState().reset();
+useWorkflowStore.getState().addWorkflow({
+  id: "workflow-new",
+  name: "New workflow",
+  formatVersion: "1",
+  revision: 1,
+  inputSlots: [],
+  operations: [],
+  edges: [],
+  outputDeclarations: [],
+});
+assert.equal(useWorkflowStore.getState().workflows[0]?.id, "workflow-new");
+useWorkflowStore.getState().reset();

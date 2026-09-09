@@ -10,6 +10,9 @@ import type {
 import type {
   LogicalFolder,
   WorkflowDefinition,
+  WorkflowExtractionRequest,
+  WorkflowRunCommitPacket,
+  WorkflowRunRequest,
   WorkflowRun,
 } from "@/types/workflow";
 
@@ -106,6 +109,15 @@ export const projectService = {
   },
 
   getCurrentProject: () => invoke<ProjectInfo | null>("get_current_project"),
+
+  extractWorkflow: (request: WorkflowExtractionRequest) =>
+    invoke<WorkflowDefinition>("extract_workflow", { request }),
+
+  runWorkflow: (request: WorkflowRunRequest) =>
+    invoke<WorkflowRunCommitPacket>("run_workflow", { request }),
+
+  acknowledgeWorkflowCommit: (commitId: string) =>
+    invoke<void>("acknowledge_workflow_commit", { commitId }),
 
   // ---- Single-table / single-graph share helpers --------------------------
   // .sptb = standalone table file, .spgh = standalone graph file. Both can

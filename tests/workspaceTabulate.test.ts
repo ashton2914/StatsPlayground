@@ -8,7 +8,7 @@ const workspaceSource = readFileSync(
 
 assert.match(
   workspaceSource,
-  /<TabulateView[\s\S]*existingDatasetNames=\{datasets\.map\(\(dataset\) => dataset\.name\)\}/,
+  /<TabulateView[\s\S]*existingDatasetNames=\{datasets\.map\(\((\w+)\) => \1\.name\)\}/,
 );
 
 console.log("workspace tabulate wiring OK");

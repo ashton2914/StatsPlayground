@@ -8,6 +8,7 @@ export default defineConfig({
   fullyParallel: false,
   use: {
     ...devices["Desktop Chrome"],
+    channel: process.env.PLAYWRIGHT_CHANNEL,
     launchOptions: process.env.PLAYWRIGHT_EXECUTABLE_PATH
       ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
       : undefined,

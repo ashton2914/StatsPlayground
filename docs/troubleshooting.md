@@ -11,6 +11,7 @@
 - [3. React Hooks 顺序 —— `if (!data) return` 之后不能再放 hook](#3-react-hooks-顺序--if-data-return-之后不能再放-hook)
 - [4. ECharts axis drag-zoom：从"飞走"到"丝滑"踩到的几个坑](#4-echarts-axis-drag-zoom从飞走到丝滑踩到的几个坑)
 - [5. `findIndex((c) => c.name === ...)` 在 `string[]` 上静默返回 -1](#5-findindexc--cname----在-string-上静默返回--1)
+- [6. Workflow rerun 报 `determinismViolation` 或保存后未显示输出](#6-workflow-rerun-报-determinismviolation-或保存后未显示输出)
 - [附录：通用排查思路](#附录通用排查思路)
 
 ---
@@ -305,6 +306,22 @@ Select-String -Path src/graphCore/*.ts,src/components/**/*.tsx `
 ```
 
 如果命中**任何**结果，立刻换成 `colIndex(data, name)`。
+
+---
+
+## 6. Workflow rerun 报 `determinismViolation` 或保存后未显示输出
+
+### `determinismViolation`
+
+当 Workflow revision、输入 fingerprints、规范化配置、seed、engine version 和 stable output bindings 都与某个成功 run 相同时，rerun 的 output fingerprints 必须完全一致。若不一致，backend 返回 `determinismViolation`，删除本轮 staging 数据，并保留上一次成功输出。
+
+排查时先比较失败 run 与 `determinismBaselineRunId` 指向 run 的输入 generation/content hash、配置 hash和engine version；这些字段相同而output hash不同，才是执行器的确定性缺陷。不要通过清空历史或忽略hash来绕过。
+
+### backend 已完成但界面未显示
+
+成功 Table publication 与 frontend 可见commit之间使用backend journal衔接。若应用在frontend acknowledge前关闭，重新打开**同一路径的项目文件**会恢复stable Table并重放未确认packet。恢复后确认run history只出现一次；commit ID使重复replay幂等。
+
+如果没有恢复，依次检查：打开的是否为同一项目、项目是否在执行前已有保存路径、run是否为`succeeded`、journal packet是否已经被acknowledge。failed/blocked run不会被恢复成成功输出。
 
 ---
 

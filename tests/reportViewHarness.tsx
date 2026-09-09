@@ -34,6 +34,7 @@ const baseItem: ReportItem = {
 const tableOptions: ReportLinkOption[] = [{ id: "table-1", name: "Incoming Data" }];
 const graphOptions: ReportLinkOption[] = [{ id: "graph-1", name: "Scatter Plot" }];
 const fitYByXOptions: ReportLinkOption[] = [{ id: "fit-1", name: "Strength vs Time" }];
+const hypothesisTestOptions: ReportLinkOption[] = [{ id: "hypothesis-1", name: "Supplier Comparison" }];
 const tabulateOptions: ReportLinkOption[] = [{ id: "tab-1", name: "Grouped Summary" }];
 const distributionOptions: ReportLinkOption[] = [{ id: "distribution-1", name: "Strength Distribution" }];
 
@@ -301,6 +302,7 @@ export function ReportViewHarness({
         tableOptions={tableOptions}
         graphOptions={graphOptions}
         fitYByXOptions={fitYByXOptions}
+        hypothesisTestOptions={hypothesisTestOptions}
         tabulateOptions={tabulateOptions}
         distributionOptions={distributionOptions}
         embedRuntime={{ ...selectedRuntime, graph: graphRuntime, distribution: distributionRuntime }}
@@ -324,6 +326,7 @@ export function ReportExternalUpdateHarness() {
         tableOptions={tableOptions}
         graphOptions={graphOptions}
         fitYByXOptions={fitYByXOptions}
+        hypothesisTestOptions={hypothesisTestOptions}
         tabulateOptions={tabulateOptions}
         distributionOptions={distributionOptions}
         onMarkdownChange={(nextMarkdown) => {

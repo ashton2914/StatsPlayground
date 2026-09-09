@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::error::AppError;
 use crate::services::spprj_archive::{ProjectDocumentRef, TableColumn};
@@ -11,6 +12,7 @@ fn invalid(message: impl Into<String>) -> AppError {
 }
 
 pub const DEFAULT_PROJECT_LINEAGE_GRAPH_ID: &str = "project-lineage";
+pub const PROJECT_LINEAGE_GRAPH_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +20,10 @@ pub struct ProjectLineageGraph {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub graph_version: u32,
+    #[serde(default)]
+    pub graph_hash: String,
     #[serde(default)]
     pub nodes: Vec<LineageNode>,
     #[serde(default)]
@@ -29,6 +35,8 @@ impl Default for ProjectLineageGraph {
         Self {
             id: DEFAULT_PROJECT_LINEAGE_GRAPH_ID.to_string(),
             name: String::new(),
+            graph_version: 0,
+            graph_hash: String::new(),
             nodes: Vec::new(),
             edges: Vec::new(),
         }
@@ -38,8 +46,84 @@ impl Default for ProjectLineageGraph {
 pub fn project_lineage_graph_is_default(graph: &ProjectLineageGraph) -> bool {
     graph.id == DEFAULT_PROJECT_LINEAGE_GRAPH_ID
         && graph.name.is_empty()
+        && graph.graph_version == 0
+        && graph.graph_hash.is_empty()
         && graph.nodes.is_empty()
         && graph.edges.is_empty()
+}
+
+pub fn seal_project_lineage_graph(graph: &mut ProjectLineageGraph) -> Result<(), AppError> {
+    graph.graph_version = PROJECT_LINEAGE_GRAPH_VERSION;
+    graph.graph_hash = project_lineage_graph_hash(graph)?;
+    Ok(())
+}
+
+pub fn project_lineage_graph_hash(graph: &ProjectLineageGraph) -> Result<String, AppError> {
+    let mut canonical_graph = graph.clone();
+    canonical_graph.graph_version = PROJECT_LINEAGE_GRAPH_VERSION;
+    canonical_graph.graph_hash.clear();
+    canonical_graph.name.clear();
+    canonical_graph
+        .nodes
+        .sort_by(|left, right| lineage_node_id(left).cmp(lineage_node_id(right)));
+    for node in &mut canonical_graph.nodes {
+        match node {
+            LineageNode::Artifact(artifact) => {
+                artifact.name.clear();
+                artifact.input_port.name.clear();
+                artifact.output_port.name.clear();
+            }
+            LineageNode::Operation(operation) => {
+                operation
+                    .input_ports
+                    .sort_by(|left, right| left.id.cmp(&right.id));
+                operation
+                    .output_ports
+                    .sort_by(|left, right| left.id.cmp(&right.id));
+                for port in operation
+                    .input_ports
+                    .iter_mut()
+                    .chain(operation.output_ports.iter_mut())
+                {
+                    port.name.clear();
+                }
+            }
+        }
+    }
+    canonical_graph
+        .edges
+        .sort_by(|left, right| left.id.cmp(&right.id));
+
+    let value = serde_json::to_value(canonical_graph).map_err(|error| {
+        invalid(format!(
+            "failed to serialize project lineage graph: {error}"
+        ))
+    })?;
+    let canonical = canonical_json(value);
+    let bytes = serde_json::to_vec(&canonical)
+        .map_err(|error| invalid(format!("failed to encode project lineage graph: {error}")))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn lineage_node_id(node: &LineageNode) -> &str {
+    match node {
+        LineageNode::Artifact(artifact) => &artifact.id,
+        LineageNode::Operation(operation) => &operation.id,
+    }
+}
+
+fn canonical_json(value: Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.into_iter().map(canonical_json).collect()),
+        Value::Object(values) => {
+            let sorted = values
+                .into_iter()
+                .map(|(key, value)| (key, canonical_json(value)))
+                .collect::<BTreeMap<_, _>>();
+            Value::Object(sorted.into_iter().collect())
+        }
+        scalar => scalar,
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -88,6 +172,30 @@ pub struct LineagePort {
     pub payload_kind: PortPayloadKind,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TableColumnConsumption {
+    pub name: String,
+    #[serde(default)]
+    pub required_extra_kinds: Vec<WorkflowSemanticExtraKind>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkflowSemanticExtraKind {
+    ValueOrder,
+    Spec,
+}
+
+impl WorkflowSemanticExtraKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ValueOrder => "valueOrder",
+            Self::Spec => "spec",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum LineageEdgeKind {
@@ -116,9 +224,13 @@ pub struct LineageEndpoint {
 pub enum PortPayloadKind {
     Any,
     Table,
+    TableTransform,
     Graph,
+    Analysis,
+    Distribution,
     FitYByX,
     Tabulate,
+    Report,
     Snapshot,
 }
 
@@ -126,9 +238,13 @@ pub enum PortPayloadKind {
 #[serde(rename_all = "camelCase")]
 pub enum ArtifactKind {
     Table,
+    TableTransform,
     Graph,
+    Analysis,
+    Distribution,
     FitYByX,
     Tabulate,
+    Report,
     Snapshot,
 }
 
@@ -139,8 +255,10 @@ pub enum OperationKind {
     SqlQuery,
     TableTransform,
     GraphGeneration,
+    AnalysisExecution,
     FitYByX,
     Tabulate,
+    ReportComposition,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -280,6 +398,8 @@ pub struct SchemaColumnRequirement {
     pub required: bool,
     #[serde(default)]
     pub required_by_operation_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub required_extras: BTreeMap<String, Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -289,6 +409,8 @@ pub struct SchemaValidationReport {
     pub missing_columns: Vec<SchemaValidationIssue>,
     #[serde(default)]
     pub type_mismatches: Vec<SchemaValidationIssue>,
+    #[serde(default)]
+    pub attribute_mismatches: Vec<SchemaAttributeMismatch>,
     #[serde(default)]
     pub extra_columns: Vec<String>,
 }
@@ -305,6 +427,18 @@ pub struct SchemaValidationIssue {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SchemaAttributeMismatch {
+    pub column_name: String,
+    pub attribute_name: String,
+    pub expected_value: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_value: Option<Value>,
+    #[serde(default)]
+    pub affected_operation_ids: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkflowInputBinding {
     pub slot_id: String,
     pub table_document_id: String,
@@ -315,6 +449,24 @@ pub struct WorkflowInputBinding {
 pub struct WorkflowOutputBinding {
     pub declaration_id: String,
     pub artifact_document_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowInputFingerprint {
+    pub slot_id: String,
+    pub table_document_id: String,
+    pub generation: u64,
+    pub schema_fingerprint: String,
+    pub content_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowOutputFingerprint {
+    pub declaration_id: String,
+    pub artifact_document_id: String,
+    pub content_hash: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -358,6 +510,54 @@ pub struct WorkflowRun {
     pub errors: Vec<WorkflowRunError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_hash: Option<String>,
+    #[serde(default)]
+    pub input_fingerprints: Vec<WorkflowInputFingerprint>,
+    #[serde(default)]
+    pub output_fingerprints: Vec<WorkflowOutputFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub determinism_baseline_run_id: Option<String>,
+}
+
+impl WorkflowRun {
+    pub fn is_determinism_comparable(&self) -> bool {
+        if self.seed.is_none()
+            || self.engine_version.as_deref().is_none_or(str::is_empty)
+            || self.configuration_hash.as_deref().is_none_or(str::is_empty)
+            || self.input_bindings.len() != self.input_fingerprints.len()
+            || self.output_bindings.len() != self.output_fingerprints.len()
+        {
+            return false;
+        }
+
+        self.input_bindings.iter().all(|binding| {
+            self.input_fingerprints
+                .iter()
+                .filter(|fingerprint| {
+                    fingerprint.slot_id == binding.slot_id
+                        && fingerprint.table_document_id == binding.table_document_id
+                        && !fingerprint.schema_fingerprint.is_empty()
+                        && !fingerprint.content_hash.is_empty()
+                })
+                .count()
+                == 1
+        }) && self.output_bindings.iter().all(|binding| {
+            self.output_fingerprints
+                .iter()
+                .filter(|fingerprint| {
+                    fingerprint.declaration_id == binding.declaration_id
+                        && fingerprint.artifact_document_id == binding.artifact_document_id
+                        && !fingerprint.content_hash.is_empty()
+                })
+                .count()
+                == 1
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
@@ -406,10 +606,14 @@ pub struct WorkflowOperationInputSchema {
     pub operation_id: String,
     pub input_port_id: String,
     #[serde(default)]
-    pub required_column_names: Vec<String>,
+    pub columns: Vec<TableColumnConsumption>,
+    #[serde(default)]
+    pub complete_schema: bool,
 }
 
-pub fn extract_workflow(request: WorkflowExtractionRequest) -> Result<WorkflowDefinition, AppError> {
+pub fn extract_workflow(
+    request: WorkflowExtractionRequest,
+) -> Result<WorkflowDefinition, AppError> {
     if request.workflow_id.trim().is_empty() {
         return Err(invalid("workflow id is required"));
     }
@@ -441,7 +645,9 @@ pub fn extract_workflow(request: WorkflowExtractionRequest) -> Result<WorkflowDe
     }
 
     if selected_operations.is_empty() {
-        return Err(invalid("workflow selection must include at least one operation"));
+        return Err(invalid(
+            "workflow selection must include at least one operation",
+        ));
     }
 
     selected_operations.sort_by(|left, right| left.id.cmp(&right.id));
@@ -466,9 +672,12 @@ pub fn extract_workflow(request: WorkflowExtractionRequest) -> Result<WorkflowDe
     let selected_node_id_set: HashSet<String> = selected_node_ids.iter().cloned().collect();
     let mut selected_internal_edges = Vec::new();
     for edge_id in &selected_edge_ids {
-        let edge = graph_index
-            .edge(edge_id.as_str())
-            .ok_or_else(|| invalid(format!("selected edge {} does not exist in the lineage graph", edge_id)))?;
+        let edge = graph_index.edge(edge_id.as_str()).ok_or_else(|| {
+            invalid(format!(
+                "selected edge {} does not exist in the lineage graph",
+                edge_id
+            ))
+        })?;
         if !selected_node_id_set.contains(edge.source.node_id.as_str())
             || !selected_node_id_set.contains(edge.target.node_id.as_str())
         {
@@ -485,13 +694,10 @@ pub fn extract_workflow(request: WorkflowExtractionRequest) -> Result<WorkflowDe
         .iter()
         .map(|table| (table.artifact_node_id.clone(), table.columns.clone()))
         .collect();
-    let requirements_by_binding = build_requirement_map(&request.operation_column_requirements);
+    let requirements_by_binding = build_requirement_map(&request.operation_column_requirements)?;
 
-    let external_dependencies = collect_external_dependencies(
-        &request.graph,
-        &selected_node_id_set,
-        &graph_index,
-    )?;
+    let external_dependencies =
+        collect_external_dependencies(&request.graph, &selected_node_id_set, &graph_index)?;
     let input_slots = build_input_slots(
         &external_dependencies,
         &table_schemas_by_artifact,
@@ -517,7 +723,12 @@ pub fn extract_workflow(request: WorkflowExtractionRequest) -> Result<WorkflowDe
                 id: operation_local_ids
                     .get(operation.id.as_str())
                     .cloned()
-                    .ok_or_else(|| invalid(format!("missing workflow-local id for operation {}", operation.id)))?,
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "missing workflow-local id for operation {}",
+                            operation.id
+                        ))
+                    })?,
                 kind: operation.kind.clone(),
                 schema_version: operation.schema_version.clone(),
                 configuration: operation
@@ -599,30 +810,29 @@ pub fn canonical_duckdb_type(raw_type: &str) -> String {
 }
 
 pub fn schema_fingerprint(columns: &[SchemaColumnRequirement]) -> String {
-    let mut pairs = columns
+    let mut entries = columns
         .iter()
         .map(|column| {
             (
                 column.name.clone(),
                 canonical_duckdb_type(column.canonical_duckdb_type.as_str()),
+                serde_json::to_string(&column.required_extras).unwrap_or_default(),
             )
         })
         .collect::<Vec<_>>();
-    pairs.sort_by(|left, right| left.cmp(right));
+    entries.sort_by(|left, right| left.cmp(right));
 
     const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x100000001b3;
 
     let mut hash = OFFSET_BASIS;
-    for (name, data_type) in pairs {
-        for byte in name.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(PRIME);
-        }
-        hash ^= u64::from(0u8);
-        hash = hash.wrapping_mul(PRIME);
-        for byte in data_type.as_bytes() {
-            hash ^= u64::from(*byte);
+    for (name, data_type, required_extras) in entries {
+        for value in [name, data_type, required_extras] {
+            for byte in value.as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
+            hash ^= u64::from(0u8);
             hash = hash.wrapping_mul(PRIME);
         }
     }
@@ -636,11 +846,12 @@ pub fn validate_schema_contract(
 ) -> SchemaValidationReport {
     let mut actual_by_name = HashMap::new();
     for column in actual_columns {
-        actual_by_name.insert(column.name.clone(), canonical_duckdb_type(column.col_type.as_str()));
+        actual_by_name.insert(column.name.clone(), column);
     }
 
     let mut missing_columns = Vec::new();
     let mut type_mismatches = Vec::new();
+    let mut attribute_mismatches = Vec::new();
     let required_names = contract
         .columns
         .iter()
@@ -661,27 +872,48 @@ pub fn validate_schema_contract(
                 actual_type: String::new(),
                 affected_operation_ids: column.required_by_operation_ids.clone(),
             }),
-            Some(actual_type) if actual_type != &expected_type => {
+            Some(actual_column)
+                if canonical_duckdb_type(actual_column.col_type.as_str()) != expected_type =>
+            {
                 type_mismatches.push(SchemaValidationIssue {
                     column_name: column.name.clone(),
                     expected_type,
-                    actual_type: actual_type.clone(),
+                    actual_type: canonical_duckdb_type(actual_column.col_type.as_str()),
                     affected_operation_ids: column.required_by_operation_ids.clone(),
                 });
             }
-            Some(_) => {}
+            Some(actual_column) => {
+                for (kind, expected_value) in &column.required_extras {
+                    let actual_value = actual_column
+                        .extras
+                        .as_ref()
+                        .and_then(|extras| extras.get(kind));
+                    if actual_value != Some(expected_value) {
+                        attribute_mismatches.push(SchemaAttributeMismatch {
+                            column_name: column.name.clone(),
+                            attribute_name: format!("extras.{kind}"),
+                            expected_value: expected_value.clone(),
+                            actual_value: actual_value.cloned(),
+                            affected_operation_ids: column.required_by_operation_ids.clone(),
+                        });
+                    }
+                }
+            }
         }
     }
 
     let mut extra_columns = actual_columns
         .iter()
-        .filter_map(|column| (!required_names.contains(column.name.as_str())).then_some(column.name.clone()))
+        .filter_map(|column| {
+            (!required_names.contains(column.name.as_str())).then_some(column.name.clone())
+        })
         .collect::<Vec<_>>();
     extra_columns.sort();
 
     SchemaValidationReport {
         missing_columns,
         type_mismatches,
+        attribute_mismatches,
         extra_columns,
     }
 }
@@ -715,12 +947,21 @@ impl<'a> GraphIndex<'a> {
             match node {
                 LineageNode::Artifact(artifact) => {
                     if artifacts.insert(artifact.id.as_str(), artifact).is_some() {
-                        return Err(invalid(format!("duplicate artifact node id: {}", artifact.id)));
+                        return Err(invalid(format!(
+                            "duplicate artifact node id: {}",
+                            artifact.id
+                        )));
                     }
                 }
                 LineageNode::Operation(operation) => {
-                    if operations.insert(operation.id.as_str(), operation).is_some() {
-                        return Err(invalid(format!("duplicate operation node id: {}", operation.id)));
+                    if operations
+                        .insert(operation.id.as_str(), operation)
+                        .is_some()
+                    {
+                        return Err(invalid(format!(
+                            "duplicate operation node id: {}",
+                            operation.id
+                        )));
                     }
                 }
             }
@@ -779,21 +1020,21 @@ fn unique_non_empty_ids(values: &[String], label: &str) -> Result<Vec<String>, A
 
 fn build_requirement_map(
     requirements: &[WorkflowOperationInputSchema],
-) -> HashMap<(String, String), Vec<String>> {
+) -> Result<HashMap<(String, String), WorkflowOperationInputSchema>, AppError> {
     let mut map = HashMap::new();
     for requirement in requirements {
         let key = (
             requirement.operation_id.clone(),
             requirement.input_port_id.clone(),
         );
-        let entry = map.entry(key).or_insert_with(Vec::new);
-        for column_name in &requirement.required_column_names {
-            if !entry.contains(column_name) {
-                entry.push(column_name.clone());
-            }
+        if map.insert(key.clone(), requirement.clone()).is_some() {
+            return Err(invalid(format!(
+                "duplicate column requirement for operation {} input {}",
+                key.0, key.1
+            )));
         }
     }
-    map
+    Ok(map)
 }
 
 fn collect_external_dependencies<'a>(
@@ -813,18 +1054,22 @@ fn collect_external_dependencies<'a>(
             continue;
         }
 
-        let source_artifact = index.artifact(edge.source.node_id.as_str()).ok_or_else(|| {
-            invalid(format!(
-                "unresolved external dependency: missing artifact node {}",
-                edge.source.node_id
-            ))
-        })?;
-        let target_operation = index.operation(edge.target.node_id.as_str()).ok_or_else(|| {
-            invalid(format!(
-                "unresolved external dependency: missing operation node {}",
-                edge.target.node_id
-            ))
-        })?;
+        let source_artifact = index
+            .artifact(edge.source.node_id.as_str())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "unresolved external dependency: missing artifact node {}",
+                    edge.source.node_id
+                ))
+            })?;
+        let target_operation = index
+            .operation(edge.target.node_id.as_str())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "unresolved external dependency: missing operation node {}",
+                    edge.target.node_id
+                ))
+            })?;
         if source_artifact.artifact_kind != ArtifactKind::Table {
             return Err(invalid(format!(
                 "non-table external dependency is not supported for workflow extraction: {}",
@@ -853,7 +1098,7 @@ fn collect_external_dependencies<'a>(
 fn build_input_slots(
     dependencies: &[ExternalDependency<'_>],
     table_schemas_by_artifact: &HashMap<String, Vec<TableColumn>>,
-    requirements_by_binding: &HashMap<(String, String), Vec<String>>,
+    requirements_by_binding: &HashMap<(String, String), WorkflowOperationInputSchema>,
     operation_local_ids: &HashMap<String, String>,
 ) -> Result<Vec<ExtractedInputSlot>, AppError> {
     let mut slot_ids_by_artifact = HashMap::new();
@@ -871,18 +1116,47 @@ fn build_input_slots(
             .entry(artifact_id.clone())
             .or_insert_with(|| dependency.source_artifact.name.clone());
 
-        let schema = table_schemas_by_artifact.get(artifact_id.as_str()).ok_or_else(|| {
-            invalid(format!(
-                "unresolved external dependency: missing source schema for artifact {}",
-                artifact_id
-            ))
-        })?;
-        let required_column_names = requirements_by_binding
-            .get(&(dependency.target_operation.id.clone(), dependency.edge.target.port_id.clone()))
-            .cloned()
-            .unwrap_or_default();
+        let schema = table_schemas_by_artifact
+            .get(artifact_id.as_str())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "unresolved external dependency: missing source schema for artifact {}",
+                    artifact_id
+                ))
+            })?;
+        let requirement_key = (
+            dependency.target_operation.id.clone(),
+            dependency.edge.target.port_id.clone(),
+        );
+        let requirement = requirements_by_binding
+            .get(&requirement_key)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "cannot determine required columns for operation {} input {}",
+                    requirement_key.0, requirement_key.1
+                ))
+            })?;
+        if requirement.columns.is_empty() && !requirement.complete_schema {
+            return Err(invalid(format!(
+                "cannot determine required columns for operation {} input {}",
+                requirement_key.0, requirement_key.1
+            )));
+        }
+        let required_columns = if requirement.complete_schema {
+            schema
+                .iter()
+                .map(|column| TableColumnConsumption {
+                    name: column.name.clone(),
+                    required_extra_kinds: Vec::new(),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            requirement.columns.clone()
+        };
 
-        for required_column_name in required_column_names {
+        for required_column in required_columns {
+            let required_column_name = required_column.name;
+            let required_extra_kinds = required_column.required_extra_kinds;
             let source_column = schema
                 .iter()
                 .find(|column| column.name == required_column_name)
@@ -893,6 +1167,21 @@ fn build_input_slots(
                     ))
                 })?;
             let canonical_type = canonical_duckdb_type(source_column.col_type.as_str());
+            let required_extras = source_column
+                .extras
+                .as_ref()
+                .map(|extras| {
+                    required_extra_kinds
+                        .iter()
+                        .filter_map(|kind| {
+                            extras
+                                .get(kind.as_str())
+                                .cloned()
+                                .map(|value| (kind.as_str().to_string(), value))
+                        })
+                        .collect::<BTreeMap<_, _>>()
+                })
+                .unwrap_or_default();
             let operation_local_id = operation_local_ids
                 .get(dependency.target_operation.id.as_str())
                 .cloned()
@@ -910,6 +1199,7 @@ fn build_input_slots(
                 .or_insert_with(|| SchemaColumnAccumulator {
                     canonical_duckdb_type: canonical_type.clone(),
                     required_by_operation_ids: HashSet::new(),
+                    required_extras: BTreeMap::new(),
                 });
 
             if column_entry.canonical_duckdb_type != canonical_type {
@@ -921,6 +1211,7 @@ fn build_input_slots(
             column_entry
                 .required_by_operation_ids
                 .insert(operation_local_id);
+            column_entry.required_extras.extend(required_extras);
         }
     }
 
@@ -949,18 +1240,28 @@ fn build_input_slots(
             .unwrap_or_default()
             .into_iter()
             .map(|(name, accumulator)| {
-                let mut required_by_operation_ids =
-                    accumulator.required_by_operation_ids.into_iter().collect::<Vec<_>>();
+                let mut required_by_operation_ids = accumulator
+                    .required_by_operation_ids
+                    .into_iter()
+                    .collect::<Vec<_>>();
                 required_by_operation_ids.sort();
                 SchemaColumnRequirement {
                     name,
                     canonical_duckdb_type: accumulator.canonical_duckdb_type,
                     required: true,
                     required_by_operation_ids,
+                    required_extras: accumulator.required_extras,
                 }
             })
             .collect::<Vec<_>>();
         columns.sort_by(|left, right| left.name.cmp(&right.name));
+
+        if columns.is_empty() {
+            return Err(invalid(format!(
+                "workflow input {} resolved to no required columns",
+                artifact_id
+            )));
+        }
 
         input_slots.push(ExtractedInputSlot {
             original_artifact_id: artifact_id,
@@ -991,7 +1292,10 @@ fn build_value_remap(
     for dependency in external_dependencies {
         if let Some(local_id) = input_slot_local_ids.get(dependency.source_artifact.id.as_str()) {
             remap.insert(dependency.source_artifact.id.clone(), local_id.clone());
-            remap.insert(dependency.source_artifact.document_ref.id.clone(), local_id.clone());
+            remap.insert(
+                dependency.source_artifact.document_ref.id.clone(),
+                local_id.clone(),
+            );
         }
     }
 
@@ -1042,12 +1346,14 @@ fn build_output_declarations(
 
     let mut declarations = Vec::new();
     for artifact in selected_artifacts {
-        let producer_edge = producer_edge_by_artifact.get(artifact.id.as_str()).ok_or_else(|| {
-            invalid(format!(
-                "selected artifact {} does not have a selected producer edge",
-                artifact.id
-            ))
-        })?;
+        let producer_edge = producer_edge_by_artifact
+            .get(artifact.id.as_str())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "selected artifact {} does not have a selected producer edge",
+                    artifact.id
+                ))
+            })?;
         let source_operation_id = operation_local_ids
             .get(producer_edge.source.node_id.as_str())
             .cloned()
@@ -1062,18 +1368,20 @@ fn build_output_declarations(
             id: output_local_ids
                 .get(artifact.id.as_str())
                 .cloned()
-                .ok_or_else(|| invalid(format!("missing output id for artifact {}", artifact.id)))?,
+                .ok_or_else(|| {
+                    invalid(format!("missing output id for artifact {}", artifact.id))
+                })?,
             name: artifact.name.clone(),
             input_port: workflow_output_input_port(
-                output_local_ids
-                    .get(artifact.id.as_str())
-                    .ok_or_else(|| invalid(format!("missing output id for artifact {}", artifact.id)))?,
+                output_local_ids.get(artifact.id.as_str()).ok_or_else(|| {
+                    invalid(format!("missing output id for artifact {}", artifact.id))
+                })?,
                 &artifact.artifact_kind,
             ),
             output_port: workflow_output_output_port(
-                output_local_ids
-                    .get(artifact.id.as_str())
-                    .ok_or_else(|| invalid(format!("missing output id for artifact {}", artifact.id)))?,
+                output_local_ids.get(artifact.id.as_str()).ok_or_else(|| {
+                    invalid(format!("missing output id for artifact {}", artifact.id))
+                })?,
                 &artifact.artifact_kind,
             ),
             source_endpoint: WorkflowEndpoint {
@@ -1158,16 +1466,16 @@ fn build_workflow_edges(
                                 edge.source.node_id
                             ))
                         })?,
-                        port_id: workflow_output_output_port_id(
-                            output_local_ids
-                                .get(edge.source.node_id.as_str())
-                                .ok_or_else(|| {
-                                    invalid(format!(
-                                        "missing workflow-local output id for artifact {}",
-                                        edge.source.node_id
-                                    ))
-                                })?,
-                        ),
+                    port_id: workflow_output_output_port_id(
+                        output_local_ids
+                            .get(edge.source.node_id.as_str())
+                            .ok_or_else(|| {
+                                invalid(format!(
+                                    "missing workflow-local output id for artifact {}",
+                                    edge.source.node_id
+                                ))
+                            })?,
+                    ),
                 },
                 target: WorkflowEndpoint {
                     node_id: operation_local_ids
@@ -1207,16 +1515,16 @@ fn build_workflow_edges(
                                 edge.target.node_id
                             ))
                         })?,
-                        port_id: workflow_output_input_port_id(
-                            output_local_ids
-                                .get(edge.target.node_id.as_str())
-                                .ok_or_else(|| {
-                                    invalid(format!(
-                                        "missing workflow-local output id for artifact {}",
-                                        edge.target.node_id
-                                    ))
-                                })?,
-                        ),
+                    port_id: workflow_output_input_port_id(
+                        output_local_ids
+                            .get(edge.target.node_id.as_str())
+                            .ok_or_else(|| {
+                                invalid(format!(
+                                    "missing workflow-local output id for artifact {}",
+                                    edge.target.node_id
+                                ))
+                            })?,
+                    ),
                 },
             }),
         }
@@ -1240,7 +1548,10 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
     let mut output_output_ports = HashMap::new();
     for input_slot in &workflow.input_slots {
         if !seen_node_ids.insert(input_slot.id.as_str()) {
-            return Err(invalid(format!("duplicate workflow node id: {}", input_slot.id)));
+            return Err(invalid(format!(
+                "duplicate workflow node id: {}",
+                input_slot.id
+            )));
         }
         register_workflow_boundary_port(
             &input_slot.id,
@@ -1254,7 +1565,10 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
     }
     for operation in &workflow.operations {
         if !seen_node_ids.insert(operation.id.as_str()) {
-            return Err(invalid(format!("duplicate workflow node id: {}", operation.id)));
+            return Err(invalid(format!(
+                "duplicate workflow node id: {}",
+                operation.id
+            )));
         }
         operation_input_ports.insert(
             operation.id.as_str(),
@@ -1275,7 +1589,10 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
     }
     for output in &workflow.output_declarations {
         if !seen_node_ids.insert(output.id.as_str()) {
-            return Err(invalid(format!("duplicate workflow node id: {}", output.id)));
+            return Err(invalid(format!(
+                "duplicate workflow node id: {}",
+                output.id
+            )));
         }
         let expected_payload_kind = artifact_kind_to_payload_kind(&output.artifact_kind);
         register_workflow_boundary_port(
@@ -1480,7 +1797,9 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
                         edge.id
                     )));
                 }
-                *producer_counts.entry(edge.target.node_id.as_str()).or_insert(0) += 1;
+                *producer_counts
+                    .entry(edge.target.node_id.as_str())
+                    .or_insert(0) += 1;
             }
         }
 
@@ -1488,9 +1807,7 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
             .entry(edge.source.node_id.as_str())
             .or_default()
             .push(edge.target.node_id.as_str());
-        *indegree
-            .entry(edge.target.node_id.as_str())
-            .or_insert(0) += 1;
+        *indegree.entry(edge.target.node_id.as_str()).or_insert(0) += 1;
 
         undirected
             .entry(edge.source.node_id.as_str())
@@ -1503,7 +1820,12 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
     }
 
     for output in &workflow.output_declarations {
-        if producer_counts.get(output.id.as_str()).copied().unwrap_or_default() != 1 {
+        if producer_counts
+            .get(output.id.as_str())
+            .copied()
+            .unwrap_or_default()
+            != 1
+        {
             return Err(invalid(format!(
                 "workflow output {} must have exactly one producer",
                 output.id
@@ -1586,6 +1908,7 @@ fn validate_extracted_workflow(workflow: &WorkflowDefinition) -> Result<(), AppE
 struct SchemaColumnAccumulator {
     canonical_duckdb_type: String,
     required_by_operation_ids: HashSet<String>,
+    required_extras: BTreeMap<String, Value>,
 }
 
 pub fn validate_lineage_graph(
@@ -1741,10 +2064,7 @@ pub fn validate_lineage_graph(
                         ))
                     })?;
 
-                if !payload_kinds_match(
-                    source_port_kind.payload_kind.clone(),
-                    target_port_kind,
-                ) {
+                if !payload_kinds_match(source_port_kind.payload_kind.clone(), target_port_kind) {
                     return Err(invalid(format!(
                         "invalid port payload direction for edge {}",
                         edge.id
@@ -1786,10 +2106,7 @@ pub fn validate_lineage_graph(
                     )));
                 }
 
-                if !payload_kinds_match(
-                    source_port_kind,
-                    target_port_kind.payload_kind.clone(),
-                ) {
+                if !payload_kinds_match(source_port_kind, target_port_kind.payload_kind.clone()) {
                     return Err(invalid(format!(
                         "invalid port payload direction for edge {}",
                         edge.id
@@ -1924,12 +2241,14 @@ pub fn validate_workflow_runs(
             return Err(invalid(format!("duplicate run id: {}", run.id)));
         }
 
-        let revisions = revisions_by_workflow.get(run.workflow_id.as_str()).ok_or_else(|| {
-            invalid(format!(
-                "run {} references missing workflow {}",
-                run.id, run.workflow_id
-            ))
-        })?;
+        let revisions = revisions_by_workflow
+            .get(run.workflow_id.as_str())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "run {} references missing workflow {}",
+                    run.id, run.workflow_id
+                ))
+            })?;
 
         if !revisions.contains(&run.workflow_revision) {
             return Err(invalid(format!(
@@ -2146,9 +2465,13 @@ fn workflow_output_output_port(output_id: &str, artifact_kind: &ArtifactKind) ->
 fn artifact_kind_to_payload_kind(kind: &ArtifactKind) -> PortPayloadKind {
     match kind {
         ArtifactKind::Table => PortPayloadKind::Table,
+        ArtifactKind::TableTransform => PortPayloadKind::TableTransform,
         ArtifactKind::Graph => PortPayloadKind::Graph,
+        ArtifactKind::Analysis => PortPayloadKind::Analysis,
+        ArtifactKind::Distribution => PortPayloadKind::Distribution,
         ArtifactKind::FitYByX => PortPayloadKind::FitYByX,
         ArtifactKind::Tabulate => PortPayloadKind::Tabulate,
+        ArtifactKind::Report => PortPayloadKind::Report,
         ArtifactKind::Snapshot => PortPayloadKind::Snapshot,
     }
 }
@@ -2219,7 +2542,12 @@ fn workflow_operation_output_payload_kind(
         .operations
         .iter()
         .find(|operation| operation.id == operation_id)
-        .and_then(|operation| operation.output_ports.iter().find(|port| port.id == port_id))
+        .and_then(|operation| {
+            operation
+                .output_ports
+                .iter()
+                .find(|port| port.id == port_id)
+        })
         .map(|port| port.payload_kind.clone())
         .ok_or_else(|| {
             invalid(format!(
@@ -2237,10 +2565,16 @@ fn node_by_id<'a>(
     if let Some(artifact) = artifacts.get(node_id) {
         return Some(LineageNodeRef::Artifact(*artifact));
     }
-    operations.get(node_id).copied().map(LineageNodeRef::Operation)
+    operations
+        .get(node_id)
+        .copied()
+        .map(LineageNodeRef::Operation)
 }
 
-fn expect_artifact<'a>(node: LineageNodeRef<'a>, context: &str) -> Result<&'a ArtifactNode, AppError> {
+fn expect_artifact<'a>(
+    node: LineageNodeRef<'a>,
+    context: &str,
+) -> Result<&'a ArtifactNode, AppError> {
     match node {
         LineageNodeRef::Artifact(artifact) => Ok(artifact),
         LineageNodeRef::Operation(operation) => Err(invalid(format!(
@@ -2330,10 +2664,22 @@ mod tests {
         }
     }
 
+    fn consumed_columns(names: &[&str]) -> Vec<TableColumnConsumption> {
+        names
+            .iter()
+            .map(|name| TableColumnConsumption {
+                name: (*name).to_string(),
+                required_extra_kinds: Vec::new(),
+            })
+            .collect()
+    }
+
     fn valid_project_lineage_graph() -> ProjectLineageGraph {
         ProjectLineageGraph {
             id: "lineage-graph-1".to_string(),
             name: "Lineage Graph".to_string(),
+            graph_version: 0,
+            graph_hash: String::new(),
             nodes: vec![
                 LineageNode::Artifact(ArtifactNode {
                     id: "artifact-table-1".to_string(),
@@ -2422,6 +2768,8 @@ mod tests {
         ProjectLineageGraph {
             id: "lineage-graph-workflow".to_string(),
             name: "Workflow Source Graph".to_string(),
+            graph_version: 0,
+            graph_hash: String::new(),
             nodes: vec![
                 LineageNode::Artifact(ArtifactNode {
                     id: "artifact-table-source-a".to_string(),
@@ -2685,8 +3033,14 @@ mod tests {
             format_version: "1".to_string(),
             revision: 1,
             graph,
-            selected_node_ids: selected_node_ids.iter().map(|id| (*id).to_string()).collect(),
-            selected_edge_ids: selected_edge_ids.iter().map(|id| (*id).to_string()).collect(),
+            selected_node_ids: selected_node_ids
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
+            selected_edge_ids: selected_edge_ids
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
             table_schemas,
             operation_column_requirements,
             layout: None,
@@ -2697,7 +3051,12 @@ mod tests {
     fn extract_workflow_converts_external_table_dependency_into_input_slot() {
         let workflow = extract_workflow(extraction_request(
             workflow_extraction_graph(),
-            &["operation-sql-1", "artifact-table-joined", "operation-fit-1", "artifact-fit-1"],
+            &[
+                "operation-sql-1",
+                "artifact-table-joined",
+                "operation-fit-1",
+                "artifact-fit-1",
+            ],
             &["edge-sql-table", "edge-table-fit", "edge-fit-output"],
             vec![WorkflowSourceTable {
                 artifact_node_id: "artifact-table-source-a".to_string(),
@@ -2711,12 +3070,14 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-sql-1".to_string(),
                     input_port_id: "operation-sql-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -2727,6 +3088,104 @@ mod tests {
         assert_eq!(workflow.output_declarations.len(), 2);
         assert_eq!(workflow.input_slots[0].schema_contract.columns.len(), 2);
         assert_eq!(workflow.input_slots[0].source_document_ref, None);
+    }
+
+    #[test]
+    fn extract_workflow_rejects_unknown_operation_column_requirements() {
+        let error = extract_workflow(extraction_request(
+            workflow_extraction_graph(),
+            &["operation-sql-1", "artifact-table-joined"],
+            &["edge-sql-table"],
+            vec![WorkflowSourceTable {
+                artifact_node_id: "artifact-table-source-a".to_string(),
+                columns: vec![
+                    table_column("height", "INTEGER"),
+                    table_column("weight", "DOUBLE"),
+                    table_column("batch", "VARCHAR"),
+                ],
+            }],
+            vec![],
+        ))
+        .expect_err("unknown column consumption must not expand to the full source schema");
+
+        assert!(error
+            .to_string()
+            .contains("cannot determine required columns for operation operation-sql-1 input operation-sql-1-in-source"));
+    }
+
+    #[test]
+    fn extract_workflow_rejects_complete_schema_that_resolves_to_no_columns() {
+        let error = extract_workflow(extraction_request(
+            workflow_extraction_graph(),
+            &["operation-sql-1", "artifact-table-joined"],
+            &["edge-sql-table"],
+            vec![WorkflowSourceTable {
+                artifact_node_id: "artifact-table-source-a".to_string(),
+                columns: vec![],
+            }],
+            vec![WorkflowOperationInputSchema {
+                operation_id: "operation-sql-1".to_string(),
+                input_port_id: "operation-sql-1-in-source".to_string(),
+                columns: vec![],
+                complete_schema: true,
+            }],
+        ))
+        .expect_err("an empty resolved schema must not create an unusable workflow");
+
+        assert!(error
+            .to_string()
+            .contains("workflow input artifact-table-source-a resolved to no required columns"));
+    }
+
+    #[test]
+    fn extract_workflow_persists_only_operation_required_column_extras() {
+        let mut height = table_column("height", "INTEGER");
+        height.extras = Some(std::collections::BTreeMap::from([
+            (
+                "valueOrder".to_string(),
+                json!({"values": ["short", "tall"]}),
+            ),
+            ("notes".to_string(), json!({"value": "display only"})),
+        ]));
+        let workflow = extract_workflow(extraction_request(
+            workflow_extraction_graph(),
+            &["operation-fit-1", "artifact-fit-1"],
+            &["edge-fit-output"],
+            vec![WorkflowSourceTable {
+                artifact_node_id: "artifact-table-joined".to_string(),
+                columns: vec![height, table_column("weight", "DOUBLE")],
+            }],
+            vec![WorkflowOperationInputSchema {
+                operation_id: "operation-fit-1".to_string(),
+                input_port_id: "operation-fit-1-in-source".to_string(),
+                columns: vec![
+                    TableColumnConsumption {
+                        name: "height".to_string(),
+                        required_extra_kinds: vec![WorkflowSemanticExtraKind::ValueOrder],
+                    },
+                    TableColumnConsumption {
+                        name: "weight".to_string(),
+                        required_extra_kinds: Vec::new(),
+                    },
+                ],
+                complete_schema: false,
+            }],
+        ))
+        .expect("workflow extracts with semantic column extras");
+
+        let height_requirement = workflow.input_slots[0]
+            .schema_contract
+            .columns
+            .iter()
+            .find(|column| column.name == "height")
+            .expect("height requirement");
+        assert_eq!(
+            height_requirement.required_extras,
+            std::collections::BTreeMap::from([(
+                "valueOrder".to_string(),
+                json!({"values": ["short", "tall"]}),
+            )])
+        );
     }
 
     #[test]
@@ -2749,20 +3208,28 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-left".to_string(),
-                    required_column_names: vec!["left_key".to_string()],
+                    columns: consumed_columns(&["left_key"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-right".to_string(),
-                    required_column_names: vec!["right_key".to_string()],
+                    columns: consumed_columns(&["right_key"]),
+                    complete_schema: false,
                 },
             ],
         ))
         .expect("two-slot workflow extracts");
 
         assert_eq!(workflow.input_slots.len(), 2);
-        assert_eq!(workflow.input_slots[0].schema_contract.columns[0].canonical_duckdb_type, "INTEGER");
-        assert_eq!(workflow.input_slots[1].schema_contract.columns[0].canonical_duckdb_type, "INTEGER");
+        assert_eq!(
+            workflow.input_slots[0].schema_contract.columns[0].canonical_duckdb_type,
+            "INTEGER"
+        );
+        assert_eq!(
+            workflow.input_slots[1].schema_contract.columns[0].canonical_duckdb_type,
+            "INTEGER"
+        );
     }
 
     #[test]
@@ -2808,7 +3275,9 @@ mod tests {
         ))
         .unwrap_err();
 
-        assert!(matches!(err, AppError::InvalidParam(message) if message.contains("non-table external dependency")));
+        assert!(
+            matches!(err, AppError::InvalidParam(message) if message.contains("non-table external dependency"))
+        );
     }
 
     #[test]
@@ -2825,14 +3294,21 @@ mod tests {
         ))
         .unwrap_err();
 
-        assert!(matches!(err, AppError::InvalidParam(message) if message.contains("unresolved external dependency")));
+        assert!(
+            matches!(err, AppError::InvalidParam(message) if message.contains("unresolved external dependency"))
+        );
     }
 
     #[test]
     fn extract_workflow_rejects_disconnected_selected_operations() {
         let err = extract_workflow(extraction_request(
             workflow_extraction_graph(),
-            &["operation-fit-1", "artifact-fit-1", "operation-join-1", "artifact-join-output"],
+            &[
+                "operation-fit-1",
+                "artifact-fit-1",
+                "operation-join-1",
+                "artifact-join-output",
+            ],
             &["edge-fit-output", "edge-join-output"],
             vec![
                 WorkflowSourceTable {
@@ -2855,23 +3331,28 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-left".to_string(),
-                    required_column_names: vec!["left_key".to_string()],
+                    columns: consumed_columns(&["left_key"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-join-1".to_string(),
                     input_port_id: "operation-join-1-in-right".to_string(),
-                    required_column_names: vec!["right_key".to_string()],
+                    columns: consumed_columns(&["right_key"]),
+                    complete_schema: false,
                 },
             ],
         ))
         .unwrap_err();
 
-        assert!(matches!(err, AppError::InvalidParam(message) if message.contains("disconnected") || message.contains("reachable") || message.contains("orphan")));
+        assert!(
+            matches!(err, AppError::InvalidParam(message) if message.contains("disconnected") || message.contains("reachable") || message.contains("orphan"))
+        );
     }
 
     #[test]
@@ -2901,7 +3382,8 @@ mod tests {
             vec![WorkflowOperationInputSchema {
                 operation_id: "operation-sql-1".to_string(),
                 input_port_id: "operation-sql-1-in-source".to_string(),
-                required_column_names: vec!["height".to_string()],
+                columns: consumed_columns(&["height"]),
+                complete_schema: false,
             }],
         ))
         .unwrap_err();
@@ -2913,7 +3395,12 @@ mod tests {
     fn extract_workflow_serialization_omits_concrete_project_table_ids() {
         let workflow = extract_workflow(extraction_request(
             workflow_extraction_graph(),
-            &["operation-sql-1", "artifact-table-joined", "operation-fit-1", "artifact-fit-1"],
+            &[
+                "operation-sql-1",
+                "artifact-table-joined",
+                "operation-fit-1",
+                "artifact-fit-1",
+            ],
             &["edge-sql-table", "edge-table-fit", "edge-fit-output"],
             vec![WorkflowSourceTable {
                 artifact_node_id: "artifact-table-source-a".to_string(),
@@ -2926,12 +3413,14 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-sql-1".to_string(),
                     input_port_id: "operation-sql-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -2950,7 +3439,12 @@ mod tests {
     fn validate_extracted_workflow_rejects_malformed_boundary_endpoint_port_ids() {
         let workflow = extract_workflow(extraction_request(
             workflow_extraction_graph(),
-            &["operation-sql-1", "artifact-table-joined", "operation-fit-1", "artifact-fit-1"],
+            &[
+                "operation-sql-1",
+                "artifact-table-joined",
+                "operation-fit-1",
+                "artifact-fit-1",
+            ],
             &["edge-sql-table", "edge-table-fit", "edge-fit-output"],
             vec![WorkflowSourceTable {
                 artifact_node_id: "artifact-table-source-a".to_string(),
@@ -2963,12 +3457,14 @@ mod tests {
                 WorkflowOperationInputSchema {
                     operation_id: "operation-sql-1".to_string(),
                     input_port_id: "operation-sql-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
                 WorkflowOperationInputSchema {
                     operation_id: "operation-fit-1".to_string(),
                     input_port_id: "operation-fit-1-in-source".to_string(),
-                    required_column_names: vec!["height".to_string(), "weight".to_string()],
+                    columns: consumed_columns(&["height", "weight"]),
+                    complete_schema: false,
                 },
             ],
         ))
@@ -2977,24 +3473,37 @@ mod tests {
         let consumes_index = workflow
             .edges
             .iter()
-            .position(|edge| edge.kind == WorkflowEdgeKind::Consumes && edge.source.node_id == workflow.input_slots[0].id)
+            .position(|edge| {
+                edge.kind == WorkflowEdgeKind::Consumes
+                    && edge.source.node_id == workflow.input_slots[0].id
+            })
             .expect("input slot consumes edge exists");
         let mut malformed_input_slot_edge = workflow.clone();
-        malformed_input_slot_edge.edges[consumes_index].source.port_id = "malformed-input-slot-output".to_string();
+        malformed_input_slot_edge.edges[consumes_index]
+            .source
+            .port_id = "malformed-input-slot-output".to_string();
 
         let err = validate_extracted_workflow(&malformed_input_slot_edge).unwrap_err();
-        assert!(matches!(err, AppError::InvalidParam(message) if message.contains("input slot") && message.contains("port")));
+        assert!(
+            matches!(err, AppError::InvalidParam(message) if message.contains("input slot") && message.contains("port"))
+        );
 
         let produces_index = workflow
             .edges
             .iter()
-            .position(|edge| edge.kind == WorkflowEdgeKind::Produces && edge.target.node_id == workflow.output_declarations[0].id)
+            .position(|edge| {
+                edge.kind == WorkflowEdgeKind::Produces
+                    && edge.target.node_id == workflow.output_declarations[0].id
+            })
             .expect("output produces edge exists");
         let mut malformed_output_edge = workflow;
-        malformed_output_edge.edges[produces_index].target.port_id = "malformed-output-input".to_string();
+        malformed_output_edge.edges[produces_index].target.port_id =
+            "malformed-output-input".to_string();
 
         let err = validate_extracted_workflow(&malformed_output_edge).unwrap_err();
-        assert!(matches!(err, AppError::InvalidParam(message) if message.contains("output") && message.contains("port")));
+        assert!(
+            matches!(err, AppError::InvalidParam(message) if message.contains("output") && message.contains("port"))
+        );
     }
 
     #[test]
@@ -3012,17 +3521,57 @@ mod tests {
                 canonical_duckdb_type: "DOUBLE".to_string(),
                 required: true,
                 required_by_operation_ids: vec!["operation-fit-1".to_string()],
+                required_extras: BTreeMap::new(),
             },
             SchemaColumnRequirement {
                 name: "height".to_string(),
                 canonical_duckdb_type: "INTEGER".to_string(),
                 required: true,
                 required_by_operation_ids: vec!["operation-sql-1".to_string()],
+                required_extras: BTreeMap::new(),
             },
         ];
         let right = vec![left[1].clone(), left[0].clone()];
 
         assert_eq!(schema_fingerprint(&left), schema_fingerprint(&right));
+    }
+
+    #[test]
+    fn schema_fingerprint_is_deterministic_and_sensitive_to_required_extras() {
+        let requirement = SchemaColumnRequirement {
+            name: "yield".to_string(),
+            canonical_duckdb_type: "DOUBLE".to_string(),
+            required: true,
+            required_by_operation_ids: vec!["operation-graph-1".to_string()],
+            required_extras: BTreeMap::from([(
+                "spec".to_string(),
+                json!({"lsl": 90, "target": 100, "usl": 110}),
+            )]),
+        };
+        let equivalent = serde_json::from_value::<SchemaColumnRequirement>(json!({
+            "name": "yield",
+            "canonicalDuckdbType": "DOUBLE",
+            "required": true,
+            "requiredByOperationIds": ["operation-graph-1"],
+            "requiredExtras": {
+                "spec": {"usl": 110, "target": 100, "lsl": 90}
+            }
+        }))
+        .expect("equivalent requirement parses");
+        let mut changed = requirement.clone();
+        changed.required_extras.insert(
+            "spec".to_string(),
+            json!({"lsl": 80, "target": 100, "usl": 120}),
+        );
+
+        assert_eq!(
+            schema_fingerprint(&[requirement.clone()]),
+            schema_fingerprint(&[equivalent])
+        );
+        assert_ne!(
+            schema_fingerprint(&[requirement]),
+            schema_fingerprint(&[changed])
+        );
     }
 
     #[test]
@@ -3035,12 +3584,14 @@ mod tests {
                     canonical_duckdb_type: "INTEGER".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-sql-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
                 SchemaColumnRequirement {
                     name: "weight".to_string(),
                     canonical_duckdb_type: "DOUBLE".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-fit-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
             ],
         };
@@ -3068,12 +3619,14 @@ mod tests {
                     canonical_duckdb_type: "INTEGER".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-sql-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
                 SchemaColumnRequirement {
                     name: "weight".to_string(),
                     canonical_duckdb_type: "DOUBLE".to_string(),
                     required: true,
                     required_by_operation_ids: vec!["operation-fit-1".to_string()],
+                    required_extras: BTreeMap::new(),
                 },
             ],
         };
@@ -3089,10 +3642,44 @@ mod tests {
         assert_eq!(report.extra_columns, vec!["bonus".to_string()]);
         assert_eq!(report.missing_columns.len(), 1);
         assert_eq!(report.missing_columns[0].column_name, "weight");
-        assert_eq!(report.missing_columns[0].affected_operation_ids, vec!["operation-fit-1".to_string()]);
+        assert_eq!(
+            report.missing_columns[0].affected_operation_ids,
+            vec!["operation-fit-1".to_string()]
+        );
         assert_eq!(report.type_mismatches.len(), 1);
         assert_eq!(report.type_mismatches[0].column_name, "height");
-        assert_eq!(report.type_mismatches[0].affected_operation_ids, vec!["operation-sql-1".to_string()]);
+        assert_eq!(
+            report.type_mismatches[0].affected_operation_ids,
+            vec!["operation-sql-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn validate_schema_contract_reports_required_extras_mismatches() {
+        let contract = SchemaContract {
+            schema_fingerprint: "unused".to_string(),
+            columns: vec![SchemaColumnRequirement {
+                name: "yield".to_string(),
+                canonical_duckdb_type: "DOUBLE".to_string(),
+                required: true,
+                required_by_operation_ids: vec!["operation-graph-1".to_string()],
+                required_extras: BTreeMap::from([(
+                    "spec".to_string(),
+                    json!({"lsl": 90, "usl": 110}),
+                )]),
+            }],
+        };
+        let mut actual = table_column("yield", "DOUBLE");
+        actual.extras = Some(BTreeMap::from([(
+            "spec".to_string(),
+            json!({"lsl": 80, "usl": 120}),
+        )]));
+
+        let report = validate_schema_contract(&contract, &[actual]);
+
+        assert_eq!(report.attribute_mismatches.len(), 1);
+        assert_eq!(report.attribute_mismatches[0].column_name, "yield");
+        assert_eq!(report.attribute_mismatches[0].attribute_name, "extras.spec");
     }
 
     fn docs(ids: &[ProjectDocumentRef]) -> HashSet<ProjectDocumentRef> {
@@ -3112,8 +3699,9 @@ mod tests {
         let mut graph = valid_project_lineage_graph();
         graph.edges[0].source.port_id = "missing-artifact-output".to_string();
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("port")));
     }
 
@@ -3122,8 +3710,9 @@ mod tests {
         let mut graph = valid_project_lineage_graph();
         graph.edges[1].target.port_id = "artifact-output".to_string();
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("port")));
     }
 
@@ -3149,8 +3738,9 @@ mod tests {
             materialized_by_workflow_run_id: None,
         }));
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("node")));
     }
 
@@ -3170,8 +3760,9 @@ mod tests {
             },
         });
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("edge")));
     }
 
@@ -3196,8 +3787,9 @@ mod tests {
             }],
         });
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("port")));
     }
 
@@ -3206,8 +3798,9 @@ mod tests {
         let mut graph = valid_project_lineage_graph();
         graph.edges[0].target.node_id = "missing-operation".to_string();
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("endpoint")));
     }
 
@@ -3216,8 +3809,9 @@ mod tests {
         let mut graph = valid_project_lineage_graph();
         graph.edges[0].kind = LineageEdgeKind::Produces;
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("direction")));
     }
 
@@ -3254,8 +3848,9 @@ mod tests {
             },
         });
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("producer")));
     }
 
@@ -3304,8 +3899,9 @@ mod tests {
             },
         });
 
-        let err = validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
-            .unwrap_err();
+        let err =
+            validate_lineage_graph(&graph, &docs(&[table_ref("table-1"), graph_ref("graph-1")]))
+                .unwrap_err();
         assert!(matches!(err, AppError::InvalidParam(message) if message.contains("cycle")));
     }
 
@@ -3357,6 +3953,12 @@ mod tests {
             output_bindings: vec![],
             errors: vec![],
             parent_folder_id: Some("folder-a".to_string()),
+            seed: None,
+            engine_version: None,
+            configuration_hash: None,
+            input_fingerprints: vec![],
+            output_fingerprints: vec![],
+            determinism_baseline_run_id: None,
         }];
 
         let err = validate_workflow_runs(&runs, &workflows, &[]).unwrap_err();
@@ -3400,6 +4002,12 @@ mod tests {
             output_bindings: vec![],
             errors: vec![],
             parent_folder_id: None,
+            seed: None,
+            engine_version: None,
+            configuration_hash: None,
+            input_fingerprints: vec![],
+            output_fingerprints: vec![],
+            determinism_baseline_run_id: None,
         };
 
         let workflow_json = serde_json::to_value(&workflow).unwrap();
@@ -3417,5 +4025,24 @@ mod tests {
         assert_eq!(run_json["nodeResults"], json!([]));
         assert_eq!(run_json["outputBindings"], json!([]));
         assert_eq!(run_json["errors"], json!([]));
+    }
+
+    #[test]
+    fn legacy_workflow_runs_deserialize_as_non_comparable() {
+        let run: WorkflowRun = serde_json::from_value(json!({
+            "id": "run-legacy",
+            "workflowId": "workflow-1",
+            "workflowRevision": 1,
+            "status": "succeeded"
+        }))
+        .unwrap();
+
+        assert_eq!(run.seed, None);
+        assert_eq!(run.engine_version, None);
+        assert_eq!(run.configuration_hash, None);
+        assert!(run.input_fingerprints.is_empty());
+        assert!(run.output_fingerprints.is_empty());
+        assert_eq!(run.determinism_baseline_run_id, None);
+        assert!(!run.is_determinism_comparable());
     }
 }
