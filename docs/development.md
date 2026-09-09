@@ -11,6 +11,7 @@
 - [macOS](#macos)
 - [Debian / Ubuntu](#debian--ubuntu)
 - [安装 Tauri CLI](#安装-tauri-cli)
+- [Portable build](#portable-build)
 - [DuckDB 集成说明](#duckdb-集成说明)
 - [验证环境](#验证环境)
 - [推荐的开发工具](#推荐的开发工具)
@@ -203,6 +204,24 @@ npm install -g @tauri-apps/cli@latest
 ```bash
 cargo tauri --version   # ≥ 2.0
 ```
+
+---
+
+## Portable build
+
+便携构建使用仓库内置脚本，输出目录固定为 `release/portable/`。
+
+```bash
+npm install
+npm run build:portable
+```
+
+构建完成后，`release/portable/` 中应只包含一个与当前宿主平台匹配的产物：
+
+- Windows：生成一个便携式 `.exe` 文件。该构建是宿主机原生构建，运行时仍依赖系统已安装的 WebView2。
+- macOS：生成一个 `.zip` 文件，压缩包内包含一个未签名的 `StatsPlayground.app`。
+
+当前便携构建流程不包含代码签名、notarization 或跨平台交叉编译。也就是说，Windows 构建需要在 Windows 主机上完成，macOS 构建需要在 macOS 主机上完成。
 
 ---
 

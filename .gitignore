@@ -16,6 +16,7 @@ test-results/
 xumax-test/
 
 # ----- Tauri -----
+/release/portable/
 # DuckDB database files (user data, not version-controlled)
 *.duckdb
 *.duckdb.wal
