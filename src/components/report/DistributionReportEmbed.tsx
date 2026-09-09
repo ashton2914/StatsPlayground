@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
+import type { AnalysisViewRuntime } from "@/components/analysis/analysisViewRegistry";
+import { DistributionAnalysisResults } from "@/components/analysis/renderers/DistributionAnalysisResults";
 import {
   DistributionGraphGrid as ReportDistributionGraphGrid,
   DistributionReportPanel,
@@ -9,14 +10,11 @@ import {
   useDistributionReport,
   type DistributionReportDependencies,
 } from "@/components/distribution/useDistributionReport";
-import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
-import type { DistributionGraphRole } from "@/graphCore/distributionAdapter";
 
 import type { ReportResolvedSource } from "./ReportEmbed";
 
-export interface DistributionReportEmbedRuntime extends Partial<DistributionReportDependencies> {
-  renderGraph?: (props: GraphRuntimeProps & { role: DistributionGraphRole }) => ReactNode;
-}
+export interface DistributionReportEmbedRuntime
+  extends Partial<DistributionReportDependencies>, Pick<AnalysisViewRuntime, "renderGraph"> {}
 
 export function DistributionReportEmbed({
   source,
@@ -26,6 +24,19 @@ export function DistributionReportEmbed({
   runtime?: DistributionReportEmbedRuntime;
 }) {
   const { t } = useTranslation();
+
+  if (source.origin === "analysis") {
+    return (
+      <section data-analysis-report-kind="distribution" data-kind="distribution">
+        <DistributionAnalysisResults
+          item={source.item}
+          dataset={source.dataset}
+          runtime={runtime}
+        />
+      </section>
+    );
+  }
+
   const reportState = useDistributionReport(
     source.item,
     source.dataset.generation ?? source.dataset.updatedAt,

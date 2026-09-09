@@ -10,3 +10,10 @@ export function resolveVisualGraphSlots(transposed: boolean): VisualGraphSlots {
     ? { top: "groupY", left: "x", right: "groupX", bottom: "y" }
     : { top: "groupX", left: "y", right: "groupY", bottom: "x" };
 }
+
+export function resolveVisibleSlotField<T>(
+  field: T | undefined,
+  fields: readonly T[] | undefined,
+): T | undefined {
+  return field ?? (fields?.length === 1 ? fields[0] : undefined);
+}

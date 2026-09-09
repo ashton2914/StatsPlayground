@@ -1,4 +1,5 @@
 mod commands;
+pub mod connectors;
 mod engine;
 mod error;
 mod models;
@@ -20,6 +21,20 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
+            commands::data_link_commands::test_postgres_connection,
+            commands::data_link_commands::test_server_connection,
+            commands::data_link_commands::list_server_source_objects,
+            commands::data_link_commands::get_server_source_schema,
+            commands::data_link_commands::preview_server_source_object,
+            commands::data_link_commands::import_server_snapshot,
+            commands::data_link_commands::list_postgres_source_objects,
+            commands::data_link_commands::get_postgres_source_schema,
+            commands::data_link_commands::preview_postgres_source_object,
+            commands::data_link_commands::import_postgres_snapshot,
+            commands::data_link_commands::list_sqlite_source_objects,
+            commands::data_link_commands::preview_sqlite_source_object,
+            commands::data_link_commands::import_selected_sqlite,
+            commands::data_link_commands::cancel_sqlite_import,
             commands::data_commands::import_file,
             commands::data_commands::list_datasets,
             commands::data_commands::delete_dataset,
@@ -69,6 +84,7 @@ pub fn run() {
             commands::fit_model_commands::fit_model,
             commands::fit_model_commands::save_fit_model_columns,
             commands::fit_y_by_x_commands::fit_y_by_x,
+            commands::hypothesis_test_commands::run_hypothesis_test,
             commands::tabulate_commands::tabulate,
             commands::io_commands::export_csv,
             commands::io_commands::import_sqlite,

@@ -10,6 +10,7 @@ cargo run --release --example performance_baseline --features perf-harness -- --
 cargo run --release --example performance_baseline --features perf-harness -- --rows 100000 --columns 20 --operation restore
 cargo run --release --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation graph
 cargo run --release --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation save
+cargo run --release --example performance_baseline --features perf-harness -- --rows 1000000 --columns 20 --operation datalink
 ```
 
 The last stdout line is machine-readable JSON:
@@ -68,6 +69,25 @@ is excluded from the JSON operation timings.
 |---:|---:|---|---:|---:|---:|---:|
 | 100,000 | 20 | query | 108 ms | 7 ms | 116 ms | 500 |
 | 100,000 | 20 | query (Phase 1 exit, 2026-08-19) | 150 ms | 9 ms | 159 ms | 500 |
+
+## SQLite DataLink Baseline
+
+Date: 2026-09-04
+
+Profile: Rust `release`, using a generated SQLite table with repeating INTEGER,
+REAL, TEXT, and BLOB columns. `operationMs` measures the production
+`SqliteConnector` to DuckDB Appender and transaction path. SQLite fixture
+generation is included in `setupMs`, not `operationMs`.
+
+| Rows | Columns | Setup | Import | Total | Peak working-set delta |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 20 | 246 ms | 781 ms | 1,032 ms | 33,587,200 bytes (32.0 MiB) |
+| 1,000,000 | 20 | 2,207 ms | 7,119 ms | 9,476 ms | 296,767,488 bytes (283.0 MiB) |
+
+Both runs imported the requested row count successfully. The working-set delta
+includes the final dataset retained by the in-memory DuckDB engine, SQLite and
+DuckDB page caches, and bounded ingestion buffers. It therefore measures total
+process growth during import, not transient ingestion-buffer memory alone.
 
 ## Save Current Baseline (Task 1)
 

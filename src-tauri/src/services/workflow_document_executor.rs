@@ -5,10 +5,14 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::models::distribution::DistributionRequest;
+use crate::models::fit_model::FitModelRequest;
 use crate::models::fit_y_by_x::FitYByXRequest;
+use crate::models::hypothesis_test::HypothesisTestRequest;
 use crate::models::tabulate::TabulateRequest;
 use crate::services::distribution_service::DistributionService;
+use crate::services::fit_model_service::FitModelService;
 use crate::services::fit_y_by_x_service::FitYByXService;
+use crate::services::hypothesis_test_service::HypothesisTestService;
 use crate::services::tabulate_service::TabulateService;
 use crate::services::workflow_executor::FrozenTableInput;
 use crate::services::workflow_fingerprint::{canonical_document_hash, canonical_json_hash};
@@ -17,7 +21,16 @@ use crate::state::AppState;
 #[derive(Clone, Debug)]
 pub enum WorkflowAnalysisRequest {
     Distribution(DistributionRequest),
+    FitModel(FitModelRequest),
     FitYByX(FitYByXRequest),
+    HypothesisTest(HypothesisTestRequest),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowReportDependency {
+    pub kind: String,
+    pub document_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -53,7 +66,7 @@ pub enum WorkflowDocumentCommit {
         id: String,
         name: String,
         markdown: String,
-        dependency_ids: Vec<String>,
+        dependency_ids: Vec<WorkflowReportDependency>,
         validation_result_hash: String,
     },
 }
@@ -120,8 +133,14 @@ impl<'a> WorkflowDocumentExecutor<'a> {
             WorkflowAnalysisRequest::Distribution(request) => serde_json::to_value(
                 DistributionService::new(self.state).compute_distribution_report(&request)?,
             ),
+            WorkflowAnalysisRequest::FitModel(request) => {
+                serde_json::to_value(FitModelService::new(self.state).run(request)?)
+            }
             WorkflowAnalysisRequest::FitYByX(request) => {
                 serde_json::to_value(FitYByXService::new(self.state).run(request)?)
+            }
+            WorkflowAnalysisRequest::HypothesisTest(request) => {
+                serde_json::to_value(HypothesisTestService::new(self.state).run(request)?)
             }
         }
         .map_err(|error| AppError::Stats(format!("failed to encode analysis result: {error}")))?;
@@ -195,7 +214,7 @@ impl<'a> WorkflowDocumentExecutor<'a> {
         id: &str,
         name: &str,
         document: Value,
-        dependency_ids: Vec<String>,
+        dependency_ids: Vec<WorkflowReportDependency>,
     ) -> Result<WorkflowDocumentCommit, AppError> {
         if document.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
             return Err(AppError::InvalidParam(
@@ -261,7 +280,13 @@ fn validate_request_identity(
         WorkflowAnalysisRequest::Distribution(request) => {
             (request.dataset_id.as_str(), request.generation)
         }
+        WorkflowAnalysisRequest::FitModel(request) => {
+            (request.dataset_id.as_str(), request.generation)
+        }
         WorkflowAnalysisRequest::FitYByX(request) => {
+            (request.dataset_id.as_str(), request.generation)
+        }
+        WorkflowAnalysisRequest::HypothesisTest(request) => {
             (request.dataset_id.as_str(), request.generation)
         }
     };
@@ -430,27 +455,72 @@ fn remap_document_commit(
                     "Workflow Report dependencies do not match embedded documents".to_string(),
                 ));
             }
-            let (remapped_markdown, remapped_dependencies) =
-                remap_report_markdown(&markdown, stable_ids)?;
-            Ok(WorkflowDocumentCommit::Report {
-                id,
-                name,
-                markdown: remapped_markdown,
-                dependency_ids: remapped_dependencies,
-                validation_result_hash,
-            })
+            let report_ids = dependency_ids
+                .iter()
+                .map(|dependency| {
+                    Ok((
+                        dependency.clone(),
+                        resolve_stable_id(&dependency.document_id, stable_ids)?,
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>, AppError>>()?;
+            remap_report_document_references(
+                WorkflowDocumentCommit::Report {
+                    id,
+                    name,
+                    markdown,
+                    dependency_ids,
+                    validation_result_hash,
+                },
+                &report_ids,
+            )
         }
     }
 }
 
-pub(crate) fn report_dependency_ids(markdown: &str) -> Result<Vec<String>, AppError> {
+pub fn remap_report_document_references(
+    commit: WorkflowDocumentCommit,
+    stable_ids: &HashMap<WorkflowReportDependency, String>,
+) -> Result<WorkflowDocumentCommit, AppError> {
+    let WorkflowDocumentCommit::Report {
+        id,
+        name,
+        markdown,
+        dependency_ids,
+        validation_result_hash,
+    } = commit
+    else {
+        return Err(AppError::InvalidParam(
+            "only Workflow Report commits support typed dependency remapping".to_string(),
+        ));
+    };
+    if report_dependency_ids(&markdown)? != dependency_ids {
+        return Err(AppError::InvalidParam(
+            "Workflow Report dependencies do not match embedded documents".to_string(),
+        ));
+    }
+    let (remapped_markdown, remapped_dependencies) = remap_report_markdown(&markdown, stable_ids)?;
+    let validation_result_hash =
+        canonical_json_hash(&Value::String(remapped_markdown.clone()))?;
+    Ok(WorkflowDocumentCommit::Report {
+        id,
+        name,
+        markdown: remapped_markdown,
+        dependency_ids: remapped_dependencies,
+        validation_result_hash,
+    })
+}
+
+pub(crate) fn report_dependency_ids(
+    markdown: &str,
+) -> Result<Vec<WorkflowReportDependency>, AppError> {
     Ok(remap_report_markdown(markdown, &HashMap::new())?.1)
 }
 
 fn remap_report_markdown(
     markdown: &str,
-    stable_ids: &HashMap<String, String>,
-) -> Result<(String, Vec<String>), AppError> {
+    stable_ids: &HashMap<WorkflowReportDependency, String>,
+) -> Result<(String, Vec<WorkflowReportDependency>), AppError> {
     let mut output = String::with_capacity(markdown.len());
     let mut dependencies = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -472,13 +542,28 @@ fn remap_report_markdown(
             continue;
         }
         if let Some((kind, document_id)) = parse_report_embed(line)? {
+            let original_dependency = WorkflowReportDependency {
+                kind: kind.to_string(),
+                document_id: document_id.to_string(),
+            };
             let remapped_id = if stable_ids.is_empty() {
                 document_id.to_string()
             } else {
-                resolve_stable_id(document_id, stable_ids)?
+                stable_ids
+                    .get(&original_dependency)
+                    .cloned()
+                    .ok_or_else(|| {
+                        AppError::InvalidParam(format!(
+                            "unresolved workflow document reference {kind}:{document_id}"
+                        ))
+                    })?
             };
-            if seen.insert(remapped_id.clone()) {
-                dependencies.push(remapped_id.clone());
+            let dependency = WorkflowReportDependency {
+                kind: kind.to_string(),
+                document_id: remapped_id.clone(),
+            };
+            if seen.insert(dependency.clone()) {
+                dependencies.push(dependency);
             }
             output.push_str(&format!(
                 "{{{{sp-embed kind=\"{kind}\" id=\"{remapped_id}\"}}}}{ending}"
@@ -506,7 +591,7 @@ fn parse_report_embed(line: &str) -> Result<Option<(&str, &str)>, AppError> {
     };
     if !matches!(
         kind,
-        "table" | "graph" | "fitYByX" | "tabulate" | "distribution"
+        "table" | "graph" | "fitYByX" | "hypothesisTest" | "tabulate" | "distribution"
     ) || document_id.is_empty()
         || document_id.chars().any(|character| {
             character.is_whitespace()
@@ -586,34 +671,54 @@ mod tests {
     use serde_json::json;
 
     use crate::models::distribution::{DistributionFitKind, DistributionRequest};
+    use crate::models::fit_model::FitModelRequest;
     use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRequest};
+    use crate::models::hypothesis_test::HypothesisTestRequest;
     use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateStatistic};
     use crate::services::workflow_executor::FrozenTableInput;
+    use crate::services::workflow_fingerprint::canonical_json_hash;
     use crate::state::AppState;
 
     use super::{
-        remap_document_references, WorkflowAnalysisRequest, WorkflowDocumentCommit,
-        WorkflowDocumentExecutor,
+        remap_document_references, report_dependency_ids, WorkflowAnalysisRequest,
+        WorkflowDocumentCommit, WorkflowDocumentExecutor, WorkflowReportDependency,
     };
+
+    fn report_dependency(kind: &str, document_id: &str) -> WorkflowReportDependency {
+        WorkflowReportDependency {
+            kind: kind.to_string(),
+            document_id: document_id.to_string(),
+        }
+    }
 
     fn seed_compute_dataset(state: &AppState) -> FrozenTableInput {
         let db = state.db.lock().expect("test db lock");
         db.create_empty_table(
             "workflow-compute",
             "workflow-compute",
-            &["height".to_string(), "site".to_string()],
-            &["DOUBLE".to_string(), "VARCHAR".to_string()],
+            &[
+                "height".to_string(),
+                "weight".to_string(),
+                "site".to_string(),
+            ],
+            &[
+                "DOUBLE".to_string(),
+                "DOUBLE".to_string(),
+                "VARCHAR".to_string(),
+            ],
         )
         .expect("create compute dataset");
         db.conn()
             .execute_batch(
                 r#"
-                INSERT INTO "dataset_workflow_compute" (_row_id, height, site) VALUES
-                    (1, 60.0, 'A'),
-                    (2, 62.0, 'A'),
-                    (3, 65.0, 'B'),
-                    (4, 67.0, 'B');
-                UPDATE _meta_datasets SET row_count = 4 WHERE id = 'workflow-compute';
+                INSERT INTO "dataset_workflow_compute" (_row_id, height, weight, site) VALUES
+                    (1, 60.0, 120.0, 'A'),
+                    (2, 62.0, 124.0, 'A'),
+                    (3, 64.0, 128.0, 'A'),
+                    (4, 65.0, 130.0, 'B'),
+                    (5, 67.0, 134.0, 'B'),
+                    (6, 69.0, 138.0, 'B');
+                UPDATE _meta_datasets SET row_count = 6 WHERE id = 'workflow-compute';
                 UPDATE _meta_columns SET role = 'nominal'
                     WHERE dataset_id = 'workflow-compute' AND col_name = 'site';
                 "#,
@@ -712,6 +817,109 @@ mod tests {
             distribution,
             WorkflowDocumentCommit::Analysis { .. }
         ));
+
+        let fit_model_request = serde_json::from_value::<FitModelRequest>(json!({
+            "datasetId": frozen.table_document_id,
+            "generation": frozen.generation,
+            "responseColumn": "height",
+            "terms": [{ "kind": "main", "columnNames": ["weight"] }],
+            "centeringMethod": "none",
+            "confidenceLevel": 0.95
+        }))
+        .expect("fit model request");
+        let fit_model_document = json!({
+            "schemaVersion": 1,
+            "documentType": "analysis",
+            "id": "fit-model-output",
+            "name": "Height model",
+            "analysisKind": "fitModel",
+            "source": { "datasetId": "workflow-compute" },
+            "definition": { "kind": "fitModel" },
+            "presentation": { "schemaVersion": 1, "layout": "fit-model-v1" }
+        });
+        let first_fit_model = executor
+            .execute_analysis(
+                "fit-model-output",
+                "Height model",
+                fit_model_document.clone(),
+                WorkflowAnalysisRequest::FitModel(fit_model_request.clone()),
+                &frozen,
+            )
+            .expect("fit model execution");
+        let second_fit_model = executor
+            .execute_analysis(
+                "fit-model-output",
+                "Height model",
+                fit_model_document,
+                WorkflowAnalysisRequest::FitModel(fit_model_request),
+                &frozen,
+            )
+            .expect("repeat fit model execution");
+        assert_eq!(
+            first_fit_model.validation_result_hash(),
+            second_fit_model.validation_result_hash()
+        );
+
+        let hypothesis_request = serde_json::from_value::<HypothesisTestRequest>(json!({
+            "analysisKind": "hypothesisTest",
+            "analysisId": "hypothesis-output",
+            "datasetId": frozen.table_document_id,
+            "generation": frozen.generation,
+            "configRevision": 1,
+            "definition": {
+                "kind": "hypothesisTest",
+                "roles": {
+                    "layout": "long",
+                    "response": { "name": "height", "type": "continuous" },
+                    "condition": { "name": "site", "type": "nominal" },
+                    "subject": null
+                },
+                "studyDesign": "independent",
+                "selectionMode": "manual",
+                "manualSelection": { "methodId": "welchTwoSampleT", "reason": null },
+                "alternative": "twoSided",
+                "alpha": 0.05,
+                "confidenceLevel": 0.95,
+                "levelOrder": ["A", "B"],
+                "referenceLevel": "A",
+                "postHoc": "none",
+                "selectorVersion": "1"
+            },
+            "requestFingerprint": "workflow-hypothesis-request"
+        }))
+        .expect("hypothesis test request");
+        let hypothesis_document = json!({
+            "schemaVersion": 1,
+            "documentType": "analysis",
+            "id": "hypothesis-output",
+            "name": "Height by site hypothesis",
+            "analysisKind": "hypothesisTest",
+            "source": { "datasetId": "workflow-compute" },
+            "definition": { "kind": "hypothesisTest" },
+            "presentation": { "schemaVersion": 1, "layout": "hypothesis-test-v1" }
+        });
+        let first_hypothesis = executor
+            .execute_analysis(
+                "hypothesis-output",
+                "Height by site hypothesis",
+                hypothesis_document.clone(),
+                WorkflowAnalysisRequest::HypothesisTest(hypothesis_request.clone()),
+                &frozen,
+            )
+            .expect("hypothesis test execution");
+        let second_hypothesis = executor
+            .execute_analysis(
+                "hypothesis-output",
+                "Height by site hypothesis",
+                hypothesis_document,
+                WorkflowAnalysisRequest::HypothesisTest(hypothesis_request),
+                &frozen,
+            )
+            .expect("repeat hypothesis test execution");
+        assert_eq!(
+            first_hypothesis.validation_result_hash(),
+            second_hypothesis.validation_result_hash()
+        );
 
         let tabulate = executor
             .execute_tabulate(
@@ -824,13 +1032,31 @@ mod tests {
                         "```"
                     )
                 }),
-                vec!["graph-output".to_string()],
+                vec![report_dependency("graph", "graph-output")],
             )
             .expect("report staging");
         let WorkflowDocumentCommit::Report { dependency_ids, .. } = report else {
             panic!("expected report commit");
         };
-        assert_eq!(dependency_ids, vec!["graph-output"]);
+        assert_eq!(
+            dependency_ids,
+            vec![report_dependency("graph", "graph-output")]
+        );
+    }
+
+    #[test]
+    fn preserves_report_dependency_kind_for_shared_document_ids() {
+        assert_eq!(
+            report_dependency_ids(concat!(
+                "{{sp-embed kind=\"graph\" id=\"shared\"}}\n",
+                "{{sp-embed kind=\"hypothesisTest\" id=\"shared\"}}"
+            ))
+            .expect("typed report dependencies"),
+            vec![
+                report_dependency("graph", "shared"),
+                report_dependency("hypothesisTest", "shared"),
+            ]
+        );
     }
 
     #[test]
@@ -906,9 +1132,9 @@ mod tests {
                     )
                     .to_string(),
                     dependency_ids: vec![
-                        "workflow-output-2".to_string(),
-                        "workflow-output-3".to_string(),
-                        "workflow-output-4".to_string(),
+                        report_dependency("graph", "workflow-output-2"),
+                        report_dependency("fitYByX", "workflow-output-3"),
+                        report_dependency("tabulate", "workflow-output-4"),
                     ],
                     validation_result_hash: "report-hash".to_string(),
                 },
@@ -923,6 +1149,7 @@ mod tests {
         let WorkflowDocumentCommit::Report {
             markdown,
             dependency_ids,
+            validation_result_hash,
             ..
         } = &commits[3]
         else {
@@ -932,11 +1159,15 @@ mod tests {
         assert!(markdown.contains("id=\"stable-analysis\""));
         assert!(markdown.contains("id=\"stable-tabulate\""));
         assert_eq!(
+            validation_result_hash,
+            &canonical_json_hash(&json!(markdown)).expect("remapped report hash")
+        );
+        assert_eq!(
             dependency_ids,
             &vec![
-                "stable-graph".to_string(),
-                "stable-analysis".to_string(),
-                "stable-tabulate".to_string(),
+                report_dependency("graph", "stable-graph"),
+                report_dependency("fitYByX", "stable-analysis"),
+                report_dependency("tabulate", "stable-tabulate"),
             ]
         );
     }

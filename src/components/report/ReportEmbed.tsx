@@ -9,7 +9,12 @@ import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import type { DatasetMeta } from "@/types/data";
-import type { AnalysisDocument, FitYByXAnalysisDocument } from "@/types/analysis";
+import type {
+  AnalysisDocument,
+  DistributionAnalysisDocument,
+  FitYByXAnalysisDocument,
+  HypothesisTestAnalysisDocument,
+} from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import type { ReportDependency } from "@/types/report";
@@ -17,6 +22,7 @@ import type { TabulateItem } from "@/types/tabulate";
 
 import type { DistributionReportEmbedRuntime } from "./DistributionReportEmbed";
 import type { FitYByXAnalysisReportEmbedRuntime } from "./FitYByXAnalysisReportEmbed";
+import type { HypothesisTestAnalysisReportEmbedRuntime } from "./HypothesisTestAnalysisReportEmbed";
 import type { GraphReportEmbedRuntime } from "./GraphReportEmbed";
 import type { TableReportEmbedRuntime } from "./TableReportEmbed";
 import type { TabulateReportEmbedRuntime } from "./TabulateReportEmbed";
@@ -26,6 +32,9 @@ const DistributionReportEmbed = lazy(async () => ({
 }));
 const FitYByXAnalysisReportEmbed = lazy(async () => ({
   default: (await import("./FitYByXAnalysisReportEmbed")).FitYByXAnalysisReportEmbed,
+}));
+const HypothesisTestAnalysisReportEmbed = lazy(async () => ({
+  default: (await import("./HypothesisTestAnalysisReportEmbed")).HypothesisTestAnalysisReportEmbed,
 }));
 const GraphReportEmbed = lazy(async () => ({
   default: (await import("./GraphReportEmbed")).GraphReportEmbed,
@@ -45,11 +54,11 @@ type ReportResolvedItemByKind = {
   table: DatasetMeta;
   graph: GraphBuilderItem;
   fitYByX: FitYByXAnalysisDocument;
+  hypothesisTest: HypothesisTestAnalysisDocument;
   tabulate: TabulateItem;
-  distribution: DistributionItem;
 };
 
-export type ReportResolvedSource = {
+type StandardReportResolvedSource = {
   [Kind in keyof ReportResolvedItemByKind]: {
     kind: Kind;
     name: string;
@@ -57,6 +66,24 @@ export type ReportResolvedSource = {
     dataset: DatasetMeta;
   };
 }[keyof ReportResolvedItemByKind];
+
+type DistributionReportResolvedSource =
+  | {
+      kind: "distribution";
+      origin: "analysis";
+      name: string;
+      item: DistributionAnalysisDocument;
+      dataset: DatasetMeta;
+    }
+  | {
+      kind: "distribution";
+      origin: "legacy";
+      name: string;
+      item: DistributionItem;
+      dataset: DatasetMeta;
+    };
+
+export type ReportResolvedSource = StandardReportResolvedSource | DistributionReportResolvedSource;
 
 export type ReportDependencyResolution =
   | {
@@ -77,6 +104,7 @@ export interface ReportEmbedRuntime {
   table?: TableReportEmbedRuntime;
   graph?: GraphReportEmbedRuntime;
   fitYByX?: FitYByXAnalysisReportEmbedRuntime;
+  hypothesisTest?: HypothesisTestAnalysisReportEmbedRuntime;
   tabulate?: TabulateReportEmbedRuntime;
   distribution?: DistributionReportEmbedRuntime;
 }
@@ -153,14 +181,54 @@ export function resolveReportDependency(
       : { status: "missing", dependency };
   }
 
+  if (dependency.kind === "hypothesisTest") {
+    const candidate = analyses.find((document) => document.id === dependency.documentId);
+    const item = candidate && analysisReportPolicies.hypothesisTest.accepts(candidate)
+      ? candidate
+      : undefined;
+    const dataset = item ? findDataset(item.source.datasetId, datasets) : undefined;
+    return item && dataset
+      ? {
+          status: "resolved",
+          source: {
+            kind: "hypothesisTest",
+            name: item.name,
+            item,
+            dataset,
+          },
+        }
+      : { status: "missing", dependency };
+  }
+
   if (dependency.kind === "distribution") {
-    const item = distributions.find((candidate) => candidate.id === dependency.documentId);
+    const candidate = analyses.find((document) => document.id === dependency.documentId);
+    const analysis = candidate && analysisReportPolicies.distribution.accepts(candidate)
+      ? candidate
+      : undefined;
+    if (analysis) {
+      const dataset = findDataset(analysis.source.datasetId, datasets);
+      return dataset
+        ? {
+            status: "resolved",
+            source: {
+              kind: "distribution",
+              origin: "analysis",
+              name: analysis.name,
+              item: analysis,
+              dataset,
+            },
+          }
+        : { status: "missing", dependency };
+    }
+
+    const item = distributions.find((legacyItem) => legacyItem.id === dependency.documentId);
     const dataset = item ? findDataset(item.sourceDatasetId, datasets) : undefined;
     return item && dataset
       ? {
           status: "resolved",
           source: {
             kind: "distribution",
+            origin: "legacy",
             name: item.name,
             item,
             dataset,
@@ -205,6 +273,8 @@ function kindLabel(kind: ReportDependency["kind"], t: (key: string, values?: Rec
     defaultValue:
       kind === "fitYByX"
         ? "Fit Y by X"
+        : kind === "hypothesisTest"
+          ? "Hypothesis Test"
         : kind === "tabulate"
           ? "Tabulate"
           : kind === "graph"
@@ -261,6 +331,9 @@ function renderResolvedEmbed(source: ReportResolvedSource, runtime: ReportEmbedR
   }
   if (source.kind === "fitYByX") {
     return renderLazyEmbed(<FitYByXAnalysisReportEmbed source={source} runtime={runtime?.fitYByX} />);
+  }
+  if (source.kind === "hypothesisTest") {
+    return renderLazyEmbed(<HypothesisTestAnalysisReportEmbed source={source} runtime={runtime?.hypothesisTest} />);
   }
   if (source.kind === "distribution") {
     return renderLazyEmbed(<DistributionReportEmbed source={source} runtime={runtime?.distribution} />);

@@ -8,7 +8,9 @@ use uuid::Uuid;
 use crate::engine::duckdb_engine::{DatasetReplacement, DuckDbEngine};
 use crate::error::AppError;
 use crate::models::distribution::DistributionRequest;
+use crate::models::fit_model::FitModelRequest;
 use crate::models::fit_y_by_x::FitYByXRequest;
+use crate::models::hypothesis_test::HypothesisTestRequest;
 use crate::models::table::DatasetMeta;
 use crate::models::tabulate::TabulateRequest;
 use crate::services::save_coordinator::SaveCoordinator;
@@ -17,8 +19,9 @@ use crate::services::table_transform_service::{
     TableTransformProjectBinding, TableTransformService,
 };
 use crate::services::workflow_document_executor::{
-    remap_document_references, report_dependency_ids, WorkflowAnalysisRequest,
-    WorkflowDocumentCommit, WorkflowDocumentExecutor,
+    remap_document_references, remap_report_document_references, report_dependency_ids,
+    WorkflowAnalysisRequest, WorkflowDocumentCommit, WorkflowDocumentExecutor,
+    WorkflowReportDependency,
 };
 use crate::services::workflow_domain::{
     ArtifactKind, OperationKind, WorkflowDefinition, WorkflowInputBinding,
@@ -323,14 +326,7 @@ impl<'a> WorkflowExecutor<'a> {
                             document,
                             original_dependency_ids,
                         )?;
-                        remap_document_references(vec![staged], &reference_map)?
-                            .into_iter()
-                            .next()
-                            .ok_or_else(|| {
-                                AppError::Stats(
-                                    "Workflow Report staging returned no document".into(),
-                                )
-                            })?
+                        remap_report_document_references(staged, &reference_map)?
                     }
                     _ => {
                         return Err(AppError::InvalidParam(format!(
@@ -940,6 +936,48 @@ fn analysis_document_and_request(
                 AppError::InvalidParam(format!("invalid Workflow Distribution request: {error}"))
             })?,
         ),
+        "fitModel" => WorkflowAnalysisRequest::FitModel(
+            serde_json::from_value::<FitModelRequest>(json!({
+                "datasetId": source_table_id,
+                "generation": generation,
+                "responseColumn": definition.pointer("/response/name"),
+                "terms": definition.get("terms"),
+                "centeringMethod": definition.get("centeringMethod"),
+                "confidenceLevel": definition.get("confidenceLevel")
+            }))
+            .map_err(|error| {
+                AppError::InvalidParam(format!("invalid Workflow Fit Model request: {error}"))
+            })?,
+        ),
+        "hypothesisTest" => {
+            let config_revision = configuration
+                .get("configRevision")
+                .and_then(Value::as_u64)
+                .unwrap_or(1);
+            let request_fingerprint = canonical_json_hash(&json!({
+                "analysisKind": analysis_kind,
+                "analysisId": id,
+                "configRevision": config_revision,
+                "sourceDatasetId": source_table_id,
+                "definition": definition
+            }))?;
+            WorkflowAnalysisRequest::HypothesisTest(
+                serde_json::from_value::<HypothesisTestRequest>(json!({
+                    "analysisKind": analysis_kind,
+                    "analysisId": id,
+                    "datasetId": source_table_id,
+                    "generation": generation,
+                    "configRevision": config_revision,
+                    "definition": definition,
+                    "requestFingerprint": request_fingerprint
+                }))
+                .map_err(|error| {
+                    AppError::InvalidParam(format!(
+                        "invalid Workflow Hypothesis Test request: {error}"
+                    ))
+                })?,
+            )
+        }
         _ => {
             return Err(AppError::InvalidParam(format!(
                 "unsupported Workflow Analysis kind {analysis_kind}"
@@ -988,7 +1026,11 @@ fn tabulate_document_and_request(
 }
 
 #[allow(clippy::too_many_arguments)]
-type ReportDocumentReferences = (Value, Vec<String>, HashMap<String, String>);
+type ReportDocumentReferences = (
+    Value,
+    Vec<WorkflowReportDependency>,
+    HashMap<WorkflowReportDependency, String>,
+);
 
 struct ReportDocumentRequest<'a> {
     workflow: &'a WorkflowDefinition,
@@ -1049,16 +1091,28 @@ fn report_document_and_references(
                     edge.target.port_id
                 ))
             })?;
-        let original_id = port
-            .name
-            .split_once(':')
-            .map(|(_, value)| value)
-            .ok_or_else(|| {
-                AppError::InvalidParam(format!(
-                    "invalid Workflow Report dependency port {}",
-                    port.name
-                ))
-            })?;
+        let (port_kind, original_id) = port.name.split_once(':').ok_or_else(|| {
+            AppError::InvalidParam(format!(
+                "invalid Workflow Report dependency port {}",
+                port.name
+            ))
+        })?;
+        let kind = if port_kind == "analysis" {
+            workflow
+                .operations
+                .iter()
+                .find(|candidate| candidate.id == edge.source.node_id)
+                .and_then(|candidate| candidate.configuration.as_ref())
+                .and_then(|configuration| configuration.get("analysisKind"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AppError::InvalidParam(format!(
+                        "Workflow Report Analysis dependency {original_id} has no analysis kind"
+                    ))
+                })?
+        } else {
+            port_kind
+        };
         let stable_id = output_by_operation
             .get(edge.source.node_id.as_str())
             .cloned()
@@ -1068,15 +1122,22 @@ fn report_document_and_references(
                     "unresolved Workflow Report dependency {original_id}"
                 ))
             })?;
-        reference_map.insert(original_id.to_string(), stable_id);
+        reference_map.insert(
+            WorkflowReportDependency {
+                kind: kind.to_string(),
+                document_id: original_id.to_string(),
+            },
+            stable_id,
+        );
     }
     let original_dependency_ids = report_dependency_ids(markdown)?;
     if let Some(unresolved) = original_dependency_ids
         .iter()
-        .find(|dependency_id| !reference_map.contains_key(*dependency_id))
+        .find(|dependency| !reference_map.contains_key(*dependency))
     {
         return Err(AppError::InvalidParam(format!(
-            "unresolved Workflow Report dependency {unresolved}"
+            "unresolved Workflow Report dependency {}:{}",
+            unresolved.kind, unresolved.document_id
         )));
     }
     Ok((
@@ -1301,6 +1362,7 @@ mod tests {
     use crate::services::table_transform_service::{
         TableTransformInputBinding, TableTransformProjectBinding,
     };
+    use crate::services::workflow_document_executor::WorkflowReportDependency;
     use crate::services::workflow_domain::{
         WorkflowDefinition, WorkflowInputBinding, WorkflowOutputBinding,
     };
@@ -2246,7 +2308,7 @@ mod tests {
             })
             .expect("branch workflow run");
 
-        assert_eq!(packet.documents.len(), 4);
+        assert_eq!(packet.documents.len(), 4, "{:?}", packet.run.errors);
         let report = packet
             .documents
             .iter()
@@ -2266,9 +2328,18 @@ mod tests {
         assert_eq!(
             dependency_ids,
             &vec![
-                "stable-graph".to_string(),
-                "stable-fit".to_string(),
-                "stable-tabulate".to_string(),
+                WorkflowReportDependency {
+                    kind: "graph".to_string(),
+                    document_id: "stable-graph".to_string(),
+                },
+                WorkflowReportDependency {
+                    kind: "fitYByX".to_string(),
+                    document_id: "stable-fit".to_string(),
+                },
+                WorkflowReportDependency {
+                    kind: "tabulate".to_string(),
+                    document_id: "stable-tabulate".to_string(),
+                },
             ]
         );
     }

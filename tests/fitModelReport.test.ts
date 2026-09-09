@@ -7,22 +7,26 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 
-import {
+const {
   applyFitModelTermRemoval,
   applyFitModelTermUndo,
-  FitModelReport,
   buildEffectSummary,
   createFitModelDefinitionConfig,
   fitModelTermId,
   logWorth,
   removeFitModelTerm,
-} from "../src/components/fitModel/index.ts";
+} = await import("../src/components/fitModel/index.ts");
+const { FitModelAnalysisReport } = await import("../src/components/analysis/renderers/FitModelAnalysisReport.tsx");
 import type { FitModelReportState } from "../src/components/fitModel/useFitModelReport.ts";
 import type { FitModelFittedResult, FitModelItem, FitModelResult } from "../src/types/fitModel.ts";
 
 const VIEW_SOURCE_PATH = path.resolve(
   process.cwd(),
-  "src/components/fitModel/FitModelView.tsx",
+  "src/components/analysis/renderers/FitModelAnalysisResults.tsx",
+);
+const REPORT_SOURCE_PATH = path.resolve(
+  process.cwd(),
+  "src/components/analysis/renderers/FitModelAnalysisReport.tsx",
 );
 
 const testI18n = createTestI18n();
@@ -284,7 +288,7 @@ function renderReport(state: FitModelReportState): string {
     React.createElement(
       I18nextProvider,
       { i18n: testI18n },
-      React.createElement(FitModelReport, {
+      React.createElement(FitModelAnalysisReport, {
         item: createItem(),
         state,
         datasetMissing: false,
@@ -302,7 +306,7 @@ function renderReportWithItem(item: FitModelItem, state: FitModelReportState): s
     React.createElement(
       I18nextProvider,
       { i18n: testI18n },
-      React.createElement(FitModelReport, {
+      React.createElement(FitModelAnalysisReport, {
         item,
         state,
         datasetMissing: false,
@@ -558,7 +562,7 @@ function testRenderFittedContracts(): void {
   assert.match(html, /Lack of Fit/);
   assert.match(html, /pureErrorZero|fitModel\.report\.reason\.pureErrorZero/);
   assert.match(html, /Feature VIF/);
-  assert.match(html, />A<\/td><td>2<\/td><td>0\.2<\/td><td>10<\/td><td>0\.0500<\/td><td>1<\/td><td>3<\/td><td>1<\/td>/);
+  assert.match(html, />A<\/td><td[^>]*>2<\/td><td[^>]*>0\.2<\/td><td[^>]*>10<\/td><td[^>]*>0\.0500<\/td><td[^>]*>1<\/td><td[^>]*>3<\/td><td[^>]*>1<\/td>/);
   assert.match(html, /auxiliaryRankDeficient|fitModel\.report\.reason\.auxiliaryRankDeficient/);
   assert.match(html, /Residual Q-Q/);
   assert.match(html, /Row Diagnostics/);
@@ -590,7 +594,7 @@ function testRenderFittedContracts(): void {
     previousIndex = sectionIndex;
   });
   assert.match(html, /fitted-equation-inputs/);
-  assert.match(html, />1<.*\+ 2 A/);
+  assert.match(html, />Y = 1 \+ 2 A/);
   assert.match(html, /saturatedModel|fitModel\.report\.warning\.saturatedModel/);
   assert.match(html, /Remove/);
   assert.match(html, /Undo/);
@@ -702,7 +706,7 @@ function testUnavailableLoadIssueRendersWithoutEquation(): void {
     React.createElement(
       I18nextProvider,
       { i18n: testI18n },
-      React.createElement(FitModelReport, {
+      React.createElement(FitModelAnalysisReport, {
         item: createItem({
           loadIssue: { code: "invalidPersistedDefinition", detail: "nonContinuousResponse:Yield" },
         }),
@@ -726,13 +730,37 @@ function testUnavailableLoadIssueRendersWithoutEquation(): void {
 }
 
 function testViewSourceContracts(): void {
-  const source = readFileSync(VIEW_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
+  const viewSource = readFileSync(VIEW_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
+  const reportSource = readFileSync(REPORT_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
+  const source = `${viewSource}\n${reportSource}`;
 
   assert.match(
-    source,
-    /useFitModelReport\(dataset && !item\.loadIssue \? item : null, dataset\?\.updatedAt \?\? null\)/,
-    "FitModelView must gate report loading by dataset and dataset update signal.",
+    viewSource,
+    /useAnalysisExecution\(item, dataset \?\? null, runtime\)/,
+    "FitModelAnalysisResults must execute through the native Analysis lifecycle.",
   );
+  assert.doesNotMatch(
+    source,
+    /(?:from\s+["'][^"']*\/FitModelReport["']|<FitModelReport\b)/,
+    "FitModelAnalysisResults must compose the native Analysis presentation instead of wrapping the legacy report.",
+  );
+  for (const primitive of [
+    "AnalysisButton",
+    "AnalysisFrame",
+    "AnalysisGraph",
+    "AnalysisStack",
+    "AnalysisTable",
+    "AnalysisText",
+  ]) {
+    assert.match(
+      source,
+      new RegExp(`\\b${primitive}\\b`),
+      `FitModelAnalysisResults must compose ${primitive}.`,
+    );
+  }
+  assert.doesNotMatch(source, /<table\b/, "Fit Model Analysis tables must use AnalysisTable.");
+  assert.doesNotMatch(source, /<button\b/, "Fit Model Analysis actions must use AnalysisButton.");
+  assert.doesNotMatch(source, /sp-fit-model-report-(?:panel|shell|section|table)/, "Fit Model Analysis must inherit shared presentation structure and tokens.");
 }
 
 testLogWorthContracts();

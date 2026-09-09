@@ -28,6 +28,7 @@ enum Operation {
     Restore,
     Graph,
     Save,
+    Datalink,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -282,6 +283,7 @@ where
                     "restore" => Operation::Restore,
                     "graph" => Operation::Graph,
                     "save" => Operation::Save,
+                    "datalink" => Operation::Datalink,
                     _ => {
                         return Err(AppError::InvalidParam(format!(
                             "unknown operation: {value}"
@@ -528,6 +530,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     if options.operation == Operation::Save {
         return execute_save(options);
     }
+    if options.operation == Operation::Datalink {
+        return execute_datalink(options);
+    }
 
     let total_started = Instant::now();
     if options.operation == Operation::Graph {
@@ -583,6 +588,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         }
         Operation::Graph => unreachable!("graph operation is handled by execute_graph"),
         Operation::Save => unreachable!("save is handled before this branch"),
+        Operation::Datalink => unreachable!("datalink is handled before this branch"),
     };
     let operation_ms = operation_started.elapsed().as_millis();
 
@@ -607,6 +613,95 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         process_memory: None,
+    })
+}
+
+fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
+    let total_started = Instant::now();
+    let setup_started = Instant::now();
+    let source_path = std::env::temp_dir().join(format!(
+        "stats_playground_datalink_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let source_path_text = source_path.to_string_lossy().into_owned();
+    let column_defs = (0..options.columns)
+        .map(|column| match column % 4 {
+            0 => format!("value_{column} INTEGER"),
+            1 => format!("value_{column} REAL"),
+            2 => format!("value_{column} TEXT"),
+            _ => format!("value_{column} BLOB"),
+        })
+        .collect::<Vec<_>>();
+    let value_exprs = (0..options.columns)
+        .map(|column| match column % 4 {
+            0 => "row_number".to_string(),
+            1 => "CAST(row_number AS REAL) / 10.0".to_string(),
+            2 => "printf('row-%d', row_number)".to_string(),
+            _ => "CAST(printf('blob-%d', row_number) AS BLOB)".to_string(),
+        })
+        .collect::<Vec<_>>();
+    let sqlite = rusqlite::Connection::open(&source_path)?;
+    sqlite.execute(
+        &format!("CREATE TABLE benchmark_data ({})", column_defs.join(", ")),
+        [],
+    )?;
+    sqlite.execute(
+        &format!(
+            "WITH RECURSIVE source(row_number) AS (\
+             SELECT 1 UNION ALL SELECT row_number + 1 FROM source WHERE row_number < ?1\
+             ) INSERT INTO benchmark_data SELECT {} FROM source",
+            value_exprs.join(", ")
+        ),
+        [i64::try_from(options.rows)
+            .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?],
+    )?;
+    drop(sqlite);
+    let db = DuckDbEngine::new_in_memory()?;
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let operation_started = Instant::now();
+    let (import_result, process_memory) = measure_peak_working_set_during(|| {
+        db.import_selected_sqlite(
+            &source_path_text,
+            &[(
+                "benchmark_data".to_string(),
+                "DataLink Benchmark".to_string(),
+                false,
+            )],
+            &|_, _, _, _, _| {},
+            &|| false,
+        )
+    });
+    let operation_ms = operation_started.elapsed().as_millis();
+    let remove_result = std::fs::remove_file(&source_path).map_err(AppError::from);
+    let imported = import_result?;
+    remove_result?;
+    let result_rows = imported
+        .first()
+        .map(|(_, _, rows_written)| *rows_written)
+        .unwrap_or(0);
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: options.columns,
+        operation: options.operation,
+        setup_ms,
+        operation_ms,
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows,
+        selected_columns: 0,
+        query_ms: None,
+        encode_ms: None,
+        decode_ms: None,
+        draw_ms: None,
+        processed_rows: None,
+        transferred_bytes: None,
+        archive_bytes: 0,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        process_memory,
     })
 }
 
@@ -819,6 +914,13 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_parses_datalink_operation() {
+        let options = parse_args(["--operation", "datalink"].map(String::from)).unwrap();
+
+        assert_eq!(options.operation, Operation::Datalink);
+    }
+
+    #[test]
     fn performance_cli_executes_each_operation() {
         for operation in [
             Operation::Query,
@@ -826,7 +928,7 @@ mod tests {
             Operation::Restore,
             Operation::Graph,
             Operation::Save,
-            Operation::Graph,
+            Operation::Datalink,
         ] {
             let report = execute(Options {
                 rows: 25,

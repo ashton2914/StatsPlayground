@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { AnalysisText } from "@/components/analysis/presentation";
-import type { AnalysisDocument } from "@/types/analysis";
+import type { AnalysisDocument, AnalysisDocumentPatch } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 
@@ -22,6 +22,8 @@ interface AnalysisViewProps {
   runtime?: AnalysisViewRuntime;
   canEditInputs?: boolean;
   onEditInputs?: () => void;
+  onDefinitionChange?: (patch: AnalysisDocumentPatch) => void;
+  onDatasetChanged?: () => Promise<void>;
   onGraphConfigChange?: (
     role: AnalysisGraphRoleByKind[AnalysisDocument["analysisKind"]],
     graph: EmbeddedGraphConfig,
@@ -50,6 +52,8 @@ export function AnalysisView({
   runtime,
   canEditInputs = false,
   onEditInputs,
+  onDefinitionChange,
+  onDatasetChanged,
   onGraphConfigChange,
 }: AnalysisViewProps) {
   const { t } = useTranslation();
@@ -76,6 +80,32 @@ export function AnalysisView({
         onGraphConfigChange={onGraphConfigChange
           ? (role, graph) => onGraphConfigChange(role, graph)
           : undefined}
+      />
+    );
+  }
+
+  if (item.analysisKind === "fitModel") {
+    return (
+      <analysisViewRegistry.fitModel
+        item={item}
+        dataset={dataset}
+        runtime={runtime}
+        canEditInputs={canEditInputs}
+        onEditInputs={onEditInputs}
+        onDefinitionChange={onDefinitionChange}
+        onDatasetChanged={onDatasetChanged}
+      />
+    );
+  }
+
+  if (item.analysisKind === "hypothesisTest") {
+    return (
+      <analysisViewRegistry.hypothesisTest
+        item={item}
+        dataset={dataset}
+        runtime={runtime}
+        canEditInputs={canEditInputs}
+        onEditInputs={onEditInputs}
       />
     );
   }

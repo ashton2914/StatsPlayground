@@ -14,7 +14,7 @@ import { modKey, shiftKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
 import { copyThenClear } from "@/utils/tableClipboard";
 import { TableWindowCache } from "@/utils/tableWindowCache";
-import { calculatePlaceholderRange, canMaterializeSelection, calculateTableWindow, MAX_MATERIALIZED_SELECTION_ITEMS, RequestEpoch, serializeTableWindowFilters, windowRowAt } from "@/utils/tableViewport";
+import { calculatePlaceholderRange, canMaterializeSelection, calculateTableWindow, isStaleDatasetGenerationError, MAX_MATERIALIZED_SELECTION_ITEMS, queryTableWindowWithFreshGeneration, RequestEpoch, serializeTableWindowFilters, shouldReloadDatasetRevision, windowRowAt, type DatasetRevision } from "@/utils/tableViewport";
 import { inferFieldType, type FieldRef, type GraphData } from "@/graphCore";
 import { FilterPanel } from "@/components/filter";
 import type { FilterRuleItem } from "@/types/filter";
@@ -810,6 +810,21 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   // Excel-like formula bar state lives inside <FormulaBar /> now.
 
   const { refreshDatasets, setStatusInfo } = useDataStore();
+  const datasetRowCount = useDataStore(
+    (state) => state.datasets.find((item) => item.id === datasetId)?.rowCount ?? 0,
+  );
+  const datasetGeneration = useDataStore(
+    (state) => state.datasets.find((item) => item.id === datasetId)?.generation ?? 0,
+  );
+  const datasetUpdatedAt = useDataStore(
+    (state) => state.datasets.find((item) => item.id === datasetId)?.updatedAt ?? "",
+  );
+  const datasetRevision = useMemo<DatasetRevision>(() => ({
+    datasetId,
+    generation: datasetGeneration,
+    rowCount: datasetRowCount,
+    updatedAt: datasetUpdatedAt,
+  }), [datasetGeneration, datasetId, datasetRowCount, datasetUpdatedAt]);
   const { markDirty, readOnly } = useProjectStore();
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
@@ -822,8 +837,8 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
     historyRevision,
     historyError,
     pendingAction,
-    tryBeginTableMutation,
-    endTableMutation,
+    tryBeginTableMutation: tryBeginHistoryTableMutation,
+    endTableMutation: endHistoryTableMutation,
     clearPendingRestore,
     invalidateData,
   } = useHistoryStore();
@@ -843,6 +858,7 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   // Refs for tracking latest state (used by recordAction and pendingRestore)
   const dataRef = useRef<TableQueryResult | null>(null);
   const generationRef = useRef(0);
+  const datasetRevisionRef = useRef<DatasetRevision | null>(null);
   const windowStartRef = useRef(0);
   const windowCacheRef = useRef<TableWindowCache | null>(null);
   const requestEpochRef = useRef<RequestEpoch | null>(null);
@@ -851,6 +867,16 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   const skipFilterReloadRef = useRef(false);
   if (!windowCacheRef.current) windowCacheRef.current = new TableWindowCache(TABLE_CACHE_ROW_LIMIT);
   if (!requestEpochRef.current) requestEpochRef.current = new RequestEpoch();
+  const tryBeginTableMutation = useCallback(() => {
+    if (!tryBeginHistoryTableMutation()) return false;
+    requestEpochRef.current!.beginMutation();
+    pendingWindowsRef.current.clear();
+    return true;
+  }, [tryBeginHistoryTableMutation]);
+  const endTableMutation = useCallback(() => {
+    requestEpochRef.current!.endMutation();
+    endHistoryTableMutation();
+  }, [endHistoryTableMutation]);
   const getTableCategoricalValues = useCallback(
     (field: string, search: string) => dataService.queryTableFilterValues(
       datasetId,
@@ -904,18 +930,20 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
     const serializedFilters = serializeTableWindowFilters(filters);
     loadedFilterKeyRef.current = JSON.stringify(serializedFilters);
     try {
-      const generation = await dataService.getDatasetGeneration(datasetId);
       const request = {
         datasetId,
         start,
         count: TABLE_WINDOW_SIZE,
         sort: null,
         filters: serializedFilters,
-        generation,
       };
-      const result = await dataService.queryTableWindow(request);
+      const result = await queryTableWindowWithFreshGeneration(
+        request,
+        () => dataService.getDatasetGeneration(datasetId),
+        dataService.queryTableWindow,
+      );
       if (!requestEpochRef.current!.isCurrent(epoch)) return;
-      windowCacheRef.current!.put(request, result);
+      windowCacheRef.current!.put({ ...request, generation: result.generation }, result);
       const nextData: TableQueryResult = {
         columns: result.columns,
         columnTypes: result.columnTypes,
@@ -1018,6 +1046,13 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
     setTableFilters([]);
     setShowTableFilters(false);
   }, [datasetId, load]);
+
+  useEffect(() => {
+    const previous = datasetRevisionRef.current;
+    datasetRevisionRef.current = datasetRevision;
+    if (!shouldReloadDatasetRevision(previous, datasetRevision)) return;
+    void load(tableFiltersRef.current, windowStartRef.current);
+  }, [datasetRevision, load]);
 
   useEffect(() => {
     if (skipFilterReloadRef.current) {
@@ -1269,7 +1304,12 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
           endCol: colIdx,
         });
       }).catch((error) => {
-        if (requestEpochRef.current!.isCurrent(epoch)) setErrorMsg(String(error));
+        if (!requestEpochRef.current!.isCurrent(epoch)) return;
+        if (isStaleDatasetGenerationError(error)) {
+          void load(tableFiltersRef.current, windowStartRef.current);
+          return;
+        }
+        setErrorMsg(String(error));
       });
       return;
     }
@@ -1542,6 +1582,7 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
 
   useEffect(() => {
     if (!data || data.totalRows === 0) return;
+    if (!requestEpochRef.current!.canIssueViewportRequest) return;
     const range = calculateTableWindow({
       totalRows: data.totalRows,
       rowHeight: ROW_HEIGHT,
@@ -1590,10 +1631,15 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
         if (assembled) applyResult(assembled);
       })
       .catch((error) => {
-        if (requestEpochRef.current!.isLatest(trackedRequest)) setErrorMsg(String(error));
+        if (!requestEpochRef.current!.isLatest(trackedRequest)) return;
+        if (isStaleDatasetGenerationError(error)) {
+          void load(tableFiltersRef.current, windowStartRef.current);
+          return;
+        }
+        setErrorMsg(String(error));
       })
       .finally(() => pendingWindowsRef.current.delete(key));
-  }, [data?.totalRows, datasetId, headerHeight, ROW_HEIGHT, scrollTop, visibleAreaHeight]);
+  }, [data?.totalRows, datasetId, headerHeight, load, ROW_HEIGHT, scrollTop, visibleAreaHeight]);
 
   // Column virtualization: cumulative widths and visible column range.
   // Stored colWidths are in base (zoom-independent) units; scale on output.

@@ -248,6 +248,25 @@ function analysisColumns(analysis: AnalysisDocument): TableInputRequirement {
       analysis.definition.factor.name,
     ]);
   }
+  if (analysis.analysisKind === "fitModel") {
+    return tableRequirement([
+      analysis.definition.response.name,
+      ...analysis.definition.terms.flatMap((term) => term.columnNames),
+    ]);
+  }
+  if (analysis.analysisKind === "hypothesisTest") {
+    const { roles } = analysis.definition;
+    return roles.layout === "long"
+      ? tableRequirement([
+          roles.response.name,
+          roles.condition.name,
+          ...(roles.subject ? [roles.subject.name] : []),
+        ])
+      : tableRequirement([
+          ...roles.measurements.map((field) => field.name),
+          ...(roles.subject ? [roles.subject.name] : []),
+        ]);
+  }
   return tableRequirement([
     ...analysis.definition.responses.map((field) => field.name),
     ...analysis.definition.by.map((field) => field.name),
@@ -390,12 +409,22 @@ export const tabulateOperationAdapter: WorkflowOperationAdapter<TabulateItem> = 
 };
 
 function reportDependencyRef(dependency: ReportDependency): ProjectDocumentRef {
-  if (dependency.kind === "fitYByX") return { kind: "analysis", id: dependency.documentId };
+  if (
+    dependency.kind === "fitYByX"
+    || dependency.kind === "distribution"
+    || dependency.kind === "hypothesisTest"
+  ) {
+    return { kind: "analysis", id: dependency.documentId };
+  }
   return { kind: dependency.kind, id: dependency.documentId };
 }
 
 function reportDependencyPayload(dependency: ReportDependency): LineagePort["payloadKind"] {
-  return dependency.kind === "fitYByX" ? "analysis" : dependency.kind;
+  return dependency.kind === "fitYByX"
+    || dependency.kind === "distribution"
+    || dependency.kind === "hypothesisTest"
+    ? "analysis"
+    : dependency.kind;
 }
 
 export const reportOperationAdapter: WorkflowOperationAdapter<ReportItem> = {

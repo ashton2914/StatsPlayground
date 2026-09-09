@@ -1,9 +1,13 @@
 .sp-report-view {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   background: var(--bg-main);
+}
+
+.sp-report-view.is-read-only {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .sp-report-titlebar {
@@ -18,26 +22,136 @@
   letter-spacing: normal;
 }
 
-.sp-report-panes {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+.sp-report-editor-surface {
   min-height: 0;
-  height: 100%;
-}
-
-.sp-report-pane {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px 28px;
   background: var(--bg-panel);
 }
 
-.sp-report-editor-pane {
-  border-right: 1px solid var(--border-main);
+.sp-report-editor-surface > div,
+.sp-report-editor-surface .ProseMirror {
+  min-height: 100%;
+}
+
+.sp-report-editor-surface .ProseMirror {
+  outline: none;
+}
+
+.sp-report-editor-surface .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--fg-placeholder);
+  pointer-events: none;
+}
+
+.sp-report-project-embed {
+  position: relative;
+}
+
+.sp-report-project-embed.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.sp-report-markdown-flow [data-report-unsupported-markdown] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-secondary);
+  border: 1px dashed var(--border-main);
+  background: var(--bg-header);
 }
 
 .sp-report-toolbar {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-main);
+  background: var(--bg-header);
+  overflow: visible;
+}
+
+.sp-report-style-control select,
+.sp-report-link-popover input {
+  height: 30px;
+  border: 1px solid var(--border-main);
+  border-radius: 5px;
+  background: var(--bg-main);
+  color: var(--fg-primary);
+}
+
+.sp-report-style-control select {
+  min-width: 112px;
+  padding: 0 24px 0 8px;
+}
+
+.sp-report-tool-group {
+  display: inline-flex;
+  gap: 2px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border-main);
+}
+
+.sp-report-tool-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-primary);
+  cursor: pointer;
+}
+
+.sp-report-tool-btn:hover,
+.sp-report-tool-btn.is-active {
+  border-color: var(--border-main);
+  background: var(--bg-hover);
+}
+
+.sp-report-tool-btn.is-active {
+  color: var(--accent);
+}
+
+.sp-report-tool-popover-wrap {
+  position: relative;
+}
+
+.sp-report-insert-wrap {
+  margin-left: auto;
+}
+
+.sp-report-link-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-main);
+  border-radius: 7px;
+  background: var(--bg-main);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+}
+
+.sp-report-link-popover input {
+  width: 240px;
+  padding: 0 8px;
+}
+
+.sp-report-link-popover button {
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  padding: 0 10px;
 }
 
 .sp-report-insert-btn,
@@ -113,25 +227,6 @@
 
 .sp-report-insert-item:hover {
   background: var(--bg-hover);
-}
-
-.sp-report-editor {
-  flex: 1;
-  min-height: 0;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: 14px 16px;
-  background: var(--bg-panel);
-  color: var(--fg-primary);
-  font: 13px/1.55 Consolas, "SFMono-Regular", "Courier New", monospace;
-}
-
-.sp-report-preview {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 14px 16px 20px;
 }
 
 .sp-report-preview-empty {
@@ -301,15 +396,11 @@
 }
 
 @media (max-width: 900px) {
-  .sp-report-panes {
-    grid-template-columns: minmax(0, 1fr);
+  .sp-report-toolbar {
+    overflow-x: auto;
   }
 
-  .sp-report-editor-pane {
-    border-right: none;
-  }
-
-  .sp-report-pane.is-hidden {
-    display: none;
+  .sp-report-editor-surface {
+    padding: 14px 12px 22px;
   }
 }

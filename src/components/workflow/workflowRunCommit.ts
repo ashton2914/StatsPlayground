@@ -98,24 +98,28 @@ export async function applyWorkflowRunCommit(
   }
 
   const resolvableDocuments = new Set([
-    ...datasetIds,
-    ...documentIds,
-    ...useGraphBuilderStore.getState().items.map((item) => item.id),
-    ...useAnalysisStore.getState().items.map((item) => item.id),
-    ...useTabulateStore.getState().items.map((item) => item.id),
-    ...useReportStore.getState().items.map((item) => item.id),
+    ...Array.from(datasetIds, (id) => `table:${id}`),
+    ...graphs.map((item) => `graph:${item.id}`),
+    ...analyses.map((item) => `${item.analysisKind}:${item.id}`),
+    ...tabulates.map((item) => `tabulate:${item.id}`),
+    ...useGraphBuilderStore.getState().items.map((item) => `graph:${item.id}`),
+    ...useAnalysisStore.getState().items.map((item) => `${item.analysisKind}:${item.id}`),
+    ...useTabulateStore.getState().items.map((item) => `tabulate:${item.id}`),
   ]);
   for (const commit of packet.documents) {
     if (commit.kind !== "report") continue;
-    const embeddedIds = extractReportDependencies(commit.markdown)
-      .map((dependency) => dependency.documentId);
-    if (embeddedIds.length !== commit.dependencyIds.length
-      || embeddedIds.some((id, index) => id !== commit.dependencyIds[index])) {
+    const embeddedDependencies = extractReportDependencies(commit.markdown);
+    if (embeddedDependencies.length !== commit.dependencyIds.length
+      || embeddedDependencies.some((dependency, index) => {
+        const committed = commit.dependencyIds[index];
+        return dependency.kind !== committed.kind
+          || dependency.documentId !== committed.documentId;
+      })) {
       throw new Error(`Workflow Report ${commit.id} dependencies do not match markdown`);
     }
-    for (const dependencyId of commit.dependencyIds) {
-      if (!resolvableDocuments.has(dependencyId)) {
-        throw new Error(`unresolved Report dependency ${dependencyId}`);
+    for (const dependency of commit.dependencyIds) {
+      if (!resolvableDocuments.has(`${dependency.kind}:${dependency.documentId}`)) {
+        throw new Error(`unresolved Report dependency ${dependency.kind}:${dependency.documentId}`);
       }
     }
     const existing = useReportStore.getState().items.find((item) => item.id === commit.id);

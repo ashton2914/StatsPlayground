@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 
-import { GraphRuntime, type GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
+import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
 import type { GraphPanelOptionFactory } from "@/graphCore";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 
 import { AnalysisFrame } from "./AnalysisFrame";
+
+const GraphRuntime = lazy(async () => {
+  const module = await import("@/components/graphBuilder/GraphRuntime");
+  return { default: module.GraphRuntime };
+});
 
 export type AnalysisGraphStrategy =
   | { mode: "builder"; runtimeProps: GraphRuntimeProps }
@@ -19,6 +24,7 @@ interface AnalysisGraphProps extends Omit<ComponentPropsWithoutRef<"section">, "
   title: ReactNode;
   graphRole: string;
   strategy: AnalysisGraphStrategy;
+  frameClassName?: string;
   contentClassName?: string;
   renderGraph?: (
     props: GraphRuntimeProps,
@@ -30,12 +36,18 @@ export function AnalysisGraph({
   title,
   graphRole,
   strategy,
+  frameClassName,
   contentClassName,
   renderGraph,
   ...frameProps
 }: AnalysisGraphProps) {
   return (
-    <AnalysisFrame title={title} contentPadding="none" className="analysis-ui-graph" {...frameProps}>
+    <AnalysisFrame
+      title={title}
+      contentPadding="none"
+      className={frameClassName ? `analysis-ui-graph ${frameClassName}` : "analysis-ui-graph"}
+      {...frameProps}
+    >
       <div className={contentClassName ? `analysis-ui-graph-content ${contentClassName}` : "analysis-ui-graph-content"}>
         <div
           className="analysis-ui-graph-runtime"
@@ -110,5 +122,9 @@ function AnalysisBuilderGraph({
 
   return renderGraph
     ? renderGraph(runtimeProps, strategy.mode)
-    : <GraphRuntime {...runtimeProps} />;
+    : (
+        <Suspense fallback={null}>
+          <GraphRuntime {...runtimeProps} />
+        </Suspense>
+      );
 }

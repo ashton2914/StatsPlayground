@@ -52,7 +52,6 @@ const beforeRemount = buildEffectiveGroupStyles(
   "Build",
   {},
   [],
-  true,
 );
 const afterRemount = buildEffectiveGroupStyles(
   ["EV", "EV1", "TC1.6"],
@@ -60,7 +59,6 @@ const afterRemount = buildEffectiveGroupStyles(
   "Build",
   {},
   [],
-  true,
 );
 assert.deepEqual(afterRemount["TC1.6"], beforeRemount["TC1.6"]);
 
@@ -76,7 +74,6 @@ const paletteBefore = buildEffectiveGroupStyles(
     { id: "p2", mode: "manual", point: "#300001", line: "#300002", fill: "#300003" },
     { id: "p3", mode: "manual", point: "#400001", line: "#400002", fill: "#400003" },
   ],
-  true,
 );
 const paletteAfter = buildEffectiveGroupStyles(
   ["EV", "EV1", "EV2", "TC1.6"],
@@ -89,7 +86,6 @@ const paletteAfter = buildEffectiveGroupStyles(
     { id: "p2", mode: "manual", point: "#300001", line: "#300002", fill: "#300003" },
     { id: "p3", mode: "manual", point: "#abc001", line: "#abc002", fill: "#abc003" },
   ],
-  true,
 );
 assert.equal(groupThemeSlot(paletteSlots, "Build", "TC1.6", 999), 3);
 assert.equal(paletteBefore["TC1.6"].line?.color, "#400002");
@@ -103,8 +99,25 @@ const autoOnly = buildEffectiveGroupStyles(
   "Build",
   {},
   [],
-  true,
 );
+const ungroupedAutomatic = buildEffectiveGroupStyles(
+  [DEFAULT_GROUP_KEY],
+  undefined,
+  undefined,
+  {},
+  [],
+);
+assert.notEqual(
+  ungroupedAutomatic[DEFAULT_GROUP_KEY].fill?.color,
+  "transparent",
+  "the automatic face color must be available to every ungrouped graph type, not only boxplots",
+);
+for (const mark of ["point", "line", "fill", "gradient"] as const) {
+  assert.ok(
+    ungroupedAutomatic[DEFAULT_GROUP_KEY][mark]?.color,
+    `the shared automatic theme must assign a ${mark} color for every graph renderer`,
+  );
+}
 const partialOverride = buildEffectiveGroupStyles(
   ["EV", "EV1", "EV2"],
   remountSlots,
@@ -121,7 +134,6 @@ const partialOverride = buildEffectiveGroupStyles(
     },
   },
   [],
-  true,
 );
 assert.deepEqual(partialOverride.EV2.point, {
   color: "#123456",
@@ -140,7 +152,6 @@ const widthOnlyOverride = buildEffectiveGroupStyles(
   "Build",
   { EV2: { line: { lineWidth: 5 } } },
   [],
-  true,
 );
 assert.deepEqual(
   widthOnlyOverride.EV2.line,

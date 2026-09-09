@@ -20,6 +20,10 @@ const archiveSource = readFileSync(
   new URL("../src-tauri/src/services/spprj_archive.rs", import.meta.url),
   "utf8",
 );
+const analysisStandardSource = readFileSync(
+  new URL("../docs/analysis-development-standard.md", import.meta.url),
+  "utf8",
+);
 
 assert.match(projectTypesSource, /analyses:\s*AnalysisDocument\[\]/);
 assert.match(projectTypesSource, /analysisFolders:\s*Record<string, string>/);
@@ -28,6 +32,11 @@ assert.match(projectServiceSource, /analysisFolders:\s*Record<string, string>/);
 assert.match(archiveSource, /DocumentKind\s*\{[\s\S]*Analysis/);
 assert.match(archiveSource, /analyses/);
 assert.match(archiveSource, /\.span/);
+assert.match(analysisStandardSource, /directly compose[\s\S]*AnalysisFrame[\s\S]*AnalysisTable[\s\S]*AnalysisGraph/i);
+assert.match(analysisStandardSource, /must not wrap or delegate to a legacy report/i);
+assert.match(analysisStandardSource, /native `<table>`[\s\S]*native action `<button>`/i);
+assert.match(analysisStandardSource, /typography[\s\S]*spacing[\s\S]*presentation tokens/i);
+assert.match(analysisStandardSource, /visual acceptance/i);
 
 const analysis = createAnalysisSampleDocument({
   datasetId: "dataset-1",
@@ -146,5 +155,61 @@ const hydratedWithFitYByX = hydrateAnalysisProjectPayload({
 assert.equal(hydratedWithFitYByX.migratedCount, 2);
 assert.equal(hydratedWithFitYByX.analyses[2]?.id, legacyFitYByX.id);
 assert.equal(hydratedWithFitYByX.analysisFolders[legacyFitYByX.id], "Analyses/Fit");
+
+const hydratedWithFitModel = hydrateAnalysisProjectPayload({
+  analyses: [analysis],
+  analysisFolders: { "analysis-1": "Analyses/New" },
+  fitModels: [
+    {
+      id: "legacy-fit-model",
+      name: "Fit Model 1",
+      sourceDatasetId: "dataset-2",
+      response: { name: "Strength", type: "continuous" },
+      construct: { kind: "manual" },
+      terms: [{ kind: "main", columnNames: ["Temperature"] }],
+      centeringMethod: "mean",
+      createdAt: "2026-09-08T00:00:00.000Z",
+    },
+    {
+      id: "analysis-1",
+      name: "Colliding legacy item",
+      sourceDatasetId: "dataset-2",
+      response: { name: "Strength", type: "continuous" },
+      terms: [{ kind: "main", columnNames: ["Temperature"] }],
+      centeringMethod: "none",
+      createdAt: "2026-09-08T00:00:00.000Z",
+    },
+    {
+      id: "invalid-fit-model",
+      name: "Damaged Fit Model",
+      sourceDatasetId: "dataset-2",
+      response: { name: "Site", type: "nominal" },
+      terms: [],
+      centeringMethod: "none",
+      createdAt: "2026-09-08T00:00:00.000Z",
+    },
+  ],
+  fitModelFolders: {
+    "legacy-fit-model": "Analyses/Models",
+    "analysis-1": "Analyses/Legacy Collision",
+    "invalid-fit-model": "Analyses/Damaged",
+  },
+});
+assert.deepEqual(hydratedWithFitModel.analyses.map((entry) => entry.id), [
+  "analysis-1",
+  "legacy-fit-model",
+  "invalid-fit-model",
+]);
+assert.equal(hydratedWithFitModel.analyses[1]?.analysisKind, "fitModel");
+assert.equal(hydratedWithFitModel.analyses[2]?.analysisKind, "fitModel");
+assert.equal(
+  hydratedWithFitModel.analyses[2]?.definition.kind === "fitModel"
+    && hydratedWithFitModel.analyses[2].definition.migrationIssue?.code,
+  "invalidPersistedDefinition",
+);
+assert.equal(hydratedWithFitModel.analysisFolders["analysis-1"], "Analyses/New");
+assert.equal(hydratedWithFitModel.analysisFolders["legacy-fit-model"], "Analyses/Models");
+assert.equal(hydratedWithFitModel.analysisFolders["invalid-fit-model"], "Analyses/Damaged");
+assert.equal(hydratedWithFitModel.migratedCount, 2);
 
 console.log("analysis project contracts passed");

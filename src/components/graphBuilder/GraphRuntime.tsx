@@ -262,10 +262,9 @@ export function GraphRuntime({
       groupingFieldName,
       model.spec.styles ?? {},
       customPalettes,
-      model.spec.elements.some((element) => element.kind === "boxplot" && element.enabled !== false),
       slotCandidateKeys,
     ),
-    [customPalettes, effectiveItem.groupThemeSlots, groupKeys, groupingFieldName, model.spec.elements, model.spec.styles, slotCandidateKeys],
+    [customPalettes, effectiveItem.groupThemeSlots, groupKeys, groupingFieldName, model.spec.styles, slotCandidateKeys],
   );
   const runtimeSpec = useMemo(
     () => ({ ...model.spec, datasetName: dataset.name, styles: effectiveStyles }),

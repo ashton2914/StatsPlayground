@@ -258,7 +258,6 @@ export function buildEffectiveGroupStyles(
   fieldName: string | undefined,
   userStyles: GroupStyleMap,
   customPalettes: readonly CustomPalette[],
-  hasBoxplot: boolean,
 ): GroupStyleMap {
   const out: GroupStyleMap = { ...userStyles };
   const groupedKeys = activeKeys.filter((key) => normalizeGroupKey(key) !== undefined);
@@ -275,7 +274,7 @@ export function buildEffectiveGroupStyles(
       ? {
           line: { color: "#000000", lineWidth: 1.5, opacity: 1 },
           fill: {
-            color: hasBoxplot ? shade("#000000", SHADE_RATIO_FILL) : "transparent",
+            color: shade("#000000", SHADE_RATIO_FILL),
             opacity: 1,
           },
           point: { color: "#000000", fillColor: "#000000", marker: "circle", markerSize: 4, opacity: 1 },

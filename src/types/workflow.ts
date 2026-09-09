@@ -279,6 +279,11 @@ interface WorkflowDocumentCommitBase {
   validationResultHash: string;
 }
 
+export interface WorkflowReportDependency {
+  kind: "table" | "graph" | "fitYByX" | "hypothesisTest" | "tabulate" | "distribution";
+  documentId: string;
+}
+
 export type WorkflowDocumentCommit =
   | (WorkflowDocumentCommitBase & {
       kind: "graph";
@@ -299,7 +304,7 @@ export type WorkflowDocumentCommit =
   | (WorkflowDocumentCommitBase & {
       kind: "report";
       markdown: string;
-      dependencyIds: string[];
+      dependencyIds: WorkflowReportDependency[];
     });
 
 export interface WorkflowRunCommitPacket {

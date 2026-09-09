@@ -494,8 +494,8 @@ impl<'a> TableTransformService<'a> {
             &definition.output.name,
         );
         next.edges.retain(|edge| {
-            !(edge.kind == LineageEdgeKind::Consumes && edge.target.node_id == operation_id
-                || edge.kind == LineageEdgeKind::Produces && edge.source.node_id == operation_id)
+            !(edge.kind == LineageEdgeKind::Consumes && edge.target.node_id == operation_id)
+                && !(edge.kind == LineageEdgeKind::Produces && edge.source.node_id == operation_id)
         });
 
         for input in &binding.inputs {

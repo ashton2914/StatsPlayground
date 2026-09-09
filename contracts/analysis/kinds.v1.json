@@ -18,6 +18,24 @@
         "schemaVersion": 1,
         "layout": "fit-y-by-x-v1"
       }
+    },
+    {
+      "analysisKind": "fitModel",
+      "documentSchemaVersion": 1,
+      "definitionKind": "fitModel",
+      "presentation": {
+        "schemaVersion": 1,
+        "layout": "fit-model-v1"
+      }
+    },
+    {
+      "analysisKind": "hypothesisTest",
+      "documentSchemaVersion": 1,
+      "definitionKind": "hypothesisTest",
+      "presentation": {
+        "schemaVersion": 1,
+        "layout": "hypothesis-test-v1"
+      }
     }
   ]
 }

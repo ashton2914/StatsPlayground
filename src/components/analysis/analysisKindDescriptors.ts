@@ -35,7 +35,7 @@ export const analysisKindDescriptors = {
     },
     capabilities: {
       graphEditing: true,
-      reportEmbedding: false,
+      reportEmbedding: true,
     },
   },
   fitYByX: {
@@ -53,6 +53,42 @@ export const analysisKindDescriptors = {
     },
     capabilities: {
       graphEditing: true,
+      reportEmbedding: true,
+    },
+  },
+  fitModel: {
+    identity: {
+      analysisKind: "fitModel",
+      definitionKind: "fitModel",
+    },
+    schema: {
+      document: 1,
+      presentation: 1,
+      layout: "fit-model-v1",
+    },
+    locale: {
+      title: "fitModel.title",
+    },
+    capabilities: {
+      graphEditing: false,
+      reportEmbedding: false,
+    },
+  },
+  hypothesisTest: {
+    identity: {
+      analysisKind: "hypothesisTest",
+      definitionKind: "hypothesisTest",
+    },
+    schema: {
+      document: 1,
+      presentation: 1,
+      layout: "hypothesis-test-v1",
+    },
+    locale: {
+      title: "hypothesisTest.title",
+    },
+    capabilities: {
+      graphEditing: false,
       reportEmbedding: true,
     },
   },

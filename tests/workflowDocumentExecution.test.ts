@@ -86,7 +86,7 @@ const commits: WorkflowDocumentCommit[] = [
     id: "stable-report",
     name: "Report",
     markdown: '{{sp-embed kind="graph" id="stable-graph"}}',
-    dependencyIds: ["stable-graph"],
+    dependencyIds: [{ kind: "graph", documentId: "stable-graph" }],
     validationResultHash: "report-hash",
   },
 ];

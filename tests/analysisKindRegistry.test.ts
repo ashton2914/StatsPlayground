@@ -28,6 +28,10 @@ const manifest = JSON.parse(readFileSync(
   new URL("../contracts/analysis/kinds.v1.json", import.meta.url),
   "utf8",
 )) as AnalysisKindManifest;
+const viewRegistrySource = readFileSync(
+  new URL("../src/components/analysis/analysisViewRegistry.tsx", import.meta.url),
+  "utf8",
+);
 const manifestKinds = manifest.kinds.map((entry) => entry.analysisKind).sort();
 const registries = {
   descriptors: analysisKindDescriptors,
@@ -39,7 +43,7 @@ const registries = {
 };
 
 assert.equal(manifest.schemaVersion, 1);
-assert.deepEqual(manifestKinds, ["distribution", "fitYByX"]);
+assert.deepEqual(manifestKinds, ["distribution", "fitModel", "fitYByX", "hypothesisTest"]);
 
 for (const [layer, registry] of Object.entries(registries)) {
   assert.deepEqual(Object.keys(registry).sort(), manifestKinds, `${layer} registry must match the manifest`);
@@ -64,7 +68,26 @@ for (const entry of manifest.kinds) {
   );
 }
 
-assert.equal(analysisReportPolicies.distribution, null);
+assert.notEqual(analysisReportPolicies.distribution, null, "Distribution must register Report embedding");
 assert.notEqual(analysisReportPolicies.fitYByX, null, "Fit Y by X must register Report embedding");
+assert.deepEqual(analysisKindDescriptors.fitModel.capabilities, {
+  graphEditing: false,
+  reportEmbedding: false,
+});
+assert.notEqual(analysisEditorRegistry.fitModel, null, "Fit Model must register an editor policy");
+assert.equal(analysisGraphPolicies.fitModel, null);
+assert.equal(analysisReportPolicies.fitModel, null);
+assert.equal(analysisViewContracts.fitModel.presentationLayout, "fit-model-v1");
+assert.match(viewRegistrySource, /fitModel:\s*FitModelAnalysisResults/);
+assert.deepEqual(analysisKindDescriptors.hypothesisTest.capabilities, {
+  graphEditing: false,
+  reportEmbedding: true,
+});
+assert.equal(analysisGraphPolicies.hypothesisTest, null);
+assert.notEqual(analysisReportPolicies.hypothesisTest, null);
+assert.equal(
+  analysisViewContracts.hypothesisTest.presentationLayout,
+  "hypothesis-test-v1",
+);
 
 console.log("Analysis kind registry contract passed");

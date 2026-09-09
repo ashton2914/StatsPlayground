@@ -2,9 +2,19 @@ import type { FieldRef } from "../graphCore/types";
 
 import type { DistributionAnalysisConfig, DistributionItem } from "./distribution";
 import type { EmbeddedGraphConfig } from "./graphBuilder";
+import type {
+  FitModelCenteringMethod,
+  FitModelConstruct,
+  FitModelLoadIssue,
+  FitModelTerm,
+} from "./fitModel";
 import type { FitYByXPersonality } from "./fitYByX";
+import type {
+  HypothesisTestAnalysisDefinition,
+  HypothesisTestAnalysisPresentation,
+} from "./hypothesisTest";
 
-export type AnalysisKind = "distribution" | "fitYByX";
+export type AnalysisKind = "distribution" | "fitYByX" | "fitModel" | "hypothesisTest";
 
 export interface DistributionAnalysisPresentation {
   schemaVersion: 1;
@@ -17,7 +27,16 @@ export interface FitYByXAnalysisPresentation {
   graph: EmbeddedGraphConfig;
 }
 
-export type AnalysisPresentation = DistributionAnalysisPresentation | FitYByXAnalysisPresentation;
+export interface FitModelAnalysisPresentation {
+  schemaVersion: 1;
+  layout: "fit-model-v1";
+}
+
+export type AnalysisPresentation =
+  | DistributionAnalysisPresentation
+  | FitYByXAnalysisPresentation
+  | FitModelAnalysisPresentation
+  | HypothesisTestAnalysisPresentation;
 
 export interface DistributionAnalysisDefinition {
   kind: "distribution";
@@ -35,6 +54,16 @@ export interface FitYByXAnalysisDefinition {
   factor: FieldRef;
   personality: FitYByXPersonality;
   confidenceLevel: number;
+}
+
+export interface FitModelAnalysisDefinition {
+  kind: "fitModel";
+  response: FieldRef;
+  construct: FitModelConstruct;
+  terms: FitModelTerm[];
+  centeringMethod: FitModelCenteringMethod;
+  confidenceLevel: number;
+  migrationIssue?: FitModelLoadIssue;
 }
 
 export interface DistributionAnalysisDocument {
@@ -65,7 +94,39 @@ export interface FitYByXAnalysisDocument {
   updatedAt: string;
 }
 
-export type AnalysisDocument = DistributionAnalysisDocument | FitYByXAnalysisDocument;
+export interface FitModelAnalysisDocument {
+  schemaVersion: 1;
+  documentType: "analysis";
+  id: string;
+  name: string;
+  analysisKind: "fitModel";
+  configRevision: number;
+  source: { datasetId: string };
+  definition: FitModelAnalysisDefinition;
+  presentation: FitModelAnalysisPresentation;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HypothesisTestAnalysisDocument {
+  schemaVersion: 1;
+  documentType: "analysis";
+  id: string;
+  name: string;
+  analysisKind: "hypothesisTest";
+  configRevision: number;
+  source: { datasetId: string };
+  definition: HypothesisTestAnalysisDefinition;
+  presentation: HypothesisTestAnalysisPresentation;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AnalysisDocument =
+  | DistributionAnalysisDocument
+  | FitYByXAnalysisDocument
+  | FitModelAnalysisDocument
+  | HypothesisTestAnalysisDocument;
 
 export type AnalysisDocumentByKind = {
   [Document in AnalysisDocument as Document["analysisKind"]]: Document;

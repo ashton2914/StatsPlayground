@@ -90,5 +90,14 @@ for (const viewport of [
       return { left: box.left, right: box.right, width: box.width };
     }));
     expect(columns.every((column) => column.left >= -1 && column.right <= viewport.width + 1 && column.width > 0)).toBe(true);
+    const profilerBox = await component.locator(".sp-fit-model-profiler").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { width: box.width };
+    });
+    if (viewport.width >= 1000) {
+      expect(profilerBox.width).toBeGreaterThanOrEqual(972);
+      expect(profilerBox.width).toBeLessThanOrEqual(1052);
+      expect(columns.every((column) => column.width >= 480 && column.width <= 520)).toBe(true);
+    }
   });
 }

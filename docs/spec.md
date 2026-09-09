@@ -501,6 +501,29 @@ await listen<ProgressPayload>('import-progress', (event) => {
 | 新建计算列 | 基于表达式创建派生列 |
 | 数据合并 | 支持 JOIN / UNION 操作 |
 
+#### 9.1.1 SQLite DataLink
+
+SQLite DataLink 采用只读快照导入：`DataConnector` 定义连接测试、对象发现、
+schema、预览、行数和流式读取契约，`SqliteConnector` 负责 SQLite 驱动细节，
+DuckDB engine 负责目标表、Appender 写入、事务、取消和 metadata。
+
+| SQLite 声明类型 | DuckDB 目标类型 | 导入策略 |
+|----------------|-----------------|----------|
+| INTEGER / BOOL | BIGINT | 文本或浮点运行时值必须可无损转换，否则整次导入回滚 |
+| REAL / FLOAT / DOUBLE / NUMERIC / DECIMAL | DOUBLE | 非有限值或不可解析文本会失败并回滚 |
+| BLOB | BLOB | 二进制内容按字节保留；BLOB 列中的文本按 UTF-8 字节写入 |
+| DATE / TIME / DATETIME / TEXT | VARCHAR | 保留源文本，不做时区或格式归一化 |
+| NULL | NULL | 保留缺失值 |
+
+预览中的 BLOB 显示为 `<BLOB: N bytes>`，不会通过 IPC 传输原始二进制。
+导入采用有上限批次和任务级原子事务；取消或任一表转换失败时，不保留物理表、
+metadata 或部分追加行。
+
+前端由 `useDataLinkStore` 统一维护向导、预览、选择、进度、错误和任务结果。
+`ImportSummary` 区分 `completed`、`failed` 和 `cancelled`，列出成功与跳过的表及
+实际写入行数。当前不支持 partial success；失败或取消时整次事务回滚，摘要中的
+提交写入行数为 0。
+
 ### 9.2 描述性统计 (Stats.Descriptive)
 
 | 功能 | 描述 |

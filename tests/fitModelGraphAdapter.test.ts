@@ -288,6 +288,48 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
 }
 
+function testChartLayoutContainsAxisText(): void {
+  const rows: FitModelPlotRow[] = [
+    { rowIndex: 0, observed: 2, fitted: 1.5, residual: 0.5 },
+    { rowIndex: 1, observed: 4, fitted: 4.5, residual: -0.5 },
+  ];
+  const options = [
+    buildActualByPredictedOption({ title: "Actual by Predicted", labels: SAMPLE_LABELS, plotRows: rows }),
+    buildResidualByPredictedOption({
+      title: "Residual by Predicted",
+      labels: { ...SAMPLE_LABELS, tooltipYLabel: "Residual" },
+      plotRows: rows,
+    }),
+    buildResidualQqOption({
+      title: "Residual Q-Q",
+      rows: [
+        { rowIndex: 1, theoreticalQuantile: -0.67, studentizedResidual: -0.5 },
+        { rowIndex: 2, theoreticalQuantile: 0.67, studentizedResidual: 0.8 },
+      ],
+      labels: {
+        theoreticalAxisName: "Theoretical quantile",
+        studentizedResidualAxisName: "Studentized residual",
+        residualSeriesName: "Residual",
+        referenceSeriesName: "Reference",
+        tooltipXLabel: "Theoretical quantile",
+        tooltipYLabel: "Studentized residual",
+      },
+    }),
+  ] as Array<{
+    grid?: { containLabel?: boolean };
+    xAxis?: { nameLocation?: string; nameGap?: number };
+    yAxis?: { nameLocation?: string; nameGap?: number };
+  }>;
+
+  for (const option of options) {
+    assert.equal(option.grid?.containLabel, true);
+    assert.equal(option.xAxis?.nameLocation, "middle");
+    assert.equal(option.yAxis?.nameLocation, "middle");
+    assert.ok((option.xAxis?.nameGap ?? 0) >= 28);
+    assert.ok((option.yAxis?.nameGap ?? 0) >= 36);
+  }
+}
+
 testActualAndResidualPointsAndAxes();
 testReferenceLinesFiniteAndCorrect();
 testTooltipValuesAreFinite();
@@ -298,5 +340,6 @@ testSinglePointReferenceLinesUseExpandedFiniteExtent();
 testResidualQqPointsAndReferenceLine();
 testResidualQqBoundaryInputs();
 testPredictionProfilerCurveAndConfidenceBand();
+testChartLayoutContainsAxisText();
 
 console.log("fitModel graph adapter contract passed");

@@ -1,4 +1,5 @@
 export { useDataStore } from "./useDataStore";
+export { useDataLinkStore } from "./useDataLinkStore";
 export {
   useFolderStore,
   normalizeFolderPath,
@@ -7,7 +8,6 @@ export {
   folderBaseName,
   validateFolderOrFileName,
 } from "./useFolderStore";
-export { useFitModelStore } from "./useFitModelStore";
 export { useReportStore } from "./useReportStore";
 export { useAnalysisStore } from "./useAnalysisStore";
 export { useDistributionStore } from "./useDistributionStore";

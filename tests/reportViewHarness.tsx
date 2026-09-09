@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
-import { createFitYByXAnalysisDocument } from "../src/components/analysis/adapters/index.ts";
+import {
+  createDistributionAnalysisDocument,
+  createFitYByXAnalysisDocument,
+} from "../src/components/analysis/adapters/index.ts";
 import { ReportView, type ReportLinkOption } from "../src/components/report/ReportView";
 import type { ReportEmbedRuntime } from "../src/components/report/ReportEmbed.tsx";
 import { useDataStore } from "../src/stores/useDataStore.ts";
@@ -31,6 +34,7 @@ const baseItem: ReportItem = {
 const tableOptions: ReportLinkOption[] = [{ id: "table-1", name: "Incoming Data" }];
 const graphOptions: ReportLinkOption[] = [{ id: "graph-1", name: "Scatter Plot" }];
 const fitYByXOptions: ReportLinkOption[] = [{ id: "fit-1", name: "Strength vs Time" }];
+const hypothesisTestOptions: ReportLinkOption[] = [{ id: "hypothesis-1", name: "Supplier Comparison" }];
 const tabulateOptions: ReportLinkOption[] = [{ id: "tab-1", name: "Grouped Summary" }];
 const distributionOptions: ReportLinkOption[] = [{ id: "distribution-1", name: "Strength Distribution" }];
 
@@ -144,6 +148,10 @@ const defaultDistribution: DistributionItem = createDistributionItem({
   }],
   createdAt: "2026-09-02T10:00:00.000Z",
 });
+const defaultDistributionAnalysis = createDistributionAnalysisDocument(
+  defaultDistribution,
+  defaultDistribution.createdAt,
+);
 
 const LIVE_EMBED_RUNTIME: ReportEmbedRuntime = {
   table: {
@@ -241,6 +249,7 @@ interface ReportViewHarnessProps {
   graphMode?: "runtime" | "stub" | "error";
   distributionGraphMode?: "runtime" | "stub";
   embedMode?: "default" | "live" | "notComputable";
+  readOnly?: boolean;
 }
 
 export function ReportViewHarness({
@@ -248,12 +257,13 @@ export function ReportViewHarness({
   embedRuntime,
   datasets = [defaultDataset],
   graphs = [defaultGraph],
-  analyses = [defaultFitYByXAnalysis],
+  analyses = [defaultFitYByXAnalysis, defaultDistributionAnalysis],
   tabulates = [defaultTabulate],
   distributions = [defaultDistribution],
   graphMode = "runtime",
   distributionGraphMode = "runtime",
   embedMode = "default",
+  readOnly = false,
 }: ReportViewHarnessProps) {
   const [markdown, setMarkdown] = useState(initialMarkdown);
 
@@ -286,16 +296,46 @@ export function ReportViewHarness({
     : selectedRuntime?.distribution;
 
   return (
-    <ReportView
-      item={{ ...baseItem, markdown, updatedAt: "2026-09-02T10:05:00.000Z" }}
-      tableOptions={tableOptions}
-      graphOptions={graphOptions}
-      fitYByXOptions={fitYByXOptions}
-      tabulateOptions={tabulateOptions}
-      distributionOptions={distributionOptions}
-      embedRuntime={{ ...selectedRuntime, graph: graphRuntime, distribution: distributionRuntime }}
-      onMarkdownChange={setMarkdown}
-    />
+    <>
+      <ReportView
+        item={{ ...baseItem, markdown, updatedAt: "2026-09-02T10:05:00.000Z" }}
+        tableOptions={tableOptions}
+        graphOptions={graphOptions}
+        fitYByXOptions={fitYByXOptions}
+        hypothesisTestOptions={hypothesisTestOptions}
+        tabulateOptions={tabulateOptions}
+        distributionOptions={distributionOptions}
+        embedRuntime={{ ...selectedRuntime, graph: graphRuntime, distribution: distributionRuntime }}
+        onMarkdownChange={setMarkdown}
+        readOnly={readOnly}
+      />
+      <output data-testid="report-markdown" hidden>{markdown}</output>
+    </>
+  );
+}
+
+export function ReportExternalUpdateHarness() {
+  const [markdown, setMarkdown] = useState("Initial");
+  const [changeCount, setChangeCount] = useState(0);
+
+  return (
+    <>
+      <button type="button" onClick={() => setMarkdown("## External")}>Load external Markdown</button>
+      <ReportView
+        item={{ ...baseItem, markdown, updatedAt: "2026-09-02T10:05:00.000Z" }}
+        tableOptions={tableOptions}
+        graphOptions={graphOptions}
+        fitYByXOptions={fitYByXOptions}
+        hypothesisTestOptions={hypothesisTestOptions}
+        tabulateOptions={tabulateOptions}
+        distributionOptions={distributionOptions}
+        onMarkdownChange={(nextMarkdown) => {
+          setChangeCount((count) => count + 1);
+          setMarkdown(nextMarkdown);
+        }}
+      />
+      <output data-testid="change-count">{changeCount}</output>
+    </>
   );
 }
 

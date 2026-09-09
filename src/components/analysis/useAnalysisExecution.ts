@@ -5,12 +5,16 @@ import type {
   DistributionRequest,
 } from "@/types/distribution";
 import type { FitYByXRequest } from "@/types/fitYByX";
+import type { FitModelRequest } from "@/types/fitModel";
+import type { HypothesisTestRequest } from "@/types/hypothesisTest";
 
 import {
   analysisExecutors,
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
   fitYByXAnalysisDefinitionFingerprint,
+  fitModelAnalysisDefinitionFingerprint,
+  hypothesisTestAnalysisDefinitionFingerprint,
   type AnalysisExecutionDependencies,
   type AnalysisExecutionRequestByKind,
   type AnalysisExecutionResponseByKind,
@@ -20,6 +24,8 @@ export {
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
   fitYByXAnalysisDefinitionFingerprint,
+  fitModelAnalysisDefinitionFingerprint,
+  hypothesisTestAnalysisDefinitionFingerprint,
 };
 export type { AnalysisExecutionDependencies };
 
@@ -105,15 +111,23 @@ function analysisExecutionRequestIdentity(
   item: AnalysisDocument,
   request: AnalysisExecutionRequestByKind[AnalysisKind] | null,
 ): string | null {
-  return item.analysisKind === "distribution"
-    ? analysisExecutors.distribution.requestIdentity(request as DistributionRequest | null)
-    : analysisExecutors.fitYByX.requestIdentity(request as FitYByXRequest | null);
+  if (item.analysisKind === "distribution") {
+    return analysisExecutors.distribution.requestIdentity(request as DistributionRequest | null);
+  }
+  if (item.analysisKind === "fitYByX") {
+    return analysisExecutors.fitYByX.requestIdentity(request as FitYByXRequest | null);
+  }
+  if (item.analysisKind === "fitModel") {
+    return analysisExecutors.fitModel.requestIdentity(request as FitModelRequest | null);
+  }
+  return analysisExecutors.hypothesisTest.requestIdentity(request as HypothesisTestRequest | null);
 }
 
 function analysisDefinitionFingerprint(item: AnalysisDocument): string {
-  return item.analysisKind === "distribution"
-    ? analysisExecutors.distribution.fingerprint(item)
-    : analysisExecutors.fitYByX.fingerprint(item);
+  if (item.analysisKind === "distribution") return analysisExecutors.distribution.fingerprint(item);
+  if (item.analysisKind === "fitYByX") return analysisExecutors.fitYByX.fingerprint(item);
+  if (item.analysisKind === "fitModel") return analysisExecutors.fitModel.fingerprint(item);
+  return analysisExecutors.hypothesisTest.fingerprint(item);
 }
 
 function createAnalysisExecutionFence(
@@ -225,6 +239,19 @@ export function createAnalysisExecutionController(
       invalidate();
     },
     load: async (item, dataset) => {
+      if (item.analysisKind === "fitModel" && item.definition.migrationIssue) {
+        invalidate();
+        emit({
+          status: "error",
+          analysisKind: "fitModel",
+          analysisId: item.id,
+          datasetId: dataset.id,
+          configRevision: item.configRevision,
+          request: null,
+          error: item.definition.migrationIssue.detail,
+        }, createAnalysisExecutionFence(item, dataset, null));
+        return;
+      }
       const pendingFence = createAnalysisExecutionFence(item, dataset, null);
       const pending: ActiveAnalysisRequest = {
         token: ++nextToken,
@@ -271,7 +298,11 @@ export function createAnalysisExecutionController(
 
         const result = item.analysisKind === "distribution"
           ? await analysisExecutors.distribution.compute(options, request as DistributionRequest)
-          : await analysisExecutors.fitYByX.compute(options, request as FitYByXRequest);
+          : item.analysisKind === "fitYByX"
+            ? await analysisExecutors.fitYByX.compute(options, request as FitYByXRequest)
+            : item.analysisKind === "fitModel"
+              ? await analysisExecutors.fitModel.compute(options, request as FitModelRequest)
+              : await analysisExecutors.hypothesisTest.compute(options, request as HypothesisTestRequest);
         if (!isActive(running)) return;
 
         const currentAnalysis = options.getCurrentAnalysis?.();
@@ -311,10 +342,20 @@ export function createAnalysisExecutionController(
             result as AnalysisExecutionResponseByKind["distribution"],
             request as DistributionRequest,
           )
-          : analysisExecutors.fitYByX.responseMatches(
-            result as AnalysisExecutionResponseByKind["fitYByX"],
-            request as FitYByXRequest,
-          );
+          : item.analysisKind === "fitYByX"
+            ? analysisExecutors.fitYByX.responseMatches(
+              result as AnalysisExecutionResponseByKind["fitYByX"],
+              request as FitYByXRequest,
+            )
+            : item.analysisKind === "fitModel"
+              ? analysisExecutors.fitModel.responseMatches(
+                result as AnalysisExecutionResponseByKind["fitModel"],
+                request as FitModelRequest,
+              )
+              : analysisExecutors.hypothesisTest.responseMatches(
+                result as AnalysisExecutionResponseByKind["hypothesisTest"],
+                request as HypothesisTestRequest,
+              );
         if (!responseMatches) {
           active = null;
           emit({
@@ -326,7 +367,11 @@ export function createAnalysisExecutionController(
             request,
             error: item.analysisKind === "distribution"
               ? analysisExecutors.distribution.responseIdentityError
-              : analysisExecutors.fitYByX.responseIdentityError,
+              : item.analysisKind === "fitYByX"
+                ? analysisExecutors.fitYByX.responseIdentityError
+                : item.analysisKind === "fitModel"
+                  ? analysisExecutors.fitModel.responseIdentityError
+                  : analysisExecutors.hypothesisTest.responseIdentityError,
               } as AnalysisExecutionState, createAnalysisExecutionFence(item, dataset, request));
           return;
         }
@@ -353,7 +398,11 @@ export function createAnalysisExecutionController(
           request,
           error: item.analysisKind === "distribution"
             ? analysisExecutors.distribution.normalizeError(error)
-            : analysisExecutors.fitYByX.normalizeError(error),
+            : item.analysisKind === "fitYByX"
+              ? analysisExecutors.fitYByX.normalizeError(error)
+              : item.analysisKind === "fitModel"
+                ? analysisExecutors.fitModel.normalizeError(error)
+                : analysisExecutors.hypothesisTest.normalizeError(error),
         } as AnalysisExecutionState, createAnalysisExecutionFence(item, dataset, request));
       }
     },
@@ -373,6 +422,8 @@ export function useAnalysisExecution(
   });
   const compute = dependencies?.compute;
   const computeFitYByX = dependencies?.computeFitYByX;
+  const runFitModel = dependencies?.runFitModel;
+  const runHypothesisTest = dependencies?.runHypothesisTest;
   const getCurrentAnalysis = dependencies?.getCurrentAnalysis;
   const getCurrentDataset = dependencies?.getCurrentDataset;
   const getDatasetGeneration = dependencies?.getDatasetGeneration;
@@ -392,7 +443,14 @@ export function useAnalysisExecution(
       try {
         const resolved = item.analysisKind === "distribution"
           ? await analysisExecutors.distribution.resolveDependencies({ compute, getDatasetGeneration })
-          : await analysisExecutors.fitYByX.resolveDependencies({ computeFitYByX, getDatasetGeneration });
+          : item.analysisKind === "fitYByX"
+            ? await analysisExecutors.fitYByX.resolveDependencies({ computeFitYByX, getDatasetGeneration })
+            : item.analysisKind === "fitModel"
+              ? await analysisExecutors.fitModel.resolveDependencies({ runFitModel, getDatasetGeneration })
+              : await analysisExecutors.hypothesisTest.resolveDependencies({
+                runHypothesisTest,
+                getDatasetGeneration,
+              });
         if (!mounted) return;
 
         controller = createAnalysisExecutionController({
@@ -416,7 +474,11 @@ export function useAnalysisExecution(
             request: null,
             error: item.analysisKind === "distribution"
               ? analysisExecutors.distribution.normalizeError(error)
-              : analysisExecutors.fitYByX.normalizeError(error),
+              : item.analysisKind === "fitYByX"
+                ? analysisExecutors.fitYByX.normalizeError(error)
+                : item.analysisKind === "fitModel"
+                  ? analysisExecutors.fitModel.normalizeError(error)
+                  : analysisExecutors.hypothesisTest.normalizeError(error),
           },
           fence: createAnalysisExecutionFence(item, dataset, null),
         });
@@ -430,6 +492,8 @@ export function useAnalysisExecution(
   }, [
     compute,
     computeFitYByX,
+    runFitModel,
+    runHypothesisTest,
     datasetSignal,
     fingerprint,
     getCurrentAnalysis,

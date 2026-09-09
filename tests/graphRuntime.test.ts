@@ -192,7 +192,6 @@ const stableRuntimeStyles = buildEffectiveStyles(
   "Build",
   {},
   [],
-  false,
 );
 assert.equal(stableRuntimeStyles.Alpha.point?.color, "#3b56c6");
 assert.equal(stableRuntimeStyles.Beta.point?.color, "#bf6e2e");
@@ -203,7 +202,6 @@ const reconciledRuntimeStyles = buildEffectiveStyles(
   "Build",
   {},
   [],
-  false,
   ["Alpha", "Beta"],
 );
 assert.equal(reconciledRuntimeStyles.Alpha.point?.color, "#3b56c6");

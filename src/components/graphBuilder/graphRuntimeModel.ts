@@ -211,7 +211,6 @@ export function buildEffectiveStyles(
   fieldName: string | undefined,
   userStyles: GroupStyleMap,
   customPalettes: readonly CustomPalette[],
-  hasBoxplot: boolean,
   slotCandidateKeys: readonly string[] = groupKeys,
 ): GroupStyleMap {
   const resolvedSlots = reconcileGroupThemeSlots(slots, fieldName, slotCandidateKeys);
@@ -221,7 +220,6 @@ export function buildEffectiveStyles(
     fieldName,
     userStyles,
     customPalettes,
-    hasBoxplot,
   );
 }
 

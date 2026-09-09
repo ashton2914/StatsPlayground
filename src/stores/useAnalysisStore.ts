@@ -49,11 +49,27 @@ function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentP
       ...(patch.presentation?.layout === "distribution-v1" ? { presentation: patch.presentation } : {}),
     });
   }
+  if (analysis.analysisKind === "fitYByX") {
+    return {
+      ...analysis,
+      ...shared,
+      ...(patch.definition?.kind === "fitYByX" ? { definition: patch.definition } : {}),
+      ...(patch.presentation?.layout === "fit-y-by-x-v1" ? { presentation: patch.presentation } : {}),
+    };
+  }
+  if (analysis.analysisKind === "hypothesisTest") {
+    return {
+      ...analysis,
+      ...shared,
+      ...(patch.definition?.kind === "hypothesisTest" ? { definition: patch.definition } : {}),
+      ...(patch.presentation?.layout === "hypothesis-test-v1" ? { presentation: patch.presentation } : {}),
+    };
+  }
   return {
     ...analysis,
     ...shared,
-    ...(patch.definition?.kind === "fitYByX" ? { definition: patch.definition } : {}),
-    ...(patch.presentation?.layout === "fit-y-by-x-v1" ? { presentation: patch.presentation } : {}),
+    ...(patch.definition?.kind === "fitModel" ? { definition: patch.definition } : {}),
+    ...(patch.presentation?.layout === "fit-model-v1" ? { presentation: patch.presentation } : {}),
   };
 }
 

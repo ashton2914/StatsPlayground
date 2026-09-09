@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/experimental-ct-react";
 
-import { FitModelReport } from "../../src/components/fitModel/FitModelReport";
+import { FitModelAnalysisReport } from "../../src/components/analysis/renderers/FitModelAnalysisReport";
 import "../../src/components/fitModel/fitModel.css";
 import type { FitModelReportState } from "../../src/components/fitModel/useFitModelReport";
 import type { FitModelFittedResult, FitModelItem } from "../../src/types/fitModel";
@@ -130,7 +130,7 @@ const state: FitModelReportState = {
 function report() {
   return (
     <div style={{ width: "100%", height: "100vh", minWidth: 0 }}>
-      <FitModelReport
+      <FitModelAnalysisReport
         item={item}
         state={state}
         datasetMissing={false}
@@ -145,13 +145,15 @@ function report() {
 
 test("toggles report sections and filters diagnostic rows", async ({ mount }) => {
   const component = await mount(report());
+  await expect(component.locator("[data-graph-strategy='custom']")).toHaveCount(4);
+  await expect(component.getByRole("button", { name: "Residual Q-Q" })).toHaveCount(1);
   const rowDiagnostics = component.getByRole("button", { name: "Row Diagnostics" });
   await expect(rowDiagnostics).toHaveAttribute("aria-expanded", "true");
   await rowDiagnostics.click();
   await expect(rowDiagnostics).toHaveAttribute("aria-expanded", "false");
   await rowDiagnostics.click();
 
-  const rows = component.locator(".sp-fit-model-diagnostics-table tbody tr");
+  const rows = component.getByRole("table", { name: "Row Diagnostics" }).locator("tbody tr");
   await expect(rows).toHaveCount(2);
   await component.locator('[data-diagnostic-filter="flagged"]').click();
   await expect(rows).toHaveCount(1);
@@ -178,6 +180,46 @@ for (const viewport of [
       return visible;
     })).toBeGreaterThan(100);
 
+    const chartBoxes = await component.locator('[data-chart-kind="actualByPredicted"], [data-chart-kind="residualByPredicted"], [data-chart-kind="residualQq"]').evaluateAll((elements) => elements.map((element) => {
+      const box = element.getBoundingClientRect();
+      const frame = element.closest<HTMLElement>(".analysis-ui-frame");
+      const frameBox = frame?.getBoundingClientRect();
+      return {
+        kind: element.getAttribute("data-chart-kind"),
+        width: box.width,
+        height: box.height,
+        frameWidth: frameBox?.width ?? 0,
+        nestedFrameCount: frame?.querySelectorAll(".analysis-ui-frame").length ?? 0,
+      };
+    }));
+    expect(chartBoxes).toHaveLength(3);
+    if (viewport.width >= 1000) {
+      for (const chart of chartBoxes.filter((entry) => entry.kind !== "residualQq")) {
+        expect(chart.width).toBeLessThanOrEqual(680);
+        expect(Math.abs(chart.frameWidth - chart.width)).toBeLessThanOrEqual(2);
+      }
+      const qq = chartBoxes.find((entry) => entry.kind === "residualQq");
+      expect(qq?.width ?? 0).toBeGreaterThanOrEqual(480);
+      expect(qq?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(560);
+      expect(Math.abs((qq?.width ?? 0) - (qq?.height ?? 0))).toBeLessThanOrEqual(80);
+      expect(Math.abs((qq?.frameWidth ?? 0) - (qq?.width ?? 0))).toBeLessThanOrEqual(2);
+      expect(qq?.nestedFrameCount).toBe(0);
+    }
+
+    const profiler = component.locator('[data-graph-role="predictionProfiler"]');
+    const profilerGeometry = await profiler.evaluate((element) => {
+      const frame = element.closest<HTMLElement>(".analysis-ui-frame");
+      const content = element.querySelector<HTMLElement>(".sp-fit-model-profiler");
+      return {
+        frameWidth: frame?.getBoundingClientRect().width ?? 0,
+        contentWidth: content?.getBoundingClientRect().width ?? 0,
+      };
+    });
+    if (viewport.width >= 1000) {
+      expect(profilerGeometry.contentWidth).toBeGreaterThanOrEqual(480);
+      expect(Math.abs(profilerGeometry.frameWidth - profilerGeometry.contentWidth)).toBeLessThanOrEqual(2);
+    }
+
     const overflow = await page.evaluate(() => ({
       amount: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       offenders: Array.from(document.querySelectorAll<HTMLElement>("body *"))
@@ -194,7 +236,7 @@ for (const viewport of [
         }),
       ancestors: (() => {
         const rows: Array<Record<string, unknown>> = [];
-        let element: HTMLElement | null = document.querySelector(".sp-fit-model-diagnostics-table");
+        let element: HTMLElement | null = document.querySelector('table[aria-label="Row Diagnostics"]');
         while (element) {
           const style = getComputedStyle(element);
           rows.push({
@@ -217,8 +259,8 @@ for (const viewport of [
     }));
     expect(overflow.amount, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
 
-    const sections = component.locator(".sp-fit-model-report-section");
-    const boxes = await sections.evaluateAll((elements) => elements.map((element) => {
+    const blocks = component.locator("[data-fit-model-analysis-report] > *");
+    const boxes = await blocks.evaluateAll((elements) => elements.map((element) => {
       const box = element.getBoundingClientRect();
       return { top: box.top, bottom: box.bottom };
     }));

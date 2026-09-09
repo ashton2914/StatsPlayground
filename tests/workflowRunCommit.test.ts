@@ -38,7 +38,7 @@ function packet(reportDependencyIds = ["stable-graph"]): WorkflowRunCommitPacket
         id: "stable-report",
         name: "Workflow report",
         markdown: `{{sp-embed kind="graph" id="${reportDependencyIds[0]}"}}`,
-        dependencyIds: reportDependencyIds,
+        dependencyIds: reportDependencyIds.map((documentId) => ({ kind: "graph", documentId })),
         validationResultHash: "report-hash",
       },
     ],
@@ -97,7 +97,7 @@ await assert.rejects(
     refreshDatasets: async () => { refreshCount += 1; },
     markDirty: () => { dirtyCount += 1; },
   }),
-  /unresolved Report dependency missing-graph/,
+  /unresolved Report dependency graph:missing-graph/,
 );
 assert.deepEqual(useGraphBuilderStore.getState().items, []);
 assert.deepEqual(useReportStore.getState().items, []);

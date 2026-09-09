@@ -3,12 +3,18 @@ use std::mem;
 use std::time::Instant;
 
 use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
-use duckdb::{params, params_from_iter, Config, Connection};
+use duckdb::{appender_params_from_iter, params, params_from_iter, Config, Connection};
 
+use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
 use crate::engine::correlation::{correlate, CorrelationFailure, StatisticalMethod};
+use crate::engine::hypothesis_test::normalize::{
+    HypothesisTestRows, LongHypothesisTestRow, WideHypothesisTestRow,
+};
 use crate::engine::sql_query::{normalize_identifier, validate_read_only_query};
 use crate::error::AppError;
+use crate::models::data_link::SourceObjectRef;
 use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRow, FitYByXRows};
+use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::graph_data::{
     BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, CorrelationMatrixCell, CorrelationMatrixPacket,
     CorrelationMethod, CorrelationUnavailableReason, GraphAggregatePacket, GraphDataRequest,
@@ -3692,204 +3698,487 @@ impl DuckDbEngine {
     }
 
     /// Import all tables from a SQLite database as datasets
-    pub fn import_sqlite<F>(
+    pub fn import_sqlite<F, C>(
         &self,
         file_path: &str,
         on_progress: &F,
-    ) -> Result<Vec<(String, DatasetMeta)>, AppError>
+        is_cancelled: &C,
+    ) -> Result<Vec<(String, DatasetMeta, usize)>, AppError>
     where
         F: Fn(&str, usize, usize, usize, usize),
+        C: Fn() -> bool,
     {
-        use rusqlite::types::ValueRef;
+        self.import_selected_sqlite(file_path, &[], on_progress, is_cancelled)
+    }
 
-        // Open SQLite file directly with rusqlite (bypasses DuckDB's scanner type issues)
-        let sqlite_conn = rusqlite::Connection::open_with_flags(
-            file_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
+    pub fn import_selected_sqlite<F, C>(
+        &self,
+        file_path: &str,
+        selections: &[(String, String, bool)],
+        on_progress: &F,
+        is_cancelled: &C,
+    ) -> Result<Vec<(String, DatasetMeta, usize)>, AppError>
+    where
+        F: Fn(&str, usize, usize, usize, usize),
+        C: Fn() -> bool,
+    {
+        let connector = SqliteConnector::new(file_path);
+        connector.test_connection()?;
+        let source_description = std::path::Path::new(file_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| AppError::InvalidParam("SQLite file name is required".to_string()))?;
+        let source_objects = connector.list_objects()?;
+        let table_names = source_objects
+            .iter()
+            .filter(|object| object.object_type == "table")
+            .map(|object| object.name.clone())
+            .collect::<Vec<_>>();
 
-        // List user tables
-        let mut table_stmt = sqlite_conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-        )?;
-        let table_names: Vec<String> = table_stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(table_stmt);
-
-        let table_total = table_names.len();
-
-        let mut results = Vec::new();
-
-        for (table_index, src_table) in table_names.iter().enumerate() {
-            self.validate_dataset_name(src_table, None)?;
-
-            let id = uuid::Uuid::new_v4().to_string();
-            let table_name = format!("dataset_{}", id.replace('-', "_"));
-
-            // Get column info via PRAGMA table_info
-            let mut pragma_stmt =
-                sqlite_conn.prepare(&format!("PRAGMA table_info(\"{}\")", src_table))?;
-            let columns: Vec<(String, String)> = pragma_stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(1)?, // column name
-                        row.get::<_, String>(2)?, // column type
-                    ))
+        let imports: Vec<(String, String, bool)> = if selections.is_empty() {
+            table_names
+                .iter()
+                .map(|name| (name.clone(), name.clone(), false))
+                .collect()
+        } else {
+            selections.to_vec()
+        };
+        let mut plans = Vec::with_capacity(imports.len());
+        for (source_name, target_name, append) in &imports {
+            if !table_names.iter().any(|name| name == source_name) {
+                return Err(AppError::InvalidParam(format!(
+                    "SQLite table not found: {source_name}"
+                )));
+            }
+            let columns = source_objects
+                .iter()
+                .find(|object| object.object_type == "table" && object.name == *source_name)
+                .ok_or_else(|| {
+                    AppError::InvalidParam(format!("SQLite table not found: {source_name}"))
                 })?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(pragma_stmt);
+                .columns
+                .iter()
+                .map(|column| (column.name.clone(), column.source_type.clone()))
+                .collect::<Vec<_>>();
 
-            if columns.is_empty() {
-                continue;
+            if *append {
+                let mut dataset_stmt = self.conn.prepare(
+                    "SELECT id FROM _meta_datasets WHERE LOWER(name) = LOWER($1) LIMIT 1",
+                )?;
+                let mut rows = dataset_stmt.query(params![target_name])?;
+                let target_id: String = rows
+                    .next()?
+                    .ok_or_else(|| {
+                        AppError::InvalidParam(format!(
+                            "Append target dataset not found: {target_name}"
+                        ))
+                    })?
+                    .get(0)?;
+                drop(rows);
+                drop(dataset_stmt);
+
+                let mut column_stmt = self.conn.prepare(
+                    "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+                )?;
+                let target_columns: Vec<(String, String)> = column_stmt
+                    .query_map(params![target_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let source_columns = columns
+                    .iter()
+                    .map(|(name, sqlite_type)| {
+                        (name.clone(), Self::map_sqlite_type(sqlite_type).to_string())
+                    })
+                    .collect::<Vec<_>>();
+                if source_columns != target_columns {
+                    return Err(AppError::InvalidParam(format!(
+                        "Cannot append {source_name} to {target_name}: column names, order, and types must match"
+                    )));
+                }
+                plans.push((
+                    source_name.clone(),
+                    target_name.clone(),
+                    columns,
+                    Some(target_id),
+                ));
+            } else {
+                self.validate_dataset_name(target_name, None)?;
+                plans.push((source_name.clone(), target_name.clone(), columns, None));
+            }
+        }
+
+        let table_total = plans.len();
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let import_result = (|| -> Result<Vec<(String, DatasetMeta, usize)>, AppError> {
+            let mut results = Vec::new();
+
+            for (table_index, (src_table, target_name, columns, append_target_id)) in
+                plans.iter().enumerate()
+            {
+                if is_cancelled() {
+                    return Err(AppError::Cancelled("SQLite import cancelled".to_string()));
+                }
+                let id = append_target_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let table_name = format!("dataset_{}", id.replace('-', "_"));
+
+                if columns.is_empty() {
+                    continue;
+                }
+
+                // Map SQLite types to DuckDB types (date/time types -> VARCHAR)
+                let col_defs: Vec<String> = columns
+                    .iter()
+                    .map(|(name, sqlite_type)| {
+                        let duckdb_type = Self::map_sqlite_type(sqlite_type);
+                        format!("\"{}\" {}", name, duckdb_type)
+                    })
+                    .collect();
+
+                if append_target_id.is_none() {
+                    self.conn.execute(
+                        &format!(
+                            "CREATE TABLE \"{}\" (\"_row_id\" BIGINT, {})",
+                            table_name,
+                            col_defs.join(", ")
+                        ),
+                        [],
+                    )?;
+                }
+
+                // Determine target types for value conversion
+                let col_types: Vec<&str> = columns
+                    .iter()
+                    .map(|(_, t)| Self::map_sqlite_type(t))
+                    .collect();
+
+                let col_count = columns.len();
+                const BATCH_SIZE: usize = 1000;
+                let total_rows = connector.row_count(src_table)?;
+                let mut rows_done: usize = 0;
+                on_progress(src_table, table_index, table_total, 0, total_rows);
+                let starting_row_id: i64 = self.conn.query_row(
+                    &format!(
+                        "SELECT COALESCE(MAX(\"_row_id\"), 0) FROM {}",
+                        Self::quote_identifier(&table_name)
+                    ),
+                    [],
+                    |row| row.get(0),
+                )?;
+                {
+                    let mut appender = self.conn.appender(&table_name)?;
+                    connector.read_batches(src_table, BATCH_SIZE, &mut |batch| {
+                        for row in batch.rows {
+                            if is_cancelled() {
+                                return Err(AppError::Cancelled(
+                                    "SQLite import cancelled".to_string(),
+                                ));
+                            }
+                            let row_id = starting_row_id
+                                + i64::try_from(row.source_index).map_err(|_| {
+                                    AppError::InvalidParam("SQLite row index overflow".to_string())
+                                })?;
+                            let mut values = Vec::with_capacity(col_count + 1);
+                            values.push(Value::BigInt(row_id));
+                            for (column_index, (target_type, source_value)) in
+                                col_types.iter().zip(row.values).enumerate()
+                            {
+                                let value = Self::convert_sqlite_value(
+                                    source_value,
+                                    target_type,
+                                    src_table,
+                                    &columns[column_index].0,
+                                    row.source_index,
+                                )?;
+                                values.push(value);
+                            }
+                            appender.append_row(appender_params_from_iter(values))?;
+                            rows_done += 1;
+                        }
+                        appender.flush()?;
+                        on_progress(src_table, table_index, table_total, rows_done, total_rows);
+                        Ok(())
+                    })?;
+                    appender.flush()?;
+                }
+
+                // Get row count
+                let row_count: i64 = self.conn.query_row(
+                    &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+                    [],
+                    |row| row.get(0),
+                )?;
+
+                if append_target_id.is_some() {
+                    self.conn.execute(
+                    "UPDATE _meta_datasets SET row_count = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                    params![row_count, id],
+                )?;
+                    self.bump_dataset_generation(&id)?;
+                } else {
+                    let col_count_i32 = columns.len() as i32;
+                    for (col_index, (col_name, sqlite_type)) in columns.iter().enumerate() {
+                        let duckdb_type = Self::map_sqlite_type(sqlite_type);
+                        self.conn.execute(
+                        "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+                        params![id, col_index as i32, col_name, duckdb_type],
+                    )?;
+                    }
+                    self.conn.execute(
+                    "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'sqlite', $4, $5)",
+                    params![id, target_name, source_description, row_count, col_count_i32],
+                )?;
+                }
+
+                let meta = self.get_dataset_meta(&id)?;
+                results.push((src_table.clone(), meta, rows_done));
             }
 
-            // Map SQLite types to DuckDB types (date/time types -> VARCHAR)
-            let col_defs: Vec<String> = columns
-                .iter()
-                .map(|(name, sqlite_type)| {
-                    let duckdb_type = Self::map_sqlite_type(sqlite_type);
-                    format!("\"{}\" {}", name, duckdb_type)
-                })
-                .collect();
+            Ok(results)
+        })();
 
+        match import_result {
+            Ok(results) => {
+                if let Err(error) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(error.into());
+                }
+                Ok(results)
+            }
+            Err(error) => {
+                let rollback_result = self.conn.execute_batch("ROLLBACK");
+                if let Err(rollback_error) = rollback_result {
+                    return Err(AppError::Database(format!(
+                        "{error}; rollback failed: {rollback_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub fn import_server_snapshot<F, C>(
+        &self,
+        connector: &ServerConnector,
+        object: &SourceObjectRef,
+        target_name: &str,
+        source_description: &str,
+        on_progress: &F,
+        is_cancelled: &C,
+    ) -> Result<(DatasetMeta, usize), AppError>
+    where
+        F: Fn(usize, usize),
+        C: Fn() -> bool,
+    {
+        self.validate_dataset_name(target_name, None)?;
+        let columns = connector
+            .schema(object)
+            .map_err(|error| AppError::Database(error.message))?;
+        if columns.is_empty() {
+            return Err(AppError::InvalidParam(
+                "Database object must contain at least one column".to_string(),
+            ));
+        }
+        let total_rows = connector
+            .row_count(object)
+            .map_err(|error| AppError::Database(error.message))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let table_name = format!("dataset_{}", id.replace('-', "_"));
+        let column_types = columns
+            .iter()
+            .map(|column| {
+                if connector.source_type() == "mysql" {
+                    Self::map_mysql_type(&column.source_type)
+                } else {
+                    Self::map_postgres_type(&column.source_type)
+                }
+            })
+            .collect::<Vec<_>>();
+        let column_definitions = columns
+            .iter()
+            .zip(&column_types)
+            .map(|(column, target_type)| {
+                format!("{} {target_type}", Self::quote_identifier(&column.name))
+            })
+            .collect::<Vec<_>>();
+
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let import_result = (|| -> Result<(DatasetMeta, usize), AppError> {
             self.conn.execute(
                 &format!(
-                    "CREATE TABLE \"{}\" (\"_row_id\" BIGINT, {})",
-                    table_name,
-                    col_defs.join(", ")
+                    "CREATE TABLE {} (\"_row_id\" BIGINT, {})",
+                    Self::quote_identifier(&table_name),
+                    column_definitions.join(", ")
                 ),
                 [],
             )?;
-
-            // Determine target types for value conversion
-            let col_types: Vec<&str> = columns
-                .iter()
-                .map(|(_, t)| Self::map_sqlite_type(t))
-                .collect();
-
-            // Read ALL data from SQLite into memory first, then batch-insert into DuckDB.
-            // This avoids holding the DuckDB mutex while doing slow SQLite I/O.
-            let col_count = columns.len();
-            on_progress(src_table, table_index, table_total, 0, 0); // signal: reading started
-            let all_rows: Vec<Vec<String>> = {
-                let col_names_sql = columns
-                    .iter()
-                    .map(|(n, _)| format!("\"{}\"", n))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let select_sql = format!("SELECT {} FROM \"{}\"", col_names_sql, src_table);
-                let mut data_stmt = sqlite_conn.prepare(&select_sql)?;
-                let mut rows = data_stmt.query([])?;
-                let mut collected = Vec::new();
-
-                while let Some(row) = rows.next()? {
-                    let mut row_vals = Vec::with_capacity(col_count);
-                    for i in 0..col_count {
-                        let val_ref = row.get_ref(i)?;
-                        let s = match val_ref {
-                            ValueRef::Null => "\0NULL\0".to_string(),
-                            ValueRef::Integer(v) => v.to_string(),
-                            ValueRef::Real(v) => v.to_string(),
-                            ValueRef::Text(t) => String::from_utf8_lossy(t).to_string(),
-                            ValueRef::Blob(_) => "\0NULL\0".to_string(),
-                        };
-                        row_vals.push(s);
-                    }
-                    collected.push(row_vals);
-                }
-                collected
-            };
-
-            // Batch INSERT using VALUES lists (1000 rows per batch for speed)
-            const BATCH_SIZE: usize = 1000;
-            let total_rows = all_rows.len();
-            let mut rows_done: usize = 0;
-            on_progress(src_table, table_index, table_total, 0, total_rows);
-            self.conn.execute_batch("BEGIN TRANSACTION")?;
-
-            for chunk in all_rows.chunks(BATCH_SIZE) {
-                let mut values_parts: Vec<String> = Vec::with_capacity(chunk.len());
-                for (batch_idx, row_vals) in chunk.iter().enumerate() {
-                    let row_id = values_parts.len(); // placeholder, will compute below
-                    let _ = row_id; // suppress warning
-                    let mut col_parts: Vec<String> = Vec::with_capacity(col_count + 1);
-                    // _row_id will be added via a subquery
-                    for (ci, val) in row_vals.iter().enumerate() {
-                        if val == "\0NULL\0" {
-                            col_parts.push("NULL".to_string());
-                        } else {
-                            match col_types[ci] {
-                                "BIGINT" => match val.parse::<i64>() {
-                                    Ok(v) => col_parts.push(v.to_string()),
-                                    Err(_) => col_parts.push("NULL".to_string()),
-                                },
-                                "DOUBLE" => match val.parse::<f64>() {
-                                    Ok(_) => col_parts.push(val.clone()),
-                                    Err(_) => col_parts.push("NULL".to_string()),
-                                },
-                                _ => {
-                                    // VARCHAR
-                                    col_parts.push(format!("'{}'", val.replace('\'', "''")));
-                                }
-                            }
+            let mut rows_done = 0_usize;
+            on_progress(0, total_rows);
+            {
+                let mut appender = self.conn.appender(&table_name)?;
+                connector.read_batches(object, 1000, &mut |batch| {
+                    for row in batch.rows {
+                        if is_cancelled() {
+                            return Err(AppError::Cancelled(
+                                "Database import cancelled".to_string(),
+                            ));
                         }
+                        let row_id = i64::try_from(row.source_index).map_err(|_| {
+                            AppError::InvalidParam(
+                                "Database row index is out of range".to_string(),
+                            )
+                        })?;
+                        let mut values = Vec::with_capacity(columns.len() + 1);
+                        values.push(Value::BigInt(row_id));
+                        for (column_index, (target_type, source_value)) in
+                            column_types.iter().zip(row.values).enumerate()
+                        {
+                            values.push(Self::convert_postgres_value(
+                                source_value,
+                                target_type,
+                                &object.name,
+                                &columns[column_index].name,
+                                row.source_index,
+                            )?);
+                        }
+                        appender.append_row(appender_params_from_iter(values))?;
+                        rows_done += 1;
                     }
-                    let _ = batch_idx;
-                    values_parts.push(format!("({})", col_parts.join(", ")));
-                }
-
-                // Use INSERT with row_number() to generate _row_id
-                let col_aliases = columns
-                    .iter()
-                    .map(|(n, _)| format!("\"{}\"", n))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let insert_sql = format!(
-                    "INSERT INTO \"{}\" SELECT row_number() OVER () + (SELECT COALESCE(MAX(\"_row_id\"), 0) FROM \"{}\"), {} FROM (VALUES {}) AS t({})",
-                    table_name, table_name, col_aliases, values_parts.join(", "), col_aliases
-                );
-                self.conn.execute_batch(&insert_sql)?;
-                rows_done += chunk.len();
-                on_progress(src_table, table_index, table_total, rows_done, total_rows);
+                    appender.flush()?;
+                    on_progress(rows_done, total_rows);
+                    Ok(())
+                })?;
+                appender.flush()?;
             }
 
-            self.conn.execute_batch("COMMIT")?;
-
-            // Get row count
-            let row_count: i64 = self.conn.query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
-                [],
-                |row| row.get(0),
-            )?;
-
-            // Insert column metadata
-            let col_count_i32 = columns.len() as i32;
-            for (col_index, (col_name, sqlite_type)) in columns.iter().enumerate() {
-                let duckdb_type = Self::map_sqlite_type(sqlite_type);
+            let row_count = i64::try_from(rows_done).map_err(|_| {
+                AppError::InvalidParam("Database row count is out of range".to_string())
+            })?;
+            for (column_index, (column, target_type)) in
+                columns.iter().zip(&column_types).enumerate()
+            {
+                let column_index = i32::try_from(column_index).map_err(|_| {
+                    AppError::InvalidParam("Database column count is out of range".to_string())
+                })?;
                 self.conn.execute(
                     "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
-                    params![id, col_index as i32, col_name, duckdb_type],
+                    params![id, column_index, column.name, target_type],
                 )?;
             }
-
-            // Insert dataset metadata
+            let column_count = i32::try_from(columns.len()).map_err(|_| {
+                AppError::InvalidParam("Database column count is out of range".to_string())
+            })?;
             self.conn.execute(
-                "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'sqlite', $4, $5)",
-                params![id, src_table, file_path, row_count, col_count_i32],
+                "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, $4, $5, $6)",
+                params![id, target_name, source_description, connector.source_type(), row_count, column_count],
             )?;
+            Ok((self.get_dataset_meta(&id)?, rows_done))
+        })();
 
-            let meta = self.get_dataset_meta(&id)?;
-            results.push((src_table.clone(), meta));
+        match import_result {
+            Ok(result) => {
+                if let Err(error) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(error.into());
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                let rollback_result = self.conn.execute_batch("ROLLBACK");
+                if let Err(rollback_error) = rollback_result {
+                    return Err(AppError::Database(format!(
+                        "{error}; rollback failed: {rollback_error}"
+                    )));
+                }
+                Err(error)
+            }
         }
+    }
 
-        Ok(results)
+    fn map_mysql_type(source_type: &str) -> &'static str {
+        let source_type = source_type.to_ascii_lowercase();
+        let base = source_type.split(['(', ' ']).next().unwrap_or("");
+        match base {
+            "bigint" if source_type.contains("unsigned") => "VARCHAR",
+            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => "BIGINT",
+            "float" | "double" | "real" => "DOUBLE",
+            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => "BLOB",
+            _ => "VARCHAR",
+        }
+    }
+
+    fn map_postgres_type(source_type: &str) -> &'static str {
+        match source_type.to_ascii_lowercase().as_str() {
+            "smallint" | "integer" | "bigint" | "smallserial" | "serial" | "bigserial"
+            | "boolean" => "BIGINT",
+            "real" | "double precision" | "numeric" | "decimal" | "money" => "DOUBLE",
+            "bytea" => "BLOB",
+            _ => "VARCHAR",
+        }
+    }
+
+    fn convert_postgres_value(
+        value: ConnectorValue,
+        target_type: &str,
+        source_object: &str,
+        source_column: &str,
+        source_row: usize,
+    ) -> Result<Value, AppError> {
+        let conversion_error = |value: &str| {
+            AppError::InvalidParam(format!(
+                "Cannot convert value '{value}' in database object '{source_object}', column '{source_column}', row {source_row} to {target_type}"
+            ))
+        };
+        match (target_type, value) {
+            (_, ConnectorValue::Null) => Ok(Value::Null),
+            ("BIGINT", ConnectorValue::Integer(value)) => Ok(Value::BigInt(value)),
+            ("BIGINT", ConnectorValue::Real(value))
+                if value.is_finite() && value.fract() == 0.0 =>
+            {
+                Ok(Value::BigInt(value as i64))
+            }
+            ("BIGINT", ConnectorValue::Text(value)) => value
+                .parse::<i64>()
+                .map(Value::BigInt)
+                .map_err(|_| conversion_error(&value)),
+            ("DOUBLE", ConnectorValue::Integer(value)) => Ok(Value::Double(value as f64)),
+            ("DOUBLE", ConnectorValue::Real(value)) if value.is_finite() => {
+                Ok(Value::Double(value))
+            }
+            ("DOUBLE", ConnectorValue::Text(value)) => value
+                .parse::<f64>()
+                .ok()
+                .filter(|parsed| parsed.is_finite())
+                .map(Value::Double)
+                .ok_or_else(|| conversion_error(&value)),
+            ("BLOB", ConnectorValue::Blob(value)) => Ok(Value::Blob(value)),
+            ("BLOB", ConnectorValue::Text(value)) => Self::decode_postgres_bytea(&value)
+                .map(Value::Blob)
+                .ok_or_else(|| conversion_error("<BYTEA>")),
+            (_, ConnectorValue::Integer(value)) => Ok(Value::Text(value.to_string())),
+            (_, ConnectorValue::Real(value)) => Ok(Value::Text(value.to_string())),
+            (_, ConnectorValue::Text(value)) => Ok(Value::Text(value)),
+            (_, ConnectorValue::Blob(value)) => Ok(Value::Blob(value)),
+        }
+    }
+
+    fn decode_postgres_bytea(value: &str) -> Option<Vec<u8>> {
+        let hex = value.strip_prefix("\\x")?;
+        if hex.len() % 2 != 0 {
+            return None;
+        }
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).ok())
+            .collect()
     }
 
     /// Map SQLite column type to DuckDB type, keeping date/time types as VARCHAR
     fn map_sqlite_type(sqlite_type: &str) -> &'static str {
         let upper = sqlite_type.to_uppercase();
-        if upper.contains("INT") || upper.contains("BOOL") {
+        if upper.contains("BLOB") {
+            "BLOB"
+        } else if upper.contains("INT") || upper.contains("BOOL") {
             "BIGINT"
         } else if upper.contains("REAL")
             || upper.contains("FLOA")
@@ -3900,6 +4189,64 @@ impl DuckDbEngine {
             "DOUBLE"
         } else {
             "VARCHAR"
+        }
+    }
+
+    fn convert_sqlite_value(
+        value: ConnectorValue,
+        target_type: &str,
+        source_table: &str,
+        source_column: &str,
+        source_row: usize,
+    ) -> Result<Value, AppError> {
+        let conversion_error = |value: &str| {
+            AppError::InvalidParam(format!(
+                "Cannot convert value '{value}' in SQLite table '{source_table}', column '{source_column}', row {source_row} to {target_type}"
+            ))
+        };
+        match (target_type, value) {
+            (_, ConnectorValue::Null) => Ok(Value::Null),
+            ("BLOB", ConnectorValue::Blob(value)) => Ok(Value::Blob(value)),
+            ("BLOB", ConnectorValue::Text(value)) => Ok(Value::Blob(value.into_bytes())),
+            ("BLOB", ConnectorValue::Integer(value)) => {
+                Ok(Value::Blob(value.to_string().into_bytes()))
+            }
+            ("BLOB", ConnectorValue::Real(value)) => {
+                Ok(Value::Blob(value.to_string().into_bytes()))
+            }
+            (_, ConnectorValue::Blob(value)) => {
+                Err(conversion_error(&format!("<BLOB: {} bytes>", value.len())))
+            }
+            ("BIGINT", ConnectorValue::Integer(value)) => Ok(Value::BigInt(value)),
+            ("BIGINT", ConnectorValue::Real(value))
+                if value.is_finite()
+                    && value.fract() == 0.0
+                    && value >= i64::MIN as f64
+                    && value <= i64::MAX as f64 =>
+            {
+                Ok(Value::BigInt(value as i64))
+            }
+            ("BIGINT", ConnectorValue::Real(value)) => Err(conversion_error(&value.to_string())),
+            ("BIGINT", ConnectorValue::Text(value)) => value
+                .trim()
+                .parse::<i64>()
+                .map(Value::BigInt)
+                .map_err(|_| conversion_error(&value)),
+            ("DOUBLE", ConnectorValue::Integer(value)) => Ok(Value::Double(value as f64)),
+            ("DOUBLE", ConnectorValue::Real(value)) if value.is_finite() => {
+                Ok(Value::Double(value))
+            }
+            ("DOUBLE", ConnectorValue::Real(value)) => Err(conversion_error(&value.to_string())),
+            ("DOUBLE", ConnectorValue::Text(value)) => value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|parsed| parsed.is_finite())
+                .map(Value::Double)
+                .ok_or_else(|| conversion_error(&value)),
+            (_, ConnectorValue::Integer(value)) => Ok(Value::Text(value.to_string())),
+            (_, ConnectorValue::Real(value)) => Ok(Value::Text(value.to_string())),
+            (_, ConnectorValue::Text(value)) => Ok(Value::Text(value)),
         }
     }
 
@@ -8039,6 +8386,145 @@ impl DuckDbEngine {
         Ok(FitYByXRows { source_rows, rows })
     }
 
+    pub fn read_hypothesis_test_rows(
+        &self,
+        dataset_id: &str,
+        roles: &HypothesisTestRoles,
+    ) -> Result<HypothesisTestRows, AppError> {
+        self.get_dataset_meta(dataset_id)?;
+        let user_columns = self.get_user_columns(dataset_id)?;
+        let column_type = |field: &HypothesisTestFieldRef| {
+            user_columns
+                .iter()
+                .find(|(name, _)| name == &field.name)
+                .map(|(_, column_type)| column_type.as_str())
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown hypothesis test column: {}", field.name)))
+        };
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+
+        match roles {
+            HypothesisTestRoles::Long { response, condition, subject } => {
+                if response.name == condition.name
+                    || subject.as_ref().is_some_and(|field| {
+                        field.name == response.name || field.name == condition.name
+                    })
+                {
+                    return Err(AppError::InvalidParam(
+                        "hypothesis test roles must reference different columns".into(),
+                    ));
+                }
+                if !is_numeric_type(column_type(response)?) {
+                    return Err(AppError::InvalidParam(format!(
+                        "hypothesis test response must be numeric: {}",
+                        response.name
+                    )));
+                }
+                column_type(condition)?;
+                let condition_role = self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
+                if !matches!(condition_role.to_ascii_lowercase().as_str(), "nominal" | "ordinal") {
+                    return Err(AppError::InvalidParam(format!(
+                        "hypothesis test condition must be categorical: {}",
+                        condition.name
+                    )));
+                }
+                if let Some(subject) = subject {
+                    column_type(subject)?;
+                }
+
+                let response = Self::quote_identifier(&response.name);
+                let condition = Self::quote_identifier(&condition.name);
+                let subject_projection = subject.as_ref()
+                    .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
+                    .unwrap_or_default();
+                let query_sql = format!(
+                    "SELECT _row_id, {response}, {condition}{subject_projection} FROM {table} ORDER BY _row_id"
+                );
+                let mut statement = self.conn.prepare(&query_sql)?;
+                let mut query_rows = statement.query([])?;
+                let mut rows = Vec::new();
+                while let Some(row) = query_rows.next()? {
+                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
+                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    rows.push(LongHypothesisTestRow {
+                        identity,
+                        response: fit_y_by_x_numeric_value(row.get::<_, Value>(1)?),
+                        condition: fit_y_by_x_display_value(row.get::<_, Value>(2)?),
+                        subject: if subject.is_some() {
+                            fit_y_by_x_display_value(row.get::<_, Value>(3)?)
+                        } else {
+                            None
+                        },
+                    });
+                }
+                Ok(HypothesisTestRows::Long(rows))
+            }
+            HypothesisTestRoles::Wide { measurements, subject } => {
+                if measurements.len() < 2 {
+                    return Err(AppError::InvalidParam(
+                        "wide hypothesis test requires at least two measurement columns".into(),
+                    ));
+                }
+                let mut names = HashSet::new();
+                for measurement in measurements {
+                    if !names.insert(measurement.name.as_str()) {
+                        return Err(AppError::InvalidParam(
+                            "wide hypothesis test measurement columns must be unique".into(),
+                        ));
+                    }
+                    if !is_numeric_type(column_type(measurement)?) {
+                        return Err(AppError::InvalidParam(format!(
+                            "hypothesis test measurement must be numeric: {}",
+                            measurement.name
+                        )));
+                    }
+                }
+                if let Some(subject) = subject {
+                    if names.contains(subject.name.as_str()) {
+                        return Err(AppError::InvalidParam(
+                            "hypothesis test subject must differ from measurements".into(),
+                        ));
+                    }
+                    column_type(subject)?;
+                }
+
+                let measurement_projection = measurements.iter()
+                    .map(|field| Self::quote_identifier(&field.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let subject_projection = subject.as_ref()
+                    .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
+                    .unwrap_or_default();
+                let query_sql = format!(
+                    "SELECT _row_id, {measurement_projection}{subject_projection} FROM {table} ORDER BY _row_id"
+                );
+                let mut statement = self.conn.prepare(&query_sql)?;
+                let mut query_rows = statement.query([])?;
+                let mut rows = Vec::new();
+                while let Some(row) = query_rows.next()? {
+                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
+                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let values = (0..measurements.len())
+                        .map(|index| row.get::<_, Value>(index + 1).map(fit_y_by_x_numeric_value))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    rows.push(WideHypothesisTestRow {
+                        identity,
+                        subject: if subject.is_some() {
+                            fit_y_by_x_display_value(row.get::<_, Value>(measurements.len() + 1)?)
+                        } else {
+                            None
+                        },
+                        measurements: values,
+                    });
+                }
+                Ok(HypothesisTestRows::Wide {
+                    conditions: measurements.iter().map(|field| field.name.clone()).collect(),
+                    explicit_subject: subject.is_some(),
+                    rows,
+                })
+            }
+        }
+    }
+
     fn fit_y_by_x_column_role(
         &self,
         dataset_id: &str,
@@ -8977,6 +9463,503 @@ mod tests {
     }
 
     #[test]
+    fn imports_selected_sqlite_table_and_appends_compatible_rows() {
+        let path =
+            std::env::temp_dir().join(format!("datalink-selected-{}.sqlite", uuid::Uuid::new_v4()));
+        let sqlite = rusqlite::Connection::open(&path).expect("create SQLite fixture");
+        sqlite
+            .execute_batch(
+                "CREATE TABLE people (id INTEGER, name TEXT); \
+                 INSERT INTO people VALUES (1, 'Ada'); \
+                 CREATE TABLE ignored (id INTEGER); \
+                 INSERT INTO ignored VALUES (2);",
+            )
+            .expect("populate SQLite fixture");
+        drop(sqlite);
+
+        let db = DuckDbEngine::new_in_memory().expect("create in-memory project");
+        let imported = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("people".to_string(), "People".to_string(), false)],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect("import selected table");
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].1.name, "People");
+        assert_eq!(imported[0].1.row_count, 1);
+        assert_eq!(db.list_datasets().expect("list datasets").len(), 1);
+        let generation_before_append = db
+            .get_dataset_generation(&imported[0].1.id)
+            .expect("read initial generation");
+
+        let appended = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("people".to_string(), "People".to_string(), true)],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect("append compatible table");
+
+        assert_eq!(appended.len(), 1);
+        assert_eq!(appended[0].1.row_count, 2);
+        assert_eq!(db.list_datasets().expect("list datasets").len(), 1);
+        assert_eq!(
+            db.get_dataset_generation(&imported[0].1.id)
+                .expect("read appended generation"),
+            generation_before_append + 1
+        );
+
+        let error = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("ignored".to_string(), "People".to_string(), true)],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect_err("reject incompatible append");
+        assert!(error
+            .to_string()
+            .contains("column names, order, and types must match"));
+        assert_eq!(
+            db.get_dataset_meta(&imported[0].1.id)
+                .expect("read unchanged dataset")
+                .row_count,
+            2
+        );
+
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn streams_sqlite_rows_in_bounded_batches() {
+        use std::cell::RefCell;
+
+        let path = std::env::temp_dir().join(format!(
+            "datalink-streaming-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let mut sqlite = rusqlite::Connection::open(&path).expect("create SQLite fixture");
+        sqlite
+            .execute(
+                "CREATE TABLE samples (id INTEGER, label TEXT, payload BLOB)",
+                [],
+            )
+            .expect("create source table");
+        let transaction = sqlite.transaction().expect("start fixture transaction");
+        for index in 0..2_001 {
+            let label = if index == 0 {
+                Some("O'Reilly".to_string())
+            } else if index == 1 {
+                None
+            } else if index == 2 {
+                Some("Unicode 数据 café".to_string())
+            } else if index == 3 {
+                Some("x".repeat(100_000))
+            } else {
+                Some(format!("row-{index}"))
+            };
+            transaction
+                .execute(
+                    "INSERT INTO samples VALUES (?1, ?2, ?3)",
+                    rusqlite::params![index, label, vec![1_u8, 2, 3]],
+                )
+                .expect("insert source row");
+        }
+        transaction.commit().expect("commit fixture rows");
+        drop(sqlite);
+
+        let progress = RefCell::new(Vec::new());
+        let db = DuckDbEngine::new_in_memory().expect("create in-memory project");
+        let imported = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("samples".to_string(), "Samples".to_string(), false)],
+                &|_, _, _, rows_done, rows_total| {
+                    if rows_done > 0 {
+                        progress.borrow_mut().push((rows_done, rows_total));
+                    }
+                },
+                &|| false,
+            )
+            .expect("stream source table");
+
+        assert_eq!(imported[0].1.row_count, 2_001);
+        assert_eq!(
+            imported[0].1.source_path.as_deref(),
+            path.file_name().and_then(|name| name.to_str())
+        );
+        assert_eq!(
+            *progress.borrow(),
+            vec![(1_000, 2_001), (2_000, 2_001), (2_001, 2_001)]
+        );
+        let table_name = format!("dataset_{}", imported[0].1.id.replace('-', "_"));
+        let first_label: String = db
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT label FROM {} WHERE _row_id = 1",
+                    DuckDbEngine::quote_identifier(&table_name)
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("read quoted text");
+        let second_label: Option<String> = db
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT label FROM {} WHERE _row_id = 2",
+                    DuckDbEngine::quote_identifier(&table_name)
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("read null text");
+        let first_payload: Vec<u8> = db
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT payload FROM {} WHERE _row_id = 1",
+                    DuckDbEngine::quote_identifier(&table_name)
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("read blob policy result");
+        assert_eq!(first_label, "O'Reilly");
+        assert_eq!(second_label, None);
+        assert_eq!(first_payload, vec![1_u8, 2, 3]);
+        let text_values: (String, usize) = db
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT MAX(CASE WHEN _row_id = 3 THEN label END), \
+                     MAX(CASE WHEN _row_id = 4 THEN LENGTH(label) END) FROM {}",
+                    DuckDbEngine::quote_identifier(&table_name)
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read Unicode and long text");
+        assert_eq!(text_values, ("Unicode 数据 café".to_string(), 100_000));
+
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn preserves_sqlite_dates_as_text_and_rolls_back_invalid_numeric_values() {
+        let path =
+            std::env::temp_dir().join(format!("datalink-types-{}.sqlite", uuid::Uuid::new_v4()));
+        let sqlite = rusqlite::Connection::open(&path).expect("create SQLite fixture");
+        sqlite
+            .execute_batch(
+                "CREATE TABLE dated (occurred_on DATE, recorded_at DATETIME, amount DECIMAL(12,2)); \
+                 INSERT INTO dated VALUES ('2026-09-03', '2026-09-03T14:30:15+08:00', 12.34); \
+                 CREATE TABLE invalid_numbers (amount INTEGER); \
+                 INSERT INTO invalid_numbers VALUES ('not-a-number');",
+            )
+            .expect("populate SQLite fixture");
+        drop(sqlite);
+
+        let db = DuckDbEngine::new_in_memory().expect("create in-memory project");
+        let imported = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("dated".to_string(), "Dated".to_string(), false)],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect("import date values");
+        let table_name = format!("dataset_{}", imported[0].1.id.replace('-', "_"));
+        let values: (String, String, f64) = db
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT occurred_on, recorded_at, amount FROM {}",
+                    DuckDbEngine::quote_identifier(&table_name)
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read preserved dates");
+        assert_eq!(values.0, "2026-09-03");
+        assert_eq!(values.1, "2026-09-03T14:30:15+08:00");
+        assert!((values.2 - 12.34).abs() < f64::EPSILON);
+
+        let error = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[(
+                    "invalid_numbers".to_string(),
+                    "Invalid Numbers".to_string(),
+                    false,
+                )],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect_err("reject invalid numeric value");
+        assert!(error
+            .to_string()
+            .contains("Cannot convert value 'not-a-number'"));
+        assert_eq!(db.list_datasets().expect("list datasets").len(), 1);
+        let physical_invalid_tables: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM information_schema.tables \
+                 WHERE table_name LIKE 'dataset_%' AND table_name <> ?1",
+                [&table_name],
+                |row| row.get(0),
+            )
+            .expect("count invalid physical tables");
+        assert_eq!(physical_invalid_tables, 0);
+
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn preserves_sqlite_integer_extremes_and_rejects_non_finite_reals() {
+        let path = std::env::temp_dir().join(format!(
+            "datalink-numeric-extremes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = rusqlite::Connection::open(&path).expect("create SQLite fixture");
+        sqlite
+            .execute("CREATE TABLE extremes (value INTEGER)", [])
+            .expect("create integer table");
+        sqlite
+            .execute(
+                "INSERT INTO extremes VALUES (?1), (?2)",
+                rusqlite::params![i64::MIN, i64::MAX],
+            )
+            .expect("insert integer extremes");
+        sqlite
+            .execute("CREATE TABLE invalid_reals (value REAL)", [])
+            .expect("create real table");
+        sqlite
+            .execute("INSERT INTO invalid_reals VALUES (?1)", [f64::INFINITY])
+            .expect("insert infinity");
+        drop(sqlite);
+
+        let db = DuckDbEngine::new_in_memory().expect("create in-memory project");
+        let imported = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("extremes".to_string(), "Extremes".to_string(), false)],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect("import integer extremes");
+        let table_name = format!("dataset_{}", imported[0].1.id.replace('-', "_"));
+        let values: (i64, i64) = db
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT MIN(value), MAX(value) FROM {}",
+                    DuckDbEngine::quote_identifier(&table_name)
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read integer extremes");
+        assert_eq!(values, (i64::MIN, i64::MAX));
+
+        let infinity_error = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[(
+                    "invalid_reals".to_string(),
+                    "Invalid Reals".to_string(),
+                    false,
+                )],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect_err("reject infinity");
+        assert!(infinity_error
+            .to_string()
+            .contains("Cannot convert value 'inf'"));
+        assert_eq!(db.list_datasets().expect("list datasets").len(), 1);
+
+        for value in [f64::NAN, f64::NEG_INFINITY] {
+            let error = DuckDbEngine::convert_sqlite_value(
+                ConnectorValue::Real(value),
+                "DOUBLE",
+                "invalid_reals",
+                "value",
+                1,
+            )
+            .expect_err("reject non-finite real");
+            assert!(error.to_string().contains("Cannot convert value"));
+        }
+
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn imports_empty_table_and_rolls_back_when_second_table_fails() {
+        let path = std::env::temp_dir().join(format!(
+            "datalink-atomic-multi-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = rusqlite::Connection::open(&path).expect("create SQLite fixture");
+        sqlite
+            .execute_batch(
+                "CREATE TABLE empty_values (id INTEGER, label TEXT); \
+                 CREATE TABLE valid_values (id INTEGER); \
+                 INSERT INTO valid_values VALUES (1); \
+                 CREATE TABLE invalid_values (amount INTEGER); \
+                 INSERT INTO invalid_values VALUES ('not-a-number');",
+            )
+            .expect("populate SQLite fixture");
+        drop(sqlite);
+
+        let db = DuckDbEngine::new_in_memory().expect("create in-memory project");
+        let empty = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[(
+                    "empty_values".to_string(),
+                    "Empty Values".to_string(),
+                    false,
+                )],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect("import empty table");
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].1.row_count, 0);
+        assert_eq!(empty[0].2, 0);
+
+        let error = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[
+                    (
+                        "valid_values".to_string(),
+                        "Valid Values".to_string(),
+                        false,
+                    ),
+                    (
+                        "invalid_values".to_string(),
+                        "Invalid Values".to_string(),
+                        false,
+                    ),
+                ],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect_err("roll back when second table fails");
+        assert!(error
+            .to_string()
+            .contains("Cannot convert value 'not-a-number'"));
+
+        let datasets = db.list_datasets().expect("list datasets after rollback");
+        assert_eq!(datasets.len(), 1);
+        assert_eq!(datasets[0].name, "Empty Values");
+        assert_eq!(datasets[0].row_count, 0);
+
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn cancelled_sqlite_import_rolls_back_create_and_append() {
+        use std::cell::Cell;
+
+        let path =
+            std::env::temp_dir().join(format!("datalink-cancel-{}.sqlite", uuid::Uuid::new_v4()));
+        let mut sqlite = rusqlite::Connection::open(&path).expect("create SQLite fixture");
+        sqlite
+            .execute_batch(
+                "CREATE TABLE baseline (id INTEGER, label TEXT); \
+                 INSERT INTO baseline VALUES (1, 'existing'); \
+                 CREATE TABLE samples (id INTEGER, label TEXT);",
+            )
+            .expect("create source tables");
+        let transaction = sqlite.transaction().expect("start fixture transaction");
+        for index in 0..2_001 {
+            transaction
+                .execute(
+                    "INSERT INTO samples VALUES (?1, ?2)",
+                    rusqlite::params![index, format!("row-{index}")],
+                )
+                .expect("insert source row");
+        }
+        transaction.commit().expect("commit fixture rows");
+        drop(sqlite);
+
+        let db = DuckDbEngine::new_in_memory().expect("create in-memory project");
+        let cancel_create = Cell::new(false);
+        let create_error = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("samples".to_string(), "Samples".to_string(), false)],
+                &|_, _, _, rows_done, _| {
+                    if rows_done == 1_000 {
+                        cancel_create.set(true);
+                    }
+                },
+                &|| cancel_create.get(),
+            )
+            .expect_err("cancel create import");
+        assert!(matches!(create_error, AppError::Cancelled(_)));
+        assert!(db.list_datasets().expect("list datasets").is_empty());
+        let physical_tables: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'dataset_%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count physical dataset tables");
+        assert_eq!(physical_tables, 0);
+
+        let baseline = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("baseline".to_string(), "People".to_string(), false)],
+                &|_, _, _, _, _| {},
+                &|| false,
+            )
+            .expect("import append baseline");
+        let dataset_id = &baseline[0].1.id;
+        let generation = db
+            .get_dataset_generation(dataset_id)
+            .expect("read baseline generation");
+
+        let cancel_append = Cell::new(false);
+        let append_error = db
+            .import_selected_sqlite(
+                path.to_str().expect("fixture path"),
+                &[("samples".to_string(), "People".to_string(), true)],
+                &|_, _, _, rows_done, _| {
+                    if rows_done == 1_000 {
+                        cancel_append.set(true);
+                    }
+                },
+                &|| cancel_append.get(),
+            )
+            .expect_err("cancel append import");
+        assert!(matches!(append_error, AppError::Cancelled(_)));
+        assert_eq!(
+            db.get_dataset_meta(dataset_id)
+                .expect("read unchanged dataset")
+                .row_count,
+            1
+        );
+        assert_eq!(
+            db.get_dataset_generation(dataset_id)
+                .expect("read unchanged generation"),
+            generation
+        );
+
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
     fn benchmark_fixture_creates_requested_shape() {
         let db = DuckDbEngine::new_in_memory().unwrap();
 
@@ -9420,6 +10403,48 @@ mod tests {
         assert!(
             matches!(error, AppError::InvalidParam(message) if message.contains("unknown dataset"))
         );
+    }
+
+    #[test]
+    fn read_hypothesis_test_rows_keeps_raw_missing_cells_and_identity() {
+        use crate::engine::hypothesis_test::normalize::HypothesisTestRows;
+        use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
+
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_y_by_x_dataset(
+            &engine,
+            "hypothesis-long-reader",
+            &["response", "condition"],
+            &["DOUBLE", "VARCHAR"],
+            r#"
+            INSERT INTO "dataset_hypothesis_long_reader" (_row_id, response, condition) VALUES
+                (1, 10.0, 'A'),
+                (2, NULL, 'B');
+            "#,
+            2,
+        );
+        engine.conn().execute(
+            "UPDATE _meta_columns SET role = 'nominal' WHERE dataset_id = $1 AND col_name = 'condition'",
+            params!["hypothesis-long-reader"],
+        ).expect("set condition role");
+
+        let rows = engine.read_hypothesis_test_rows(
+            "hypothesis-long-reader",
+            &HypothesisTestRoles::Long {
+                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
+                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
+                subject: None,
+            },
+        ).expect("read hypothesis test rows");
+
+        let HypothesisTestRows::Long(rows) = rows else {
+            panic!("expected long rows");
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].identity, "1");
+        assert_eq!(rows[0].response, Some(10.0));
+        assert_eq!(rows[1].response, None);
+        assert_eq!(rows[1].condition.as_deref(), Some("B"));
     }
 
     #[test]

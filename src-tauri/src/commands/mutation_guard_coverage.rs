@@ -38,6 +38,62 @@ mod tests {
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
             (
+                "commands::data_link_commands::test_server_connection",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::list_server_source_objects",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::get_server_source_schema",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::preview_server_source_object",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::import_server_snapshot",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_link_commands::test_postgres_connection",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::list_postgres_source_objects",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::get_postgres_source_schema",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::preview_postgres_source_object",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::import_postgres_snapshot",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_link_commands::list_sqlite_source_objects",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::preview_sqlite_source_object",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_link_commands::import_selected_sqlite",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_link_commands::cancel_sqlite_import",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::data_commands::import_file",
                 CommandClass::Mutation,
             ),
@@ -217,6 +273,10 @@ mod tests {
             ),
             (
                 "commands::distribution_commands::compute_distribution_report",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::hypothesis_test_commands::run_hypothesis_test",
                 CommandClass::ReadOnly,
             ),
             ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),

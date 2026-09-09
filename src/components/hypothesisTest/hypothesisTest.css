@@ -1,0 +1,94 @@
+.sp-hypothesis-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 32px));
+}
+
+.sp-hypothesis-dialog-body {
+  display: grid;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.sp-hypothesis-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.sp-hypothesis-group legend,
+.sp-hypothesis-role-grid label,
+.sp-hypothesis-options-grid label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sp-hypothesis-segments {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(110px, 1fr);
+  width: fit-content;
+  margin-top: 6px;
+}
+
+.sp-hypothesis-segments button {
+  min-height: 32px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-btn-secondary);
+  color: var(--fg-primary);
+}
+
+.sp-hypothesis-segments button[aria-pressed="true"] {
+  border-color: var(--fg-accent);
+  background: color-mix(in srgb, var(--fg-accent) 75%, #000);
+  color: #fff;
+}
+
+.sp-hypothesis-role-grid,
+.sp-hypothesis-options-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.sp-hypothesis-role-grid select,
+.sp-hypothesis-options-grid select,
+.sp-hypothesis-options-grid input {
+  min-width: 0;
+  min-height: 34px;
+}
+
+.sp-hypothesis-role-grid select[multiple] {
+  min-height: 96px;
+}
+
+.sp-hypothesis-error {
+  margin: 0;
+  color: var(--danger-color, #b42318);
+  font-size: 12px;
+}
+
+.analysis-hypothesis-chart {
+  box-sizing: border-box;
+  width: 100%;
+  height: clamp(280px, 42vh, 480px);
+  min-height: 280px;
+  padding: 8px;
+}
+
+.analysis-hypothesis-chart-diagnostic,
+.analysis-hypothesis-chart-qq {
+  height: clamp(240px, 34vh, 380px);
+}
+
+@media (max-width: 620px) {
+  .sp-hypothesis-role-grid,
+  .sp-hypothesis-options-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-hypothesis-segments {
+    width: 100%;
+  }
+}

@@ -8,6 +8,8 @@
     "../src/components/analysis/**/*.ts",
     "../src/components/analysis/**/*.tsx",
     "../src/types/analysis.ts",
-    "./analysisKindRegistry.test.ts"
+    "../src/types/hypothesisTest.ts",
+    "./analysisKindRegistry.test.ts",
+    "./hypothesisTestContracts.test.ts"
   ]
 }

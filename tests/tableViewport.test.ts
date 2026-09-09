@@ -4,8 +4,11 @@ import {
   canMaterializeSelection,
   calculatePlaceholderRange,
   calculateTableWindow,
+  isStaleDatasetGenerationError,
+  queryTableWindowWithFreshGeneration,
   RequestEpoch,
   serializeTableWindowFilters,
+  shouldReloadDatasetRevision,
   windowRowAt,
 } from "../src/utils/tableViewport.ts";
 
@@ -127,5 +130,74 @@ const olderViewport = epochs.track("0:500");
 const latestViewport = epochs.track("500:500");
 assert.equal(epochs.isLatest(olderViewport), false);
 assert.equal(epochs.isLatest(latestViewport), true);
+
+epochs.beginMutation();
+assert.equal(epochs.canIssueViewportRequest, false);
+assert.equal(epochs.isLatest(latestViewport), false);
+epochs.endMutation();
+assert.equal(epochs.canIssueViewportRequest, true);
+
+epochs.beginMutation();
+epochs.beginMutation();
+epochs.endMutation();
+assert.equal(epochs.canIssueViewportRequest, false);
+epochs.endMutation();
+assert.equal(epochs.canIssueViewportRequest, true);
+
+assert.equal(
+  isStaleDatasetGenerationError(
+    "Invalid parameter: stale dataset generation: expected 6, received 5",
+  ),
+  true,
+);
+assert.equal(isStaleDatasetGenerationError("Invalid parameter: unknown column"), false);
+
+{
+  const requestedGenerations: number[] = [];
+  const availableGenerations = [5, 6];
+  const result = await queryTableWindowWithFreshGeneration(
+    {
+      datasetId: "track",
+      start: 0,
+      count: 500,
+      sort: null,
+      filters: [],
+    },
+    async () => availableGenerations.shift() ?? 6,
+    async (request) => {
+      requestedGenerations.push(request.generation);
+      if (request.generation === 5) {
+        throw new Error("stale dataset generation: expected 6, received 5");
+      }
+      return { ...request, columns: [], columnTypes: [], rows: [], totalRows: 0 };
+    },
+  );
+  assert.deepEqual(requestedGenerations, [5, 6]);
+  assert.equal(result.generation, 6);
+}
+
+const originalRevision = {
+  datasetId: "track",
+  generation: 5,
+  rowCount: 3_503,
+  updatedAt: "before",
+};
+assert.equal(shouldReloadDatasetRevision(null, originalRevision), false);
+assert.equal(
+  shouldReloadDatasetRevision(originalRevision, { ...originalRevision, rowCount: 7_006 }),
+  true,
+);
+assert.equal(
+  shouldReloadDatasetRevision(originalRevision, { ...originalRevision, updatedAt: "after" }),
+  true,
+);
+assert.equal(
+  shouldReloadDatasetRevision(originalRevision, { ...originalRevision, generation: 6 }),
+  true,
+);
+assert.equal(
+  shouldReloadDatasetRevision(originalRevision, { ...originalRevision, datasetId: "album" }),
+  false,
+);
 
 console.log("table-viewport regression passed");
