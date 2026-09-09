@@ -54,7 +54,7 @@ export function synchronizeReleaseVersions({
     ),
     cargoLock: replaceVersion(
       cargoLock,
-      /(\[\[package\]\]\nname = "stats-playground"\nversion = ")[^"]+(")/,
+      /(\[\[package\]\]\r?\nname = "stats-playground"\r?\nversion = ")[^"]+(")/,
       validatedVersion,
       "Cargo.lock stats-playground package",
     ),

@@ -31,6 +31,22 @@ test("synchronizes every release manifest from the tag version", () => {
   assert.match(synchronized.cargoLock, /version = "0\.0\.0-alpha\.1"/);
 });
 
+test("synchronizes a Cargo.lock checked out with CRLF line endings", () => {
+  const synchronized = synchronizeReleaseVersions({
+    version: "0.0.0-alpha.1",
+    packageJson: '{\n  "name": "stats-playground",\n  "version": "0.1.0"\n}\n',
+    packageLockJson: '{\n  "name": "stats-playground",\n  "version": "0.1.0",\n  "packages": {\n    "": {\n      "version": "0.1.0"\n    }\n  }\n}\n',
+    tauriConfigJson: '{\n  "productName": "StatsPlayground",\n  "version": "0.1.0"\n}\n',
+    cargoToml: '[package]\nname = "stats-playground"\nversion = "0.1.0"\n',
+    cargoLock: '[[package]]\r\nname = "stats-playground"\r\nversion = "0.1.0"\r\n',
+  });
+
+  assert.equal(
+    synchronized.cargoLock,
+    '[[package]]\r\nname = "stats-playground"\r\nversion = "0.0.0-alpha.1"\r\n',
+  );
+});
+
 test("defines parallel portable builds and a dependent GitHub Release job", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 
