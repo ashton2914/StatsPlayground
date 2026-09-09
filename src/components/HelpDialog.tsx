@@ -1,14 +1,11 @@
 import { useTranslation } from "react-i18next";
+
+import { APP_VERSION } from "@/appVersion";
+
 // Raw-import the project's LICENSE so the dialog always shows the exact
 // text shipped at the repo root (no copy/paste drift). Vite resolves
 // "?raw" to the file's UTF-8 contents as a string at build time.
 import licenseText from "../../LICENSE?raw";
-
-/** Bumped manually as part of release cuts. Kept at v0.0.0 while the
- *  app is in early feature-development; package.json / Cargo.toml carry
- *  their own version fields for tooling but the user-facing version
- *  lives here so we control exactly what shows in the About dialog. */
-const APP_VERSION = "0.0.0";
 
 /** Curated acknowledgments. We don't auto-generate from
  *  package.json + Cargo.toml because the goal here is to *credit* the
@@ -62,7 +59,7 @@ export function HelpDialog({ mode, onClose }: Props) {
             <div className="sp-help-about">
               <div className="sp-help-appname">StatsPlayground</div>
               <div className="sp-help-version">
-                {t("help.version", { defaultValue: "Version" })} v{APP_VERSION}
+                {t("help.version", { defaultValue: "Version" })} {APP_VERSION}
               </div>
               <div className="sp-help-desc">
                 {t("help.description", {

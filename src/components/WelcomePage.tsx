@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useProjectStore } from "@/stores/useProjectStore";
 import { save } from "@tauri-apps/plugin-dialog";
+
+import { APP_VERSION } from "@/appVersion";
+import { useProjectStore } from "@/stores/useProjectStore";
 
 export function WelcomePage() {
   const { t } = useTranslation();
@@ -41,7 +43,7 @@ export function WelcomePage() {
       <div className="welcome-card">
         <h1>StatsPlayground</h1>
         <p className="subtitle">{t("welcome.subtitle")}</p>
-        <div className="version-tag">v0.1.0</div>
+        <div className="version-tag">{APP_VERSION}</div>
 
         {!showCreate ? (
           <div className="welcome-actions">
