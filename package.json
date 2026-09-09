@@ -7,9 +7,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:portable": "node scripts/buildPortable.mjs",
     "benchmark:scatter": "node scripts/runScatterBudget.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
+    "test:portable-build": "node --test scripts/portableBuildCore.test.mjs",
     "test:analysis:typecheck": "tsc -p tests/tsconfig.analysis-typecheck.json",
     "test:analysis:contracts": "tsx --tsconfig tsconfig.app.json tests/analysisKindRegistry.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisDocument.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisStore.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisSample.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisProjectContracts.test.ts && tsx --tsconfig tsconfig.app.json tests/folderStore.analysis.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysis.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysisLifecycle.test.ts && tsx --tsconfig tsconfig.app.json tests/workspaceAnalysisSample.test.ts && tsx --tsconfig tsconfig.app.json tests/analysisExecution.test.ts",
     "test:analysis:ui": "playwright test -c playwright-ct.config.ts tests/analysisShell.spec.tsx tests/analysisPresentation.spec.tsx tests/analysisView.spec.tsx tests/hypothesisTest.spec.tsx",
