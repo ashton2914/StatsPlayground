@@ -1,7 +1,9 @@
 import { create } from "zustand";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export type ThemeMode = "light" | "dark" | "system";
+import { resolveStoredThemeMode, type ThemeMode } from "./themeMode";
+
+export type { ThemeMode } from "./themeMode";
 
 interface ThemeState {
   mode: ThemeMode;
@@ -11,9 +13,7 @@ interface ThemeState {
 const STORAGE_KEY = "sp-theme-mode";
 
 function getStoredMode(): ThemeMode {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === "light" || stored === "dark" || stored === "system") return stored;
-  return "system";
+  return resolveStoredThemeMode(localStorage.getItem(STORAGE_KEY));
 }
 
 function getEffectiveTheme(mode: ThemeMode): "light" | "dark" {
