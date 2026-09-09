@@ -358,7 +358,6 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             ("commands::project_commands::import_table", CommandClass::Mutation),
-            ("commands::project_commands::export_graph", CommandClass::ReadOnly),
             ("commands::project_commands::import_graph", CommandClass::ReadOnly),
             (
                 "commands::project_commands::create_table_transform",

@@ -111,6 +111,8 @@
     "help": "帮助",
     "about": "关于",
     "license": "许可证",
+    "contributors": "贡献者",
+    "exportTables": "导出表格",
     "fitModel": "拟合模型"
   },
   "alert": {
@@ -759,12 +761,42 @@
   "help": {
     "aboutTitle": "关于 StatsPlayground",
     "licenseTitle": "许可证",
+    "contributorsTitle": "贡献者",
+    "contributorsIntro": "StatsPlayground 由以下贡献者共同打造。",
     "version": "版本",
     "description": "一款超轻量、开源、可扩展的数据分析工具。",
     "copyright": "版权所有 © 2026 Ashton Huang，保留所有权利。",
     "acknowledgments": "鸣谢",
     "acknowledgmentsIntro": "StatsPlayground 基于以下开源项目构建，谨向各项目的维护者与贡献者致以诚挚谢意。",
     "close": "关闭"
+  },
+  "tableExport": {
+    "title": "导出表格",
+    "intro": "选择要导出的表格和输出格式。",
+    "tablesTitle": "表格",
+    "empty": "没有可导出的表格。",
+    "formatTitle": "格式",
+    "formatAriaLabel": "导出格式",
+    "format": {
+      "csv": "CSV",
+      "sqlite": "SQLite",
+      "sptb": "SPTB"
+    },
+    "selectedCount": {
+      "one": "已选择 {{count}} 张表",
+      "other": "已选择 {{count}} 张表"
+    },
+    "summarySelected": "已选择：{{count}}",
+    "summaryProject": "项目：{{projectName}}",
+    "cancel": "取消",
+    "export": "导出",
+    "exporting": "导出中...",
+    "error": "导出失败",
+    "pickerTitle": {
+      "csv": "将表格导出为 CSV",
+      "sqlite": "将表格导出为 SQLite",
+      "sptb": "将表格导出为 SPTB"
+    }
   },
   "tableOp": {
     "transformTitle": "转换数据表",

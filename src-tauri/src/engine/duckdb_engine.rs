@@ -3617,6 +3617,20 @@ impl DuckDbEngine {
             return Err(AppError::InvalidParam("没有可导出的数据表".to_string()));
         }
 
+        for dataset in &filtered {
+            let column_count: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = $1",
+                params![dataset.id],
+                |row| row.get(0),
+            )?;
+            if column_count == 0 {
+                return Err(AppError::InvalidParam(format!(
+                    "Dataset \"{}\" has no columns and cannot be exported",
+                    dataset.name
+                )));
+            }
+        }
+
         let file = std::fs::File::create(output_path)?;
         let mut zip = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default()
@@ -3635,10 +3649,6 @@ impl DuckDbEngine {
             let col_names: Vec<String> = col_stmt
                 .query_map(params![ds.id], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?;
-
-            if col_names.is_empty() {
-                continue;
-            }
 
             let select_cols = col_names
                 .iter()
@@ -4314,6 +4324,36 @@ impl DuckDbEngine {
         subset: Option<&[String]>,
         name_overrides: &std::collections::HashMap<String, String>,
     ) -> Result<(), AppError> {
+        let datasets = self.list_datasets()?;
+        let filtered: Vec<DatasetMeta> = match subset {
+            Some(ids) => {
+                let id_set: std::collections::HashSet<&str> =
+                    ids.iter().map(|s| s.as_str()).collect();
+                datasets
+                    .into_iter()
+                    .filter(|d| id_set.contains(d.id.as_str()))
+                    .collect()
+            }
+            None => datasets,
+        };
+        if filtered.is_empty() {
+            return Err(AppError::InvalidParam("没有可导出的数据表".to_string()));
+        }
+
+        for dataset in &filtered {
+            let column_count: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = $1",
+                params![dataset.id],
+                |row| row.get(0),
+            )?;
+            if column_count == 0 {
+                return Err(AppError::InvalidParam(format!(
+                    "Dataset \"{}\" has no columns and cannot be exported",
+                    dataset.name
+                )));
+            }
+        }
+
         // Install and load the sqlite extension
         self.conn.execute_batch("INSTALL sqlite; LOAD sqlite;")?;
 
@@ -4333,22 +4373,6 @@ impl DuckDbEngine {
         )?;
 
         let result = (|| -> Result<(), AppError> {
-            let datasets = self.list_datasets()?;
-            let filtered: Vec<DatasetMeta> = match subset {
-                Some(ids) => {
-                    let id_set: std::collections::HashSet<&str> =
-                        ids.iter().map(|s| s.as_str()).collect();
-                    datasets
-                        .into_iter()
-                        .filter(|d| id_set.contains(d.id.as_str()))
-                        .collect()
-                }
-                None => datasets,
-            };
-            if filtered.is_empty() {
-                return Err(AppError::InvalidParam("没有可导出的数据表".to_string()));
-            }
-
             // Track which SQLite table names we've already emitted so the
             // (folder, name) → table name collisions resolve deterministically.
             let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -4363,10 +4387,6 @@ impl DuckDbEngine {
                 let col_names: Vec<String> = col_stmt
                     .query_map(params![ds.id], |row| row.get(0))?
                     .collect::<Result<Vec<_>, _>>()?;
-
-                if col_names.is_empty() {
-                    continue;
-                }
 
                 let select_cols = col_names
                     .iter()

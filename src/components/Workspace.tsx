@@ -22,6 +22,7 @@ import { HelpDialog } from "./HelpDialog";
 import { PostgresDataLinkDialog } from "./dataLink/PostgresDataLinkDialog";
 import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
 import { TableOpsDialog } from "./TableOpsDialog";
+import { TableExportDialog, type TableExportPlan } from "./tableExport";
 import { TableTransformView } from "./tableTransform/TableTransformView";
 import { GraphBuilderView } from "./graphBuilder";
 import { FitYByXRoleDialog } from "./fitYByX";
@@ -91,6 +92,7 @@ import type { TabulateItem } from "@/types/tabulate";
 import { inferFieldType } from "@/graphCore/types";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { join } from "@tauri-apps/api/path";
 import { modKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
 import {
@@ -339,7 +341,7 @@ export function Workspace() {
   const [showPrefs, setShowPrefs] = useState(false);
   const [showSqlQuery, setShowSqlQuery] = useState(false);
   const [showPostgresDataLink, setShowPostgresDataLink] = useState(false);
-  const [serverConnector, setServerConnector] = useState<"postgresql" | "mysql">("postgresql");
+  const [serverConnector] = useState<"postgresql" | "mysql">("postgresql");
   const sqliteDataLinkPath = useDataLinkStore((state) => state.filePath);
   const openDataLink = useDataLinkStore((state) => state.open);
   const closeDataLink = useDataLinkStore((state) => state.close);
@@ -348,8 +350,9 @@ export function Workspace() {
   const activeImportRequestId = useDataLinkStore((state) => state.requestId);
   const cancellingImport = useDataLinkStore((state) => state.cancelling);
   const cancelActiveImport = useDataLinkStore((state) => state.cancelImport);
-  const [helpDialog, setHelpDialog] = useState<"about" | "license" | null>(null);
+  const [helpDialog, setHelpDialog] = useState<"about" | "license" | "contributors" | null>(null);
   const [showTableTransformDialog, setShowTableTransformDialog] = useState(false);
+  const [showTableExport, setShowTableExport] = useState(false);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
   const [showFitModelDialog, setShowFitModelDialog] = useState(false);
   const [showHypothesisTestDialog, setShowHypothesisTestDialog] = useState(false);
@@ -1323,66 +1326,6 @@ export function Workspace() {
     return summary;
   };
 
-  const handleExportSqlite = async () => {
-    const filePath = await save({
-      title: t("menu.exportSqlite"),
-      defaultPath: `${project?.name ?? "export"}.db`,
-      filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
-    });
-    if (filePath) {
-      try {
-        // Menu-bar "Export → SQLite": dump every table into one .db, using
-        // `folder-tablename` names so users can still tell which folder a
-        // table came from after extraction (SQLite has no nested namespaces).
-        const ids = datasets.map((d) => d.id);
-        await ioService.exportSqliteSubset(filePath, ids, buildSqliteNames(ids, null));
-      } catch (e) {
-        alert(t("alert.exportSqliteFailed") + String(e));
-      }
-    }
-  };
-
-  const handleExportCsvZip = async () => {
-    const filePath = await save({
-      title: t("menu.exportCsv"),
-      defaultPath: `${project?.name ?? "export"}.zip`,
-      filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
-    });
-    if (filePath) {
-      try {
-        // Menu-bar "Export → CSV": dump every table into one .zip preserving
-        // the project's folder tree as nested directories inside the archive.
-        const ids = datasets.map((d) => d.id);
-        await ioService.exportCsvZipSubset(filePath, ids, buildArchivePaths(ids, null, "csv"));
-      } catch (e) {
-        alert(t("alert.exportCsvFailed") + String(e));
-      }
-    }
-  };
-
-  // ---- Single-table / single-graph share ----------------------------------
-  // .sptb / .spgh let users break individual tables and graphs out of the
-  // project so they can be shared or re-imported elsewhere.
-
-  const handleExportTableSptb = async () => {
-    const ds = datasets.find((d) => d.id === activeDatasetId);
-    if (!ds) {
-      alert(t("alert.selectTableFirst"));
-      return;
-    }
-    const filePath = await save({
-      title: t("menu.exportSptb"),
-      defaultPath: `${ds.name}.sptb`,
-      filters: [{ name: "StatsPlayground Table", extensions: ["sptb"] }],
-    });
-    if (!filePath) return;
-    try {
-      await projectService.exportTable(ds.id, filePath as string);
-    } catch (e) {
-      alert(t("alert.exportTableFailed") + String(e));
-    }
-  };
-
   const handleImportTableSptb = async () => {
     if (busyMessage) return;
     const selected = await open({
@@ -1404,25 +1347,6 @@ export function Workspace() {
       alert(t("alert.importTableFailed") + String(e));
     } finally {
       setBusyMessage(null);
-    }
-  };
-
-  const handleExportGraphSpgh = async () => {
-    const gb = graphBuilders.find((g) => g.id === activeGraphBuilderId);
-    if (!gb) {
-      alert(t("alert.selectGraphFirst"));
-      return;
-    }
-    const filePath = await save({
-      title: t("menu.exportSpgh"),
-      defaultPath: `${gb.name}.spgh`,
-      filters: [{ name: "StatsPlayground Graph", extensions: ["spgh"] }],
-    });
-    if (!filePath) return;
-    try {
-      await projectService.exportGraph(gb, filePath as string);
-    } catch (e) {
-      alert(t("alert.exportGraphFailed") + String(e));
     }
   };
 
@@ -1815,226 +1739,82 @@ export function Workspace() {
     }
   };
 
-  // ---- Folder-aware export helpers ----------------------------------------
-  // These functions all share the same naming convention so the user gets a
-  // predictable suggested filename in the OS save dialog:
-  //   `${projectName}-${folderName ?? ''}-${itemName}.ext`
-  // The middle segment collapses when the item is at the project root.
-
-  /** Build the `${project}-${folder}-${name}.ext` default filename. */
-  const suggestFilename = (folder: string | null | undefined, name: string, ext: string) => {
-    const proj = (project?.name ?? "project").trim() || "project";
-    const folderLabel = folder ? folderBaseName(folder) : "";
-    const parts = folderLabel ? [proj, folderLabel, name] : [proj, name];
-    // Per-segment cleanup so the dialog suggestion is friendly cross-platform;
-    // the user can still edit it before confirming the save.
-    const safe = parts
-      .map((p) => p.replace(/[\\/:*?"<>|]+/g, "_").trim())
-      .filter((p) => p.length > 0)
-      .join("-");
-    return `${safe || "export"}.${ext}`;
-  };
-
-  /** Return ids of all datasets that live under `folder` or any descendant. */
-  const datasetIdsUnderFolder = useCallback(
-    (folder: string | null): string[] => {
-      const allFolders = useFolderStore.getState().folders;
-      const allTableFolders = useFolderStore.getState().tableFolders;
-      const matchPrefix = folder === null
-        ? (_f: string) => true
-        : (f: string) => f === folder || f.startsWith(folder + "/");
-      // Subset of folders whose ids count: the folder itself plus any
-      // descendants. Null parent (root) matches everything.
-      const okFolders = new Set<string>(
-        folder === null ? allFolders : allFolders.filter(matchPrefix),
-      );
-      // A table is included if it is unassigned and we're exporting root, or
-      // assigned to one of the matching folders.
-      return datasets
-        .filter((ds) => {
-          const f = allTableFolders[ds.id];
-          if (!f) return folder === null;
-          return okFolders.has(f);
-        })
-        .map((ds) => ds.id);
-    },
-    [datasets],
-  );
-
-  /** Build a map of `datasetId → archive path` to mirror folder structure
-   *  inside a zip. `basePrefix` (e.g. the clicked folder) is stripped so the
-   *  paths inside the zip are relative to what the user selected. */
-  const buildArchivePaths = (
-    ids: string[],
-    basePrefix: string | null,
-    ext: "csv" | "sptb",
-  ): Record<string, string> => {
-    void ext; // Extension is appended by the backend; included here only to
-              // make call sites self-documenting at the type level.
-    const result: Record<string, string> = {};
-    const base = basePrefix ?? "";
-    for (const id of ids) {
-      const ds = datasets.find((d) => d.id === id);
-      if (!ds) continue;
-      const folder = tableFolders[id] ?? "";
-      // Make the folder path inside the zip relative to the user's chosen
-      // root. So if the user right-clicked `A/B` and a table lives in
-      // `A/B/C`, the zip path becomes `C/Table.csv`.
-      let relative = folder;
-      if (base && folder.startsWith(base + "/")) {
-        relative = folder.slice(base.length + 1);
-      } else if (base && folder === base) {
-        relative = "";
+  const singleExportBaseName = useCallback((plan: TableExportPlan): string => {
+    const datasetId = plan.datasetIds[0];
+    if (!datasetId) {
+      return "export";
+    }
+    const archivePath = plan.archivePaths[datasetId];
+    if (archivePath) {
+      const parts = archivePath.split("/");
+      const leaf = parts[parts.length - 1];
+      if (leaf) {
+        return leaf;
       }
-      result[id] = relative ? `${relative}/${ds.name}` : ds.name;
     }
-    return result;
-  };
+    return datasets.find((dataset) => dataset.id === datasetId)?.name ?? "export";
+  }, [datasets]);
 
-  /** Build a map of `datasetId → SQLite table name` per the user's spec of
-   *  `folder-tablename`, with `basePrefix` stripped. */
-  const buildSqliteNames = (
-    ids: string[],
-    basePrefix: string | null,
-  ): Record<string, string> => {
-    const result: Record<string, string> = {};
-    const base = basePrefix ?? "";
-    for (const id of ids) {
-      const ds = datasets.find((d) => d.id === id);
-      if (!ds) continue;
-      const folder = tableFolders[id] ?? "";
-      let relative = folder;
-      if (base && folder.startsWith(base + "/")) {
-        relative = folder.slice(base.length + 1);
-      } else if (base && folder === base) {
-        relative = "";
+  const tableExportPickerTitle = useCallback((format: TableExportPlan["format"]): string => {
+    const defaultTitle = format === "csv"
+      ? "Export tables as CSV"
+      : format === "sqlite"
+        ? "Export tables as SQLite"
+        : "Export tables as SPTB";
+    return t(`tableExport.pickerTitle.${format}`, { defaultValue: defaultTitle });
+  }, [t]);
+
+  const handleTableExport = async (plan: TableExportPlan): Promise<boolean> => {
+    let outputPath: string | null = null;
+    const pickerTitle = tableExportPickerTitle(plan.format);
+
+    if (plan.mode === "zip") {
+      const selectedDirectory = await open({ directory: true, multiple: false, title: pickerTitle });
+      if (typeof selectedDirectory !== "string") {
+        return false;
       }
-      // Slash → dash so the assembled name is one flat SQLite identifier.
-      const flat = relative.replace(/\//g, "-");
-      result[id] = flat ? `${flat}-${ds.name}` : ds.name;
+      outputPath = await join(selectedDirectory, plan.suggestedFilename);
+    } else {
+      const defaultPath = plan.mode === "sqlite-subset"
+        ? `${(project?.name ?? "export").trim() || "export"}.db`
+        : `${singleExportBaseName(plan)}.${plan.format}`;
+      const filters = plan.format === "csv"
+        ? [{ name: "CSV", extensions: ["csv"] }]
+        : plan.format === "sqlite"
+          ? [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }]
+          : [{ name: "StatsPlayground Table", extensions: ["sptb"] }];
+      const selectedFile = await save({
+        title: pickerTitle,
+        defaultPath,
+        filters,
+      });
+      if (typeof selectedFile !== "string") {
+        return false;
+      }
+      outputPath = selectedFile;
     }
-    return result;
-  };
 
-  /** Export an individual table to a single .sptb (right-click on table). */
-  const handleExportTableSptbFromCtx = async (datasetId: string) => {
-    const ds = datasets.find((d) => d.id === datasetId);
-    if (!ds) return;
-    const folder = tableFolders[datasetId] ?? null;
-    const filePath = await save({
-      title: t("menu.exportSptb"),
-      defaultPath: suggestFilename(folder, ds.name, "sptb"),
-      filters: [{ name: "StatsPlayground Table", extensions: ["sptb"] }],
-    });
-    if (!filePath) return;
-    try {
-      await projectService.exportTable(ds.id, filePath as string);
-    } catch (e) {
-      alert(t("alert.exportTableFailed") + String(e));
+    if (plan.format === "csv") {
+      if (plan.mode === "single-file") {
+        await ioService.exportCsv(plan.datasetIds[0]!, outputPath);
+        return true;
+      }
+      await ioService.exportCsvZipSubset(outputPath, plan.datasetIds, plan.archivePaths);
+      return true;
     }
-  };
 
-  /** Export an individual table to a single .csv (right-click on table). */
-  const handleExportTableCsvFromCtx = async (datasetId: string) => {
-    const ds = datasets.find((d) => d.id === datasetId);
-    if (!ds) return;
-    const folder = tableFolders[datasetId] ?? null;
-    const filePath = await save({
-      title: t("table.exportCsvSingle", { defaultValue: "Export as CSV" }),
-      defaultPath: suggestFilename(folder, ds.name, "csv"),
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!filePath) return;
-    try {
-      await ioService.exportCsv(ds.id, filePath as string);
-    } catch (e) {
-      alert(t("alert.exportCsvFailed") + String(e));
+    if (plan.format === "sqlite") {
+      await ioService.exportSqliteSubset(outputPath, plan.datasetIds, plan.sqliteNames);
+      return true;
     }
-  };
 
-  /** Export an individual table into its own single-table .sqlite db. */
-  const handleExportTableSqliteFromCtx = async (datasetId: string) => {
-    const ds = datasets.find((d) => d.id === datasetId);
-    if (!ds) return;
-    const folder = tableFolders[datasetId] ?? null;
-    const filePath = await save({
-      title: t("table.exportSqliteSingle", { defaultValue: "Export as SQLite" }),
-      defaultPath: suggestFilename(folder, ds.name, "db"),
-      filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
-    });
-    if (!filePath) return;
-    try {
-      // Single-table export: just pass the one id, no name override needed.
-      await ioService.exportSqliteSubset(filePath as string, [ds.id], {});
-    } catch (e) {
-      alert(t("alert.exportSqliteFailed") + String(e));
+    if (plan.mode === "single-file") {
+      await projectService.exportTable(plan.datasetIds[0]!, outputPath);
+      return true;
     }
-  };
 
-  /** Export every table under a folder as a zip of .sptb files. */
-  const handleExportFolderSptbZip = async (folderPath: string) => {
-    const ids = datasetIdsUnderFolder(folderPath);
-    if (ids.length === 0) return;
-    const folderName = folderBaseName(folderPath);
-    const filePath = await save({
-      title: t("folder.exportSptbZip", { defaultValue: "Export folder as .sptb (zip)" }),
-      defaultPath: suggestFilename(folderPath, folderName, "zip"),
-      filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
-    });
-    if (!filePath) return;
-    try {
-      await projectService.exportTablesSptbZip(
-        ids,
-        filePath as string,
-        buildArchivePaths(ids, folderPath, "sptb"),
-      );
-    } catch (e) {
-      alert(t("alert.exportTableFailed") + String(e));
-    }
-  };
-
-  /** Export every table under a folder as a zip of CSVs. */
-  const handleExportFolderCsvZip = async (folderPath: string) => {
-    const ids = datasetIdsUnderFolder(folderPath);
-    if (ids.length === 0) return;
-    const folderName = folderBaseName(folderPath);
-    const filePath = await save({
-      title: t("folder.exportCsvZip", { defaultValue: "Export folder as CSV (zip)" }),
-      defaultPath: suggestFilename(folderPath, folderName, "zip"),
-      filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
-    });
-    if (!filePath) return;
-    try {
-      await ioService.exportCsvZipSubset(
-        filePath as string,
-        ids,
-        buildArchivePaths(ids, folderPath, "csv"),
-      );
-    } catch (e) {
-      alert(t("alert.exportCsvFailed") + String(e));
-    }
-  };
-
-  /** Export every table under a folder into a single multi-table SQLite. */
-  const handleExportFolderSqlite = async (folderPath: string) => {
-    const ids = datasetIdsUnderFolder(folderPath);
-    if (ids.length === 0) return;
-    const folderName = folderBaseName(folderPath);
-    const filePath = await save({
-      title: t("folder.exportSqlite", { defaultValue: "Export folder as SQLite" }),
-      defaultPath: suggestFilename(folderPath, folderName, "db"),
-      filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
-    });
-    if (!filePath) return;
-    try {
-      await ioService.exportSqliteSubset(
-        filePath as string,
-        ids,
-        buildSqliteNames(ids, folderPath),
-      );
-    } catch (e) {
-      alert(t("alert.exportSqliteFailed") + String(e));
-    }
+    await projectService.exportTablesSptbZip(plan.datasetIds, outputPath, plan.archivePaths);
+    return true;
   };
 
   // ---- Folder mutation helpers wired to the side-panel UI ----------------
@@ -2568,25 +2348,23 @@ export function Workspace() {
               >
                 {t("menu.transform", { defaultValue: "Transform..." })}
               </div>
+              <div
+                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId && !readOnly ? handleCreateTabulate : undefined}
+              >
+                {t("menu.tabulate")}
+              </div>
+              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => setShowSqlQuery(true))}>{t("menu.sqlQuery")}</div>
               <div className="menu-sep" />
+              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportTableSptb}>{t("menu.importSptb")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportCsv}>{t("menu.importCsv")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportSqlite}>{t("menu.importSqlite")}</div>
-              <div className="menu-item" onClick={() => { setServerConnector("postgresql"); setShowPostgresDataLink(true); }}>{t("menu.connectPostgres")}</div>
-              <div className="menu-item" onClick={() => { setServerConnector("mysql"); setShowPostgresDataLink(true); }}>{t("menu.connectMysql", { defaultValue: "Connect MySQL..." })}</div>
               <div className="menu-sep" />
-              <div className="menu-item" onClick={handleExportSqlite}>{t("menu.exportSqlite")}</div>
-              <div className="menu-item" onClick={handleExportCsvZip}>{t("menu.exportCsv")}</div>
-              <div className="menu-sep" />
-              <div className="menu-item" onClick={handleExportTableSptb}>{t("menu.exportSptb")}</div>
-              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportTableSptb}>{t("menu.importSptb")}</div>
-            </MenuDropdown>
-            <MenuDropdown label={t("menu.data")}>
-              <div className="menu-item" onClick={() => setShowSqlQuery(true)}>{t("menu.sqlQuery")}</div>
+              <div className={`menu-item${datasets.length === 0 ? " menu-item-disabled" : ""}`} onClick={datasets.length === 0 ? undefined : (() => setShowTableExport(true))}>{t("menu.exportTables", { defaultValue: "Export Tables..." })}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.graph")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateGraphBuilder}>{t("menu.newGraph")}</div>
               <div className="menu-sep" />
-              <div className="menu-item" onClick={handleExportGraphSpgh}>{t("menu.exportSpgh")}</div>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportGraphSpgh}>{t("menu.importSpgh")}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.analyze")}>
@@ -2597,12 +2375,6 @@ export function Workspace() {
                 {t("menu.analysisSample")}
               </div>
               <div className="menu-sep" />
-              <div
-                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
-                onClick={activeDatasetId && !readOnly ? handleCreateTabulate : undefined}
-              >
-                {t("menu.tabulate")}
-              </div>
               <div
                 className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
                 onClick={activeDatasetId && !readOnly ? handleCreateFitYByX : undefined}
@@ -2634,6 +2406,7 @@ export function Workspace() {
             <MenuDropdown label={t("menu.help")}>
               <div className="menu-item" onClick={() => setHelpDialog("about")}>{t("menu.about")}</div>
               <div className="menu-item" onClick={() => setHelpDialog("license")}>{t("menu.license")}</div>
+              <div className="menu-item" onClick={() => setHelpDialog("contributors")}>{t("menu.contributors")}</div>
             </MenuDropdown>
           </MenuBar>
         </div>
@@ -2998,6 +2771,16 @@ export function Workspace() {
 
       {helpDialog && <HelpDialog mode={helpDialog} onClose={() => setHelpDialog(null)} />}
 
+      {showTableExport && (
+        <TableExportDialog
+          datasets={datasets}
+          tableFolders={tableFolders}
+          projectName={project?.name ?? "export"}
+          onExport={handleTableExport}
+          onClose={() => setShowTableExport(false)}
+        />
+      )}
+
       {showTableTransformDialog && (
         <TableOpsDialog
           datasets={datasets}
@@ -3202,10 +2985,6 @@ export function Workspace() {
                   setCtxMenu(null);
                 })}>{t("common.rename")}</div>
                 <div className="sp-ctx-sep" />
-                <div className="sp-ctx-item" onClick={() => { handleExportTableSptbFromCtx(id); setCtxMenu(null); }}>{t("menu.exportSptb")}</div>
-                <div className="sp-ctx-item" onClick={() => { handleExportTableCsvFromCtx(id); setCtxMenu(null); }}>{t("table.exportCsvSingle", { defaultValue: "Export as CSV" })}</div>
-                <div className="sp-ctx-item" onClick={() => { handleExportTableSqliteFromCtx(id); setCtxMenu(null); }}>{t("table.exportSqliteSingle", { defaultValue: "Export as SQLite" })}</div>
-                <div className="sp-ctx-sep" />
                 <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteDataset(id); setCtxMenu(null); })}>{t("common.delete")}</div>
               </>
             );
@@ -3288,10 +3067,6 @@ export function Workspace() {
                   setFolderRenameValue(folderBaseName(fp));
                   setCtxMenu(null);
                 })}>{t("common.rename")}</div>
-                <div className="sp-ctx-sep" />
-                <div className="sp-ctx-item" onClick={() => { handleExportFolderSptbZip(fp); setCtxMenu(null); }}>{t("folder.exportSptbZip", { defaultValue: "Export as .sptb (zip)" })}</div>
-                <div className="sp-ctx-item" onClick={() => { handleExportFolderCsvZip(fp); setCtxMenu(null); }}>{t("folder.exportCsvZip", { defaultValue: "Export as CSV (zip)" })}</div>
-                <div className="sp-ctx-item" onClick={() => { handleExportFolderSqlite(fp); setCtxMenu(null); }}>{t("folder.exportSqlite", { defaultValue: "Export as SQLite" })}</div>
                 <div className="sp-ctx-sep" />
                 <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteFolder(fp); setCtxMenu(null); })}>{t("common.delete")}</div>
               </>

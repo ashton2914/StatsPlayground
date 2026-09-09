@@ -13,6 +13,7 @@ import licenseText from "../../LICENSE?raw";
  *  bill-of-materials. Add an entry when you take on a meaningful new
  *  dependency. License strings use SPDX identifiers. */
 type Ack = { name: string; license: string };
+type Contributor = { name: string };
 
 const ACKNOWLEDGMENTS: Ack[] = [
   // Frontend runtime
@@ -35,8 +36,17 @@ const ACKNOWLEDGMENTS: Ack[] = [
   { name: "zip-rs", license: "MIT" },
 ];
 
+const CONTRIBUTORS: Contributor[] = [
+  { name: "Ashton Huang" },
+  { name: "Chi Zhang" },
+  { name: "Junyi Zhu" },
+  { name: "Max Xu" },
+  { name: "Ryan Qiu" },
+  { name: "Stanley Su" },
+];
+
 interface Props {
-  mode: "about" | "license";
+  mode: "about" | "license" | "contributors";
   onClose: () => void;
 }
 
@@ -45,7 +55,9 @@ export function HelpDialog({ mode, onClose }: Props) {
 
   const title = mode === "about"
     ? t("help.aboutTitle", { defaultValue: "About StatsPlayground" })
-    : t("help.licenseTitle", { defaultValue: "License" });
+    : mode === "contributors"
+      ? t("help.contributorsTitle", { defaultValue: "Contributors" })
+      : t("help.licenseTitle", { defaultValue: "License" });
 
   return (
     <div className="sp-dialog-overlay" onClick={onClose}>
@@ -87,6 +99,21 @@ export function HelpDialog({ mode, onClose }: Props) {
                   <li key={a.name}>
                     <span className="sp-help-ack-name">{a.name}</span>
                     <span className="sp-help-ack-license"> — {a.license}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : mode === "contributors" ? (
+            <div className="sp-help-about">
+              <div className="sp-help-section-intro">
+                {t("help.contributorsIntro", {
+                  defaultValue: "StatsPlayground is shaped by the following contributors.",
+                })}
+              </div>
+              <ul className="sp-help-acks">
+                {CONTRIBUTORS.map((contributor) => (
+                  <li key={contributor.name}>
+                    <span className="sp-help-ack-name">{contributor.name}</span>
                   </li>
                 ))}
               </ul>

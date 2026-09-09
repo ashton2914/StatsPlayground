@@ -119,9 +119,9 @@ export const projectService = {
   acknowledgeWorkflowCommit: (commitId: string) =>
     invoke<void>("acknowledge_workflow_commit", { commitId }),
 
-  // ---- Single-table / single-graph share helpers --------------------------
-  // .sptb = standalone table file, .spgh = standalone graph file. Both can
-  // live by themselves on disk and can be re-imported into any project.
+  // ---- Single-table share helpers ----------------------------------------
+  // .sptb = standalone table file. It can live by itself on disk and be
+  // re-imported into any project.
 
   /** Export one dataset to a `.sptb` file. */
   exportTable: (datasetId: string, filePath: string) =>
@@ -146,10 +146,6 @@ export const projectService = {
    *  caller decides where to place the imported table (defaults to root). */
   importTable: (filePath: string) =>
     invoke<ImportTableResult>("import_table", { filePath }),
-
-  /** Export an opaque graph builder config to a `.spgh` file. */
-  exportGraph: (graph: unknown, filePath: string) =>
-    invoke<void>("export_graph", { graph, filePath }),
 
   /** Import a `.spgh` file and return its graph builder body. */
   importGraph: (filePath: string) =>
