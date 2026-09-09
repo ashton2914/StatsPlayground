@@ -223,6 +223,14 @@ npm run build:portable
 
 当前便携构建流程不包含代码签名、notarization 或跨平台交叉编译。也就是说，Windows 构建需要在 Windows 主机上完成，macOS 构建需要在 macOS 主机上完成。
 
+### GitHub Release
+
+推送 `v` 开头的语义化版本 tag 后，`.github/workflows/release.yml` 会在 Windows 和 macOS runner 上并行执行便携构建，并把两个平台的产物发布到同一个 GitHub Release。workflow 会从 tag 提取版本号并在 runner 内临时同步 npm、Cargo 和 Tauri manifest，因此发布产物名称与 tag 一致。
+
+对于早于 workflow 创建的既有 tag，在 GitHub Actions 中手动运行 **Release Portable**，并将 `tag` 输入设为完整 tag（例如 `v0.0.0-alpha.1`）。包含连字符的版本会发布为 prerelease。
+
+发布权限只授予最终的 `release` job；两个构建 job 保持 `contents: read`。当前流程不执行 Windows 代码签名或 macOS signing/notarization。
+
 ---
 
 ## DuckDB 集成说明

@@ -1,0 +1,77 @@
+name: Release Portable
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_SOURCE_ROOT: source
+    steps:
+      - name: Check out release automation
+        uses: actions/checkout@v4
+        with:
+          path: automation
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          path: source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Synchronize release version
+        run: node automation/scripts/syncReleaseVersion.mjs
+      - run: npm ci
+        working-directory: source
+      - run: npm run test:portable-build
+        working-directory: source
+      - run: npm run build:portable
+        working-directory: source
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ runner.os }}-${{ runner.arch }}
+          path: source/release/portable/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: portable-*
+          path: release-artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: StatsPlayground ${{ env.RELEASE_TAG }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-artifacts/*
