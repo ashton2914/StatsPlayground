@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { APP_VERSION } from "@/appVersion";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
@@ -350,7 +351,7 @@ export function Workspace() {
   const activeImportRequestId = useDataLinkStore((state) => state.requestId);
   const cancellingImport = useDataLinkStore((state) => state.cancelling);
   const cancelActiveImport = useDataLinkStore((state) => state.cancelImport);
-  const [helpDialog, setHelpDialog] = useState<"about" | "license" | "contributors" | null>(null);
+  const [helpDialog, setHelpDialog] = useState<boolean>(false);
   const [showTableTransformDialog, setShowTableTransformDialog] = useState(false);
   const [showTableExport, setShowTableExport] = useState(false);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
@@ -2421,9 +2422,7 @@ export function Workspace() {
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateReport}>{t("menu.newReport")}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.help")}>
-              <div className="menu-item" onClick={() => setHelpDialog("about")}>{t("menu.about")}</div>
-              <div className="menu-item" onClick={() => setHelpDialog("license")}>{t("menu.license")}</div>
-              <div className="menu-item" onClick={() => setHelpDialog("contributors")}>{t("menu.contributors")}</div>
+              <div className="menu-item" onClick={() => setHelpDialog(true)}>{t("menu.about")}</div>
             </MenuDropdown>
           </MenuBar>
         </div>
@@ -2784,7 +2783,7 @@ export function Workspace() {
         />
       )}
 
-      {helpDialog && <HelpDialog mode={helpDialog} onClose={() => setHelpDialog(null)} />}
+      {helpDialog && <HelpDialog version={APP_VERSION} onClose={() => setHelpDialog(false)} />}
 
       {showTableExport && (
         <TableExportDialog

@@ -1,6 +1,5 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-
-import { APP_VERSION } from "@/appVersion";
 
 // Raw-import the project's LICENSE so the dialog always shows the exact
 // text shipped at the repo root (no copy/paste drift). Vite resolves
@@ -23,12 +22,25 @@ const ACKNOWLEDGMENTS: Ack[] = [
   { name: "Zustand", license: "MIT" },
   { name: "i18next", license: "MIT" },
   { name: "react-i18next", license: "MIT" },
+  { name: "Tiptap", license: "MIT" },
+  { name: "react-markdown", license: "MIT" },
+  { name: "remark-gfm", license: "MIT" },
+  { name: "Font Awesome Free", license: "CC-BY-4.0 AND OFL-1.1 AND MIT" },
   { name: "Apache ECharts", license: "Apache-2.0" },
+  { name: "zrender", license: "BSD-3-Clause" },
+  { name: "ECharts GL", license: "BSD-3-Clause" },
+  { name: "ClayGL", license: "BSD-3-Clause" },
   // Desktop shell + Rust backend
   { name: "Tauri", license: "MIT OR Apache-2.0" },
   { name: "DuckDB", license: "MIT" },
   { name: "duckdb-rs", license: "MIT" },
   { name: "rusqlite", license: "MIT" },
+  { name: "rust-postgres", license: "MIT OR Apache-2.0" },
+  { name: "rust-mysql-simple", license: "MIT OR Apache-2.0" },
+  { name: "sqlparser-rs", license: "Apache-2.0" },
+  { name: "statrs", license: "MIT" },
+  { name: "argmin", license: "MIT OR Apache-2.0" },
+  { name: "nalgebra", license: "Apache-2.0" },
   { name: "serde / serde_json", license: "MIT OR Apache-2.0" },
   { name: "tokio", license: "MIT" },
   { name: "thiserror", license: "MIT OR Apache-2.0" },
@@ -46,18 +58,17 @@ const CONTRIBUTORS: Contributor[] = [
 ];
 
 interface Props {
-  mode: "about" | "license" | "contributors";
+  version: string;
   onClose: () => void;
 }
 
-export function HelpDialog({ mode, onClose }: Props) {
+export function HelpDialog({ version, onClose }: Props) {
   const { t } = useTranslation();
+  const [view, setView] = useState<"about" | "license">("about");
 
-  const title = mode === "about"
+  const title = view === "about"
     ? t("help.aboutTitle", { defaultValue: "About StatsPlayground" })
-    : mode === "contributors"
-      ? t("help.contributorsTitle", { defaultValue: "Contributors" })
-      : t("help.licenseTitle", { defaultValue: "License" });
+    : t("help.licenseTitle", { defaultValue: "License" });
 
   return (
     <div className="sp-dialog-overlay" onClick={onClose}>
@@ -67,11 +78,11 @@ export function HelpDialog({ mode, onClose }: Props) {
       >
         <div className="sp-dialog-title">{title}</div>
         <div className="sp-dialog-body">
-          {mode === "about" ? (
+          {view === "about" ? (
             <div className="sp-help-about">
               <div className="sp-help-appname">StatsPlayground</div>
               <div className="sp-help-version">
-                {t("help.version", { defaultValue: "Version" })} {APP_VERSION}
+                {t("help.version", { defaultValue: "Version" })} {version}
               </div>
               <div className="sp-help-desc">
                 {t("help.description", {
@@ -81,8 +92,18 @@ export function HelpDialog({ mode, onClose }: Props) {
               </div>
               <div className="sp-help-copyright">
                 {t("help.copyright", {
-                  defaultValue: "Copyright © 2026 Ashton Huang. All rights reserved.",
+                  defaultValue: "Copyright © 2026 StatsPlayground.org contributors.",
                 })}
+                {" "}
+                <button
+                  type="button"
+                  className="sp-help-license-link"
+                  onClick={() => setView("license")}
+                >
+                  {t("help.licenseLink", {
+                    defaultValue: "Licensed under the Apache License 2.0.",
+                  })}
+                </button>
               </div>
 
               <div className="sp-help-section-title">
@@ -102,9 +123,10 @@ export function HelpDialog({ mode, onClose }: Props) {
                   </li>
                 ))}
               </ul>
-            </div>
-          ) : mode === "contributors" ? (
-            <div className="sp-help-about">
+
+              <div className="sp-help-section-title">
+                {t("help.contributorsTitle", { defaultValue: "Contributors" })}
+              </div>
               <div className="sp-help-section-intro">
                 {t("help.contributorsIntro", {
                   defaultValue: "StatsPlayground is shaped by the following contributors.",
@@ -123,6 +145,11 @@ export function HelpDialog({ mode, onClose }: Props) {
           )}
         </div>
         <div className="sp-dialog-actions">
+          {view === "license" && (
+            <button className="sp-dialog-btn" onClick={() => setView("about")}>
+              {t("help.backToAbout", { defaultValue: "Back to About" })}
+            </button>
+          )}
           <button className="sp-dialog-btn sp-dialog-btn-primary" onClick={onClose}>
             {t("help.close", { defaultValue: "Close" })}
           </button>
