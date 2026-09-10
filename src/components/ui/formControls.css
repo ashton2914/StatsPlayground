@@ -108,6 +108,7 @@
   height: 16px;
   box-sizing: border-box;
   place-items: center;
+  pointer-events: none;
   border: 1px solid var(--border-input);
   border-radius: 3px;
   background-color: var(--bg-input);

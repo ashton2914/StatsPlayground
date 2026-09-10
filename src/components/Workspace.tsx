@@ -12,14 +12,16 @@ import {
   validateFolderOrFileName,
 } from "@/stores/useFolderStore";
 import { useDataLinkStore } from "@/stores/useDataLinkStore";
+import { useUpdateStore } from "@/stores/useUpdateStore";
 import { dataService } from "@/services/dataService";
 import { ioService } from "@/services/ioService";
 import { projectService } from "@/services/projectService";
+import { openUpdateUrl } from "@/services/updateDownload";
 import { DataTableView } from "./DataTableView";
 import { HistoryPanel, type SnapshotMenuData } from "./HistoryPanel";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { SqlQueryDialog } from "./SqlQueryDialog";
-import { HelpDialog } from "./HelpDialog";
+import { UpdateDialogs } from "./UpdateDialogs";
 import { PostgresDataLinkDialog } from "./dataLink/PostgresDataLinkDialog";
 import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
 import { TableOpsDialog } from "./TableOpsDialog";
@@ -352,6 +354,10 @@ export function Workspace() {
   const cancellingImport = useDataLinkStore((state) => state.cancelling);
   const cancelActiveImport = useDataLinkStore((state) => state.cancelImport);
   const [helpDialog, setHelpDialog] = useState<boolean>(false);
+  const updateStatus = useUpdateStore((state) => state.status);
+  const availableUpdate = useUpdateStore((state) => state.update);
+  const checkForUpdate = useUpdateStore((state) => state.check);
+  const dismissUpdate = useUpdateStore((state) => state.dismiss);
   const [showTableTransformDialog, setShowTableTransformDialog] = useState(false);
   const [showTableExport, setShowTableExport] = useState(false);
   const [showFitYByXDialog, setShowFitYByXDialog] = useState(false);
@@ -1602,6 +1608,16 @@ export function Workspace() {
     }, durationMs);
   };
 
+  const handleDownloadUpdate = async () => {
+    if (!availableUpdate) return;
+    try {
+      await openUpdateUrl(availableUpdate.downloadUrl);
+      dismissUpdate();
+    } catch {
+      showToast(t("update.openFailed", { defaultValue: "Unable to open the update download." }), 3000);
+    }
+  };
+
   const handleCloseProject = async () => {
     flushPendingReportHistory();
     clearWorkspaceDocumentSelection();
@@ -2783,7 +2799,16 @@ export function Workspace() {
         />
       )}
 
-      {helpDialog && <HelpDialog version={APP_VERSION} onClose={() => setHelpDialog(false)} />}
+      <UpdateDialogs
+        helpOpen={helpDialog}
+        currentVersion={APP_VERSION}
+        status={updateStatus}
+        update={availableUpdate}
+        onCheck={() => checkForUpdate("manual")}
+        onCloseHelp={() => setHelpDialog(false)}
+        onIgnore={dismissUpdate}
+        onDownload={() => void handleDownloadUpdate()}
+      />
 
       {showTableExport && (
         <TableExportDialog

@@ -49,8 +49,10 @@ test("resolves Git metadata independently of the caller's working directory", ()
 test("renders the resolved version verbatim on both public surfaces", () => {
   const welcome = readFileSync(new URL("../src/components/WelcomePage.tsx", import.meta.url), "utf8");
   const help = readFileSync(new URL("../src/components/HelpDialog.tsx", import.meta.url), "utf8");
+  const workspace = readFileSync(new URL("../src/components/Workspace.tsx", import.meta.url), "utf8");
 
   assert.match(welcome, /className="version-tag">\{APP_VERSION\}</);
-  assert.match(help, /defaultValue: "Version" \}\)} \{APP_VERSION\}/);
-  assert.doesNotMatch(`${welcome}\n${help}`, /v\{APP_VERSION\}/);
+  assert.match(workspace, /<UpdateDialogs[\s\S]*?currentVersion=\{APP_VERSION\}/);
+  assert.match(help, /defaultValue: "Version" \}\)} \{version\}/);
+  assert.doesNotMatch(`${welcome}\n${help}\n${workspace}`, /v\{(?:APP_VERSION|version)\}/);
 });

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import type { UpdateCheckStatus } from "@/stores/updateStoreCore";
+
 // Raw-import the project's LICENSE so the dialog always shows the exact
 // text shipped at the repo root (no copy/paste drift). Vite resolves
 // "?raw" to the file's UTF-8 contents as a string at build time.
@@ -59,12 +61,15 @@ const CONTRIBUTORS: Contributor[] = [
 
 interface Props {
   version: string;
+  updateStatus?: UpdateCheckStatus;
+  onCheckForUpdates?: () => Promise<void>;
   onClose: () => void;
 }
 
-export function HelpDialog({ version, onClose }: Props) {
+export function HelpDialog({ version, updateStatus = "idle", onCheckForUpdates, onClose }: Props) {
   const { t } = useTranslation();
   const [view, setView] = useState<"about" | "license">("about");
+  const titleId = "help-dialog-title";
 
   const title = view === "about"
     ? t("help.aboutTitle", { defaultValue: "About StatsPlayground" })
@@ -74,9 +79,12 @@ export function HelpDialog({ version, onClose }: Props) {
     <div className="sp-dialog-overlay" onClick={onClose}>
       <div
         className="sp-dialog sp-dialog-wide sp-help-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sp-dialog-title">{title}</div>
+        <div className="sp-dialog-title" id={titleId}>{title}</div>
         <div className="sp-dialog-body">
           {view === "about" ? (
             <div className="sp-help-about">
@@ -105,6 +113,31 @@ export function HelpDialog({ version, onClose }: Props) {
                   })}
                 </button>
               </div>
+
+              {onCheckForUpdates && (
+                <div className="sp-help-update-check">
+                  <button
+                    type="button"
+                    className="sp-dialog-btn"
+                    disabled={updateStatus === "checking"}
+                    onClick={() => void onCheckForUpdates()}
+                  >
+                    {updateStatus === "checking"
+                      ? t("update.checking", { defaultValue: "Checking..." })
+                      : t("update.check", { defaultValue: "Check for Updates" })}
+                  </button>
+                  {updateStatus === "upToDate" && (
+                    <span role="status" className="sp-help-update-status">
+                      {t("update.upToDate", { defaultValue: "StatsPlayground is up to date." })}
+                    </span>
+                  )}
+                  {updateStatus === "error" && (
+                    <span role="alert" className="sp-help-update-status sp-help-update-error">
+                      {t("update.checkFailed", { defaultValue: "Unable to check for updates. Try again later." })}
+                    </span>
+                  )}
+                </div>
+              )}
 
               <div className="sp-help-section-title">
                 {t("help.acknowledgments", { defaultValue: "Acknowledgments" })}

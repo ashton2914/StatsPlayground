@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useThemeStore, ThemeMode } from "@/stores/useThemeStore";
-import { useLocaleStore } from "@/stores/useLocaleStore";
+
 import { SUPPORTED_LOCALES, type Locale } from "@/i18n";
+import { useLocaleStore } from "@/stores/useLocaleStore";
+import { useThemeStore, ThemeMode } from "@/stores/useThemeStore";
+import { useUpdatePreferencesStore } from "@/stores/useUpdatePreferencesStore";
+
+import { Checkbox } from "./ui/FormControls";
 
 interface Props {
   onClose: () => void;
@@ -14,6 +18,7 @@ export function PreferencesDialog({ onClose }: Props) {
   const { t } = useTranslation();
   const { mode, setMode } = useThemeStore();
   const { locale, setLocale } = useLocaleStore();
+  const { automaticCheck, includePrerelease, setAutomaticCheck, setIncludePrerelease } = useUpdatePreferencesStore();
   const [active, setActive] = useState<CategoryKey>("general");
 
   const categories: { key: CategoryKey; label: string }[] = [
@@ -43,22 +48,40 @@ export function PreferencesDialog({ onClose }: Props) {
           </nav>
           <div className="pref-pane">
             {active === "general" && (
-              <div className="pref-row">
-                <label className="sp-dialog-label" htmlFor="pref-language">
-                  {t("prefs.language")}
-                </label>
-                <select
-                  id="pref-language"
-                  className="pref-select"
-                  value={locale}
-                  onChange={(e) => setLocale(e.target.value as Locale)}
-                >
-                  {SUPPORTED_LOCALES.map((opt) => (
-                    <option key={opt.code} value={opt.code}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+              <div className="pref-section">
+                <div className="pref-row">
+                  <label className="sp-dialog-label" htmlFor="pref-language">
+                    {t("prefs.language")}
+                  </label>
+                  <select
+                    id="pref-language"
+                    className="pref-select"
+                    value={locale}
+                    onChange={(e) => setLocale(e.target.value as Locale)}
+                  >
+                    {SUPPORTED_LOCALES.map((opt) => (
+                      <option key={opt.code} value={opt.code}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="pref-update-options">
+                  <Checkbox
+                    checked={automaticCheck}
+                    onChange={(event) => setAutomaticCheck(event.target.checked)}
+                    hint={t("prefs.automaticUpdatesHint", { defaultValue: "Check once whenever StatsPlayground starts." })}
+                  >
+                    {t("prefs.automaticUpdates", { defaultValue: "Automatically check for updates" })}
+                  </Checkbox>
+                  <Checkbox
+                    checked={includePrerelease}
+                    onChange={(event) => setIncludePrerelease(event.target.checked)}
+                    hint={t("prefs.previewUpdatesHint", { defaultValue: "Include preview releases when looking for a newer version." })}
+                  >
+                    {t("prefs.previewUpdates", { defaultValue: "Include preview releases" })}
+                  </Checkbox>
+                </div>
               </div>
             )}
             {active === "appearance" && (
