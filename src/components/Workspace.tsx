@@ -342,7 +342,6 @@ export function Workspace() {
   const [showPrefs, setShowPrefs] = useState(false);
   const [showSqlQuery, setShowSqlQuery] = useState(false);
   const [showPostgresDataLink, setShowPostgresDataLink] = useState(false);
-  const [serverConnector] = useState<"postgresql" | "mysql">("postgresql");
   const sqliteDataLinkPath = useDataLinkStore((state) => state.filePath);
   const openDataLink = useDataLinkStore((state) => state.open);
   const closeDataLink = useDataLinkStore((state) => state.close);
@@ -2351,6 +2350,8 @@ export function Workspace() {
             <MenuDropdown label={t("menu.file")}>
               <div className={`menu-item${saving ? " menu-item-disabled" : ""}`} onClick={saving ? undefined : handleSave}>{t("menu.save")}<span className="menu-shortcut">{modKey}S</span></div>
               <div className="menu-sep" />
+              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : () => setShowPostgresDataLink(true)}>{t("menu.dataLink")}</div>
+              <div className="menu-sep" />
               <div className="menu-item" onClick={() => setShowPrefs(true)}>{t("menu.preferences")}<span className="menu-shortcut">{modKey},</span></div>
               <div className="menu-sep" />
               <div className="menu-item" onClick={handleOpenAnother}>{t("menu.openProject")}<span className="menu-shortcut">{modKey}O</span></div>
@@ -2758,18 +2759,16 @@ export function Workspace() {
 
       {showPostgresDataLink && (
         <PostgresDataLinkDialog
-          key={serverConnector}
-          connector={serverConnector}
           existingDatasetNames={datasets.map((dataset) => dataset.name)}
           onClose={() => setShowPostgresDataLink(false)}
-          onImported={async (targetName) => {
+          onImported={async (targetName, connector) => {
             markDirty();
             await refreshDatasets();
             const imported = useDataStore
               .getState()
               .datasets.find((dataset) => dataset.name.toLowerCase() === targetName.toLowerCase());
             if (imported) setActiveDataset(imported.id);
-            recordAction(serverConnector === "mysql"
+            recordAction(connector === "mysql"
               ? t("history.importMysql", { name: targetName, defaultValue: "Import MySQL snapshot: {{name}}" })
               : t("history.importPostgres", { name: targetName }));
           }}

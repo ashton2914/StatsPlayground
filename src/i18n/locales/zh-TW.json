@@ -16,6 +16,23 @@
     "selectionMode": { "label": "方法選擇", "automatic": "自動", "guided": "引導", "manual": "手動" },
     "graph": { "dataAndEstimates": "資料與估計", "diagnosticValues": "診斷值", "normalQq": "常態 Q-Q 圖", "distribution": "分布摘要", "observations": "觀測值", "meanInterval": "平均值區間", "subjectProfile": "受試者軌跡", "responseAxis": "反應", "observationOrderAxis": "觀測順序", "groupResiduals": "組內殘差", "pairedDifferences": "配對差值", "additiveResiduals": "加性模型殘差", "theoreticalQuantileAxis": "理論分位數", "observedDiagnosticAxis": "觀測診斷值", "reference": "參考線" }
   },
+  "serverBatch": {
+    "selectAll": "全選",
+    "selectObject": "選擇 {{name}}",
+    "queue": "匯入佇列",
+    "targetFor": "{{name}} 的目標名稱",
+    "nameConflict": "目標名稱不可為空、重複或與現有資料集同名。",
+    "pending": "等待中",
+    "importing": "正在匯入...",
+    "completed": "已匯入",
+    "failed": "失敗",
+    "progress": "已處理 {{done}} / {{total}} 張資料表",
+    "selected": "已選擇 {{count}} 項",
+    "stopping": "正在完成目前的資料表...",
+    "stop": "完成目前資料表後停止",
+    "close": "關閉",
+    "importSelected": "匯入所選項目 ({{count}})"
+  },
   "common": {
     "ok": "確定",
     "cancel": "取消",
@@ -60,6 +77,7 @@
   "menu": {
     "file": "檔案",
     "save": "儲存",
+    "dataLink": "DataLink...",
     "preferences": "偏好設定",
     "openProject": "開啟專案",
     "closeProject": "關閉專案",
@@ -118,6 +136,7 @@
     }
   },
   "dataLink": {
+    "connector": "資料庫類型",
     "title": "SQLite 資料連結",
     "objects": "物件",
     "noObjects": "沒有資料表或檢視表",
@@ -153,6 +172,36 @@
       "rows": "列",
       "close": "關閉"
     }
+  },
+  "postgresDataLink": {
+    "title": "PostgreSQL 資料連結",
+    "sessionOnly": "認證資訊僅保留在此對話框中",
+    "connection": "連線",
+    "connected": "已連線",
+    "notTested": "尚未測試",
+    "host": "主機",
+    "port": "連接埠",
+    "database": "資料庫",
+    "username": "使用者名稱",
+    "password": "密碼",
+    "timeout": "逾時（秒）",
+    "tlsMode": "TLS 模式",
+    "tlsDisabled": "停用",
+    "tlsRequired": "必要",
+    "tlsVerifyCa": "驗證 CA",
+    "tlsVerifyFull": "完整驗證",
+    "rootCertificate": "根 CA 憑證（PEM，可選）",
+    "credentialsNote": "關閉此對話框時將捨棄密碼",
+    "test": "測試連線",
+    "testing": "測試中...",
+    "discover": "探索物件",
+    "discovering": "探索中...",
+    "connectPrompt": "請先測試連線",
+    "discoverPrompt": "探索可存取的資料表和檢視表",
+    "readOnly": "唯讀探索和預覽",
+    "snapshotNote": "將快照匯入目前的工作區",
+    "importSnapshot": "匯入快照",
+    "importing": "正在匯入..."
   },
   "folder": {
     "defaultName": "新增資料夾",
@@ -203,6 +252,8 @@
     "deleteDistribution": "刪除分佈分析 \"{{name}}\"",
     "importCsv": "匯入 CSV \"{{file}}\"",
     "importSqlite": "匯入 SQLite \"{{file}}\"",
+    "importPostgres": "匯入 PostgreSQL 快照 \"{{name}}\"",
+    "importMysql": "匯入 MySQL 快照 \"{{name}}\"",
     "addRow": "新增列",
     "addRowsBatch": "批次新增列",
     "deleteRow": "刪除列",
