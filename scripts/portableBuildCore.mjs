@@ -44,8 +44,9 @@ export function validatePortableVersion(version) {
   return version;
 }
 
-export function runCommand(command, args = [], { cwd, spawnSyncImpl = spawnSync } = {}) {
-  const result = spawnSyncImpl(command, args, { cwd, stdio: "inherit", shell: false });
+export function runCommand(command, args = [], { cwd, platform = process.platform, spawnSyncImpl = spawnSync } = {}) {
+  const isWindowsCommandScript = platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
+  const result = spawnSyncImpl(command, args, { cwd, stdio: "inherit", shell: isWindowsCommandScript });
 
   if (result.error) {
     throw new Error(`Could not start command: ${command}: ${formatProcessStartError(result.error)}`);
