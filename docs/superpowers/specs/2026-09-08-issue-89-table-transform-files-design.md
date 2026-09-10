@@ -71,6 +71,13 @@ that output. Later execution, including execution after input rebinding,
 replaces the output table's schema, rows, and display metadata under the same
 document ID.
 
+The output is an ordinary Table document, not a Transform-specific table type.
+Stack and every other operation therefore produce tables with the same filter,
+graph, analysis, project-save, and standalone-export behavior as imported or
+manually created tables. The `.sptb` suffix shown in the project tree identifies
+the logical Table document and its standard serialization format; it does not
+assert that a standalone `.sptb` file already exists on disk.
+
 The executor computes into a temporary table first. It validates the completed
 result and then swaps it into the stable output in one database transaction. If
 validation or execution fails, the temporary table is discarded and the prior
@@ -196,6 +203,18 @@ The `.spprj` manifest gains an additive, default-empty indexed collection for
 Table Transform documents. New project archives write each definition as an
 independent `.sptbtf` entry using the existing collision-safe name allocation.
 Bindings and lineage remain project metadata and reference stable document IDs.
+Each materialized output is serialized through the normal Table writer as an
+embedded `.sptb` entry. No separate table format or archive path is introduced
+for Transform outputs.
+
+Creating, rebinding, or rerunning a Transform changes project state and marks
+the project dirty. Before project save, its definition, bindings, run state, and
+materialized output exist in runtime/project state only. Confirming the operation
+does not write a standalone `.sptbtf` or `.sptb` file. Saving the project embeds
+both entries in `.spprj`; exporting the Transform or output Table is a separate,
+explicit action that writes the corresponding standalone file. Closing without
+saving follows the common save/discard/cancel flow, and discard may remove the
+unsaved definition and output.
 
 Existing archives load with no Table Transform definitions. Adding defaulted
 collections does not by itself require an archive major-version increase.
