@@ -138,7 +138,7 @@ StatsPlayground 是一款轻量级、跨平台、开源的数据分析软件，�
 ┌──────────────────────────┐
 │   文件系统 / 用户数据      │
 │   - .duckdb 数据库文件    │
-│   - 项目文件 (.spg)      │
+│   - 项目文件 (.spprj)    │
 │   - 导出文件             │
 └──────────────────────────┘
 ```
@@ -149,6 +149,23 @@ StatsPlayground 是一款轻量级、跨平台、开源的数据分析软件，�
 2. **SQL 驱动分析**：尽量将计算下推到 DuckDB SQL 层，利用其列式引擎和向量化执行
 3. **异步非阻塞**：大型计算操作通过 Tauri 异步 Command 执行，通过 Event 推送进度
 4. **模块化隔离**：各功能模块通过 Service trait 解耦，支持独立测试和替换
+
+### 4.3 Table 文档与持久化契约
+
+**Table Document** 是应用内统一的表格文档抽象，拥有稳定文档 ID、显示名称、schema、行数据与列元数据。导入表、手工表以及 Sort、Subset、Stack、Join 等 Table Transform 的输出均为标准 Table Document；Stack 输出不是特殊表类型，必须支持与其他 Table 相同的筛选、图表、分析、保存和导出能力。
+
+文件扩展名描述序列化容器，不改变运行时文档类型：
+
+| 形式 | 含义 |
+|------|------|
+| Table Document | 运行时及项目树中的逻辑文档；不要求已经存在对应磁盘文件 |
+| `.sptb` | 一个 Table Document 的标准序列化格式，可作为 `.spprj` 内的 archive entry，也可通过显式导出成为独立文件 |
+| `.sptbtf` | 可复用的 Table Transform 定义；保存参数、输入 contract 与稳定输出引用，不保存输出行数据 |
+| `.spprj` | 项目 archive；保存项目时嵌入 Table 的 `.sptb` entry、Transform 的 `.sptbtf` entry，以及绑定、lineage 和其他项目状态 |
+
+确认 Table Transform 后，backend 先在 DuckDB 中物化结果，并以稳定 Table ID 在项目树中创建或更新输出 Table Document。此时 Transform 定义、绑定和输出属于未保存的项目状态；确认操作本身不在用户文件系统中创建独立 `.sptb`。保存项目时，当前输出才作为 `.sptb` entry 写入 `.spprj`，Transform 定义作为 `.sptbtf` entry 写入同一 archive。显式导出 Table 才创建独立磁盘 `.sptb`，显式导出 Transform 才创建独立 `.sptbtf`。
+
+项目 dirty state 必须覆盖 Transform 的创建、参数或绑定变更、执行后输出变更以及输出 Table 的其他持久化元数据变更。关闭含未保存变更的项目必须走统一的保存/放弃/取消流程；选择放弃后，未写入 `.spprj` 的 Transform 与输出可被丢弃。重新执行或重新绑定 Transform 在同一稳定输出 Table ID 下原子替换 schema、行与显示元数据，使下游文档引用保持有效。
 
 ---
 
@@ -560,7 +577,7 @@ metadata 或部分追加行。
 
 | 功能 | 描述 |
 |------|------|
-| 项目文件 (.spg) | 保存数据集引用、分析配置、图表布局为单一项目文件 |
+| 项目文件 (.spprj) | 将 Table、Transform、分析、图表及其绑定和 lineage 保存为单一项目 archive |
 | 撤销/重做 | 操作历史记录 |
 | 最近文件 | 最近打开的项目和数据文件列表 |
 
