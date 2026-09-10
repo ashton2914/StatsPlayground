@@ -299,4 +299,36 @@ assert.deepEqual(transformOperation.inputPorts[0]?.tableRequirement, {
 });
 assert.deepEqual(transformOperation.configuration, transform);
 
+const detachedOutput = buildProjectDependencyGraph({
+  datasets: [
+    dataset,
+    { ...dataset, id: "table-sorted", name: "Sorted measurements" },
+  ],
+  tableTransforms: [],
+  tableTransformBindings: [],
+  graphs: [{ ...graph, sourceDatasetId: "table-sorted" }],
+  analyses: [],
+  tabulates: [],
+  reports: [],
+});
+assert.equal(
+  detachedOutput.nodes.some((node) => node.id === "operation:tableTransform:transform-1"),
+  false,
+);
+assert.deepEqual(
+  detachedOutput.edges.map((edge) => [edge.kind, edge.source.nodeId, edge.target.nodeId]),
+  [
+    ["consumes", "artifact:table:table-sorted", "operation:graph:graph-1"],
+    ["produces", "operation:graph:graph-1", "artifact:graph:graph-1"],
+  ],
+);
+assert.equal(
+  detachedOutput.nodes.some((node) => node.id === "artifact:table:table-1"),
+  true,
+);
+assert.equal(
+  detachedOutput.nodes.some((node) => node.id === "artifact:table:table-sorted"),
+  true,
+);
+
 console.log("Workflow project dependency graph contract passed");

@@ -197,6 +197,7 @@
     "deleteAnalysis": "刪除分析 \"{{name}}\"",
     "updateAnalysisInputs": "更新分析輸入 \"{{name}}\"",
     "deleteTable": "刪除資料表 \"{{name}}\"",
+    "deleteTableTransform": "刪除資料表轉換 \"{{name}}\"",
     "deleteTabulate": "Delete tabulate \"{{name}}\"",
     "deleteFitYByX": "刪除配適 Y by X \"{{name}}\"",
     "deleteDistribution": "刪除分佈分析 \"{{name}}\"",

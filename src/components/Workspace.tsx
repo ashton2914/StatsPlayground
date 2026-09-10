@@ -284,6 +284,7 @@ export function Workspace() {
   const tableTransformBindings = useTableTransformStore((s) => s.bindings);
   const rebindTableTransform = useTableTransformStore((s) => s.rebindAndRun);
   const rerunTableTransform = useTableTransformStore((s) => s.rerun);
+  const deleteTableTransform = useTableTransformStore((s) => s.remove);
   const loadTableTransforms = useTableTransformStore((s) => s.loadFromProject);
   const resetTableTransforms = useTableTransformStore((s) => s.reset);
   const loadWorkflowsFromProject = useWorkflowStore((s) => s.loadFromProject);
@@ -399,6 +400,7 @@ export function Workspace() {
    *  whitespace below the tree (which lets the user create a root folder). */
   type CtxMenu =
     | { kind: "table"; id: string; x: number; y: number }
+    | { kind: "tableTransform"; id: string; x: number; y: number }
     | { kind: "graph"; id: string; x: number; y: number }
     | { kind: "report"; id: string; x: number; y: number }
     | { kind: "analysis"; id: string; x: number; y: number }
@@ -1236,6 +1238,15 @@ export function Workspace() {
     if (activeGraphBuilderId === id) setActiveGraphBuilderId(null);
     markDirty();
     if (it) recordAction(t("history.deleteGraph", { name: it.name }));
+  };
+
+  const handleDeleteTableTransform = (id: string) => {
+    if (readOnly) return;
+    const item = useTableTransformStore.getState().definitions.find((entry) => entry.id === id);
+    deleteTableTransform(id);
+    if (activeTableTransformId === id) setActiveTableTransformId(null);
+    markDirty();
+    if (item) recordAction(t("history.deleteTableTransform", { name: item.name }));
   };
 
   const handleDeleteTabulate = (id: string) => {
@@ -2116,6 +2127,11 @@ export function Workspace() {
           className={`dataset-item ${activeTableTransformId === transform.id ? "active" : ""}`}
           style={{ paddingLeft: 8 + depth * 12 + 12 }}
           onClick={() => activateWorkspaceDocument("tableTransform", transform.id)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setCtxMenu({ kind: "tableTransform", id: transform.id, x: event.clientX, y: event.clientY });
+          }}
         >
           <i className="ds-icon fa-solid fa-shuffle" aria-hidden="true" />
           <span className="ds-name">{withProjectExtension(transform.name, "tableTransform")}</span>
@@ -2987,6 +3003,22 @@ export function Workspace() {
                 <div className="sp-ctx-sep" />
                 <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteDataset(id); setCtxMenu(null); })}>{t("common.delete")}</div>
               </>
+            );
+          })()}
+          {ctxMenu.kind === "tableTransform" && (() => {
+            const id = ctxMenu.id;
+            const transform = tableTransforms.find((item) => item.id === id);
+            if (!transform) return null;
+            return (
+              <div
+                className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`}
+                onClick={readOnly ? undefined : (() => {
+                  handleDeleteTableTransform(id);
+                  setCtxMenu(null);
+                })}
+              >
+                {t("common.delete")}
+              </div>
             );
           })()}
           {ctxMenu.kind === "graph" && (() => {

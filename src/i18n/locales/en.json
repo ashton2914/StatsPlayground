@@ -246,6 +246,7 @@
     "deleteAnalysis": "Delete analysis \"{{name}}\"",
     "updateAnalysisInputs": "Update analysis inputs \"{{name}}\"",
     "deleteTable": "Delete table \"{{name}}\"",
+    "deleteTableTransform": "Delete table transform \"{{name}}\"",
     "deleteTabulate": "Delete tabulate \"{{name}}\"",
     "deleteFitYByX": "Delete Fit Y by X \"{{name}}\"",
     "deleteDistribution": "Delete Distribution \"{{name}}\"",

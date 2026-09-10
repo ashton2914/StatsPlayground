@@ -36,6 +36,8 @@ assert.doesNotMatch(dataTableViewSource, /onTableOp|menu\.opSummary|menu\.opConc
 assert.match(dataTableViewSource, /menu\.manageExtras/);
 assert.doesNotMatch(workspaceSource, /handleExportTableTransform|handleImportTableTransform/);
 assert.match(workspaceSource, /menu\.transform/);
+assert.match(workspaceSource, /kind: "tableTransform"/);
+assert.match(workspaceSource, /handleDeleteTableTransform/);
 assert.match(dialogSource, /TABLE_TRANSFORM_TYPES\.map/);
 assert.doesNotMatch(dialogSource, /interface Props \{\s*op:/);
 

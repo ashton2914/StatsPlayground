@@ -197,6 +197,7 @@
     "deleteAnalysis": "Xóa phân tích \"{{name}}\"",
     "updateAnalysisInputs": "Cập nhật đầu vào phân tích \"{{name}}\"",
     "deleteTable": "Xóa bảng \"{{name}}\"",
+    "deleteTableTransform": "Xóa biến đổi bảng \"{{name}}\"",
     "deleteTabulate": "Delete tabulate \"{{name}}\"",
     "deleteFitYByX": "Xóa Khớp Y theo X \"{{name}}\"",
     "deleteDistribution": "Xóa phân tích phân phối \"{{name}}\"",

@@ -140,10 +140,29 @@ function stateCreator(
         );
         return applyResult(result, token, transformId);
       },
-      remove: (transformId) => set((state) => ({
-        definitions: state.definitions.filter((item) => item.id !== transformId),
-        bindings: state.bindings.filter((item) => item.definitionId !== transformId),
-      })),
+      remove: (transformId) => {
+        const lineage = dependencies.getLineage();
+        const operationIds = new Set(lineage.nodes
+          .filter((node) => node.nodeType === "operation"
+            && node.documentRef?.kind === "tableTransform"
+            && node.documentRef.id === transformId)
+          .map((node) => node.id));
+        dependencies.setLineage({
+          ...lineage,
+          graphHash: "",
+          nodes: lineage.nodes.filter((node) => !operationIds.has(node.id)),
+          edges: lineage.edges.filter((edge) => !operationIds.has(edge.source.nodeId)
+            && !operationIds.has(edge.target.nodeId)),
+        });
+        set((state) => {
+          const { [transformId]: _removed, ...pendingById } = state.pendingById;
+          return {
+            definitions: state.definitions.filter((item) => item.id !== transformId),
+            bindings: state.bindings.filter((item) => item.definitionId !== transformId),
+            pendingById,
+          };
+        });
+      },
       reset: () => set({ definitions: [], bindings: [], pendingById: {} }),
     };
   };
