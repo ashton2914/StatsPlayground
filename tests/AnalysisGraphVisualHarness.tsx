@@ -15,8 +15,8 @@ const data = { columns: ["__sp_variable__", "__sp_value__"], rows: [] };
 
 const compositeSpec: GraphSpec = {
   encoding: {
-    x: { name: "__sp_value__", type: "continuous" },
-    y: { name: "__sp_variable__", type: "nominal" },
+    x: { name: "__sp_variable__", type: "nominal" },
+    y: { name: "__sp_value__", type: "continuous" },
   },
   elements: [
     { kind: "histogram", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram } },

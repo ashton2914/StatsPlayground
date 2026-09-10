@@ -21,8 +21,8 @@ const presentationSource = readFileSync(
   new URL("../src/components/distribution/distributionPresentation.tsx", import.meta.url),
   "utf8",
 );
-const analysisViewSource = readFileSync(
-  new URL("../src/components/analysis/AnalysisView.tsx", import.meta.url),
+const analysisResultsSource = readFileSync(
+  new URL("../src/components/analysis/renderers/DistributionAnalysisResults.tsx", import.meta.url),
   "utf8",
 );
 
@@ -59,6 +59,6 @@ assert.match(presentationSource, /AnalysisText/);
 assert.doesNotMatch(presentationSource, /distribution-report-status/);
 assert.match(presentationSource, /externalDataState:\s*mapDistributionExternalDataState\(reportState, role\)/);
 assert.match(presentationSource, /renderGraph \? renderGraph\(graphProps\) : <GraphRuntime \{\.\.\.graphProps\} \/>/);
-assert.match(analysisViewSource, /function AnalysisUnavailable[\s\S]*return <AnalysisText/);
+assert.match(analysisResultsSource, /function AnalysisUnavailable[\s\S]*return <AnalysisText/);
 
 console.log("distribution report wiring OK");
