@@ -5,12 +5,14 @@
 Add one local build command that produces one portable download artifact for the
 current host platform:
 
-- Windows: one `StatsPlayground-<version>-windows-<arch>.exe` file.
+- Windows: one `StatsPlayground-<version>-windows-<arch>.zip` file containing
+  `StatsPlayground.exe`.
 - macOS: one `StatsPlayground-<version>-macos-<arch>.zip` file containing the
   runnable `StatsPlayground.app` bundle.
 
-The command builds only for the host operating system. Cross-compilation and
-release publishing are outside this issue.
+The command builds only for the host operating system. The GitHub Release
+workflow runs it independently on native Windows and macOS runners; it does not
+cross-compile.
 
 ## Platform Contract
 
@@ -18,9 +20,10 @@ The Windows executable may depend on the system WebView2 runtime. Windows 10 and
 Windows 11 normally provide it, but the build documentation must state this
 runtime requirement.
 
-The macOS application remains an `.app` bundle because that is the native GUI
-application format. The build command packages that bundle into one ZIP file so
-the download and transfer artifact is a single file. Local unsigned builds may
+Both platforms use versioned ZIP filenames while keeping stable application
+names inside the archives, so users can replace an older extracted application
+without changing its filename. The macOS application remains an `.app` bundle
+because that is the native GUI application format. Local unsigned builds may
 trigger Gatekeeper; signing and notarization are outside this issue.
 
 ## Build Interface
@@ -50,6 +53,8 @@ final artifact count exits non-zero with an actionable message.
 - `package.json`: `build:portable` and focused test scripts.
 - `docs/development.md`: usage, output locations, prerequisites, and platform
   limitations.
+- `.github/workflows/release.yml`: native platform matrix builds and GitHub
+  Release publication.
 - `.gitignore`: generated portable output, if it is not already ignored.
 
 ## Verification

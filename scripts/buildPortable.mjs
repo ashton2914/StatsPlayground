@@ -46,10 +46,26 @@ async function buildPortable() {
   runCommand(npmCommand, ["run", "tauri", "--", ...plan.tauriArgs.slice(1)], { cwd: repositoryRoot });
   await ensureNativeArtifactExists(plan.nativeArtifact);
 
-  if (plan.kind === "windows-executable") {
-    await fs.copyFile(plan.nativeArtifact, outputPath);
+  if (plan.kind === "windows-executable-zip") {
+    const stagedExecutable = path.join(outputDir, plan.innerName);
+    const compressionScript = path.join(repositoryRoot, "scripts", "compressPortable.ps1");
+    await fs.copyFile(plan.nativeArtifact, stagedExecutable);
+    try {
+      runCommand("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        compressionScript,
+        "-SourcePath",
+        stagedExecutable,
+        "-DestinationPath",
+        outputPath,
+      ], { cwd: repositoryRoot });
+    } finally {
+      await fs.rm(stagedExecutable, { force: true });
+    }
   } else {
-    runCommand("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", plan.nativeArtifact, outputPath], {
+    runCommand("ditto", ["-c", "-k", "--norsrc", "--keepParent", plan.nativeArtifact, outputPath], {
       cwd: repositoryRoot,
     });
   }

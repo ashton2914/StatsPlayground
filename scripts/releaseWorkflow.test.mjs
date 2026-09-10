@@ -54,13 +54,23 @@ test("defines parallel portable builds and a dependent GitHub Release job", () =
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /os: \[windows-latest, macos-latest\]/);
   assert.match(workflow, /node automation\/scripts\/syncReleaseVersion\.mjs/);
-  assert.match(workflow, /npm run build:portable/);
+  assert.match(workflow, /node source\/scripts\/buildPortable\.mjs/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
+  assert.match(workflow, /name: ci-transfer-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}/);
   assert.match(workflow, /needs: build/);
   assert.match(workflow, /actions\/download-artifact@v4/);
+  assert.match(workflow, /pattern: ci-transfer-\*/);
   assert.match(workflow, /merge-multiple: true/);
-  assert.match(workflow, /softprops\/action-gh-release@v2/);
+  assert.match(workflow, /gh release view "\$RELEASE_TAG"/);
+  assert.match(workflow, /gh release delete-asset "\$RELEASE_TAG" "\$asset" --yes/);
+  assert.match(workflow, /mapfile -t desired_assets/);
+  assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(workflow, /softprops\/action-gh-release@v3/);
   assert.match(workflow, /contents: write/);
+
+  const uploadIndex = workflow.indexOf("softprops/action-gh-release@v3");
+  const cleanupIndex = workflow.indexOf("name: Remove stale release assets");
+  assert.ok(uploadIndex >= 0 && cleanupIndex > uploadIndex, "stale assets must be removed only after upload succeeds");
 });
 
 test("keeps release automation available when publishing a tag that predates the workflow", () => {
@@ -70,6 +80,12 @@ test("keeps release automation available when publishing a tag that predates the
   assert.match(workflow, /ref: \$\{\{ env\.RELEASE_TAG \}\}\s*\n\s*path: source/);
   assert.match(workflow, /RELEASE_SOURCE_ROOT: source/);
   assert.match(workflow, /node automation\/scripts\/syncReleaseVersion\.mjs/);
+  assert.match(workflow, /node --test automation\/scripts\/portableBuildCore\.test\.mjs/);
+  assert.match(workflow, /cp automation\/scripts\/buildPortable\.mjs source\/scripts\/buildPortable\.mjs/);
+  assert.match(workflow, /cp automation\/scripts\/compressPortable\.ps1 source\/scripts\/compressPortable\.ps1/);
+  assert.match(workflow, /cp automation\/scripts\/portableBuildCore\.mjs source\/scripts\/portableBuildCore\.mjs/);
+  assert.match(workflow, /node source\/scripts\/buildPortable\.mjs/);
+  assert.doesNotMatch(workflow, /npm run (?:test:portable-build|build:portable)/);
   assert.match(workflow, /working-directory: source/);
   assert.match(workflow, /path: source\/release\/portable\/\*/);
 });

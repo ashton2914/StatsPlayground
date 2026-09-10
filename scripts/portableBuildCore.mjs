@@ -70,8 +70,9 @@ export function createPortableBuildPlan({ platform, arch, version, projectRoot }
     return {
       tauriArgs: ["tauri", "build", "--no-bundle"],
       nativeArtifact: `${projectRoot}/src-tauri/target/release/stats-playground.exe`,
-      portableName: `StatsPlayground-${version}-windows-${archLabel}.exe`,
-      kind: "windows-executable",
+      portableName: `StatsPlayground-${version}-windows-${archLabel}.zip`,
+      innerName: "StatsPlayground.exe",
+      kind: "windows-executable-zip",
     };
   }
 
@@ -80,6 +81,7 @@ export function createPortableBuildPlan({ platform, arch, version, projectRoot }
       tauriArgs: ["tauri", "build", "--bundles", "app"],
       nativeArtifact: `${projectRoot}/src-tauri/target/release/bundle/macos/StatsPlayground.app`,
       portableName: `StatsPlayground-${version}-macos-${archLabel}.zip`,
+      innerName: "StatsPlayground.app",
       kind: "macos-app-zip",
     };
   }

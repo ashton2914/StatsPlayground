@@ -44,13 +44,16 @@ jobs:
         run: node automation/scripts/syncReleaseVersion.mjs
       - run: npm ci
         working-directory: source
-      - run: npm run test:portable-build
-        working-directory: source
-      - run: npm run build:portable
-        working-directory: source
+      - run: node --test automation/scripts/portableBuildCore.test.mjs
+      - name: Stage release automation in tagged source
+        run: |
+          cp automation/scripts/buildPortable.mjs source/scripts/buildPortable.mjs
+          cp automation/scripts/compressPortable.ps1 source/scripts/compressPortable.ps1
+          cp automation/scripts/portableBuildCore.mjs source/scripts/portableBuildCore.mjs
+      - run: node source/scripts/buildPortable.mjs
       - uses: actions/upload-artifact@v4
         with:
-          name: portable-${{ runner.os }}-${{ runner.arch }}
+          name: ci-transfer-${{ runner.os }}-${{ runner.arch }}
           path: source/release/portable/*
           if-no-files-found: error
 
@@ -64,10 +67,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: portable-*
+          pattern: ci-transfer-*
           path: release-artifacts
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: StatsPlayground ${{ env.RELEASE_TAG }}
@@ -75,3 +78,20 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: release-artifacts/*
+      - name: Remove stale release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t desired_assets < <(find release-artifacts -maxdepth 1 -type f -exec basename {} \; | sort)
+          while IFS= read -r asset; do
+            keep=false
+            for desired in "${desired_assets[@]}"; do
+              if [[ "$asset" == "$desired" ]]; then
+                keep=true
+                break
+              fi
+            done
+            if [[ "$keep" == false ]]; then
+              gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+            fi
+          done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add one local command that creates one portable host-platform artifact: a Windows executable or a macOS ZIP containing the native app bundle.
+**Goal:** Add one local command that creates one versioned portable ZIP for the host platform, containing a stable `StatsPlayground.exe` or `StatsPlayground.app` name.
 
 **Architecture:** A small pure ES module owns platform detection, artifact naming, command planning, and final-output validation. A separate CLI module performs filesystem and child-process effects, which keeps both Windows and macOS contracts testable from either host while allowing a real macOS packaging acceptance run.
 
@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- Build only for the current host; cross-compilation and release publishing are out of scope.
-- Windows produces one `.exe` and may depend on the system WebView2 runtime.
+- Build only for the current host; the GitHub Release workflow coordinates native Windows and macOS runners instead of cross-compiling.
+- Windows produces one `.zip` containing `StatsPlayground.exe` and may depend on the system WebView2 runtime.
 - macOS produces one `.zip` containing `StatsPlayground.app`; signing and notarization are out of scope.
 - Final artifacts live in `release/portable/` and include product version, platform, and architecture in the filename.
 - Any unsupported platform, failed command, missing native output, or unexpected final artifact count exits non-zero.
@@ -41,7 +41,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createPortableBuildPlan } from "./portableBuildCore.mjs";
 
-test("plans a single portable Windows executable", () => {
+test("plans a Windows ZIP with a stable executable name", () => {
   const plan = createPortableBuildPlan({
     platform: "win32",
     arch: "x64",
@@ -51,8 +51,9 @@ test("plans a single portable Windows executable", () => {
 
   assert.deepEqual(plan.tauriArgs, ["tauri", "build", "--no-bundle"]);
   assert.equal(plan.nativeArtifact, "/repo/src-tauri/target/release/stats-playground.exe");
-  assert.equal(plan.portableName, "StatsPlayground-0.1.0-windows-x64.exe");
-  assert.equal(plan.kind, "windows-executable");
+  assert.equal(plan.portableName, "StatsPlayground-0.1.0-windows-x64.zip");
+  assert.equal(plan.innerName, "StatsPlayground.exe");
+  assert.equal(plan.kind, "windows-executable-zip");
 });
 
 test("plans a zipped native macOS application", () => {
@@ -194,8 +195,9 @@ The CLI must:
 5. Run `npm run <each plan.tauriArgs item>` using the platform's npm command
    (`npm.cmd` on Windows, `npm` elsewhere).
 6. Fail if `plan.nativeArtifact` does not exist.
-7. Copy the Windows executable, or run
-   `ditto -c -k --sequesterRsrc --keepParent <app> <zip>` on macOS.
+7. Stage the Windows executable as `StatsPlayground.exe` and invoke the
+  parameterized `compressPortable.ps1` through `powershell.exe -File`, or run
+  `ditto -c -k --norsrc --keepParent <app> <zip>` on macOS.
 8. Read the output directory, call `validatePortableArtifacts`, and print the
    repository-relative artifact path plus `formatByteSize(stat.size)`.
 9. Catch errors only at the top level, print `Portable build failed: <message>`
