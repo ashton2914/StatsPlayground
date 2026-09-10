@@ -749,6 +749,10 @@
     "themeDark": "Tối (Thử nghiệm)",
     "themeSystem": "Theo hệ thống",
     "language": "Ngôn ngữ",
+    "automaticUpdates": "Tự động kiểm tra bản cập nhật",
+    "automaticUpdatesHint": "Kiểm tra một lần mỗi khi StatsPlayground khởi động.",
+    "previewUpdates": "Bao gồm các bản phát hành xem trước",
+    "previewUpdatesHint": "Bao gồm các bản xem trước khi tìm phiên bản mới hơn.",
     "done": "Xong"
   },
   "help": {
@@ -764,6 +768,20 @@
     "acknowledgments": "Lời cảm ơn",
     "acknowledgmentsIntro": "StatsPlayground được xây dựng trên các dự án mã nguồn mở dưới đây. Xin chân thành cảm ơn các nhà bảo trì và đóng góp của các dự án này.",
     "close": "Đóng"
+  },
+  "update": {
+    "check": "Kiểm tra bản cập nhật",
+    "checking": "Đang kiểm tra...",
+    "upToDate": "StatsPlayground đã được cập nhật.",
+    "checkFailed": "Không thể kiểm tra bản cập nhật. Hãy thử lại sau.",
+    "availableTitle": "Có bản cập nhật",
+    "availableMessage": "Đã có phiên bản StatsPlayground mới.",
+    "currentVersion": "Phiên bản hiện tại",
+    "newVersion": "Phiên bản mới",
+    "assetUnavailable": "Không có tệp tải xuống trực tiếp cho nền tảng này. Trang phát hành sẽ được mở thay thế.",
+    "ignore": "Bỏ qua",
+    "download": "Tải bản cập nhật",
+    "openFailed": "Không thể mở liên kết tải bản cập nhật."
   },
   "tableExport": {
     "title": "Xuất bảng",

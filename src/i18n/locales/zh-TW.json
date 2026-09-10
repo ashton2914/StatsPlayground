@@ -743,6 +743,10 @@
     "themeDark": "深色（試驗性）",
     "themeSystem": "跟隨系統",
     "language": "介面語言",
+    "automaticUpdates": "自動檢查更新",
+    "automaticUpdatesHint": "每次啟動 StatsPlayground 時檢查一次。",
+    "previewUpdates": "取得 Preview 版本更新",
+    "previewUpdatesHint": "檢查更新時包含預覽版本。",
     "done": "完成"
   },
   "help": {
@@ -758,6 +762,20 @@
     "acknowledgments": "鳴謝",
     "acknowledgmentsIntro": "StatsPlayground 建構於下列開源專案之上，謹向各專案的維護者與貢獻者致上誠摯謝意。",
     "close": "關閉"
+  },
+  "update": {
+    "check": "檢查更新",
+    "checking": "正在檢查...",
+    "upToDate": "StatsPlayground 已是最新版本。",
+    "checkFailed": "無法檢查更新，請稍後再試。",
+    "availableTitle": "發現新版本",
+    "availableMessage": "StatsPlayground 有新版本可用。",
+    "currentVersion": "目前版本",
+    "newVersion": "新版本",
+    "assetUnavailable": "目前平台沒有直接下載檔案，將改為開啟 Release 頁面。",
+    "ignore": "忽略",
+    "download": "下載更新",
+    "openFailed": "無法開啟更新下載連結。"
   },
   "tableExport": {
     "title": "匯出資料表",

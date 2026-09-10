@@ -882,6 +882,10 @@
     "themeDark": "Dark (Experimental)",
     "themeSystem": "Follow system",
     "language": "Language",
+    "automaticUpdates": "Automatically check for updates",
+    "automaticUpdatesHint": "Check once whenever StatsPlayground starts.",
+    "previewUpdates": "Include preview releases",
+    "previewUpdatesHint": "Include preview releases when looking for a newer version.",
     "done": "Done"
   },
   "help": {
@@ -897,6 +901,20 @@
     "acknowledgments": "Acknowledgments",
     "acknowledgmentsIntro": "StatsPlayground is built on top of the following open-source projects. Sincere thanks to their maintainers and contributors.",
     "close": "Close"
+  },
+  "update": {
+    "check": "Check for Updates",
+    "checking": "Checking...",
+    "upToDate": "StatsPlayground is up to date.",
+    "checkFailed": "Unable to check for updates. Try again later.",
+    "availableTitle": "Update available",
+    "availableMessage": "A new version of StatsPlayground is available.",
+    "currentVersion": "Current version",
+    "newVersion": "New version",
+    "assetUnavailable": "No direct download is available for this platform. The release page will open instead.",
+    "ignore": "Ignore",
+    "download": "Download Update",
+    "openFailed": "Unable to open the update download."
   },
   "tableExport": {
     "title": "Export Tables",
