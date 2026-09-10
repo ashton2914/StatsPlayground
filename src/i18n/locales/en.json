@@ -111,8 +111,6 @@
     "hypothesisTest": "Hypothesis Test",
     "help": "Help",
     "about": "About",
-    "license": "License",
-    "contributors": "Contributors",
     "exportTables": "Export Tables",
     "fitModel": "Fit Model"
   },
@@ -893,7 +891,9 @@
     "contributorsIntro": "StatsPlayground is shaped by the following contributors.",
     "version": "Version",
     "description": "An ultra-lightweight, open-source, and extensible data analysis tool.",
-    "copyright": "Copyright © 2026 Ashton Huang. All rights reserved.",
+    "copyright": "Copyright © 2026 StatsPlayground.org contributors.",
+    "licenseLink": "Licensed under the Apache License 2.0.",
+    "backToAbout": "Back to About",
     "acknowledgments": "Acknowledgments",
     "acknowledgmentsIntro": "StatsPlayground is built on top of the following open-source projects. Sincere thanks to their maintainers and contributors.",
     "close": "Close"

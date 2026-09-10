@@ -109,8 +109,6 @@
     "hypothesisTest": "Kiểm định giả thuyết",
     "help": "Trợ giúp",
     "about": "Giới thiệu",
-    "license": "Giấy phép",
-    "contributors": "Người đóng góp",
     "exportTables": "Xuất bảng",
     "fitModel": "Khớp Mô hình"
   },
@@ -760,7 +758,9 @@
     "contributorsIntro": "StatsPlayground được xây dựng cùng với những người đóng góp sau đây.",
     "version": "Phiên bản",
     "description": "Công cụ phân tích dữ liệu siêu nhẹ, mã nguồn mở và có thể mở rộng.",
-    "copyright": "Bản quyền © 2026 Ashton Huang. Bảo lưu mọi quyền.",
+    "copyright": "Bản quyền © 2026 các cộng tác viên StatsPlayground.org.",
+    "licenseLink": "Được cấp phép theo Apache License 2.0.",
+    "backToAbout": "Quay lại Giới thiệu",
     "acknowledgments": "Lời cảm ơn",
     "acknowledgmentsIntro": "StatsPlayground được xây dựng trên các dự án mã nguồn mở dưới đây. Xin chân thành cảm ơn các nhà bảo trì và đóng góp của các dự án này.",
     "close": "Đóng"

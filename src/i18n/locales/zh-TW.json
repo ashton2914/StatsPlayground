@@ -109,8 +109,6 @@
     "hypothesisTest": "假設檢定",
     "help": "說明",
     "about": "關於",
-    "license": "授權",
-    "contributors": "貢獻者",
     "exportTables": "匯出資料表",
     "fitModel": "配適模型"
   },
@@ -754,7 +752,9 @@
     "contributorsIntro": "StatsPlayground 由以下貢獻者共同打造。",
     "version": "版本",
     "description": "一款超輕量、開源、可擴充的資料分析工具。",
-    "copyright": "版權所有 © 2026 Ashton Huang，保留所有權利。",
+    "copyright": "版權所有 © 2026 StatsPlayground.org 貢獻者。",
+    "licenseLink": "依 Apache License 2.0 授權。",
+    "backToAbout": "返回關於",
     "acknowledgments": "鳴謝",
     "acknowledgmentsIntro": "StatsPlayground 建構於下列開源專案之上，謹向各專案的維護者與貢獻者致上誠摯謝意。",
     "close": "關閉"

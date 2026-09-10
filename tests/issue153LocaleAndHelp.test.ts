@@ -19,7 +19,6 @@ const CONTRIBUTOR_NAMES = [
 ] as const;
 const REQUIRED_LOCALE_KEYS = [
   "menu.exportTables",
-  "menu.contributors",
   "tableExport.title",
   "tableExport.intro",
   "tableExport.tablesTitle",
@@ -42,6 +41,8 @@ const REQUIRED_LOCALE_KEYS = [
   "tableExport.pickerTitle.sptb",
   "help.contributorsTitle",
   "help.contributorsIntro",
+  "help.licenseLink",
+  "help.backToAbout",
 ] as const;
 
 function readLocale(locale: (typeof LOCALES)[number]): LocaleTree {
@@ -105,24 +106,32 @@ for (const locale of LOCALES) {
     undefined,
     `${locale} must not nest tableExport inside fitYByX.report.lackOfFit`,
   );
+  assert.equal(getValue(messages, "menu.license"), undefined, `${locale} should integrate License into About`);
+  assert.equal(getValue(messages, "menu.contributors"), undefined, `${locale} should integrate Contributors into About`);
+  assert.doesNotMatch(getValue(messages, "help.copyright") ?? "", /Ashton Huang/, `${locale} should use project attribution`);
 }
 
 const workspaceSource = readFileSync(WORKSPACE_PATH, "utf8");
-assert.match(workspaceSource, /useState<"about" \| "license" \| "contributors" \| null>\(null\)/, "Workspace should track contributors help mode");
-assert.match(workspaceSource, /t\("menu\.contributors"\)/, "Workspace Help menu should render contributors entry");
-assert.match(workspaceSource, /setHelpDialog\("contributors"\)/, "Workspace Help menu should open contributors dialog");
-expectInOrder(menuBlock(workspaceSource, "menu.help"), [
-  't("menu.about")',
-  't("menu.license")',
-  't("menu.contributors")',
-]);
+assert.match(workspaceSource, /const \[helpDialog, setHelpDialog\] = useState<boolean>\(false\)/, "Workspace should track a single About dialog");
+const helpMenu = menuBlock(workspaceSource, "menu.help");
+assert.match(helpMenu, /t\("menu\.about"\)/, "Workspace Help menu should render About");
+assert.doesNotMatch(helpMenu, /menu\.license|menu\.contributors/, "Workspace Help menu should not duplicate integrated About sections");
 
 const helpDialogSource = readFileSync(HELP_DIALOG_PATH, "utf8");
-assert.match(helpDialogSource, /mode: "about" \| "license" \| "contributors"/, "HelpDialog should accept contributors mode");
+assert.doesNotMatch(helpDialogSource, /mode: "about" \| "license" \| "contributors"/, "HelpDialog should own its integrated view state");
+assert.match(helpDialogSource, /useState<"about" \| "license">\("about"\)/, "HelpDialog should switch between About and License views");
+assert.match(helpDialogSource, /Licensed under the Apache License 2\.0\./, "About should expose the Apache license link text");
+assert.match(helpDialogSource, /\{ name: "zrender", license: "BSD-3-Clause" \}/, "About should acknowledge the ECharts rendering engine");
 assert.match(helpDialogSource, /const CONTRIBUTORS(?:\s*:\s*Contributor\[\])?\s*=\s*\[/, "HelpDialog should declare a contributors constant");
 const contributorsStart = helpDialogSource.indexOf("const CONTRIBUTORS");
 const contributorsEnd = helpDialogSource.indexOf("\n];", contributorsStart);
 assert.notEqual(contributorsEnd, -1, "HelpDialog should terminate the contributors constant");
 expectContributorNames(helpDialogSource.slice(contributorsStart, contributorsEnd));
+expectInOrder(helpDialogSource, [
+  't("help.acknowledgments"',
+  "ACKNOWLEDGMENTS.map",
+  't("help.contributorsTitle"',
+  "CONTRIBUTORS.map",
+]);
 
 console.log("issue 153 locale and help contract passed");

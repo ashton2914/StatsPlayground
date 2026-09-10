@@ -111,8 +111,6 @@
     "hypothesisTest": "假设检验",
     "help": "帮助",
     "about": "关于",
-    "license": "许可证",
-    "contributors": "贡献者",
     "exportTables": "导出表格",
     "fitModel": "拟合模型"
   },
@@ -768,7 +766,9 @@
     "contributorsIntro": "StatsPlayground 由以下贡献者共同打造。",
     "version": "版本",
     "description": "一款超轻量、开源、可扩展的数据分析工具。",
-    "copyright": "版权所有 © 2026 Ashton Huang，保留所有权利。",
+    "copyright": "版权所有 © 2026 StatsPlayground.org 贡献者。",
+    "licenseLink": "基于 Apache License 2.0 许可。",
+    "backToAbout": "返回关于",
     "acknowledgments": "鸣谢",
     "acknowledgmentsIntro": "StatsPlayground 基于以下开源项目构建，谨向各项目的维护者与贡献者致以诚挚谢意。",
     "close": "关闭"
