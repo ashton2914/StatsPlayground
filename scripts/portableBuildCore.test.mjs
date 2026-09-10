@@ -109,6 +109,38 @@ test("reports a failed build command", () => {
   );
 });
 
+test("starts Windows command scripts through the shell", () => {
+  let spawnOptions;
+
+  runCommand("npm.cmd", ["run", "tauri"], {
+    cwd: "C:\\repo",
+    platform: "win32",
+    spawnSyncImpl: (_command, _args, options) => {
+      spawnOptions = options;
+      return { status: 0, error: undefined };
+    },
+  });
+
+  assert.equal(spawnOptions.shell, true);
+});
+
+test("keeps direct executables out of the shell", () => {
+  for (const [command, platform] of [["powershell.exe", "win32"], ["npm.cmd", "darwin"]]) {
+    let spawnOptions;
+
+    runCommand(command, [], {
+      cwd: "/repo",
+      platform,
+      spawnSyncImpl: (_command, _args, options) => {
+        spawnOptions = options;
+        return { status: 0, error: undefined };
+      },
+    });
+
+    assert.equal(spawnOptions.shell, false);
+  }
+});
+
 test("reports a command that could not start", () => {
   assert.throws(
     () => runCommand("ditto", [], {
