@@ -89,6 +89,61 @@ function commandResult(
   };
 }
 
+function lineageWithTransform(): ProjectLineageGraph {
+  const sourceId = "artifact:table:source-a";
+  const outputId = "artifact:table:output-1";
+  const operationId = "operation:tableTransform:transform-1";
+  return {
+    id: "project-lineage",
+    name: "Project lineage",
+    graphVersion: 2,
+    graphHash: "cached",
+    nodes: [
+      {
+        nodeType: "artifact",
+        id: sourceId,
+        documentRef: { kind: "table", id: "source-a" },
+        name: "Source",
+        artifactKind: "table",
+        inputPort: { id: `${sourceId}:input`, name: "input", payloadKind: "table" },
+        outputPort: { id: `${sourceId}:output`, name: "output", payloadKind: "table" },
+      },
+      {
+        nodeType: "operation",
+        id: operationId,
+        kind: "tableTransform",
+        schemaVersion: "1",
+        documentRef: { kind: "tableTransform", id: "transform-1" },
+        inputPorts: [{ id: `${operationId}:input:source`, name: "source", payloadKind: "table" }],
+        outputPorts: [{ id: `${operationId}:output:result`, name: "result", payloadKind: "table" }],
+      },
+      {
+        nodeType: "artifact",
+        id: outputId,
+        documentRef: { kind: "table", id: "output-1" },
+        name: "Sorted table",
+        artifactKind: "table",
+        inputPort: { id: `${outputId}:input`, name: "input", payloadKind: "table" },
+        outputPort: { id: `${outputId}:output`, name: "output", payloadKind: "table" },
+      },
+    ],
+    edges: [
+      {
+        id: "source-to-transform",
+        kind: "consumes",
+        source: { nodeId: sourceId, portId: `${sourceId}:output` },
+        target: { nodeId: operationId, portId: `${operationId}:input:source` },
+      },
+      {
+        id: "transform-to-output",
+        kind: "produces",
+        source: { nodeId: operationId, portId: `${operationId}:output:result` },
+        target: { nodeId: outputId, portId: `${outputId}:input` },
+      },
+    ],
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((next) => { resolve = next; });
@@ -156,6 +211,34 @@ async function main() {
   older.resolve(commandResult("succeeded", binding(undefined, 2)));
   await olderRun;
   assert.equal(fencedStore.getState().bindings[0]?.outputGeneration, 3);
+
+  lineage = lineageWithTransform();
+  const pendingRemoval = deferred<TableTransformCommandResult>();
+  const removalStore = createTableTransformStore({
+    service: {
+      ...service,
+      run: async () => pendingRemoval.promise,
+    },
+    getLineage: () => lineage,
+    setLineage: (next) => { lineage = next; },
+  });
+  removalStore.getState().loadFromProject([definition()], [binding()]);
+  const pendingRun = removalStore.getState().rerun("transform-1");
+  removalStore.getState().remove("transform-1");
+  assert.deepEqual(
+    lineage.nodes.map((node) => node.id),
+    ["artifact:table:source-a", "artifact:table:output-1"],
+  );
+  assert.deepEqual(lineage.edges, []);
+  pendingRemoval.resolve(commandResult("succeeded", binding(undefined, 4)));
+  await pendingRun;
+  assert.deepEqual(removalStore.getState().definitions, []);
+  assert.deepEqual(removalStore.getState().bindings, []);
+  assert.deepEqual(
+    lineage.nodes.map((node) => node.id),
+    ["artifact:table:source-a", "artifact:table:output-1"],
+  );
+  assert.deepEqual(lineage.edges, []);
 
   fencedStore.getState().reset();
   assert.deepEqual(fencedStore.getState().definitions, []);
