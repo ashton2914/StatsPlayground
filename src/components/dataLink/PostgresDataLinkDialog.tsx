@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { dataLinkService } from "@/services/dataLinkService";
+import { createServerConnectionDefinition } from "@/utils/serverConnectionDefaults";
 import { createServerImportItems, hasServerImportNameConflict, runServerImportBatch, type ServerImportItem } from "@/utils/serverImportBatch";
 import type {
   ConnectionCredentials,
@@ -15,21 +16,10 @@ import type {
 import "./dataLink.css";
 
 interface PostgresDataLinkDialogProps {
-  connector?: "postgresql" | "mysql";
   existingDatasetNames: string[];
   onClose: () => void;
-  onImported: (targetName: string) => Promise<void>;
+  onImported: (targetName: string, connector: "postgresql" | "mysql") => Promise<void>;
 }
-
-const DEFAULT_DEFINITION: ConnectionDefinition = {
-  connector: "postgresql",
-  host: "127.0.0.1",
-  port: 55432,
-  database: "statsplayground_test",
-  authenticationType: "usernamePassword",
-  tlsMode: "verifyFull",
-  connectTimeoutSeconds: 10,
-};
 
 function displayValue(value: unknown): string {
   if (value === null) return "NULL";
@@ -50,14 +40,9 @@ function normalizeError(error: unknown): DataLinkError {
   return { category: "query", message: "Database operation could not be completed" };
 }
 
-export function PostgresDataLinkDialog({ connector = "postgresql", existingDatasetNames, onClose, onImported }: PostgresDataLinkDialogProps) {
+export function PostgresDataLinkDialog({ existingDatasetNames, onClose, onImported }: PostgresDataLinkDialogProps) {
   const { t } = useTranslation();
-  const [definition, setDefinition] = useState<ConnectionDefinition>({
-    ...DEFAULT_DEFINITION,
-    connector,
-    host: connector === "mysql" ? "localhost" : DEFAULT_DEFINITION.host,
-    port: connector === "mysql" ? 53307 : DEFAULT_DEFINITION.port,
-  });
+  const [definition, setDefinition] = useState<ConnectionDefinition>(() => createServerConnectionDefinition("postgresql", false));
   const [credentials, setCredentials] = useState<ConnectionCredentials>({
     username: "stats_reader",
     password: "",
@@ -82,6 +67,20 @@ export function PostgresDataLinkDialog({ connector = "postgresql", existingDatas
   };
   const [busy, setBusy] = useState<"connection" | "objects" | "preview" | "import" | null>(null);
   const [error, setError] = useState<DataLinkError | null>(null);
+
+  const setConnector = (connector: "postgresql" | "mysql") => {
+    if (definition.connector === connector || busy !== null) return;
+    setDefinition(createServerConnectionDefinition(connector, false));
+    setCredentials({ username: "stats_reader", password: "" });
+    setConnected(false);
+    setObjects([]);
+    setSelectedObject(null);
+    setColumns([]);
+    setPreview(null);
+    setItems([]);
+    setBatchProgress(null);
+    setError(null);
+  };
 
   const setDefinitionField = <K extends keyof ConnectionDefinition>(
     key: K,
@@ -181,7 +180,7 @@ export function PostgresDataLinkDialog({ connector = "postgresql", existingDatas
           if (summary.status !== "completed") throw summary.error ?? summary.status;
           return summary.totalRowsWritten;
         },
-        onImported,
+        (targetName) => onImported(targetName, definition.connector === "mysql" ? "mysql" : "postgresql"),
         (key, patch) => {
           updateItem(key, patch);
           if (patch.status === "completed" || patch.status === "failed") {
@@ -204,10 +203,14 @@ export function PostgresDataLinkDialog({ connector = "postgresql", existingDatas
       <div className="sp-dialog datalink-dialog postgres-datalink-dialog" onMouseDown={(event) => event.stopPropagation()}>
         <header className="datalink-header">
           <div>
-            <h2>{connector === "mysql" ? "MySQL DataLink" : t("postgresDataLink.title", { defaultValue: "PostgreSQL DataLink" })}</h2>
+            <h2>DataLink</h2>
             <p>{connected
               ? `${definition.host}:${definition.port} / ${definition.database}`
               : t("postgresDataLink.sessionOnly", { defaultValue: "Credentials remain in this dialog only" })}</p>
+          </div>
+          <div className="datalink-connector-switch" role="group" aria-label={t("dataLink.connector", { defaultValue: "Database type" })}>
+            <button type="button" className={definition.connector === "postgresql" ? "active" : ""} aria-pressed={definition.connector === "postgresql"} onClick={() => setConnector("postgresql")} disabled={isBusy}>PostgreSQL</button>
+            <button type="button" className={definition.connector === "mysql" ? "active" : ""} aria-pressed={definition.connector === "mysql"} onClick={() => setConnector("mysql")} disabled={isBusy}>MySQL</button>
           </div>
           <button className="datalink-close" onClick={onClose} title={t("common.cancel")} aria-label={t("common.cancel")} disabled={isBusy}>
             <i className="fa-solid fa-xmark" aria-hidden="true" />

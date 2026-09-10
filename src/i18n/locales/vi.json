@@ -16,6 +16,23 @@
     "selectionMode": { "label": "Chọn phương pháp", "automatic": "Tự động", "guided": "Có hướng dẫn", "manual": "Thủ công" },
     "graph": { "dataAndEstimates": "Dữ liệu và ước lượng", "diagnosticValues": "Giá trị chẩn đoán", "normalQq": "Biểu đồ Q-Q chuẩn", "distribution": "Tóm tắt phân phối", "observations": "Quan sát", "meanInterval": "Khoảng trung bình", "subjectProfile": "Hồ sơ đối tượng", "responseAxis": "Biến phản hồi", "observationOrderAxis": "Thứ tự quan sát", "groupResiduals": "Phần dư trong nhóm", "pairedDifferences": "Chênh lệch ghép cặp", "additiveResiduals": "Phần dư mô hình cộng", "theoreticalQuantileAxis": "Phân vị lý thuyết", "observedDiagnosticAxis": "Giá trị chẩn đoán quan sát", "reference": "Đường tham chiếu" }
   },
+  "serverBatch": {
+    "selectAll": "Chọn tất cả",
+    "selectObject": "Chọn {{name}}",
+    "queue": "Hàng đợi nhập",
+    "targetFor": "Tên đích cho {{name}}",
+    "nameConflict": "Tên đích không được để trống, trùng nhau hoặc trùng với tập dữ liệu hiện có.",
+    "pending": "Đang chờ",
+    "importing": "Đang nhập...",
+    "completed": "Đã nhập",
+    "failed": "Thất bại",
+    "progress": "Đã xử lý {{done}} / {{total}} bảng",
+    "selected": "Đã chọn {{count}}",
+    "stopping": "Đang hoàn tất bảng hiện tại...",
+    "stop": "Dừng sau bảng hiện tại",
+    "close": "Đóng",
+    "importSelected": "Nhập mục đã chọn ({{count}})"
+  },
   "common": {
     "ok": "OK",
     "cancel": "Hủy",
@@ -60,6 +77,7 @@
   "menu": {
     "file": "Tệp",
     "save": "Lưu",
+    "dataLink": "DataLink...",
     "preferences": "Tùy chọn",
     "openProject": "Mở dự án",
     "closeProject": "Đóng dự án",
@@ -118,6 +136,7 @@
     }
   },
   "dataLink": {
+    "connector": "Loại cơ sở dữ liệu",
     "title": "Liên kết dữ liệu SQLite",
     "objects": "Đối tượng",
     "noObjects": "Không có bảng hoặc dạng xem",
@@ -153,6 +172,36 @@
       "rows": "hàng",
       "close": "Đóng"
     }
+  },
+  "postgresDataLink": {
+    "title": "Liên kết dữ liệu PostgreSQL",
+    "sessionOnly": "Thông tin đăng nhập chỉ được giữ trong hộp thoại này",
+    "connection": "Kết nối",
+    "connected": "Đã kết nối",
+    "notTested": "Chưa kiểm tra",
+    "host": "Máy chủ",
+    "port": "Cổng",
+    "database": "Cơ sở dữ liệu",
+    "username": "Tên người dùng",
+    "password": "Mật khẩu",
+    "timeout": "Thời gian chờ (giây)",
+    "tlsMode": "Chế độ TLS",
+    "tlsDisabled": "Tắt",
+    "tlsRequired": "Bắt buộc",
+    "tlsVerifyCa": "Xác minh CA",
+    "tlsVerifyFull": "Xác minh đầy đủ",
+    "rootCertificate": "Chứng chỉ CA gốc (PEM, tùy chọn)",
+    "credentialsNote": "Mật khẩu sẽ bị xóa khi đóng hộp thoại",
+    "test": "Kiểm tra kết nối",
+    "testing": "Đang kiểm tra...",
+    "discover": "Khám phá đối tượng",
+    "discovering": "Đang khám phá...",
+    "connectPrompt": "Hãy kiểm tra kết nối trước",
+    "discoverPrompt": "Khám phá các bảng và dạng xem có thể truy cập",
+    "readOnly": "Khám phá và xem trước chỉ đọc",
+    "snapshotNote": "Nhập ảnh chụp vào không gian làm việc hiện tại",
+    "importSnapshot": "Nhập ảnh chụp",
+    "importing": "Đang nhập..."
   },
   "folder": {
     "defaultName": "Thư mục mới",
@@ -203,6 +252,8 @@
     "deleteDistribution": "Xóa phân tích phân phối \"{{name}}\"",
     "importCsv": "Nhập CSV \"{{file}}\"",
     "importSqlite": "Nhập SQLite \"{{file}}\"",
+    "importPostgres": "Nhập ảnh chụp PostgreSQL \"{{name}}\"",
+    "importMysql": "Nhập ảnh chụp MySQL \"{{name}}\"",
     "addRow": "Thêm hàng",
     "addRowsBatch": "Thêm hàng hàng loạt",
     "deleteRow": "Xóa hàng",

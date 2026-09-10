@@ -77,6 +77,7 @@
   "menu": {
     "file": "File",
     "save": "Save",
+    "dataLink": "DataLink...",
     "preferences": "Preferences",
     "openProject": "Open Project",
     "closeProject": "Close Project",
@@ -137,6 +138,7 @@
     }
   },
   "dataLink": {
+    "connector": "Database type",
     "title": "SQLite DataLink",
     "objects": "Objects",
     "noObjects": "No tables or views",
