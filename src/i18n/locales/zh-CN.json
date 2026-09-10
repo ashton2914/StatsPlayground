@@ -941,6 +941,7 @@
     "exportFailed": "导出失败:{{err}}",
     "importPickFirst": "请先在下拉框中选择一个属性表。",
     "importTooFewCols": "所选表至少需要 2 列(列名 + 至少一个属性字段)。",
+    "importMissingColumnName": "所选表缺少必需的“{{name}}”列。",
     "importDoneRows": "已导入 {{n}} 列",
     "importSkippedRows": "跳过 {{n}} 行({{names}}{{more}})",
     "importIgnoredCols": "忽略未识别列:{{names}}",

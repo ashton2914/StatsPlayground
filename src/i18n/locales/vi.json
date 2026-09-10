@@ -884,6 +884,7 @@
     "exportFailed": "Xuất thất bại: {{err}}",
     "importPickFirst": "Vui lòng chọn một bảng thuộc tính trước.",
     "importTooFewCols": "Bảng đã chọn cần ít nhất 2 cột (tên + ít nhất một thuộc tính).",
+    "importMissingColumnName": "Bảng đã chọn thiếu cột bắt buộc \"{{name}}\".",
     "importDoneRows": "Đã nhập {{n}} cột",
     "importSkippedRows": "đã bỏ qua {{n}} hàng ({{names}}{{more}})",
     "importIgnoredCols": "bỏ qua các cột không nhận dạng được: {{names}}",

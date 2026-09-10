@@ -1066,6 +1066,7 @@
     "exportFailed": "Export failed: {{err}}",
     "importPickFirst": "Please choose a property table first.",
     "importTooFewCols": "The selected table needs at least 2 columns (name + at least one property field).",
+    "importMissingColumnName": "The selected table is missing the required \"{{name}}\" column.",
     "importDoneRows": "Imported {{n}} columns",
     "importSkippedRows": "skipped {{n}} rows ({{names}}{{more}})",
     "importIgnoredCols": "ignored unknown columns: {{names}}",

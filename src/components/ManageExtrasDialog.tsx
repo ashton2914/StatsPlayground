@@ -9,6 +9,7 @@ import {
   resolveProjectBasenameForKind,
   type ProjectBasenameValidationError,
 } from "@/utils/projectFileNaming";
+import { resolvePropertyTableLayout } from "./manageExtrasImport";
 
 /**
  * Per-column "additional properties" bag (same shape as ColumnDisplayProps.extras).
@@ -267,8 +268,8 @@ export function ManageExtrasDialog({
     }
   };
 
-  /** Import from a user-picked dataset. Matches by 列名 (first column expected
-   *  to be either "列名" or whatever its first column is); other column headers
+  /** Import from a user-picked dataset. Matches by the localized 列名 header;
+   *  other column headers
    *  must match the standard naming scheme ("kindLabel" or "kindLabel / fieldLabel").
    *  Unmatched columns / rows are summarized in statusMsg. */
   const handleImport = async () => {
@@ -282,25 +283,32 @@ export function ManageExtrasDialog({
       const result = await dataService.queryTable({
         datasetId: importPickId, page: 0, pageSize: 100000,
       });
-      // First non-_row_id column is the key; remaining are field columns.
       const allCols = result.columns;
       const visibleCols = allCols.filter((c) => c !== "_row_id");
       if (visibleCols.length < 2) {
         setStatusMsg({ text: t("extras.importTooFewCols"), tone: "error" });
         return;
       }
+      const layout = resolvePropertyTableLayout(allCols, t("extras.columnNameHeader"));
+      if (!layout) {
+        setStatusMsg({
+          text: t("extras.importMissingColumnName", {
+            name: t("extras.columnNameHeader"),
+          }),
+          tone: "error",
+        });
+        return;
+      }
       const colIndexInRows = (name: string) => allCols.indexOf(name);
-      const keyColName = visibleCols[0];
-      const keyColIdx = colIndexInRows(keyColName);
 
-      // Map each subsequent header → FlatField via the global header index.
+      // Map every non-key header → FlatField via the global header index.
       const headerIdx = buildHeaderIndex(t);
       const fieldMappings: Array<{ rowColIdx: number; field: FlatField } | null> =
-        visibleCols.slice(1).map((h) => {
+        layout.propertyColumnNames.map((h) => {
           const f = headerIdx.get(h);
           return f ? { rowColIdx: colIndexInRows(h), field: f } : null;
         });
-      const unknownHeaders = visibleCols.slice(1).filter((h) => !headerIdx.has(h));
+      const unknownHeaders = layout.propertyColumnNames.filter((h) => !headerIdx.has(h));
 
       // Build name → source col index map for the cols currently in view.
       const nameToCi = new Map<string, number>();
@@ -318,7 +326,7 @@ export function ManageExtrasDialog({
       const kindsSeen = new Set<ExtraKind>(selectedKinds);
       for (const m of fieldMappings) if (m) kindsSeen.add(m.field.kind);
       for (const row of result.rows) {
-        const keyVal = row[keyColIdx];
+        const keyVal = row[layout.keyColumnIndex];
         const key = keyVal == null ? "" : String(keyVal);
         const ci = nameToCi.get(key);
         if (ci === undefined) {

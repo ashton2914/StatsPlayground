@@ -878,6 +878,7 @@
     "exportFailed": "匯出失敗：{{err}}",
     "importPickFirst": "請先在下拉選單中選擇一張屬性表。",
     "importTooFewCols": "所選資料表至少需要 2 欄（欄名 + 至少一個屬性欄位）。",
+    "importMissingColumnName": "所選資料表缺少必要的「{{name}}」欄。",
     "importDoneRows": "已匯入 {{n}} 欄",
     "importSkippedRows": "略過 {{n}} 列（{{names}}{{more}}）",
     "importIgnoredCols": "忽略未識別的欄：{{names}}",
