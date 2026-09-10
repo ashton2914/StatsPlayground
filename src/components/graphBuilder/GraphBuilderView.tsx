@@ -32,7 +32,7 @@ import { useTableSelectionStore } from "@/stores/useTableSelectionStore";
 import { ctxMenuRef } from "@/utils/ctxMenu";
 import { AddPaletteDialog } from "./AddPaletteDialog";
 import { AxisSettingsDialog, isAxisConfigEmpty } from "./AxisSettingsDialog";
-import { prepareAxisBinding } from "./axisBinding";
+import { bindGraphBuilderField } from "./axisBinding";
 import { updateGraphBuilder2D } from "./graphBuilderAxisInteractions";
 import { decideGraphBuilderDropRoute } from "./graphBuilderDropRouting";
 import { resolveVisibleSlotField, resolveVisualGraphSlots } from "./graphBuilderSlotLayout";
@@ -472,25 +472,6 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
     markDirty();
   }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem, markDirty]);
 
-  const setEncoding = useCallback(
-    (
-      updater:
-        | typeof encoding
-        | ((prev: typeof encoding) => typeof encoding),
-    ) => {
-      if (isMultivariateMode) return;
-      const next =
-        typeof updater === "function"
-          ? (updater as (p: typeof encoding) => typeof encoding)(encoding)
-          : updater;
-      if (isThreeDMode) {
-        setThreeDState((prev) => ({ ...prev, encoding: next }));
-      } else {
-        setTwoDState((prev) => ({ ...prev, encoding: next }));
-      }
-    },
-    [encoding, isMultivariateMode, isThreeDMode, setThreeDState, setTwoDState],
-  );
   const setElements = useCallback(
     (
       updater: ChartElement[] | ((prev: ChartElement[]) => ChartElement[]),
@@ -744,34 +725,12 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const bindFieldToSlot = useCallback(
     (slot: SlotKey, field: FieldRef) => {
       if (item.mode === "multivariate") return;
-      const prevField = encoding[slot];
-      const multiKey: "multiX" | "multiY" | null =
-        slot === "x" ? "multiX" : slot === "y" ? "multiY" : null;
-      const hadMulti = multiKey ? ((slot === "x" ? multiX : multiY)?.length ?? 0) > 0 : false;
-      const axisKey: "xAxis" | "yAxis" | null =
-        slot === "x" ? "xAxis" : slot === "y" ? "yAxis" : null;
-      const prevAxis = axisKey === "xAxis" ? xAxisConfig : axisKey === "yAxis" ? yAxisConfig : undefined;
-      const prepared = prepareAxisBinding(
-        prevField?.name,
-        field.name,
-        hadMulti,
-        prevAxis,
-      );
-      const { bindingChanged, axisConfig } = prepared;
-      if (axisKey && bindingChanged) {
-        setTwoDState((prev) => ({
-          ...prev,
-          encoding: { ...prev.encoding, [slot]: field },
-          ...(axisKey === "xAxis" ? { xAxis: axisConfig } : {}),
-          ...(axisKey === "yAxis" ? { yAxis: axisConfig } : {}),
-          ...(multiKey === "multiX" ? { multiX: [] } : {}),
-          ...(multiKey === "multiY" ? { multiY: [] } : {}),
-        }));
-        return;
-      }
-      setEncoding((prev) => ({ ...prev, [slot]: field }));
+      const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
+      const nextItem = bindGraphBuilderField(currentItem, slot, field);
+      updateItem(item.id, { modeStates: nextItem.modeStates });
+      markDirty();
     },
-    [item.mode, encoding, multiX, multiY, xAxisConfig, yAxisConfig, setTwoDState, setEncoding],
+    [item, updateItem, markDirty],
   );
 
   /** Replace a slot's multi-mode list. Length 0 / undefined exits
@@ -863,10 +822,10 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
     routeDropToSlot(slot, fields);
   };
 
-  /** Centralized drop-router for one slot. Continuous fields on X
-   *  always use multi-mode so column labels are X attributes and
-   *  values are Y variables. Y keeps direct single-field binding and
-   *  uses multi-mode for multiple numeric fields. Multi-field drops on
+  /** Centralized drop-router for one slot. In 2D, continuous fields on
+   *  X use multi-mode so column labels are X attributes and values are
+    *  Y variables, while Y uses multi-mode for multiple numeric fields.
+    *  In 3D, X/Y/Z keep direct single-field bindings. Multi-field drops on
    *  other slots use the first field only.
    *  Drop while already in multi-mode on x/y → APPEND.
    *  Any drop that would mix numeric + non-numeric columns in multi
@@ -896,7 +855,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         slot === "x" ? "multiX" : slot === "y" ? "multiY" : null;
       const existingMulti = multiKey ? (slot === "x" ? multiX : multiY) : undefined;
       const inMulti = !!existingMulti && existingMulti.length >= 1;
-      const route = decideGraphBuilderDropRoute(slot, fields, inMulti);
+      const route = decideGraphBuilderDropRoute(slot, fields, inMulti, item.mode);
 
       if (route === "reject") {
         flashRejectOnSlot(slot);
