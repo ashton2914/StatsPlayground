@@ -1,6 +1,8 @@
 # StatsPlayground
 An ultra-lightweight, open-source, and extensible data analysis tool.
 
+Official website: https://statsplayground.org
+
 ## DataLink
 
 SQLite DataLink supports read-only object discovery, schema inspection, 100-row

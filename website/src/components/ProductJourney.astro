@@ -1,0 +1,48 @@
+---
+const stages = [
+  {
+    number: "01",
+    title: "Shape the data",
+    description:
+      "Import tables, manage column properties, and keep repeatable transformations with the project.",
+  },
+  {
+    number: "02",
+    title: "Follow the signal",
+    description:
+      "Move from Graph Builder to focused statistical analyses without losing the source context.",
+  },
+  {
+    number: "03",
+    title: "Keep the reasoning",
+    description:
+      "Assemble results into reports and preserve reusable workflows for the next dataset.",
+  },
+];
+---
+
+<section class="product section" id="product" aria-labelledby="product-title" data-reveal>
+  <p class="eyebrow eyebrow--dark">From table to report</p>
+  <h2 class="section__title" id="product-title">Keep the analytical journey in one workspace.</h2>
+  <ol class="product__stages">
+    {
+      stages.map((stage) => (
+        <li class="product__stage">
+          <span class="product__number">{stage.number}</span>
+          <h3>{stage.title}</h3>
+          <p>{stage.description}</p>
+        </li>
+      ))
+    }
+  </ol>
+  <figure class="product__media" id="product-demo" data-reveal>
+    <img
+      src="/images/statsplayground-workspace.webp"
+      alt="Project view connecting tables, graphs, and analyses"
+      width="1600"
+      height="1600"
+      loading="lazy"
+    />
+    <figcaption>A project keeps source data and analytical results together.</figcaption>
+  </figure>
+</section>

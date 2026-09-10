@@ -1,0 +1,33 @@
+---
+const values = [
+  {
+    title: "Local-first ownership",
+    description:
+      "Analysis remains on your machine unless you explicitly connect or export it.",
+  },
+  {
+    title: "Visual statistical thinking",
+    description:
+      "Tables, graphs, analyses, and reports coexist in one project workspace.",
+  },
+  {
+    title: "Open and extensible",
+    description:
+      "The open-source project is designed to grow through reusable analytical workflows.",
+  },
+];
+---
+
+<section class="values section" aria-labelledby="values-title" data-reveal>
+  <h2 class="section__title" id="values-title">Built around the way analysis develops.</h2>
+  <div class="values__list">
+    {
+      values.map((value) => (
+        <article class="values__item">
+          <h3>{value.title}</h3>
+          <p>{value.description}</p>
+        </article>
+      ))
+    }
+  </div>
+</section>

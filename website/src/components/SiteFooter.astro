@@ -1,0 +1,29 @@
+---
+const links = [
+  { label: "Product", href: "#product" },
+  {
+    label: "Documentation",
+    href: "https://github.com/ashton2914/StatsPlayground/tree/dev/docs",
+  },
+  {
+    label: "Community",
+    href: "https://github.com/ashton2914/StatsPlayground/issues",
+  },
+  {
+    label: "Releases",
+    href: "https://github.com/ashton2914/StatsPlayground/releases",
+  },
+  {
+    label: "Repository",
+    href: "https://github.com/ashton2914/StatsPlayground",
+  },
+];
+---
+
+<footer class="site-footer">
+  <a class="site-footer__brand" href="/">StatsPlayground</a>
+  <nav aria-label="Footer">
+    {links.map((link) => <a href={link.href}>{link.label}</a>)}
+  </nav>
+  <p>Apache-2.0 licensed.</p>
+</footer>
