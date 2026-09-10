@@ -10,10 +10,11 @@ import { AnalysisStack } from "@/components/analysis/presentation/AnalysisStack"
 import { AnalysisText } from "@/components/analysis/presentation/AnalysisText";
 import type { AnalysisKindViewProps } from "@/components/analysis/analysisViewRegistry";
 import { useAnalysisExecution } from "@/components/analysis/useAnalysisExecution";
+import { getDistributionResponseAxis } from "@/components/distribution/distributionAxisInteractions";
 import { DistributionReport } from "@/components/distribution/DistributionReport";
 import { AxisSettingsDialog } from "@/components/graphBuilder/AxisSettingsDialog";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
-import type { RefLineX, RefLineY, YAxisConfig } from "@/graphCore";
+import type { RefLineY, YAxisConfig } from "@/graphCore";
 import {
   mapDistributionCompositeExternalDataState,
   type DistributionFrameSourceState,
@@ -46,7 +47,7 @@ export function DistributionAnalysisResults({
   const documentScrollRef = useRef<HTMLElement | null>(null);
   const [axisDialog, setAxisDialog] = useState<{
     role: DistributionBuilderGraphRole;
-    axis: "x" | "y";
+    sourceAxis: "x" | "y";
   } | null>(null);
   const executionState = useAnalysisExecution(item, dataset ?? null, runtime);
   const graphItems = useMemo(() => ({
@@ -63,6 +64,10 @@ export function DistributionAnalysisResults({
     }),
   }), [item]);
   const responseName = item.definition.responses.map((response) => response.name).join(", ") || item.name;
+  const overviewResponse = item.definition.responses[0];
+  const overviewResponseAxis = overviewResponse
+    ? getDistributionResponseAxis(item.definition.graphs.overview, overviewResponse)
+    : null;
   const updateGraph2D = (role: DistributionBuilderGraphRole, patch: Partial<Graph2DState>) => {
     if (!onGraphConfigChange) return;
     const graph = item.definition.graphs[role];
@@ -117,11 +122,30 @@ export function DistributionAnalysisResults({
                   externalDataState: mapDistributionCompositeExternalDataState(
                     toDistributionFrameSourceState(executionState),
                   ),
-                  onXAxisDblClick: onGraphConfigChange
-                    ? () => setAxisDialog({ role: "overview", axis: "x" })
+                  onYAxisDblClick: onGraphConfigChange && overviewResponseAxis
+                    ? () => setAxisDialog({ role: "overview", sourceAxis: overviewResponseAxis })
                     : undefined,
-                  onYAxisDblClick: onGraphConfigChange
-                    ? () => setAxisDialog({ role: "overview", axis: "y" })
+                  onAxisRangeChange: onGraphConfigChange
+                    ? (axis, min, max) => {
+                        if (axis !== "y") return;
+                        if (overviewResponseAxis === "x") {
+                          updateGraph2D("overview", {
+                            xAxis: {
+                              ...(item.definition.graphs.overview.modeStates.twoD.xAxis ?? {}),
+                              min,
+                              max,
+                            },
+                          });
+                        } else if (overviewResponseAxis === "y") {
+                          updateGraph2D("overview", {
+                            yAxis: {
+                              ...(item.definition.graphs.overview.modeStates.twoD.yAxis ?? {}),
+                              min,
+                              max,
+                            },
+                          });
+                        }
+                      }
                     : undefined,
                 },
               }}
@@ -143,24 +167,31 @@ export function DistributionAnalysisResults({
       </AnalysisFrame>
       {axisDialog && (() => {
         const twoD = item.definition.graphs[axisDialog.role].modeStates.twoD;
+        const sourceAxis = axisDialog.sourceAxis;
+        const refLines = sourceAxis === "x"
+          ? (twoD.refLinesX ?? []).map(({ x, ...line }) => ({ ...line, y: x }))
+          : twoD.refLinesY ?? [];
         return (
           <AxisSettingsDialog
-            axis={axisDialog.axis}
-            refLines={axisDialog.axis === "x" ? twoD.refLinesX ?? [] : twoD.refLinesY ?? []}
-            setRefLines={axisDialog.axis === "x"
-              ? (lines: RefLineX[]) => updateGraph2D(axisDialog.role, { refLinesX: lines })
-              : (lines: RefLineY[]) => updateGraph2D(axisDialog.role, { refLinesY: lines })}
-            autoSpecLines={axisDialog.axis === "x"
-              ? !!twoD.autoSpecLinesX
+            axis="y"
+            refLines={refLines}
+            setRefLines={(lines: RefLineY[]) => updateGraph2D(
+              axisDialog.role,
+              sourceAxis === "x"
+                ? { refLinesX: lines.map(({ y, ...line }) => ({ ...line, x: y })) }
+                : { refLinesY: lines },
+            )}
+            autoSpecLines={sourceAxis === "x"
+              ? !!(twoD.autoSpecLinesX ?? twoD.autoSpecLines)
               : !!(twoD.autoSpecLinesY ?? twoD.autoSpecLines)}
             setAutoSpecLines={(enabled) => updateGraph2D(
               axisDialog.role,
-              axisDialog.axis === "x" ? { autoSpecLinesX: enabled } : { autoSpecLinesY: enabled },
+              sourceAxis === "x" ? { autoSpecLinesX: enabled } : { autoSpecLinesY: enabled },
             )}
-            axisConfig={axisDialog.axis === "x" ? twoD.xAxis : twoD.yAxis}
+            axisConfig={sourceAxis === "x" ? twoD.xAxis : twoD.yAxis}
             setAxisConfig={(config: YAxisConfig | undefined) => updateGraph2D(
               axisDialog.role,
-              axisDialog.axis === "x" ? { xAxis: config } : { yAxis: config },
+              sourceAxis === "x" ? { xAxis: config } : { yAxis: config },
             )}
             onClose={() => setAxisDialog(null)}
           />

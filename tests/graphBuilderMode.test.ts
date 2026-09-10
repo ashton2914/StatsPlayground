@@ -63,6 +63,28 @@ assert.equal(getLayerMode("points"), "2d");
 assert.equal(getLayerMode("surface"), "3d");
 assert.equal(getLayerMode("correlationMatrix"), "multivariate");
 
+const embeddedDistribution = normalizeGraphBuilderItem({
+  id: "distribution-graph:distribution-1:overview",
+  name: "Distribution 1 overview",
+  sourceDatasetId: "dataset-1",
+  mode: "2d",
+  modeStates: {
+    twoD: {
+      ...createDefaultGraph2DState(),
+      encoding: { x: continuous("height") },
+      multiX: [],
+      elements: [{ kind: "histogram", enabled: true }],
+    },
+    threeD: createDefaultGraph3DState(),
+    multivariate: createDefaultMultivariateGraphState(),
+  },
+  filters: [],
+  sampling: { mode: "full" },
+  createdAt: "2026-09-10T00:00:00.000Z",
+});
+assert.deepEqual(embeddedDistribution.modeStates.twoD.encoding.x, continuous("height"));
+assert.deepEqual(embeddedDistribution.modeStates.twoD.multiX, []);
+
 const legacy2d = normalizeGraphBuilderItem({
   ...legacyBase,
   threeD: false,

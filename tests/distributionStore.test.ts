@@ -77,6 +77,18 @@ const customOverview = {
     },
   },
 };
+const yBound = item("y-bound", "Distribution 5");
+const customBoxPlot = {
+  ...yBound.graphs.boxPlot,
+  modeStates: {
+    ...yBound.graphs.boxPlot.modeStates,
+    twoD: {
+      ...yBound.graphs.boxPlot.modeStates.twoD,
+      encoding: { y: columns[0]!.field },
+      yAxis: { min: 2, max: 8 },
+    },
+  },
+};
 const malformed = {
   ...item("malformed", "Malformed Distribution"),
   analysis: { confidenceLevel: 2 },
@@ -102,14 +114,18 @@ const invalidRoles = {
 };
 useDistributionStore.getState().loadFromProject([
   { ...valid, graphs: { ...valid.graphs, overview: customOverview } },
+  { ...yBound, graphs: { ...yBound.graphs, boxPlot: customBoxPlot } },
   malformed,
   wrongGraphFamily,
   partial,
   invalidRoles,
 ]);
 const loaded = useDistributionStore.getState().items;
-assert.deepEqual(loaded.map(({ id }) => id), ["loaded", "malformed", "wrong-family", "partial"]);
+assert.deepEqual(loaded.map(({ id }) => id), ["loaded", "y-bound", "malformed", "wrong-family", "partial"]);
 assert.equal(loaded[0]?.graphs.overview.modeStates.twoD.xAxis?.min, 1);
+const loadedYBound = loaded.find(({ id }) => id === "y-bound")!;
+assert.deepEqual(loadedYBound.graphs.boxPlot.modeStates.twoD.encoding.y, columns[0]!.field);
+assert.equal(loadedYBound.graphs.boxPlot.modeStates.twoD.yAxis?.min, 2);
 assert.equal(loaded.find(({ id }) => id === "malformed")?.analysis.confidenceLevel, 0.95);
 assert.deepEqual(
   loaded.find(({ id }) => id === "malformed")?.graphs.overview.modeStates.twoD.elements,

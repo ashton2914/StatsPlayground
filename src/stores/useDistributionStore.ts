@@ -135,15 +135,17 @@ function materializeGraph(
     filters: graph.filters,
     sampling: graph.sampling,
   };
-  const binding = candidate.modeStates.twoD.encoding.x;
+  const hasResponseBinding = [
+    candidate.modeStates.twoD.encoding.x,
+    candidate.modeStates.twoD.encoding.y,
+  ].some((binding) => binding?.name === response.name && binding.type === response.type);
   const elements = candidate.modeStates.twoD.elements
     .filter((element) => element.enabled !== false)
     .map((element) => [element.kind, element.options?.elementId]);
   const expectedElements = fallback.modeStates.twoD.elements
     .filter((element) => element.enabled !== false)
     .map((element) => [element.kind, element.options?.elementId]);
-  return binding?.name === response.name
-    && binding.type === response.type
+  return hasResponseBinding
     && JSON.stringify(elements) === JSON.stringify(expectedElements)
     ? candidate
     : fallback;

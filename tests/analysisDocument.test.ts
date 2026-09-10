@@ -80,17 +80,21 @@ analysis.definition.graphs.boxPlot.modeStates.twoD.elements[0] = {
   },
 };
 analysis.definition.graphs.overview.modeStates.twoD.xAxis = { min: 55, max: 145 };
+analysis.definition.graphs.overview.modeStates.twoD.yAxis = { min: 0, max: 1 };
 analysis.definition.graphs.overview.modeStates.twoD.refLinesX = [{ x: 100, label: "Target" }];
+analysis.definition.graphs.overview.modeStates.twoD.refLinesY = [{ y: 0.5, label: "Wrong axis" }];
 analysis.definition.graphs.overview.modeStates.twoD.autoSpecLinesX = true;
+analysis.definition.graphs.overview.modeStates.twoD.autoSpecLinesY = false;
 const graphBuilderConfig = createDistributionGraphBuilderConfig(
   analysis.definition.graphs.overview,
   analysis.definition.graphs.boxPlot,
   analysis.definition.responses,
 );
 assert.deepEqual(graphBuilderConfig.modeStates.twoD.encoding, {});
-assert.deepEqual(graphBuilderConfig.modeStates.twoD.multiY, [
+assert.deepEqual(graphBuilderConfig.modeStates.twoD.multiX, [
   { name: "DIM1", type: "continuous" },
 ]);
+assert.deepEqual(graphBuilderConfig.modeStates.twoD.multiY, []);
 assert.equal(graphBuilderConfig.modeStates.twoD.xAxis, undefined);
 assert.deepEqual(graphBuilderConfig.modeStates.twoD.yAxis, { min: 55, max: 145 });
 assert.equal(graphBuilderConfig.modeStates.twoD.refLinesX, undefined);
@@ -126,7 +130,7 @@ const singleResponseItem = createEmbeddedGraphItem({
   createdAt: analysis.createdAt,
 });
 const singleResponseRequest = deriveGraphRequestParts(singleResponseItem);
-assert.deepEqual(singleResponseRequest.fields, [{ role: "multiY0", column: "DIM1" }]);
+assert.deepEqual(singleResponseRequest.fields, [{ role: "multiX0", column: "DIM1" }]);
 assert.equal(canExecuteGraphRequest(singleResponseItem, singleResponseRequest.fields, singleResponseRequest.elements), true);
 const multiResponseConfig = createDistributionGraphBuilderConfig(
   analysis.definition.graphs.overview,
@@ -140,9 +144,10 @@ const multiResponseConfig = createDistributionGraphBuilderConfig(
 );
 assert.deepEqual(multiResponseConfig.modeStates.twoD.encoding, {});
 assert.deepEqual(
-  multiResponseConfig.modeStates.twoD.multiY.map((field) => field.name),
+  multiResponseConfig.modeStates.twoD.multiX.map((field) => field.name),
   ["203-A1", "203-A2", "203-A3", "203-A4"],
 );
+assert.deepEqual(multiResponseConfig.modeStates.twoD.multiY, []);
 const graphBuilderItem = createEmbeddedGraphItem({
   id: "analysis-graph:analysis-112:distributionComposite",
   name: "Distribution",
@@ -154,10 +159,10 @@ const requestParts = deriveGraphRequestParts(graphBuilderItem);
 assert.deepEqual(
   requestParts.fields.map((field) => [field.role, field.column]),
   [
-    ["multiY0", "203-A1"],
-    ["multiY1", "203-A2"],
-    ["multiY2", "203-A3"],
-    ["multiY3", "203-A4"],
+    ["multiX0", "203-A1"],
+    ["multiX1", "203-A2"],
+    ["multiX2", "203-A3"],
+    ["multiX3", "203-A4"],
   ],
 );
 assert.deepEqual(requestParts.elements.map((element) => element.kind), ["histogram", "normalCurve", "boxplot"]);

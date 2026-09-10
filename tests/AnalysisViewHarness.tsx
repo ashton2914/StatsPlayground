@@ -24,7 +24,7 @@ function createDataset(): DatasetMeta {
   };
 }
 
-function createAnalysisDocument() {
+function createAnalysisDocument(responseAxis: "x" | "y" = "x") {
   const document = createAnalysisSampleDocument({
     datasetId: "dataset-1",
     analysisId: "analysis-1",
@@ -32,6 +32,14 @@ function createAnalysisDocument() {
     createdAt: "2026-09-03T00:00:00.000Z",
   });
   document.definition.graphs.overview.modeStates.twoD.elements = [];
+  if (responseAxis === "y") {
+    const response = document.definition.responses[0];
+    document.definition.graphs.overview.modeStates.twoD.encoding = {
+      ...document.definition.graphs.overview.modeStates.twoD.encoding,
+      x: undefined,
+      y: response,
+    };
+  }
   return document;
 }
 
@@ -173,18 +181,19 @@ function createResponse(quantile: number, generation: number): DistributionRepor
 }
 
 interface AnalysisViewHarnessProps {
-  mode?: "default" | "unsupportedPresentation";
+  mode?: "default" | "unsupportedPresentation" | "yBound";
 }
 
 export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessProps) {
   const [dataset] = useState(createDataset());
   const [item, setItem] = useState(() => mode === "unsupportedPresentation"
     ? createUnsupportedPresentationDocument()
-    : createAnalysisDocument());
+    : createAnalysisDocument(mode === "yBound" ? "y" : "x"));
   const [current, setCurrent] = useState(() => createResponse(101.044792, 4));
   const [computeCalls, setComputeCalls] = useState(0);
   const [generationCalls, setGenerationCalls] = useState(0);
   const [editInputsCalls, setEditInputsCalls] = useState(0);
+  const [showAnalysis, setShowAnalysis] = useState(true);
   const [deferNextResponse, setDeferNextResponse] = useState(false);
   const currentResponseRef = useRef(current);
   const currentDatasetRef = useRef(dataset);
@@ -222,11 +231,24 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
         }
         return currentResponseRef.current;
       },
-      renderGraph: ({ role, externalDataState, optionFactory, item: graphItem, onXAxisDblClick, onYAxisDblClick }) => (
+      renderGraph: ({
+        role,
+        externalDataState,
+        optionFactory,
+        item: graphItem,
+        onXAxisDblClick,
+        onYAxisDblClick,
+        onAxisRangeChange,
+      }) => (
         <div>
           {`Distribution graph:${role}:${externalDataState?.status ?? "pipeline"}:${optionFactory ? "custom-option" : "native"}`}
-          <button type="button" onClick={onXAxisDblClick}>{`Open ${role} X axis`}</button>
-          <button type="button" onClick={onYAxisDblClick}>{`Open ${role} Y axis`}</button>
+          {onXAxisDblClick && <button type="button" onClick={onXAxisDblClick}>{`Open ${role} X axis`}</button>}
+          {onYAxisDblClick && <button type="button" onClick={onYAxisDblClick}>{`Open ${role} Y axis`}</button>}
+          {role === "overview" && (
+            <button type="button" onClick={() => onAxisRangeChange?.("y", 4, 20)}>
+              Zoom overview response axis
+            </button>
+          )}
           {role === "overview" && (
             <>
               <output data-testid="composite-element-kinds">
@@ -267,25 +289,31 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
       >
         Resolve pending response
       </button>
+      <button type="button" onClick={() => setShowAnalysis(false)}>Navigate away</button>
+      <button type="button" onClick={() => setShowAnalysis(true)}>Navigate back</button>
       <div>{JSON.stringify(item.definition) === originalDefinition ? "definition:unchanged" : "definition:mutated"}</div>
       <div>{`compute-calls:${computeCalls}`}</div>
       <div>{`generation-calls:${generationCalls}`}</div>
       <output data-testid="overview-x-min">{item.definition.graphs.overview.modeStates.twoD.xAxis?.min ?? "auto"}</output>
+      <output data-testid="overview-y-min">{item.definition.graphs.overview.modeStates.twoD.yAxis?.min ?? "auto"}</output>
+      <output data-testid="config-revision">{item.configRevision}</output>
       <output data-testid="edit-inputs-calls">{editInputsCalls}</output>
-      <AnalysisView
-        item={item}
-        dataset={dataset}
-        runtime={runtimeRef.current}
-        canEditInputs
-        onEditInputs={() => setEditInputsCalls((count) => count + 1)}
-        onGraphConfigChange={(role, graph) => setItem((previous) => ({
-          ...previous,
-          definition: {
-            ...previous.definition,
-            graphs: { ...previous.definition.graphs, [role]: graph },
-          },
-        }))}
-      />
+      {showAnalysis && (
+        <AnalysisView
+          item={item}
+          dataset={dataset}
+          runtime={runtimeRef.current}
+          canEditInputs
+          onEditInputs={() => setEditInputsCalls((count) => count + 1)}
+          onGraphConfigChange={(role, graph) => setItem((previous) => ({
+            ...previous,
+            definition: {
+              ...previous.definition,
+              graphs: { ...previous.definition.graphs, [role]: graph },
+            },
+          }))}
+        />
+      )}
     </>
   );
 }

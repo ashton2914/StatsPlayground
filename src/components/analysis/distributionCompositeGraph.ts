@@ -1,4 +1,5 @@
 import type { ChartElement, FieldRef } from "@/graphCore";
+import { getDistributionResponseAxis } from "@/components/distribution/distributionAxisInteractions";
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "@/types/graphData";
 import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 
@@ -21,7 +22,14 @@ export function createDistributionGraphBuilderConfig(
 ): EmbeddedGraphConfig {
   const twoD = overview.modeStates.twoD;
   const { x: _x, y: _y, ...nonAxisEncoding } = twoD.encoding;
-  const responseRefLines = twoD.refLinesY ?? twoD.refLinesX?.map(({ x, ...line }) => ({ ...line, y: x }));
+  const responseAxis = responses[0] ? getDistributionResponseAxis(overview, responses[0]) : null;
+  const responseAxisConfig = responseAxis === "x" ? twoD.xAxis : twoD.yAxis;
+  const responseRefLines = responseAxis === "x"
+    ? twoD.refLinesX?.map(({ x, ...line }) => ({ ...line, y: x }))
+    : twoD.refLinesY;
+  const responseAutoSpecLines = responseAxis === "x"
+    ? twoD.autoSpecLinesX ?? twoD.autoSpecLines
+    : twoD.autoSpecLinesY ?? twoD.autoSpecLines;
   return {
     ...overview,
     modeStates: {
@@ -29,15 +37,15 @@ export function createDistributionGraphBuilderConfig(
       twoD: {
         ...twoD,
         encoding: { ...nonAxisEncoding },
-        multiX: [],
-        multiY: structuredClone(responses),
+        multiX: structuredClone(responses),
+        multiY: [],
         xAxis: undefined,
-        yAxis: twoD.yAxis ?? twoD.xAxis,
+        yAxis: responseAxisConfig,
         refLinesX: undefined,
         refLinesY: responseRefLines,
         autoSpecLines: undefined,
         autoSpecLinesX: undefined,
-        autoSpecLinesY: twoD.autoSpecLinesY ?? twoD.autoSpecLinesX ?? twoD.autoSpecLines,
+        autoSpecLinesY: responseAutoSpecLines,
         elements: [
           { kind: "histogram", enabled: true, options: layerOptions([overview], "histogram") },
           {

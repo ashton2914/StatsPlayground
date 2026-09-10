@@ -3091,8 +3091,8 @@ for (const element of [
   const responses = ["203-A1", "203-A2", "203-A3", "203-A4"];
   const spec: GraphSpec = {
     encoding: {
-      x: { name: "__sp_value__", type: "continuous" },
-      y: { name: "__sp_variable__", type: "nominal" },
+      x: { name: "__sp_variable__", type: "nominal" },
+      y: { name: "__sp_value__", type: "continuous" },
     },
     elements: [
       { kind: "histogram", enabled: true },
@@ -3160,14 +3160,16 @@ for (const element of [
     undefined,
     frame,
   ).panels[0].option as Record<string, unknown>;
+  const xAxis = (Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis) as Record<string, unknown>;
   const yAxis = (Array.isArray(option.yAxis) ? option.yAxis[0] : option.yAxis) as Record<string, unknown>;
-  assert.deepEqual(yAxis.data, responses, "multiY source columns must become ordered category labels");
+  assert.deepEqual(xAxis.data, responses, "multiX source columns must become ordered category labels");
+  assert.equal(yAxis.type, "value", "Distribution response values must render on Y");
   const series = panelSeries(option);
   const categoriesInCustomSeries = (idPrefix: string) => Array.from(new Set(
     series
       .filter((entry) => String(entry.id ?? "").startsWith(idPrefix))
       .flatMap((entry) => Array.isArray(entry.data) ? entry.data : [])
-      .map((point) => Array.isArray(point) ? String(point[1] ?? "") : "")
+      .map((point) => Array.isArray(point) ? String(point[0] ?? "") : "")
       .filter(Boolean),
   ));
   assert.deepEqual(categoriesInCustomSeries("__hist_cat_"), responses);
@@ -3178,13 +3180,17 @@ for (const element of [
   })(
     { dataIndex: 0, seriesId: normalSeries.id },
     {
-      coord: ([value]: [number, string]) => [value * 10, 50],
+      coord: ([, value]: [string, number]) => [50, value * 10],
       size: () => [100, 100],
     },
   );
   assert.ok(
-    normalShape.shape.points.every((point) => point[1] >= 14 && point[1] <= 99),
+    normalShape.shape.points.every((point) => point[0] >= 0 && point[0] <= 100),
     "precomputed curves must stay within their category slot",
+  );
+  assert.ok(
+    new Set(normalShape.shape.points.map((point) => point[1])).size > 1,
+    "precomputed curve values must vary along the Y axis",
   );
   const boxplotSeries = series.find((entry) => entry.type === "boxplot");
   assert.ok(boxplotSeries);

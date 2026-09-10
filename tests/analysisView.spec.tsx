@@ -119,23 +119,58 @@ test("unsupported presentation schema does not invoke generation or compute serv
   await expect(component.getByText(/Distribution graph:/)).toHaveCount(0);
 });
 
-test("builder-backed Analysis graphs open axis settings from both axes", async ({ mount }) => {
+test("Distribution composite exposes only its persisted response axis settings", async ({ mount }) => {
   const component = await mount(<AnalysisViewHarness />);
 
-  for (const axis of ["X", "Y"] as const) {
-    await component.getByRole("button", { name: `Open overview ${axis} axis` }).click();
-    await expect(component.locator(".sp-dialog-title")).toHaveText(`${axis} Axis Settings`);
-    await component.getByRole("button", { name: "Done" }).click();
-  }
+  await expect(component.getByRole("button", { name: "Open overview X axis" })).toHaveCount(0);
+  await component.getByRole("button", { name: "Open overview Y axis" }).click();
+  await expect(component.locator(".sp-dialog-title")).toHaveText("Y Axis Settings");
+  await component.getByRole("button", { name: "Done" }).click();
 });
 
-test("Analysis axis settings update the selected persisted graph config", async ({ mount }) => {
+test("Distribution response axis settings persist to the source X-bound graph", async ({ mount }) => {
   const component = await mount(<AnalysisViewHarness />);
 
-  await component.getByRole("button", { name: "Open overview X axis" }).click();
+  await component.getByRole("button", { name: "Open overview Y axis" }).click();
   await component.getByLabel("Min").fill("80");
   await expect(component.getByTestId("overview-x-min")).toHaveText("80");
+  await expect(component.getByTestId("overview-y-min")).toHaveText("auto");
+  await expect(component.getByTestId("config-revision")).toHaveText("1");
+  await expect(component.getByText("compute-calls:1")).toBeVisible();
   await component.getByRole("button", { name: "Done" }).click();
+});
+
+test("Distribution response axis settings persist to a legacy Y-bound graph", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="yBound" />);
+
+  await component.getByRole("button", { name: "Open overview Y axis" }).click();
+  await component.getByLabel("Min").fill("80");
+  await expect(component.getByTestId("overview-x-min")).toHaveText("auto");
+  await expect(component.getByTestId("overview-y-min")).toHaveText("80");
+  await expect(component.getByTestId("config-revision")).toHaveText("1");
+  await expect(component.getByText("compute-calls:1")).toBeVisible();
+  await component.getByRole("button", { name: "Done" }).click();
+});
+
+test("Distribution axis range persists through navigation without changing statistical revision", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness />);
+
+  await expect(component.getByTestId("overview-x-min")).toHaveText("auto");
+  await expect(component.getByTestId("config-revision")).toHaveText("1");
+  await expect(component.getByText("compute-calls:1")).toBeVisible();
+
+  await component.getByRole("button", { name: "Zoom overview response axis" }).click();
+
+  await expect(component.getByTestId("overview-x-min")).toHaveText("4");
+  await expect(component.getByTestId("config-revision")).toHaveText("1");
+  await expect(component.getByText("compute-calls:1")).toBeVisible();
+
+  await component.getByRole("button", { name: "Navigate away" }).click();
+  await expect(component.locator("[data-analysis-document]")).toHaveCount(0);
+  await component.getByRole("button", { name: "Navigate back" }).click();
+
+  await expect(component.getByTestId("overview-x-min")).toHaveText("4");
+  await expect(component.getByTestId("config-revision")).toHaveText("1");
 });
 
 test("fits the painted Distribution graph without an internal vertical scroller", async ({ mount, page }) => {

@@ -167,7 +167,8 @@ function normalizeTwoDEncodingAndMultiAxes(
     elements.filter((element) => element.enabled !== false).map((element) => element.kind),
   );
   const isInternalGraph = itemId.startsWith("analysis-graph:")
-    || itemId.startsWith("fit-y-by-x-graph:");
+    || itemId.startsWith("fit-y-by-x-graph:")
+    || itemId.startsWith("distribution-graph:");
   const continuousX = encoding.x?.type === "continuous" ? encoding.x : undefined;
   const isValueOnlyDistribution = enabledKinds.has("histogram")
     || enabledKinds.has("normalCurve")
