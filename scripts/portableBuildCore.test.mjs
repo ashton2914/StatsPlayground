@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { createPortableBuildPlan, validatePortableArtifacts, formatByteSize, runCommand, validatePortableVersion } from "./portableBuildCore.mjs";
+
+const buildPortableSource = fs.readFileSync(new URL("./buildPortable.mjs", import.meta.url), "utf8");
 
 test("accepts artifact-safe semantic versions", () => {
   const validVersions = [
@@ -27,7 +30,7 @@ test("rejects malformed or unsafe package versions", () => {
   }
 });
 
-test("plans a single portable Windows executable", () => {
+test("plans a Windows ZIP with a stable executable name", () => {
   const plan = createPortableBuildPlan({
     platform: "win32",
     arch: "x64",
@@ -37,8 +40,22 @@ test("plans a single portable Windows executable", () => {
 
   assert.deepEqual(plan.tauriArgs, ["tauri", "build", "--no-bundle"]);
   assert.equal(plan.nativeArtifact, "/repo/src-tauri/target/release/stats-playground.exe");
-  assert.equal(plan.portableName, "StatsPlayground-0.1.0-windows-x64.exe");
-  assert.equal(plan.kind, "windows-executable");
+  assert.equal(plan.portableName, "StatsPlayground-0.1.0-windows-x64.zip");
+  assert.equal(plan.innerName, "StatsPlayground.exe");
+  assert.equal(plan.kind, "windows-executable-zip");
+});
+
+test("binds Windows compression paths through a PowerShell file", () => {
+  const compressionScriptUrl = new URL("./compressPortable.ps1", import.meta.url);
+
+  assert.match(buildPortableSource, /"-File"/);
+  assert.match(buildPortableSource, /compressPortable\.ps1/);
+  assert.doesNotMatch(buildPortableSource, /\$args/);
+  assert.equal(fs.existsSync(compressionScriptUrl), true);
+
+  const compressionScriptSource = fs.readFileSync(compressionScriptUrl, "utf8");
+  assert.match(compressionScriptSource, /param\s*\(/);
+  assert.match(compressionScriptSource, /Compress-Archive -LiteralPath \$SourcePath -DestinationPath \$DestinationPath -Force/);
 });
 
 test("plans a zipped native macOS application", () => {
@@ -52,7 +69,13 @@ test("plans a zipped native macOS application", () => {
   assert.deepEqual(plan.tauriArgs, ["tauri", "build", "--bundles", "app"]);
   assert.equal(plan.nativeArtifact, "/repo/src-tauri/target/release/bundle/macos/StatsPlayground.app");
   assert.equal(plan.portableName, "StatsPlayground-0.1.0-macos-arm64.zip");
+  assert.equal(plan.innerName, "StatsPlayground.app");
   assert.equal(plan.kind, "macos-app-zip");
+});
+
+test("packages macOS without an extra metadata directory", () => {
+  assert.doesNotMatch(buildPortableSource, /--sequesterRsrc/);
+  assert.match(buildPortableSource, /"--norsrc"/);
 });
 
 test("rejects unsupported hosts", () => {
