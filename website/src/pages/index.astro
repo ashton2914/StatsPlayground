@@ -1,0 +1,20 @@
+---
+import Capabilities from "../components/Capabilities.astro";
+import CoreValues from "../components/CoreValues.astro";
+import Hero from "../components/Hero.astro";
+import OpenSourceCta from "../components/OpenSourceCta.astro";
+import ProductJourney from "../components/ProductJourney.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout title="StatsPlayground · Local-first statistical exploration">
+  <SiteHeader slot="header" />
+  <Hero />
+  <ProductJourney />
+  <CoreValues />
+  <Capabilities />
+  <OpenSourceCta />
+  <SiteFooter slot="footer" />
+</BaseLayout>

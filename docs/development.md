@@ -11,6 +11,7 @@
 - [macOS](#macos)
 - [Debian / Ubuntu](#debian--ubuntu)
 - [安装 Tauri CLI](#安装-tauri-cli)
+- [Official website](#official-website)
 - [Portable build](#portable-build)
 - [DuckDB 集成说明](#duckdb-集成说明)
 - [验证环境](#验证环境)
@@ -204,6 +205,34 @@ npm install -g @tauri-apps/cli@latest
 ```bash
 cargo tauri --version   # ≥ 2.0
 ```
+
+---
+
+## Official website
+
+官方站点位于 `website/`，是独立于桌面应用的 Astro 静态站点包。它拥有自己的依赖和构建输出，不会改变根目录 Vite/Tauri 应用的命令或构建语义。
+
+在仓库根目录运行：
+
+```bash
+npm --prefix website install
+npm --prefix website run dev
+npm --prefix website run check
+npm --prefix website run build
+npm --prefix website run test
+```
+
+生产文件生成在 `website/dist/`。推送到 `dev` 且变更 `website/**` 或 `.github/workflows/website.yml` 时，GitHub Pages workflow 会通过 `.github/workflows/website.yml` 构建并部署站点。
+
+当前产品画面使用占位资源，因此 `website/public/images/PLACEHOLDER_MEDIA.md` 会主动阻止 Pages 部署。准备发布时，先用经过隐私检查的真实产品截图替换同目录下的 `statsplayground-workspace.webp` 和 `statsplayground-analysis.webp`，运行 `npm --prefix website run test` 并检查桌面及移动版页面，最后删除 marker 文件。不要在占位资源仍存在时绕过此检查。
+
+首次启用部署时，仓库所有者需要完成以下一次性配置：
+
+1. 在 **Settings → Pages → Build and deployment** 中，将 **Source** 设为 **GitHub Actions**。
+2. 按 [GitHub Pages 自定义域名文档](https://docs.github.com/pages/configuring-a-custom-domain-for-your-github-pages-site) 在 DNS 服务商处配置并验证根域名 `statsplayground.org`，等待 DNS 生效后确认记录指向 GitHub Pages。
+3. 在 **Settings → Pages → Custom domain** 中填写 `statsplayground.org`，确认域名验证成功；HTTPS 可用后启用 **Enforce HTTPS**。
+
+仓库中的 `website/public/CNAME` 会将 `statsplayground.org` 写入每次静态构建。DNS 和仓库 Pages 设置属于外部部署配置，不由 workflow 自动修改。
 
 ---
 

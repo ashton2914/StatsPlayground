@@ -1,0 +1,22 @@
+{
+  "name": "@statsplayground/website",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check",
+    "test:contracts": "node --test tests/foundation.test.mjs",
+    "test:e2e": "playwright test",
+    "test": "npm run test:contracts && npm run check && npm run build && npm run test:e2e"
+  },
+  "dependencies": {
+    "astro": "^7.2.10"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@playwright/test": "^1.63.0",
+    "typescript": "^6.0.3"
+  }
+}

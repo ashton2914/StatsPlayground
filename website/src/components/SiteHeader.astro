@@ -1,0 +1,37 @@
+---
+const links = [
+  { label: "Product", href: "#product" },
+  {
+    label: "Docs",
+    href: "https://github.com/ashton2914/StatsPlayground/tree/dev/docs",
+  },
+  {
+    label: "GitHub",
+    href: "https://github.com/ashton2914/StatsPlayground",
+  },
+];
+const downloadUrl =
+  "https://github.com/ashton2914/StatsPlayground/releases/latest";
+---
+
+<header class="site-header">
+  <a class="site-header__brand" href="/" aria-label="StatsPlayground home">
+    <img src="/favicon.svg" alt="" width="32" height="32" />
+    <span>StatsPlayground</span>
+  </a>
+  <button
+    class="site-header__toggle"
+    data-menu-toggle
+    type="button"
+    aria-label="Open navigation"
+    aria-expanded="false"
+    aria-controls="primary-navigation"
+  >
+    <img data-menu-icon="open" src="/icons/menu.svg" alt="" width="24" height="24" />
+    <img data-menu-icon="close" src="/icons/x.svg" alt="" width="24" height="24" hidden />
+  </button>
+  <nav class="site-header__nav" id="primary-navigation" aria-label="Primary">
+    {links.map((link) => <a href={link.href}>{link.label}</a>)}
+    <a class="site-header__download" href={downloadUrl}>Download</a>
+  </nav>
+</header>

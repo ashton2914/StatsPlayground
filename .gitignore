@@ -1,6 +1,7 @@
 # ----- Node / Frontend -----
 node_modules/
 dist/
+website/.astro/
 *.local
 playwright/.cache/
 playwright-report/

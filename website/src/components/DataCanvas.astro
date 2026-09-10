@@ -1,0 +1,28 @@
+---
+const points = [
+  { x: 12, y: 70 },
+  { x: 20, y: 54 },
+  { x: 31, y: 61 },
+  { x: 39, y: 42 },
+  { x: 50, y: 48 },
+  { x: 61, y: 30 },
+  { x: 72, y: 35 },
+  { x: 82, y: 18 },
+];
+---
+
+<div class="data-canvas" aria-hidden="true">
+  <span class="data-canvas__axis data-canvas__axis--x">Variable X</span>
+  <span class="data-canvas__axis data-canvas__axis--y">Response Y</span>
+  {
+    points.map((point) => (
+      <span
+        class="data-canvas__point"
+        style={`--point-x:${point.x}%;--point-y:${point.y}%`}
+      />
+    ))
+  }
+  <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+    <path d="M10 76 C30 65 45 53 58 43 S78 25 88 14" />
+  </svg>
+</div>

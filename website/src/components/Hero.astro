@@ -1,0 +1,27 @@
+---
+import DataCanvas from "./DataCanvas.astro";
+---
+
+<section class="hero" aria-labelledby="hero-title">
+  <DataCanvas />
+  <div class="hero__content">
+    <p class="eyebrow hero__eyebrow">Open source · Desktop · Local first</p>
+    <h1 class="hero__title" id="hero-title">Your data has more to say.</h1>
+    <p class="hero__lede">
+      Explore, visualize, and understand it in one open-source statistics
+      workspace built to keep the whole analytical story together.
+    </p>
+    <div class="hero__actions">
+      <a class="button button--mint" href="#product">Explore the product</a>
+      <a class="button button--quiet" href="#product-demo">Watch overview</a>
+    </div>
+  </div>
+  <figure class="hero__media" data-reveal>
+    <img
+      src="/images/statsplayground-workspace.webp"
+      alt="StatsPlayground workspace showing a populated data project"
+      width="1600"
+      height="1600"
+    />
+  </figure>
+</section>

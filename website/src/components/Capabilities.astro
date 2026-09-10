@@ -1,0 +1,28 @@
+---
+const capabilities = [
+  "Tables & transforms",
+  "Graph Builder",
+  "Distribution & Fit Y by X",
+  "Fit Model & hypothesis testing",
+  "Reports & reusable workflows",
+];
+---
+
+<section class="capabilities section" id="capabilities" aria-labelledby="capabilities-title" data-reveal>
+  <p class="eyebrow eyebrow--dark">Representative capabilities</p>
+  <h2 class="section__title" id="capabilities-title">Move between visual questions and statistical answers.</h2>
+  <div class="capabilities__layout">
+  <figure class="capabilities__media" data-reveal>
+    <img
+      src="/images/statsplayground-analysis.webp"
+      alt="StatsPlayground analysis view with a chart and statistical results"
+      width="1600"
+      height="1600"
+      loading="lazy"
+    />
+  </figure>
+  <ul class="capabilities__list">
+    {capabilities.map((capability) => <li>{capability}</li>)}
+  </ul>
+  </div>
+</section>

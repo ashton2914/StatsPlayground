@@ -1,0 +1,19 @@
+---
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="Page not found · StatsPlayground"
+  description="The requested StatsPlayground page could not be found."
+>
+  <SiteHeader slot="header" />
+  <section class="not-found section" aria-labelledby="not-found-title">
+    <p class="eyebrow eyebrow--dark">404</p>
+    <h1 id="not-found-title">This path wandered off.</h1>
+    <p>The page may have moved, or the address may be incomplete.</p>
+    <a class="button button--dark" href="/">Return home</a>
+  </section>
+  <SiteFooter slot="footer" />
+</BaseLayout>
