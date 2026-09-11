@@ -224,7 +224,7 @@ npm --prefix website run test
 
 生产文件生成在 `website/dist/`。推送到 `dev` 且变更 `website/**` 或 `.github/workflows/website.yml` 时，GitHub Pages workflow 会通过 `.github/workflows/website.yml` 构建并部署站点。
 
-当前产品画面使用占位资源，因此 `website/public/images/PLACEHOLDER_MEDIA.md` 会主动阻止 Pages 部署。准备发布时，先用经过隐私检查的真实产品截图替换同目录下的 `statsplayground-workspace.webp` 和 `statsplayground-analysis.webp`，运行 `npm --prefix website run test` 并检查桌面及移动版页面，最后删除 marker 文件。不要在占位资源仍存在时绕过此检查。
+当前产品画面使用经过隐私检查的真实截图：`website/public/images/statsplayground-workspace.webp` 和 `website/public/images/statsplayground-analysis.webp`。更换截图时，运行 `npm --prefix website run test` 并检查桌面及移动版页面。若使用 `website/public/images/PLACEHOLDER_MEDIA.md` 标记临时资源，Pages workflow 会主动阻止部署，只有在生产截图完成检查后才能删除该 marker。
 
 首次启用部署时，仓库所有者需要完成以下一次性配置：
 
