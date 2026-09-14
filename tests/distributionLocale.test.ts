@@ -23,6 +23,7 @@ const allMessages = Object.fromEntries(localePaths.map((locale) => [
 ]));
 const englishDistribution = allMessages.en.distribution as Record<string, unknown>;
 const requiredDistributionPaths = collectLeafPaths(englishDistribution);
+const requiredGraphPaths = ["graph.unavailable"];
 const requiredWorkspacePaths = ["workspace.distributionMissing", "workspace.distributionSourceMissing"];
 const requiredHistoryPaths = ["history.newDistribution", "history.renameDistribution", "history.deleteDistribution"];
 
@@ -32,6 +33,9 @@ for (const locale of localePaths) {
 
   assert.ok(distribution, `${locale} must define the distribution namespace`);
   for (const path of requiredDistributionPaths) {
+    assert.equal(typeof getPathValue(distribution, path), "string", `${locale} distribution.${path}`);
+  }
+  for (const path of requiredGraphPaths) {
     assert.equal(typeof getPathValue(distribution, path), "string", `${locale} distribution.${path}`);
   }
   for (const path of [...requiredWorkspacePaths, ...requiredHistoryPaths, "menu.distribution"]) {

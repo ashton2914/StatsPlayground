@@ -1,39 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { describeAnalysisDocument } from "@/components/analysis/analysisEditorRegistry";
-import { createDistributionGraphBuilderConfig } from "@/components/analysis/distributionCompositeGraph";
 import { AnalysisFrame } from "@/components/analysis/presentation/AnalysisFrame";
-import { AnalysisGraph } from "@/components/analysis/presentation/AnalysisGraph";
 import { AnalysisShell } from "@/components/analysis/presentation/AnalysisShell";
-import { AnalysisStack } from "@/components/analysis/presentation/AnalysisStack";
 import { AnalysisText } from "@/components/analysis/presentation/AnalysisText";
 import type { AnalysisKindViewProps } from "@/components/analysis/analysisViewRegistry";
 import { useAnalysisExecution } from "@/components/analysis/useAnalysisExecution";
 import { getDistributionResponseAxis } from "@/components/distribution/distributionAxisInteractions";
-import { DistributionReport } from "@/components/distribution/DistributionReport";
 import { AxisSettingsDialog } from "@/components/graphBuilder/AxisSettingsDialog";
+import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
+import { createDistributionGraphBuilderConfig } from "@/components/analysis/distributionCompositeGraph";
+import { AnalysisGraph, AnalysisStack } from "@/components/analysis/presentation";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
 import type { RefLineY, YAxisConfig } from "@/graphCore";
-import {
-  mapDistributionCompositeExternalDataState,
-  type DistributionFrameSourceState,
-} from "@/graphCore/distributionAdapter";
-import type { DistributionReportResponse } from "@/types/distribution";
 import type { Graph2DState } from "@/types/graphBuilder";
+
+import { DistributionAnalysisReportTree } from "./DistributionAnalysisReportTree";
 
 type DistributionAnalysisResultsProps = AnalysisKindViewProps<"distribution">;
 type DistributionBuilderGraphRole = "overview";
-
-function toDistributionFrameSourceState(
-  state: ReturnType<typeof useAnalysisExecution>,
-): DistributionFrameSourceState {
-  if (state.status === "success") {
-    return state.analysisKind === "distribution" ? state : { status: "loading" };
-  }
-  if (state.status === "error") return { status: "error", error: state.error };
-  return { status: state.status };
-}
+type DistributionGraphRenderer = (
+  props: GraphRuntimeProps,
+  mode: "builder" | "builder-custom",
+) => ReactNode;
 
 export function DistributionAnalysisResults({
   item,
@@ -50,21 +40,10 @@ export function DistributionAnalysisResults({
     sourceAxis: "x" | "y";
   } | null>(null);
   const executionState = useAnalysisExecution(item, dataset ?? null, runtime);
-  const graphItems = useMemo(() => ({
-    distributionComposite: createEmbeddedGraphItem({
-      id: `analysis-graph:${item.id}:distributionComposite`,
-      name: item.name,
-      sourceDatasetId: item.source.datasetId,
-      config: createDistributionGraphBuilderConfig(
-        item.definition.graphs.overview,
-        item.definition.graphs.boxPlot,
-        item.definition.responses,
-      ),
-      createdAt: item.createdAt,
-    }),
-  }), [item]);
-  const responseName = item.definition.responses.map((response) => response.name).join(", ") || item.name;
   const overviewResponse = item.definition.responses[0];
+  const renderOverviewGraph = runtime?.renderGraph
+    ? (props: GraphRuntimeProps) => runtime.renderGraph?.({ ...props, role: "overview" })
+    : undefined;
   const overviewResponseAxis = overviewResponse
     ? getDistributionResponseAxis(item.definition.graphs.overview, overviewResponse)
     : null;
@@ -101,70 +80,71 @@ export function DistributionAnalysisResults({
       onEditInputs={onEditInputs}
       resultsRef={documentScrollRef}
     >
-      <AnalysisFrame title={responseName} contentPadding="compact" data-analysis-document>
-        <AnalysisStack>
-          {dataset == null ? (
-            <AnalysisFrame title={t("menu.graph", { defaultValue: "Graph" })} data-analysis-block="graph">
-              <AnalysisUnavailable message={t("workspace.analysisSourceMissing")} />
-            </AnalysisFrame>
-          ) : (
-            <AnalysisGraph
-              title={t("distribution.graph.overview", { defaultValue: "Distribution" })}
-              graphRole="distributionComposite"
-              data-analysis-block="graph"
-              contentClassName="analysis-graph-distribution"
-              strategy={{
-                mode: "builder",
-                runtimeProps: {
-                  item: graphItems.distributionComposite,
-                  dataset,
-                  panelLayout: "fit",
-                  externalDataState: mapDistributionCompositeExternalDataState(
-                    toDistributionFrameSourceState(executionState),
-                  ),
-                  onYAxisDblClick: onGraphConfigChange && overviewResponseAxis
-                    ? () => setAxisDialog({ role: "overview", sourceAxis: overviewResponseAxis })
-                    : undefined,
-                  onAxisRangeChange: onGraphConfigChange
-                    ? (axis, min, max) => {
-                        if (axis !== "y") return;
-                        if (overviewResponseAxis === "x") {
-                          updateGraph2D("overview", {
-                            xAxis: {
-                              ...(item.definition.graphs.overview.modeStates.twoD.xAxis ?? {}),
-                              min,
-                              max,
-                            },
-                          });
-                        } else if (overviewResponseAxis === "y") {
-                          updateGraph2D("overview", {
-                            yAxis: {
-                              ...(item.definition.graphs.overview.modeStates.twoD.yAxis ?? {}),
-                              min,
-                              max,
-                            },
-                          });
-                        }
-                      }
-                    : undefined,
-                },
-              }}
-              renderGraph={runtime?.renderGraph
-                ? (props) => runtime.renderGraph?.({ ...props, role: "overview" })
+      {dataset != null && executionState.status === "success" && executionState.analysisKind === "distribution"
+        ? (
+            <DistributionAnalysisReportTree
+              item={item}
+              dataset={dataset}
+              result={executionState.result}
+              onOpenAxisSettings={onGraphConfigChange && overviewResponseAxis
+                ? () => setAxisDialog({ role: "overview", sourceAxis: overviewResponseAxis })
                 : undefined}
+              onAxisRangeChange={onGraphConfigChange
+                ? (axis, min, max) => {
+                    if (axis !== "y") return;
+                    if (overviewResponseAxis === "x") {
+                      updateGraph2D("overview", {
+                        xAxis: {
+                          ...(item.definition.graphs.overview.modeStates.twoD.xAxis ?? {}),
+                          min,
+                          max,
+                        },
+                      });
+                    } else if (overviewResponseAxis === "y") {
+                      updateGraph2D("overview", {
+                        yAxis: {
+                          ...(item.definition.graphs.overview.modeStates.twoD.yAxis ?? {}),
+                          min,
+                          max,
+                        },
+                      });
+                    }
+                  }
+                : undefined}
+              renderGraph={renderOverviewGraph}
             />
-          )}
-
-          <AnalysisTextBlock state={executionState} />
-
-          <AnalysisFrame
-            title={t("distribution.report.title", { defaultValue: "Statistical Report" })}
-            data-analysis-block="report"
-          >
-            <AnalysisDistributionReport state={executionState} datasetMissing={dataset == null} />
-          </AnalysisFrame>
-        </AnalysisStack>
-      </AnalysisFrame>
+          )
+        : <DistributionAnalysisPendingSurface
+            item={item}
+            dataset={dataset}
+            state={executionState}
+            onOpenAxisSettings={onGraphConfigChange && overviewResponseAxis
+              ? () => setAxisDialog({ role: "overview", sourceAxis: overviewResponseAxis })
+              : undefined}
+            onAxisRangeChange={onGraphConfigChange
+              ? (axis, min, max) => {
+                  if (axis !== "y") return;
+                  if (overviewResponseAxis === "x") {
+                    updateGraph2D("overview", {
+                      xAxis: {
+                        ...(item.definition.graphs.overview.modeStates.twoD.xAxis ?? {}),
+                        min,
+                        max,
+                      },
+                    });
+                  } else if (overviewResponseAxis === "y") {
+                    updateGraph2D("overview", {
+                      yAxis: {
+                        ...(item.definition.graphs.overview.modeStates.twoD.yAxis ?? {}),
+                        min,
+                        max,
+                      },
+                    });
+                  }
+                }
+              : undefined}
+            renderGraph={renderOverviewGraph}
+          />}
       {axisDialog && (() => {
         const twoD = item.definition.graphs[axisDialog.role].modeStates.twoD;
         const sourceAxis = axisDialog.sourceAxis;
@@ -201,17 +181,71 @@ export function DistributionAnalysisResults({
   );
 }
 
-function AnalysisTextBlock({ state }: { state: ReturnType<typeof useAnalysisExecution> }) {
-  const result = state.status === "success" && state.analysisKind === "distribution"
-    ? firstResult(state.result)
-    : null;
-  const summary = result?.blocks.find((block) => block.summaryData)?.summaryData;
-  if (!result || !summary) return null;
+function DistributionAnalysisPendingSurface({
+  item,
+  dataset,
+  state,
+  onOpenAxisSettings,
+  onAxisRangeChange,
+  renderGraph,
+}: {
+  item: DistributionAnalysisResultsProps["item"];
+  dataset: DistributionAnalysisResultsProps["dataset"];
+  state: ReturnType<typeof useAnalysisExecution>;
+  onOpenAxisSettings?: () => void;
+  onAxisRangeChange?: (axis: "x" | "y", min: number, max: number) => void;
+  renderGraph?: DistributionGraphRenderer;
+}) {
+  const { t } = useTranslation();
+  const documentTitle = item.definition.responses.map((field) => field.name).join(", ") || item.name;
 
   return (
-    <AnalysisText data-analysis-block="text">
-      {result.yName}: n = {formatNumber(summary.n)}, mean = {formatNumber(summary.mean)}, standard deviation = {formatNumber(summary.stdDev)}.
-    </AnalysisText>
+    <AnalysisFrame title={documentTitle} data-analysis-document>
+      <AnalysisStack>
+        {dataset == null ? (
+          <AnalysisFrame title={t("graph.distribution", { defaultValue: "Distribution" })} data-analysis-block="graph">
+            <AnalysisText>{t("workspace.analysisSourceMissing")}</AnalysisText>
+          </AnalysisFrame>
+        ) : (
+          <AnalysisGraph
+            title={t("graph.distribution", { defaultValue: "Distribution" })}
+            graphRole="distributionComposite"
+            data-analysis-block="graph"
+            contentClassName="analysis-graph-distribution"
+            strategy={{
+              mode: "builder",
+              runtimeProps: {
+                item: createEmbeddedGraphItem({
+                  id: `analysis-graph:${item.id}:pending:distributionComposite`,
+                  name: `${documentTitle} Distribution`,
+                  sourceDatasetId: item.source.datasetId,
+                  config: createDistributionGraphBuilderConfig(
+                    item.definition.graphs.overview,
+                    item.definition.graphs.boxPlot,
+                    item.definition.responses,
+                  ),
+                  createdAt: item.createdAt,
+                }),
+                dataset,
+                panelLayout: "fit",
+                externalDataState: state.status === "error"
+                  ? { status: "error", frame: null, error: state.error }
+                  : { status: "loading", frame: null, error: null },
+                onYAxisDblClick: onOpenAxisSettings,
+                onAxisRangeChange,
+              },
+            }}
+            renderGraph={renderGraph}
+          />
+        )}
+        <AnalysisFrame
+          title={t("distribution.report.title", { defaultValue: "Statistical Report" })}
+          data-analysis-block="report"
+        >
+          <AnalysisDistributionReport state={state} datasetMissing={dataset == null} />
+        </AnalysisFrame>
+      </AnalysisStack>
+    </AnalysisFrame>
   );
 }
 
@@ -225,19 +259,11 @@ function AnalysisDistributionReport({ state, datasetMissing }: {
     return <AnalysisUnavailable message={t("distribution.report.loading", { defaultValue: "Loading report..." })} />;
   }
   if (state.status === "error") return <AnalysisUnavailable message={state.error} alert />;
-  if (state.analysisKind !== "distribution") return null;
-
-  return <DistributionReport groups={state.result.groups} reportBlocks={state.result.reportBlocks} />;
+  return state.analysisKind === "distribution"
+    ? <AnalysisUnavailable message={t("distribution.report.loading", { defaultValue: "Loading report..." })} />
+    : null;
 }
 
 function AnalysisUnavailable({ message, alert = false }: { message: string; alert?: boolean }) {
   return <AnalysisText role={alert ? "alert" : undefined}>{message}</AnalysisText>;
-}
-
-function firstResult(response: DistributionReportResponse) {
-  return response.groups.flatMap((group) => group.yResults)[0] ?? null;
-}
-
-function formatNumber(value: number | null): string {
-  return value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 10 });
 }

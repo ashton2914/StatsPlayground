@@ -167,6 +167,31 @@ assert.deepEqual(
 );
 assert.deepEqual(requestParts.elements.map((element) => element.kind), ["histogram", "normalCurve", "boxplot"]);
 assert.equal(canExecuteGraphRequest(graphBuilderItem, requestParts.fields, requestParts.elements), true);
+
+const persistedResponseFields = [
+  { name: "Length", columnId: "col-a", type: "continuous" as const },
+  { name: "Length", columnId: "col-b", type: "continuous" as const },
+  { name: "Width", columnId: "col-c", type: "continuous" as const },
+];
+analysis.definition.graphs.overview.modeStates.twoD.encoding = { x: persistedResponseFields[0] };
+analysis.definition.graphs.overview.modeStates.twoD.xAxis = { min: -5, max: 20 };
+analysis.definition.graphs.overview.modeStates.twoD.yAxis = { min: 100, max: 200 };
+analysis.definition.graphs.overview.modeStates.twoD.refLinesX = [{ x: 3.5, label: "LSL" }];
+analysis.definition.graphs.overview.modeStates.twoD.refLinesY = [{ y: 150, label: "Wrong axis" }];
+analysis.definition.graphs.overview.modeStates.twoD.autoSpecLinesX = false;
+analysis.definition.graphs.overview.modeStates.twoD.autoSpecLinesY = true;
+for (const responseField of persistedResponseFields) {
+  const responseConfig = createDistributionGraphBuilderConfig(
+    analysis.definition.graphs.overview,
+    analysis.definition.graphs.boxPlot,
+    [responseField],
+    persistedResponseFields[0],
+  );
+  assert.deepEqual(responseConfig.modeStates.twoD.multiX, [responseField]);
+  assert.deepEqual(responseConfig.modeStates.twoD.yAxis, { min: -5, max: 20 });
+  assert.deepEqual(responseConfig.modeStates.twoD.refLinesY, [{ y: 3.5, label: "LSL" }]);
+  assert.equal(responseConfig.modeStates.twoD.autoSpecLinesY, false);
+}
 assert.equal("reportBlocks" in analysis, false);
 assert.equal("graphFrames" in analysis, false);
 

@@ -5,10 +5,12 @@ import {
   DISTRIBUTION_GRAPH_ROLES,
   getDistributionCompositeGraphFrame,
   getDistributionGraphFrame,
+  getDistributionGroupName,
+  getDistributionResponseCompositeGraphFrame,
   mapDistributionCompositeExternalDataState,
   mapDistributionExternalDataState,
 } from "../src/graphCore/distributionAdapter.ts";
-import type { DistributionReportResponse } from "../src/types/distribution.ts";
+import type { DistributionGroupResult, DistributionReportResponse } from "../src/types/distribution.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
 
 function frame(role: string): GraphDataFrame {
@@ -30,6 +32,21 @@ function frame(role: string): GraphDataFrame {
 const graphFrames = Object.fromEntries(
   DISTRIBUTION_GRAPH_ROLES.map((role) => [role, frame(role)]),
 ) as DistributionReportResponse["graphFrames"];
+const overallGroup: DistributionGroupResult = {
+  groupKey: [],
+  groupNames: [],
+  yResults: [],
+};
+const siteAGroup: DistributionGroupResult = {
+  groupKey: [{ kind: "text", value: "A" }],
+  groupNames: ["Site"],
+  yResults: [],
+};
+const siteBGroup: DistributionGroupResult = {
+  groupKey: [{ kind: "text", value: "B" }],
+  groupNames: ["Site"],
+  yResults: [],
+};
 graphFrames.overview.aggregates = [{
   kind: "histogram",
   yColumn: "__sp_y",
@@ -39,8 +56,8 @@ graphFrames.overview.aggregates = [{
   binWidth: 1,
   totalCount: 1,
   bins: [{
-    group: "DIM1 | A",
-    category: "A",
+    group: "DIM1",
+    category: "Overall",
     sourceColumn: "DIM1",
     binStart: 0,
     binEnd: 1,
@@ -49,20 +66,45 @@ graphFrames.overview.aggregates = [{
 }, {
   kind: "precomputedCurve",
   elementId: "distribution.overview.fittedCurves",
-  seriesName: "DIM1 | A - Normal",
-  group: "DIM1 | A",
-  category: "DIM1 | A",
+  seriesName: "DIM1 - Normal",
+  group: "DIM1",
+  category: "Overall",
   sourceColumn: "DIM1",
   interpolation: "linear",
   points: [{ x: 0, y: 0.1 }, { x: 1, y: 1 }],
+}, {
+  kind: "histogram",
+  yColumn: "__sp_y",
+  sourceColumn: "responseColumn",
+  binCount: 1,
+  missingCount: 0,
+  binWidth: 1,
+  totalCount: 1,
+  bins: [{
+    group: "DIM2 | Site=A",
+    category: "Site=A",
+    sourceColumn: "DIM2",
+    binStart: 1,
+    binEnd: 2,
+    count: 1,
+  }],
+}, {
+  kind: "precomputedCurve",
+  elementId: "distribution.overview.fittedCurves",
+  seriesName: "DIM2 | Site=A - Normal",
+  group: "DIM2 | Site=A",
+  category: "Site=A",
+  sourceColumn: "DIM2",
+  interpolation: "linear",
+  points: [{ x: 1, y: 0.1 }, { x: 2, y: 1 }],
 }];
 graphFrames.boxPlot.aggregates = [{
   kind: "boxPlot",
   yColumn: "__sp_y",
   sourceColumn: "responseColumn",
   entries: [{
-    group: "DIM1 | A",
-    category: "A",
+    group: "DIM1",
+    category: "Overall",
     sourceColumn: "DIM1",
     count: 1,
     min: 0,
@@ -73,6 +115,97 @@ graphFrames.boxPlot.aggregates = [{
     whiskerLow: 0,
     whiskerHigh: 1,
     outliers: [],
+  }, {
+    group: "DIM2 | Site=A",
+    category: "Site=A",
+    sourceColumn: "DIM2",
+    count: 1,
+    min: 1,
+    q1: 1.2,
+    median: 1.5,
+    q3: 1.8,
+    max: 2,
+    whiskerLow: 1,
+    whiskerHigh: 2,
+    outliers: [],
+  }],
+}];
+
+const originalGraphFrames = structuredClone(graphFrames);
+
+const duplicateNameGraphFrames = structuredClone(graphFrames);
+duplicateNameGraphFrames.overview.aggregates = [{
+  kind: "histogram",
+  yColumn: "__sp_y",
+  sourceColumn: "responseColumn",
+  binCount: 2,
+  missingCount: 0,
+  binWidth: 1,
+  totalCount: 2,
+  bins: [{
+    group: "Length",
+    category: "Overall",
+    sourceColumn: "col-a",
+    binStart: 0,
+    binEnd: 1,
+    count: 1,
+  }, {
+    group: "Length",
+    category: "Overall",
+    sourceColumn: "col-b",
+    binStart: 10,
+    binEnd: 11,
+    count: 1,
+  }],
+}, {
+  kind: "precomputedCurve",
+  elementId: "distribution.overview.fittedCurves",
+  seriesName: "Length - Normal",
+  group: "Length",
+  category: "Overall",
+  sourceColumn: "col-a",
+  interpolation: "linear",
+  points: [{ x: 0, y: 0.1 }, { x: 1, y: 1 }],
+}, {
+  kind: "precomputedCurve",
+  elementId: "distribution.overview.fittedCurves",
+  seriesName: "Length - Normal",
+  group: "Length",
+  category: "Overall",
+  sourceColumn: "col-b",
+  interpolation: "linear",
+  points: [{ x: 10, y: 0.1 }, { x: 11, y: 1 }],
+}];
+duplicateNameGraphFrames.boxPlot.aggregates = [{
+  kind: "boxPlot",
+  yColumn: "__sp_y",
+  sourceColumn: "responseColumn",
+  entries: [{
+    group: "Length",
+    category: "Overall",
+    sourceColumn: "col-a",
+    count: 1,
+    min: 0,
+    q1: 0.2,
+    median: 0.5,
+    q3: 0.8,
+    max: 1,
+    whiskerLow: 0,
+    whiskerHigh: 1,
+    outliers: [{ value: 1.5, sourceColumn: "col-a" }],
+  }, {
+    group: "Length",
+    category: "Overall",
+    sourceColumn: "col-b",
+    count: 1,
+    min: 10,
+    q1: 10.2,
+    median: 10.5,
+    q3: 10.8,
+    max: 11,
+    whiskerLow: 10,
+    whiskerHigh: 11,
+    outliers: [{ value: 11.5, sourceColumn: "col-b" }],
   }],
 }];
 
@@ -85,21 +218,146 @@ for (const role of DISTRIBUTION_GRAPH_ROLES) {
 }
 
 const compositeFrame = getDistributionCompositeGraphFrame({ graphFrames });
-assert.deepEqual(compositeFrame.aggregates.map((packet) => packet.kind), ["histogram", "precomputedCurve", "boxPlot"]);
-const compositeHistogram = compositeFrame.aggregates.find((packet) => packet.kind === "histogram");
-const compositeBoxPlot = compositeFrame.aggregates.find((packet) => packet.kind === "boxPlot");
-assert.equal(compositeHistogram?.sourceColumn, "__sp_variable__");
-assert.deepEqual(compositeHistogram?.bins.map((bin) => [bin.category, bin.group, bin.sourceColumn]), [
-  ["DIM1 | A", undefined, "DIM1"],
+assert.deepEqual(compositeFrame.aggregates.map((packet) => packet.kind), [
+  "histogram",
+  "precomputedCurve",
+  "histogram",
+  "precomputedCurve",
+  "boxPlot",
 ]);
-assert.equal(compositeBoxPlot?.sourceColumn, "__sp_variable__");
-assert.deepEqual(compositeBoxPlot?.entries.map((entry) => [entry.category, entry.group, entry.sourceColumn]), [
-  ["DIM1 | A", undefined, "DIM1"],
+const compositeHistograms = compositeFrame.aggregates.filter((packet) => packet.kind === "histogram");
+const compositeCurves = compositeFrame.aggregates.filter((packet) => packet.kind === "precomputedCurve");
+const compositeBoxPlots = compositeFrame.aggregates.filter((packet) => packet.kind === "boxPlot");
+assert.deepEqual(compositeHistograms.map((packet) => [packet.sourceColumn, packet.bins[0]?.category, packet.bins[0]?.group]), [
+  ["__sp_variable__", "DIM1", undefined],
+  ["__sp_variable__", "DIM2 | Site=A", undefined],
+]);
+assert.deepEqual(compositeCurves.map((packet) => [packet.sourceColumn, packet.category, packet.group, packet.seriesName]), [
+  ["DIM1", "Overall", "DIM1", "DIM1 - Normal"],
+  ["DIM2", "Site=A", "DIM2 | Site=A", "DIM2 | Site=A - Normal"],
+]);
+assert.deepEqual(compositeBoxPlots.map((packet) => [packet.sourceColumn, packet.entries.map((entry) => entry.category), packet.entries.map((entry) => entry.group)]), [
+  ["__sp_variable__", ["DIM1", "DIM2 | Site=A"], [undefined, undefined]],
 ]);
 assert.deepEqual(
   mapDistributionCompositeExternalDataState({ status: "success", result: { graphFrames } }),
   { status: "ready", frame: compositeFrame, error: null },
 );
+
+assert.equal(getDistributionGroupName(overallGroup), "Overall");
+assert.equal(getDistributionGroupName(siteAGroup), "Site=A");
+
+const selectedFrame = getDistributionResponseCompositeGraphFrame({ graphFrames }, "DIM2", siteAGroup);
+assert.equal(selectedFrame.aggregates.length, 3);
+assert.deepEqual(selectedFrame.aggregates.map((packet) => packet.kind), ["histogram", "precomputedCurve", "boxPlot"]);
+
+const selectedHistogram = selectedFrame.aggregates.find((packet) => packet.kind === "histogram");
+const selectedCurve = selectedFrame.aggregates.find((packet) => packet.kind === "precomputedCurve");
+const selectedBoxPlot = selectedFrame.aggregates.find((packet) => packet.kind === "boxPlot");
+
+assert.equal(selectedHistogram?.sourceColumn, "__sp_variable__");
+assert.equal(selectedBoxPlot?.sourceColumn, "__sp_variable__");
+assert.deepEqual(selectedHistogram?.bins.map((bin) => [bin.sourceColumn, bin.category, bin.group]), [
+  ["DIM2", "DIM2 | Site=A", undefined],
+]);
+assert.deepEqual(selectedBoxPlot?.entries.map((entry) => [entry.sourceColumn, entry.category, entry.group]), [
+  ["DIM2", "DIM2 | Site=A", undefined],
+]);
+assert.equal(selectedCurve?.sourceColumn, "DIM2");
+assert.deepEqual(selectedCurve && [selectedCurve.group, selectedCurve.category, selectedCurve.seriesName], [
+  "DIM2 | Site=A",
+  "Site=A",
+  "DIM2 | Site=A - Normal",
+]);
+
+const missingFrame = getDistributionResponseCompositeGraphFrame({ graphFrames }, "DIM2", siteBGroup);
+assert.equal(missingFrame.aggregates.length, 0);
+
+const legacyGraphFrames = structuredClone(graphFrames);
+legacyGraphFrames.overview.aggregates = [{
+  kind: "histogram",
+  yColumn: "__sp_y",
+  sourceColumn: "responseColumn",
+  binCount: 1,
+  missingCount: 0,
+  binWidth: 1,
+  totalCount: 1,
+  bins: [{
+    binStart: 0,
+    binEnd: 1,
+    count: 1,
+  }],
+}, {
+  kind: "precomputedCurve",
+  elementId: "distribution.overview.fittedCurves",
+  seriesName: "DIM1 - Normal",
+  interpolation: "linear",
+  points: [{ x: 0, y: 0.1 }, { x: 1, y: 1 }],
+}];
+legacyGraphFrames.boxPlot.aggregates = [{
+  kind: "boxPlot",
+  yColumn: "__sp_y",
+  sourceColumn: "responseColumn",
+  entries: [{
+    count: 1,
+    min: 0,
+    q1: 0.2,
+    median: 0.5,
+    q3: 0.8,
+    max: 1,
+    whiskerLow: 0,
+    whiskerHigh: 1,
+    outliers: [],
+  }],
+}];
+
+const legacyOverallFrame = getDistributionResponseCompositeGraphFrame(
+  { graphFrames: legacyGraphFrames },
+  "DIM1",
+  overallGroup,
+  { allowLegacyOverallFallback: true },
+);
+assert.deepEqual(legacyOverallFrame.aggregates.map((packet) => packet.kind), ["histogram", "precomputedCurve", "boxPlot"]);
+
+const legacyNonMatchingResponseFrame = getDistributionResponseCompositeGraphFrame(
+  { graphFrames: legacyGraphFrames },
+  "DIM2",
+  overallGroup,
+  { allowLegacyOverallFallback: false },
+);
+assert.equal(legacyNonMatchingResponseFrame.aggregates.length, 0);
+
+const duplicateNameAFrame = getDistributionResponseCompositeGraphFrame(
+  { graphFrames: duplicateNameGraphFrames },
+  { sourceColumn: "col-a", seriesName: "Length" },
+  overallGroup,
+);
+const duplicateNameBFrame = getDistributionResponseCompositeGraphFrame(
+  { graphFrames: duplicateNameGraphFrames },
+  { sourceColumn: "col-b", seriesName: "Length" },
+  overallGroup,
+);
+for (const [sourceColumn, selected] of [["col-a", duplicateNameAFrame], ["col-b", duplicateNameBFrame]] as const) {
+  assert.equal(selected.aggregates.length, 3);
+  const selectedHistogram = selected.aggregates.find((packet) => packet.kind === "histogram");
+  const selectedCurve = selected.aggregates.find((packet) => packet.kind === "precomputedCurve");
+  const selectedBoxPlot = selected.aggregates.find((packet) => packet.kind === "boxPlot");
+
+  assert.deepEqual(selectedHistogram?.bins.map((bin) => [bin.sourceColumn, bin.category, bin.group]), [
+    [sourceColumn, "Length", undefined],
+  ]);
+  assert.deepEqual(selectedBoxPlot?.entries.map((entry) => [entry.sourceColumn, entry.category, entry.group]), [
+    [sourceColumn, "Length", undefined],
+  ]);
+  assert.equal(selectedCurve?.sourceColumn, sourceColumn);
+  assert.deepEqual(selectedCurve && [selectedCurve.group, selectedCurve.category, selectedCurve.seriesName], [
+    "Length",
+    "Overall",
+    "Length - Normal",
+  ]);
+}
+
+assert.deepEqual(graphFrames, originalGraphFrames);
 
 const source = readFileSync(
   new URL("../src/graphCore/distributionAdapter.ts", import.meta.url),

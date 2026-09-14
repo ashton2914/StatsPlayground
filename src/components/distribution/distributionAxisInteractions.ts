@@ -22,6 +22,7 @@ export interface DistributionAxisRangeController {
 }
 
 function sameField(left: FieldRef | undefined, right: FieldRef): boolean {
+  if (left?.columnId && right.columnId) return left.columnId === right.columnId;
   return left?.name === right.name && left.type === right.type;
 }
 

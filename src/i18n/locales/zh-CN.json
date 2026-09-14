@@ -442,6 +442,7 @@
     "confidenceLevel": "置信水平",
     "saving": "正在保存...",
     "loadFieldsFailed": "加载字段失败: {{message}}",
+    "graph": { "unavailable": "此响应的图形不可用。" },
     "roleLabel": "{{role}} 角色",
     "roleEmpty": "拖放或指定一列",
     "removeFromRole": "从 {{role}} 中移除 {{column}}",
@@ -1247,6 +1248,7 @@
     "loading": "正在加载数据…",
     "loadingProgress": "{{loaded}} / {{total}} 行",
     "noData": "无数据",
+    "unavailable": "图表不可用：{{reason}}",
     "dragHint": "将列拖至坐标槽以开始作图",
     "correlation": {
       "requiresColumns": "相关矩阵需要 {{min}}-{{max}} 个数值列。",

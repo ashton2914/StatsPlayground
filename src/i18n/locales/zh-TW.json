@@ -435,6 +435,7 @@
   "distribution": {
     "title": "分佈", "searchColumns": "搜尋欄位", "frequencyShort": "頻數", "confidenceLevel": "信賴水準",
     "saving": "正在儲存...", "loadFieldsFailed": "載入欄位失敗：{{message}}", "roleLabel": "{{role}} 角色",
+    "graph": { "unavailable": "此反應的圖形無法使用。" },
     "roleEmpty": "拖放或指定一個欄位", "removeFromRole": "從 {{role}} 移除 {{column}}",
     "roles": { "y": "Y，反應", "weight": "權重", "frequency": "頻數", "by": "分組" },
     "specification": { "lsl": "規格下限", "target": "目標值", "usl": "規格上限" },
@@ -1233,6 +1234,7 @@
     "loading": "正在載入資料…",
     "loadingProgress": "{{loaded}} / {{total}} 列",
     "noData": "無資料",
+    "unavailable": "圖表無法使用：{{reason}}",
     "dragHint": "將欄拖曳至座標槽以開始繪圖",
     "correlation": {
       "requiresColumns": "相關矩陣需要 {{min}}-{{max}} 個數值欄。",

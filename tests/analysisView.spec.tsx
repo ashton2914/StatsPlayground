@@ -20,6 +20,111 @@ async function paintedPixelCount(canvas: Locator) {
   });
 }
 
+async function directChildFrameTitles(frame: Locator) {
+  return frame.evaluate((node) => {
+    const stack = node.classList.contains("analysis-ui-stack")
+      ? node
+      : node.querySelector(":scope > .analysis-ui-frame-body > .analysis-ui-stack");
+    if (!(stack instanceof HTMLElement)) return [];
+    return Array.from(stack.children)
+      .filter((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains("analysis-ui-frame"))
+      .map((child) => child.querySelector(".analysis-ui-frame-title span:last-child")?.textContent?.trim() ?? "");
+  });
+}
+
+async function ensureFrameExpanded(root: Locator, title: string) {
+  const button = root.getByRole("button", { name: title, exact: true }).first();
+  if ((await button.getAttribute("aria-expanded")) === "false") {
+    await button.click();
+  }
+}
+
+function directChildFrames(root: Locator) {
+  return root.locator(":scope > .analysis-ui-frame-body > .analysis-ui-stack > .analysis-ui-frame");
+}
+
+async function frameTitleText(frame: Locator) {
+  return frame.locator(":scope > .analysis-ui-frame-title span:last-child").textContent();
+}
+
+async function frameWidths(frames: Locator) {
+  return frames.evaluateAll((nodes) => nodes.map((node) => Math.round((node as HTMLElement).getBoundingClientRect().width)));
+}
+
+async function layoutRect(locator: Locator) {
+  return locator.evaluate((node) => {
+    const rect = (node as HTMLElement).getBoundingClientRect();
+    return {
+      left: Math.round(rect.left),
+      right: Math.round(rect.right),
+      top: Math.round(rect.top),
+      bottom: Math.round(rect.bottom),
+    };
+  });
+}
+
+async function computedLayoutStyle(locator: Locator) {
+  return locator.evaluate((node) => {
+    const style = window.getComputedStyle(node as HTMLElement);
+    return {
+      boxSizing: style.boxSizing,
+      minWidth: style.minWidth,
+    };
+  });
+}
+
+async function expectContainedWithin(frame: Locator, content: Locator, label: string) {
+  await expect.poll(async () => {
+    const [frameRect, contentRect] = await Promise.all([layoutRect(frame), layoutRect(content)]);
+    return {
+      left: contentRect.left >= frameRect.left - 1,
+      right: contentRect.right <= frameRect.right + 1,
+      top: contentRect.top >= frameRect.top - 1,
+      bottom: contentRect.bottom <= frameRect.bottom + 1,
+    };
+  }, { message: `${label} should remain within its response frame` }).toEqual({
+    left: true,
+    right: true,
+    top: true,
+    bottom: true,
+  });
+}
+
+function responseSurface(root: Locator, surface: string) {
+  return root.locator(`[data-analysis-surface='${surface}']`).first();
+}
+
+async function textOverflowOffenders(root: Locator) {
+  return root.evaluate((node) => {
+    const selectors = [
+      ".analysis-shell-titlebar",
+      ".analysis-shell-source",
+      ".analysis-shell-summary-row dd",
+      ".analysis-ui-frame-title",
+      ".analysis-ui-table th",
+      ".analysis-ui-table td",
+    ];
+
+    return selectors.flatMap((selector) => Array.from(node.querySelectorAll<HTMLElement>(selector))
+      .filter((element) => element.getClientRects().length > 0 && element.scrollWidth > element.clientWidth + 1)
+      .map((element) => `${selector}:${element.innerText.trim().replace(/\s+/g, " ").slice(0, 80)}`))
+      .slice(0, 12);
+  });
+}
+
+function distributionGraphItemId(groupIdentity: string, columnId: string) {
+  return `analysis-graph:analysis-1:${encodeURIComponent(groupIdentity)}:${columnId}:distributionComposite`;
+}
+
+function expectedResponseGraphSignatures(sourceColumn: string, responseName: string, groupName: string) {
+  const seriesName = groupName === "Overall" ? responseName : `${responseName} | ${groupName}`;
+  return [
+    `histogram:${sourceColumn}|${seriesName}|`,
+    `precomputedCurve:${sourceColumn}|${groupName}|${seriesName}`,
+    `boxPlot:${sourceColumn}|${seriesName}|`,
+  ].join(",");
+}
+
 test("useAnalysisExecution masks stale success synchronously when configRevision changes", async ({ mount }) => {
   const component = await mount(<AnalysisExecutionHarness />);
 
@@ -39,6 +144,8 @@ test("useAnalysisExecution masks stale success synchronously when configRevision
 
 test("configRevision-only changes fence stale results and force re-execution on the mounted AnalysisView path", async ({ mount }) => {
   const component = await mount(<AnalysisViewHarness />);
+  const documentFrame = component.locator("[data-analysis-document]");
+  const topLevelFrames = component.locator("[data-analysis-document] > .analysis-ui-frame");
   const firstValueCell = component.getByRole("cell", { name: "101.044792" }).first();
   const originalMedianRow = component.getByRole("row", { name: "Median 101.044792", exact: true });
 
@@ -50,10 +157,12 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(component.locator(".analysis-shell-summary")).toContainText("55 / 100 / 145");
   await component.getByRole("button", { name: "Edit Inputs" }).click();
   await expect(component.getByTestId("edit-inputs-calls")).toHaveText("1");
-  await expect(component.locator("[data-analysis-document]")).toHaveClass("analysis-ui-frame");
+  await expect(documentFrame).toHaveClass(/analysis-ui-stack/);
+  await expect.poll(() => directChildFrameTitles(documentFrame)).toEqual(["DIM1"]);
+  await expect(topLevelFrames).toHaveCount(1);
   await expect(component.locator("[data-analysis-block='graph']")).toHaveCount(1);
   await expect(component.locator("[data-analysis-block='graph']").first()).toHaveClass(/analysis-ui-frame/);
-  await expect(component.locator("[data-analysis-block='report']")).toHaveClass("analysis-ui-frame");
+  await expect(component.locator("[data-analysis-block='report']")).toHaveCount(0);
   await expect(component.locator(".analysis-ui-graph")).toHaveCount(1);
   await expect(component.locator(".analysis-ui-graph-runtime")).toHaveCount(1);
   await expect(component.locator("[data-graph-role='distributionComposite']")).toHaveCount(1);
@@ -63,20 +172,12 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(component.locator("[data-graph-role='boxPlot']")).toHaveCount(0);
   await expect(component.locator("[data-graph-role='distributionComposite']")).toHaveAttribute("data-graph-strategy", "builder");
   await expect(component.getByRole("img", { name: /five-number range/i })).toHaveCount(0);
-  const summarySection = component.locator("[data-analysis-block='report']");
-  await expect(summarySection).toContainText("Quantiles");
-  await expect(summarySection).toContainText("Location");
-  await expect(summarySection).toContainText("Variation");
-  await expect(summarySection.locator(".distribution-report-tree")).toHaveCount(0);
-  await expect(summarySection.locator(".distribution-quantile-table")).toHaveCount(0);
-  await expect(summarySection.locator(".distribution-summary-table")).toHaveCount(0);
-  await expect(summarySection.locator(".analysis-ui-table")).toHaveCount(3);
-  await expect(component.locator(".analysis-ui-text")).toHaveCSS("border-style", "none");
-  assert.deepEqual(
-    await component.locator("[data-analysis-document] > .analysis-ui-frame-body > .analysis-ui-stack > *")
-      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-analysis-block"))),
-    ["graph", "text", "report"],
-  );
+  const responseFrame = topLevelFrames.first();
+  await ensureFrameExpanded(responseFrame, "DIM1");
+  await expect.poll(() => frameTitleText(responseFrame)).toBe("DIM1");
+  await expect(responseFrame.getByRole("button", { name: "Distribution", exact: true })).toHaveCount(1);
+  await expect(responseFrame.getByRole("button", { name: "Overall", exact: true })).toHaveCount(1);
+  await expect(responseFrame.locator(".analysis-ui-table")).toHaveCount(3);
   await expect(firstValueCell).toBeVisible();
   await expect(originalMedianRow).toBeVisible();
   await expect(component.locator(".report-editor")).toHaveCount(0);
@@ -88,25 +189,46 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(component.getByText("definition:unchanged")).toBeVisible();
   await expect(component.getByText("compute-calls:1")).toBeVisible();
   await expect(component.getByText(/generation-calls:[1-9]\d*/)).toBeVisible();
-
-  await component.getByRole("button", { name: "Statistical Report" }).click();
-  await expect(component.getByRole("button", { name: "Statistical Report" })).toHaveAttribute("aria-expanded", "false");
-  await expect(component.locator(".distribution-quantile-table")).toHaveCount(0);
-  await expect(component.locator("[data-graph-role='distributionComposite']")).toHaveCount(1);
-  await component.getByRole("button", { name: "Statistical Report" }).click();
+  await expect(component.getByRole("button", { name: "Statistical Report", exact: true })).toHaveCount(0);
 
   await component.getByRole("button", { name: "Bump config revision" }).click();
 
+  await expect(component.getByText("Distribution graph:overview:loading:native")).toBeVisible();
+  await expect(component.getByRole("button", { name: "Distribution", exact: true })).toHaveCount(1);
+  await expect(component.getByRole("button", { name: "Statistical Report", exact: true })).toHaveCount(1);
   await expect(component.getByText("Loading report...")).toBeVisible();
   await expect(originalMedianRow).toHaveCount(0);
   await expect(component.getByText("compute-calls:2")).toBeVisible();
   await expect(component.getByText("definition:unchanged")).toBeVisible();
+  await expect(component.locator("[data-analysis-document]")).toHaveClass("analysis-ui-frame");
 
   await component.getByRole("button", { name: "Resolve pending response" }).click();
 
+  await expect(component.locator("[data-analysis-document]")).toHaveClass(/analysis-ui-stack/);
+  await expect.poll(() => directChildFrameTitles(component.locator("[data-analysis-document]"))).toEqual(["DIM1"]);
   await expect(component.getByRole("row", { name: "Median 88.5", exact: true })).toBeVisible();
   await expect(originalMedianRow).toHaveCount(0);
   assert.equal(true, true);
+});
+
+test("Distribution analysis preserves graph and report frames while loading", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="loading" />);
+  const documentFrame = component.locator("[data-analysis-document]");
+
+  await expect(component.getByRole("button", { name: "DIM1", exact: true })).toHaveCount(1);
+  await expect(component.getByText("Distribution graph:overview:loading:native")).toBeVisible();
+  await expect.poll(() => directChildFrameTitles(documentFrame)).toEqual(["Distribution", "Statistical Report"]);
+  await expect(component.getByText("Loading report...")).toBeVisible();
+});
+
+test("Distribution analysis preserves graph and report frames when execution fails", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="error" />);
+  const documentFrame = component.locator("[data-analysis-document]");
+
+  await expect(component.getByRole("button", { name: "DIM1", exact: true })).toHaveCount(1);
+  await expect(component.getByText("Distribution graph:overview:error:native")).toBeVisible();
+  await expect.poll(() => directChildFrameTitles(documentFrame)).toEqual(["Distribution", "Statistical Report"]);
+  await expect(component.getByRole("alert")).toContainText("distribution failed");
 });
 
 test("unsupported presentation schema does not invoke generation or compute services", async ({ mount }) => {
@@ -171,6 +293,203 @@ test("Distribution axis range persists through navigation without changing stati
 
   await expect(component.getByTestId("overview-x-min")).toHaveText("4");
   await expect(component.getByTestId("config-revision")).toHaveText("1");
+});
+
+test("Distribution response tree renders one top-level frame per response when By is empty", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="multiResponse" />);
+  const documentFrame = component.locator("[data-analysis-document]");
+  const topLevelFrames = component.locator("[data-analysis-document] > .analysis-ui-frame");
+  const fallbackGraphId = distributionGraphItemId("overall", "legacy-301A-F02");
+
+  await expect.poll(() => directChildFrameTitles(documentFrame)).toEqual([
+    "301A-F01",
+    "301A-F02",
+    "301A-F03",
+  ]);
+  await expect(topLevelFrames).toHaveCount(3);
+  await expect(component.getByRole("button", { name: "301A-F01, 301A-F02, 301A-F03", exact: true })).toHaveCount(0);
+  await expect(component.getByRole("button", { name: "Statistical Report", exact: true })).toHaveCount(0);
+  await expect(component.getByText(/301A-F01: n =/)).toHaveCount(0);
+
+  for (const [index, responseName] of ["301A-F01", "301A-F02", "301A-F03"].entries()) {
+    const sourceColumn = responseName === "301A-F02" ? "legacy-301A-F02" : `col-${responseName}`;
+    const responseFrame = topLevelFrames.nth(index);
+    await ensureFrameExpanded(responseFrame, responseName);
+    await expect.poll(() => frameTitleText(responseFrame)).toBe(responseName);
+    await expect(responseFrame.getByRole("button", { name: "Distribution", exact: true })).toHaveCount(1);
+    await expect(responseFrame.getByRole("button", { name: "Overall", exact: true })).toHaveCount(1);
+    await expect(responseFrame.locator("[data-analysis-block='graph']")).toHaveCount(1);
+    await expect(responseFrame.locator("[data-analysis-block='report']")).toHaveCount(0);
+    await expect(responseFrame.locator("output[data-testid^='graph-sources:']")).toHaveText(sourceColumn);
+    await expect(responseFrame.locator("output[data-testid^='graph-signatures:']")).toHaveText(
+      expectedResponseGraphSignatures(sourceColumn, responseName, "Overall"),
+    );
+  }
+
+  await expect(component.locator(`output[data-testid='graph-sources:${fallbackGraphId}']`)).toHaveText("legacy-301A-F02");
+});
+
+test("Distribution response tree shows one unavailable state for a missing response result", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="multiResponseMissingResult" />);
+  const documentFrame = component.locator("[data-analysis-document]");
+  const topLevelFrames = component.locator("[data-analysis-document] > .analysis-ui-frame");
+
+  await expect.poll(() => directChildFrameTitles(documentFrame)).toEqual(["301A-F01", "301A-F02"]);
+  await ensureFrameExpanded(topLevelFrames.nth(1), "301A-F02");
+  await expect(topLevelFrames.nth(1).locator("output[data-testid^='graph-sources:']")).toHaveCount(0);
+  await expect(topLevelFrames.nth(1).getByText("Graph unavailable for this response.")).toHaveCount(1);
+});
+
+test("Distribution response tree nests response frames under backend group order when By is present", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="multiResponseBy" />);
+  const documentFrame = component.locator("[data-analysis-document]");
+  const groupFrames = component.locator("[data-analysis-document] > .analysis-ui-frame");
+
+  await expect.poll(() => directChildFrameTitles(documentFrame)).toEqual([
+    "Overall",
+    "Site = A",
+    "Site = B",
+    "Site = Missing",
+  ]);
+  await expect(groupFrames).toHaveCount(4);
+
+  for (const [groupIndex, groupTitle] of ["Overall", "Site = A", "Site = B", "Site = Missing"].entries()) {
+    const groupFrame = groupFrames.nth(groupIndex);
+    await ensureFrameExpanded(groupFrame, groupTitle);
+    await expect.poll(() => frameTitleText(groupFrame)).toBe(groupTitle);
+    await expect.poll(() => directChildFrameTitles(groupFrame)).toEqual([
+      "301A-F01",
+      "301A-F02",
+      "301A-F03",
+    ]);
+
+    const responseFrames = directChildFrames(groupFrame);
+    await expect(responseFrames).toHaveCount(3);
+    for (const [responseIndex, responseName] of ["301A-F01", "301A-F02", "301A-F03"].entries()) {
+      const sourceColumn = responseName === "301A-F02" ? "legacy-301A-F02" : `col-${responseName}`;
+      const responseFrame = responseFrames.nth(responseIndex);
+      await ensureFrameExpanded(responseFrame, responseName);
+      await expect.poll(() => frameTitleText(responseFrame)).toBe(responseName);
+      await expect(responseFrame.getByRole("button", { name: "Distribution", exact: true })).toHaveCount(1);
+      await expect(responseFrame.getByRole("button", { name: "Overall", exact: true })).toHaveCount(1);
+      await expect(responseFrame.locator("output[data-testid^='graph-sources:']")).toHaveText(sourceColumn);
+      await expect(responseFrame.locator("output[data-testid^='graph-signatures:']")).toHaveText(
+        expectedResponseGraphSignatures(
+          sourceColumn,
+          responseName,
+          groupTitle === "Overall" ? "Overall" : groupTitle.replace(/ = /g, "="),
+        ),
+      );
+    }
+  }
+});
+
+test("Distribution response tree keeps layout bounded on desktop and narrow widths", async ({ mount, page }) => {
+  await page.setViewportSize({ width: 1440, height: 1600 });
+  const component = await mount(
+    <div data-testid="layout-host" style={{ width: "100%", minHeight: 0 }}>
+      <AnalysisViewHarness mode="multiResponseBy" />
+    </div>,
+  );
+  const host = component.locator(".analysis-shell").first();
+  const resultsPane = component.locator(".analysis-shell-results").first();
+  const documentFrame = component.locator("[data-analysis-document]");
+  const groupFrames = component.locator("[data-analysis-document] > .analysis-ui-frame");
+  const groupTitles = ["Overall", "Site = A", "Site = B", "Site = Missing"];
+  const responseTitles = ["301A-F01", "301A-F02", "301A-F03"];
+  const requiredSurfaces = [
+    { key: "overall", title: "Overall" },
+    { key: "continuousFit", title: "Continuous Fit - Normal" },
+    { key: "fitComparison", title: "Fit Comparison" },
+    { key: "processCapability", title: "Process Capability" },
+  ];
+
+  await expect(documentFrame).toHaveAttribute("data-analysis-kind", "distribution");
+  await expect(documentFrame).toHaveAttribute("data-analysis-tree", "response");
+  await expect.poll(() => directChildFrameTitles(documentFrame)).toEqual(groupTitles);
+
+  for (const [groupIndex, groupTitle] of groupTitles.entries()) {
+    const groupFrame = groupFrames.nth(groupIndex);
+    await ensureFrameExpanded(groupFrame, groupTitle);
+    const responseFrames = directChildFrames(groupFrame);
+    await expect(responseFrames).toHaveCount(3);
+    for (const [responseIndex, responseTitle] of responseTitles.entries()) {
+      const responseFrame = responseFrames.nth(responseIndex);
+      await ensureFrameExpanded(responseFrame, responseTitle);
+    }
+  }
+
+  const overallResponses = directChildFrames(groupFrames.first());
+  const firstOverallSurface = responseSurface(overallResponses.first(), "overall");
+  const firstCompactTable = firstOverallSurface.locator(".analysis-ui-table-compact").first();
+  await expect(firstCompactTable).toHaveCSS("width", "520px");
+  await expect.poll(async () => {
+    const responseBounds = await overallResponses.first().boundingBox();
+    const tableBounds = await firstCompactTable.boundingBox();
+    if (!responseBounds || !tableBounds) return 0;
+    return Math.round(responseBounds.x + responseBounds.width - tableBounds.x - tableBounds.width);
+  }).toBeGreaterThan(100);
+
+  const siblingWidthsBeforeCollapse = (await frameWidths(overallResponses)).slice(1);
+  await groupFrames.first().getByRole("button", { name: "301A-F01", exact: true }).click();
+  await expect.poll(async () => (await frameWidths(directChildFrames(groupFrames.first()))).slice(1)).toEqual(siblingWidthsBeforeCollapse);
+  await groupFrames.first().getByRole("button", { name: "301A-F01", exact: true }).click();
+
+  const assertVisibleLayout = async () => {
+    expect(await textOverflowOffenders(host)).toEqual([]);
+    await expect.poll(() => resultsPane.evaluate((node) => {
+      const element = node as HTMLElement;
+      return element.scrollWidth - element.clientWidth;
+    })).toBeLessThanOrEqual(2);
+
+    for (const groupIndex of groupTitles.keys()) {
+      const responseFrames = directChildFrames(groupFrames.nth(groupIndex));
+      for (const responseIndex of responseTitles.keys()) {
+        const responseFrame = responseFrames.nth(responseIndex);
+        await expect.poll(() => computedLayoutStyle(responseFrame)).toEqual({
+          boxSizing: "border-box",
+          minWidth: "0px",
+        });
+        await expectContainedWithin(
+          responseFrame,
+          responseFrame.locator("[data-analysis-block='graph']").first(),
+          `group ${groupIndex + 1} response ${responseIndex + 1} graph`,
+        );
+        await expect.poll(() => computedLayoutStyle(responseFrame.locator("[data-analysis-block='graph']").first())).toEqual({
+          boxSizing: "border-box",
+          minWidth: "0px",
+        });
+        for (const surface of requiredSurfaces) {
+          const surfaceFrame = responseSurface(responseFrame, surface.key);
+          await expect(surfaceFrame, `${surface.title} should render for response ${responseIndex + 1} in group ${groupIndex + 1}`).toHaveCount(1);
+          await expect.poll(() => frameTitleText(surfaceFrame)).toBe(surface.title);
+          await expect.poll(() => computedLayoutStyle(surfaceFrame)).toEqual({
+            boxSizing: "border-box",
+            minWidth: "0px",
+          });
+          const table = surfaceFrame.locator(".analysis-ui-table").first();
+          if (await table.count()) {
+            await expect.poll(() => computedLayoutStyle(table)).toEqual({
+              boxSizing: "border-box",
+              minWidth: "0px",
+            });
+          }
+          await expectContainedWithin(
+            responseFrame,
+            surfaceFrame,
+            `group ${groupIndex + 1} response ${responseIndex + 1} surface ${surface.title}`,
+          );
+        }
+      }
+    }
+  };
+
+  await assertVisibleLayout();
+
+  await page.setViewportSize({ width: 480, height: 1600 });
+  await expect.poll(() => host.evaluate((node) => Math.round((node as HTMLElement).getBoundingClientRect().width))).toBeLessThanOrEqual(480);
+
+  await assertVisibleLayout();
 });
 
 test("fits the painted Distribution graph without an internal vertical scroller", async ({ mount, page }) => {

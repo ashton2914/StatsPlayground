@@ -453,6 +453,7 @@
     "confidenceLevel": "Confidence level",
     "saving": "Saving...",
     "loadFieldsFailed": "Failed to load fields: {{message}}",
+    "graph": { "unavailable": "Graph unavailable for this response." },
     "roleLabel": "{{role}} role",
     "roleEmpty": "Drop or assign a column",
     "removeFromRole": "Remove {{column}} from {{role}}",
@@ -1372,6 +1373,7 @@
     "loading": "Loading data…",
     "loadingProgress": "{{loaded}} / {{total}} rows",
     "noData": "No data",
+    "unavailable": "Graph unavailable: {{reason}}",
     "dragHint": "Drag a column onto an axis slot to begin",
     "correlation": {
       "requiresColumns": "Correlation matrix requires {{min}}-{{max}} numeric columns.",

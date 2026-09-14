@@ -10,6 +10,8 @@ import type {
   DistributionGroupResult,
   DistributionGroupValueV1,
   DistributionReportBlock,
+  DistributionReportBlockV1,
+  DistributionYResultV1,
 } from "@/types/distribution";
 
 import { ContinuousFitComparisonReport, ContinuousFitReport } from "./ContinuousFitReport";
@@ -18,6 +20,25 @@ import { ProcessCapabilityReport } from "./ProcessCapabilityReport";
 interface DistributionReportProps {
   groups: DistributionGroupResult[];
   reportBlocks: DistributionReportBlock[];
+}
+
+export interface DistributionResponseReportProps {
+  result: DistributionYResultV1;
+}
+
+type ReportBlockLike = DistributionReportBlock | DistributionReportBlockV1;
+
+export function formatDistributionGroupLabel(
+  group: DistributionGroupResult,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  return group.groupKey.length === 0
+    ? t("distribution.report.overall")
+    : group.groupKey.map((value, index) => {
+        const formatted = formatGroupValue(value, t("distribution.report.missing"));
+        const name = group.groupNames?.[index];
+        return name ? `${name} = ${formatted}` : formatted;
+      }).join(" / ");
 }
 
 export function DistributionReport({ groups, reportBlocks }: DistributionReportProps) {
@@ -59,13 +80,7 @@ function GroupSection({
   defaultOpen: boolean;
 }) {
   const { t } = useTranslation();
-  const label = group.groupKey.length === 0
-    ? t("distribution.report.overall")
-    : group.groupKey.map((value, index) => {
-        const formatted = formatGroupValue(value, t("distribution.report.missing"));
-        const name = group.groupNames?.[index];
-        return name ? `${name} = ${formatted}` : formatted;
-      }).join(" / ");
+  const label = formatDistributionGroupLabel(group, t);
 
   return (
     <AnalysisFrame
@@ -75,32 +90,9 @@ function GroupSection({
     >
       <AnalysisStack>
         {group.yResults.map((result, yIndex) => {
-          const summaryBlock = result.blocks.find((block) => block.summaryData);
           return (
             <AnalysisFrame title={result.yName} key={result.yColumn.columnId} defaultExpanded={yIndex === 0}>
-              <AnalysisStack>
-                <AnalysisTable
-                  title={t("distribution.report.quantiles")}
-                  width="wide"
-                  columns={[
-                    { key: "probability", label: t("distribution.report.probability"), rowHeader: true },
-                    { key: "label", label: t("distribution.report.label") },
-                    { key: "value", label: t("distribution.report.value"), numeric: true },
-                  ]}
-                  rows={result.quantiles.map((quantile) => ({
-                    key: String(quantile.probability),
-                    cells: [
-                      formatProbability(quantile.probability),
-                      quantileLabel(quantile.probability, t),
-                      formatNumber(quantile.value),
-                    ],
-                  }))}
-                />
-                {summaryBlock?.summaryData && <SummaryDataTables summaryData={summaryBlock.summaryData} />}
-                {result.blocks
-                  .filter((block) => block !== summaryBlock && hasReportContent(block))
-                  .map((block) => <ReportBlock key={block.blockId} block={block} />)}
-              </AnalysisStack>
+              <DistributionResponseReport result={result} />
             </AnalysisFrame>
           );
         })}
@@ -109,9 +101,45 @@ function GroupSection({
   );
 }
 
-export function ReportBlock({ block }: { block: DistributionReportBlock }) {
+export function DistributionResponseReport({ result }: DistributionResponseReportProps) {
+  const { t } = useTranslation();
+  const summaryBlock = result.blocks.find((block) => block.summaryData);
+
+  return (
+    <AnalysisStack>
+      <AnalysisFrame title={t("distribution.report.overall")} data-analysis-surface="overall">
+        <AnalysisStack>
+          <AnalysisTable
+            title={t("distribution.report.quantiles")}
+            width="wide"
+            columns={[
+              { key: "probability", label: t("distribution.report.probability"), rowHeader: true },
+              { key: "label", label: t("distribution.report.label") },
+              { key: "value", label: t("distribution.report.value"), numeric: true },
+            ]}
+            rows={result.quantiles.map((quantile) => ({
+              key: String(quantile.probability),
+              cells: [
+                formatProbability(quantile.probability),
+                quantileLabel(quantile.probability, t),
+                formatNumber(quantile.value),
+              ],
+            }))}
+          />
+          {summaryBlock?.summaryData && <SummaryDataTables summaryData={summaryBlock.summaryData} />}
+        </AnalysisStack>
+      </AnalysisFrame>
+      {result.blocks
+        .filter((block) => block !== summaryBlock && hasReportContent(block))
+        .map((block) => <ReportBlock key={block.blockId} block={block} />)}
+    </AnalysisStack>
+  );
+}
+
+export function ReportBlock({ block }: { block: ReportBlockLike }) {
   const { t } = useTranslation();
   const compatibilityStatus = getCompatibilityStatus(block);
+  const reasonCode = getBlockReasonCode(block);
   const blockTitle = block.distributionFitData
     ? `${t(block.titleKey)} - ${t(`distribution.fit.distributions.${block.distributionFitData.distributionId}`, {
       defaultValue: block.distributionFitData.distributionId,
@@ -119,16 +147,20 @@ export function ReportBlock({ block }: { block: DistributionReportBlock }) {
     : t(block.titleKey);
 
   return (
-    <AnalysisFrame title={blockTitle} data-testid={`distribution-report-block-${block.blockId}`}>
+    <AnalysisFrame
+      title={blockTitle}
+      data-testid={`distribution-report-block-${block.blockId}`}
+      data-analysis-surface={getReportSurfaceKind(block)}
+    >
       <AnalysisStack>
       {compatibilityStatus && (
         <AnalysisText>
           {t(`distribution.compatibility.${compatibilityStatus}`)}
         </AnalysisText>
       )}
-      {block.status !== "available" && block.reasonCode && (
+      {block.status !== "available" && reasonCode && (
         <AnalysisText data-testid={`distribution-report-unavailable-${block.blockId}`}>
-          {t("distribution.report.unavailableReason", { reason: block.reasonCode })}
+          {t("distribution.report.unavailableReason", { reason: reasonCode })}
         </AnalysisText>
       )}
       {block.summaryData && <SummaryDataTables summaryData={block.summaryData} />}
@@ -188,7 +220,7 @@ function SummaryTable({ title, rows }: { title: string; rows: Array<[string, num
   );
 }
 
-function hasReportContent(block: DistributionReportBlock): boolean {
+function hasReportContent(block: ReportBlockLike): boolean {
   return block.status !== "available"
     || !!block.summaryData
     || !!block.capabilityData
@@ -197,12 +229,24 @@ function hasReportContent(block: DistributionReportBlock): boolean {
 }
 
 function getCompatibilityStatus(
-  block: DistributionReportBlock,
+  block: ReportBlockLike,
 ): "intentionalDifference" | "compatibilityPending" | null {
   const status = block.chartData?.provenance.compatibilityStatus;
   return status === "intentionalDifference" || status === "compatibilityPending"
     ? status
     : null;
+}
+
+function getBlockReasonCode(block: ReportBlockLike): string | null {
+  return "reasonCode" in block ? block.reasonCode : null;
+}
+
+function getReportSurfaceKind(block: ReportBlockLike): string {
+  if (block.distributionFitData) return "continuousFit";
+  if (block.distributionFitComparisonData) return "fitComparison";
+  if (block.capabilityData) return "processCapability";
+  if (block.summaryData) return "summary";
+  return block.kind;
 }
 
 function quantileLabel(probability: number, t: (key: string) => string): string {

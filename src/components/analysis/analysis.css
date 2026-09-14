@@ -9,6 +9,23 @@
 
 .analysis-graph-fit-y-by-x > [data-graph-role] { width: 100%; height: 100%; }
 
+[data-analysis-kind="distribution"][data-analysis-tree="response"] > .analysis-ui-frame,
+[data-analysis-kind="distribution"][data-analysis-tree="response"] [data-analysis-surface="response"],
+[data-analysis-kind="distribution"][data-analysis-tree="response"] [data-analysis-block="graph"],
+[data-analysis-kind="distribution"][data-analysis-tree="response"] [data-analysis-surface="overall"],
+[data-analysis-kind="distribution"][data-analysis-tree="response"] [data-analysis-surface="continuousFit"],
+[data-analysis-kind="distribution"][data-analysis-tree="response"] [data-analysis-surface="fitComparison"],
+[data-analysis-kind="distribution"][data-analysis-tree="response"] [data-analysis-surface="processCapability"] {
+  align-self: stretch;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+[data-analysis-kind="distribution"][data-analysis-tree="response"] [data-analysis-surface] .analysis-ui-table {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
 .analysis-sample-range {
   display: grid;
   align-content: center;
