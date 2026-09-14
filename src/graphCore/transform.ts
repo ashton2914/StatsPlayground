@@ -6195,6 +6195,25 @@ function buildSingleOption(
   } else {
     let dataMin = Infinity;
     let dataMax = -Infinity;
+    if (frameBackedAggregateMode && boxPlotPacket && hasBoxplot) {
+      const boxElement = enabledElements.find((element) => element.kind === "boxplot")!;
+      const boxType = getOpt<string>(boxElement.options, "boxType", "outlier");
+      const showOutliers = getOpt<boolean>(boxElement.options, "outliers", true);
+      for (const entry of boxPlotPacket.entries) {
+        const groupKey = entry.group ?? DEFAULT_GROUP_KEY;
+        if (isHidden(groupKey)) continue;
+        const lower = boxType === "outlier" ? entry.whiskerLow : entry.min;
+        const upper = boxType === "outlier" ? entry.whiskerHigh : entry.max;
+        if (Number.isFinite(lower) && lower < dataMin) dataMin = lower;
+        if (Number.isFinite(upper) && upper > dataMax) dataMax = upper;
+        if (showOutliers) {
+          for (const outlier of entry.outliers) {
+            if (Number.isFinite(outlier.value) && outlier.value < dataMin) dataMin = outlier.value;
+            if (Number.isFinite(outlier.value) && outlier.value > dataMax) dataMax = outlier.value;
+          }
+        }
+      }
+    }
     if (framePointsOnly && framePointExtents?.y) {
       dataMin = framePointExtents.y.min;
       dataMax = framePointExtents.y.max;

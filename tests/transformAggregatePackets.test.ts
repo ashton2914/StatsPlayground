@@ -1903,6 +1903,57 @@ for (const element of [
       },
     },
     {
+      name: "boxplot packet with Y reference line",
+      data: frameBackedAggregateData(["x", "y"], 10),
+      spec: {
+        encoding: {
+          x: { name: "x", type: "nominal" },
+          y: { name: "y", type: "continuous" },
+        },
+        elements: [{ kind: "boxplot", enabled: true }],
+        refLinesY: [{
+          id: "lsl",
+          y: 0,
+          label: "LSL",
+          style: "dashed",
+          color: "#E60000",
+          width: 1,
+        }],
+      },
+      frame: frameBackedAggregateFrame([
+        {
+          kind: "boxPlot",
+          xColumn: "x",
+          yColumn: "y",
+          groupColumn: null,
+          entries: [{
+            group: null,
+            category: "G1",
+            count: 10,
+            min: 0.14,
+            q1: 0.2,
+            median: 0.25,
+            q3: 0.35,
+            max: 0.45,
+            whiskerLow: 0.14,
+            whiskerHigh: 0.45,
+            outliers: [],
+          }],
+        },
+      ], 10),
+      verify: (series, option) => {
+        const boxplot = series.find((entry) => entry.type === "boxplot");
+        const refCarrier = series.find((entry) => entry.id === "__ref_lines_y__") as {
+          markLine?: { data?: Array<{ yAxis?: number }> };
+        } | undefined;
+        const yAxis = option.yAxis as Record<string, unknown>;
+        assert.deepEqual(boxplot?.data, [[0.14, 0.2, 0.25, 0.35, 0.45]]);
+        assert.equal(refCarrier?.markLine?.data?.[0]?.yAxis, 0);
+        assert.ok(Math.abs(Number(yAxis.min) - (-0.055)) < 1e-12);
+        assert.ok(Math.abs(Number(yAxis.max) - 0.505) < 1e-12);
+      },
+    },
+    {
       name: "frame-backed categorical scatter axes",
       data: frameBackedAggregateData(["x", "y"]),
       spec: {
