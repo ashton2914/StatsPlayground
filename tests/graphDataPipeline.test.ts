@@ -33,7 +33,8 @@ import type {
   GraphDataFrame,
   GraphElementRequest,
 } from "../src/types/graphData.ts";
-import type { GraphBuilderItem } from "../src/types/graphBuilder.ts";
+import type { GraphBuilderItem, GraphRuntimeItem } from "../src/types/graphBuilder.ts";
+import type { FilterRuleItem } from "../src/types/filter.ts";
 
 const TEST_FILE_DIR = resolve(process.cwd(), "tests");
 
@@ -1109,9 +1110,9 @@ function makeGraphBuilderItem(overrides: Record<string, unknown> = {}): GraphBui
 function makeCanonicalGraphBuilderItem(input: {
   mode: GraphBuilderItem["mode"];
   modeStates: GraphBuilderItem["modeStates"];
-  filters?: GraphBuilderItem["filters"];
+  filters?: GraphRuntimeItem["filters"];
   sampling?: GraphBuilderItem["sampling"];
-}): GraphBuilderItem {
+}): GraphRuntimeItem {
   return {
     id: "graph-1",
     name: "Graph 1",
@@ -1133,7 +1134,7 @@ function makeLegacyGraphBuilderItem(overrides: Record<string, unknown> = {}): Gr
     multiX?: Array<{ name: string; type: "continuous" | "nominal" | "ordinal" | "date" }>;
     multiY?: Array<{ name: string; type: "continuous" | "nominal" | "ordinal" | "date" }>;
     threeD?: boolean;
-    filters?: GraphBuilderItem["filters"];
+    filters?: GraphRuntimeItem["filters"];
     sampling?: GraphBuilderItem["sampling"];
     hiddenGroups?: string[];
     groupStyles?: GraphBuilderItem["modeStates"]["twoD"]["groupStyles"];
@@ -1141,6 +1142,55 @@ function makeLegacyGraphBuilderItem(overrides: Record<string, unknown> = {}): Gr
   };
 
   return makeGraphBuilderItem(raw);
+}
+
+{
+  const frozenFilter: FilterRuleItem = {
+    id: "filter-build",
+    op: "AND",
+    rule: {
+      kind: "categorical",
+      field: { name: "build", type: "nominal" },
+      selected: ["DV"],
+      exclude: false,
+    },
+  };
+  const base = {
+    id: "graph-filter-boundary",
+    name: "Filter boundary",
+    sourceDatasetId: "dataset-1",
+    createdAt: new Date(0).toISOString(),
+    mode: "2d" as const,
+    modeStates: defaultModeStates(),
+    filters: [frozenFilter],
+  };
+
+  const standalone = normalizeGraphBuilderItem(base);
+  assert.equal(
+    Object.hasOwn(standalone, "filters"),
+    false,
+    "standalone graph normalization must strip legacy graph-local filters",
+  );
+
+  const embedded = createEmbeddedGraphItem({
+    id: "analysis-graph:filter-boundary",
+    name: "Frozen filter",
+    sourceDatasetId: "dataset-1",
+    createdAt: base.createdAt,
+    config: {
+      mode: base.mode,
+      modeStates: base.modeStates,
+      filters: [frozenFilter],
+    },
+  });
+  assert.deepEqual(embedded.filters, [frozenFilter]);
+  assert.notEqual(embedded.filters, base.filters);
+  assert.notEqual(embedded.filters?.[0], frozenFilter);
+  assert.deepEqual(deriveGraphRequestParts(embedded).filters, [{
+    op: "AND",
+    rule: { kind: "categorical", field: "build", selected: ["DV"], exclude: false },
+  }]);
+  assert.equal(deriveFields(embedded).some((field) => field.role === "filter" && field.column === "build"), true);
 }
 
 {
@@ -2662,7 +2712,7 @@ function makeProgressedChunk(
 
   assert.deepEqual(roleColumns(staleUnused, "size"), []);
   assert.deepEqual(roleColumns(staleUnused, "group"), ["color_unused"]);
-  assert.deepEqual(roleColumns(staleUnused, "filter"), ["category_filter"]);
+  assert.deepEqual(roleColumns(staleUnused, "filter"), []);
 
   const pointsWithSize = deriveFields(
     makeLegacyGraphBuilderItem({

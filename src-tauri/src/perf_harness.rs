@@ -780,6 +780,7 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
                         distribution_folders: std::collections::HashMap::new(),
                         analysis_folders: std::collections::HashMap::new(),
                         tabulate_folders,
+                        dataset_filters: std::collections::HashMap::new(),
                         workflows: Vec::new(),
                         logical_folders: Vec::new(),
                         workflow_runs: Vec::new(),

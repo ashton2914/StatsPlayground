@@ -196,6 +196,69 @@ pub struct ProjectManifest {
     pub lineage_graph: workflow_domain::ProjectLineageGraph,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relationships: Vec<ProjectRelationship>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub dataset_filters: DatasetFilters,
+}
+
+pub type DatasetFilters = HashMap<String, Vec<ProjectFilterRuleItem>>;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFilterRuleItem {
+    pub id: String,
+    pub op: ProjectFilterOp,
+    pub rule: ProjectFilterRule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ProjectFilterOp {
+    #[serde(rename = "AND")]
+    And,
+    #[serde(rename = "OR")]
+    Or,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFilterField {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_id: Option<String>,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub field_type: ProjectFilterFieldType,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectFilterFieldType {
+    Continuous,
+    Nominal,
+    Ordinal,
+    Datetime,
+    Id,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProjectFilterRule {
+    Continuous {
+        field: ProjectFilterField,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    Categorical {
+        field: ProjectFilterField,
+        selected: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        exclude: bool,
+    },
+    Date {
+        field: ProjectFilterField,
+        start: Option<String>,
+        end: Option<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
@@ -362,6 +425,76 @@ pub struct GraphDoc {
     pub body: serde_json::Map<String, Value>,
 }
 
+pub struct DatasetFilterMigration {
+    pub dataset_filters: DatasetFilters,
+    pub conflicts: Vec<String>,
+    pub changed: bool,
+}
+
+pub fn migrate_legacy_graph_filters(
+    manifest_filters: &DatasetFilters,
+    graphs: &mut [GraphDoc],
+) -> Result<DatasetFilterMigration, AppError> {
+    let mut grouped = HashMap::<String, Vec<Vec<ProjectFilterRuleItem>>>::new();
+    let mut changed = false;
+
+    for graph in graphs {
+        let Some(raw_filters) = graph.body.remove("filters") else {
+            continue;
+        };
+        changed = true;
+        let filters = serde_json::from_value::<Vec<ProjectFilterRuleItem>>(raw_filters)
+            .map_err(|error| AppError::FileIO(format!("Invalid legacy graph filters: {error}")))?;
+        let dataset_id = graph
+            .body
+            .get("sourceDatasetId")
+            .and_then(Value::as_str)
+            .filter(|dataset_id| !dataset_id.is_empty())
+            .map(str::to_string);
+        let validation_id = dataset_id.as_deref().unwrap_or(&graph.id);
+        for (index, rule) in filters.iter().enumerate() {
+            validate_dataset_filter_rule_item(validation_id, index, rule)?;
+        }
+        let Some(dataset_id) = dataset_id else {
+            continue;
+        };
+        grouped.entry(dataset_id).or_default().push(filters);
+    }
+
+    let mut dataset_filters = canonicalize_dataset_filters(manifest_filters);
+    let mut dataset_ids = grouped.keys().cloned().collect::<Vec<_>>();
+    dataset_ids.sort();
+    let mut conflicts = Vec::new();
+
+    for dataset_id in dataset_ids {
+        if dataset_filters
+            .get(&dataset_id)
+            .is_some_and(|filters| !filters.is_empty())
+        {
+            continue;
+        }
+        let candidates = &grouped[&dataset_id];
+        let first = &candidates[0];
+        if candidates.iter().all(|candidate| candidate == first) {
+            if first.is_empty() {
+                dataset_filters.remove(&dataset_id);
+            } else {
+                dataset_filters.insert(dataset_id, first.clone());
+            }
+        } else {
+            dataset_filters.remove(&dataset_id);
+            conflicts.push(dataset_id);
+        }
+    }
+
+    validate_dataset_filters(&dataset_filters)?;
+    Ok(DatasetFilterMigration {
+        dataset_filters,
+        conflicts,
+        changed,
+    })
+}
+
 fn default_doc_version() -> String {
     "1".to_string()
 }
@@ -452,7 +585,8 @@ pub fn build_graph_docs(raw_graph_builders: Vec<Value>) -> Vec<GraphDoc> {
         .into_iter()
         .enumerate()
         .map(|(index, raw)| {
-            let (id, name, body) = lift_id_name(raw, index);
+            let (id, name, mut body) = lift_id_name(raw, index);
+            body.remove("filters");
             GraphDoc {
                 id,
                 name,
@@ -461,6 +595,12 @@ pub fn build_graph_docs(raw_graph_builders: Vec<Value>) -> Vec<GraphDoc> {
             }
         })
         .collect()
+}
+
+fn without_standalone_filters(doc: &GraphDoc) -> GraphDoc {
+    let mut sanitized = doc.clone();
+    sanitized.body.remove("filters");
+    sanitized
 }
 
 pub fn validate_archive_manifest_and_entries(
@@ -877,6 +1017,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
     let manifest: ProjectManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| AppError::FileIO(format!("Invalid manifest.json: {}", e)))?;
 
+    validate_dataset_filters(&manifest.dataset_filters)?;
     validate_manifest_entry_refs(&manifest)?;
     let strict_v4_name_checks = is_format_v4(&manifest.version);
 
@@ -1271,6 +1412,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         workflow_runs: Vec::new(),
         lineage_graph: workflow_domain::ProjectLineageGraph::default(),
         relationships: Vec::new(),
+        dataset_filters: HashMap::new(),
     };
 
     Ok(ProjectBundle {
@@ -1425,6 +1567,7 @@ pub fn build_bundle_with_fit_models(
         distribution_folders,
         analysis_folders,
         tabulate_folders,
+        &HashMap::new(),
         history,
         snapshots,
         Vec::new(),
@@ -1481,6 +1624,7 @@ pub fn build_bundle_with_workflows(
         distribution_folders,
         analysis_folders,
         tabulate_folders,
+        &HashMap::new(),
         history,
         snapshots,
         workflows,
@@ -1512,6 +1656,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
     distribution_folders: &HashMap<String, String>,
     analysis_folders: &HashMap<String, String>,
     tabulate_folders: &HashMap<String, String>,
+    dataset_filters: &HashMap<String, Vec<ProjectFilterRuleItem>>,
     history: Vec<Value>,
     snapshots: Vec<Value>,
     workflows: Vec<workflow_domain::WorkflowDefinition>,
@@ -1765,6 +1910,8 @@ pub fn build_bundle_with_workflows_and_fit_models(
     // any implicit ancestor folders for completeness so an extractor sees the
     // full tree even if the user only created `a/b/c` directly.
     let normalized_folders = normalize_folder_list(folders);
+    validate_dataset_filters(dataset_filters)?;
+    let dataset_filters = canonicalize_dataset_filters(dataset_filters);
 
     let manifest_fit_y_by_x = if is_format_v4(&version) {
         Vec::new()
@@ -1852,6 +1999,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
             workflow_runs,
             lineage_graph,
             relationships,
+            dataset_filters,
         },
         tables,
         graphs,
@@ -2843,6 +2991,22 @@ fn strip_transient_distribution_fields(value: Value) -> Value {
 /// Strategy: write to `<path>.tmp` first, then rename over the original. Gives
 /// us a much safer path than a direct in-place overwrite on Windows.
 pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), AppError> {
+    write_project_archive_impl(bundle, path, true)
+}
+
+#[cfg(test)]
+pub(crate) fn write_legacy_project_archive_for_test(
+    bundle: &ProjectBundle,
+    path: &str,
+) -> Result<(), AppError> {
+    write_project_archive_impl(bundle, path, false)
+}
+
+fn write_project_archive_impl(
+    bundle: &ProjectBundle,
+    path: &str,
+    strip_standalone_filters: bool,
+) -> Result<(), AppError> {
     validate_bundle_before_write(bundle)?;
 
     let tmp_path = format!("{}.tmp", path);
@@ -2984,7 +3148,12 @@ pub fn write_project_archive(bundle: &ProjectBundle, path: &str) -> Result<(), A
                     entry.id
                 ))
             })?;
-            write_zip_json_entry(&mut zip, &entry.file, doc, opts)?;
+            if strip_standalone_filters {
+                let sanitized = without_standalone_filters(doc);
+                write_zip_json_entry(&mut zip, &entry.file, &sanitized, opts)?;
+            } else {
+                write_zip_json_entry(&mut zip, &entry.file, doc, opts)?;
+            }
         }
         for entry in &bundle.manifest.fit_y_by_x_files {
             let doc = fit_by_id.get(entry.id.as_str()).ok_or_else(|| {
@@ -3197,7 +3366,9 @@ pub fn read_table_file(path: &str) -> Result<TableDoc, AppError> {
 
 /// Write a single `GraphDoc` to a `.spgh` file.
 pub fn write_graph_file(doc: &GraphDoc, path: &str) -> Result<(), AppError> {
-    let bytes = serde_json::to_vec_pretty(doc).map_err(|e| AppError::FileIO(e.to_string()))?;
+    let sanitized = without_standalone_filters(doc);
+    let bytes = serde_json::to_vec_pretty(&sanitized)
+        .map_err(|e| AppError::FileIO(e.to_string()))?;
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -3637,6 +3808,107 @@ fn validate_bundle_before_write(bundle: &ProjectBundle) -> Result<(), AppError> 
                 "project lineage graph hash does not match current project documents".to_string(),
             ));
         }
+    }
+    Ok(())
+}
+
+fn canonicalize_dataset_filters(dataset_filters: &DatasetFilters) -> DatasetFilters {
+    dataset_filters
+        .iter()
+        .filter(|(_, rules)| !rules.is_empty())
+        .map(|(dataset_id, rules)| (dataset_id.clone(), rules.clone()))
+        .collect()
+}
+
+fn validate_dataset_filters(dataset_filters: &DatasetFilters) -> Result<(), AppError> {
+    for (dataset_id, rules) in dataset_filters {
+        if dataset_id.is_empty() {
+            return Err(AppError::FileIO(
+                "Archive dataset filter dataset id is missing".to_string(),
+            ));
+        }
+        for (index, rule) in rules.iter().enumerate() {
+            validate_dataset_filter_rule_item(dataset_id, index, rule)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_dataset_filter_rule_item(
+    dataset_id: &str,
+    index: usize,
+    rule_item: &ProjectFilterRuleItem,
+) -> Result<(), AppError> {
+    let context = format!("Archive dataset filter {dataset_id} rule[{index}]");
+    if rule_item.id.is_empty() {
+        return Err(AppError::FileIO(format!("{context} id is missing")));
+    }
+    if let Some(height) = rule_item
+        .height
+        .filter(|height| !height.is_finite() || *height <= 0.0)
+    {
+        return Err(AppError::FileIO(format!(
+            "{context} height must be a finite number greater than 0 (got {height})"
+        )));
+    }
+    validate_dataset_filter_rule(&rule_item.rule, &context)
+}
+
+fn validate_dataset_filter_rule(rule: &ProjectFilterRule, context: &str) -> Result<(), AppError> {
+    match rule {
+        ProjectFilterRule::Continuous { field, min, max } => {
+            validate_dataset_filter_field(field, context)?;
+            if let Some(min) = min.as_ref().filter(|min| !min.is_finite()) {
+                return Err(AppError::FileIO(format!(
+                    "{context} min must be finite (got {min})"
+                )));
+            }
+            if let Some(max) = max.as_ref().filter(|max| !max.is_finite()) {
+                return Err(AppError::FileIO(format!(
+                    "{context} max must be finite (got {max})"
+                )));
+            }
+        }
+        ProjectFilterRule::Categorical {
+            field,
+            selected,
+            exclude: _,
+        } => {
+            validate_dataset_filter_field(field, context)?;
+            if selected.iter().any(|value| value.is_empty()) {
+                return Err(AppError::FileIO(format!(
+                    "{context} selected values must be non-empty strings"
+                )));
+            }
+        }
+        ProjectFilterRule::Date { field, start, end } => {
+            validate_dataset_filter_field(field, context)?;
+            if start.as_deref().is_some_and(str::is_empty) {
+                return Err(AppError::FileIO(format!(
+                    "{context} start must be a non-empty string"
+                )));
+            }
+            if end.as_deref().is_some_and(str::is_empty) {
+                return Err(AppError::FileIO(format!(
+                    "{context} end must be a non-empty string"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_dataset_filter_field(
+    field: &ProjectFilterField,
+    context: &str,
+) -> Result<(), AppError> {
+    if field.column_id.as_deref().is_some_and(str::is_empty) {
+        return Err(AppError::FileIO(format!(
+            "{context} field.columnId must be a non-empty string"
+        )));
+    }
+    if field.name.is_empty() {
+        return Err(AppError::FileIO(format!("{context} field.name is missing")));
     }
     Ok(())
 }
@@ -6533,6 +6805,7 @@ mod tests {
             workflow_runs: vec![],
             lineage_graph: workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
+            dataset_filters: HashMap::new(),
         };
 
         let json = serde_json::to_vec(&manifest).expect("serialize manifest");
@@ -6543,6 +6816,518 @@ mod tests {
         assert_eq!(round_trip.graph_folders, Some(HashMap::new()));
         assert!(round_trip.fit_y_by_x.is_empty());
         assert!(round_trip.fit_y_by_x_folders.is_empty());
+    }
+
+    #[test]
+    fn build_graph_docs_strips_standalone_filters() {
+        let docs = build_graph_docs(vec![serde_json::json!({
+            "id": "graph-a",
+            "name": "Graph A",
+            "sourceDatasetId": "table-a",
+            "filters": [{
+                "id": "rule-1",
+                "op": "AND",
+                "rule": {
+                    "kind": "continuous",
+                    "field": { "name": "Length", "type": "continuous" },
+                    "min": 1.0,
+                    "max": 5.0
+                }
+            }],
+            "title": "Preserved"
+        })]);
+
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        assert_eq!(docs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert!(!docs[0].body.contains_key("filters"));
+    }
+
+    #[test]
+    fn write_graph_file_strips_standalone_filters() {
+        let path = temp_project_path("standalone-graph-filter").with_extension("spgh");
+        let mut graph = graph_doc_with_source("graph-a", "Graph A", "table-a");
+        graph
+            .body
+            .insert("filters".to_string(), serde_json::json!([]));
+
+        write_graph_file(&graph, path.to_str().unwrap()).unwrap();
+        let persisted = read_graph_file(path.to_str().unwrap()).unwrap();
+
+        assert!(!persisted.body.contains_key("filters"));
+        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn write_project_archive_strips_standalone_filters() {
+        let path = temp_project_path("project-graph-filter");
+        let mut graph = graph_doc_with_source("graph-a", "Graph A", "table-a");
+        graph
+            .body
+            .insert("filters".to_string(), serde_json::json!([]));
+        let folders = HashMap::new();
+        let bundle = build_bundle(
+            "Project".to_string(),
+            "4.0.0".to_string(),
+            "2026-09-14T00:00:00Z".to_string(),
+            vec![table_doc("table-a", "Table A")],
+            vec![graph],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let graph_entry = &bundle.manifest.graphs[0].file;
+        let persisted: GraphDoc = serde_json::from_reader(archive.by_name(graph_entry).unwrap()).unwrap();
+
+        assert!(!persisted.body.contains_key("filters"));
+        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        drop(archive);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn conflicting_legacy_graph_filters_clear_dataset() {
+        let filtered_body = serde_json::json!({
+            "sourceDatasetId": "table-a",
+            "filters": [{
+                "id": "rule-1",
+                "op": "AND",
+                "rule": {
+                    "kind": "continuous",
+                    "field": { "name": "Length", "type": "continuous" },
+                    "min": 1.0,
+                    "max": 5.0
+                }
+            }]
+        });
+        let empty_body = serde_json::json!({
+            "sourceDatasetId": "table-a",
+            "filters": []
+        });
+        let mut graphs = vec![
+            GraphDoc {
+                id: "graph-filtered".to_string(),
+                name: "Filtered".to_string(),
+                version: default_doc_version(),
+                body: filtered_body.as_object().unwrap().clone(),
+            },
+            GraphDoc {
+                id: "graph-empty".to_string(),
+                name: "Empty".to_string(),
+                version: default_doc_version(),
+                body: empty_body.as_object().unwrap().clone(),
+            },
+        ];
+
+        let migrated = migrate_legacy_graph_filters(&HashMap::new(), &mut graphs).unwrap();
+
+        assert_eq!(migrated.conflicts, vec!["table-a"]);
+        assert!(!migrated.dataset_filters.contains_key("table-a"));
+        assert!(migrated.changed);
+        assert!(graphs
+            .iter()
+            .all(|graph| !graph.body.contains_key("filters")));
+    }
+
+    #[test]
+    fn legacy_graph_filters_migrate() {
+        let rule = serde_json::json!({
+            "id": "rule-1",
+            "op": "AND",
+            "rule": {
+                "kind": "categorical",
+                "field": {
+                    "columnId": "column-build",
+                    "name": "Build",
+                    "type": "nominal"
+                },
+                "selected": ["DV", "EV"],
+                "exclude": true
+            },
+            "height": 96.0
+        });
+        let manifest_rule = serde_json::json!({
+            "id": "manifest-rule",
+            "op": "OR",
+            "rule": {
+                "kind": "date",
+                "field": { "name": "Created At", "type": "datetime" },
+                "start": "2026-09-01T00:00:00Z",
+                "end": null
+            }
+        });
+        let manifest_filters = HashMap::from([(
+            "table-authoritative".to_string(),
+            serde_json::from_value(serde_json::json!([manifest_rule])).unwrap(),
+        )]);
+        let graph_body = |dataset_id: &str, filters: Value| {
+            serde_json::json!({
+                "sourceDatasetId": dataset_id,
+                "filters": filters
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        let mut graphs = vec![
+            GraphDoc {
+                id: "graph-a-1".to_string(),
+                name: "A1".to_string(),
+                version: default_doc_version(),
+                body: graph_body("table-a", serde_json::json!([rule.clone()])),
+            },
+            GraphDoc {
+                id: "graph-a-2".to_string(),
+                name: "A2".to_string(),
+                version: default_doc_version(),
+                body: graph_body("table-a", serde_json::json!([rule.clone()])),
+            },
+            GraphDoc {
+                id: "graph-b".to_string(),
+                name: "B".to_string(),
+                version: default_doc_version(),
+                body: graph_body("table-b", serde_json::json!([])),
+            },
+            GraphDoc {
+                id: "graph-authoritative".to_string(),
+                name: "Authoritative".to_string(),
+                version: default_doc_version(),
+                body: graph_body("table-authoritative", serde_json::json!([rule])),
+            },
+        ];
+
+        let migrated = migrate_legacy_graph_filters(&manifest_filters, &mut graphs).unwrap();
+
+        assert_eq!(migrated.dataset_filters["table-a"].len(), 1);
+        assert_eq!(
+            migrated.dataset_filters["table-authoritative"],
+            manifest_filters["table-authoritative"]
+        );
+        assert!(!migrated.dataset_filters.contains_key("table-b"));
+        assert!(migrated.conflicts.is_empty());
+        assert!(migrated.changed);
+        assert!(graphs
+            .iter()
+            .all(|graph| !graph.body.contains_key("filters")));
+    }
+
+    #[test]
+    fn empty_manifest_filter_entry_does_not_override_legacy_filter() {
+        let body = serde_json::json!({
+            "sourceDatasetId": "table-a",
+            "filters": [{
+                "id": "rule-1",
+                "op": "AND",
+                "rule": {
+                    "kind": "continuous",
+                    "field": { "name": "Length", "type": "continuous" },
+                    "min": 1.0,
+                    "max": 5.0
+                }
+            }]
+        });
+        let mut graphs = vec![GraphDoc {
+            id: "graph-a".to_string(),
+            name: "Graph A".to_string(),
+            version: default_doc_version(),
+            body: body.as_object().unwrap().clone(),
+        }];
+        let manifest_filters = HashMap::from([("table-a".to_string(), vec![])]);
+
+        let migrated = migrate_legacy_graph_filters(&manifest_filters, &mut graphs).unwrap();
+
+        assert_eq!(migrated.dataset_filters["table-a"].len(), 1);
+        assert!(migrated.conflicts.is_empty());
+        assert!(!graphs[0].body.contains_key("filters"));
+    }
+
+    #[test]
+    fn source_less_legacy_filters_are_stripped_without_changing_other_graph_fields() {
+        let body = serde_json::json!({
+            "title": "Preserved",
+            "filters": []
+        });
+        let mut graphs = vec![GraphDoc {
+            id: "graph-a".to_string(),
+            name: "Graph A".to_string(),
+            version: default_doc_version(),
+            body: body.as_object().unwrap().clone(),
+        }];
+
+        let migrated = migrate_legacy_graph_filters(&HashMap::new(), &mut graphs).unwrap();
+
+        assert!(migrated.dataset_filters.is_empty());
+        assert!(migrated.conflicts.is_empty());
+        assert!(migrated.changed);
+        assert_eq!(graphs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert!(!graphs[0].body.contains_key("filters"));
+    }
+
+    #[test]
+    fn malformed_legacy_graph_filters_are_rejected() {
+        let body = serde_json::json!({
+            "sourceDatasetId": "table-a",
+            "filters": { "unexpected": true }
+        });
+        let mut graphs = vec![GraphDoc {
+            id: "graph-a".to_string(),
+            name: "Graph A".to_string(),
+            version: default_doc_version(),
+            body: body.as_object().unwrap().clone(),
+        }];
+
+        let error = match migrate_legacy_graph_filters(&HashMap::new(), &mut graphs) {
+            Ok(_) => panic!("expected malformed legacy graph filters to fail migration"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("Invalid legacy graph filters"));
+    }
+
+    #[test]
+    fn invalid_legacy_graph_filters_are_rejected_before_conflict_resolution() {
+        let invalid_body = serde_json::json!({
+            "sourceDatasetId": "table-a",
+            "filters": [{
+                "id": "",
+                "op": "AND",
+                "rule": {
+                    "kind": "continuous",
+                    "field": { "name": "", "type": "continuous" },
+                    "min": 1.0,
+                    "max": 5.0
+                }
+            }]
+        });
+        let empty_body = serde_json::json!({
+            "sourceDatasetId": "table-a",
+            "filters": []
+        });
+        let mut graphs = vec![
+            GraphDoc {
+                id: "graph-invalid".to_string(),
+                name: "Invalid".to_string(),
+                version: default_doc_version(),
+                body: invalid_body.as_object().unwrap().clone(),
+            },
+            GraphDoc {
+                id: "graph-empty".to_string(),
+                name: "Empty".to_string(),
+                version: default_doc_version(),
+                body: empty_body.as_object().unwrap().clone(),
+            },
+        ];
+
+        let error = match migrate_legacy_graph_filters(&HashMap::new(), &mut graphs) {
+            Ok(_) => panic!("expected invalid legacy graph filters to fail migration"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("rule[0] id is missing"));
+    }
+
+    #[test]
+    fn dataset_filters_round_trip() {
+        let path = temp_project_path("dataset-filters-round-trip");
+        let manifest = ProjectManifest {
+            name: "Project".into(),
+            version: "4.0.0".into(),
+            created_at: "2026-09-14T00:00:00Z".into(),
+            tables: vec![],
+            graphs: vec![],
+            folders: vec![],
+            table_folders: Some(HashMap::new()),
+            graph_folders: Some(HashMap::new()),
+            fit_y_by_x: vec![],
+            fit_y_by_x_folders: HashMap::new(),
+            fit_models: vec![],
+            fit_model_folders: HashMap::new(),
+            report_folders: HashMap::new(),
+            distributions: vec![],
+            distribution_folders: HashMap::new(),
+            analyses: vec![],
+            analysis_folders: HashMap::new(),
+            tabulates: vec![],
+            tabulate_folders: HashMap::new(),
+            report_files: vec![],
+            fit_y_by_x_files: vec![],
+            tabulate_files: vec![],
+            snapshot_files: vec![],
+            workflow_files: vec![],
+            table_transform_files: vec![],
+            table_transform_bindings: vec![],
+            logical_folders: vec![],
+            workflow_runs: vec![],
+            lineage_graph: workflow_domain::ProjectLineageGraph::default(),
+            relationships: vec![],
+            dataset_filters: HashMap::from([(
+                "table-1".to_string(),
+                vec![
+                    ProjectFilterRuleItem {
+                        id: "rule-continuous".to_string(),
+                        op: ProjectFilterOp::And,
+                        rule: ProjectFilterRule::Continuous {
+                            field: ProjectFilterField {
+                                column_id: None,
+                                name: "Length".to_string(),
+                                field_type: ProjectFilterFieldType::Continuous,
+                            },
+                            min: Some(1.0),
+                            max: Some(5.0),
+                        },
+                        height: Some(120.0),
+                    },
+                    ProjectFilterRuleItem {
+                        id: "rule-categorical".to_string(),
+                        op: ProjectFilterOp::Or,
+                        rule: ProjectFilterRule::Categorical {
+                            field: ProjectFilterField {
+                                column_id: Some("field-categorical".to_string()),
+                                name: "Build".to_string(),
+                                field_type: ProjectFilterFieldType::Nominal,
+                            },
+                            selected: vec!["DV".to_string(), "EV".to_string()],
+                            exclude: true,
+                        },
+                        height: None,
+                    },
+                    ProjectFilterRuleItem {
+                        id: "rule-date".to_string(),
+                        op: ProjectFilterOp::And,
+                        rule: ProjectFilterRule::Date {
+                            field: ProjectFilterField {
+                                column_id: Some("field-date".to_string()),
+                                name: "Created At".to_string(),
+                                field_type: ProjectFilterFieldType::Datetime,
+                            },
+                            start: Some("2026-09-01T00:00:00Z".to_string()),
+                            end: Some("2026-09-14T00:00:00Z".to_string()),
+                        },
+                        height: Some(88.0),
+                    },
+                ],
+            )]),
+        };
+
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("manifest.json", opts).unwrap();
+        zip.write_all(serde_json::to_vec_pretty(&manifest).unwrap().as_slice())
+            .unwrap();
+        zip.finish().unwrap();
+
+        let encoded = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(encoded["datasetFilters"]["table-1"][0]["op"], "AND");
+        assert!(encoded["datasetFilters"]["table-1"][0]["rule"]["field"]
+            .get("columnId")
+            .is_none());
+        assert_eq!(
+            encoded["datasetFilters"]["table-1"][1]["rule"]["field"]["columnId"],
+            "field-categorical"
+        );
+
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.manifest.dataset_filters, manifest.dataset_filters);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn manifest_without_dataset_filters_opens_empty() {
+        let path = temp_project_path("manifest-without-dataset-filters");
+        let manifest = serde_json::json!({
+            "name": "Project",
+            "version": "4.0.0",
+            "createdAt": "2026-09-14T00:00:00Z",
+            "tables": [],
+            "graphs": [],
+            "folders": [],
+            "fitYByXFiles": [],
+            "tabulateFiles": [],
+            "snapshotFiles": []
+        });
+
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("manifest.json", opts).unwrap();
+        zip.write_all(serde_json::to_vec_pretty(&manifest).unwrap().as_slice())
+            .unwrap();
+        zip.finish().unwrap();
+
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+        assert!(loaded.manifest.dataset_filters.is_empty());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_dataset_filters_are_rejected() {
+        let path = temp_project_path("invalid-dataset-filters");
+        let manifest = serde_json::json!({
+            "name": "Project",
+            "version": "4.0.0",
+            "createdAt": "2026-09-14T00:00:00Z",
+            "tables": [],
+            "graphs": [],
+            "folders": [],
+            "datasetFilters": {
+                "": [
+                    {
+                        "id": "",
+                        "op": "AND",
+                        "rule": {
+                            "kind": "continuous",
+                            "field": {
+                                "columnId": "",
+                                "name": "",
+                                "type": "continuous"
+                            },
+                            "min": 1.0,
+                            "max": 5.0
+                        },
+                        "height": 0
+                    }
+                ]
+            },
+            "fitYByXFiles": [],
+            "tabulateFiles": [],
+            "snapshotFiles": []
+        });
+
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("manifest.json", opts).unwrap();
+        zip.write_all(serde_json::to_vec_pretty(&manifest).unwrap().as_slice())
+            .unwrap();
+        zip.finish().unwrap();
+
+        let error = match read_project_file(path.to_str().unwrap()) {
+            Ok(_) => panic!("expected invalid dataset filters to fail open"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, AppError::FileIO(message) if message.contains("dataset")));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

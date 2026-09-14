@@ -71,5 +71,10 @@ assert.match(viewSource, /\{ getCurrentItem \}/, "view must fence reports agains
 assert.doesNotMatch(presentationSource, /echarts|DistributionChart/);
 assert.equal((presentationSource.match(/<GraphRuntime/g) ?? []).length, 1, "one mapped runtime expression renders all four roles");
 assert.match(presentationSource, /DISTRIBUTION_GRAPH_ROLES\.map/);
+assert.doesNotMatch(
+  presentationSource,
+  /useDatasetFilterStore/,
+  "embedded Analysis graphs must not subscribe to the live dataset Filter store",
+);
 
 console.log("distribution graph embedding OK");

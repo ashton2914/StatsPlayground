@@ -1,5 +1,5 @@
 import { inferFieldType, type FieldRef } from "@/graphCore/types";
-import type { GraphBuilderItem, GraphSlotKey } from "@/types/graphBuilder";
+import type { GraphBuilderItem, GraphRuntimeItem, GraphSlotKey } from "@/types/graphBuilder";
 
 export interface GraphColumnDescriptor {
   columnId: string;
@@ -63,11 +63,11 @@ function migrateLegacyField(
 }
 
 export function migrateLegacyGraphColumnName(
-  item: GraphBuilderItem,
+  item: GraphRuntimeItem,
   oldName: string,
   newName: string,
   sqlType: string,
-): GraphBuilderItem {
+): GraphRuntimeItem {
   const migrateFields = (fields: FieldRef[]) => {
     let changed = false;
     const next = fields.map((field) => {
@@ -133,9 +133,9 @@ export function migrateLegacyGraphColumnName(
 }
 
 export function reconcileGraphColumnIdentities(
-  item: GraphBuilderItem,
+  item: GraphRuntimeItem,
   descriptors: readonly GraphColumnDescriptor[],
-): GraphBuilderItem {
+): GraphRuntimeItem {
   const byId = new Map(descriptors.map((descriptor) => [descriptor.columnId, descriptor]));
   const byName = new Map(descriptors.map((descriptor) => [descriptor.name, descriptor]));
   const renamedFields = new Map<string, string>();

@@ -9,6 +9,7 @@
     "../src/components/analysis/**/*.tsx",
     "../src/types/analysis.ts",
     "../src/types/hypothesisTest.ts",
+    "./graphBuilderFilterTypes.typecheck.ts",
     "./analysisKindRegistry.test.ts",
     "./hypothesisTestContracts.test.ts"
   ]

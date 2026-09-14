@@ -23,9 +23,10 @@ import { dataService } from "@/services/dataService";
 import { isMissing, DEFAULT_GROUP_KEY, type FieldRef, type ChartElement, type ElementKind, type MarkStyle, type GroupStyle, type GroupStyleMap, type MarkerShape, type RefLineY, type RefLineX, type YAxisConfig } from "@/graphCore";
 import { SCATTER_RENDER_BUDGET } from "@/graphCore/scatterBudget";
 import type { DatasetMeta } from "@/types/data";
-import type { GraphBuilderItem, GraphBuilderMode, GraphSlotKey } from "@/types/graphBuilder";
+import type { GraphBuilderItem, GraphBuilderMode, GraphRuntimeItem, GraphSlotKey } from "@/types/graphBuilder";
 import type { FilterRuleItem } from "@/types/filter";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
+import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useGraphPaletteStore, type CustomPalette } from "@/stores/useGraphPaletteStore";
 import { useTableSelectionStore } from "@/stores/useTableSelectionStore";
@@ -83,6 +84,7 @@ const GRAPH_LAYER_DEFS_WITH_CORRELATION: readonly GraphLayerDef[] = GRAPH_LAYER_
   : [...GRAPH_LAYER_DEFS, { kind: "correlationMatrix" as ElementKind, icon: "▦" }];
 const DRAG_MIME = "text/plain";
 const CORRELATION_MAX_COLUMNS = MAX_MULTIVARIATE_COLUMNS;
+const EMPTY_FILTERS: FilterRuleItem[] = [];
 type MultivariateDropNotice = "invalidFieldType" | "duplicateField" | "maxColumns";
 
 export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
@@ -352,9 +354,9 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const xAxisConfig = twoD.xAxis;
   const refLinesY = twoD.refLinesY ?? [];
   const refLinesX = twoD.refLinesX ?? [];
-  // Filter rules (JMP-style Local Data Filter). Persist on the item so
-  // they survive project save/load.
-  const filters = useMemo(() => item.filters ?? [], [item.filters]);
+  const filters = useDatasetFilterStore((state) => state.byDataset[dataset.id] ?? EMPTY_FILTERS);
+  const replaceDatasetFilters = useDatasetFilterStore((state) => state.replaceFilters);
+  const runtimeItem = useMemo<GraphRuntimeItem>(() => ({ ...item, filters }), [filters, item]);
   const getGraphCategoricalValues = useCallback(async (field: string, search: string) => {
     const generation = await dataService.getDatasetGeneration(dataset.id);
     return dataService.queryTableFilterValues(dataset.id, field, search, 500, generation);
@@ -498,10 +500,10 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   // writes to it any more.
   const setFilters = useCallback(
     (next: FilterRuleItem[]) => {
-      updateItem(item.id, { filters: next });
-      markDirty();
+      if (readOnly) return;
+      if (replaceDatasetFilters(dataset.id, next)) markDirty();
     },
-    [item.id, updateItem, markDirty],
+    [dataset.id, markDirty, readOnly, replaceDatasetFilters],
   );
 
   /** Replace the entire group-style entry for one group (or remove it). */
@@ -1510,7 +1512,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
               }}
             >
               <GraphRuntime
-                item={item}
+                item={runtimeItem}
                 dataset={dataset}
                 showPointBudgetAction={!isMultivariateMode}
                 onRequestSampleMode={!isMultivariateMode ? () => setSamplingMode("sample") : undefined}
@@ -1534,9 +1536,11 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
                 onItemReconciled={(nextItem) => {
                   updateItem(item.id, {
                     modeStates: nextItem.modeStates,
-                    filters: nextItem.filters,
                     groupThemeSlots: nextItem.groupThemeSlots,
                   });
+                  if (!readOnly && nextItem.filters) {
+                    replaceDatasetFilters(dataset.id, nextItem.filters);
+                  }
                   markDirty();
                 }}
                 onStateChange={setRuntimeState}

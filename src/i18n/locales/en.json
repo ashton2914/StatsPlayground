@@ -348,6 +348,7 @@
     "cancelImport": "Cancel import",
     "cancellingImport": "Cancelling…",
     "datasetNameMigrations": "Renamed {{count}} duplicate dataset name(s) while opening this project. Save to persist the updated names.",
+    "datasetFilterMigrationConflict": "Conflicting legacy Graph filters were cleared for these tables: {{names}}. Save the project to persist this migration.",
     "importProgressTable": "Table {{i}}/{{total}}: {{name}}",
     "importProgressRows": "rows",
     "createSnapshotTitle": "Create snapshot",
