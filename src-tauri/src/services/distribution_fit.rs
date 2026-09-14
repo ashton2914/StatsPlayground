@@ -192,6 +192,14 @@ pub trait FitModel {
     fn distribution_id(&self) -> ContinuousDistributionIdV1;
     fn validate_domain(&self, observations: &[FitObservationV1]) -> Result<(), FitFailureV1>;
     fn fit(&self, observations: &[FitObservationV1]) -> Result<FitEstimateV1, FitFailureV1>;
+    fn curve_domain(
+        &self,
+        _estimate: &FitEstimateV1,
+        x_min: f64,
+        x_max: f64,
+    ) -> Result<(f64, f64), FitFailureV1> {
+        Ok((x_min, x_max))
+    }
     fn pdf(&self, estimate: &FitEstimateV1, x: f64) -> Result<f64, FitFailureV1>;
 }
 
@@ -461,6 +469,24 @@ impl FitModel for NormalFitV1 {
             log_likelihood,
             closed_form_convergence(),
         )
+    }
+
+    fn curve_domain(
+        &self,
+        estimate: &FitEstimateV1,
+        x_min: f64,
+        x_max: f64,
+    ) -> Result<(f64, f64), FitFailureV1> {
+        let [location, scale] = expect_parameter_values(
+            estimate,
+            &ContinuousDistributionIdV1::Normal,
+            Self::PARAMETERIZATION_ID,
+            &["location", "scale"],
+        )?;
+        Ok((
+            x_min.min(location - 4.0 * scale),
+            x_max.max(location + 4.0 * scale),
+        ))
     }
 
     fn pdf(&self, estimate: &FitEstimateV1, x: f64) -> Result<f64, FitFailureV1> {

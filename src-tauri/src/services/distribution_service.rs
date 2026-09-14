@@ -1222,7 +1222,19 @@ fn build_fit_payload(
             ));
         }
     };
-    let curve = match build_pdf_curve(model.as_ref(), &estimate, x_min, x_max) {
+    let (curve_min, curve_max) = match model.curve_domain(&estimate, x_min, x_max) {
+        Ok(domain) => domain,
+        Err(failure) => {
+            return Ok(failed_fit_payload(
+                registration,
+                fit_id,
+                effective_n,
+                provenance,
+                failure,
+            ));
+        }
+    };
+    let curve = match build_pdf_curve(model.as_ref(), &estimate, curve_min, curve_max) {
         Ok(points) => DistributionFittedCurveDataV1 {
             schema_version: "1".to_string(),
             points,
@@ -2343,6 +2355,35 @@ mod tests {
                     && parameter.lower_confidence.value.is_some_and(f64::is_finite)
                     && parameter.upper_confidence.value.is_some_and(f64::is_finite)
             }));
+        }
+
+        #[test]
+        fn normal_fit_curve_includes_four_sigma_tails() {
+            let state = AppState::new().expect("test state");
+            let result = execute_fit_request(
+                &state,
+                &[(1.0, 1, 1.0), (2.0, 1, 1.0), (4.0, 1, 1.0), (8.0, 1, 1.0)],
+                |request, _, _| {
+                    request.continuous_fit.enabled_distribution_ids =
+                        vec![ContinuousDistributionIdV1::Normal];
+                },
+            )
+            .expect("normal fit");
+            let normal = fit_payloads(&result)[0];
+            let parameter = |id: &str| {
+                normal
+                    .parameters
+                    .iter()
+                    .find(|candidate| candidate.parameter_id == id)
+                    .and_then(|candidate| candidate.value.value)
+                    .expect("available normal parameter")
+            };
+            let location = parameter("location");
+            let scale = parameter("scale");
+            let curve = normal.fitted_curve.as_ref().expect("normal fitted curve");
+
+            assert!(curve.points.first().unwrap().x <= location - 4.0 * scale);
+            assert!(curve.points.last().unwrap().x >= location + 4.0 * scale);
         }
 
         #[test]

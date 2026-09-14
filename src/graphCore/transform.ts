@@ -4049,6 +4049,14 @@ function buildSingleOption(
             if (Number.isFinite(entry.max) && entry.max > hi) hi = entry.max;
           }
         }
+        if (frameBackedAggregateMode && hasNormalCurve) {
+          for (const packet of normalCurvePackets) {
+            for (const point of packet.points) {
+              if (Number.isFinite(point.x) && point.x < lo) lo = point.x;
+              if (Number.isFinite(point.x) && point.x > hi) hi = point.x;
+            }
+          }
+        }
         if ((!Number.isFinite(lo) || !Number.isFinite(hi)) && frameBackedAggregateMode && histogramPacket) {
           // Frame-backed histogram mode must never fall back to raw rows.
           // Use axis pins when present, otherwise an explicit safe empty span.
@@ -5016,6 +5024,12 @@ function buildSingleOption(
           if (Number.isFinite(entry.max) && entry.max > xDataHi) xDataHi = entry.max;
         }
       }
+      for (const packet of normalCurvePackets) {
+        for (const point of packet.points) {
+          if (Number.isFinite(point.x) && point.x < xDataLo) xDataLo = point.x;
+          if (Number.isFinite(point.x) && point.x > xDataHi) xDataHi = point.x;
+        }
+      }
       if (!Number.isFinite(xDataLo) || !Number.isFinite(xDataHi)) {
         for (const v of allXs) {
           if (!Number.isFinite(v)) continue;
@@ -5255,15 +5269,20 @@ function buildSingleOption(
           const packetSummary = summaryPacket?.summaries.find((entry) =>
             !grouping || String(entry.group ?? DEFAULT_GROUP_KEY) === slot.key
           );
-          const rawSummary = meanStd(gxs);
-          const points = normalCurve(
-            packetSummary?.mean ?? rawSummary.mean,
-            packetSummary?.stddev ?? rawSummary.std,
-            packetSummary?.count ?? rawSummary.n,
-            width,
-            packetSummary?.min ?? xDataLo,
-            packetSummary?.max ?? xDataHi,
+          const curvePacket = normalCurvePackets.find((packet) =>
+            !grouping || String(packet.group ?? DEFAULT_GROUP_KEY) === slot.key
           );
+          const rawSummary = meanStd(gxs);
+          const points: [number, number][] = curvePacket
+            ? curvePacket.points.map((point) => [point.x, point.y])
+            : normalCurve(
+                packetSummary?.mean ?? rawSummary.mean,
+                packetSummary?.stddev ?? rawSummary.std,
+                packetSummary?.count ?? rawSummary.n,
+                width,
+                packetSummary?.min ?? xDataLo,
+                packetSummary?.max ?? xDataHi,
+              );
           if (points.length > 0) {
             if (showNormalSigmaBands) {
               const bandOpacity = [0.1, 0.16, 0.24, 0.24, 0.16, 0.1];
@@ -5383,6 +5402,9 @@ function buildSingleOption(
             // bin centers are visually comparable across panels.
             ...(sharedRanges?.xMin != null ? { min: sharedRanges.xMin } : {}),
             ...(sharedRanges?.xMax != null ? { max: sharedRanges.xMax } : {}),
+            ...(sharedRanges?.xMin == null && sharedRanges?.xMax == null
+              ? { min: autoXLo, max: autoXHi }
+              : {}),
             // Single-panel: expand auto-fit so vertical ref lines drawn
             // outside the data extent stay visible. The shared-range
             // spreads above already include refXs via computeSharedRanges,
@@ -6176,6 +6198,13 @@ function buildSingleOption(
     if (framePointsOnly && framePointExtents?.y) {
       dataMin = framePointExtents.y.min;
       dataMax = framePointExtents.y.max;
+    } else if (frameBackedAggregateMode && xIsCategory && normalCurvePackets.length > 0) {
+      for (const packet of normalCurvePackets) {
+        for (const point of packet.points) {
+          if (Number.isFinite(point.x) && point.x < dataMin) dataMin = point.x;
+          if (Number.isFinite(point.x) && point.x > dataMax) dataMax = point.x;
+        }
+      }
     } else if (normalSummaryPacketMode && summaryPacket) {
       for (const entry of summaryPacket.summaries) {
         if (Number.isFinite(entry.min) && entry.min < dataMin) dataMin = entry.min;

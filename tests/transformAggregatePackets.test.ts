@@ -2535,6 +2535,67 @@ for (const element of [
 
 {
   const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true },
+      {
+        kind: "normalCurve",
+        enabled: true,
+        options: { elementId: "distribution.overview.fittedCurves" },
+      },
+    ],
+  };
+  const frame = baseFrame([
+    {
+      kind: "histogram",
+      xColumn: "measurement",
+      minValue: 0,
+      maxValue: 2,
+      totalCount: 10,
+      bins: [
+        { binStart: 0, binEnd: 1, count: 3 },
+        { binStart: 1, binEnd: 2, count: 7 },
+      ],
+    },
+    {
+      kind: "summary",
+      xColumn: "measurement",
+      summaries: [{ count: 10, mean: 1, median: 1, stddev: 0.25, min: 0, max: 2 }],
+    },
+    {
+      kind: "precomputedCurve",
+      elementId: "distribution.overview.fittedCurves",
+      interpolation: "linear",
+      points: [{ x: -2, y: 0.01 }, { x: 1, y: 7 }, { x: 4, y: 0.01 }],
+    },
+  ]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const xAxis = option.xAxis as Record<string, unknown>;
+  const normal = panelSeries(option).find((entry) => String(entry.id ?? "").startsWith("__normal_curve_"));
+  assert.deepEqual(
+    normal?.data,
+    [[-2, 0.01], [1, 7], [4, 0.01]],
+    "the numeric Normal layer must prefer backend curve points over its summary fallback",
+  );
+  assert.ok(Number(xAxis.min) <= -2, "the numeric response axis must include the fitted curve's lower tail");
+  assert.ok(Number(xAxis.max) >= 4, "the numeric response axis must include the fitted curve's upper tail");
+
+  const pinnedOption = buildGraph(
+    { ...spec, xAxis: { min: -1, max: 3 } },
+    baseData(["measurement"], []),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const pinnedXAxis = pinnedOption.xAxis as Record<string, unknown>;
+  assert.equal(pinnedXAxis.min, -1, "an explicit numeric lower pin must override automatic tail expansion");
+  assert.equal(pinnedXAxis.max, 3, "an explicit numeric upper pin must override automatic tail expansion");
+}
+
+{
+  const spec: GraphSpec = {
     encoding: {
       x: { name: "__sp_value__", type: "continuous" },
       y: { name: "__sp_variable__", type: "nominal" },
@@ -3129,9 +3190,11 @@ for (const element of [
       sourceColumn,
       interpolation: "linear" as const,
       points: [
+        { x: -2, y: 0.001 },
         { x: 0, y: 0.1 },
         { x: 1.5 + responseIndex * 0.2, y: 12 },
         { x: 4, y: 0.1 },
+        { x: 6, y: 0.001 },
       ],
     })),
     {
@@ -3164,6 +3227,26 @@ for (const element of [
   const yAxis = (Array.isArray(option.yAxis) ? option.yAxis[0] : option.yAxis) as Record<string, unknown>;
   assert.deepEqual(xAxis.data, responses, "multiX source columns must become ordered category labels");
   assert.equal(yAxis.type, "value", "Distribution response values must render on Y");
+  assert.ok(
+    Number(yAxis.min) <= -2,
+    `the value axis must include the precomputed curve's lower tail: ${JSON.stringify(yAxis)}`,
+  );
+  assert.ok(
+    Number(yAxis.max) >= 6,
+    `the value axis must include the precomputed curve's upper tail: ${JSON.stringify(yAxis)}`,
+  );
+  const pinnedOption = buildGraph(
+    { ...spec, yAxis: { min: -1, max: 5 } },
+    frameBackedAggregateData(["__sp_variable__", "__sp_value__"], 40),
+    theme,
+    undefined,
+    frame,
+  ).panels[0].option as Record<string, unknown>;
+  const pinnedYAxis = (Array.isArray(pinnedOption.yAxis)
+    ? pinnedOption.yAxis[0]
+    : pinnedOption.yAxis) as Record<string, unknown>;
+  assert.equal(pinnedYAxis.min, -1, "an explicit lower pin must override the precomputed curve tail");
+  assert.equal(pinnedYAxis.max, 5, "an explicit upper pin must override the precomputed curve tail");
   const series = panelSeries(option);
   const categoriesInCustomSeries = (idPrefix: string) => Array.from(new Set(
     series
