@@ -2,7 +2,7 @@
 
 **分析入口：** Distribution → Process Capability  
 **方法 ID：** `capability.normal.individuals`  
-**Legacy 方法版本：** `1.0.0`  
+**默认方法版本：** `1.1.0`
 **Nested Subgroup 方法版本：** `2.0.0`  
 **状态：** Individuals / Moving Range、Nested Subgroup 与 Count Histogram 已实现
 
@@ -16,14 +16,15 @@ Nested Subgroup 是兼容扩展：未选择标签列时保留原算法、结果�
 
 ## 2. 规格限
 
-规格可来自 Table 列属性或当前 Analysis override：
+当前产品入口只使用 Table 响应列属性中的规格限：
 
-- 没有 override 时，使用运行 snapshot 中的列属性。
-- 提交 override 后，`lsl`、`target`、`usl` 按字段覆盖当前分析，不回写 Table。
+- Analysis 运行 snapshot 读取响应列的 `lsl`、`target` 和 `usl`。
+- Distribution Analysis 不提供独立的规格编辑器，也不在 Analysis 定义中持久化另一套规格限。
+- 旧项目中残留的 `specLimits` 会在迁移时规范化为空；底层 `capabilityOverrides` payload 仅为兼容合同，不是当前产品入口的规格来源。
 - 所有提供的数值必须有限。
 - 双侧规格必须满足 $LSL<USL$。
 - Target 必须位于已提供的规格边界内。
-- 无效列属性产生 warning 并不生成 Capability block；无效 override 使请求失败。
+- 无效列属性产生 warning，并且不生成 Capability block。
 
 ## 3. 有效观测、By 与顺序
 
@@ -286,9 +287,10 @@ Nested Subgroup 初版只允许一个 nominal 或 ordinal 标签列，并且不�
 
 ## 10. Provenance 与兼容性
 
-默认路径继续使用 method version `1.0.0`。配置 Nested Subgroup 时使用 method version `2.0.0`，并记录 subgroup column identity、有效 subgroup 数、$M$、$A$、缺失标签数、singleton subgroup 数和 effective DF。
+默认路径使用 method version `1.1.0`。配置 Nested Subgroup 时使用 method version `2.0.0`，并记录 subgroup column identity、有效 subgroup 数、$M$、$A$、缺失标签数、singleton subgroup 数和 effective DF。
 
 报告还记录 capability method ID、interval method、normal density method、computation ID 和 specification fingerprint。
+当前产品路径的 specification source 为 `columnProperty`；兼容层中的 `analysisOverride` 枚举值不表示 UI 或 Analysis 文档仍拥有独立规格。
 
 主要 interval method IDs：
 
@@ -308,4 +310,5 @@ Nested Subgroup 初版只允许一个 nominal 或 ordinal 标签列，并且不�
 - 图形 adapter：`src/graphCore/distributionAdapter.ts`
 - 当前开发方法规格：`docs/superpowers/specs/2026-08-26-distribution-normal-capability-method-v1.md`
 - Moving Range effective DF 设计：`docs/superpowers/specs/2026-08-31-distribution-phase-a-layout-capability-design.md`
-- Nested Subgroup 与 Count Histogram：GitHub Issue 194 的批准设计
+- Nested Subgroup 与 Count Histogram：[GitHub Issue 194](https://github.com/ashton2914/StatsPlayground/issues/194) 的批准设计
+- Table 规格单一来源：`docs/superpowers/specs/2026-09-14-distribution-table-specification-source-design.md`
