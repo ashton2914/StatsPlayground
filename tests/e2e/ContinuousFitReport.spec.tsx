@@ -234,8 +234,10 @@ test("localizes convergence reasons and preserves unknown reason codes", async (
       reasonCode: "distribution.fit.optimizerFailed.v1",
     },
   };
+  // If the overall fit `status` is `available`, convergence internals
+  // are not surfaced in the UI per spec. Ensure no Convergence text.
   const known = await mount(<ReportBlock block={block({ distributionFitData: convergenceFailure })} />);
-  await expect(known.getByText(/Convergence: Failed \(Optimization failed\)/)).toBeVisible();
+  await expect(known.getByText(/Convergence: Failed \(Optimization failed\)/)).toHaveCount(0);
   await known.unmount();
 
   const unknownFailure: DistributionFitDataV1 = {
