@@ -59,7 +59,7 @@ const OPTIMIZER_BRACKET_INVALID_REASON: &str = "distribution.fit.optimizerBracke
 const ARGMIN_BRENT_OPTIMIZER_ID: &str = "argmin.brentOptThenRoot.v1";
 const ARGMIN_BRENT_OPTIMIZER_VERSION: &str = "0.11.0";
 const CAUCHY_NELDER_MEAD_OPTIMIZER_ID: &str = "local.nelderMead2d.v1";
-const CAUCHY_NELDER_MEAD_OPTIMIZER_VERSION: &str = "1.0.0";
+const CAUCHY_NELDER_MEAD_OPTIMIZER_VERSION: &str = "1.1.0";
 const CONTINUOUS_FIT_ITERATION_LIMIT: u64 = 500;
 const CONTINUOUS_FIT_TOLERANCE: f64 = 1e-10;
 const EULER_MASCHERONI: f64 = 0.577_215_664_901_532_9;
@@ -455,16 +455,28 @@ fn cauchy_standard_errors(
             + evaluate(minus_minus)?)
             / (4.0 * steps[0] * steps[1])
     };
-    let determinant = hessian[0][0] * hessian[1][1] - cross * cross;
+    let information_scale = hessian[0][0].abs().max(hessian[1][1].abs()).max(cross.abs());
+    if !information_scale.is_finite() || information_scale <= 0.0 {
+        return None;
+    }
+    let diagonal_00 = hessian[0][0] / information_scale;
+    let diagonal_11 = hessian[1][1] / information_scale;
+    let off_diagonal = cross / information_scale;
+    let determinant = diagonal_00 * diagonal_11 - off_diagonal * off_diagonal;
+    let largest_eigenvalue = 0.5 * (diagonal_00 + diagonal_11)
+        + (0.5 * (diagonal_00 - diagonal_11)).hypot(off_diagonal);
+    let smallest_eigenvalue = determinant / largest_eigenvalue;
+    let relative_information_tolerance = 64.0 * f64::EPSILON.sqrt();
     if !determinant.is_finite()
         || determinant <= 0.0
-        || hessian[0][0] <= 0.0
-        || hessian[1][1] <= 0.0
+        || diagonal_00 <= 0.0
+        || diagonal_11 <= 0.0
+        || smallest_eigenvalue <= relative_information_tolerance * largest_eigenvalue
     {
         return None;
     }
-    let location_variance = hessian[1][1] / determinant;
-    let log_scale_variance = hessian[0][0] / determinant;
+    let location_variance = (diagonal_11 / determinant) / information_scale;
+    let log_scale_variance = (diagonal_00 / determinant) / information_scale;
     if !location_variance.is_finite()
         || location_variance < 0.0
         || !log_scale_variance.is_finite()
@@ -599,6 +611,99 @@ pub struct CauchyFitV1;
 impl CauchyFitV1 {
     pub const METHOD_ID: &'static str = "fit.cauchy.locationScale.mle.v1";
     pub const PARAMETERIZATION_ID: &'static str = "cauchy.locationScale.v1";
+
+    fn fit_with_iteration_limit(
+        &self,
+        observations: &[FitObservationV1],
+        iteration_limit: u64,
+    ) -> Result<FitEstimateV1, FitFailureV1> {
+        self.validate_domain(observations)?;
+        let center = weighted_quantile(observations, 0.5)?;
+        let q1 = weighted_quantile(observations, 0.25)?;
+        let q3 = weighted_quantile(observations, 0.75)?;
+        let reference_scale = if (q3 - q1).is_finite() {
+            (q3 - q1) / 2.0
+        } else {
+            q3 / 2.0 - q1 / 2.0
+        };
+        if !reference_scale.is_finite() || reference_scale <= 0.0 {
+            return Err(domain_failure(CONSTANT_SAMPLE_REASON));
+        }
+        let normalized = observations
+            .iter()
+            .map(|observation| {
+                let difference = observation.value - center;
+                FitObservationV1 {
+                    value: if difference.is_finite() {
+                        difference / reference_scale
+                    } else {
+                        observation.value / reference_scale - center / reference_scale
+                    },
+                    ..*observation
+                }
+            })
+            .collect::<Vec<_>>();
+        let objective = CauchyObjectiveV1 {
+            observations: &normalized,
+        };
+        let optimizer = NelderMead2dOptimizerV1;
+        let starts = cauchy_initial_parameters(&normalized)?;
+        let mut best: Option<(usize, FitOptimizationProblemV1<'_>, FitOptimizationResultV1)> = None;
+        let mut reached_iteration_limit = false;
+
+        for (start_index, initial_parameters) in starts.into_iter().enumerate() {
+            let problem = FitOptimizationProblemV1 {
+                objective: &objective,
+                initial_parameters,
+                lower_bounds: vec![None, None],
+                upper_bounds: vec![None, None],
+                iteration_limit,
+                tolerance: CONTINUOUS_FIT_TOLERANCE,
+            };
+            let Ok(candidate) = run_optimizer(&optimizer, &problem) else {
+                continue;
+            };
+            reached_iteration_limit |= candidate.state == FitOptimizationStateV1::IterationLimit;
+            if candidate.state != FitOptimizationStateV1::Converged
+                || !candidate.objective_value.is_finite()
+            {
+                continue;
+            }
+            let replace = best.as_ref().is_none_or(|(best_index, _, best_candidate)| {
+                candidate.objective_value < best_candidate.objective_value
+                    || (candidate.objective_value == best_candidate.objective_value
+                        && start_index < *best_index)
+            });
+            if replace {
+                best = Some((start_index, problem, candidate));
+            }
+        }
+
+        let (_, problem, optimization) = best.ok_or_else(|| {
+            optimizer_failure(if reached_iteration_limit {
+                OPTIMIZER_ITERATION_LIMIT_REASON
+            } else {
+                OPTIMIZER_FAILED_REASON
+            })
+        })?;
+        let mut convergence = optimized_convergence(&optimizer, &problem, &optimization)?;
+        let location = optimization.unconstrained_parameters[0].mul_add(reference_scale, center);
+        let scale = reference_scale * positive_transform(optimization.unconstrained_parameters[1])?;
+        let original_objective = CauchyObjectiveV1 { observations }.evaluate(&[location, scale.ln()])?;
+        let log_likelihood = finite_log_likelihood_from_objective(original_objective)?;
+        convergence.objective = Some(original_objective);
+
+        FitEstimateV1::new(
+            ContinuousDistributionIdV1::Cauchy,
+            Self::PARAMETERIZATION_ID,
+            vec![
+                available_parameter("location", location)?,
+                available_parameter("scale", scale)?,
+            ],
+            log_likelihood,
+            convergence,
+        )
+    }
 }
 
 impl FitModel for CauchyFitV1 {
@@ -619,56 +724,7 @@ impl FitModel for CauchyFitV1 {
     }
 
     fn fit(&self, observations: &[FitObservationV1]) -> Result<FitEstimateV1, FitFailureV1> {
-        self.validate_domain(observations)?;
-        let objective = CauchyObjectiveV1 { observations };
-        let optimizer = NelderMead2dOptimizerV1;
-        let starts = cauchy_initial_parameters(observations)?;
-        let mut best: Option<(usize, FitOptimizationProblemV1<'_>, FitOptimizationResultV1)> = None;
-
-        for (start_index, initial_parameters) in starts.into_iter().enumerate() {
-            let problem = FitOptimizationProblemV1 {
-                objective: &objective,
-                initial_parameters,
-                lower_bounds: vec![None, None],
-                upper_bounds: vec![None, None],
-                iteration_limit: CONTINUOUS_FIT_ITERATION_LIMIT,
-                tolerance: CONTINUOUS_FIT_TOLERANCE,
-            };
-            let Ok(candidate) = run_optimizer(&optimizer, &problem) else {
-                continue;
-            };
-            if candidate.state != FitOptimizationStateV1::Converged
-                || !candidate.objective_value.is_finite()
-            {
-                continue;
-            }
-            let replace = best.as_ref().is_none_or(|(best_index, _, best_candidate)| {
-                candidate.objective_value < best_candidate.objective_value
-                    || (candidate.objective_value == best_candidate.objective_value
-                        && start_index < *best_index)
-            });
-            if replace {
-                best = Some((start_index, problem, candidate));
-            }
-        }
-
-        let (_, problem, optimization) =
-            best.ok_or_else(|| optimizer_failure(OPTIMIZER_FAILED_REASON))?;
-        let convergence = optimized_convergence(&optimizer, &problem, &optimization)?;
-        let location = optimization.unconstrained_parameters[0];
-        let scale = positive_transform(optimization.unconstrained_parameters[1])?;
-        let log_likelihood = finite_log_likelihood_from_objective(optimization.objective_value)?;
-
-        FitEstimateV1::new(
-            ContinuousDistributionIdV1::Cauchy,
-            Self::PARAMETERIZATION_ID,
-            vec![
-                available_parameter("location", location)?,
-                available_parameter("scale", scale)?,
-            ],
-            log_likelihood,
-            convergence,
-        )
+        self.fit_with_iteration_limit(observations, CONTINUOUS_FIT_ITERATION_LIMIT)
     }
 
     fn curve_domain(
@@ -2860,9 +2916,7 @@ mod tests {
 
                 let expected_method_id = match case.distribution_id {
                     ContinuousDistributionIdV1::Normal => NormalFitV1::METHOD_ID,
-                    ContinuousDistributionIdV1::Cauchy => {
-                        panic!("cauchy fit model not implemented in fixture")
-                    }
+                    ContinuousDistributionIdV1::Cauchy => CauchyFitV1::METHOD_ID,
                     ContinuousDistributionIdV1::Lognormal => LognormalFitV1::METHOD_ID,
                     ContinuousDistributionIdV1::Exponential => ExponentialFitV1::METHOD_ID,
                     ContinuousDistributionIdV1::Gamma => GammaFitV1::METHOD_ID,
@@ -2876,6 +2930,12 @@ mod tests {
                 assert_eq!(estimate.distribution_id, case.distribution_id);
                 assert_eq!(estimate.parameterization_id, case.parameterization_id);
                 assert_eq!(estimate.parameters.len(), case.expected_parameters.len());
+                let assert_estimate_close =
+                    if case.distribution_id == ContinuousDistributionIdV1::Cauchy {
+                        assert_numerical_inference_close
+                    } else {
+                        assert_close
+                    };
 
                 for (actual, expected) in estimate
                     .parameters
@@ -2885,7 +2945,7 @@ mod tests {
                     assert_eq!(actual.parameter_id, expected.parameter_id);
                     assert_eq!(actual.value.state, "available");
                     assert_eq!(actual.value.reason_code, None);
-                    assert_close(actual.value.value.unwrap(), expected.estimate);
+                    assert_estimate_close(actual.value.value.unwrap(), expected.estimate);
                 }
 
                 assert_close(estimate.log_likelihood, case.expected_log_likelihood);
@@ -2913,12 +2973,12 @@ mod tests {
                             *pinned_inference_distributions
                                 .entry(format!("{:?}", case.distribution_id))
                                 .or_default() += 1;
-                            assert_close(standard_error, expected_standard_error);
-                            assert_close(
+                            assert_estimate_close(standard_error, expected_standard_error);
+                            assert_estimate_close(
                                 parameter.lower_confidence.value.unwrap(),
                                 expected.lower_confidence.unwrap(),
                             );
-                            assert_close(
+                            assert_estimate_close(
                                 parameter.upper_confidence.value.unwrap(),
                                 expected.upper_confidence.unwrap(),
                             );
@@ -2946,8 +3006,8 @@ mod tests {
                 }
             }
 
-            assert_eq!(inferred_distributions.len(), 5);
-            assert_eq!(pinned_inference_distributions.len(), 5);
+            assert_eq!(inferred_distributions.len(), 6);
+            assert_eq!(pinned_inference_distributions.len(), 6);
 
             for estimates in replication_groups.values() {
                 assert_eq!(estimates.len(), 2);
@@ -3575,6 +3635,107 @@ mod tests {
         }
 
         #[test]
+        fn cauchy_fit_asymmetric_affine_parameters_and_objective() {
+            let values = [-20.0, -1.0, 0.0, 0.5, 1.0, 2.0];
+            let observations = values.map(|value| observation(value, 1.0, 1.0));
+            let baseline = CauchyFitV1.fit(&observations).expect("base fit");
+            for (offset, factor) in [
+                (0.0, 1e100),
+                (0.0, 1e-100),
+                (7e200, 1e200),
+                (7e-200, 1e-200),
+                (1e9, 1.0),
+                (-7e100, 1e100),
+                (-7e-100, 1e-100),
+            ] {
+                let transformed = values.map(|value| observation(offset + factor * value, 1.0, 1.0));
+                let estimate = CauchyFitV1.fit(&transformed).expect("affine fit");
+                let normalized_location =
+                    (estimate_parameter(&estimate, "location") - offset) / factor;
+                let normalized_scale = estimate_parameter(&estimate, "scale") / factor;
+                let normalized_likelihood = estimate.log_likelihood + values.len() as f64 * factor.ln();
+                println!(
+                    "offset={offset:e}, factor={factor:e}, location={normalized_location}, \
+                     scale={normalized_scale}, likelihood={normalized_likelihood}, iterations={}",
+                    estimate.convergence.iterations
+                );
+                assert!(
+                    (normalized_location - estimate_parameter(&baseline, "location")).abs() < 3e-5,
+                    "normalized location differs: {normalized_location}, baseline={baseline:?}"
+                );
+                assert!((normalized_scale - estimate_parameter(&baseline, "scale")).abs() < 3e-5);
+                assert!((normalized_likelihood - baseline.log_likelihood).abs() < 1e-8);
+                assert_eq!(estimate.convergence.objective, Some(-estimate.log_likelihood));
+                assert_eq!(estimate, CauchyFitV1.fit(&transformed).unwrap());
+            }
+        }
+
+        #[test]
+        fn cauchy_fit_multistart_preserves_iteration_limit_reason() {
+            let observations =
+                [-20.0, -1.0, 0.0, 0.5, 1.0, 2.0].map(|value| observation(value, 1.0, 1.0));
+            for budget in [1, 2] {
+                let failure = CauchyFitV1
+                    .fit_with_iteration_limit(&observations, budget)
+                    .unwrap_err();
+                assert_eq!(failure.classification, FitFailureClassificationV1::Optimizer);
+                assert_eq!(
+                    failure.reason_code,
+                    "distribution.fit.optimizerIterationLimit.v1"
+                );
+                assert_eq!(
+                    CauchyFitV1
+                        .fit_with_iteration_limit(&observations, budget)
+                        .unwrap_err(),
+                    failure
+                );
+            }
+        }
+
+        #[test]
+        fn cauchy_fit_successful_iterations_are_selected_start_not_aggregate() {
+            let observations =
+                [-20.0, -1.0, 0.0, 0.5, 1.0, 2.0].map(|value| observation(value, 1.0, 1.0));
+            let objective = super::super::CauchyObjectiveV1 {
+                observations: &observations,
+            };
+            let optimizer = super::super::NelderMead2dOptimizerV1;
+            let candidates = super::super::cauchy_initial_parameters(&observations)
+                .unwrap()
+                .into_iter()
+                .map(|initial_parameters| {
+                    run_optimizer(
+                        &optimizer,
+                        &FitOptimizationProblemV1 {
+                            objective: &objective,
+                            initial_parameters,
+                            lower_bounds: vec![None, None],
+                            upper_bounds: vec![None, None],
+                            iteration_limit: 500,
+                            tolerance: 1e-10,
+                        },
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let selected = candidates
+                .iter()
+                .filter(|candidate| candidate.state == FitOptimizationStateV1::Converged)
+                .min_by(|left, right| left.objective_value.total_cmp(&right.objective_value))
+                .unwrap();
+            let estimate = CauchyFitV1.fit(&observations).unwrap();
+            assert_eq!(estimate.convergence.iterations, selected.iterations);
+            assert!(
+                estimate.convergence.iterations
+                    < candidates.iter().map(|candidate| candidate.iterations).sum()
+            );
+            assert_close(
+                estimate.convergence.objective.unwrap(),
+                selected.objective_value,
+            );
+        }
+
+        #[test]
         fn cauchy_fit_optimizer_checks_the_entire_simplex() {
             struct FlatObjective;
             impl FitObjective for FlatObjective {
@@ -3801,6 +3962,40 @@ mod tests {
             assert!(curve
                 .iter()
                 .all(|point| point.y.is_finite() && point.y >= 0.0));
+        }
+
+        #[test]
+        fn cauchy_fit_information_ridge_preserves_point_fit_and_curve() {
+            let observations = vec![observation(-1.0, 1.0, 1.0), observation(1.0, 1.0, 1.0)];
+            let mut estimate = CauchyFitV1.fit(&observations).expect("ridge point fit");
+            let original = estimate.clone();
+            let curve = build_pdf_curve(&CauchyFitV1, &estimate, -3.0, 3.0).unwrap();
+
+            attach_parameter_inference(&mut estimate, &observations);
+
+            assert_eq!(estimate.log_likelihood, original.log_likelihood);
+            assert_eq!(estimate.convergence, original.convergence);
+            assert_eq!(
+                build_pdf_curve(&CauchyFitV1, &estimate, -3.0, 3.0).unwrap(),
+                curve
+            );
+            assert!((estimate.log_likelihood + 2.0 * (2.0 * std::f64::consts::PI).ln()).abs() < 1e-8);
+            for (parameter, point) in estimate.parameters.iter().zip(&original.parameters) {
+                assert_eq!(parameter.value, point.value);
+                assert_eq!(parameter.value.state, "available");
+                for inference in [
+                    &parameter.standard_error,
+                    &parameter.lower_confidence,
+                    &parameter.upper_confidence,
+                ] {
+                    assert_eq!(inference.state, "unavailable", "ridge inference: {inference:?}");
+                    assert_eq!(inference.value, None);
+                    assert_eq!(
+                        inference.reason_code.as_deref(),
+                        Some("distribution.fit.parameterInformationSingular.v1")
+                    );
+                }
+            }
         }
 
         #[test]
