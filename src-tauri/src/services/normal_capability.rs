@@ -1053,6 +1053,139 @@ mod tests {
         }
     }
 
+    fn assert_cpm_scale_invariance(scale: f64, mean: f64, target: f64, lsl: f64, usl: f64) {
+        let summary = NormalProcessSummaryV1 {
+            n: 10,
+            mean,
+            moving_range_average: Some(2.0 / std::f64::consts::PI.sqrt()),
+            d2: 2.0 / std::f64::consts::PI.sqrt(),
+            within_sigma: Some(1.0),
+            overall_sigma: Some(2.0),
+        };
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(lsl),
+            target: Some(target),
+            usl: Some(usl),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        let baseline_indices = capability_indices(&summary, &limits);
+        let baseline = capability_intervals(&summary, &baseline_indices, limits.target, 0.95);
+        let scaled_summary = NormalProcessSummaryV1 {
+            mean: mean * scale,
+            moving_range_average: summary.moving_range_average.map(|value| value * scale),
+            within_sigma: Some(scale),
+            overall_sigma: Some(2.0 * scale),
+            ..summary
+        };
+        let scaled_limits = SpecificationLimitsV1 {
+            lsl: Some(lsl * scale),
+            target: Some(target * scale),
+            usl: Some(usl * scale),
+            ..limits
+        };
+        let scaled_indices = capability_indices(&scaled_summary, &scaled_limits);
+        let intervals_95 =
+            capability_intervals(&scaled_summary, &scaled_indices, scaled_limits.target, 0.95);
+        let intervals_90 =
+            capability_intervals(&scaled_summary, &scaled_indices, scaled_limits.target, 0.90);
+        for (expected, wider, narrower, point) in [
+            (
+                &baseline.cpm_within,
+                &intervals_95.cpm_within,
+                &intervals_90.cpm_within,
+                &scaled_indices.cpm_within,
+            ),
+            (
+                &baseline.cpm_overall,
+                &intervals_95.cpm_overall,
+                &intervals_90.cpm_overall,
+                &scaled_indices.cpm_overall,
+            ),
+        ] {
+            for (actual, expected) in [
+                (&wider.lower, &expected.lower),
+                (&wider.upper, &expected.upper),
+            ] {
+                assert_eq!(
+                    actual.state,
+                    NumericStateV1::Available,
+                    "scale={scale}, mean={mean}"
+                );
+                assert!(
+                    (actual.value.unwrap() - expected.value.unwrap()).abs() <= 1e-10,
+                    "scale={scale}, mean={mean}: expected {:?}, got {:?}",
+                    expected.value,
+                    actual.value
+                );
+            }
+            assert_eq!(wider.interval_method, expected.interval_method);
+            assert_eq!(narrower.lower.state, NumericStateV1::Available);
+            assert_eq!(narrower.upper.state, NumericStateV1::Available);
+            assert!(wider.lower.value.unwrap() < narrower.lower.value.unwrap());
+            assert!(narrower.lower.value.unwrap() < point.value.unwrap());
+            assert!(point.value.unwrap() < narrower.upper.value.unwrap());
+            assert!(narrower.upper.value.unwrap() < wider.upper.value.unwrap());
+        }
+    }
+
+    #[test]
+    fn cpm_scaling_analytic_fixture_at_1e_minus_100() {
+        assert_cpm_scale_invariance(1e-100, 6.0, 5.0, 0.0, 10.0);
+    }
+
+    #[test]
+    fn cpm_scaling_symmetric_target_at_1e_minus_100() {
+        assert_cpm_scale_invariance(1e-100, 5.0, 5.0, 0.0, 10.0);
+    }
+
+    #[test]
+    fn cpm_scaling_q_underflow() {
+        for scale in [1e-200, 1e-300, 1e-320] {
+            for mean in [5.0, 6.0] {
+                assert_cpm_scale_invariance(scale, mean, 5.0, 0.0, 10.0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpm_scaling_q_overflow() {
+        for scale in [1e100, 1e200, 1e307] {
+            for mean in [5.0, 6.0] {
+                assert_cpm_scale_invariance(scale, mean, 5.0, 0.0, 10.0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpm_scaling_overflowing_finite_differences() {
+        assert_cpm_scale_invariance(8e307, 1.5, -1.5, -2.0, 2.0);
+    }
+
+    #[test]
+    fn cpm_intervals_reject_unrepresentable_uncertainty() {
+        for (sigma, mean) in [(1e-320, 1e308), (1e-200, 1e100)] {
+            let interval = cpm_log_delta_interval(
+                &available(1.0),
+                Some(sigma),
+                mean,
+                Some(0.0),
+                10,
+                9.0,
+                0.05,
+                "logDeltaCpm.v1",
+            );
+            for endpoint in [&interval.lower, &interval.upper] {
+                assert_eq!(endpoint.state, NumericStateV1::Unavailable);
+                assert_eq!(endpoint.value, None);
+                assert_eq!(
+                    endpoint.reason_code.as_deref(),
+                    Some("capability.intervalUnavailable.v1")
+                );
+            }
+            assert_eq!(interval.interval_method.as_deref(), Some("logDeltaCpm.v1"));
+        }
+    }
+
     #[test]
     fn cpm_intervals_preserve_typed_edge_states() {
         let base_summary = NormalProcessSummaryV1 {
@@ -1767,7 +1900,14 @@ fn indices_for_sigma(
     };
     let target = match (limits.lsl, limits.target, limits.usl) {
         (Some(lsl), Some(target), Some(usl)) => {
-            available((usl - lsl) / (6.0 * (sigma * sigma + (mean - target).powi(2)).sqrt()))
+            let (scale, scaled_sigma, scaled_delta) = cpm_scaled_components(sigma, mean, target);
+            let span = usl - lsl;
+            let scaled_span = if span.is_finite() {
+                span / scale
+            } else {
+                usl / scale - lsl / scale
+            };
+            available(scaled_span / (6.0 * scaled_sigma.hypot(scaled_delta)))
         }
         _ => not_applicable(),
     };
@@ -2035,6 +2175,21 @@ fn wald_interval(
     }
 }
 
+fn cpm_scaled_components(sigma: f64, mean: f64, target: f64) -> (f64, f64, f64) {
+    let delta = mean - target;
+    let scale = sigma.abs().max(if delta.is_finite() {
+        delta.abs()
+    } else {
+        mean.abs().max(target.abs())
+    });
+    let scaled_delta = if delta.is_finite() {
+        delta / scale
+    } else {
+        mean / scale - target / scale
+    };
+    (scale, sigma / scale, scaled_delta)
+}
+
 fn cpm_log_delta_interval(
     point_value: &TypedValueV1,
     sigma: Option<f64>,
@@ -2082,12 +2237,9 @@ fn cpm_log_delta_interval(
         );
     }
 
-    let delta = mean - target;
-    let sigma_squared = sigma * sigma;
-    let q = sigma_squared + delta * delta;
-    let variance_q = 2.0 * sigma_squared * sigma_squared / degrees_of_freedom
-        + 4.0 * delta * delta * sigma_squared / n as f64;
-    if !q.is_finite() || q <= 0.0 || !variance_q.is_finite() || variance_q < 0.0 {
+    let (_, scaled_sigma, scaled_delta) = cpm_scaled_components(sigma, mean, target);
+    let scaled_root_q = scaled_sigma.hypot(scaled_delta);
+    if !scaled_root_q.is_finite() || scaled_root_q <= 0.0 {
         return unavailable_interval_from_point(
             point_value,
             "capability.intervalUnavailable.v1",
@@ -2105,16 +2257,21 @@ fn cpm_log_delta_interval(
         }
     };
     let critical = standard_normal.inverse_cdf(1.0 - alpha / 2.0);
-    let standard_error = variance_q.sqrt() / (2.0 * q);
+    let sigma_ratio = scaled_sigma / scaled_root_q;
+    let delta_ratio = scaled_delta / scaled_root_q;
+    let standard_error = (sigma_ratio * (sigma_ratio / degrees_of_freedom.sqrt())
+        / std::f64::consts::SQRT_2)
+        .hypot(delta_ratio * (sigma_ratio / (n as f64).sqrt()));
     let lower = point * (-critical * standard_error).exp();
     let upper = point * (critical * standard_error).exp();
     if !(critical.is_finite()
         && standard_error.is_finite()
+        && standard_error > 0.0
         && lower.is_finite()
         && lower > 0.0
         && upper.is_finite()
         && upper > 0.0
-        && lower <= upper)
+        && lower < upper)
     {
         return unavailable_interval_from_point(
             point_value,
