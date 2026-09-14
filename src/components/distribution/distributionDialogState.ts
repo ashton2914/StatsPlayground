@@ -7,6 +7,7 @@ import {
   type DistributionAnalysisValidationError,
   DISTRIBUTION_FIT_CAPABILITY_REGISTRY,
   type DistributionFieldInfo,
+  isDistributionFitImplemented,
   type DistributionRole,
   type DistributionRoleValidationError,
   validateDistributionAnalysisConfig,
@@ -101,6 +102,9 @@ export function toggleDistributionFit(
   state: DistributionDialogState,
   distributionId: DistributionAnalysisConfig["fitDistributions"][number],
 ): DistributionDialogState {
+  if (!isDistributionFitImplemented(distributionId)) {
+    return state;
+  }
   const selected = state.analysis.fitDistributions.includes(distributionId)
     ? state.analysis.fitDistributions.filter((candidate) => candidate !== distributionId)
     : [...state.analysis.fitDistributions, distributionId];

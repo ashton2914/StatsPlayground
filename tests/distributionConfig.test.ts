@@ -153,6 +153,44 @@ assert.equal(
   )[0]?.code,
   "distribution.config.freqNotIntegerCompatible",
 );
+assert.equal(
+  validateDistributionConfig(
+    {
+      ...config,
+      continuousFit: {
+        enabledDistributionIds: [],
+        fitAll: false,
+        diagnostics: {
+          goodnessOfFit: false,
+          qqPlot: false,
+          cdfPlot: false,
+          ppPlot: false,
+        },
+      },
+    },
+    columns,
+  )[0]?.code,
+  "distribution.config.continuousFitSelectionRequired",
+);
+assert.deepEqual(
+  validateDistributionConfig(
+    {
+      ...config,
+      continuousFit: {
+        enabledDistributionIds: [],
+        fitAll: true,
+        diagnostics: {
+          goodnessOfFit: false,
+          qqPlot: false,
+          cdfPlot: false,
+          ppPlot: false,
+        },
+      },
+    },
+    columns,
+  ),
+  [],
+);
 
 const unknownOverride: CapabilityOverrideEnvelopeV1 = {
   schemaVersion: "1",

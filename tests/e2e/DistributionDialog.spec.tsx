@@ -178,22 +178,43 @@ test("Continuous Fit selector disables individual fits without clearing them", a
   const fitAll = component.getByRole("checkbox", { name: "Fit All", exact: true });
   const normal = component.getByRole("checkbox", { name: "Normal", exact: true });
   const cauchy = component.getByRole("checkbox", { name: "Cauchy", exact: true });
+  const lognormal = component.getByRole("checkbox", { name: "Lognormal", exact: true });
 
   await expect(normal).toBeChecked();
-  await cauchy.check();
+  await expect(cauchy).toBeDisabled();
+  await expect(cauchy).not.toBeChecked();
+  await lognormal.check();
   await fitAll.check();
 
   await expect(normal).toBeDisabled();
-  await expect(cauchy).toBeDisabled();
+  await expect(lognormal).toBeDisabled();
 
   await fitAll.uncheck();
-  await expect(cauchy).toBeChecked();
+  await expect(cauchy).not.toBeChecked();
+  await expect(lognormal).toBeChecked();
 
   await component.getByRole("button", { name: "Save" }).click();
   await component.getByRole("button", { name: "Continue Without Capability" }).click();
 
   expect(saved?.analysis.fitAll).toBe(false);
-  expect(saved?.analysis.fitDistributions).toEqual(["normal", "cauchy"]);
+  expect(saved?.analysis.fitDistributions).toEqual(["normal", "lognormal"]);
+});
+
+test("Continuous Fit exposes disabled Cauchy while leaving implemented fits selectable", async ({ mount }) => {
+  const component = await mount(
+    <DistributionDialog {...dialogProps({ columns: missingSpecColumns })} />,
+  );
+
+  await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+
+  const cauchy = component.getByRole("checkbox", { name: "Cauchy", exact: true });
+  const normal = component.getByRole("checkbox", { name: "Normal", exact: true });
+  const weibull = component.getByRole("checkbox", { name: "Weibull", exact: true });
+
+  await expect(cauchy).toBeVisible();
+  await expect(cauchy).toBeDisabled();
+  await expect(normal).toBeEnabled();
+  await expect(weibull).toBeEnabled();
 });
 
 test("Continuous Fit requires at least one fit unless Fit All is enabled", async ({ mount }) => {

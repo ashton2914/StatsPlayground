@@ -9,6 +9,7 @@ import {
   DISTRIBUTION_FIT_CAPABILITY_REGISTRY,
   type DistributionFieldInfo,
   findResponsesMissingCapabilitySpecs,
+  isDistributionFitImplemented,
   type DistributionRole,
 } from "./distributionConfig";
 import {
@@ -284,7 +285,7 @@ export function DistributionDialog({
                     <Checkbox
                       key={distributionId}
                       checked={state.analysis.fitDistributions.includes(distributionId)}
-                      disabled={state.analysis.fitAll}
+                      disabled={state.analysis.fitAll || !isDistributionFitImplemented(distributionId)}
                       onChange={() => setState((current) => toggleDistributionFit(current, distributionId))}
                     >
                       {t(`distribution.fit.distributions.${distributionId}`, {

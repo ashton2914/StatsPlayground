@@ -161,10 +161,17 @@ export function createDefaultDistributionAnalysisConfig(): DistributionAnalysisC
   };
 }
 
+function hasContinuousFitSelection(
+  fitAll: boolean,
+  distributionIds: readonly ContinuousDistributionIdV1[],
+): boolean {
+  return fitAll || distributionIds.length > 0;
+}
+
 export function validateDistributionAnalysisConfig(
   analysis: DistributionAnalysisConfig,
 ): DistributionAnalysisValidationError | null {
-  if (!analysis.fitAll && analysis.fitDistributions.length === 0) {
+  if (!hasContinuousFitSelection(analysis.fitAll, analysis.fitDistributions)) {
     return "fitSelectionRequired";
   }
   return null;
@@ -284,7 +291,7 @@ export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[]
     methodId: "fit.cauchy.locationScale.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "cauchy.locationScale.v1",
-    implemented: true,
+    implemented: false,
     compatibilityStatus: "compatibilityPending",
   },
   {
@@ -321,6 +328,18 @@ export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[]
   },
 ] as const;
 
+const IMPLEMENTED_DISTRIBUTION_FIT_IDS = new Set<ContinuousDistributionIdV1>(
+  DISTRIBUTION_FIT_CAPABILITY_REGISTRY
+    .filter((capability) => capability.implemented)
+    .map((capability) => capability.distributionId),
+);
+
+export function isDistributionFitImplemented(
+  distributionId: ContinuousDistributionIdV1,
+): boolean {
+  return IMPLEMENTED_DISTRIBUTION_FIT_IDS.has(distributionId);
+}
+
 const error = (
   code: string,
   messageKey: string,
@@ -340,7 +359,7 @@ export function createDefaultDistributionVisualDiagnosticsConfig(): Distribution
 
 export function createDefaultDistributionContinuousFitConfig(): DistributionContinuousFitConfigV1 {
   return {
-    enabledDistributionIds: [],
+    enabledDistributionIds: ["normal"],
     fitAll: false,
     diagnostics: {
       goodnessOfFit: false,
@@ -365,14 +384,16 @@ export function validateDistributionContinuousFitConfig(
   continuousFit: DistributionContinuousFitConfigV1,
 ): DistributionConfigErrorV1[] {
   const errors: DistributionConfigErrorV1[] = [];
-  const implementedIds = new Set(
-    DISTRIBUTION_FIT_CAPABILITY_REGISTRY
-      .filter((capability) => capability.implemented)
-      .map((capability) => capability.distributionId),
-  );
+  if (!hasContinuousFitSelection(continuousFit.fitAll, continuousFit.enabledDistributionIds)) {
+    errors.push(error(
+      "distribution.config.continuousFitSelectionRequired",
+      "distribution.errors.fitSelectionRequired",
+      "continuousFit.enabledDistributionIds",
+    ));
+  }
   const seenDistributionIds = new Set<ContinuousDistributionIdV1>();
   continuousFit.enabledDistributionIds.forEach((distributionId, index) => {
-    if (!implementedIds.has(distributionId)) {
+    if (!isDistributionFitImplemented(distributionId)) {
       errors.push(error(
         "distribution.config.unknownContinuousFitCapability",
         "distribution.errors.unknownContinuousFitCapability",
