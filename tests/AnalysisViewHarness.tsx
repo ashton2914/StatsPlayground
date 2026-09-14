@@ -3,12 +3,20 @@ import { useEffect, useRef, useState } from "react";
 import { AnalysisView } from "../src/components/analysis/AnalysisView";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample";
 import { createDefaultFitYByXGraphConfig } from "../src/components/fitYByX/fitYByXConfig";
+import type { FieldRef } from "../src/graphCore/types";
 import type { AnalysisDocument, FitYByXAnalysisDocument } from "../src/types/analysis";
 import type { DatasetMeta } from "../src/types/data";
-import type { DistributionReportResponse } from "../src/types/distribution";
+import type {
+  DistributionFitComparisonDataV1,
+  DistributionFitDataV1,
+  DistributionGroupResult,
+  DistributionGroupValueV1,
+  ProcessCapabilityDataV1,
+  DistributionReportResponse,
+} from "../src/types/distribution";
 import type { FitYByXResponse } from "../src/types/fitYByX";
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "../src/types/graphData";
-import type { GraphAggregatePacket } from "../src/types/graphData";
+import type { GraphAggregatePacket, GraphDataFrame } from "../src/types/graphData";
 
 function createDataset(): DatasetMeta {
   return {
@@ -24,13 +32,36 @@ function createDataset(): DatasetMeta {
   };
 }
 
-function createAnalysisDocument(responseAxis: "x" | "y" = "x") {
+const MULTI_RESPONSE_FIELDS: FieldRef[] = [
+  { columnId: "col-301A-F01", name: "301A-F01", type: "continuous" },
+  { columnId: "col-301A-F02", name: "301A-F02", type: "continuous" },
+  { columnId: "col-301A-F03", name: "301A-F03", type: "continuous" },
+];
+
+const SITE_BY_FIELD: FieldRef = { columnId: "col-site", name: "Site", type: "nominal" };
+
+function createAnalysisDocument(options: {
+  responseAxis?: "x" | "y";
+  responses?: FieldRef[];
+  by?: FieldRef[];
+} = {}) {
+  const {
+    responseAxis = "x",
+    responses,
+    by,
+  } = options;
   const document = createAnalysisSampleDocument({
     datasetId: "dataset-1",
     analysisId: "analysis-1",
     analysisName: "Strength Distribution",
     createdAt: "2026-09-03T00:00:00.000Z",
   });
+  if (responses) {
+    document.definition.responses = structuredClone(responses);
+  }
+  if (by) {
+    document.definition.by = structuredClone(by);
+  }
   document.definition.graphs.overview.modeStates.twoD.elements = [];
   if (responseAxis === "y") {
     const response = document.definition.responses[0];
@@ -53,8 +84,8 @@ function createUnsupportedPresentationDocument(): AnalysisDocument {
   };
 }
 
-function createResponse(quantile: number, generation: number): DistributionReportResponse {
-  const frame = (role: string, aggregates: GraphAggregatePacket[]) => ({
+function createFrame(role: string, aggregates: GraphAggregatePacket[], generation: number): GraphDataFrame {
+  return {
     requestId: `analysis:${role}`,
     datasetId: "dataset-1",
     generation,
@@ -66,7 +97,10 @@ function createResponse(quantile: number, generation: number): DistributionRepor
     rawChunks: [],
     aggregates,
     rawPointDisposition: { status: "included" as const, validRows: 32, budget: 8000 },
-  });
+  };
+}
+
+function createResponse(quantile: number, generation: number): DistributionReportResponse {
 
   return {
     datasetId: "dataset-1",
@@ -116,7 +150,7 @@ function createResponse(quantile: number, generation: number): DistributionRepor
     }],
     reportBlocks: [],
     graphFrames: {
-      overview: frame("overview", [
+      overview: createFrame("overview", [
         {
           kind: "histogram",
           yColumn: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram,
@@ -147,8 +181,8 @@ function createResponse(quantile: number, generation: number): DistributionRepor
             { x: 121, y: 0.2 },
           ],
         },
-      ]),
-      boxPlot: frame("boxPlot", [{
+      ], generation),
+      boxPlot: createFrame("boxPlot", [{
         kind: "boxPlot",
         yColumn: DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot,
         entries: [{
@@ -162,8 +196,8 @@ function createResponse(quantile: number, generation: number): DistributionRepor
           whiskerHigh: 121.3,
           outliers: [],
         }],
-      }]),
-      ecdf: frame("ecdf", [{
+      }], generation),
+      ecdf: createFrame("ecdf", [{
         kind: "precomputedCurve",
         elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.ecdf,
         interpolation: "stepEnd",
@@ -174,22 +208,558 @@ function createResponse(quantile: number, generation: number): DistributionRepor
           { x: 108.9, y: 0.75 },
           { x: 121.3, y: 1 },
         ],
-      }]),
-      normalQuantile: frame("normalQuantile", []),
+      }], generation),
+      normalQuantile: createFrame("normalQuantile", [], generation),
     },
   };
 }
 
+function createMultiResponseResult(
+  field: FieldRef,
+  baseMedian: number,
+  groupOffset: number,
+  options: {
+    resultColumnId?: string;
+  } = {},
+) {
+  const median = baseMedian + groupOffset;
+  const responseId = field.columnId ?? field.name;
+  return {
+    yColumn: {
+      columnId: options.resultColumnId ?? field.columnId ?? field.name,
+      modelingType: "continuous" as const,
+    },
+    yName: field.name,
+    quantiles: [
+      { probability: 0, value: median - 14 },
+      { probability: 0.25, value: median - 5 },
+      { probability: 0.5, value: median },
+      { probability: 0.75, value: median + 6 },
+      { probability: 1, value: median + 15 },
+    ],
+    blocks: [
+      {
+        schemaVersion: "1" as const,
+        blockId: `summary:${responseId}:${groupOffset}`,
+        kind: "summary" as const,
+        titleKey: "distribution.report.summary",
+        status: "available" as const,
+        reasonCode: null,
+        summaryData: {
+          n: 32,
+          nMissing: 0,
+          mean: median + 0.125,
+          stdDev: 5.25,
+          stdError: 0.928,
+          meanCiLower: median - 1.75,
+          meanCiUpper: median + 2,
+          minimum: median - 14,
+          maximum: median + 15,
+          median,
+          primaryMode: median,
+          modeIsUnique: true,
+          range: 29,
+          iqr: 11,
+          mad: 4.2,
+        },
+        capabilityData: undefined,
+        distributionFitData: undefined,
+        distributionFitComparisonData: undefined,
+        chartData: null,
+      },
+      {
+        schemaVersion: "1" as const,
+        blockId: `fit:${responseId}:${groupOffset}`,
+        kind: "continuousFit" as const,
+        titleKey: "distribution.report.continuousFit",
+        status: "available" as const,
+        reasonCode: null,
+        capabilityData: undefined,
+        distributionFitData: createContinuousFitData(median, responseId),
+        distributionFitComparisonData: undefined,
+        chartData: null,
+      },
+      {
+        schemaVersion: "1" as const,
+        blockId: `fitComparison:${responseId}:${groupOffset}`,
+        kind: "fitComparison" as const,
+        titleKey: "distribution.report.fitComparison",
+        status: "available" as const,
+        reasonCode: null,
+        summaryData: undefined,
+        capabilityData: undefined,
+        distributionFitData: undefined,
+        distributionFitComparisonData: createFitComparisonData(responseId),
+        chartData: null,
+      },
+      {
+        schemaVersion: "1" as const,
+        blockId: `capability:${responseId}:${groupOffset}`,
+        kind: "processCapability" as const,
+        titleKey: "distribution.report.processCapability",
+        status: "available" as const,
+        reasonCode: null,
+        summaryData: undefined,
+        capabilityData: createProcessCapabilityData(median),
+        distributionFitData: undefined,
+        distributionFitComparisonData: undefined,
+        chartData: null,
+      },
+    ],
+  };
+}
+
+function createCapabilityValue(value: number | null, reasonCode: string | null = null) {
+  return {
+    state: value === null ? "unavailable" as const : "available" as const,
+    value,
+    reasonCode,
+  };
+}
+
+function createCapabilityCount(value: number | null, reasonCode: string | null = null) {
+  return {
+    state: value === null ? "unavailable" as const : "available" as const,
+    value,
+    reasonCode,
+  };
+}
+
+function createFitParameter(parameterId: string, estimate: number, standardError: number) {
+  const interval = standardError * 1.959963984540054;
+  return {
+    parameterId,
+    estimate: createCapabilityValue(estimate),
+    standardError: createCapabilityValue(standardError),
+    lowerConfidence: createCapabilityValue(estimate - interval),
+    upperConfidence: createCapabilityValue(estimate + interval),
+  };
+}
+
+function createContinuousFitData(median: number, responseId: string): DistributionFitDataV1 {
+  return {
+    schemaVersion: "1",
+    fitId: `fit-normal:${responseId}`,
+    distributionId: "normal",
+    parameterizationId: "normal.locationScale.v1",
+    status: "available",
+    reasonCode: null,
+    parameters: [
+      createFitParameter("location", median, 0.85),
+      createFitParameter("scale", 5.25, 0.22),
+    ],
+    estimatedParameterCount: 2,
+    effectiveN: 32,
+    logLikelihood: createCapabilityValue(-12.4),
+    aic: createCapabilityValue(28.8),
+    aicc: createCapabilityValue(29.2),
+    bic: createCapabilityValue(31.1),
+    goodnessOfFit: [],
+    fittedCurve: {
+      schemaVersion: "1",
+      points: [
+        { x: median - 15, y: 0.5 },
+        { x: median, y: 6.5 },
+        { x: median + 15, y: 0.6 },
+      ],
+      provenance: {
+        methodId: "fit.normal.mle.v1",
+        methodVersion: "1",
+        parameterizationId: "normal.locationScale.v1",
+        optimizerId: "closedForm",
+        optimizerVersion: "1",
+        initializationStrategyId: "closedForm",
+        convergenceTolerance: 0,
+        iterationLimit: 0,
+        dependencyVersions: { statrs: "0.18.0" },
+        computationId: `computation:${responseId}`,
+        candidateRegistryIds: ["normal"],
+        compatibilityStatus: "compatibilityPending",
+      },
+    },
+    diagnostics: [],
+    convergence: {
+      status: "converged",
+      reasonCode: null,
+      optimizerId: "closedForm",
+      optimizerVersion: "1",
+      iterations: 0,
+      tolerance: 0,
+    },
+    provenance: {
+      methodId: "fit.normal.mle.v1",
+      methodVersion: "1",
+      parameterizationId: "normal.locationScale.v1",
+      optimizerId: "closedForm",
+      optimizerVersion: "1",
+      initializationStrategyId: "closedForm",
+      convergenceTolerance: 0,
+      iterationLimit: 0,
+      dependencyVersions: { statrs: "0.18.0" },
+      computationId: `computation:${responseId}`,
+      candidateRegistryIds: ["normal", "gamma"],
+      compatibilityStatus: "compatibilityPending",
+    },
+    warnings: [],
+  };
+}
+
+function createFitComparisonData(responseId: string): DistributionFitComparisonDataV1 {
+  return {
+    schemaVersion: "1",
+    comparisonId: `fit-comparison:${responseId}`,
+    candidateRegistryIds: ["normal", "gamma"],
+    rows: [
+      {
+        distributionId: "normal",
+        status: "available",
+        reasonCode: null,
+        aic: createCapabilityValue(28.8),
+        aicc: createCapabilityValue(29.2),
+        bic: createCapabilityValue(31.1),
+      },
+      {
+        distributionId: "gamma",
+        status: "available",
+        reasonCode: null,
+        aic: createCapabilityValue(30.4),
+        aicc: createCapabilityValue(31.1),
+        bic: createCapabilityValue(33.7),
+      },
+    ],
+  };
+}
+
+function createProcessCapabilityData(median: number): ProcessCapabilityDataV1 {
+  const observedBelow = 0.015;
+  const observedAbove = 0.01;
+  const expectedWithinBelow = 0.012;
+  const expectedWithinAbove = 0.009;
+  const expectedOverallBelow = 0.017;
+  const expectedOverallAbove = 0.013;
+  return {
+    specification: {
+      lsl: median - 12,
+      target: median,
+      usl: median + 12,
+      source: "analysisOverride",
+    },
+    processSummary: {
+      n: 32,
+      mean: median + 0.125,
+      movingRangeAverage: 4.1,
+      d2: 1.128,
+      withinSigma: 3.64,
+      overallSigma: 5.25,
+      stabilityIndex: {
+        value: createCapabilityValue(1.443),
+        methodId: "sigmaRatio.overallWithin.v1",
+      },
+    },
+    indices: {
+      cp: createCapabilityValue(1.101),
+      cpk: createCapabilityValue(1.088),
+      cpl: createCapabilityValue(1.12),
+      cpu: createCapabilityValue(1.056),
+      cpmWithin: createCapabilityValue(1.044),
+      pp: createCapabilityValue(0.762),
+      ppk: createCapabilityValue(0.751),
+      ppl: createCapabilityValue(0.774),
+      ppu: createCapabilityValue(0.728),
+      cpmOverall: createCapabilityValue(0.72),
+    },
+    intervals: {
+      confidenceLevel: 0.95,
+      cp: createCapabilityInterval(1.101),
+      cpk: createCapabilityInterval(1.088),
+      cpl: createCapabilityInterval(1.12),
+      cpu: createCapabilityInterval(1.056),
+      cpmWithin: createCapabilityInterval(1.044),
+      pp: createCapabilityInterval(0.762),
+      ppk: createCapabilityInterval(0.751),
+      ppl: createCapabilityInterval(0.774),
+      ppu: createCapabilityInterval(0.728),
+      cpmOverall: createCapabilityInterval(0.72),
+      provenance: {
+        distributionCrate: "statrs",
+        distributionCrateVersion: "0.18.0",
+        parameterization: "normal.locationScale.v1",
+        inverseCdfAlgorithmId: "normal.inverseCdf.v1",
+        methodVersion: "1",
+        withinEffectiveDegreesOfFreedom: 31,
+      },
+    },
+    nonconformance: {
+      observed: {
+        below: createObservedTail(1, observedBelow),
+        above: createObservedTail(1, observedAbove),
+        total: createObservedTail(2, observedBelow + observedAbove),
+      },
+      expectedWithin: {
+        below: createExpectedTail(expectedWithinBelow),
+        above: createExpectedTail(expectedWithinAbove),
+        total: createExpectedTail(expectedWithinBelow + expectedWithinAbove),
+      },
+      expectedOverall: {
+        below: createExpectedTail(expectedOverallBelow),
+        above: createExpectedTail(expectedOverallAbove),
+        total: createExpectedTail(expectedOverallBelow + expectedOverallAbove),
+      },
+    },
+    warnings: [],
+  };
+}
+
+function createCapabilityInterval(value: number) {
+  return {
+    lower: createCapabilityValue(Math.max(0, value - 0.1)),
+    upper: createCapabilityValue(value + 0.1),
+    intervalMethod: "approximateNormal",
+    limitingSide: null,
+    warnings: [],
+  };
+}
+
+function createObservedTail(count: number, proportion: number) {
+  return {
+    count: createCapabilityCount(count),
+    proportion: createCapabilityValue(proportion),
+    ppm: createCapabilityValue(proportion * 1_000_000),
+    proportionInterval: {
+      lower: createCapabilityValue(Math.max(0, proportion - 0.005)),
+      upper: createCapabilityValue(proportion + 0.005),
+      intervalMethod: "wilson",
+    },
+  };
+}
+
+function createExpectedTail(proportion: number) {
+  return {
+    proportion: createCapabilityValue(proportion),
+    ppm: createCapabilityValue(proportion * 1_000_000),
+  };
+}
+
+function createGraphSeriesName(responseName: string, groupName: string): string {
+  return groupName === "Overall" ? responseName : `${responseName} | ${groupName}`;
+}
+
+function createGroupResult(
+  groupKey: DistributionGroupValueV1[],
+  groupNames: string[],
+  groupOffset: number,
+  responseOrder: FieldRef[] = MULTI_RESPONSE_FIELDS,
+  responseColumnIds: Partial<Record<string, string>> = {},
+): DistributionGroupResult {
+  return {
+    groupKey,
+    groupNames,
+    yResults: responseOrder.map((field, index) => createMultiResponseResult(
+      field,
+      100 + MULTI_RESPONSE_FIELDS.findIndex((candidate) => candidate.name === field.name) * 10,
+      groupOffset,
+      { resultColumnId: responseColumnIds[field.name] },
+    )),
+  };
+}
+
+function createMultiResponseGraphFrames(groups: DistributionGroupResult[], generation: number) {
+  const overviewAggregates: GraphAggregatePacket[] = [];
+  const boxPlotEntries: NonNullable<Extract<GraphAggregatePacket, { kind: "boxPlot" }> ["entries"]> = [];
+
+  groups.forEach((group, groupIndex) => {
+    const groupName = group.groupKey.length === 0
+      ? "Overall"
+      : group.groupNames.map((name, index) => {
+          const value = group.groupKey[index];
+          if (!value || value.kind === "missing") return `${name}=Missing`;
+          if (value.kind === "text") return `${name}=${value.value}`;
+          if (value.kind === "number") return `${name}=${value.value}`;
+          if (value.kind === "boolean") return `${name}=${String(value.value)}`;
+          return `${name}=${value.utcMillis}`;
+        }).join(", ");
+
+    group.yResults.forEach((result, responseIndex) => {
+      const responseName = result.yName;
+      const sourceColumn = result.yColumn.columnId;
+      const median = result.quantiles[2]?.value ?? 0;
+      const seriesName = createGraphSeriesName(responseName, groupName);
+
+      overviewAggregates.push({
+        kind: "histogram",
+        yColumn: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram,
+        sourceColumn: "responseColumn",
+        binCount: 3,
+        minValue: median - 15,
+        maxValue: median + 15,
+        missingCount: 0,
+        binWidth: 10,
+        totalCount: 32,
+        bins: [0, 1, 2].map((binIndex) => ({
+          group: seriesName,
+          category: groupName,
+          sourceColumn,
+          binStart: median - 15 + binIndex * 10,
+          binEnd: median - 5 + binIndex * 10,
+          count: 6 + responseIndex + groupIndex + binIndex,
+        })),
+      });
+      overviewAggregates.push({
+        kind: "precomputedCurve",
+        elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves,
+        sourceColumn,
+        category: groupName,
+        group: seriesName,
+        seriesName: `${seriesName} - Normal`,
+        interpolation: "linear",
+        points: [
+          { x: median - 15, y: 0.5 + responseIndex },
+          { x: median, y: 6.5 + groupIndex },
+          { x: median + 15, y: 0.75 + responseIndex },
+        ],
+      });
+      boxPlotEntries.push({
+        group: seriesName,
+        category: groupName,
+        sourceColumn,
+        count: 32,
+        min: median - 14,
+        q1: median - 5,
+        median,
+        q3: median + 6,
+        max: median + 15,
+        whiskerLow: median - 14,
+        whiskerHigh: median + 15,
+        outliers: [],
+      });
+    });
+  });
+
+  return {
+    overview: createFrame("overview", overviewAggregates, generation),
+    boxPlot: createFrame("boxPlot", [{
+      kind: "boxPlot",
+      yColumn: DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot,
+      sourceColumn: "responseColumn",
+      entries: boxPlotEntries,
+    }], generation),
+    ecdf: createFrame("ecdf", [], generation),
+    normalQuantile: createFrame("normalQuantile", [], generation),
+  };
+}
+
+function createMultiResponseDistributionResponse(
+  by: boolean,
+  options: {
+    responseOrder?: FieldRef[];
+    responseColumnIds?: Partial<Record<string, string>>;
+  } = {},
+): DistributionReportResponse {
+  const responseOrder = options.responseOrder ?? MULTI_RESPONSE_FIELDS;
+  const responseColumnIds = options.responseColumnIds ?? {};
+  const groups = by
+    ? [
+        createGroupResult([], [], 0, responseOrder, responseColumnIds),
+        createGroupResult([{ kind: "text", value: "A" }], ["Site"], 4, responseOrder, responseColumnIds),
+        createGroupResult([{ kind: "text", value: "B" }], ["Site"], 8, responseOrder, responseColumnIds),
+        createGroupResult([{ kind: "missing" }], ["Site"], 12, responseOrder, responseColumnIds),
+      ]
+    : [createGroupResult([], [], 0, responseOrder, responseColumnIds)];
+
+  return {
+    datasetId: "dataset-1",
+    generation: 4,
+    groups,
+    reportBlocks: [],
+    graphFrames: createMultiResponseGraphFrames(groups, 4),
+  };
+}
+
+function collectGraphSources(frame: GraphDataFrame | null | undefined): string[] {
+  if (!frame) return [];
+  const sources = new Set<string>();
+  for (const packet of frame.aggregates) {
+    if (packet.sourceColumn && packet.sourceColumn !== "responseColumn" && packet.sourceColumn !== "__sp_variable__") {
+      sources.add(packet.sourceColumn);
+    }
+    if (packet.kind === "histogram") {
+      for (const bin of packet.bins) {
+        if (bin.sourceColumn) sources.add(bin.sourceColumn);
+      }
+    }
+    if (packet.kind === "boxPlot") {
+      for (const entry of packet.entries) {
+        if (entry.sourceColumn) sources.add(entry.sourceColumn);
+      }
+    }
+  }
+  return [...sources];
+}
+
+function collectGraphSignatures(frame: GraphDataFrame | null | undefined): string[] {
+  if (!frame) return [];
+  const signatures: string[] = [];
+  for (const packet of frame.aggregates) {
+    if (packet.kind === "histogram") {
+      const source = new Set(packet.bins.map((bin) => bin.sourceColumn ?? ""));
+      const category = new Set(packet.bins.map((bin) => bin.category ?? ""));
+      const group = new Set(packet.bins.map((bin) => bin.group ?? ""));
+      signatures.push(`histogram:${[...source].join("+")}|${[...category].join("+")}|${[...group].join("+")}`);
+      continue;
+    }
+    if (packet.kind === "boxPlot") {
+      const source = new Set(packet.entries.map((entry) => entry.sourceColumn ?? ""));
+      const category = new Set(packet.entries.map((entry) => entry.category ?? ""));
+      const group = new Set(packet.entries.map((entry) => entry.group ?? ""));
+      signatures.push(`boxPlot:${[...source].join("+")}|${[...category].join("+")}|${[...group].join("+")}`);
+      continue;
+    }
+    if (packet.kind === "precomputedCurve") {
+      signatures.push(`precomputedCurve:${packet.sourceColumn ?? ""}|${packet.category ?? ""}|${packet.group ?? ""}`);
+    }
+  }
+  return signatures;
+}
+
 interface AnalysisViewHarnessProps {
-  mode?: "default" | "unsupportedPresentation" | "yBound";
+  mode?: "default" | "unsupportedPresentation" | "yBound" | "multiResponse" | "multiResponseBy" | "multiResponseMissingResult" | "loading" | "error";
 }
 
 export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessProps) {
   const [dataset] = useState(createDataset());
-  const [item, setItem] = useState(() => mode === "unsupportedPresentation"
-    ? createUnsupportedPresentationDocument()
-    : createAnalysisDocument(mode === "yBound" ? "y" : "x"));
-  const [current, setCurrent] = useState(() => createResponse(101.044792, 4));
+  const [item, setItem] = useState(() => {
+    if (mode === "unsupportedPresentation") return createUnsupportedPresentationDocument();
+    if (mode === "multiResponse") {
+      return createAnalysisDocument({ responses: MULTI_RESPONSE_FIELDS });
+    }
+    if (mode === "multiResponseMissingResult") {
+      return createAnalysisDocument({ responses: MULTI_RESPONSE_FIELDS.slice(0, 2) });
+    }
+    if (mode === "multiResponseBy") {
+      return createAnalysisDocument({ responses: MULTI_RESPONSE_FIELDS, by: [SITE_BY_FIELD] });
+    }
+    return createAnalysisDocument({ responseAxis: mode === "yBound" ? "y" : "x" });
+  });
+  const [current, setCurrent] = useState(() => {
+    if (mode === "multiResponse") {
+      return createMultiResponseDistributionResponse(false, {
+        responseOrder: [MULTI_RESPONSE_FIELDS[2]!, MULTI_RESPONSE_FIELDS[0]!, MULTI_RESPONSE_FIELDS[1]!],
+        responseColumnIds: { "301A-F02": "legacy-301A-F02" },
+      });
+    }
+    if (mode === "multiResponseMissingResult") {
+      return createMultiResponseDistributionResponse(false, {
+        responseOrder: [MULTI_RESPONSE_FIELDS[0]!],
+      });
+    }
+    if (mode === "multiResponseBy") {
+      return createMultiResponseDistributionResponse(true, {
+        responseOrder: [MULTI_RESPONSE_FIELDS[2]!, MULTI_RESPONSE_FIELDS[0]!, MULTI_RESPONSE_FIELDS[1]!],
+        responseColumnIds: { "301A-F02": "legacy-301A-F02" },
+      });
+    }
+    return createResponse(101.044792, 4);
+  });
   const [computeCalls, setComputeCalls] = useState(0);
   const [generationCalls, setGenerationCalls] = useState(0);
   const [editInputsCalls, setEditInputsCalls] = useState(0);
@@ -222,6 +792,8 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
       },
       compute: async () => {
         setComputeCalls((count) => count + 1);
+        if (mode === "loading") return await new Promise<DistributionReportResponse>(() => undefined);
+        if (mode === "error") throw new Error("distribution failed");
         if (deferNextResponseRef.current) {
           deferNextResponseRef.current = false;
           setDeferNextResponse(false);
@@ -242,6 +814,12 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
       }) => (
         <div>
           {`Distribution graph:${role}:${externalDataState?.status ?? "pipeline"}:${optionFactory ? "custom-option" : "native"}`}
+          <output data-testid={`graph-sources:${graphItem.id}`}>
+            {collectGraphSources(externalDataState?.frame).join(",")}
+          </output>
+          <output data-testid={`graph-signatures:${graphItem.id}`}>
+            {collectGraphSignatures(externalDataState?.frame).join(",")}
+          </output>
           {onXAxisDblClick && <button type="button" onClick={onXAxisDblClick}>{`Open ${role} X axis`}</button>}
           {onYAxisDblClick && <button type="button" onClick={onYAxisDblClick}>{`Open ${role} Y axis`}</button>}
           {role === "overview" && (

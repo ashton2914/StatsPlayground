@@ -801,7 +801,8 @@ fn build_graph_frames(
         let group_name = graph_group_name(&group.group_names, &group.group_key);
         for y_result in &group.y_results {
             let series_name = graph_series_name(&y_result.y_name, &group_name);
-            let series_key = graph_series_key(&y_result.y_name, &group.group_key)?;
+            let source_column = y_result.y_column.column_id.clone();
+            let series_key = graph_series_key(&source_column, &group.group_key)?;
             let summary = y_result
                 .blocks
                 .iter()
@@ -819,7 +820,7 @@ fn build_graph_frames(
                             histogram_bins.push(HistogramBin {
                                 group: Some(series_name.clone()),
                                 category: Some(group_name.clone()),
-                                source_column: Some(y_result.y_name.clone()),
+                                source_column: Some(source_column.clone()),
                                 facet_x: None,
                                 facet_y: None,
                                 facet_z: None,
@@ -834,7 +835,7 @@ fn build_graph_frames(
                         box_entries.push(BoxPlotEntry {
                             group: Some(series_name.clone()),
                             category: Some(group_name.clone()),
-                            source_column: Some(y_result.y_name.clone()),
+                            source_column: Some(source_column.clone()),
                             facet_x: None,
                             facet_y: None,
                             facet_z: None,
@@ -853,7 +854,7 @@ fn build_graph_frames(
                                 .map(|value| BoxPlotOutlier {
                                     value: *value,
                                     row_id: None,
-                                    source_column: Some(y_result.y_name.clone()),
+                                    source_column: Some(source_column.clone()),
                                 })
                                 .collect(),
                         });
@@ -866,7 +867,7 @@ fn build_graph_frames(
                                 series_name: Some(series_name.clone()),
                                 group: Some(series_name.clone()),
                                 category: Some(group_name.clone()),
-                                source_column: Some(y_result.y_name.clone()),
+                                source_column: Some(source_column.clone()),
                                 interpolation: PrecomputedCurveInterpolation::StepEnd,
                                 points: points
                                     .iter()
@@ -935,7 +936,7 @@ fn build_graph_frames(
                                     series_name: Some(series_name.clone()),
                                     group: Some(series_name.clone()),
                                     category: Some(group_name.clone()),
-                                    source_column: Some(y_result.y_name.clone()),
+                                    source_column: Some(source_column.clone()),
                                     interpolation: PrecomputedCurveInterpolation::Linear,
                                     points: points
                                         .into_iter()
@@ -967,7 +968,7 @@ fn build_graph_frames(
                                 series_name: Some(fit_name),
                                 group: Some(series_name.clone()),
                                 category: Some(series_name.clone()),
-                                source_column: Some(y_result.y_name.clone()),
+                                source_column: Some(source_column.clone()),
                                 interpolation: PrecomputedCurveInterpolation::Linear,
                                 points: curve
                                     .points
@@ -1952,8 +1953,15 @@ mod tests {
     use super::*;
     use crate::models::distribution::{
         BlackBoxObservationV1, BlackBoxProvenanceV1, BlackBoxStatusV1, BlackBoxValueV1,
-        DistributionColumnRefV1, DistributionModeV1, DistributionModelingTypeV1,
-        DistributionRequest, DistributionRequestV1, ObservationContributionPolicyV1,
+        BoxPlotCoordinatesV1, ContinuousDistributionIdV1, DiagnosticDataStatusV1,
+        DistributionChartDataV1, DistributionChartProvenanceV1, DistributionColumnRefV1,
+        DistributionCoordinateV1, DistributionFitConvergenceStatusV1, DistributionFitConvergenceV1,
+        DistributionFitDataV1, DistributionFitProvenanceV1, DistributionFitStatusV1,
+        DistributionFittedCurveDataV1, DistributionGroupResult, DistributionModeV1,
+        DistributionModelingTypeV1, DistributionReportBlock,
+        DistributionReportBlockV1, DistributionRequest, DistributionRequestV1, DistributionYResult,
+        HistogramBinV1, Jmp19CompatibilityStatusV1, NormalQuantileBandPointV1,
+        NormalQuantileDataV1, NormalQuantilePointV1, ObservationContributionPolicyV1,
         ResourceBudgetV1,
     };
     use crate::services::data_service::DataService;
@@ -1994,6 +2002,255 @@ mod tests {
         OneShotExecutionContext {
             provenance_id: format!("distribution:test:{config_revision}"),
         }
+    }
+
+    fn graph_test_provenance() -> DistributionChartProvenanceV1 {
+        DistributionChartProvenanceV1 {
+            method_id: "distribution.graph.test".to_string(),
+            method_version: "1".to_string(),
+            compatibility_status: Jmp19CompatibilityStatusV1::CompatibilityPending,
+            computation_id: "distribution:test:graph".to_string(),
+        }
+    }
+
+    fn graph_test_block(
+        kind: &str,
+        chart_data: Option<DistributionChartDataV1>,
+        distribution_fit_data: Option<DistributionFitDataV1>,
+    ) -> DistributionReportBlock {
+        DistributionReportBlock {
+            block: DistributionReportBlockV1 {
+                schema_version: "1".to_string(),
+                block_id: kind.to_string(),
+                kind: kind.to_string(),
+                title_key: format!("distribution.{kind}"),
+                status: "available".to_string(),
+                summary_data: None,
+                capability_data: None,
+                distribution_fit_data,
+                distribution_fit_comparison_data: None,
+                chart_data,
+            },
+            reason_code: None,
+        }
+    }
+
+    fn graph_test_fit(column_id: &str) -> DistributionFitDataV1 {
+        let provenance = DistributionFitProvenanceV1 {
+            method_id: "fit.continuous.normal".to_string(),
+            method_version: "1".to_string(),
+            parameterization_id: "normal.locationScale.v1".to_string(),
+            optimizer_id: "closedForm".to_string(),
+            optimizer_version: "1".to_string(),
+            initialization_strategy_id: "closedForm".to_string(),
+            convergence_tolerance: 0.0,
+            iteration_limit: 0,
+            dependency_versions: std::collections::BTreeMap::new(),
+            computation_id: "distribution:test:fit".to_string(),
+            candidate_registry_ids: vec![ContinuousDistributionIdV1::Normal],
+            compatibility_status: Jmp19CompatibilityStatusV1::CompatibilityPending,
+        };
+        DistributionFitDataV1 {
+            schema_version: "1".to_string(),
+            fit_id: format!("{column_id}-fit-normal"),
+            distribution_id: ContinuousDistributionIdV1::Normal,
+            parameterization_id: "normal.locationScale.v1".to_string(),
+            status: DistributionFitStatusV1::Available,
+            reason_code: None,
+            parameters: Vec::new(),
+            estimated_parameter_count: 2,
+            effective_n: 2.0,
+            log_likelihood: available_fit_metric(-1.0).expect("log likelihood"),
+            aic: available_fit_metric(6.0).expect("aic"),
+            aicc: available_fit_metric(18.0).expect("aicc"),
+            bic: available_fit_metric(4.0).expect("bic"),
+            goodness_of_fit: Vec::new(),
+            fitted_curve: Some(DistributionFittedCurveDataV1 {
+                schema_version: "1".to_string(),
+                points: vec![
+                    DistributionCoordinateV1 { x: 0.0, y: 0.1 },
+                    DistributionCoordinateV1 { x: 1.0, y: 0.2 },
+                ],
+                provenance: provenance.clone(),
+            }),
+            diagnostics: Vec::new(),
+            convergence: DistributionFitConvergenceV1 {
+                status: DistributionFitConvergenceStatusV1::Converged,
+                reason_code: None,
+                optimizer_id: "closedForm".to_string(),
+                optimizer_version: "1".to_string(),
+                iterations: 0,
+                tolerance: 0.0,
+                objective: None,
+                gradient_norm: None,
+            },
+            provenance,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn graph_frames_use_column_id_for_source_identity_and_display_name_for_series() {
+        let request = DistributionRequest {
+            dataset_id: "dataset-1".to_string(),
+            generation: 4,
+            response_columns: vec!["col-a".to_string(), "col-b".to_string()],
+            weight_column: None,
+            freq_column: None,
+            by_columns: Vec::new(),
+            confidence_level: 0.95,
+            spec_limits: HashMap::new(),
+            fit_distributions: vec![ContinuousDistributionIdV1::Normal],
+        };
+        let groups = vec![DistributionGroupResult {
+            group_key: Vec::new(),
+            group_names: Vec::new(),
+            y_results: ["col-a", "col-b"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, column_id)| DistributionYResult {
+                    y_column: DistributionColumnRefV1 {
+                        column_id: column_id.to_string(),
+                        modeling_type: DistributionModelingTypeV1::Continuous,
+                    },
+                    y_name: "Length".to_string(),
+                    quantiles: Vec::new(),
+                    blocks: vec![
+                        graph_test_block(
+                            "histogram",
+                            Some(DistributionChartDataV1::HistogramData {
+                                schema_version: "1".to_string(),
+                                provenance: graph_test_provenance(),
+                                bins: vec![HistogramBinV1 {
+                                    lower: index as f64,
+                                    upper: index as f64 + 1.0,
+                                    count: 1.0,
+                                    probability: 0.5,
+                                    density: 0.5,
+                                }],
+                            }),
+                            None,
+                        ),
+                        graph_test_block(
+                            "boxPlot",
+                            Some(DistributionChartDataV1::BoxPlotData {
+                                schema_version: "1".to_string(),
+                                provenance: graph_test_provenance(),
+                                coordinates: BoxPlotCoordinatesV1 {
+                                    lower_whisker: index as f64,
+                                    lower_quartile: index as f64 + 0.2,
+                                    median: index as f64 + 0.5,
+                                    upper_quartile: index as f64 + 0.8,
+                                    upper_whisker: index as f64 + 1.0,
+                                    outliers: vec![index as f64 + 1.5],
+                                },
+                            }),
+                            None,
+                        ),
+                        graph_test_block(
+                            "ecdf",
+                            Some(DistributionChartDataV1::CdfData {
+                                schema_version: "1".to_string(),
+                                provenance: graph_test_provenance(),
+                                points: vec![DistributionCoordinateV1 { x: index as f64, y: 0.5 }],
+                            }),
+                            None,
+                        ),
+                        graph_test_block(
+                            "normalQuantile",
+                            Some(DistributionChartDataV1::NormalQuantileData {
+                                schema_version: "1".to_string(),
+                                provenance: graph_test_provenance(),
+                                payload: NormalQuantileDataV1 {
+                                    points: vec![NormalQuantilePointV1 {
+                                        rank: 1.0,
+                                        probability: 0.5,
+                                        normal_score: 0.0,
+                                        observed_value: index as f64,
+                                    }],
+                                    reference_line: vec![DistributionCoordinateV1 { x: 0.0, y: index as f64 }],
+                                    confidence_band: vec![NormalQuantileBandPointV1 {
+                                        x: 0.0,
+                                        lower: index as f64 - 0.1,
+                                        upper: index as f64 + 0.1,
+                                    }],
+                                    status: DiagnosticDataStatusV1::Available,
+                                    reason_code: None,
+                                    provenance: graph_test_provenance(),
+                                    reference_line_provenance: graph_test_provenance(),
+                                    confidence_band_provenance: graph_test_provenance(),
+                                },
+                            }),
+                            None,
+                        ),
+                        graph_test_block("continuousFit", None, Some(graph_test_fit(column_id))),
+                    ],
+                })
+                .collect(),
+        }];
+
+        let frames = build_graph_frames(&request, &groups).expect("graph frames");
+        let histogram_sources = frames
+            .overview
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::Histogram(packet) => Some(packet),
+                _ => None,
+            })
+            .flat_map(|packet| packet.bins.iter().map(|bin| bin.source_column.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(histogram_sources, vec![Some("col-a"), Some("col-b")]);
+        let fitted_sources = frames
+            .overview
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::PrecomputedCurve(packet) => Some(packet),
+                _ => None,
+            })
+            .filter(|packet| packet.element_id == DISTRIBUTION_OVERVIEW_FITTED_CURVES_ELEMENT_ID)
+            .map(|packet| (packet.source_column.as_deref(), packet.group.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(fitted_sources, vec![(Some("col-a"), Some("Length")), (Some("col-b"), Some("Length"))]);
+        let box_sources = frames
+            .box_plot
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::BoxPlot(packet) => Some(packet),
+                _ => None,
+            })
+            .flat_map(|packet| packet.entries.iter())
+            .map(|entry| {
+                (
+                    entry.source_column.as_deref(),
+                    entry.group.as_deref(),
+                    entry.outliers.first().and_then(|outlier| outlier.source_column.as_deref()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(box_sources, vec![(Some("col-a"), Some("Length"), Some("col-a")), (Some("col-b"), Some("Length"), Some("col-b"))]);
+        let ecdf_sources = frames
+            .ecdf
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::PrecomputedCurve(packet) => packet.source_column.as_deref(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ecdf_sources, vec!["col-a", "col-b"]);
+        let normal_quantile_sources = frames
+            .normal_quantile
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::PrecomputedCurve(packet) => packet.source_column.as_deref(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(normal_quantile_sources, vec!["col-a", "col-a", "col-a", "col-b", "col-b", "col-b"]);
     }
 
     fn create_value_freq_weight_dataset(

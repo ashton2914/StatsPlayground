@@ -19,10 +19,11 @@ export function createDistributionGraphBuilderConfig(
   overview: EmbeddedGraphConfig,
   boxPlot: EmbeddedGraphConfig,
   responses: FieldRef[],
+  persistedResponse: FieldRef | null = responses[0] ?? null,
 ): EmbeddedGraphConfig {
   const twoD = overview.modeStates.twoD;
   const { x: _x, y: _y, ...nonAxisEncoding } = twoD.encoding;
-  const responseAxis = responses[0] ? getDistributionResponseAxis(overview, responses[0]) : null;
+  const responseAxis = persistedResponse ? getDistributionResponseAxis(overview, persistedResponse) : null;
   const responseAxisConfig = responseAxis === "x" ? twoD.xAxis : twoD.yAxis;
   const responseRefLines = responseAxis === "x"
     ? twoD.refLinesX?.map(({ x, ...line }) => ({ ...line, y: x }))
