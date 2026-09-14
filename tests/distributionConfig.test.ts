@@ -6,6 +6,8 @@ import {
   createDistributionItem,
   createDefaultDistributionVisualDiagnosticsConfig,
   createCapabilityOverrideRegistry,
+  findResponsesMissingCapabilitySpecs,
+  hasDistributionCapabilitySpec,
   isDistributionMenuEnabled,
   validateDistributionRoles,
   validateDistributionVisualDiagnosticsConfig,
@@ -225,44 +227,139 @@ const responseField = {
   name: "height",
   sqlType: "DOUBLE",
   integerCompatible: false,
+  colIndex: 0,
   field: { name: "height", type: "continuous" as const },
 };
 const secondResponseField = {
   name: "width",
   sqlType: "DOUBLE",
   integerCompatible: false,
+  colIndex: 1,
   field: { name: "width", type: "continuous" as const },
 };
 const weightField = {
   name: "weight",
   sqlType: "DECIMAL(10, 2)",
   integerCompatible: false,
+  colIndex: 2,
   field: { name: "weight", type: "continuous" as const },
 };
 const frequencyField = {
   name: "count",
   sqlType: "BIGINT",
   integerCompatible: true,
+  colIndex: 3,
   field: { name: "count", type: "continuous" as const },
 };
 const nonIntegerFrequencyField = {
   name: "ratio",
   sqlType: "DOUBLE",
   integerCompatible: false,
+  colIndex: 4,
   field: { name: "ratio", type: "continuous" as const },
 };
 const groupField = {
   name: "site",
   sqlType: "VARCHAR",
   integerCompatible: false,
+  colIndex: 5,
   field: { name: "site", type: "nominal" as const },
 };
 const ordinalGroupField = {
   name: "batch",
   sqlType: "VARCHAR",
   integerCompatible: false,
+  colIndex: 6,
   field: { name: "batch", type: "ordinal" as const },
 };
+
+const specFields = [
+  {
+    name: "LSL",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 0,
+    extras: { spec: { lsl: 1 } },
+    field: { name: "LSL", type: "continuous" as const },
+  },
+  {
+    name: "Target",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 1,
+    extras: { spec: { target: 2 } },
+    field: { name: "Target", type: "continuous" as const },
+  },
+  {
+    name: "USL",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 2,
+    extras: { spec: { usl: 3 } },
+    field: { name: "USL", type: "continuous" as const },
+  },
+  {
+    name: "Two-sided",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 3,
+    extras: { spec: { lsl: 1, target: 2, usl: 3 } },
+    field: { name: "Two-sided", type: "continuous" as const },
+  },
+  {
+    name: "Absent",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 4,
+    field: { name: "Absent", type: "continuous" as const },
+  },
+  {
+    name: "String",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 5,
+    extras: { spec: { lsl: "1" } },
+    field: { name: "String", type: "continuous" as const },
+  },
+  {
+    name: "NaN",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 6,
+    extras: { spec: { usl: Number.NaN } },
+    field: { name: "NaN", type: "continuous" as const },
+  },
+  {
+    name: "Infinity",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 7,
+    extras: { spec: { lsl: Number.POSITIVE_INFINITY } },
+    field: { name: "Infinity", type: "continuous" as const },
+  },
+  {
+    name: "Negative Infinity",
+    sqlType: "DOUBLE",
+    integerCompatible: false,
+    colIndex: 8,
+    extras: { spec: { usl: Number.NEGATIVE_INFINITY } },
+    field: { name: "Negative Infinity", type: "continuous" as const },
+  },
+] as const;
+
+assert.equal(hasDistributionCapabilitySpec(specFields[0]), true);
+assert.equal(hasDistributionCapabilitySpec(specFields[1]), false);
+assert.equal(hasDistributionCapabilitySpec(specFields[2]), true);
+assert.equal(hasDistributionCapabilitySpec(specFields[3]), true);
+assert.equal(hasDistributionCapabilitySpec(specFields[4]), false);
+assert.equal(hasDistributionCapabilitySpec(specFields[5]), false);
+assert.equal(hasDistributionCapabilitySpec(specFields[6]), false);
+assert.equal(hasDistributionCapabilitySpec(specFields[7]), false);
+assert.equal(hasDistributionCapabilitySpec(specFields[8]), false);
+assert.deepEqual(
+  findResponsesMissingCapabilitySpecs(specFields.map((entry) => entry.field), specFields).map((entry) => entry.colIndex),
+  [1, 4, 5, 6, 7, 8],
+);
 
 assert.equal(canAssignDistributionRole("response", responseField, []), true);
 assert.equal(canAssignDistributionRole("response", groupField, []), "invalidResponse");
@@ -285,6 +382,12 @@ assert.deepEqual(validateDistributionRoles({ responses: [], weight: null, freque
   ok: false,
   error: "missingResponse",
 });
+assert.deepEqual(validateDistributionRoles({
+  responses: [{ name: "ghost", type: "continuous" as const }],
+  weight: null,
+  frequency: null,
+  by: [],
+}, [responseField]), { ok: false, error: "invalidResponse" });
 assert.deepEqual(validateDistributionRoles({
   responses: [responseField.field, responseField.field],
   weight: null,

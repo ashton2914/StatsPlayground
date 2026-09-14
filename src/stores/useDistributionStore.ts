@@ -168,7 +168,10 @@ function normalizeLoadedItem(value: unknown): DistributionItem | null {
     ...(weight ? [{ name: weight.name, sqlType: "DOUBLE", integerCompatible: false, field: weight }] : []),
     ...(frequency ? [{ name: frequency.name, sqlType: "BIGINT", integerCompatible: true, field: frequency }] : []),
     ...by.map((field) => ({ name: field.name, sqlType: "VARCHAR", integerCompatible: false, field })),
-  ];
+  ].map((field, colIndex) => ({
+    ...field,
+    colIndex,
+  }));
   if (!validateDistributionRoles({ responses, weight, frequency, by }, metadata).ok) return null;
 
   const base = createDistributionItem({

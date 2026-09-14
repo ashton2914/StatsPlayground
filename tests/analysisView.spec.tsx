@@ -154,7 +154,7 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(component.locator(".analysis-shell-titlebar")).toHaveText("Strength Distribution");
   await expect(component.locator(".analysis-shell-source")).toContainText("Incoming Data");
   await expect(component.locator(".analysis-shell-summary")).toContainText("DIM1");
-  await expect(component.locator(".analysis-shell-summary")).toContainText("55 / 100 / 145");
+  await expect(component.locator(".analysis-shell-summary")).not.toContainText("55 / 100 / 145");
   await component.getByRole("button", { name: "Edit Inputs" }).click();
   await expect(component.getByTestId("edit-inputs-calls")).toHaveText("1");
   await expect(documentFrame).toHaveClass(/analysis-ui-stack/);

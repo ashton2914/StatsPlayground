@@ -56,6 +56,15 @@ export interface DistributionReportController {
   dispose: () => void;
 }
 
+function normalizeDistributionAnalysisForRequest(
+  analysis: DistributionItem["analysis"],
+): DistributionItem["analysis"] {
+  return {
+    ...structuredClone(analysis),
+    specLimits: {},
+  };
+}
+
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(stableValue);
@@ -81,7 +90,7 @@ export function distributionRequestFingerprint(item: DistributionItem): string {
     weight: item.weight,
     frequency: item.frequency,
     by: item.by,
-    analysis: item.analysis,
+    analysis: normalizeDistributionAnalysisForRequest(item.analysis),
   }));
 }
 
@@ -97,7 +106,7 @@ export function createDistributionRequest(
     freqColumn: item.frequency?.name ?? null,
     byColumns: item.by.map((field) => field.name),
     confidenceLevel: item.analysis.confidenceLevel,
-    specLimits: stableValue(item.analysis.specLimits) as DistributionRequest["specLimits"],
+    specLimits: {},
     fitDistributions: [...item.analysis.fitDistributions],
   };
 }

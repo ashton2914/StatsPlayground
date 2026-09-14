@@ -21,6 +21,15 @@ import type { FitYByXRequest, FitYByXResponse } from "@/types/fitYByX";
 import type { FitModelRequest, FitModelResult } from "@/types/fitModel";
 import type { HypothesisTestRequest, HypothesisTestResponse } from "@/types/hypothesisTest";
 
+function normalizeDistributionAnalysisForFrontend(
+  analysis: DistributionItem["analysis"],
+): DistributionItem["analysis"] {
+  return {
+    ...structuredClone(analysis),
+    specLimits: {},
+  };
+}
+
 function normalizeFitYByXReportError(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   if (typeof error === "object" && error !== null) {
@@ -84,7 +93,7 @@ function toDistributionItem(document: DistributionAnalysisDocument): Distributio
     weight: document.definition.weight,
     frequency: document.definition.frequency,
     by: document.definition.by,
-    analysis: document.definition.analysis,
+    analysis: normalizeDistributionAnalysisForFrontend(document.definition.analysis),
     graphs: document.definition.graphs,
     createdAt: document.createdAt,
   };
@@ -169,7 +178,7 @@ const distributionExecutor = {
     weight: document.definition.weight,
     frequency: document.definition.frequency,
     by: document.definition.by,
-    analysis: document.definition.analysis,
+    analysis: normalizeDistributionAnalysisForFrontend(document.definition.analysis),
   })),
   requestIdentity: (request) => request == null
     ? null

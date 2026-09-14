@@ -438,6 +438,12 @@
     "graph": { "unavailable": "Biểu đồ không khả dụng cho phản hồi này." },
     "roleEmpty": "Thả hoặc gán một cột", "removeFromRole": "Xóa {{column}} khỏi {{role}}",
     "roles": { "y": "Y, đáp ứng", "weight": "Trọng số", "frequency": "Tần số", "by": "Theo nhóm" },
+    "missingSpecs": {
+      "title": "Thiếu giới hạn đặc tính kỹ thuật",
+      "message": "Các biến phản hồi này không có LSL hoặc USL hữu hạn trong thuộc tính cột của bảng:",
+      "manage": "Quản lý thuộc tính cột",
+      "continue": "Tiếp tục mà không tính năng lực"
+    },
     "specification": { "lsl": "Giới hạn kỹ thuật dưới", "target": "Mục tiêu", "usl": "Giới hạn kỹ thuật trên" },
     "report": {
       "title": "Báo cáo thống kê", "loading": "Đang tải báo cáo...", "overview": "Tổng quan phân phối",

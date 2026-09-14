@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import React, { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { dataService } from "@/services/dataService";
@@ -18,10 +18,18 @@ import { calculatePlaceholderRange, canMaterializeSelection, calculateTableWindo
 import { inferFieldType, type FieldRef, type GraphData } from "@/graphCore";
 import { FilterPanel } from "@/components/filter";
 import type { FilterRuleItem } from "@/types/filter";
+import {
+  createTableRenderLoadToken,
+  useTablePropertyManagerController,
+  type TablePropertyManagerRequest,
+} from "./tablePropertyManagerRequest";
+import { shouldIssueDataTableLoadForCurrentDataset } from "./dataTableLoadGuards";
 
 interface DataTableViewProps {
   datasetId: string;
   onColumnRenamed?: (oldName: string, newName: string, sqlType: string) => void;
+  propertyManagerRequest?: TablePropertyManagerRequest | null;
+  onPropertyManagerRequestHandled?: (requestId: string) => void;
 }
 
 const COLUMN_TYPE_VALUES = ["VARCHAR", "INTEGER", "BIGINT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"] as const;
@@ -690,7 +698,12 @@ const FormulaBar = React.memo(function FormulaBar({
   );
 });
 
-export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps) {
+export function DataTableView({
+  datasetId,
+  onColumnRenamed,
+  propertyManagerRequest,
+  onPropertyManagerRequestHandled,
+}: DataTableViewProps) {
   const { t } = useTranslation();
   const labelOf = useMemo(() => typeLabelOf(t), [t]);
   const [data, setData] = useState<TableQueryResult | null>(null);
@@ -717,10 +730,6 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   const [renameWidth, setRenameWidth] = useState("");
   const [renameFormat, setRenameFormat] = useState<ColumnFormat>(DEFAULT_FORMAT);
   const [renameExtras, setRenameExtras] = useState<Record<string, unknown>>({});
-  // "管理附加属性" dialog visibility — opened from the menu via a window
-  // CustomEvent so DataTableView (which owns colExtras state) is the
-  // single source of truth.
-  const [showManageExtras, setShowManageExtras] = useState(false);
   const [batchColProps, setBatchColProps] = useState<{ colIndices: number[]; checkedCols: Set<number> } | null>(null);
   const [batchColType, setBatchColType] = useState("VARCHAR");
   const [batchColWidth, setBatchColWidth] = useState("");
@@ -744,6 +753,8 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   colExtrasRef.current = colExtras;
   const [selection, setSelection] = useState<CellRange | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [loadedDataLoadToken, setLoadedDataLoadToken] = useState<string | null>(null);
+  const [loadedDisplayPropsLoadToken, setLoadedDisplayPropsLoadToken] = useState<string | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   // rAF coalesce scroll updates: one state commit per animation frame instead
@@ -825,6 +836,10 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
     rowCount: datasetRowCount,
     updatedAt: datasetUpdatedAt,
   }), [datasetGeneration, datasetId, datasetRowCount, datasetUpdatedAt]);
+  const currentRenderedLoadToken = useMemo(
+    () => createTableRenderLoadToken(datasetRevision),
+    [datasetRevision],
+  );
   const { markDirty, readOnly } = useProjectStore();
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
@@ -859,6 +874,7 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   const dataRef = useRef<TableQueryResult | null>(null);
   const generationRef = useRef(0);
   const datasetRevisionRef = useRef<DatasetRevision | null>(null);
+  const currentRenderedLoadTokenRef = useRef(currentRenderedLoadToken);
   const windowStartRef = useRef(0);
   const windowCacheRef = useRef<TableWindowCache | null>(null);
   const requestEpochRef = useRef<RequestEpoch | null>(null);
@@ -867,6 +883,7 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   const skipFilterReloadRef = useRef(false);
   if (!windowCacheRef.current) windowCacheRef.current = new TableWindowCache(TABLE_CACHE_ROW_LIMIT);
   if (!requestEpochRef.current) requestEpochRef.current = new RequestEpoch();
+  currentRenderedLoadTokenRef.current = currentRenderedLoadToken;
   const tryBeginTableMutation = useCallback(() => {
     if (!tryBeginHistoryTableMutation()) return false;
     requestEpochRef.current!.beginMutation();
@@ -888,8 +905,16 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
     [datasetId],
   );
   const colWidthsRef = useRef<number[]>([]);
+  const currentDatasetIdRef = useRef<string | null>(datasetId);
   if (data) dataRef.current = data;
   colWidthsRef.current = colWidths;
+  currentDatasetIdRef.current = datasetId;
+
+  useLayoutEffect(() => {
+    return () => {
+      currentDatasetIdRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!readOnly) return;
@@ -924,14 +949,23 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
     filters = tableFiltersRef.current,
     start = windowStartRef.current,
   ) => {
+    const requestedDatasetId = datasetId;
+    const loadToken = currentRenderedLoadTokenRef.current;
+    const isCurrentDatasetLoad = () => shouldIssueDataTableLoadForCurrentDataset({
+      requestedDatasetId,
+      currentDatasetId: currentDatasetIdRef.current,
+    });
+    if (!isCurrentDatasetLoad()) return;
     const epoch = requestEpochRef.current!.advance();
+    setLoadedDataLoadToken(null);
+    setLoadedDisplayPropsLoadToken(null);
     windowCacheRef.current!.clear();
     pendingWindowsRef.current.clear();
     const serializedFilters = serializeTableWindowFilters(filters);
     loadedFilterKeyRef.current = JSON.stringify(serializedFilters);
     try {
       const request = {
-        datasetId,
+        datasetId: requestedDatasetId,
         start,
         count: TABLE_WINDOW_SIZE,
         sort: null,
@@ -939,10 +973,10 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
       };
       const result = await queryTableWindowWithFreshGeneration(
         request,
-        () => dataService.getDatasetGeneration(datasetId),
+        () => dataService.getDatasetGeneration(requestedDatasetId),
         dataService.queryTableWindow,
       );
-      if (!requestEpochRef.current!.isCurrent(epoch)) return;
+      if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
       windowCacheRef.current!.put({ ...request, generation: result.generation }, result);
       const nextData: TableQueryResult = {
         columns: result.columns,
@@ -957,9 +991,11 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
       setWindowStart(result.start);
       setData(nextData);
       dataRef.current = nextData;
+      setLoadedDataLoadToken(loadToken);
       // Load saved display props
       try {
-        const props = await dataService.getColumnDisplayProps(datasetId);
+        const props = await dataService.getColumnDisplayProps(requestedDatasetId);
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
         const visCount = result.columns.filter(c => c !== "_row_id").length;
         // Always rebuild the per-column arrays (even when props is empty), so
         // switching to a dataset with no saved props clears any state that
@@ -983,11 +1019,17 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
         });
         setColExtras(extras);
         colExtrasRef.current = extras;
-      } catch { /* ignore display prop load errors */ }
+        setLoadedDisplayPropsLoadToken(loadToken);
+      } catch {
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        setLoadedDisplayPropsLoadToken(null);
+      }
     } catch (e) {
-      if (!requestEpochRef.current!.isCurrent(epoch)) return;
+      if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
       console.error("Failed to load table:", e);
       setErrorMsg(String(e));
+      setLoadedDataLoadToken(null);
+      setLoadedDisplayPropsLoadToken(null);
       setWindowStart(0);
       windowStartRef.current = 0;
       setData(null);
@@ -1046,6 +1088,21 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
     setTableFilters([]);
     setShowTableFilters(false);
   }, [datasetId, load]);
+
+  const {
+    showManageExtras,
+    manageExtrasInitialSelectedColIndices,
+    manageExtrasInitialExtraKinds,
+    openManageExtras,
+    closeManageExtras,
+  } = useTablePropertyManagerController({
+    datasetId,
+    currentRenderedLoadToken,
+    loadedDataLoadToken,
+    loadedDisplayPropsLoadToken,
+    propertyManagerRequest,
+    onPropertyManagerRequestHandled,
+  });
 
   useEffect(() => {
     const previous = datasetRevisionRef.current;
@@ -4102,7 +4159,7 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
         <div className="sp-tb-sep" />
         <button
           className="sp-tb-btn"
-          onClick={() => setShowManageExtras(true)}
+          onClick={openManageExtras}
         >
           {t("menu.manageExtras")}
         </button>
@@ -4861,8 +4918,10 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
           cols={cols}
           colExtras={colExtras}
           sourceDatasetName={useDataStore.getState().datasets.find((d) => d.id === datasetId)?.name}
+          initialSelectedColIndices={manageExtrasInitialSelectedColIndices}
+          initialExtraKinds={manageExtrasInitialExtraKinds}
           onApply={handleApplyManageExtras}
-          onClose={() => setShowManageExtras(false)}
+          onClose={closeManageExtras}
         />
       )}
     </div>
