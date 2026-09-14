@@ -1068,6 +1068,7 @@
     "cantDeleteAllCols": "不能刪除所有欄，至少保留一欄",
     "clipboardWriteFail": "無法寫入剪貼簿",
     "clipboardReadFail": "無法讀取剪貼簿",
+    "copyDataChanged": "複製期間表格已發生變更，請重新複製。",
     "pasteOverwriteConfirm": "貼上區域已有資料，是否覆寫？",
     "pasteTypeIncompatible": "欄 {{letter}}（{{name}}）的類型為 {{existing}}，與貼上資料的類型 {{detected}} 不相容",
     "dimensionsFiltered": "{{shown}} / {{total}} 列 × {{cols}} 欄",

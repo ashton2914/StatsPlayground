@@ -12,7 +12,7 @@ import { useTableZoomStore } from "@/stores/useTableZoomStore";
 import { useTableSelectionStore } from "@/stores/useTableSelectionStore";
 import { modKey, shiftKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
-import { copyThenClear } from "@/utils/tableClipboard";
+import { buildClipboardTsv, copyThenClear, createClipboardRowFetcher, resolveClipboardSelection } from "@/utils/tableClipboard";
 import { TableWindowCache } from "@/utils/tableWindowCache";
 import { calculatePlaceholderRange, canMaterializeSelection, calculateTableWindow, isStaleDatasetGenerationError, MAX_MATERIALIZED_SELECTION_ITEMS, queryTableWindowWithFreshGeneration, RequestEpoch, serializeTableWindowFilters, shouldReloadDatasetRevision, windowRowAt, type DatasetRevision } from "@/utils/tableViewport";
 import { inferFieldType, type FieldRef, type GraphData } from "@/graphCore";
@@ -2631,70 +2631,42 @@ export function DataTableView({ datasetId, onColumnRenamed }: DataTableViewProps
   // ---- Copy selected cells to clipboard as TSV ----
   const handleCopy = async (withHeader: boolean = false): Promise<boolean> => {
     if (!data) return false;
-    let rows: string[][] = [];
-    let headerCols: number[] | null = null;
-
-    if (selectedRows.size > 0) {
-      // Copy selected rows (all columns)
-      const sortedRows = Array.from(selectedRows).sort((a, b) => a - b);
-      headerCols = cols.map((_, i) => i);
-      for (const ri of sortedRows) {
-        const dr = displayRowAt(ri);
-        if (!dr) {
-          setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
-            defaultValue: "This operation requires rows outside the loaded window.",
-          }));
-          return false;
-        }
-        rows.push(dr.map((v) => (v == null ? "" : String(v))));
-      }
-    } else if (selectedCols.size > 0) {
-      if (data.totalRows > displayRows.length) {
-        setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
-          defaultValue: "This operation requires rows outside the loaded window.",
-        }));
-        return false;
-      }
-      // Copy selected columns (all rows)
-      const sortedCols = Array.from(selectedCols).sort((a, b) => a - b);
-      headerCols = sortedCols;
-      for (const dr of displayRows) {
-        rows.push(sortedCols.map((ci) => (dr[ci] == null ? "" : String(dr[ci]))));
-      }
-    } else if (selection) {
-      // Copy selection range
-      const { r1, c1, r2, c2 } = normalizeRange(selection);
-      if (r1 < windowStart || r2 >= windowStart + displayRows.length) {
-        setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
-          defaultValue: "This operation requires rows outside the loaded window.",
-        }));
-        return false;
-      }
-      headerCols = [];
-      for (let c = c1; c <= c2; c++) headerCols.push(c);
-      for (let r = r1; r <= r2; r++) {
-        const dr = displayRowAt(r);
-        if (!dr) return false;
-        const row: string[] = [];
-        for (let c = c1; c <= c2; c++) {
-          row.push(dr[c] == null ? "" : String(dr[c]));
-        }
-        rows.push(row);
-      }
-    } else if (activeCell) {
-      // Copy single cell
-      const dr = displayRowAt(activeCell.row);
-      if (!dr) return false;
-      headerCols = [activeCell.col];
-      rows.push([dr[activeCell.col] == null ? "" : String(dr[activeCell.col])]);
+    const copySelection = resolveClipboardSelection({
+      selectedRows: [...selectedRows],
+      selectedColumns: [...selectedCols],
+      range: selection,
+      activeCell,
+      totalRows: data.totalRows,
+      columnCount: cols.length,
+    });
+    if (!copySelection) return false;
+    const copyGeneration = generationRef.current;
+    const copyFilters = serializeTableWindowFilters(tableFiltersRef.current);
+    let tsv: string;
+    try {
+      const fetchRows = createClipboardRowFetcher({
+        datasetId,
+        generation: copyGeneration,
+        filters: copyFilters,
+        windowStart,
+        windowRows: displayRows,
+        queryWindow: dataService.queryTableWindow,
+      });
+      tsv = await buildClipboardTsv({
+        rowSelection: copySelection.rowSelection,
+        columnIndexes: copySelection.columnIndexes,
+        columnNames: cols,
+        withHeader,
+        fetchRows,
+      });
+    } catch (error) {
+      setErrorMsg(isStaleDatasetGenerationError(error)
+        ? t("dataTable.copyDataChanged", {
+          defaultValue: "The table changed while copying. Please copy again.",
+        })
+        : String(error));
+      return false;
     }
-
-    if (rows.length === 0) return false;
-    if (withHeader && headerCols) {
-      const headerRow = headerCols.map((ci) => cols[ci] ?? "");
-      rows.unshift(headerRow);
-    }
-    const tsv = rows.map((r) => r.join("\t")).join("\n");
     try {
       await navigator.clipboard.writeText(tsv);
       return true;

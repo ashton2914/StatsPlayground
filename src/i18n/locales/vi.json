@@ -1074,6 +1074,7 @@
     "cantDeleteAllCols": "Không thể xóa tất cả cột; phải còn ít nhất một",
     "clipboardWriteFail": "Không thể ghi clipboard",
     "clipboardReadFail": "Không thể đọc clipboard",
+    "copyDataChanged": "Bảng đã thay đổi trong khi sao chép. Vui lòng sao chép lại.",
     "pasteOverwriteConfirm": "Dữ liệu hiện tại sẽ bị ghi đè. Tiếp tục?",
     "pasteTypeIncompatible": "Cột {{letter}} (\"{{name}}\") có kiểu {{existing}}, không tương thích với kiểu dán {{detected}}",
     "dimensionsFiltered": "{{shown}} / {{total}} hàng × {{cols}} cột",
