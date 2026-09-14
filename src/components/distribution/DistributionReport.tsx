@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -12,6 +13,7 @@ import type {
   DistributionReportBlock,
   DistributionReportBlockV1,
   DistributionYResultV1,
+  ProcessCapabilityDataV1,
 } from "@/types/distribution";
 
 import { ContinuousFitComparisonReport, ContinuousFitReport } from "./ContinuousFitReport";
@@ -24,6 +26,7 @@ interface DistributionReportProps {
 
 export interface DistributionResponseReportProps {
   result: DistributionYResultV1;
+  renderProcessCapabilityGraph?: (data: ProcessCapabilityDataV1) => ReactNode;
 }
 
 type ReportBlockLike = DistributionReportBlock | DistributionReportBlockV1;
@@ -101,7 +104,10 @@ function GroupSection({
   );
 }
 
-export function DistributionResponseReport({ result }: DistributionResponseReportProps) {
+export function DistributionResponseReport({
+  result,
+  renderProcessCapabilityGraph,
+}: DistributionResponseReportProps) {
   const { t } = useTranslation();
   const summaryBlock = result.blocks.find((block) => block.summaryData);
 
@@ -131,12 +137,24 @@ export function DistributionResponseReport({ result }: DistributionResponseRepor
       </AnalysisFrame>
       {result.blocks
         .filter((block) => block !== summaryBlock && hasReportContent(block))
-        .map((block) => <ReportBlock key={block.blockId} block={block} />)}
+        .map((block) => (
+          <ReportBlock
+            key={block.blockId}
+            block={block}
+            renderProcessCapabilityGraph={renderProcessCapabilityGraph}
+          />
+        ))}
     </AnalysisStack>
   );
 }
 
-export function ReportBlock({ block }: { block: ReportBlockLike }) {
+export function ReportBlock({
+  block,
+  renderProcessCapabilityGraph,
+}: {
+  block: ReportBlockLike;
+  renderProcessCapabilityGraph?: (data: ProcessCapabilityDataV1) => ReactNode;
+}) {
   const { t } = useTranslation();
   const compatibilityStatus = getCompatibilityStatus(block);
   const reasonCode = getBlockReasonCode(block);
@@ -168,6 +186,7 @@ export function ReportBlock({ block }: { block: ReportBlockLike }) {
       {block.distributionFitComparisonData && (
         <ContinuousFitComparisonReport data={block.distributionFitComparisonData} />
       )}
+      {block.capabilityData && renderProcessCapabilityGraph?.(block.capabilityData)}
       {block.capabilityData && <ProcessCapabilityReport data={block.capabilityData} />}
       </AnalysisStack>
     </AnalysisFrame>

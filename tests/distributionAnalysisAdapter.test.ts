@@ -34,6 +34,7 @@ const document = {
         DIM1: { lsl: 1, target: 2, usl: 3 },
       },
     },
+    nestedSubgroup: { name: "Lot", type: "nominal" as const },
   },
 };
 const dataset: DatasetMeta = {
@@ -69,6 +70,7 @@ assert.equal(editorItem.id, document.id);
 assert.equal(editorItem.name, document.name);
 assert.equal(editorItem.sourceDatasetId, document.source.datasetId);
 assert.deepEqual(editorItem.responses, document.definition.responses);
+assert.deepEqual(editorItem.nestedSubgroup, document.definition.nestedSubgroup);
 assert.deepEqual(editorItem.analysis, {
   ...document.definition.analysis,
   specLimits: {},
@@ -83,6 +85,7 @@ submitted.analysis.specLimits = {
   DIM2: { lsl: -5, target: 0, usl: 5 },
 };
 submitted.responses = [{ name: "DIM2", type: "continuous" }];
+submitted.nestedSubgroup = { name: "Batch", type: "ordinal" };
 submitted.graphs.overview.configRevision += 1;
 const patch = createDistributionAnalysisPatch(document, submitted, "2026-09-04T01:00:00.000Z");
 
@@ -92,6 +95,7 @@ assert.equal(patch.updatedAt, "2026-09-04T01:00:00.000Z");
 assert.deepEqual(patch.source, document.source);
 assert.equal(patch.definition?.kind, "distribution");
 assert.deepEqual(patch.definition?.responses, submitted.responses);
+assert.deepEqual(patch.definition?.nestedSubgroup, submitted.nestedSubgroup);
 assert.equal(patch.definition?.analysis.confidenceLevel, 0.99);
 assert.deepEqual(patch.definition?.analysis.specLimits, {});
 assert.deepEqual(patch.definition?.graphs, submitted.graphs);
@@ -110,6 +114,7 @@ assert.equal(created.analysisKind, "distribution");
 assert.equal(created.configRevision, 1);
 assert.deepEqual(created.source, { datasetId: editorItem.sourceDatasetId });
 assert.deepEqual(created.definition.analysis.specLimits, {});
+assert.deepEqual(created.definition.nestedSubgroup, editorItem.nestedSubgroup);
 assert.deepEqual(created.definition.graphs, editorItem.graphs);
 assert.equal(created.createdAt, editorItem.createdAt);
 assert.equal(created.updatedAt, "2026-09-06T01:00:00.000Z");

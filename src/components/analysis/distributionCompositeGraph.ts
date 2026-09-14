@@ -1,5 +1,7 @@
 import type { ChartElement, FieldRef } from "@/graphCore";
 import { getDistributionResponseAxis } from "@/components/distribution/distributionAxisInteractions";
+import { getProcessCapabilityCurveElementId } from "@/graphCore/distributionAdapter";
+import type { ProcessCapabilityChartDataV1 } from "@/types/distribution";
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "@/types/graphData";
 import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 
@@ -58,6 +60,60 @@ export function createDistributionGraphBuilderConfig(
             },
           },
           { kind: "boxplot", enabled: true, options: layerOptions([overview, boxPlot], "boxplot") },
+        ],
+      },
+    },
+  };
+}
+
+export function createProcessCapabilityGraphBuilderConfig(
+  overview: EmbeddedGraphConfig,
+  response: FieldRef,
+  persistedResponse: FieldRef,
+  chart: ProcessCapabilityChartDataV1,
+): EmbeddedGraphConfig {
+  const twoD = overview.modeStates.twoD;
+  const responseAxis = getDistributionResponseAxis(overview, persistedResponse);
+  const responseAxisConfig = responseAxis === "y" ? twoD.yAxis : twoD.xAxis;
+  const specificationLines = [
+    ["lsl", "LSL", chart.specificationLines.lsl, "#E53935"],
+    ["target", "Target", chart.specificationLines.target, "#00C853"],
+    ["usl", "USL", chart.specificationLines.usl, "#E53935"],
+  ] as const;
+
+  return {
+    ...overview,
+    modeStates: {
+      ...overview.modeStates,
+      twoD: {
+        ...twoD,
+        encoding: { x: structuredClone(response) },
+        multiX: [],
+        multiY: [],
+        xAxis: responseAxisConfig,
+        yAxis: undefined,
+        refLinesX: specificationLines.flatMap(([kind, label, value, color]) => value == null ? [] : [{
+          id: `capability-spec:${kind}`,
+          x: value,
+          label,
+          style: kind === "target" ? "solid" : "dashed",
+          color,
+          width: 1.5,
+        }]),
+        refLinesY: undefined,
+        autoSpecLines: undefined,
+        autoSpecLinesX: false,
+        autoSpecLinesY: false,
+        elements: [
+          { kind: "histogram", enabled: true, options: layerOptions([overview], "histogram") },
+          {
+            kind: "normalCurve",
+            enabled: true,
+            options: {
+              ...layerOptions([overview], "normalCurve", { showSigmaBands: false }),
+              elementId: getProcessCapabilityCurveElementId(chart.provenance.computationId),
+            },
+          },
         ],
       },
     },

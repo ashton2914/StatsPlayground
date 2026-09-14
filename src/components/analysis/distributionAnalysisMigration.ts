@@ -74,6 +74,7 @@ export function createDistributionAnalysisDocument(
       weight: structuredClone(item.weight),
       frequency: structuredClone(item.frequency),
       by: structuredClone(item.by),
+      nestedSubgroup: structuredClone(item.nestedSubgroup ?? null),
       analysis: normalizeDistributionAnalysisForFrontend(item.analysis),
       graphs: structuredClone(item.graphs),
     },

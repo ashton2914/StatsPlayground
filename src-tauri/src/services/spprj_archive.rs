@@ -4785,6 +4785,10 @@ fn validate_distribution_analysis_definition(
         definition.get("by"),
         &format!("{context} analysis definition.by"),
     )?;
+    validate_optional_field_ref(
+        definition.get("nestedSubgroup"),
+        &format!("{context} analysis definition.nestedSubgroup"),
+    )?;
 
     let analysis = definition
         .get("analysis")
@@ -6785,6 +6789,26 @@ mod tests {
         assert!(matches!(
             validate_analysis_value(&invalid_confidence, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("confidenceLevel")
+        ));
+
+        let mut null_nested_subgroup = analysis_doc("analysis-1", "DIM1 Analysis");
+        null_nested_subgroup["definition"]["nestedSubgroup"] = Value::Null;
+        validate_analysis_value(&null_nested_subgroup, "analysis validation")
+            .expect("null nested subgroup remains backward compatible");
+
+        let mut configured_nested_subgroup = analysis_doc("analysis-1", "DIM1 Analysis");
+        configured_nested_subgroup["definition"]["nestedSubgroup"] = json!({
+            "name": "Lot",
+            "type": "nominal"
+        });
+        validate_analysis_value(&configured_nested_subgroup, "analysis validation")
+            .expect("configured nested subgroup");
+
+        let mut invalid_nested_subgroup = analysis_doc("analysis-1", "DIM1 Analysis");
+        invalid_nested_subgroup["definition"]["nestedSubgroup"] = json!(["Lot"]);
+        assert!(matches!(
+            validate_analysis_value(&invalid_nested_subgroup, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("nestedSubgroup")
         ));
 
         let mut invalid_fit = analysis_doc("analysis-1", "DIM1 Analysis");

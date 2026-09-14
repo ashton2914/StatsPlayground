@@ -120,6 +120,7 @@ export interface HistogramBin {
 
 export interface HistogramPacket {
   kind: "histogram";
+  binPolicy?: "tickAligned" | "preserve";
   xColumn?: string | null;
   yColumn: string;
   groupColumn?: string | null;
@@ -512,7 +513,8 @@ export function isGraphAggregatePacket(value: unknown): value is GraphAggregateP
       && value.points.every(isPrecomputedCurvePoint);
   }
   if (value.kind === "histogram") {
-    return isOptionalString(value.xColumn)
+    return (value.binPolicy === undefined || value.binPolicy === "tickAligned" || value.binPolicy === "preserve")
+      && isOptionalString(value.xColumn)
       && isString(value.yColumn)
       && isOptionalString(value.groupColumn)
       && isOptionalString(value.sourceColumn)

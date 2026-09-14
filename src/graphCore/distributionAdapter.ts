@@ -1,4 +1,10 @@
-import type { DistributionGroupResult, DistributionGroupValueV1, DistributionReportResponse } from "@/types/distribution";
+import type {
+  DistributionGroupResult,
+  DistributionGroupValueV1,
+  DistributionReportResponse,
+  ProcessCapabilityDataV1,
+  ProcessCapabilityDensitySeriesV1,
+} from "@/types/distribution";
 import type { GraphAggregatePacket, GraphDataFrame } from "@/types/graphData";
 
 const DISTRIBUTION_MELT_CATEGORY_COLUMN = "__sp_variable__";
@@ -25,6 +31,104 @@ export type DistributionFrameSourceState =
 export interface DistributionResponseGraphIdentity {
   sourceColumn: string;
   seriesName: string;
+}
+
+export interface ProcessCapabilityGraphIdentity {
+  datasetId: string;
+  generation: number;
+  responseColumn: string;
+}
+
+export function getProcessCapabilityCurveElementId(computationId: string): string {
+  return `${computationId}:normal-curves`;
+}
+
+function mapCapabilityDensitySeries(
+  densitySeries: ProcessCapabilityDensitySeriesV1 | null,
+  elementId: string,
+  seriesId: string,
+  seriesName: string,
+  sourceColumn: string,
+  countScale: number,
+): GraphAggregatePacket[] {
+  if (densitySeries?.state !== "available") return [];
+  return [{
+    kind: "precomputedCurve",
+    elementId,
+    seriesId,
+    seriesName,
+    sourceColumn,
+    interpolation: "linear",
+    points: densitySeries.coordinates.map(({ x, y }) => ({ x, y: y * countScale })),
+  }];
+}
+
+export function getProcessCapabilityGraphFrame(
+  capability: ProcessCapabilityDataV1,
+  identity: ProcessCapabilityGraphIdentity,
+): GraphDataFrame {
+  const chart = capability.chartData;
+  if (!chart) {
+    throw new Error("Process capability chart data is unavailable");
+  }
+
+  const binWidth = chart.bins[0]
+    ? chart.bins[0].upper - chart.bins[0].lower
+    : 0;
+  const computationId = chart.provenance.computationId;
+  const curveElementId = getProcessCapabilityCurveElementId(computationId);
+  const countScale = capability.processSummary.n * binWidth;
+
+  return {
+    requestId: `${computationId}:process-capability`,
+    datasetId: identity.datasetId,
+    generation: identity.generation,
+    sourceRows: capability.processSummary.n,
+    processedRows: capability.processSummary.n,
+    sampling: { mode: "full" },
+    dictionaries: {},
+    extents: {},
+    rawChunks: [],
+    aggregates: [{
+      kind: "histogram",
+      binPolicy: "preserve",
+      yColumn: "Count",
+      sourceColumn: identity.responseColumn,
+      binCount: chart.bins.length,
+      minValue: chart.bins[0]?.lower ?? null,
+      maxValue: chart.bins[chart.bins.length - 1]?.upper ?? null,
+      missingCount: 0,
+      binWidth,
+      totalCount: capability.processSummary.n,
+      bins: chart.bins.map((bin) => ({
+        sourceColumn: identity.responseColumn,
+        binStart: bin.lower,
+        binEnd: bin.upper,
+        count: bin.count,
+      })),
+    },
+    ...mapCapabilityDensitySeries(
+      chart.overallDensity,
+      curveElementId,
+      `${computationId}:overall`,
+      "Overall Normal",
+      identity.responseColumn,
+      countScale,
+    ),
+    ...mapCapabilityDensitySeries(
+      chart.withinDensity,
+      curveElementId,
+      `${computationId}:within`,
+      "Within Normal",
+      identity.responseColumn,
+      countScale,
+    )],
+    rawPointDisposition: {
+      status: "included",
+      validRows: 0,
+      budget: 0,
+    },
+  };
 }
 
 function graphGroupValue(value: DistributionGroupValueV1): string {

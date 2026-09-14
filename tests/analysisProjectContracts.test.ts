@@ -45,6 +45,7 @@ const analysis = createAnalysisSampleDocument({
   analysisName: "DIM1 Analysis",
   createdAt: "2026-09-03T00:00:00.000Z",
 });
+analysis.definition.nestedSubgroup = { name: "Lot", type: "nominal" };
 
 const project: ProjectInfo = {
   name: "Project",
@@ -110,8 +111,16 @@ const openResult = {
 } satisfies OpenProjectResult;
 
 assert.deepEqual(saveRequest.analyses, [analysis]);
+assert.deepEqual(saveRequest.analyses[0]?.definition.nestedSubgroup, {
+  name: "Lot",
+  type: "nominal",
+});
 assert.deepEqual(saveRequest.analysisFolders, { "analysis-1": "Analyses/Sample" });
 assert.deepEqual(openResult.analyses, [analysis]);
+assert.deepEqual(openResult.analyses[0]?.definition.nestedSubgroup, {
+  name: "Lot",
+  type: "nominal",
+});
 assert.deepEqual(openResult.analysisFolders, { "analysis-1": "Analyses/Sample" });
 
 const response = { name: "DIM2", type: "continuous" as const };
