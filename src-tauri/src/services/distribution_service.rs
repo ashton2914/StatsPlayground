@@ -1811,12 +1811,6 @@ fn validate_run_request(request: &DistributionRequestV1) -> Result<(), AppError>
             "distribution.config.normalQuantileConfidenceOutOfRange".to_string(),
         ));
     }
-    if request.continuous_fit.fit_all && !request.continuous_fit.enabled_distribution_ids.is_empty()
-    {
-        return Err(AppError::InvalidParam(
-            "distribution.config.continuousFitSelectionConflict".to_string(),
-        ));
-    }
     let mut fit_ids = HashSet::new();
     for distribution in &request.continuous_fit.enabled_distribution_ids {
         if matches!(
@@ -2887,7 +2881,48 @@ mod tests {
         }
 
         #[test]
-        fn validation_rejects_duplicate_unknown_and_conflicting_selection() {
+        fn fit_all_uses_full_registry_even_with_persisted_explicit_selection() {
+            let state = AppState::new().expect("test state");
+            let result = execute_fit_request(
+                &state,
+                &[
+                    (0.5, 1, 1.0),
+                    (1.0, 1, 1.0),
+                    (2.0, 1, 1.0),
+                    (4.0, 1, 1.0),
+                    (8.0, 1, 1.0),
+                ],
+                |request, _, _| {
+                    request.continuous_fit.fit_all = true;
+                    request.continuous_fit.enabled_distribution_ids =
+                        vec![ContinuousDistributionIdV1::Normal];
+                },
+            )
+            .expect("fit all with persisted selection");
+
+            let payloads = fit_payloads(&result);
+            assert_eq!(payloads.len(), 6);
+            assert!(payloads.iter().any(|payload| {
+                payload.distribution_id == ContinuousDistributionIdV1::Normal
+                    && payload.status == DistributionFitStatusV1::Available
+            }));
+
+            let comparison_blocks = result
+                .report_blocks
+                .iter()
+                .filter(|block| block.kind == "fitComparison")
+                .collect::<Vec<_>>();
+            assert_eq!(comparison_blocks.len(), 1);
+            let comparison = comparison_blocks[0]
+                .distribution_fit_comparison_data
+                .as_ref()
+                .expect("fit comparison data");
+            assert_eq!(comparison.candidate_registry_ids.len(), 6);
+            assert_eq!(comparison.rows.len(), 6);
+        }
+
+        #[test]
+        fn validation_rejects_duplicate_and_unknown_fit_selection_but_allows_fit_all_coexistence() {
             let mut duplicate = run_request();
             duplicate.continuous_fit.enabled_distribution_ids = vec![
                 ContinuousDistributionIdV1::Normal,
@@ -2910,10 +2945,7 @@ mod tests {
             conflict.continuous_fit.fit_all = true;
             conflict.continuous_fit.enabled_distribution_ids =
                 vec![ContinuousDistributionIdV1::Normal];
-            assert!(matches!(
-                validate_run_request(&conflict),
-                Err(AppError::InvalidParam(code)) if code == "distribution.config.continuousFitSelectionConflict"
-            ));
+            assert!(validate_run_request(&conflict).is_ok());
         }
 
         #[test]
