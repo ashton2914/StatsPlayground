@@ -1631,6 +1631,23 @@ function findPrecomputedCurvePackets(
   );
 }
 
+function findPrecomputedPacketGroupKey(
+  packet: PrecomputedPointPacket | PrecomputedCurvePacket,
+  groupKeys: ReadonlySet<string>,
+): string | null {
+  if (packet.kind === "precomputedCurve") {
+    for (const candidate of [packet.group, packet.category]) {
+      if (candidate !== undefined && groupKeys.has(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  const pointGroups = new Set(packet.points.flatMap((point) => point.group ? [point.group] : []));
+  if (pointGroups.size !== 1) return null;
+  const [pointGroup] = pointGroups;
+  return pointGroup !== undefined && groupKeys.has(pointGroup) ? pointGroup : null;
+}
+
 function buildPrecomputedPointSeries(
   packet: PrecomputedPointPacket,
   seriesName: string,
@@ -5838,6 +5855,7 @@ function buildSingleOption(
   }
 
   const emittedPrecomputedSeriesIds = new Set<string>();
+  const groupedPacketKeys = new Set(groupKeys);
   groupKeys.forEach((gKey) => {
     // Skip groups hidden via the legend show/hide toggle.
     if (isHidden(gKey)) return;
@@ -5858,9 +5876,16 @@ function buildSingleOption(
           const pointPackets = findPrecomputedPointPackets(aggregatePackets, elementId);
           if (pointPackets.length > 0) {
             for (const pointPacket of pointPackets) {
+              const packetGroupKey = grouping
+                ? findPrecomputedPacketGroupKey(pointPacket, groupedPacketKeys)
+                : null;
+              if (packetGroupKey !== null && packetGroupKey !== gKey) continue;
               const emittedSeriesId = pointPacket.seriesId ?? pointPacket.elementId;
               if (emittedPrecomputedSeriesIds.has(emittedSeriesId)) continue;
-              series.push(buildPrecomputedPointSeries(pointPacket, seriesName, resolvedStyle));
+              const packetStyle = packetGroupKey === null
+                ? resolvedStyle
+                : resolvedStyleFor(packetGroupKey);
+              series.push(buildPrecomputedPointSeries(pointPacket, seriesName, packetStyle));
               emittedPrecomputedSeriesIds.add(emittedSeriesId);
             }
             return;
@@ -5870,12 +5895,19 @@ function buildSingleOption(
           const curvePackets = findPrecomputedCurvePackets(aggregatePackets, elementId);
           if (curvePackets.length > 0) {
             for (const curvePacket of curvePackets) {
+              const packetGroupKey = grouping
+                ? findPrecomputedPacketGroupKey(curvePacket, groupedPacketKeys)
+                : null;
+              if (packetGroupKey !== null && packetGroupKey !== gKey) continue;
               const emittedSeriesId = curvePacket.seriesId ?? curvePacket.elementId;
               if (emittedPrecomputedSeriesIds.has(emittedSeriesId)) continue;
+              const packetStyle = packetGroupKey === null
+                ? resolvedStyle
+                : resolvedStyleFor(packetGroupKey);
               series.push(buildPrecomputedCurveSeries(
                 curvePacket,
                 seriesName,
-                resolvedStyle,
+                packetStyle,
                 theme.categorical,
               ));
               emittedPrecomputedSeriesIds.add(emittedSeriesId);

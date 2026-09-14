@@ -216,6 +216,82 @@ function typedGroupedNumericFrame(aggregates: GraphDataFrame["aggregates"] = [])
   };
 }
 
+{
+  const curveElementId = "grouped-curves";
+  const pointElementId = "grouped-points";
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: "x", type: "continuous" },
+      y: { name: "y", type: "continuous" },
+      color: { name: "region", type: "nominal" },
+    },
+    elements: [
+      { kind: "line", enabled: true, options: { elementId: curveElementId } },
+      { kind: "points", enabled: true, options: { elementId: pointElementId } },
+    ],
+    styles: {
+      East: {
+        line: { color: "#aa1100" },
+        point: { color: "#cc3300" },
+      },
+      West: {
+        line: { color: "#007744" },
+        point: { color: "#009966" },
+      },
+    },
+  };
+  const frame = typedGroupedNumericFrame([
+    ...["East", "West"].map((group, index) => ({
+      kind: "precomputedCurve" as const,
+      elementId: curveElementId,
+      seriesId: `${group.toLowerCase()}:reference`,
+      group,
+      category: group,
+      interpolation: "linear" as const,
+      points: [{ x: 0, y: index + 1 }, { x: 1, y: index + 1 }],
+    })),
+    {
+      kind: "precomputedCurve",
+      elementId: curveElementId,
+      seriesId: "east:fit:normal",
+      group: "East",
+      category: "East",
+      interpolation: "linear",
+      points: [{ x: 0, y: 3 }, { x: 1, y: 3 }],
+    },
+    {
+      kind: "precomputedCurve",
+      elementId: curveElementId,
+      seriesId: "west:fit:cauchy",
+      group: "West",
+      category: "West",
+      interpolation: "linear",
+      points: [{ x: 0, y: 4 }, { x: 1, y: 4 }],
+    },
+    ...["East", "West"].map((group, index) => ({
+      kind: "precomputedPoints" as const,
+      elementId: pointElementId,
+      seriesId: `${group.toLowerCase()}:points`,
+      points: [{ x: index, y: index + 1, group }],
+    })),
+  ]);
+
+  const option = buildGraph(spec, baseData(["x", "y", "region"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const emitted = panelSeries(option);
+  const lineColor = (seriesId: string): string | undefined =>
+    (emitted.find((entry) => entry.id === seriesId)?.lineStyle as { color?: string } | undefined)?.color;
+  const pointColor = (seriesId: string): string | undefined =>
+    (emitted.find((entry) => entry.id === seriesId)?.itemStyle as { color?: string } | undefined)?.color;
+
+  assert.equal(lineColor("east:reference"), "#aa1100");
+  assert.equal(lineColor("west:reference"), "#007744");
+  assert.equal(pointColor("east:points"), "#cc3300");
+  assert.equal(pointColor("west:points"), "#009966");
+  assert.equal(lineColor("east:fit:normal"), distributionFitColor("normal", theme.categorical));
+  assert.equal(lineColor("west:fit:cauchy"), distributionFitColor("cauchy", theme.categorical));
+}
+
 function frameScatterValues(panel: { option: unknown }): Array<{
   value: [number | string, number | string];
   __pick?: { rowId: number; colName: string };
