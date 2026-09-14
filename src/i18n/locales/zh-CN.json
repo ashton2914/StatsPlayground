@@ -1082,6 +1082,7 @@
     "cantDeleteAllCols": "不能删除所有列，至少保留一列",
     "clipboardWriteFail": "无法写入剪贴板",
     "clipboardReadFail": "无法读取剪贴板",
+    "copyDataChanged": "复制期间表格已发生变化，请重新复制。",
     "pasteOverwriteConfirm": "粘贴区域存在已有数据，是否覆盖？",
     "pasteTypeIncompatible": "列 {{letter}}（{{name}}）的类型为 {{existing}}，与粘贴数据的类型 {{detected}} 不兼容",
     "dimensionsFiltered": "{{shown}} / {{total}} 行 × {{cols}} 列",

@@ -1207,6 +1207,7 @@
     "cantDeleteAllCols": "Can't delete all columns; at least one must remain",
     "clipboardWriteFail": "Failed to write clipboard",
     "clipboardReadFail": "Failed to read clipboard",
+    "copyDataChanged": "The table changed while copying. Please copy again.",
     "pasteOverwriteConfirm": "Existing data will be overwritten. Continue?",
     "pasteTypeIncompatible": "Column {{letter}} (\"{{name}}\") has type {{existing}}, incompatible with pasted type {{detected}}",
     "dimensionsFiltered": "{{shown}} / {{total}} rows × {{cols}} cols",
