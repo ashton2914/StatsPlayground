@@ -142,7 +142,7 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
           })}
         </AnalysisText>
       )}
-      {/* Convergence and compatibility messages are intentionally hidden for successful fits */}
+      
     </AnalysisStack>
   );
 }

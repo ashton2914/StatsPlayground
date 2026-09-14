@@ -455,7 +455,7 @@
     "statistics": {
       "n": "N", "nMissing": "缺失數", "mean": "平均值", "median": "中位數", "mode": "眾數",
       "noUniqueMode": "無唯一眾數", "minimum": "最小值", "maximum": "最大值", "stdDev": "標準差",
-      "stdError": "平均值標準誤", "meanCiLower": "平均值信賴下限", "meanCiUpper": "平均值信賴上限",
+      "stdError": "標準誤", "meanCiLower": "平均值 95% 下限", "meanCiUpper": "平均值 95% 上限",
       "range": "全距", "iqr": "四分位距", "mad": "中位絕對偏差"
     },
     "compatibility": {
