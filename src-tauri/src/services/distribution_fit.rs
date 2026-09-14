@@ -421,6 +421,8 @@ fn cauchy_standard_errors(
     let steps = [f64::EPSILON.sqrt().sqrt(); 2];
     let objective = CauchyObjectiveV1 {
         observations: &standardized,
+        center: 0.0,
+        reference_scale: 1.0,
     };
     let evaluate = |parameters: [f64; 2]| {
         objective
@@ -629,25 +631,13 @@ impl CauchyFitV1 {
         if !reference_scale.is_finite() || reference_scale <= 0.0 {
             return Err(domain_failure(CONSTANT_SAMPLE_REASON));
         }
-        let normalized = observations
-            .iter()
-            .map(|observation| {
-                let difference = observation.value - center;
-                FitObservationV1 {
-                    value: if difference.is_finite() {
-                        difference / reference_scale
-                    } else {
-                        observation.value / reference_scale - center / reference_scale
-                    },
-                    ..*observation
-                }
-            })
-            .collect::<Vec<_>>();
         let objective = CauchyObjectiveV1 {
-            observations: &normalized,
+            observations,
+            center,
+            reference_scale,
         };
         let optimizer = NelderMead2dOptimizerV1;
-        let starts = cauchy_initial_parameters(&normalized)?;
+        let starts = cauchy_initial_parameters(observations, center, reference_scale)?;
         let mut best: Option<(usize, FitOptimizationProblemV1<'_>, FitOptimizationResultV1)> = None;
         let mut reached_iteration_limit = false;
 
@@ -688,8 +678,14 @@ impl CauchyFitV1 {
         })?;
         let mut convergence = optimized_convergence(&optimizer, &problem, &optimization)?;
         let location = optimization.unconstrained_parameters[0].mul_add(reference_scale, center);
-        let scale = reference_scale * positive_transform(optimization.unconstrained_parameters[1])?;
-        let original_objective = CauchyObjectiveV1 { observations }.evaluate(&[location, scale.ln()])?;
+        let scale =
+            positive_transform(reference_scale.ln() + optimization.unconstrained_parameters[1])?;
+        let original_objective = CauchyObjectiveV1 {
+            observations,
+            center: 0.0,
+            reference_scale: 1.0,
+        }
+        .evaluate(&[location, scale.ln()])?;
         let log_likelihood = finite_log_likelihood_from_objective(original_objective)?;
         convergence.objective = Some(original_objective);
 
@@ -1385,6 +1381,8 @@ struct WeibullObjectiveV1<'a> {
 #[derive(Debug, Clone, Copy)]
 struct CauchyObjectiveV1<'a> {
     observations: &'a [FitObservationV1],
+    center: f64,
+    reference_scale: f64,
 }
 
 fn cauchy_log_kernel(value: f64, location: f64, log_scale: f64) -> f64 {
@@ -1407,13 +1405,14 @@ impl FitObjective for CauchyObjectiveV1<'_> {
         if unconstrained_parameters.len() != 2 {
             return Err(input_failure(OPTIMIZER_PARAMETERS_INVALID_REASON));
         }
-        let location = unconstrained_parameters[0];
-        let log_scale = unconstrained_parameters[1];
+        let location = unconstrained_parameters[0].mul_add(self.reference_scale, self.center);
+        let relative_log_scale = unconstrained_parameters[1];
+        let log_scale = self.reference_scale.ln() + relative_log_scale;
         if !location.is_finite() || !log_scale.is_finite() {
             return Err(objective_failure(LOG_LIKELIHOOD_INVALID_REASON));
         }
         positive_transform(log_scale)?;
-        let constant = std::f64::consts::PI.ln() + log_scale;
+        let constant = std::f64::consts::PI.ln() + relative_log_scale;
         let mut objective = 0.0;
         for observation in self.observations {
             let term = constant + cauchy_log_kernel(observation.value, location, log_scale);
@@ -1951,21 +1950,28 @@ fn weighted_quantile(
 
 fn cauchy_initial_parameters(
     observations: &[FitObservationV1],
+    center: f64,
+    reference_scale: f64,
 ) -> Result<Vec<Vec<f64>>, FitFailureV1> {
     let q1 = weighted_quantile(observations, 0.25)?;
-    let median = weighted_quantile(observations, 0.5)?;
     let q3 = weighted_quantile(observations, 0.75)?;
-    let scale = (q3 - q1) / 2.0;
-    if !scale.is_finite() || scale <= 0.0 {
+    if !reference_scale.is_finite() || reference_scale <= 0.0 {
         return Err(domain_failure(CONSTANT_SAMPLE_REASON));
     }
-    let log_scale = scale.ln();
+    let relative_location = |value: f64| {
+        let difference = value - center;
+        if difference.is_finite() {
+            difference / reference_scale
+        } else {
+            value / reference_scale - center / reference_scale
+        }
+    };
     Ok(vec![
-        vec![median, log_scale],
-        vec![q1, log_scale],
-        vec![q3, log_scale],
-        vec![median, (scale * 0.5).ln()],
-        vec![median, (scale * 2.0).ln()],
+        vec![0.0, 0.0],
+        vec![relative_location(q1), 0.0],
+        vec![relative_location(q3), 0.0],
+        vec![0.0, 0.5_f64.ln()],
+        vec![0.0, 2.0_f64.ln()],
     ])
 }
 
@@ -3598,10 +3604,53 @@ mod tests {
         use super::*;
 
         #[test]
+        fn cauchy_fit_finite_heavy_tail_survives_normalization_overflow() {
+            let values = [-1.0, -0.5, 0.0, 0.25, 0.5, 1e308];
+            let observations = values.map(|value| observation(value, 1.0, 1.0));
+            let estimate = CauchyFitV1.fit(&observations).expect("finite heavy-tail fit");
+
+            assert_eq!(estimate.distribution_id, ContinuousDistributionIdV1::Cauchy);
+            assert!(estimate.log_likelihood.is_finite());
+            assert!(estimate_parameter(&estimate, "location").is_finite());
+            let scale = estimate_parameter(&estimate, "scale");
+            assert!(scale.is_finite() && scale > 0.0);
+            assert_eq!(estimate.convergence.objective, Some(-estimate.log_likelihood));
+            assert_eq!(estimate, CauchyFitV1.fit(&observations).expect("repeat fit"));
+            for value in values.into_iter().chain([1e150, -1e150]) {
+                let density = CauchyFitV1.pdf(&estimate, value).expect("finite tail pdf");
+                assert!(density.is_finite() && density >= 0.0);
+                if value.abs() <= 1e150 {
+                    assert!(density > 0.0, "representable density at {value}");
+                }
+            }
+        }
+
+        #[test]
+        fn cauchy_fit_candidate_transform_avoids_intermediate_overflow() {
+            for (value, center, reference_scale, parameters, expected_kernel) in [
+                (-1e308, -1e308, 1e308, [2.0, 0.0], 5.0_f64.ln()),
+                (0.0, 0.0, 1e-100, [0.0, 800.0], 0.0),
+            ] {
+                let observations = [observation(value, 1.0, 1.0)];
+                let objective = super::super::CauchyObjectiveV1 {
+                    observations: &observations,
+                    center,
+                    reference_scale,
+                };
+                let actual = objective.evaluate(&parameters).expect("finite candidate objective");
+                let expected = std::f64::consts::PI.ln() + parameters[1] + expected_kernel;
+                assert!(actual.is_finite());
+                assert!((actual - expected).abs() < 1e-10);
+            }
+        }
+
+        #[test]
         fn cauchy_fit_extreme_residual_objective_remains_finite() {
             let observations = vec![observation(1e200, 2.0, 3.0)];
             let objective = super::super::CauchyObjectiveV1 {
                 observations: &observations,
+                center: 0.0,
+                reference_scale: 1.0,
             };
             let actual = objective
                 .evaluate(&[0.0, 0.0])
@@ -3698,9 +3747,11 @@ mod tests {
                 [-20.0, -1.0, 0.0, 0.5, 1.0, 2.0].map(|value| observation(value, 1.0, 1.0));
             let objective = super::super::CauchyObjectiveV1 {
                 observations: &observations,
+                center: 0.0,
+                reference_scale: 1.0,
             };
             let optimizer = super::super::NelderMead2dOptimizerV1;
-            let candidates = super::super::cauchy_initial_parameters(&observations)
+            let candidates = super::super::cauchy_initial_parameters(&observations, 0.0, 1.0)
                 .unwrap()
                 .into_iter()
                 .map(|initial_parameters| {
