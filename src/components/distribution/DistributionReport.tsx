@@ -181,21 +181,19 @@ function SummaryDataTables({
 }) {
   const { t } = useTranslation();
   return (
-    <AnalysisStack>
-      <SummaryTable title={t("distribution.report.location")} rows={[
-        ["n", summaryData.n], ["nMissing", summaryData.nMissing],
-        ["mean", summaryData.mean], ["median", summaryData.median],
-        ["mode", summaryData.modeIsUnique
-          ? summaryData.primaryMode
-          : t("distribution.statistics.noUniqueMode")], ["minimum", summaryData.minimum],
-        ["maximum", summaryData.maximum],
-      ]} />
-      <SummaryTable title={t("distribution.report.variation")} rows={[
-        ["stdDev", summaryData.stdDev], ["stdError", summaryData.stdError],
-        ["meanCiLower", summaryData.meanCiLower], ["meanCiUpper", summaryData.meanCiUpper],
-        ["range", summaryData.range], ["iqr", summaryData.iqr], ["mad", summaryData.mad],
-      ]} />
-    </AnalysisStack>
+    <SummaryTable
+      title={t("distribution.report.summaryStatistics")}
+      rows={[
+        ["n", summaryData.n],
+        ["nMissing", summaryData.nMissing],
+        ["mean", summaryData.mean],
+        ["median", summaryData.median],
+        ["stdDev", summaryData.stdDev],
+        ["stdError", summaryData.stdError],
+        ["meanCiLower", summaryData.meanCiLower],
+        ["meanCiUpper", summaryData.meanCiUpper],
+      ]}
+    />
   );
 }
 

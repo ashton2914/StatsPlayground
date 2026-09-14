@@ -448,7 +448,7 @@
     "report": {
       "title": "統計報告", "loading": "正在載入報告...", "overview": "分佈概覽", "outlierBoxPlot": "離群值箱形圖",
       "ecdf": "經驗累積分佈", "normalQuantilePlot": "常態分位數圖", "overall": "整體", "missing": "缺失",
-      "quantiles": "分位數", "probability": "機率", "label": "標籤", "value": "值", "summary": "彙總統計",
+      "quantiles": "分位數", "probability": "機率", "label": "標籤", "value": "值", "summary": "彙總統計", "summaryStatistics": "彙總統計",
       "location": "位置", "variation": "變異", "unavailableReason": "無法使用：{{reason}}",
       "processCapability": "製程能力", "continuousFit": "連續分佈配適", "fitComparison": "配適比較"
     },

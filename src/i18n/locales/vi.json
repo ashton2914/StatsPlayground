@@ -450,7 +450,7 @@
       "outlierBoxPlot": "Biểu đồ hộp ngoại lệ", "ecdf": "Hàm phân phối tích lũy thực nghiệm",
       "normalQuantilePlot": "Biểu đồ phân vị chuẩn", "overall": "Tổng thể", "missing": "Thiếu",
       "quantiles": "Phân vị", "probability": "Xác suất", "label": "Nhãn", "value": "Giá trị",
-      "summary": "Thống kê tóm tắt", "location": "Vị trí", "variation": "Biến thiên",
+      "summary": "Thống kê tóm tắt", "summaryStatistics": "Thống kê tóm tắt", "location": "Vị trí", "variation": "Biến thiên",
       "unavailableReason": "Không khả dụng: {{reason}}", "processCapability": "Năng lực quá trình",
       "continuousFit": "Khớp phân phối liên tục", "fitComparison": "So sánh độ khớp"
     },

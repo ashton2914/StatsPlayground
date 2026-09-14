@@ -81,8 +81,8 @@ test("renders available Continuous Fit parameter estimates and JMP measures with
   await expect(component.getByRole("table", { name: "Normal Parameter Estimates" })).toBeVisible();
   const measures = component.getByRole("table", { name: "Normal measures" });
   await expect(measures).toBeVisible();
-  await expect(component.getByText("Compatibility pending")).toBeVisible();
-  await expect(component.getByText(/Convergence: Converged/)).toBeVisible();
+  await expect(component.getByText("Compatibility pending")).toHaveCount(0);
+  await expect(component.getByText(/Convergence: Converged/)).toHaveCount(0);
   await expect(component.getByRole("columnheader", { name: "Estimate" })).toBeVisible();
   await expect(component.getByRole("columnheader", { name: "Std Error" })).toBeVisible();
   await expect(component.getByRole("columnheader", { name: "Lower 95%" })).toBeVisible();

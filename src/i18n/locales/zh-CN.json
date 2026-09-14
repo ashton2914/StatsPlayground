@@ -458,7 +458,7 @@
       "title": "统计报告", "loading": "正在加载报告...", "overview": "分布概览",
       "outlierBoxPlot": "异常值箱线图", "ecdf": "经验累积分布", "normalQuantilePlot": "正态分位数图",
       "overall": "整体", "missing": "缺失", "quantiles": "分位数", "probability": "概率",
-      "label": "标签", "value": "值", "summary": "汇总统计", "location": "位置",
+      "label": "标签", "value": "值", "summary": "汇总统计", "summaryStatistics": "汇总统计", "location": "位置",
       "variation": "变异", "unavailableReason": "不可用: {{reason}}", "processCapability": "过程能力",
       "continuousFit": "连续分布拟合", "fitComparison": "拟合比较"
     },

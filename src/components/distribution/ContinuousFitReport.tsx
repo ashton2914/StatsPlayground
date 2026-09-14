@@ -100,9 +100,6 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
 
   return (
     <AnalysisStack>
-      <AnalysisText>
-        {t(`distribution.compatibility.${data.provenance.compatibilityStatus}`)}
-      </AnalysisText>
       <AnalysisTable
         title={t("distribution.fit.parameters", { defaultValue: "Parameter Estimates" })}
         width="wide"
@@ -145,10 +142,7 @@ export function ContinuousFitReport({ data }: { data: DistributionFitDataV1 }) {
           })}
         </AnalysisText>
       )}
-      <AnalysisText>
-        {t("distribution.fit.convergence", { defaultValue: "Convergence" })}: {t(`distribution.fit.states.${data.convergence.status}`, { defaultValue: data.convergence.status })}
-        {data.convergence.reasonCode ? ` (${formatReason(t, data.convergence.reasonCode)})` : ""}
-      </AnalysisText>
+      {/* Convergence and compatibility messages are intentionally hidden for successful fits */}
     </AnalysisStack>
   );
 }

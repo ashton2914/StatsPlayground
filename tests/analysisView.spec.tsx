@@ -178,6 +178,15 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect(responseFrame.getByRole("button", { name: "Distribution", exact: true })).toHaveCount(1);
   await expect(responseFrame.getByRole("button", { name: "Overall", exact: true })).toHaveCount(1);
   await expect(responseFrame.locator(".analysis-ui-table")).toHaveCount(3);
+  const summary = component.getByRole("table", { name: "Summary Statistics" });
+  await expect(summary).toBeVisible();
+  await expect(summary.locator("tbody tr")).toHaveCount(8);
+  for (const label of ["N", "N Missing", "Mean", "Median", "Std Dev", "Std Error", "Lower 95% Mean", "Upper 95% Mean"]) {
+    await expect(summary.getByRole("rowheader", { name: label, exact: true })).toBeVisible();
+  }
+  for (const removed of ["Mode", "Minimum", "Maximum", "Range", "Interquartile Range", "Median Absolute Deviation"]) {
+    await expect(summary.getByRole("rowheader", { name: removed, exact: true })).toHaveCount(0);
+  }
   await expect(firstValueCell).toBeVisible();
   await expect(originalMedianRow).toBeVisible();
   await expect(component.locator(".report-editor")).toHaveCount(0);
