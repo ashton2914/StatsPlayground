@@ -1213,6 +1213,37 @@ mod tests {
     }
 
     #[test]
+    fn continuous_fit_config_deserializes_cauchy_fit_all_and_disabled_diagnostics() {
+        let value = json!({
+            "enabledDistributionIds": ["cauchy"],
+            "fitAll": true,
+            "diagnostics": {
+                "goodnessOfFit": false,
+                "qqPlot": false,
+                "cdfPlot": false,
+                "ppPlot": false
+            }
+        });
+
+        let config: DistributionContinuousFitConfigV1 =
+            serde_json::from_value(value.clone()).expect("deserialize continuous fit config");
+
+        assert_eq!(
+            config.enabled_distribution_ids,
+            vec![ContinuousDistributionIdV1::Cauchy]
+        );
+        assert!(config.fit_all);
+        assert!(!config.diagnostics.goodness_of_fit);
+        assert!(!config.diagnostics.qq_plot);
+        assert!(!config.diagnostics.cdf_plot);
+        assert!(!config.diagnostics.pp_plot);
+        assert_eq!(
+            serde_json::to_value(config).expect("serialize continuous fit config"),
+            value
+        );
+    }
+
+    #[test]
     fn distribution_report_response_serializes_exact_frames_and_no_lifecycle_fields() {
         let response = DistributionReportResponse {
             dataset_id: "dataset-1".to_string(),
