@@ -64,6 +64,7 @@ export function toDistributionEditorItem(document: DistributionAnalysisDocument)
     weight: structuredClone(document.definition.weight),
     frequency: structuredClone(document.definition.frequency),
     by: structuredClone(document.definition.by),
+    nestedSubgroup: structuredClone(document.definition.nestedSubgroup ?? null),
     analysis: normalizeDistributionAnalysisForFrontend(document.definition.analysis),
     graphs: structuredClone(document.definition.graphs),
     createdAt: document.createdAt,
@@ -81,6 +82,7 @@ export function createDistributionAnalysisPatch(
     weight: structuredClone(submitted.weight),
     frequency: structuredClone(submitted.frequency),
     by: structuredClone(submitted.by),
+    nestedSubgroup: structuredClone(submitted.nestedSubgroup ?? null),
     analysis: normalizeDistributionAnalysisForFrontend(submitted.analysis),
     graphs: structuredClone(submitted.graphs),
   };

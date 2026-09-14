@@ -426,6 +426,8 @@ pub struct DistributionAnalysisConfigV1 {
     pub weight_column_id: Option<String>,
     pub frequency_column_id: Option<String>,
     pub by_column_ids: Vec<String>,
+    #[serde(default)]
+    pub nested_subgroup_column_id: Option<String>,
     pub filter_expr: FilterExprV1,
     pub confidence_level: f64,
     pub histograms_only: bool,
@@ -504,6 +506,8 @@ pub struct DistributionRequestV1 {
     pub weight_column_id: Option<String>,
     pub frequency_column_id: Option<String>,
     pub by_column_ids: Vec<String>,
+    #[serde(default)]
+    pub nested_subgroup_column_id: Option<String>,
     pub filter_expr: FilterExprV1,
     pub confidence_level: f64,
     pub histograms_only: bool,
@@ -537,6 +541,8 @@ pub struct DistributionRequest {
     pub weight_column: Option<String>,
     pub freq_column: Option<String>,
     pub by_columns: Vec<String>,
+    #[serde(default)]
+    pub nested_subgroup_column: Option<String>,
     pub confidence_level: f64,
     pub spec_limits: HashMap<String, SpecLimitsOverride>,
     pub fit_distributions: Vec<DistributionFitKind>,
@@ -897,7 +903,6 @@ pub struct ProcessCapabilityDensitySeriesV1 {
 pub struct ProcessCapabilityChartProvenanceV1 {
     pub capability_method: String,
     pub normal_density_method: String,
-    #[serde(skip_serializing)]
     pub computation_id: String,
     pub spec_fingerprint: String,
 }
@@ -914,6 +919,18 @@ pub struct ProcessCapabilityChartDataV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct ProcessCapabilityNestedSubgroupV1 {
+    pub method_version: String,
+    pub column_id: String,
+    pub subgroup_count: u64,
+    pub moving_range_count: u64,
+    pub adjacent_moving_range_pair_count: u64,
+    pub missing_label_count: u64,
+    pub singleton_subgroup_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessCapabilityDataV1 {
     pub specification: ProcessCapabilitySpecificationV1,
     pub process_summary: ProcessCapabilitySummaryV1,
@@ -922,6 +939,8 @@ pub struct ProcessCapabilityDataV1 {
     pub nonconformance: ProcessCapabilityNonconformanceV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chart_data: Option<ProcessCapabilityChartDataV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_subgroup: Option<ProcessCapabilityNestedSubgroupV1>,
     pub warnings: Vec<String>,
 }
 
@@ -1186,6 +1205,7 @@ mod tests {
             "weightColumn": "weight",
             "freqColumn": "frequency",
             "byColumns": ["region", "batch"],
+            "nestedSubgroupColumn": null,
             "confidenceLevel": 0.95,
             "specLimits": {
                 "height": { "lsl": 1.0, "target": 2.0, "usl": 3.0 }
@@ -1200,6 +1220,23 @@ mod tests {
         assert_eq!(
             serde_json::to_value(request).expect("serialize request"),
             value
+        );
+    }
+
+    #[test]
+    fn capability_chart_provenance_serializes_computation_id() {
+        let provenance = ProcessCapabilityChartProvenanceV1 {
+            capability_method: "normalIndividualsMovingRange.v1".to_string(),
+            normal_density_method: "normalPdf.v1".to_string(),
+            computation_id: "capability-1".to_string(),
+            spec_fingerprint: "spec-1".to_string(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(provenance)
+                .expect("serialize provenance")
+                .get("computationId"),
+            Some(&json!("capability-1")),
         );
     }
 
@@ -1300,6 +1337,7 @@ mod tests {
             weight_column_id: Some("sample-weight-id".to_string()),
             frequency_column_id: None,
             by_column_ids: vec!["region-id".to_string()],
+            nested_subgroup_column_id: None,
             filter_expr: FilterExprV1::And {
                 exprs: vec![FilterExprV1::CategorySet {
                     field_id: "region".to_string(),
@@ -1408,6 +1446,7 @@ mod tests {
             weight_column_id: Some("col-weight".to_string()),
             frequency_column_id: Some("col-freq".to_string()),
             by_column_ids: vec!["col-date".to_string()],
+            nested_subgroup_column_id: None,
             filter_expr: FilterExprV1::IsNull {
                 field_id: "col-group".to_string(),
                 negate: true,

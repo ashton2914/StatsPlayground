@@ -90,6 +90,7 @@ export function distributionRequestFingerprint(item: DistributionItem): string {
     weight: item.weight,
     frequency: item.frequency,
     by: item.by,
+    nestedSubgroup: item.nestedSubgroup,
     analysis: normalizeDistributionAnalysisForRequest(item.analysis),
   }));
 }
@@ -105,6 +106,7 @@ export function createDistributionRequest(
     weightColumn: item.weight?.name ?? null,
     freqColumn: item.frequency?.name ?? null,
     byColumns: item.by.map((field) => field.name),
+    nestedSubgroupColumn: item.nestedSubgroup?.name ?? null,
     confidenceLevel: item.analysis.confidenceLevel,
     specLimits: {},
     fitDistributions: [...item.analysis.fitDistributions],

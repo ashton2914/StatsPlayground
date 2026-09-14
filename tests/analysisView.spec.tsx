@@ -501,14 +501,20 @@ test("fits the painted Distribution graph without an internal vertical scroller"
   const component = await mount(<AnalysisGraphVisualHarness />);
   const frames = component.locator(".analysis-ui-graph");
   const compositeCanvas = component.locator("[data-graph-role='distributionComposite'] canvas");
+  const capabilityCanvas = component.locator("[data-graph-role='processCapability'] canvas");
 
   await expect.poll(() => browserErrors, { message: "AnalysisView must mount without browser errors" }).toEqual([]);
   await expect(page.getByTestId("visual-error")).toHaveCount(0);
-  await expect(frames).toHaveCount(1);
+  await expect(frames).toHaveCount(2);
   await expect(compositeCanvas).toHaveCount(1);
+  await expect(capabilityCanvas).toHaveCount(1);
   await expect.poll(() => paintedPixelCount(compositeCanvas)).toBeGreaterThan(1_000);
-  await expect(frames).toHaveCSS("overflow-y", "visible");
-  await expect(component.locator(".gc-graph")).toHaveCSS("overflow-y", "visible");
+  await expect.poll(() => paintedPixelCount(capabilityCanvas)).toBeGreaterThan(1_000);
+  await expect.poll(() => frames.evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).overflowY)))
+    .toEqual(["visible", "visible"]);
+  await expect.poll(() => component.locator(".gc-graph")
+    .evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).overflowY)))
+    .toEqual(["visible", "visible"]);
   const verticalMetrics = await component
     .locator(".analysis-graph-distribution, [data-graph-role='distributionComposite'], .gc-graph")
     .evaluateAll((nodes) => nodes.map((node) => ({
@@ -531,8 +537,10 @@ test("fits the painted Distribution graph without an internal vertical scroller"
   await page.mouse.move(0, 0);
   await page.screenshot({ path: "test-results/analysis-distribution-fit-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 480, height: 900 });
-  await expect(frames).toHaveCount(1);
-  await expect(component.locator(".gc-graph")).toHaveCSS("overflow-y", "visible");
+  await expect(frames).toHaveCount(2);
+  await expect.poll(() => component.locator(".gc-graph")
+    .evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).overflowY)))
+    .toEqual(["visible", "visible"]);
   await page.screenshot({ path: "test-results/analysis-distribution-fit-mobile.png", fullPage: true });
 });
 

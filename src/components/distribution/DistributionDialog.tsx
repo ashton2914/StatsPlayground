@@ -46,6 +46,7 @@ function stateFromItem(item: DistributionItem): DistributionDialogState {
     weight: structuredClone(item.weight),
     frequency: structuredClone(item.frequency),
     by: structuredClone(item.by),
+    nestedSubgroup: structuredClone(item.nestedSubgroup ?? null),
     analysis: structuredClone(item.analysis),
     validationError: null,
   };
@@ -155,6 +156,7 @@ export function DistributionDialog({
         weight: state.weight,
         frequency: state.frequency,
         by: state.by,
+        nestedSubgroup: state.nestedSubgroup,
         columns,
         analysis: {
           ...state.analysis,
@@ -247,6 +249,7 @@ export function DistributionDialog({
                         <Button size="small" disabled={column.field.type !== "continuous"} onClick={() => assign("weight", column.field.name)}>{t("distribution.roles.weight")}</Button>
                         <Button size="small" disabled={!column.integerCompatible} onClick={() => assign("frequency", column.field.name)}>{t("distribution.frequencyShort")}</Button>
                         <Button size="small" disabled={column.field.type !== "nominal" && column.field.type !== "ordinal"} onClick={() => assign("by", column.field.name)}>By</Button>
+                        <Button size="small" disabled={column.field.type !== "nominal" && column.field.type !== "ordinal"} onClick={() => assign("nestedSubgroup", column.field.name)}>{t("distribution.nestedSubgroupShort")}</Button>
                       </div>
                     </div>
                   ))}
@@ -258,6 +261,7 @@ export function DistributionDialog({
                 <DistributionRoleZone role="weight" fields={state.weight ? [state.weight] : []} onAssign={(name) => assign("weight", name)} onRemove={() => setState((current) => clearDistributionField(current, "weight"))} />
                 <DistributionRoleZone role="frequency" fields={state.frequency ? [state.frequency] : []} onAssign={(name) => assign("frequency", name)} onRemove={() => setState((current) => clearDistributionField(current, "frequency"))} />
                 <DistributionRoleZone role="by" fields={state.by} onAssign={(name) => assign("by", name)} onRemove={(name) => setState((current) => clearDistributionField(current, "by", name))} />
+                <DistributionRoleZone role="nestedSubgroup" fields={state.nestedSubgroup ? [state.nestedSubgroup] : []} onAssign={(name) => assign("nestedSubgroup", name)} onRemove={() => setState((current) => clearDistributionField(current, "nestedSubgroup"))} />
               </main>
             </div>
 

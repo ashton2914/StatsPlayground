@@ -92,6 +92,7 @@ export interface DistributionItem {
   weight: FieldRef | null;
   frequency: FieldRef | null;
   by: FieldRef[];
+  nestedSubgroup: FieldRef | null;
   analysis: DistributionAnalysisConfig;
   graphs: {
     overview: EmbeddedGraphConfig;
@@ -109,6 +110,7 @@ export interface DistributionRequest {
   weightColumn: string | null;
   freqColumn: string | null;
   byColumns: string[];
+  nestedSubgroupColumn: string | null;
   confidenceLevel: number;
   specLimits: Record<string, SpecLimitsOverride>;
   fitDistributions: DistributionFitKind[];
@@ -262,6 +264,7 @@ export interface DistributionRequestV1 {
   weightColumnId: string | null;
   frequencyColumnId: string | null;
   byColumnIds: string[];
+  nestedSubgroupColumnId: string | null;
   filterExpr: FilterExprV1;
   confidenceLevel: number;
   histogramsOnly: boolean;
@@ -461,6 +464,15 @@ export interface ProcessCapabilityDataV1 {
   };
   nonconformance: ProcessCapabilityNonconformanceV1;
   chartData?: ProcessCapabilityChartDataV1;
+  nestedSubgroup?: {
+    methodVersion: "2.0.0";
+    columnId: string;
+    subgroupCount: number;
+    movingRangeCount: number;
+    adjacentMovingRangePairCount: number;
+    missingLabelCount: number;
+    singletonSubgroupCount: number;
+  };
   warnings: string[];
 }
 
@@ -765,6 +777,7 @@ export interface DistributionAnalysisConfigV1 {
   weightColumnId: string | null;
   frequencyColumnId: string | null;
   byColumnIds: string[];
+  nestedSubgroupColumnId: string | null;
   filterExpr: FilterExprV1;
   confidenceLevel: number;
   histogramsOnly: boolean;

@@ -93,6 +93,7 @@ function toDistributionItem(document: DistributionAnalysisDocument): Distributio
     weight: document.definition.weight,
     frequency: document.definition.frequency,
     by: document.definition.by,
+    nestedSubgroup: document.definition.nestedSubgroup,
     analysis: normalizeDistributionAnalysisForFrontend(document.definition.analysis),
     graphs: document.definition.graphs,
     createdAt: document.createdAt,
@@ -178,6 +179,7 @@ const distributionExecutor = {
     weight: document.definition.weight,
     frequency: document.definition.frequency,
     by: document.definition.by,
+    nestedSubgroup: document.definition.nestedSubgroup,
     analysis: normalizeDistributionAnalysisForFrontend(document.definition.analysis),
   })),
   requestIdentity: (request) => request == null
