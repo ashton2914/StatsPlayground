@@ -110,6 +110,19 @@ test("uses model-specific parameter terminology without fixed location rows", as
     {
       data: {
         ...fit,
+        fitId: "fit-cauchy",
+        distributionId: "cauchy",
+        parameterizationId: "cauchy.locationScale.v1",
+        parameters: [
+          parameter("location", 1),
+          parameter("scale", 2),
+        ],
+      },
+      expectedRows: ["Location", "Scale"],
+    },
+    {
+      data: {
+        ...fit,
         fitId: "fit-lognormal",
         distributionId: "lognormal",
         parameterizationId: "lognormal.logLocationLogScale.v1",

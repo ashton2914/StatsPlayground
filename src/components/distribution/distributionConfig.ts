@@ -291,7 +291,7 @@ export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[]
     methodId: "fit.cauchy.locationScale.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "cauchy.locationScale.v1",
-    implemented: false,
+    implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
   {

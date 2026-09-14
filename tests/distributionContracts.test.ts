@@ -198,7 +198,7 @@ const fitCapabilities = DISTRIBUTION_FIT_CAPABILITY_REGISTRY.filter(
 );
 assert.deepEqual(
   fitCapabilities.map((capability) => capability.distributionId),
-  ["normal", "lognormal", "exponential", "gamma", "weibull"],
+  ["normal", "cauchy", "lognormal", "exponential", "gamma", "weibull"],
 );
 assert.equal(
   fitCapabilities.every((capability) => capability.compatibilityStatus === "compatibilityPending"),
