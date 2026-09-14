@@ -65,17 +65,12 @@ function createSampleDistributionItem(input: {
       name: SAMPLE_COLUMN,
       sqlType: "DOUBLE",
       integerCompatible: false,
+      colIndex: 0,
       field: response,
     }],
     analysis: {
       confidenceLevel: 0.95,
-      specLimits: {
-        [SAMPLE_COLUMN]: {
-          lsl: 55,
-          target: 100,
-          usl: 145,
-        },
-      },
+      specLimits: {},
       fitDistributions: ["normal"],
     },
     createdAt: input.createdAt,

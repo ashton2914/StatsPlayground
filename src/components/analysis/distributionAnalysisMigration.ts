@@ -15,6 +15,40 @@ export interface DistributionAnalysisMigrationResult {
   migratedCount: number;
 }
 
+function isDistributionAnalysisDocument(
+  document: AnalysisDocument,
+): document is Extract<AnalysisDocument, { analysisKind: "distribution" }> {
+  return document.analysisKind === "distribution" && document.definition.kind === "distribution";
+}
+
+function hasPersistedSpecLimitOverrides(document: AnalysisDocument): document is Extract<AnalysisDocument, { analysisKind: "distribution" }> {
+  return isDistributionAnalysisDocument(document)
+    && Object.keys(document.definition.analysis.specLimits).length > 0;
+}
+
+function normalizePersistedDistributionAnalysisDocument(document: AnalysisDocument): AnalysisDocument {
+  if (!hasPersistedSpecLimitOverrides(document)) return document;
+  return {
+    ...document,
+    definition: {
+      ...document.definition,
+      analysis: {
+        ...document.definition.analysis,
+        specLimits: {},
+      },
+    },
+  };
+}
+
+function normalizeDistributionAnalysisForFrontend(
+  analysis: DistributionItem["analysis"],
+): DistributionItem["analysis"] {
+  return {
+    ...structuredClone(analysis),
+    specLimits: {},
+  };
+}
+
 function allocateMigratedId(requested: string, occupied: Set<string>): string {
   if (!occupied.has(requested)) return requested;
   let suffix = 2;
@@ -40,7 +74,7 @@ export function createDistributionAnalysisDocument(
       weight: structuredClone(item.weight),
       frequency: structuredClone(item.frequency),
       by: structuredClone(item.by),
-      analysis: structuredClone(item.analysis),
+      analysis: normalizeDistributionAnalysisForFrontend(item.analysis),
       graphs: structuredClone(item.graphs),
     },
     presentation: { schemaVersion: 1, layout: "distribution-v1" },
@@ -52,7 +86,12 @@ export function createDistributionAnalysisDocument(
 export function migrateLegacyDistributions(
   input: DistributionAnalysisMigrationInput,
 ): DistributionAnalysisMigrationResult {
-  const analyses = [...input.analyses];
+  let migratedCount = 0;
+  const analyses = input.analyses.map((analysis) => {
+    const normalized = normalizePersistedDistributionAnalysisDocument(analysis);
+    if (normalized !== analysis) migratedCount += 1;
+    return normalized;
+  });
   const analysisFolders = { ...input.analysisFolders };
   const occupiedIds = new Set(analyses.map((analysis) => analysis.id));
   const occupiedNames = analyses.map((analysis) => analysis.name);
@@ -75,6 +114,6 @@ export function migrateLegacyDistributions(
   return {
     analyses,
     analysisFolders,
-    migratedCount: input.distributions.length,
+    migratedCount: migratedCount + input.distributions.length,
   };
 }

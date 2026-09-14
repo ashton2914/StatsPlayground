@@ -33,6 +33,8 @@ export interface DistributionFieldInfo {
   name: string;
   sqlType: string;
   integerCompatible: boolean;
+  colIndex: number;
+  extras?: Record<string, unknown>;
   field: FieldRef;
 }
 
@@ -74,6 +76,33 @@ function isCategoricalField(field: DistributionFieldInfo): boolean {
   return field.field.type === "nominal" || field.field.type === "ordinal";
 }
 
+function readDistributionCapabilitySpecValue(
+  field: DistributionFieldInfo,
+  key: "lsl" | "usl",
+): number | null {
+  const spec = field.extras?.spec;
+  if (typeof spec !== "object" || spec === null || Array.isArray(spec)) return null;
+  const specRecord = spec as Record<string, unknown>;
+  const value = specRecord[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function hasDistributionCapabilitySpec(field: DistributionFieldInfo): boolean {
+  return readDistributionCapabilitySpecValue(field, "lsl") !== null
+    || readDistributionCapabilitySpecValue(field, "usl") !== null;
+}
+
+export function findResponsesMissingCapabilitySpecs(
+  responses: readonly FieldRef[],
+  fields: readonly DistributionFieldInfo[],
+): DistributionFieldInfo[] {
+  const metadataByName = new Map(fields.map((field) => [field.name, field]));
+  return responses.flatMap((response) => {
+    const metadata = metadataByName.get(response.name);
+    return metadata && hasDistributionCapabilitySpec(metadata) ? [] : metadata ? [metadata] : [];
+  });
+}
+
 export function canAssignDistributionRole(
   role: DistributionRole,
   field: DistributionFieldInfo,
@@ -91,6 +120,13 @@ export function canAssignDistributionRole(
   return true;
 }
 
+function invalidDistributionRoleError(role: DistributionRole): Exclude<DistributionRoleValidationError, "missingResponse" | "duplicateRole"> {
+  if (role === "response") return "invalidResponse";
+  if (role === "weight") return "invalidWeight";
+  if (role === "frequency") return "invalidFrequency";
+  return "invalidBy";
+}
+
 export function validateDistributionRoles(
   roles: DistributionRoleBindings,
   fields: readonly DistributionFieldInfo[],
@@ -105,12 +141,8 @@ export function validateDistributionRoles(
     ...roles.by.map((field): [DistributionRole, FieldRef] => ["by", field]),
   ];
   for (const [role, field] of assignments) {
-    const metadata = byName.get(field.name) ?? {
-      name: field.name,
-      sqlType: "",
-      integerCompatible: false,
-      field,
-    };
+    const metadata = byName.get(field.name);
+    if (!metadata) return { ok: false, error: invalidDistributionRoleError(role) };
     const result = canAssignDistributionRole(role, metadata, occupied);
     if (result !== true) return { ok: false, error: result };
     occupied.push(field);

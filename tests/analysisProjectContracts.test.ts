@@ -6,6 +6,7 @@ import { createAnalysisSampleDocument } from "../src/components/analysis/analysi
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
 import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
 import type { SaveProjectRequest } from "../src/services/projectService";
+import type { ColumnDisplayProps } from "../src/types/data";
 import type { OpenProjectResult, ProjectInfo } from "../src/types/project";
 
 const projectTypesSource = readFileSync(
@@ -123,18 +124,61 @@ const legacyDistribution = createDistributionItem({
   frequency: null,
   by: [],
   columns: [{ name: response.name, sqlType: "DOUBLE", integerCompatible: false, field: response }],
+  analysis: {
+    confidenceLevel: 0.99,
+    specLimits: { DIM2: { lsl: 9, target: 10, usl: 11 } },
+    fitDistributions: ["normal", "weibull"],
+  },
   createdAt: "2026-09-06T00:00:00.000Z",
 });
-const hydrated = hydrateAnalysisProjectPayload({
+const legacyProjectPayload = {
   analyses: [analysis],
   analysisFolders: { "analysis-1": "Analyses/Sample" },
   distributions: [legacyDistribution],
   distributionFolders: { "legacy-distribution": "Analyses/Legacy" },
-});
+  tableDisplayProps: [{ colIndex: 0, extras: { spec: { lsl: 9, target: 10, usl: 11 } } }] satisfies ColumnDisplayProps[],
+};
+const legacyProjectPayloadSnapshot = JSON.stringify(legacyProjectPayload);
+const hydrated = hydrateAnalysisProjectPayload(legacyProjectPayload);
 assert.equal(hydrated.migratedCount, 1);
 assert.equal(hydrated.analyses.length, 2);
 assert.equal(hydrated.analyses[1]?.documentType, "analysis");
+assert.equal(hydrated.analyses[1]?.analysisKind, "distribution");
+assert.deepEqual(
+  hydrated.analyses[1]?.analysisKind === "distribution"
+    ? hydrated.analyses[1].definition.analysis.specLimits
+    : null,
+  {},
+);
 assert.equal(hydrated.analysisFolders["legacy-distribution"], "Analyses/Legacy");
+assert.equal(JSON.stringify(legacyProjectPayload), legacyProjectPayloadSnapshot);
+
+const canonicalLegacyOverride = {
+  ...analysis,
+  definition: {
+    ...analysis.definition,
+    analysis: {
+      ...analysis.definition.analysis,
+      specLimits: { DIM1: { lsl: 9, target: 10, usl: 11 } },
+    },
+  },
+};
+const canonicalHydrated = hydrateAnalysisProjectPayload({
+  analyses: [canonicalLegacyOverride],
+  analysisFolders: { [canonicalLegacyOverride.id]: "Analyses/Sample" },
+});
+assert.equal(canonicalHydrated.migratedCount, 1);
+assert.equal(canonicalHydrated.analyses.length, 1);
+assert.deepEqual(
+  canonicalHydrated.analyses[0]?.analysisKind === "distribution"
+    ? canonicalHydrated.analyses[0].definition.analysis.specLimits
+    : null,
+  {},
+);
+assert.deepEqual(
+  canonicalLegacyOverride.definition.analysis.specLimits,
+  { DIM1: { lsl: 9, target: 10, usl: 11 } },
+);
 
 const legacyFitYByX = createFitYByXItem({
   id: "legacy-fit-y-by-x",

@@ -463,6 +463,12 @@
       "frequency": "Frequency",
       "by": "By"
     },
+    "missingSpecs": {
+      "title": "Missing specification limits",
+      "message": "These responses have no finite LSL or USL in Table column properties:",
+      "manage": "Manage Column Properties",
+      "continue": "Continue Without Capability"
+    },
     "specification": {
       "lsl": "Lower specification limit",
       "target": "Target",

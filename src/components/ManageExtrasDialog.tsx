@@ -22,6 +22,8 @@ interface ManageExtrasDialogProps {
   colExtras: ColExtrasArray;
   /** Source dataset (for default export name; not used to link). */
   sourceDatasetName?: string;
+  initialSelectedColIndices?: readonly number[];
+  initialExtraKinds?: readonly ExtraKind[];
   /** User confirmed edits — caller updates state + persists. */
   onApply: (next: Array<Record<string, unknown> | null>) => void;
   onClose: () => void;
@@ -115,7 +117,7 @@ function invalidNameMessage(t: TFunction, code: ProjectBasenameValidationError):
  *          back via onApply, "重新载入" discards local edits.
  */
 export function ManageExtrasDialog({
-  cols, colExtras, sourceDatasetName, onApply, onClose,
+  cols, colExtras, sourceDatasetName, initialSelectedColIndices, initialExtraKinds, onApply, onClose,
 }: ManageExtrasDialogProps) {
   const { t } = useTranslation();
   const readOnly = useProjectStore((s) => s.readOnly);
@@ -123,22 +125,40 @@ export function ManageExtrasDialog({
   const datasets = useDataStore((s) => s.datasets);
   const refreshDatasets = useDataStore((s) => s.refreshDatasets);
 
-  // ---- Step 1 state ----
-  const initialCheckedCols = useMemo(() => new Set(cols.map((_, i) => i)), [cols]);
-  const initialCheckedKinds = useMemo<Set<ExtraKind>>(() => {
-    const present = new Set<ExtraKind>();
-    for (const e of colExtras) {
-      if (!e) continue;
-      for (const k of EXTRA_KINDS) {
-        if (e[k] !== undefined) present.add(k);
-      }
+  const initialCheckedCols = useMemo(() => {
+    if (initialSelectedColIndices === undefined) {
+      return new Set(cols.map((_, i) => i));
     }
-    return present.size > 0 ? present : new Set<ExtraKind>();
-  }, [colExtras]);
+    return new Set(
+      initialSelectedColIndices.filter(
+        (index): index is number => Number.isInteger(index) && index >= 0 && index < cols.length,
+      ),
+    );
+  }, [cols, initialSelectedColIndices]);
 
+  const initialCheckedKinds = useMemo<Set<ExtraKind>>(() => {
+    if (initialExtraKinds === undefined) {
+      const present = new Set<ExtraKind>();
+      for (const e of colExtras) {
+        if (!e) continue;
+        for (const k of EXTRA_KINDS) {
+          if (e[k] !== undefined) present.add(k);
+        }
+      }
+      return present.size > 0 ? present : new Set<ExtraKind>();
+    }
+    return new Set(
+      initialExtraKinds.filter((kind) => {
+        const def = EXTRA_DEFS[kind];
+        return def !== undefined && !def.batchExcluded;
+      }),
+    );
+  }, [colExtras, initialExtraKinds]);
+
+  // ---- Step 1 state ----
   const [step, setStep] = useState<1 | 2>(1);
-  const [checkedCols, setCheckedCols] = useState<Set<number>>(initialCheckedCols);
-  const [checkedKinds, setCheckedKinds] = useState<Set<ExtraKind>>(initialCheckedKinds);
+  const [checkedCols, setCheckedCols] = useState<Set<number>>(() => initialCheckedCols);
+  const [checkedKinds, setCheckedKinds] = useState<Set<ExtraKind>>(() => initialCheckedKinds);
 
   // ---- Step 2 state: staged edits, shape ColExtrasArray scoped to selected cols ----
   // Map keyed by col index for sparse edits; values mirror the extras shape.
