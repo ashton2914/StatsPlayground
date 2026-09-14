@@ -29,6 +29,7 @@ const legacy = createDistributionItem({
     confidenceLevel: 0.99,
     specLimits: { DIM1: { lsl: 9, target: 10, usl: 11 } },
     fitDistributions: ["normal", "weibull"],
+    fitAll: false,
   },
   createdAt,
 });
@@ -157,5 +158,29 @@ const canonicalAlreadyNormalized = migrateLegacyDistributions({
 assert.equal(canonicalAlreadyNormalized.migratedCount, 0);
 assert.strictEqual(canonicalAlreadyNormalized.analyses[0], existing);
 assert.strictEqual(canonicalAlreadyNormalized.analyses[1], unaffectedNonDistribution);
+
+const missingFitAll = structuredClone(existing) as typeof existing & {
+  definition: typeof existing.definition & { analysis: Record<string, unknown> };
+};
+delete missingFitAll.definition.analysis.fitAll;
+const normalizedMissingFitAll = migrateLegacyDistributions({
+  analyses: [missingFitAll],
+  analysisFolders: { [missingFitAll.id]: "Analyses/Existing" },
+  distributions: [],
+  distributionFolders: {},
+});
+assert.equal(normalizedMissingFitAll.migratedCount, 1);
+assert.equal(normalizedMissingFitAll.analyses[0]?.analysisKind, "distribution");
+assert.deepEqual(
+  normalizedMissingFitAll.analyses[0]?.analysisKind === "distribution"
+    ? normalizedMissingFitAll.analyses[0].definition.analysis
+    : null,
+  {
+    confidenceLevel: 0.95,
+    specLimits: {},
+    fitDistributions: ["normal"],
+    fitAll: false,
+  },
+);
 
 console.log("distribution analysis migration passed");

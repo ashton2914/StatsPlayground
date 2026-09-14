@@ -155,6 +155,17 @@ export function createDefaultDistributionAnalysisConfig(): DistributionAnalysisC
     confidenceLevel: 0.95,
     specLimits: {},
     fitDistributions: ["normal"],
+    fitAll: false,
+  };
+}
+
+function normalizeDistributionAnalysisConfigValue(
+  analysis: DistributionAnalysisConfig | undefined,
+): DistributionAnalysisConfig {
+  if (!analysis) return createDefaultDistributionAnalysisConfig();
+  return {
+    ...clone(analysis),
+    fitAll: analysis.fitAll ?? false,
   };
 }
 
@@ -230,7 +241,7 @@ export function createDistributionItem(input: {
     weight: clone(input.weight),
     frequency: clone(input.frequency),
     by: clone(input.by),
-    analysis: clone(input.analysis ?? createDefaultDistributionAnalysisConfig()),
+    analysis: normalizeDistributionAnalysisConfigValue(input.analysis),
     graphs: createDefaultDistributionGraphs(input.responses[0]!),
     createdAt: input.createdAt,
   };

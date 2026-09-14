@@ -4994,10 +4994,18 @@ fn validate_distribution_analysis_config(
         })?;
         if !matches!(
             fit_id,
-            "normal" | "lognormal" | "exponential" | "gamma" | "weibull"
+            "normal" | "cauchy" | "lognormal" | "exponential" | "gamma" | "weibull"
         ) {
             return Err(AppError::FileIO(format!(
                 "{context}.fitDistributions contains unsupported distribution id {fit_id}"
+            )));
+        }
+    }
+
+    if let Some(fit_all) = analysis.get("fitAll") {
+        if fit_all.as_bool().is_none() {
+            return Err(AppError::FileIO(format!(
+                "{context}.fitAll must be a boolean"
             )));
         }
     }
@@ -5355,7 +5363,8 @@ mod tests {
             "analysis": {
                 "confidenceLevel": 0.95,
                 "specLimits": {},
-                "fitDistributions": ["normal"]
+                "fitDistributions": ["normal"],
+                "fitAll": false
             },
             "graphs": {},
             "createdAt": "2026-09-02T00:00:00Z"
@@ -5384,7 +5393,8 @@ mod tests {
                 "analysis": {
                     "confidenceLevel": 0.95,
                     "specLimits": {},
-                    "fitDistributions": ["normal"]
+                    "fitDistributions": ["normal"],
+                    "fitAll": false
                 },
                 "graphs": {
                     "overview": {
@@ -6792,6 +6802,25 @@ mod tests {
         assert!(matches!(
             validate_analysis_value(&invalid_fit, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("fitDistributions")
+        ));
+
+        let mut cauchy_fit = analysis_doc("analysis-1", "DIM1 Analysis");
+        cauchy_fit["definition"]["analysis"]["fitDistributions"] = json!(["cauchy"]);
+        cauchy_fit["definition"]["analysis"]["fitAll"] = json!(true);
+        assert!(validate_analysis_value(&cauchy_fit, "analysis validation").is_ok());
+
+        let mut missing_fit_all = analysis_doc("analysis-1", "DIM1 Analysis");
+        missing_fit_all["definition"]["analysis"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fitAll");
+        assert!(validate_analysis_value(&missing_fit_all, "analysis validation").is_ok());
+
+        let mut invalid_fit_all = analysis_doc("analysis-1", "DIM1 Analysis");
+        invalid_fit_all["definition"]["analysis"]["fitAll"] = json!("true");
+        assert!(matches!(
+            validate_analysis_value(&invalid_fit_all, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("fitAll")
         ));
 
         let mut invalid_mode = analysis_doc("analysis-1", "DIM1 Analysis");

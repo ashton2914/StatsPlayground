@@ -63,6 +63,7 @@ pub enum DistributionGroupValueV1 {
 #[serde(rename_all = "camelCase")]
 pub enum ContinuousDistributionIdV1 {
     Normal,
+    Cauchy,
     Lognormal,
     Exponential,
     Gamma,
@@ -540,6 +541,8 @@ pub struct DistributionRequest {
     pub confidence_level: f64,
     pub spec_limits: HashMap<String, SpecLimitsOverride>,
     pub fit_distributions: Vec<DistributionFitKind>,
+    #[serde(default)]
+    pub fit_all: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1190,13 +1193,19 @@ mod tests {
             "specLimits": {
                 "height": { "lsl": 1.0, "target": 2.0, "usl": 3.0 }
             },
-            "fitDistributions": ["normal", "gamma"]
+            "fitDistributions": ["normal", "cauchy"],
+            "fitAll": true
         });
         let request: DistributionRequest =
             serde_json::from_value(value.clone()).expect("deserialize one-shot request");
 
         assert_eq!(request.response_columns, vec!["height", "width"]);
         assert_eq!(request.by_columns, vec!["region", "batch"]);
+        assert_eq!(request.fit_distributions, vec![
+            ContinuousDistributionIdV1::Normal,
+            ContinuousDistributionIdV1::Cauchy,
+        ]);
+        assert!(request.fit_all);
         assert_eq!(
             serde_json::to_value(request).expect("serialize request"),
             value

@@ -20,6 +20,7 @@ function makeAnalysisDocument(overrides: Partial<AnalysisDocument> & Pick<Analys
       confidenceLevel: 0.95,
       specLimits: {},
       fitDistributions: ["normal"],
+      fitAll: false,
     },
     createdAt: "2026-09-03T00:00:00.000Z",
   });
@@ -42,6 +43,7 @@ function makeAnalysisDocument(overrides: Partial<AnalysisDocument> & Pick<Analys
         confidenceLevel: 0.95,
         specLimits: {},
         fitDistributions: ["normal"],
+        fitAll: false,
       },
       graphs: distribution.graphs,
     },
@@ -90,6 +92,7 @@ useAnalysisStore.getState().updateAnalysis("analysis-1", {
       confidenceLevel: 0.9,
       specLimits: { DIM1: { lsl: 1, target: 2, usl: 3 } },
       fitDistributions: ["normal"],
+      fitAll: false,
     },
     graphs: makeAnalysisDocument({ id: "analysis-graph", name: "Analysis Graph" }).definition.graphs,
   },
@@ -126,9 +129,10 @@ legacyAnalysis.definition.analysis.fitDistributions = [];
 useAnalysisStore.getState().loadAnalyses([legacyAnalysis]);
 assert.deepEqual(
   useAnalysisStore.getState().items[0]?.definition.analysis.fitDistributions,
-  ["normal"],
-  "legacy Distribution Analysis documents must restore the required fitted normal curve",
+  [],
+  "distribution Analysis documents must preserve the configured fit identities during load",
 );
+assert.equal(useAnalysisStore.getState().items[0]?.definition.analysis.fitAll, false);
 
 useAnalysisStore.getState().loadAnalyses([
   makeAnalysisDocument({ id: "analysis-2", name: "Analysis 2" }),

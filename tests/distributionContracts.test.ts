@@ -43,6 +43,7 @@ const oneShotRequest: DistributionRequest = {
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: ["normal"],
+  fitAll: false,
 };
 assert.deepEqual(Object.keys(oneShotRequest), [
   "datasetId",
@@ -54,6 +55,7 @@ assert.deepEqual(Object.keys(oneShotRequest), [
   "confidenceLevel",
   "specLimits",
   "fitDistributions",
+  "fitAll",
 ]);
 const resultStatuses = [
   "available",

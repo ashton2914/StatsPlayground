@@ -1459,6 +1459,7 @@ fn distribution_id(
     use crate::models::distribution::ContinuousDistributionIdV1;
     match distribution {
         ContinuousDistributionIdV1::Normal => "normal",
+        ContinuousDistributionIdV1::Cauchy => "cauchy",
         ContinuousDistributionIdV1::Lognormal => "lognormal",
         ContinuousDistributionIdV1::Exponential => "exponential",
         ContinuousDistributionIdV1::Gamma => "gamma",
@@ -2101,6 +2102,7 @@ mod tests {
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: vec![ContinuousDistributionIdV1::Normal],
+            fit_all: false,
         };
         let groups = vec![DistributionGroupResult {
             group_key: Vec::new(),
@@ -2326,6 +2328,7 @@ mod tests {
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: Vec::new(),
+            fit_all: false,
         };
 
         let response = DistributionService::new(&state)
@@ -2432,6 +2435,7 @@ mod tests {
             fit_distributions: vec![
                 crate::models::distribution::ContinuousDistributionIdV1::Normal,
             ],
+            fit_all: false,
         };
         let service = DistributionService::new(&state);
         let first = service

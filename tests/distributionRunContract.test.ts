@@ -19,6 +19,7 @@ const request: DistributionRequest = {
     value: { lsl: 0, target: 5, usl: 10 },
   },
   fitDistributions: ["normal", "gamma"],
+  fitAll: false,
 };
 
 const graphFrame = {
@@ -65,6 +66,7 @@ assert.deepEqual(Object.keys(request), [
   "confidenceLevel",
   "specLimits",
   "fitDistributions",
+  "fitAll",
 ]);
 assert.equal(response.datasetId, request.datasetId);
 assert.equal(response.generation, request.generation);

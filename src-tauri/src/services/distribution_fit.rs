@@ -2054,6 +2054,7 @@ mod tests {
     fn fit_model_for(distribution_id: &ContinuousDistributionIdV1) -> Box<dyn FitModel> {
         match distribution_id {
             ContinuousDistributionIdV1::Normal => Box::new(NormalFitV1),
+            ContinuousDistributionIdV1::Cauchy => panic!("cauchy fit model not implemented in fixture"),
             ContinuousDistributionIdV1::Lognormal => Box::new(LognormalFitV1),
             ContinuousDistributionIdV1::Exponential => Box::new(ExponentialFitV1),
             ContinuousDistributionIdV1::Gamma => Box::new(GammaFitV1),
@@ -2443,6 +2444,9 @@ mod tests {
 
                 let expected_method_id = match case.distribution_id {
                     ContinuousDistributionIdV1::Normal => NormalFitV1::METHOD_ID,
+                    ContinuousDistributionIdV1::Cauchy => {
+                        panic!("cauchy fit model not implemented in fixture")
+                    }
                     ContinuousDistributionIdV1::Lognormal => LognormalFitV1::METHOD_ID,
                     ContinuousDistributionIdV1::Exponential => ExponentialFitV1::METHOD_ID,
                     ContinuousDistributionIdV1::Gamma => GammaFitV1::METHOD_ID,

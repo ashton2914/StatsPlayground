@@ -27,6 +27,7 @@ function normalizeDistributionAnalysisForFrontend(
   return {
     ...structuredClone(analysis),
     specLimits: {},
+    fitAll: analysis.fitAll ?? false,
   };
 }
 

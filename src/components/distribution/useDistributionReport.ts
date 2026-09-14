@@ -62,6 +62,7 @@ function normalizeDistributionAnalysisForRequest(
   return {
     ...structuredClone(analysis),
     specLimits: {},
+    fitAll: analysis.fitAll ?? false,
   };
 }
 
@@ -108,6 +109,7 @@ export function createDistributionRequest(
     confidenceLevel: item.analysis.confidenceLevel,
     specLimits: {},
     fitDistributions: [...item.analysis.fitDistributions],
+    fitAll: item.analysis.fitAll ?? false,
   };
 }
 
