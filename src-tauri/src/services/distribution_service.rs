@@ -602,6 +602,7 @@ impl<'a> DistributionService<'a> {
                                 let intervals = capability_intervals(
                                     &process_summary,
                                     &indices,
+                                    limits.target,
                                     request.confidence_level,
                                 );
                                 let nonconformance = nonconformance_metrics(
