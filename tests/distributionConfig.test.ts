@@ -9,6 +9,7 @@ import {
   findResponsesMissingCapabilitySpecs,
   hasDistributionCapabilitySpec,
   isDistributionMenuEnabled,
+  validateDistributionAnalysisConfig,
   validateDistributionRoles,
   validateDistributionVisualDiagnosticsConfig,
   validateDistributionConfig,
@@ -93,6 +94,19 @@ const config: DistributionAnalysisConfigV1 = {
 const defaultVisualDiagnostics = createDefaultDistributionVisualDiagnosticsConfig();
 assert.equal(defaultVisualDiagnostics.histogram.method, "jmpAuto");
 assert.equal(config.reportPreferences?.["col-y"]?.normalQuantilePlot, false);
+assert.equal(validateDistributionAnalysisConfig(createDefaultDistributionAnalysisConfig()), null);
+assert.equal(validateDistributionAnalysisConfig({
+  confidenceLevel: 0.95,
+  specLimits: {},
+  fitDistributions: [],
+  fitAll: true,
+}), null);
+assert.equal(validateDistributionAnalysisConfig({
+  confidenceLevel: 0.95,
+  specLimits: {},
+  fitDistributions: [],
+  fitAll: false,
+}), "fitSelectionRequired");
 assert.equal(
   validateDistributionVisualDiagnosticsConfig({
     histogram: {

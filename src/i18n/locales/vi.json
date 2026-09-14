@@ -467,11 +467,11 @@
     },
     "fitStandardError": "Sai số chuẩn", "fitLower95": "Cận dưới 95%", "fitUpper95": "Cận trên 95%",
     "fit": {
-      "unavailable": "Độ khớp không khả dụng: {{reason}}", "parameters": "Ước lượng tham số", "parameter": "Tham số",
+      "continuousFit": "Khớp phân phối liên tục", "fitAll": "Khớp tất cả", "unavailable": "Độ khớp không khả dụng: {{reason}}", "parameters": "Ước lượng tham số", "parameter": "Tham số",
       "estimate": "Ước lượng", "measuresAria": "thước đo", "measures": "Thước đo", "measure": "Thước đo",
       "lognormalNaturalLogNote": "Các tham số sử dụng logarit tự nhiên của biến đáp ứng.", "convergence": "Hội tụ",
       "comparison": "So sánh độ khớp", "distribution": "Phân phối", "status": "Trạng thái",
-      "distributions": { "normal": "Chuẩn", "lognormal": "Log-chuẩn", "exponential": "Mũ", "gamma": "Gamma", "weibull": "Weibull" },
+      "distributions": { "normal": "Chuẩn", "cauchy": "Cauchy", "lognormal": "Log-chuẩn", "exponential": "Mũ", "gamma": "Gamma", "weibull": "Weibull" },
       "states": { "available": "Khả dụng", "unavailable": "Không khả dụng", "failed": "Thất bại", "converged": "Đã hội tụ", "notConverged": "Chưa hội tụ" },
       "parametersById": { "location": "Vị trí", "scale": "Tỷ lệ", "shape": "Hình dạng", "rate": "Tốc độ", "dispersion": "Độ phân tán" },
       "metrics": { "negativeTwoLogLikelihood": "-2 Log Likelihood", "aic": "AIC", "aicc": "AICc", "bic": "BIC" }
@@ -499,7 +499,7 @@
       "normalQuantileConfidenceOutOfRange": "Mức tin cậy phân vị chuẩn ngoài phạm vi", "unknownCapability": "Năng lực không xác định",
       "unknownCapabilityVersion": "Phiên bản năng lực không xác định", "yRequired": "Cần ít nhất một biến đáp ứng", "columnUnknown": "Cột không khả dụng",
       "roleDuplicate": "Một cột không thể có nhiều vai trò", "yTypeIncompatible": "Biến đáp ứng phải liên tục",
-      "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "roleConflict": "Vai trò cột xung đột", "weightTypeIncompatible": "Trọng số phải là số",
+      "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "fitSelectionRequired": "Hãy chọn ít nhất một độ khớp liên tục", "roleConflict": "Vai trò cột xung đột", "weightTypeIncompatible": "Trọng số phải là số",
       "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên", "duplicateCapability": "Năng lực bị trùng", "duplicateCapabilityOverride": "Ghi đè năng lực bị trùng"
     },
     "errors": {
@@ -508,7 +508,7 @@
       "normalQuantileConfidenceOutOfRange": "Mức tin cậy phân vị chuẩn ngoài phạm vi", "unknownCapability": "Năng lực không xác định",
       "unknownCapabilityVersion": "Phiên bản năng lực không xác định", "invalidCapabilityOverride": "Ghi đè năng lực không hợp lệ",
       "yRequired": "Cần ít nhất một biến đáp ứng", "columnUnknown": "Cột không khả dụng", "roleDuplicate": "Một cột không thể có nhiều vai trò",
-      "yTypeIncompatible": "Biến đáp ứng phải liên tục", "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "roleConflict": "Vai trò cột xung đột",
+      "yTypeIncompatible": "Biến đáp ứng phải liên tục", "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "fitSelectionRequired": "Hãy chọn ít nhất một độ khớp liên tục", "roleConflict": "Vai trò cột xung đột",
       "weightTypeIncompatible": "Trọng số phải là số", "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên",
       "duplicateCapability": "Năng lực bị trùng", "duplicateCapabilityOverride": "Ghi đè năng lực bị trùng"
     }

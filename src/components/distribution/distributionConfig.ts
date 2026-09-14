@@ -29,6 +29,8 @@ export type DistributionRoleValidationError =
   | "invalidBy"
   | "duplicateRole";
 
+export type DistributionAnalysisValidationError = "fitSelectionRequired";
+
 export interface DistributionFieldInfo {
   name: string;
   sqlType: string;
@@ -159,6 +161,15 @@ export function createDefaultDistributionAnalysisConfig(): DistributionAnalysisC
   };
 }
 
+export function validateDistributionAnalysisConfig(
+  analysis: DistributionAnalysisConfig,
+): DistributionAnalysisValidationError | null {
+  if (!analysis.fitAll && analysis.fitDistributions.length === 0) {
+    return "fitSelectionRequired";
+  }
+  return null;
+}
+
 function normalizeDistributionAnalysisConfigValue(
   analysis: DistributionAnalysisConfig | undefined,
 ): DistributionAnalysisConfig {
@@ -265,6 +276,14 @@ export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[]
     methodId: "fit.normal.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "normal.locationScale.v1",
+    implemented: true,
+    compatibilityStatus: "compatibilityPending",
+  },
+  {
+    distributionId: "cauchy",
+    methodId: "fit.cauchy.locationScale.mle.v1",
+    methodVersion: "1.0.0",
+    parameterizationId: "cauchy.locationScale.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },

@@ -290,6 +290,35 @@
   border-top: 1px solid var(--border-color);
 }
 
+.distribution-fit-selector {
+  min-width: 0;
+}
+
+.distribution-fit-selector-title {
+  display: block;
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.distribution-fit-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+
+.distribution-fit-options .ui-checkbox-field {
+  min-width: 0;
+}
+
+.distribution-fit-options .ui-checkbox {
+  width: 100%;
+}
+
+.distribution-fit-options .ui-checkbox-label {
+  overflow-wrap: anywhere;
+}
+
 .distribution-role-zone {
   min-height: 88px;
   padding: 10px;
@@ -421,6 +450,10 @@
 @media (max-width: 560px) {
   .distribution-options,
   .distribution-role-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .distribution-fit-options {
     grid-template-columns: 1fr;
   }
 

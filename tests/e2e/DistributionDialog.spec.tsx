@@ -160,6 +160,92 @@ test("uses shared controls without collapsing the desktop dialog", async ({ moun
   await dialog.screenshot({ path: "test-results/distribution-dialog-shared-controls.png" });
 });
 
+test("Continuous Fit selector disables individual fits without clearing them", async ({ mount }) => {
+  let saved: DistributionItem | null = null;
+  const component = await mount(
+    <DistributionDialog
+      {...dialogProps({
+        columns: missingSpecColumns,
+        onSubmit: (item: DistributionItem) => {
+          saved = item;
+        },
+      })}
+    />,
+  );
+
+  await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+
+  const fitAll = component.getByRole("checkbox", { name: "Fit All", exact: true });
+  const normal = component.getByRole("checkbox", { name: "Normal", exact: true });
+  const cauchy = component.getByRole("checkbox", { name: "Cauchy", exact: true });
+
+  await expect(normal).toBeChecked();
+  await cauchy.check();
+  await fitAll.check();
+
+  await expect(normal).toBeDisabled();
+  await expect(cauchy).toBeDisabled();
+
+  await fitAll.uncheck();
+  await expect(cauchy).toBeChecked();
+
+  await component.getByRole("button", { name: "Save" }).click();
+  await component.getByRole("button", { name: "Continue Without Capability" }).click();
+
+  expect(saved?.analysis.fitAll).toBe(false);
+  expect(saved?.analysis.fitDistributions).toEqual(["normal", "cauchy"]);
+});
+
+test("Continuous Fit requires at least one fit unless Fit All is enabled", async ({ mount }) => {
+  let submitCalls = 0;
+  const component = await mount(
+    <DistributionDialog
+      {...dialogProps({
+        columns: missingSpecColumns,
+        onSubmit: () => {
+          submitCalls += 1;
+        },
+      })}
+    />,
+  );
+
+  await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+  await component.getByRole("checkbox", { name: "Normal", exact: true }).uncheck();
+
+  await expect(component.getByRole("button", { name: "Save" })).toBeDisabled();
+  await expect(component.getByRole("alert")).toContainText("Select at least one continuous fit");
+
+  expect(submitCalls).toBe(0);
+});
+
+test("Continuous Fit selector remains visible and wrapped at 390px", async ({ mount, page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const component = await mount(
+    <DistributionDialog {...dialogProps({ columns: missingSpecColumns })} />,
+  );
+
+  await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+
+  const fitSection = component.locator(".distribution-fit-selector");
+  const fitOptions = component.locator(".distribution-fit-options");
+  const fitCheckboxes = component.locator('.distribution-fit-options input[type="checkbox"]');
+  const fitAllLabel = component.getByText("Fit All", { exact: true });
+  const weibullLabel = component.getByText("Weibull", { exact: true });
+
+  await expect(fitSection).toBeVisible();
+  await expect(fitCheckboxes).toHaveCount(7);
+  await expect(fitAllLabel).toBeVisible();
+  await expect(weibullLabel).toBeVisible();
+
+  const metrics = await fitOptions.evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+    gridTemplateColumns: getComputedStyle(element).gridTemplateColumns,
+  }));
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth);
+  expect(metrics.gridTemplateColumns.split(" ").length).toBe(1);
+});
+
 test("keeps hundreds of fields inside a bounded scrollable selector", async ({ mount, page }) => {
   const component = await mount(
     <DistributionDialog {...dialogProps({ columns: manyColumns })} />,

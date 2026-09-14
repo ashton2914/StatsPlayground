@@ -464,11 +464,11 @@
     },
     "fitStandardError": "標準誤", "fitLower95": "95% 下限", "fitUpper95": "95% 上限",
     "fit": {
-      "unavailable": "配適無法使用：{{reason}}", "parameters": "參數估計", "parameter": "參數", "estimate": "估計值",
+      "continuousFit": "連續分佈配適", "fitAll": "全部配適", "unavailable": "配適無法使用：{{reason}}", "parameters": "參數估計", "parameter": "參數", "estimate": "估計值",
       "measuresAria": "度量", "measures": "度量", "measure": "度量",
       "lognormalNaturalLogNote": "參數使用反應變數的自然對數。", "convergence": "收斂",
       "comparison": "配適比較", "distribution": "分佈", "status": "狀態",
-      "distributions": { "normal": "常態", "lognormal": "對數常態", "exponential": "指數", "gamma": "伽瑪", "weibull": "韋伯" },
+      "distributions": { "normal": "常態", "cauchy": "柯西", "lognormal": "對數常態", "exponential": "指數", "gamma": "伽瑪", "weibull": "韋伯" },
       "states": { "available": "可用", "unavailable": "不可用", "failed": "失敗", "converged": "已收斂", "notConverged": "未收斂" },
       "parametersById": { "location": "位置", "scale": "尺度", "shape": "形狀", "rate": "速率", "dispersion": "離散度" },
       "metrics": { "negativeTwoLogLikelihood": "-2 對數概似", "aic": "AIC", "aicc": "AICc", "bic": "BIC" }
@@ -494,7 +494,7 @@
       "normalQuantileConfidenceOutOfRange": "常態分位數信賴水準超出範圍", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "yRequired": "至少需要一個反應變數", "columnUnknown": "欄位不可用",
       "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
-      "confidenceOutOfRange": "信賴水準超出範圍", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
+      "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
       "freqNotIntegerCompatible": "頻數必須相容整數", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     },
     "errors": {
@@ -503,7 +503,7 @@
       "normalQuantileConfidenceOutOfRange": "常態分位數信賴水準超出範圍", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "invalidCapabilityOverride": "能力覆寫無效", "yRequired": "至少需要一個反應變數",
       "columnUnknown": "欄位不可用", "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
-      "confidenceOutOfRange": "信賴水準超出範圍", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
+      "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
       "freqNotIntegerCompatible": "頻數必須相容整數", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     }
   },
