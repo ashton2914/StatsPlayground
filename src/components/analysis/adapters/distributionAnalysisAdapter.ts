@@ -5,25 +5,19 @@ import type {
   DistributionAnalysisDocument,
 } from "../../../types/analysis";
 import type { DatasetMeta } from "../../../types/data";
-import type { DistributionItem, SpecLimitsOverride } from "../../../types/distribution";
+import type { DistributionItem } from "../../../types/distribution";
 
 export { createDistributionAnalysisDocument } from "../distributionAnalysisMigration";
 
 type Translate = (key: string, values?: Record<string, unknown>) => string;
 
-function formatLimit(value: number | null): string {
-  return value === null ? "—" : value.toLocaleString(undefined, { maximumSignificantDigits: 8 });
-}
-
-function formatSpecificationLimits(document: DistributionAnalysisDocument): string {
-  const entries = document.definition.responses
-    .map((response) => [response.name, document.definition.analysis.specLimits[response.name]] as const)
-    .filter((entry): entry is readonly [string, SpecLimitsOverride] => entry[1] !== undefined);
-  if (entries.length === 0) return "—";
-  return entries.map(([name, limits]) => {
-    const values = [limits.lsl, limits.target, limits.usl].map(formatLimit).join(" / ");
-    return entries.length === 1 ? values : `${name}: ${values}`;
-  }).join("; ");
+function normalizeDistributionAnalysisForFrontend(
+  analysis: DistributionItem["analysis"],
+): DistributionItem["analysis"] {
+  return {
+    ...structuredClone(analysis),
+    specLimits: {},
+  };
 }
 
 export function describeDistributionAnalysis(
@@ -48,11 +42,6 @@ export function describeDistributionAnalysis(
       value: document.definition.analysis.fitDistributions.join(", ") || "—",
     },
     {
-      key: "specificationLimits",
-      label: translate("workspace.analysisSummary.specificationLimits", { defaultValue: "LSL / Target / USL" }),
-      value: formatSpecificationLimits(document),
-    },
-    {
       key: "confidenceLevel",
       label: translate("distribution.confidenceLevel", { defaultValue: "Confidence level" }),
       value: new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 2 })
@@ -75,7 +64,7 @@ export function toDistributionEditorItem(document: DistributionAnalysisDocument)
     weight: structuredClone(document.definition.weight),
     frequency: structuredClone(document.definition.frequency),
     by: structuredClone(document.definition.by),
-    analysis: structuredClone(document.definition.analysis),
+    analysis: normalizeDistributionAnalysisForFrontend(document.definition.analysis),
     graphs: structuredClone(document.definition.graphs),
     createdAt: document.createdAt,
   };
@@ -92,7 +81,7 @@ export function createDistributionAnalysisPatch(
     weight: structuredClone(submitted.weight),
     frequency: structuredClone(submitted.frequency),
     by: structuredClone(submitted.by),
-    analysis: structuredClone(submitted.analysis),
+    analysis: normalizeDistributionAnalysisForFrontend(submitted.analysis),
     graphs: structuredClone(submitted.graphs),
   };
   return {

@@ -438,6 +438,12 @@
     "graph": { "unavailable": "此反應的圖形無法使用。" },
     "roleEmpty": "拖放或指定一個欄位", "removeFromRole": "從 {{role}} 移除 {{column}}",
     "roles": { "y": "Y，反應", "weight": "權重", "frequency": "頻數", "by": "分組" },
+    "missingSpecs": {
+      "title": "缺少規格限",
+      "message": "這些反應在資料表欄位屬性中沒有有限的 LSL 或 USL：",
+      "manage": "管理欄位屬性",
+      "continue": "繼續且不計算製程能力"
+    },
     "specification": { "lsl": "規格下限", "target": "目標值", "usl": "規格上限" },
     "report": {
       "title": "統計報告", "loading": "正在載入報告...", "overview": "分佈概覽", "outlierBoxPlot": "離群值箱形圖",

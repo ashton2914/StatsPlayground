@@ -50,7 +50,11 @@ import {
   createAnalysisEditorPatch,
   toAnalysisEditorItem,
 } from "./analysis/analysisEditorRegistry";
-import { DistributionDialog, type DistributionFieldInfo } from "./distribution";
+import {
+  DistributionDialog,
+  type DistributionFieldInfo,
+  type DistributionManagePropertiesRequest,
+} from "./distribution";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
 import { applyWorkflowRunCommit } from "./workflow/workflowRunCommit";
@@ -92,7 +96,6 @@ import type { FitModelPrefill } from "@/types/fitModel";
 import type { ReportItem } from "@/types/report";
 import type { DistributionItem } from "@/types/distribution";
 import type { TabulateItem } from "@/types/tabulate";
-import { inferFieldType } from "@/graphCore/types";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { join } from "@tauri-apps/api/path";
@@ -112,6 +115,15 @@ import {
 } from "@/utils/projectFileNaming";
 import type { NamedSnapshot } from "@/types/history";
 import type { ImportSummary, SqliteImportSelection } from "@/types/dataLink";
+import {
+  buildDistributionFieldInfo,
+  shouldRetainTablePropertyManagerRequest,
+  type TablePropertyManagerRequest,
+} from "./tablePropertyManagerRequest";
+import {
+  shouldApplyDistributionCreateMetadataLoad,
+  shouldApplyDistributionEditMetadataLoad,
+} from "./workspaceDistributionMetadata";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -368,6 +380,9 @@ export function Workspace() {
   const [distributionColumns, setDistributionColumns] = useState<DistributionFieldInfo[]>([]);
   const [editingAnalysisId, setEditingAnalysisId] = useState<string | null>(null);
   const [analysisEditorColumns, setAnalysisEditorColumns] = useState<DistributionFieldInfo[]>([]);
+  const [propertyManagerRequest, setPropertyManagerRequest] = useState<TablePropertyManagerRequest | null>(null);
+  const distributionCreateRequestEpochRef = useRef(0);
+  const distributionEditRequestEpochRef = useRef(0);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
@@ -583,6 +598,15 @@ export function Workspace() {
   useEffect(() => {
     refreshDatasets();
   }, []);
+
+  useEffect(() => {
+    const availableDatasetIds = datasets.map((dataset) => dataset.id);
+    setPropertyManagerRequest((current) => (
+      shouldRetainTablePropertyManagerRequest(current, availableDatasetIds)
+        ? current
+        : null
+    ));
+  }, [datasets]);
 
   useEffect(() => () => {
     if (toastTimerRef.current !== null) {
@@ -1007,14 +1031,25 @@ export function Workspace() {
       alert(t("alert.selectDatasetFirst"));
       return;
     }
+    const requestedDatasetId = activeDatasetId;
+    const requestEpoch = distributionCreateRequestEpochRef.current + 1;
+    distributionCreateRequestEpochRef.current = requestEpoch;
     try {
-      const columns = await dataService.getColumns(activeDatasetId);
-      setDistributionColumns(columns.map(([name, sqlType]) => ({
-        name,
-        sqlType,
-        integerCompatible: /^(?:U?(?:TINY|SMALL|BIG|HUGE)?INT(?:EGER)?)$/i.test(sqlType),
-        field: { name, type: inferFieldType(sqlType) },
-      })));
+      const [columns, displayProps] = await Promise.all([
+        dataService.getColumns(activeDatasetId),
+        dataService.getColumnDisplayProps(activeDatasetId),
+      ]);
+      const currentDataState = useDataStore.getState();
+      if (!shouldApplyDistributionCreateMetadataLoad({
+        requestedDatasetId,
+        requestEpoch,
+        currentRequestEpoch: distributionCreateRequestEpochRef.current,
+        activeDatasetId: currentDataState.activeDatasetId,
+        availableDatasetIds: currentDataState.datasets.map((dataset) => dataset.id),
+      })) {
+        return;
+      }
+      setDistributionColumns(buildDistributionFieldInfo(columns, displayProps));
       setShowDistributionDialog(true);
     } catch (error) {
       alert(t("distribution.loadFieldsFailed", {
@@ -1030,18 +1065,35 @@ export function Workspace() {
     if (!analysis) return;
     const dataset = datasets.find((item) => item.id === analysis.source.datasetId);
     if (!dataset) return;
+    const requestedAnalysisId = id;
+    const requestedDatasetId = dataset.id;
+    const requestEpoch = distributionEditRequestEpochRef.current + 1;
+    distributionEditRequestEpochRef.current = requestEpoch;
     if (analysis.analysisKind === "fitYByX" || analysis.analysisKind === "hypothesisTest") {
       setEditingAnalysisId(id);
       return;
     }
     try {
-      const columns = await dataService.getColumns(dataset.id);
-      setAnalysisEditorColumns(columns.map(([name, sqlType]) => ({
-        name,
-        sqlType,
-        integerCompatible: /^(?:U?(?:TINY|SMALL|BIG|HUGE)?INT(?:EGER)?)$/i.test(sqlType),
-        field: { name, type: inferFieldType(sqlType) },
-      })));
+      const [columns, displayProps] = await Promise.all([
+        dataService.getColumns(dataset.id),
+        dataService.getColumnDisplayProps(dataset.id),
+      ]);
+      const currentDataState = useDataStore.getState();
+      const currentAnalyses = useAnalysisStore.getState().items.map((item) => ({
+        id: item.id,
+        sourceDatasetId: item.source.datasetId,
+      }));
+      if (!shouldApplyDistributionEditMetadataLoad({
+        requestedAnalysisId,
+        requestedDatasetId,
+        requestEpoch,
+        currentRequestEpoch: distributionEditRequestEpochRef.current,
+        availableDatasetIds: currentDataState.datasets.map((item) => item.id),
+        analyses: currentAnalyses,
+      })) {
+        return;
+      }
+      setAnalysisEditorColumns(buildDistributionFieldInfo(columns, displayProps));
       setEditingAnalysisId(id);
     } catch (error) {
       alert(t("distribution.loadFieldsFailed", {
@@ -1063,6 +1115,22 @@ export function Workspace() {
     markDirty();
     recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
   };
+
+  const handleManageDistributionProperties = useCallback((request: DistributionManagePropertiesRequest) => {
+    setShowDistributionDialog(false);
+    setEditingAnalysisId(null);
+    setPropertyManagerRequest({
+      requestId: crypto.randomUUID(),
+      datasetId: request.datasetId,
+      colIndices: request.colIndices,
+      extraKinds: ["spec"],
+    });
+    activateWorkspaceDocument("dataset", request.datasetId);
+  }, [activateWorkspaceDocument]);
+
+  const handlePropertyManagerRequestHandled = useCallback((requestId: string) => {
+    setPropertyManagerRequest((current) => (current?.requestId === requestId ? null : current));
+  }, []);
 
   const handleUpdateFitYByXAnalysisInputs = (
     editing: FitYByXAnalysisDocument,
@@ -2706,8 +2774,10 @@ export function Workspace() {
             })()
           ) : activeDatasetId ? (
             <DataTableView
-              key={tableKey}
+              key={`${activeDatasetId}:${tableKey}`}
               datasetId={activeDatasetId}
+              propertyManagerRequest={propertyManagerRequest}
+              onPropertyManagerRequestHandled={handlePropertyManagerRequestHandled}
               onColumnRenamed={(oldName, newName, sqlType) => {
                 migrateLegacyGraphColumnName(activeDatasetId, oldName, newName, sqlType);
               }}
@@ -2888,6 +2958,7 @@ export function Workspace() {
           datasetId={activeDatasetId}
           columns={distributionColumns}
           defaultName={nextDistributionAnalysisName(analysisItems)}
+          onManageProperties={handleManageDistributionProperties}
           onCancel={() => setShowDistributionDialog(false)}
           onSubmit={handleCreateDistributionItem}
         />
@@ -2941,6 +3012,7 @@ export function Workspace() {
             columns={analysisEditorColumns}
             defaultName={editingAnalysis.name}
             initialItem={toAnalysisEditorItem(editingAnalysis)}
+            onManageProperties={handleManageDistributionProperties}
             onCancel={() => setEditingAnalysisId(null)}
             onSubmit={(submitted) => handleUpdateDistributionAnalysisInputs(editingAnalysis, submitted)}
           />

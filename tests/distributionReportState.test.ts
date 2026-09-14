@@ -40,6 +40,13 @@ const analysis: DistributionAnalysisConfig = {
   fitDistributions: [],
 };
 
+const legacyAnalysis: DistributionAnalysisConfig = {
+  ...analysis,
+  specLimits: {
+    height: { lsl: 1, target: 2, usl: 3 },
+  },
+};
+
 function item(overrides: Partial<DistributionItem> = {}): DistributionItem {
   const graph = {
     mode: "2d" as const,
@@ -89,6 +96,7 @@ assert.deepEqual(request, {
   specLimits: {},
   fitDistributions: [],
 });
+assert.deepEqual(createDistributionRequest(item({ analysis: legacyAnalysis }), 7).specLimits, {});
 
 const baseFingerprint = distributionRequestFingerprint(item());
 const requestAffectingMutations: Partial<DistributionItem>[] = [
@@ -98,12 +106,17 @@ const requestAffectingMutations: Partial<DistributionItem>[] = [
   { frequency: null },
   { by: [{ name: "batch", type: "ordinal" }] },
   { analysis: { ...analysis, confidenceLevel: 0.9 } },
-  { analysis: { ...analysis, specLimits: { height: { lsl: 1, target: 2, usl: 3 } } } },
   { analysis: { ...analysis, fitDistributions: ["normal"] } },
 ];
 for (const mutation of requestAffectingMutations) {
   assert.notEqual(distributionRequestFingerprint(item(mutation)), baseFingerprint);
 }
+assert.equal(
+  distributionRequestFingerprint(item({ analysis: legacyAnalysis })),
+  distributionRequestFingerprint(item({
+    analysis: { ...legacyAnalysis, specLimits: {} },
+  })),
+);
 assert.equal(
   distributionRequestFingerprint(item({
     graphs: {
@@ -122,26 +135,6 @@ assert.equal(
   })),
   baseFingerprint,
   "graph-only updates must not affect the report request fingerprint",
-);
-assert.equal(
-  distributionRequestFingerprint(item({
-    analysis: {
-      ...analysis,
-      specLimits: {
-        width: { lsl: null, target: 2, usl: 3 },
-        height: { lsl: 1, target: 2, usl: null },
-      },
-    },
-  })),
-  distributionRequestFingerprint(item({
-    analysis: {
-      ...analysis,
-      specLimits: {
-        height: { usl: null, target: 2, lsl: 1 },
-        width: { usl: 3, target: 2, lsl: null },
-      },
-    },
-  })),
 );
 
 async function testLoadingSuccessAndError(): Promise<void> {

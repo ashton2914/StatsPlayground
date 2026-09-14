@@ -447,6 +447,12 @@
     "roleEmpty": "拖放或指定一列",
     "removeFromRole": "从 {{role}} 中移除 {{column}}",
     "roles": { "y": "Y，响应", "weight": "权重", "frequency": "频数", "by": "分组" },
+    "missingSpecs": {
+      "title": "缺少规格限",
+      "message": "这些响应在表列属性中没有有限的 LSL 或 USL：",
+      "manage": "管理列属性",
+      "continue": "继续且不计算过程能力"
+    },
     "specification": { "lsl": "规格下限", "target": "目标值", "usl": "规格上限" },
     "report": {
       "title": "统计报告", "loading": "正在加载报告...", "overview": "分布概览",

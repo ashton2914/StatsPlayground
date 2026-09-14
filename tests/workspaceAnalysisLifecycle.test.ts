@@ -110,6 +110,36 @@ assert.deepEqual(
   "open hydration must preserve saved analyses and folder assignments",
 );
 
+const canonicalLegacyOverride = {
+  ...analysisItems[0],
+  definition: {
+    ...analysisItems[0].definition,
+    analysis: {
+      ...analysisItems[0].definition.analysis,
+      specLimits: { DIM1: { lsl: 60, target: 100, usl: 140 } },
+    },
+  },
+};
+const canonicalHydrated = hydrateAnalysisProjectPayload({
+  analyses: [canonicalLegacyOverride],
+  analysisFolders,
+});
+assert.equal(canonicalHydrated.migratedCount, 1);
+assert.equal(shouldMarkAnalysisMigrationDirty(canonicalHydrated.migratedCount), true);
+assert.notStrictEqual(canonicalHydrated.analyses[0], canonicalLegacyOverride);
+assert.deepEqual(
+  canonicalHydrated.analyses[0]?.analysisKind === "distribution"
+    ? canonicalHydrated.analyses[0].definition.analysis.specLimits
+    : null,
+  {},
+  "hydration must normalize legacy canonical spec overrides so the project re-saves cleanly",
+);
+assert.deepEqual(
+  canonicalLegacyOverride.definition.analysis.specLimits,
+  { DIM1: { lsl: 60, target: 100, usl: 140 } },
+  "hydration must not mutate the persisted input object",
+);
+
 const legacyDistribution = createDistributionItem({
   id: "distribution-legacy",
   name: "Legacy Distribution",

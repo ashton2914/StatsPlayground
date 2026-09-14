@@ -53,6 +53,22 @@ function analysis(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function withLegacySpecLimits<T extends { definition: { analysis: { specLimits: Record<string, { lsl: number | null; target: number | null; usl: number | null }> } } }>(
+  document: T,
+  specLimits: Record<string, { lsl: number | null; target: number | null; usl: number | null }>,
+): T {
+  return {
+    ...document,
+    definition: {
+      ...document.definition,
+      analysis: {
+        ...document.definition.analysis,
+        specLimits: structuredClone(specLimits),
+      },
+    },
+  };
+}
+
 function fitAnalysis() {
   return createFitYByXAnalysisDocument({
     item: createFitYByXItem({
@@ -192,7 +208,9 @@ function response(datasetId: string, generation: number): DistributionReportResp
   };
 }
 
-const request = createAnalysisExecutionRequest(analysis(), 7);
+const request = createAnalysisExecutionRequest(withLegacySpecLimits(analysis(), {
+  DIM1: { lsl: 1, target: 2, usl: 3 },
+}), 7);
 assert.deepEqual(request, {
   datasetId: "dataset-1",
   generation: 7,
@@ -201,13 +219,7 @@ assert.deepEqual(request, {
   freqColumn: null,
   byColumns: [],
   confidenceLevel: 0.95,
-  specLimits: {
-    DIM1: {
-      lsl: 55,
-      target: 100,
-      usl: 145,
-    },
-  },
+  specLimits: {},
   fitDistributions: ["normal"],
 });
 
@@ -292,6 +304,16 @@ assert.notEqual(
 );
 
 const baseFingerprint = distributionAnalysisDefinitionFingerprint(analysis());
+assert.equal(
+  distributionAnalysisDefinitionFingerprint(withLegacySpecLimits(analysis(), {
+    DIM1: { lsl: 1, target: 2, usl: 3 },
+  })),
+  distributionAnalysisDefinitionFingerprint(withLegacySpecLimits(analysis(), {
+    DIM1: { lsl: 10, target: 20, usl: 30 },
+    DIM2: { lsl: -5, target: 0, usl: 5 },
+  })),
+  "Legacy spec-limit overrides must be normalized away before execution fingerprinting.",
+);
 assert.notEqual(
   distributionAnalysisDefinitionFingerprint(analysis({ configRevision: 2 })),
   baseFingerprint,
@@ -304,6 +326,12 @@ assert.notEqual(
     },
   })),
   baseFingerprint,
+);
+assert.equal(
+  distributionAnalysisDefinitionFingerprint(withLegacySpecLimits(analysis(), {
+    DIM1: { lsl: 1, target: 2, usl: 3 },
+  })),
+  distributionAnalysisDefinitionFingerprint(analysis()),
 );
 assert.equal(
   distributionAnalysisDefinitionFingerprint(analysis({

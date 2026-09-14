@@ -3338,6 +3338,131 @@ mod tests {
     }
 
     #[test]
+    fn table_specs_are_resolved_per_response() {
+        let state = AppState::new().expect("test state");
+        let data = DataService::new(&state);
+        let dataset = data
+            .create_table(
+                "Per Response Specs",
+                &["response_a".into(), "response_b".into()],
+                &["DOUBLE".into(), "DOUBLE".into()],
+            )
+            .expect("create dataset");
+        for (response_a, response_b) in [(1.0, 11.0), (2.0, 12.0), (3.0, 13.0), (4.0, 14.0)] {
+            let row_id = data.add_row(&dataset.id).expect("add row");
+            data.update_cell(&dataset.id, row_id, "response_a", &response_a.to_string())
+                .expect("response_a");
+            data.update_cell(&dataset.id, row_id, "response_b", &response_b.to_string())
+                .expect("response_b");
+        }
+
+        let descriptors = state
+            .db
+            .lock()
+            .expect("db")
+            .get_distribution_columns(&dataset.id)
+            .expect("columns");
+        let response_a = descriptors
+            .iter()
+            .find(|column| column.name == "response_a")
+            .expect("response_a descriptor");
+        let response_b = descriptors
+            .iter()
+            .find(|column| column.name == "response_b")
+            .expect("response_b descriptor");
+
+        state.column_display.lock().expect("display props").insert(
+            dataset.id.clone(),
+            vec![
+                crate::models::table::ColumnDisplayProps {
+                    col_index: response_a.index as usize,
+                    width: None,
+                    format: None,
+                    extras: Some(std::collections::BTreeMap::from([(
+                        "spec".to_string(),
+                        serde_json::json!({ "lsl": 0.0, "usl": 10.0 }),
+                    )])),
+                },
+                crate::models::table::ColumnDisplayProps {
+                    col_index: response_b.index as usize,
+                    width: None,
+                    format: None,
+                    extras: Some(std::collections::BTreeMap::from([(
+                        "spec".to_string(),
+                        serde_json::json!({ "target": 12.5 }),
+                    )])),
+                },
+            ],
+        );
+
+        let mut request = run_request();
+        request.source_dataset_id = Some(dataset.id);
+        request.y_columns = vec![
+            DistributionColumnRefV1 {
+                column_id: response_a.column_id.clone(),
+                modeling_type: DistributionModelingTypeV1::Continuous,
+            },
+            DistributionColumnRefV1 {
+                column_id: response_b.column_id.clone(),
+                modeling_type: DistributionModelingTypeV1::Continuous,
+            },
+        ];
+        request.enabled_capability_ids = vec!["capability.normal.individuals".to_string()];
+        let context = one_shot_context(request.config_revision);
+
+        let result = DistributionService::new(&state)
+            .execute_one_shot(&request, &context)
+            .expect("execute distribution");
+
+        assert_eq!(result.groups.len(), 1);
+        assert_eq!(result.groups[0].y_results.len(), 2);
+
+        let blocks_by_response = result.groups[0]
+            .y_results
+            .iter()
+            .map(|y_result| {
+                (
+                    y_result.y_column.column_id.as_str(),
+                    y_result
+                        .blocks
+                        .iter()
+                        .filter(|block| block.kind == "processCapability")
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let response_a_blocks = blocks_by_response
+            .get(response_a.column_id.as_str())
+            .expect("response_a blocks");
+        assert_eq!(response_a_blocks.len(), 1);
+        assert_eq!(response_a_blocks[0].status, "available");
+        assert_eq!(
+            response_a_blocks[0]
+                .capability_data
+                .as_ref()
+                .expect("response_a capability")
+                .specification
+                .source,
+            "columnProperty"
+        );
+
+        let response_b_blocks = blocks_by_response
+            .get(response_b.column_id.as_str())
+            .expect("response_b blocks");
+        assert!(response_b_blocks.is_empty());
+
+        assert_eq!(
+            result
+                .report_blocks
+                .iter()
+                .filter(|block| block.kind == "processCapability")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn normal_quantile_service_integration_sets_provenance_and_typed_statuses() {
         let state = AppState::new().expect("test state");
         let service = DistributionService::new(&state);
