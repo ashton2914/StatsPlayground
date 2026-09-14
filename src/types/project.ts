@@ -1,5 +1,6 @@
 import type { AnalysisDocument } from "./analysis";
 import type { DistributionItem } from "./distribution";
+import type { DatasetFilterMap } from "@/stores/useDatasetFilterStore";
 import type { ReportItem } from "./report";
 import type {
   TableTransformDefinition,
@@ -38,6 +39,8 @@ export interface OpenProjectResult {
   project: ProjectInfo;
   history: unknown[];
   snapshots: unknown[];
+  datasetFilters: DatasetFilterMap;
+  datasetFilterMigrationConflicts: string[];
   graphBuilders: unknown[];
   fitYByX: unknown[];
   fitModels?: unknown[];

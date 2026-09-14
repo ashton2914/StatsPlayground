@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { APP_VERSION } from "@/appVersion";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useDataStore } from "@/stores/useDataStore";
+import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useTableZoomStore } from "@/stores/useTableZoomStore";
 import {
@@ -290,6 +291,10 @@ export function Workspace() {
   const { openProject } = useProjectStore();
   const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory, invalidateData } = useHistoryStore();
   const graphBuilders = useGraphBuilderStore((s) => s.items);
+  const removeDatasetFilters = useDatasetFilterStore((s) => s.removeDataset);
+  const renameDatasetFilterColumn = useDatasetFilterStore((s) => s.renameColumn);
+  const loadDatasetFiltersFromProject = useDatasetFilterStore((s) => s.loadFromProject);
+  const resetDatasetFilters = useDatasetFilterStore((s) => s.reset);
   const tabulates = useTabulateStore((s) => s.items);
   const workflows = useWorkflowStore((s) => s.workflows);
   const logicalFolders = useWorkflowStore((s) => s.logicalFolders);
@@ -1359,6 +1364,7 @@ export function Workspace() {
       activeAnalysis: activeAnalysis ?? null,
     });
     await dataService.deleteDataset(id);
+    removeDatasetFilters(id);
     if (activeDatasetId === id) setActiveDataset(null);
     // 联动删除引用此数据表的图表
     deleteGraphBuildersByDataset(id);
@@ -1465,6 +1471,7 @@ export function Workspace() {
     flushPendingReportHistory();
     const { snapshots } = useHistoryStore.getState();
     const gbItems = useGraphBuilderStore.getState().items;
+    const datasetFilters = useDatasetFilterStore.getState().toProjectPayload();
     // History is session-only (not persisted); only snapshots are saved.
     // Per issue #7 folder routing for both tables and graphs flows OUT-OF-BAND
     // via the folderPayload — the file bodies (.sptb / .spgh) themselves
@@ -1490,6 +1497,7 @@ export function Workspace() {
           filePath: filePath as string,
           history: [],
           snapshots,
+          datasetFilters,
           graphBuilders: gbItems,
           fitYByX: [],
           tabulates,
@@ -1514,6 +1522,7 @@ export function Workspace() {
         await saveProject({
           history: [],
           snapshots,
+          datasetFilters,
           graphBuilders: gbItems,
           fitYByX: [],
           tabulates,
@@ -1696,6 +1705,7 @@ export function Workspace() {
     resetTabulates();
     resetWorkflows();
     resetTableTransforms();
+    resetDatasetFilters();
     fsReset();
     await initProject();
     await refreshDatasets();
@@ -1718,6 +1728,7 @@ export function Workspace() {
       resetTabulates();
       resetWorkflows();
       resetTableTransforms();
+      resetDatasetFilters();
       setBusyMessage(t("workspace.openingProject"));
       const unlisten = await listen<{
         datasetIndex: number;
@@ -1734,6 +1745,7 @@ export function Workspace() {
       });
       try {
         const result = await openProject(selected as string);
+        loadDatasetFiltersFromProject(result.datasetFilters);
         const analysisProjectPayload = hydrateAnalysisProjectPayload({
           analyses: result.analyses ?? [],
           analysisFolders: result.analysisFolders ?? {},
@@ -1753,6 +1765,15 @@ export function Workspace() {
         resetWorkflows();
         resetTableTransforms();
         await refreshDatasets();
+        if (result.datasetFilterMigrationConflicts.length > 0) {
+          const datasetNames = new Map(
+            useDataStore.getState().datasets.map((dataset) => [dataset.id, dataset.name]),
+          );
+          const names = result.datasetFilterMigrationConflicts
+            .map((datasetId) => datasetNames.get(datasetId) ?? datasetId)
+            .join(", ");
+          showToast(t("workspace.datasetFilterMigrationConflict", { names }), 5000);
+        }
         tableCounter.current = 0;
         // Restore snapshots from project file (history is session-only)
         if (result.snapshots.length > 0) {
@@ -2780,6 +2801,7 @@ export function Workspace() {
               onPropertyManagerRequestHandled={handlePropertyManagerRequestHandled}
               onColumnRenamed={(oldName, newName, sqlType) => {
                 migrateLegacyGraphColumnName(activeDatasetId, oldName, newName, sqlType);
+                renameDatasetFilterColumn(activeDatasetId, oldName, newName);
               }}
             />
           ) : (

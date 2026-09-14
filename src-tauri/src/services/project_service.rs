@@ -8,7 +8,7 @@ use crate::services::archive_cell::{
     archive_cell_to_json, archive_export_expression, is_archive_scalar_type,
 };
 use crate::services::spprj_archive::{
-    self, GraphDoc, ProjectBundle, TableColumn, TableColumnFormat, TableDoc,
+    self, DatasetFilters, GraphDoc, ProjectBundle, TableColumn, TableColumnFormat, TableDoc,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
 use crate::services::table_transform_domain::TableTransformDefinition;
@@ -82,6 +82,10 @@ pub struct OpenProjectResult {
     pub dataset_name_migrations: Vec<DatasetNameMigration>,
     #[serde(default)]
     pub requires_migration: bool,
+    #[serde(default)]
+    pub dataset_filters: DatasetFilters,
+    #[serde(default)]
+    pub dataset_filter_migration_conflicts: Vec<String>,
     /// `tabulateId -> folder path`.
     #[serde(default)]
     pub tabulate_folders: std::collections::HashMap<String, String>,
@@ -219,9 +223,15 @@ impl<'a> ProjectService<'a> {
                 bundle.manifest.version
             )));
         }
+        let filter_migration = spprj_archive::migrate_legacy_graph_filters(
+            &bundle.manifest.dataset_filters,
+            &mut bundle.graphs,
+        )?;
+        bundle.manifest.dataset_filters = filter_migration.dataset_filters;
         let graph_requires_migration = spprj_archive::refresh_project_lineage_graph(&mut bundle)?;
-        let requires_migration =
-            requires_archive_migration(&bundle.manifest.version) || graph_requires_migration;
+        let requires_migration = requires_archive_migration(&bundle.manifest.version)
+            || graph_requires_migration
+            || filter_migration.changed;
         let document_name_migrations = if requires_migration {
             normalize_visible_document_names(&mut bundle)
         } else {
@@ -412,6 +422,8 @@ impl<'a> ProjectService<'a> {
             document_name_migrations,
             dataset_name_migrations,
             requires_migration,
+            dataset_filters: bundle.manifest.dataset_filters.clone(),
+            dataset_filter_migration_conflicts: filter_migration.conflicts,
             tabulate_folders,
             workflows,
             logical_folders,
@@ -1421,6 +1433,7 @@ mod tests {
             distribution_folders: HashMap::new(),
             analysis_folders,
             tabulate_folders,
+            dataset_filters: HashMap::new(),
             workflows: Vec::new(),
             logical_folders: Vec::new(),
             workflow_runs: Vec::new(),
@@ -1536,7 +1549,11 @@ mod tests {
         ]);
 
         ProjectService::new(&state)
-            .export_tables_sptb_zip(&[alpha_id.clone(), beta_id.clone()], &archive_paths, &output_path)
+            .export_tables_sptb_zip(
+                &[alpha_id.clone(), beta_id.clone()],
+                &archive_paths,
+                &output_path,
+            )
             .expect("export nested sptb zip");
 
         let file = std::fs::File::open(&output).expect("open zip output");
@@ -2609,6 +2626,7 @@ mod tests {
             workflow_runs: vec![],
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
+            dataset_filters: HashMap::new(),
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -2830,6 +2848,7 @@ mod tests {
             workflow_runs: vec![],
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
+            dataset_filters: HashMap::new(),
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -2922,6 +2941,85 @@ mod tests {
     }
 
     #[test]
+    fn open_project_migrates_conflicting_legacy_graph_filters() {
+        let state = AppState::new().unwrap();
+        let mut graphs = spprj_archive::build_graph_docs(vec![
+            serde_json::json!({
+                "id": "graph-filtered",
+                "name": "Filtered",
+                "sourceDatasetId": "table-a",
+            }),
+            serde_json::json!({
+                "id": "graph-empty",
+                "name": "Empty",
+                "sourceDatasetId": "table-a",
+            }),
+        ]);
+        graphs[0].body.insert(
+            "filters".to_string(),
+            serde_json::json!([{
+                    "id": "rule-1",
+                    "op": "AND",
+                    "rule": {
+                        "kind": "continuous",
+                        "field": { "name": "Length", "type": "continuous" },
+                        "min": 1.0,
+                        "max": 5.0
+                    }
+                }]),
+        );
+        graphs[1]
+            .body
+            .insert("filters".to_string(), serde_json::json!([]));
+        let folders = HashMap::new();
+        let bundle = spprj_archive::build_bundle(
+            "Legacy Filters".to_string(),
+            "4.0.0".to_string(),
+            "2026-09-14T00:00:00Z".to_string(),
+            vec![table_doc("table-a", "Measurements")],
+            graphs,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let file_path = std::env::temp_dir().join(format!(
+            "sp_legacy_filter_conflict_{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        spprj_archive::write_legacy_project_archive_for_test(
+            &bundle,
+            file_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let result = ProjectService::new(&state)
+            .open_project(file_path.to_str().unwrap(), None)
+            .unwrap();
+
+        assert!(result.requires_migration);
+        assert_eq!(result.dataset_filter_migration_conflicts, vec!["table-a"]);
+        assert!(result.dataset_filters.is_empty());
+        assert!(result.graph_builders.iter().all(|graph| graph
+            .as_object()
+            .is_some_and(|body| !body.contains_key("filters"))));
+
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
     fn future_project_format_is_rejected_before_live_state_replacement() {
         let state = AppState::new().unwrap();
         *state.project.write().unwrap() = Some(ProjectInfo {
@@ -2963,6 +3061,7 @@ mod tests {
             workflow_runs: vec![],
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
+            dataset_filters: HashMap::new(),
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());

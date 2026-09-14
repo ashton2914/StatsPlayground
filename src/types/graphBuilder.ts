@@ -99,10 +99,6 @@ export interface GraphBuilderItem {
   sampling?: GraphSampling;
   /** Persisted theme slot identity by grouping field and normalized group key. */
   groupThemeSlots?: GroupThemeSlots;
-  /** JMP-style Local Data Filter rules. Each rule narrows (AND) or
-   *  expands (OR) the row set fed into the graph. Stored on the item so
-   *  it persists with the project and survives reloads. */
-  filters?: FilterRuleItem[];
   /** 创建时间 ISO 字符串。
  *
  *  注：图所属的文件夹不属于图本身的内禀属性——按 #7 设计，文件夹只
@@ -111,10 +107,14 @@ export interface GraphBuilderItem {
   createdAt: string;
 }
 
+export type GraphRuntimeItem = GraphBuilderItem & {
+  filters?: FilterRuleItem[];
+};
+
 export type EmbeddedGraphConfig = Pick<
   GraphBuilderItem,
-  "mode" | "modeStates" | "filters" | "sampling" | "groupThemeSlots"
->;
+  "mode" | "modeStates" | "sampling" | "groupThemeSlots"
+> & { filters?: FilterRuleItem[] };
 
 export function isCorrelationMatrixItem(item: GraphBuilderItem): boolean {
   const asUnknown = item as unknown as {

@@ -80,6 +80,18 @@ const distribution = createDistributionItem({
 const request: SaveProjectRequest = {
   history: [],
   snapshots: [],
+  datasetFilters: {
+    "table-1": [{
+      id: "filter-height",
+      op: "AND",
+      rule: {
+        kind: "continuous",
+        field: { name: "height", type: "continuous" },
+        min: 10,
+        max: 20,
+      },
+    }],
+  },
   graphBuilders: [],
   fitYByX: [{ id: "fit-1", sourceDatasetId: "table-1" }],
   fitModels: [fitModelWithLoadIssue],
@@ -168,6 +180,8 @@ function resetGraphBuilderStore() {
         tabulateFolders: {},
         datasetNameMigrations: [],
         documentNameMigrations: [],
+        datasetFilters: {},
+        datasetFilterMigrationConflicts: [],
         requiresMigration: false,
       }),
       saveProject: async (req) => {

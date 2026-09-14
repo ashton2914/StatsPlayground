@@ -116,8 +116,6 @@ function activeGraphColumns(graph: GraphBuilderItem): TableInputRequirement {
   if ("multiX" in state) state.multiX.forEach(addField);
   if ("multiY" in state) state.multiY.forEach(addField);
   if ("columns" in state) state.columns.forEach(addField);
-  graph.filters?.forEach((item) => addField(item.rule.field));
-
   if (graph.mode === "2d") {
     const x = graph.modeStates.twoD.encoding.x?.name;
     const y = graph.modeStates.twoD.encoding.y?.name;
@@ -139,7 +137,6 @@ function graphConfiguration(graph: GraphBuilderItem): unknown {
     sourceDatasetId: graph.sourceDatasetId,
     mode: graph.mode,
     activeState,
-    filters: graph.filters ?? [],
     sampling: graph.sampling ?? { mode: "full" },
     groupThemeSlots: graph.groupThemeSlots ?? {},
   };

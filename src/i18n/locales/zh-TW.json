@@ -341,6 +341,7 @@
     "cancelImport": "取消匯入",
     "cancellingImport": "正在取消…",
     "datasetNameMigrations": "開啟專案時已重新命名 {{count}} 個重複的資料表名稱。請儲存專案以保留這些更新後的名稱。",
+    "datasetFilterMigrationConflict": "以下資料表的舊圖形篩選器存在衝突，已被清除：{{names}}。請儲存專案以保留此次移轉。",
     "importProgressTable": "資料表 {{i}}/{{total}}：{{name}}",
     "importProgressRows": "列",
     "createSnapshotTitle": "建立快照",

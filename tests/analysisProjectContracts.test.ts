@@ -74,6 +74,7 @@ const saveRequest = {
   workflows: [],
   logicalFolders: [],
   workflowRuns: [],
+  datasetFilters: {},
 } satisfies SaveProjectRequest;
 
 const openResult = {
@@ -93,6 +94,8 @@ const openResult = {
   analysisFolders: { "analysis-1": "Analyses/Sample" },
   documentNameMigrations: [],
   datasetNameMigrations: [],
+  datasetFilters: {},
+  datasetFilterMigrationConflicts: [],
   requiresMigration: false,
   tabulateFolders: {},
   reportFolders: {},

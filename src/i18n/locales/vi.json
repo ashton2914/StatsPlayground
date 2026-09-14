@@ -341,6 +341,7 @@
     "cancelImport": "Hủy nhập",
     "cancellingImport": "Đang hủy…",
     "datasetNameMigrations": "Đã đổi tên {{count}} bảng có tên trùng khi mở dự án này. Hãy lưu dự án để ghi lại các tên đã cập nhật.",
+    "datasetFilterMigrationConflict": "Các bộ lọc Đồ thị cũ bị xung đột đã được xóa cho các bảng sau: {{names}}. Hãy lưu dự án để ghi lại quá trình chuyển đổi này.",
     "importProgressTable": "Bảng {{i}}/{{total}}: {{name}}",
     "importProgressRows": "hàng",
     "createSnapshotTitle": "Tạo ảnh chụp",

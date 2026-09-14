@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
+import type { DatasetFilterMap } from "@/stores/useDatasetFilterStore";
 import type { ProjectInfo, OpenProjectResult, ImportTableResult } from "@/types/project";
 import type { ReportItem } from "@/types/report";
 import type {
@@ -49,6 +50,7 @@ export interface SaveProjectRequest {
   filePath?: string;
   history: unknown[];
   snapshots: unknown[];
+  datasetFilters: DatasetFilterMap;
   graphBuilders: unknown[];
   fitYByX: unknown[];
   fitModels?: unknown[];

@@ -366,6 +366,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             &snapshot.request.distribution_folders,
             &snapshot.request.analysis_folders,
             &snapshot.request.tabulate_folders,
+            &snapshot.request.dataset_filters,
             snapshot.request.history.clone(),
             snapshot.request.snapshots.clone(),
             snapshot.request.workflows.clone(),
@@ -790,11 +791,11 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             let analysis_doc = analysis_by_id
                 .get(analysis_ref.id.as_str())
                 .ok_or_else(|| {
-                AppError::FileIO(format!(
-                    "missing analysis payload for manifest reference {}",
-                    analysis_ref.id
-                ))
-            })?;
+                    AppError::FileIO(format!(
+                        "missing analysis payload for manifest reference {}",
+                        analysis_ref.id
+                    ))
+                })?;
             zip.start_file(&analysis_ref.file, file_opts)
                 .map_err(|e| AppError::FileIO(e.to_string()))?;
             serde_json::to_writer(&mut zip, analysis_doc)
@@ -1436,6 +1437,7 @@ mod tests {
                 distribution_folders: HashMap::new(),
                 analysis_folders: HashMap::new(),
                 tabulate_folders: HashMap::new(),
+                dataset_filters: HashMap::new(),
                 workflows: vec![],
                 logical_folders: vec![],
                 workflow_runs: vec![],
@@ -1702,6 +1704,7 @@ mod tests {
                     "Root/Nested/Leaf".to_string(),
                 )]),
                 tabulate_folders: HashMap::from([("tab-1".to_string(), "Root".to_string())]),
+                dataset_filters: HashMap::new(),
                 workflows: vec![],
                 logical_folders: vec![],
                 workflow_runs: vec![],
@@ -1841,7 +1844,10 @@ mod tests {
 
         let reopened = spprj_archive::read_project_file(destination.to_str().unwrap()).unwrap();
         assert_eq!(reopened.manifest.workflow_files.len(), 1);
-        assert_eq!(reopened.manifest.workflow_files[0].file, "workflow/workflow-1.spwf");
+        assert_eq!(
+            reopened.manifest.workflow_files[0].file,
+            "workflow/workflow-1.spwf"
+        );
         assert_eq!(reopened.workflows.len(), 1);
         assert_eq!(reopened.workflows[0].revision, 2);
 

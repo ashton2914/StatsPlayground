@@ -12,7 +12,7 @@ import { dataService } from "@/services/dataService";
 import { useGraphPaletteStore } from "@/stores/useGraphPaletteStore";
 import type { ColumnMeta, DatasetMeta } from "@/types/data";
 import type { GraphDataFrame } from "@/types/graphData";
-import type { GraphBuilderItem } from "@/types/graphBuilder";
+import type { GraphRuntimeItem } from "@/types/graphBuilder";
 
 import { reconcileGraphColumnIdentities, type GraphColumnDescriptor } from "./graphColumnIdentity";
 import { getRawPointNotice } from "./graphSamplingPolicy";
@@ -37,7 +37,7 @@ import {
 export type { ExternalGraphDataState } from "./useGraphDataPipeline";
 
 export interface GraphRuntimeProps {
-  item: GraphBuilderItem;
+  item: GraphRuntimeItem;
   dataset: DatasetMeta;
   minPanelHeight?: number;
   panelLayout?: "scroll" | "fit";
@@ -52,7 +52,7 @@ export interface GraphRuntimeProps {
   onXAxisDblClick?: () => void;
   onAxisRangeChange?: (axis: "x" | "y", min: number, max: number) => void;
   onAxisContextMenu?: (axis: "x" | "y", x: number, y: number) => void;
-  onItemReconciled?: (item: GraphBuilderItem) => void;
+  onItemReconciled?: (item: GraphRuntimeItem) => void;
   onStateChange?: (state: GraphRuntimeState) => void;
 }
 

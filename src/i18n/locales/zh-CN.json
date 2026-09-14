@@ -344,6 +344,7 @@
     "cancelImport": "取消导入",
     "cancellingImport": "正在取消…",
     "datasetNameMigrations": "打开项目时已重命名 {{count}} 个重复的数据表名称。保存项目以持久化这些更新后的名称。",
+    "datasetFilterMigrationConflict": "以下数据表的旧图形筛选器存在冲突，已被清空：{{names}}。请保存项目以持久化此次迁移。",
     "importProgressTable": "表 {{i}}/{{total}}: {{name}}",
     "importProgressRows": "行",
     "createSnapshotTitle": "创建快照",
