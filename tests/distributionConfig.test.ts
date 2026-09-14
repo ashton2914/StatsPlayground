@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   canAssignDistributionRole,
   createDefaultDistributionAnalysisConfig,
+  validateDistributionContinuousFitConfig,
   createDistributionItem,
   createDefaultDistributionVisualDiagnosticsConfig,
   createCapabilityOverrideRegistry,
@@ -107,6 +108,16 @@ assert.equal(validateDistributionAnalysisConfig({
   fitDistributions: [],
   fitAll: false,
 }), "fitSelectionRequired");
+assert.deepEqual(validateDistributionContinuousFitConfig({
+  enabledDistributionIds: [],
+  fitAll: false,
+  diagnostics: {
+    goodnessOfFit: false,
+    qqPlot: false,
+    cdfPlot: false,
+    ppPlot: false,
+  },
+}), []);
 assert.equal(
   validateDistributionVisualDiagnosticsConfig({
     histogram: {
@@ -153,7 +164,7 @@ assert.equal(
   )[0]?.code,
   "distribution.config.freqNotIntegerCompatible",
 );
-assert.equal(
+assert.deepEqual(
   validateDistributionConfig(
     {
       ...config,
@@ -169,8 +180,8 @@ assert.equal(
       },
     },
     columns,
-  )[0]?.code,
-  "distribution.config.continuousFitSelectionRequired",
+  ),
+  [],
 );
 assert.deepEqual(
   validateDistributionConfig(

@@ -142,7 +142,7 @@ assert.deepEqual(continuousFit, {
   },
 });
 assert.deepEqual(createDefaultDistributionContinuousFitConfig(), {
-  enabledDistributionIds: [],
+  enabledDistributionIds: ["normal"],
   fitAll: false,
   diagnostics: {
     goodnessOfFit: false,
@@ -168,6 +168,29 @@ assert.deepEqual(
       fieldPath: "continuousFit.enabledDistributionIds[2]",
     },
   ],
+);
+assert.deepEqual(createDefaultDistributionContinuousFitConfig(), {
+  enabledDistributionIds: ["normal"],
+  fitAll: false,
+  diagnostics: {
+    goodnessOfFit: false,
+    qqPlot: false,
+    cdfPlot: false,
+    ppPlot: false,
+  },
+});
+assert.deepEqual(
+  validateDistributionContinuousFitConfig({
+    enabledDistributionIds: [],
+    fitAll: false,
+    diagnostics: {
+      goodnessOfFit: false,
+      qqPlot: false,
+      cdfPlot: false,
+      ppPlot: false,
+    },
+  }),
+  [],
 );
 
 const fitCapabilities = DISTRIBUTION_FIT_CAPABILITY_REGISTRY.filter(

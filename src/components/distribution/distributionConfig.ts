@@ -384,13 +384,6 @@ export function validateDistributionContinuousFitConfig(
   continuousFit: DistributionContinuousFitConfigV1,
 ): DistributionConfigErrorV1[] {
   const errors: DistributionConfigErrorV1[] = [];
-  if (!hasContinuousFitSelection(continuousFit.fitAll, continuousFit.enabledDistributionIds)) {
-    errors.push(error(
-      "distribution.config.continuousFitSelectionRequired",
-      "distribution.errors.fitSelectionRequired",
-      "continuousFit.enabledDistributionIds",
-    ));
-  }
   const seenDistributionIds = new Set<ContinuousDistributionIdV1>();
   continuousFit.enabledDistributionIds.forEach((distributionId, index) => {
     if (!isDistributionFitImplemented(distributionId)) {
