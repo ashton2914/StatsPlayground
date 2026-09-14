@@ -1162,6 +1162,134 @@ mod tests {
     }
 
     #[test]
+    fn cpm_mixed_scale_points_and_intervals_remain_available() {
+        let summary = NormalProcessSummaryV1 {
+            n: 10,
+            mean: 0.0,
+            moving_range_average: None,
+            d2: 2.0 / std::f64::consts::PI.sqrt(),
+            within_sigma: Some(0.5),
+            overall_sigma: Some(0.5),
+        };
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: Some(0.0),
+            usl: Some(3.0),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        for (sigma, span, expected_point) in [
+            (0.5, 1e308, 3.333333333333333e307),
+            (0.25, 5e307, 3.333333333333333e307),
+            (1.0, 1e308, 1.6666666666666666e307),
+            (1e308, 1e308, 1.0 / 6.0),
+            (1e308, 10.0, 1.6666666666666667e-308),
+            (1e-308, 3.0, 5e307),
+            (1e-308, 1e-307, 1.6666666666666667),
+        ] {
+            let mixed_summary = NormalProcessSummaryV1 {
+                within_sigma: Some(sigma),
+                overall_sigma: Some(sigma),
+                ..summary.clone()
+            };
+            let mixed_limits = SpecificationLimitsV1 {
+                usl: Some(span),
+                ..limits.clone()
+            };
+            let indices = capability_indices(&mixed_summary, &mixed_limits);
+            let intervals = capability_intervals(&mixed_summary, &indices, limits.target, 0.95);
+            if sigma == 0.5 && span == 1e308 {
+                for (actual, expected) in [
+                    (&intervals.cpm_overall.lower, 2.1001417928947413e307),
+                    (&intervals.cpm_overall.upper, 5.290648064193824e307),
+                    (&intervals.cpm_within.lower, 1.8595612320219735e307),
+                    (&intervals.cpm_within.upper, 5.975125163815964e307),
+                ] {
+                    assert_eq!(actual.state, NumericStateV1::Available);
+                    assert!((actual.value.unwrap() / expected - 1.0).abs() < 1e-11);
+                }
+            }
+            for (actual, expected) in [
+                (&indices.cpm_overall, expected_point),
+                (&indices.cpm_within, expected_point),
+                (
+                    &intervals.cpm_overall.lower,
+                    expected_point * 0.6300425378684224,
+                ),
+                (
+                    &intervals.cpm_overall.upper,
+                    expected_point * 1.5871944192581472,
+                ),
+                (
+                    &intervals.cpm_within.lower,
+                    expected_point * 0.557868369606592,
+                ),
+                (
+                    &intervals.cpm_within.upper,
+                    expected_point * 1.7925375491447895,
+                ),
+            ] {
+                assert_eq!(
+                    actual.state,
+                    NumericStateV1::Available,
+                    "sigma={sigma}, span={span}: {actual:?}"
+                );
+                assert!(
+                    (actual.value.unwrap() / expected - 1.0).abs() < 1e-11,
+                    "sigma={sigma}, span={span}: expected {expected}, got {actual:?}"
+                );
+            }
+            assert_eq!(
+                intervals.cpm_within.interval_method.as_deref(),
+                Some("movingRangeEffectiveDfLogDeltaCpm.v1")
+            );
+            assert_eq!(
+                intervals.cpm_overall.interval_method.as_deref(),
+                Some("logDeltaCpm.v1")
+            );
+        }
+    }
+
+    #[test]
+    fn cpm_mixed_scale_subnormal_point_does_not_round_early() {
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: Some(0.0),
+            usl: Some(f64::from_bits(3)),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        let point = indices_for_sigma(0.0, Some(0.5), &limits, false).target;
+        assert_eq!(point.state, NumericStateV1::Available);
+        assert_eq!(point.value, Some(f64::from_bits(1)));
+        let underflow = indices_for_sigma(
+            0.0,
+            Some(1.0),
+            &SpecificationLimitsV1 {
+                usl: Some(f64::from_bits(1)),
+                ..limits
+            },
+            false,
+        )
+        .target;
+        assert_eq!(underflow.state, NumericStateV1::Unavailable);
+        assert_eq!(underflow.value, None);
+    }
+
+    #[test]
+    fn cpm_mixed_scale_rejects_nonpositive_span_or_denominator() {
+        for (sigma, lsl, usl) in [(-0.5, 0.0, 1e308), (0.5, 1.0, 0.0), (0.5, 1.0, 1.0)] {
+            let limits = SpecificationLimitsV1 {
+                lsl: Some(lsl),
+                target: Some(0.0),
+                usl: Some(usl),
+                source: SpecificationSourceV1::ColumnProperty,
+            };
+            let point = indices_for_sigma(0.0, Some(sigma), &limits, false).target;
+            assert_eq!(point.state, NumericStateV1::Unavailable, "{point:?}");
+            assert_eq!(point.value, None);
+        }
+    }
+
+    #[test]
     fn cpm_intervals_reject_unrepresentable_uncertainty() {
         for (sigma, mean) in [(1e-320, 1e308), (1e-200, 1e100)] {
             let interval = cpm_log_delta_interval(
@@ -1899,7 +2027,15 @@ fn indices_for_sigma(
         _ => not_applicable(),
     };
     let target = match (limits.lsl, limits.target, limits.usl) {
-        (Some(lsl), Some(target), Some(usl)) => {
+        (Some(lsl), Some(target), Some(usl))
+            if sigma.is_finite()
+                && sigma > 0.0
+                && mean.is_finite()
+                && target.is_finite()
+                && lsl.is_finite()
+                && usl.is_finite()
+                && usl > lsl =>
+        {
             let (scale, scaled_sigma, scaled_delta) = cpm_scaled_components(sigma, mean, target);
             let span = usl - lsl;
             let scaled_span = if span.is_finite() {
@@ -1907,8 +2043,26 @@ fn indices_for_sigma(
             } else {
                 usl / scale - lsl / scale
             };
-            available(scaled_span / (6.0 * scaled_sigma.hypot(scaled_delta)))
+            let scaled_denominator = 6.0 * scaled_sigma.hypot(scaled_delta);
+            let ratio = scaled_span / scaled_denominator;
+            let point = if scaled_span.is_normal() && ratio.is_normal() {
+                ratio
+            } else {
+                let log_span = if span.is_finite() {
+                    span.ln()
+                } else {
+                    let span_scale = usl.abs().max(lsl.abs());
+                    span_scale.ln() + (usl / span_scale - lsl / span_scale).ln()
+                };
+                (log_span - scale.ln() - scaled_denominator.ln()).exp()
+            };
+            if point.is_finite() && point > 0.0 {
+                available(point)
+            } else {
+                unavailable(unavailable_reason)
+            }
         }
+        (Some(_), Some(_), Some(_)) => unavailable(unavailable_reason),
         _ => not_applicable(),
     };
     SigmaIndices {
