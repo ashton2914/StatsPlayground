@@ -10,6 +10,10 @@ import type { GraphSpec, GraphData, ChartElement, FieldRef, GroupStyle, MarkerSh
 import { DEFAULT_GROUP_KEY } from "./types.ts";
 import { buildAxisCommon, buildCorrelationDivergingPalette, type GraphTheme } from "./theme.ts";
 import { buildBandSeries, FIT_BAND_ID_PREFIX } from "./confidenceBand.ts";
+import {
+  distributionFitColor,
+  distributionIdFromFitSeriesId,
+} from "./distributionFitStyle.ts";
 import type {
   BoxPlotPacket,
   CorrelationMatrixPacket,
@@ -1651,7 +1655,9 @@ function buildPrecomputedCurveSeries(
   packet: PrecomputedCurvePacket,
   seriesName: string,
   style: ResolvedGroupStyle,
+  categorical: readonly string[],
 ): Record<string, unknown> {
+  const distributionId = distributionIdFromFitSeriesId(packet.seriesId);
   return {
     id: packet.seriesId ?? packet.elementId,
     type: "line",
@@ -1662,7 +1668,9 @@ function buildPrecomputedCurveSeries(
     smooth: false,
     step: packet.interpolation === "stepEnd" ? "end" : undefined,
     lineStyle: {
-      color: style.line.color,
+      color: distributionId
+        ? distributionFitColor(distributionId, categorical)
+        : style.line.color,
       width: style.line.width,
       opacity: style.line.opacity,
     },
@@ -5327,7 +5335,12 @@ function buildSingleOption(
         if (!elementId) continue;
         const resolvedStyle = resolvedStyleFor(DEFAULT_GROUP_KEY);
         for (const packet of findPrecomputedCurvePackets(aggregatePackets, elementId)) {
-          series.push(buildPrecomputedCurveSeries(packet, packet.seriesName ?? "", resolvedStyle));
+          series.push(buildPrecomputedCurveSeries(
+            packet,
+            packet.seriesName ?? "",
+            resolvedStyle,
+            theme.categorical,
+          ));
         }
       }
 
@@ -5859,7 +5872,12 @@ function buildSingleOption(
             for (const curvePacket of curvePackets) {
               const emittedSeriesId = curvePacket.seriesId ?? curvePacket.elementId;
               if (emittedPrecomputedSeriesIds.has(emittedSeriesId)) continue;
-              series.push(buildPrecomputedCurveSeries(curvePacket, seriesName, resolvedStyle));
+              series.push(buildPrecomputedCurveSeries(
+                curvePacket,
+                seriesName,
+                resolvedStyle,
+                theme.categorical,
+              ));
               emittedPrecomputedSeriesIds.add(emittedSeriesId);
             }
             return;

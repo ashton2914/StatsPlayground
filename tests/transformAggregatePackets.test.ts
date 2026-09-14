@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter.ts";
+import {
+  DISTRIBUTION_FIT_ORDER,
+  distributionFitColor,
+} from "../src/graphCore/distributionFitStyle.ts";
 import type { GraphTheme } from "../src/graphCore/theme.ts";
 import { DEFAULT_GROUP_KEY } from "../src/graphCore/types.ts";
 import type { GraphData, GraphSpec } from "../src/graphCore/types.ts";
@@ -83,6 +87,75 @@ function panelSeries(option: Record<string, unknown>): Array<Record<string, unkn
   const series = option.series;
   if (!Array.isArray(series)) return [];
   return series as Array<Record<string, unknown>>;
+}
+
+{
+  const palette = ["#101010", "#202020", "#303030", "#404040", "#505050", "#606060"];
+  assert.equal(distributionFitColor("normal", palette), palette[0]);
+  assert.equal(distributionFitColor("cauchy", palette), palette[1]);
+  assert.notEqual(distributionFitColor("normal", palette), distributionFitColor("weibull", palette));
+
+  const fitTheme: GraphTheme = { ...theme, categorical: palette };
+  const elementId = "distribution.overview.fittedCurves";
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true },
+      { kind: "line", enabled: true, options: { elementId } },
+    ],
+  };
+  const frame = baseFrame([
+    {
+      kind: "histogram",
+      xColumn: "measurement",
+      totalCount: 1,
+      bins: [{ binStart: 0, binEnd: 1, count: 1 }],
+    },
+    ...DISTRIBUTION_FIT_ORDER.map((distributionId, index) => ({
+      kind: "precomputedCurve" as const,
+      elementId,
+      seriesId: `measurement:fit:${distributionId}`,
+      interpolation: "linear" as const,
+      points: [{ x: 0, y: index + 1 }, { x: 1, y: index + 1 }],
+    })),
+    {
+      kind: "precomputedCurve" as const,
+      elementId,
+      seriesId: "measurement:fit:normal:extra",
+      interpolation: "linear" as const,
+      points: [{ x: 0, y: 7 }, { x: 1, y: 7 }],
+    },
+    {
+      kind: "precomputedCurve" as const,
+      elementId,
+      seriesId: "measurement:reference",
+      interpolation: "linear" as const,
+      points: [{ x: 0, y: 8 }, { x: 1, y: 8 }],
+    },
+  ]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), fitTheme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const curves = panelSeries(option).filter((entry) => String(entry.id).includes(":fit:"));
+  const knownCurves = curves.filter((entry) => DISTRIBUTION_FIT_ORDER.some(
+    (distributionId) => entry.id === `measurement:fit:${distributionId}`,
+  ));
+  assert.equal(knownCurves.length, DISTRIBUTION_FIT_ORDER.length);
+  assert.deepEqual(
+    knownCurves.map((entry) => (entry.lineStyle as { color: string }).color),
+    DISTRIBUTION_FIT_ORDER.map((distributionId) => distributionFitColor(distributionId, palette)),
+  );
+  assert.equal(
+    new Set(knownCurves.map((entry) => (entry.lineStyle as { color: string }).color)).size,
+    DISTRIBUTION_FIT_ORDER.length,
+  );
+  const unknownCurve = curves.find((entry) => entry.id === "measurement:fit:normal:extra");
+  const referenceCurve = panelSeries(option).find((entry) => entry.id === "measurement:reference");
+  assert.equal(
+    (unknownCurve?.lineStyle as { color: string }).color,
+    (referenceCurve?.lineStyle as { color: string }).color,
+    "a non-stable fit suffix must retain the existing group style",
+  );
 }
 
 function throwOnAnyRowAccess(label: string): unknown[][] {

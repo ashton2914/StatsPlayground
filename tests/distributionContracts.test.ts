@@ -19,6 +19,7 @@ import {
   createDefaultDistributionContinuousFitConfig,
   validateDistributionContinuousFitConfig,
 } from "../src/components/distribution/distributionConfig.ts";
+import { DISTRIBUTION_FIT_ORDER } from "../src/graphCore/distributionFitStyle.ts";
 
 const chartKinds = [
   "histogramData",
@@ -198,7 +199,7 @@ const fitCapabilities = DISTRIBUTION_FIT_CAPABILITY_REGISTRY.filter(
 );
 assert.deepEqual(
   fitCapabilities.map((capability) => capability.distributionId),
-  ["normal", "cauchy", "lognormal", "exponential", "gamma", "weibull"],
+  DISTRIBUTION_FIT_ORDER,
 );
 assert.equal(
   fitCapabilities.every((capability) => capability.compatibilityStatus === "compatibilityPending"),

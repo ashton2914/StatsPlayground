@@ -1,4 +1,5 @@
 import type { FieldRef } from "@/graphCore";
+import { DISTRIBUTION_FIT_ORDER } from "@/graphCore/distributionFitStyle";
 
 import {
   createDefaultGraph2DState,
@@ -277,56 +278,59 @@ export interface CapabilityOverrideRegistryV1 {
   validate: (envelope: CapabilityOverrideEnvelopeV1) => DistributionConfigErrorV1[];
 }
 
-export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[] = [
-  {
-    distributionId: "normal",
+const DISTRIBUTION_FIT_CAPABILITY_BY_ID = {
+  normal: {
     methodId: "fit.normal.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "normal.locationScale.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "cauchy",
+  cauchy: {
     methodId: "fit.cauchy.locationScale.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "cauchy.locationScale.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "lognormal",
+  lognormal: {
     methodId: "fit.lognormal.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "lognormal.logLocationLogScale.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "exponential",
+  exponential: {
     methodId: "fit.exponential.location0.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "exponential.scaleLocation0.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "gamma",
+  gamma: {
     methodId: "fit.gamma.shapeScale.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "gamma.shapeScale.location0.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "weibull",
+  weibull: {
     methodId: "fit.weibull.shapeScale.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "weibull.shapeScale.location0.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-] as const;
+} satisfies Record<
+  ContinuousDistributionIdV1,
+  Omit<DistributionFitCapabilityV1, "distributionId">
+>;
+
+export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[] =
+  DISTRIBUTION_FIT_ORDER.map((distributionId) => ({
+    distributionId,
+    ...DISTRIBUTION_FIT_CAPABILITY_BY_ID[distributionId],
+  }));
 
 const IMPLEMENTED_DISTRIBUTION_FIT_IDS = new Set<ContinuousDistributionIdV1>(
   DISTRIBUTION_FIT_CAPABILITY_REGISTRY

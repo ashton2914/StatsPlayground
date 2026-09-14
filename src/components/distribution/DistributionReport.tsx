@@ -6,6 +6,8 @@ import {
   AnalysisTable,
   AnalysisText,
 } from "@/components/analysis/presentation";
+import { distributionFitColor } from "@/graphCore/distributionFitStyle";
+import { getGraphTheme } from "@/graphCore/theme";
 import type {
   DistributionGroupResult,
   DistributionGroupValueV1,
@@ -153,6 +155,21 @@ export function ReportBlock({ block }: { block: ReportBlockLike }) {
       data-analysis-surface={getReportSurfaceKind(block)}
     >
       <AnalysisStack>
+      {block.distributionFitData && (
+        <AnalysisText data-testid={`distribution-fit-report-title-${block.blockId}`}>
+          <span
+            className="distribution-fit-report-swatch"
+            aria-hidden="true"
+            style={{
+              backgroundColor: distributionFitColor(
+                block.distributionFitData.distributionId,
+                getGraphTheme().categorical,
+              ),
+            }}
+          />
+          <span className="distribution-fit-report-label">{blockTitle}</span>
+        </AnalysisText>
+      )}
       {compatibilityStatus && (
         <AnalysisText>
           {t(`distribution.compatibility.${compatibilityStatus}`)}

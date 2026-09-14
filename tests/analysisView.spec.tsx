@@ -430,6 +430,9 @@ test("Distribution response tree keeps layout bounded on desktop and narrow widt
 
   const overallResponses = directChildFrames(groupFrames.first());
   const firstOverallSurface = responseSurface(overallResponses.first(), "overall");
+  const firstFitSurface = responseSurface(overallResponses.first(), "continuousFit");
+  await expect(firstFitSurface.locator(".distribution-fit-report-swatch")).toHaveCount(1);
+  await expect(firstFitSurface.getByRole("button", { name: "Continuous Fit - Normal" })).toBeVisible();
   const firstCompactTable = firstOverallSurface.locator(".analysis-ui-table-compact").first();
   await expect(firstCompactTable).toHaveCSS("width", "520px");
   await expect.poll(async () => {

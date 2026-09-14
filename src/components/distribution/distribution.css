@@ -319,6 +319,20 @@
   overflow-wrap: anywhere;
 }
 
+.distribution-fit-report-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  margin-right: 7px;
+  border: 1px solid rgb(0 0 0 / 24%);
+  vertical-align: -1px;
+}
+
+.distribution-fit-report-label {
+  overflow-wrap: anywhere;
+}
+
 .distribution-role-zone {
   min-height: 88px;
   padding: 10px;
