@@ -18,7 +18,9 @@ import { TableWindowCache } from "@/utils/tableWindowCache";
 import { calculatePlaceholderRange, canMaterializeSelection, calculateTableWindow, isStaleDatasetGenerationError, MAX_MATERIALIZED_SELECTION_ITEMS, queryTableWindowWithFreshGeneration, RequestEpoch, serializeTableWindowFilters, shouldReloadDatasetRevision, windowRowAt, type DatasetRevision } from "@/utils/tableViewport";
 import { inferFieldType, type FieldRef, type GraphData } from "@/graphCore";
 import { FilterPanel } from "@/components/filter";
+import { PanelSplitter } from "@/components/layout";
 import type { FilterRuleItem } from "@/types/filter";
+import { useLayoutPreferencesStore } from "@/stores/useLayoutPreferencesStore";
 import {
   createTableRenderLoadToken,
   useTablePropertyManagerController,
@@ -62,6 +64,20 @@ const OVERSCAN = 10; // extra rows above/below viewport
 const COLUMN_OVERSCAN = 4; // extra columns left/right of viewport
 const TABLE_WINDOW_SIZE = 500;
 const TABLE_CACHE_ROW_LIMIT = 5_000;
+const TABLE_FILTER_PANEL_ID = "table.filter" as const;
+const TABLE_COLUMNS_PANEL_ID = "table.columns" as const;
+const TABLE_FILTER_DEFAULT_WIDTH = 260;
+const TABLE_FILTER_MIN_WIDTH = 200;
+const TABLE_FILTER_MAX_WIDTH = 500;
+const TABLE_COLUMNS_DEFAULT_WIDTH = 200;
+const TABLE_COLUMNS_MIN_WIDTH = 120;
+const TABLE_COLUMNS_MAX_WIDTH = 600;
+const TABLE_FILTER_SPLITTER_LABEL = "Resize data table filter panel";
+const TABLE_COLUMNS_SPLITTER_LABEL = "Resize data table columns panel";
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
 
 // Shared empty Set so resetting "selected rows/cols" to empty doesn't
 // allocate a new reference every time and trigger downstream re-renders.
@@ -802,18 +818,26 @@ export function DataTableView({
 
   const tableFilters = useDatasetFilterStore((state) => state.byDataset[datasetId] ?? EMPTY_FILTERS);
   const replaceDatasetFilters = useDatasetFilterStore((state) => state.replaceFilters);
+  const persistedTableFilterWidth = useLayoutPreferencesStore((state) => state.sizes[TABLE_FILTER_PANEL_ID]);
+  const persistedColsPanelWidth = useLayoutPreferencesStore((state) => state.sizes[TABLE_COLUMNS_PANEL_ID]);
+  const setPanelSizePreference = useLayoutPreferencesStore((state) => state.setPanelSize);
+  const resetPanelSizePreference = useLayoutPreferencesStore((state) => state.resetPanelSize);
   const tableFiltersRef = useRef<FilterRuleItem[]>([]);
   tableFiltersRef.current = tableFilters;
   const [showTableFilters, setShowTableFilters] = useState(false);
-  // Width of the FilterPanel column. Clamped at render time by the
-  // splitter (see handler below). Same defaults as the Graph Builder.
-  const [tableFilterWidth, setTableFilterWidth] = useState(260);
+  const [tableFilterWidth, setTableFilterWidth] = useState(() => clamp(
+    persistedTableFilterWidth ?? TABLE_FILTER_DEFAULT_WIDTH,
+    TABLE_FILTER_MIN_WIDTH,
+    TABLE_FILTER_MAX_WIDTH,
+  ));
 
   // Left "Columns" panel (collapsible)
   const [colsPanelCollapsed, setColsPanelCollapsed] = useState(false);
-  // Width of the left columns panel; user-resizable via the splitter on its
-  // right edge. Clamped between 120 and 600 px.
-  const [colsPanelWidth, setColsPanelWidth] = useState(200);
+  const [colsPanelWidth, setColsPanelWidth] = useState(() => clamp(
+    persistedColsPanelWidth ?? TABLE_COLUMNS_DEFAULT_WIDTH,
+    TABLE_COLUMNS_MIN_WIDTH,
+    TABLE_COLUMNS_MAX_WIDTH,
+  ));
   const colsPanelAnchorRef = useRef<number | null>(null);
 
   // Excel-like formula bar state lives inside <FormulaBar /> now.
@@ -4290,25 +4314,24 @@ export function DataTableView({
               categoricalMode="exclude"
               getCategoricalValues={getTableCategoricalValues}
             />
-            <div
-              className="sp-cols-panel-splitter"
-              title={t("graph.resizePanel", { defaultValue: "Drag to resize" })}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                const startX = e.clientX;
-                const startW = tableFilterWidth;
-                const onMove = (ev: MouseEvent) => {
-                  const next = Math.max(200, Math.min(500, startW + (ev.clientX - startX)));
-                  setTableFilterWidth(next);
-                };
-                const onUp = () => {
-                  document.removeEventListener("mousemove", onMove);
-                  document.removeEventListener("mouseup", onUp);
-                };
-                document.addEventListener("mousemove", onMove);
-                document.addEventListener("mouseup", onUp);
+            <PanelSplitter
+              orientation="vertical"
+              value={tableFilterWidth}
+              min={TABLE_FILTER_MIN_WIDTH}
+              max={TABLE_FILTER_MAX_WIDTH}
+              defaultValue={TABLE_FILTER_DEFAULT_WIDTH}
+              unit="px"
+              label={TABLE_FILTER_SPLITTER_LABEL}
+              onChange={(nextWidth) => setTableFilterWidth(clamp(nextWidth, TABLE_FILTER_MIN_WIDTH, TABLE_FILTER_MAX_WIDTH))}
+              onCommit={(nextWidth) => {
+                const preferredWidth = clamp(nextWidth, TABLE_FILTER_MIN_WIDTH, TABLE_FILTER_MAX_WIDTH);
+                setTableFilterWidth(preferredWidth);
+                setPanelSizePreference(TABLE_FILTER_PANEL_ID, preferredWidth);
               }}
-              onDoubleClick={() => setTableFilterWidth(260)}
+              onReset={() => {
+                setTableFilterWidth(TABLE_FILTER_DEFAULT_WIDTH);
+                resetPanelSizePreference(TABLE_FILTER_PANEL_ID);
+              }}
             />
           </>
         )}
@@ -4347,29 +4370,24 @@ export function DataTableView({
             />
           </div>
           {/* Splitter: drag to resize the columns panel width. */}
-          <div
-            className="sp-cols-panel-splitter"
-            title={t("dataTable.resizeColPanel")}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              const startX = e.clientX;
-              const startW = colsPanelWidth;
-              const onMove = (ev: MouseEvent) => {
-                const next = Math.max(120, Math.min(600, startW + (ev.clientX - startX)));
-                setColsPanelWidth(next);
-              };
-              const onUp = () => {
-                document.removeEventListener("mousemove", onMove);
-                document.removeEventListener("mouseup", onUp);
-                document.body.style.cursor = "";
-                document.body.style.userSelect = "";
-              };
-              document.addEventListener("mousemove", onMove);
-              document.addEventListener("mouseup", onUp);
-              document.body.style.cursor = "col-resize";
-              document.body.style.userSelect = "none";
+          <PanelSplitter
+            orientation="vertical"
+            value={colsPanelWidth}
+            min={TABLE_COLUMNS_MIN_WIDTH}
+            max={TABLE_COLUMNS_MAX_WIDTH}
+            defaultValue={TABLE_COLUMNS_DEFAULT_WIDTH}
+            unit="px"
+            label={TABLE_COLUMNS_SPLITTER_LABEL}
+            onChange={(nextWidth) => setColsPanelWidth(clamp(nextWidth, TABLE_COLUMNS_MIN_WIDTH, TABLE_COLUMNS_MAX_WIDTH))}
+            onCommit={(nextWidth) => {
+              const preferredWidth = clamp(nextWidth, TABLE_COLUMNS_MIN_WIDTH, TABLE_COLUMNS_MAX_WIDTH);
+              setColsPanelWidth(preferredWidth);
+              setPanelSizePreference(TABLE_COLUMNS_PANEL_ID, preferredWidth);
             }}
-            onDoubleClick={() => setColsPanelWidth(200)}
+            onReset={() => {
+              setColsPanelWidth(TABLE_COLUMNS_DEFAULT_WIDTH);
+              resetPanelSizePreference(TABLE_COLUMNS_PANEL_ID);
+            }}
           />
           </>
         )}

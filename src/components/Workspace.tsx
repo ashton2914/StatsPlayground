@@ -23,6 +23,7 @@ import { HistoryPanel, type SnapshotMenuData } from "./HistoryPanel";
 import { PreferencesDialog } from "./PreferencesDialog";
 import { SqlQueryDialog } from "./SqlQueryDialog";
 import { UpdateDialogs } from "./UpdateDialogs";
+import { WorkspaceFrame } from "./layout";
 import { PostgresDataLinkDialog } from "./dataLink/PostgresDataLinkDialog";
 import { SqliteDataLinkDialog } from "./dataLink/SqliteDataLinkDialog";
 import { TableOpsDialog } from "./TableOpsDialog";
@@ -2570,9 +2571,9 @@ export function Workspace() {
       </div>
 
       {/* Workspace */}
-      <div className="workspace">
-        {/* Activity Bar (VS Code-style) */}
-        <div className="activity-bar">
+      <WorkspaceFrame
+        activityBar={(
+          <div className="activity-bar">
           <button
             className={`activity-btn${activeTab === "files" ? " activity-btn-active" : ""}`}
             onClick={() => setActiveTab("files")}
@@ -2599,10 +2600,10 @@ export function Workspace() {
           >
             <i className="fa-solid fa-diagram-project" aria-hidden="true" />
           </button>
-        </div>
-
-        {/* Left: Side Panel */}
-        <div className="side-panel">
+          </div>
+        )}
+        sidePanel={(
+          <div className="side-panel">
           {activeTab === "files" ? (
             <>
               <div className="panel-header">
@@ -2662,9 +2663,9 @@ export function Workspace() {
               snapRenameRef={snapRenameRef}
             />
           )}
-        </div>
-
-        {/* Right: Main Content */}
+          </div>
+        )}
+      >
         <div className="main-area">
           {activeTab === "workflow" ? (
             <WorkflowView
@@ -2812,7 +2813,7 @@ export function Workspace() {
             </div>
           )}
         </div>
-      </div>
+      </WorkspaceFrame>
 
       {/* Status Bar */}
       <div className="status-bar">

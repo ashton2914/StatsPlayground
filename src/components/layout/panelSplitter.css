@@ -1,0 +1,42 @@
+.panel-splitter {
+  position: relative;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  outline: none;
+  touch-action: none;
+}
+
+.panel-splitter--vertical {
+  inline-size: 14px;
+  min-block-size: 24px;
+  cursor: col-resize;
+}
+
+.panel-splitter--horizontal {
+  block-size: 14px;
+  min-inline-size: 24px;
+  cursor: row-resize;
+}
+
+.panel-splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background: currentColor;
+  opacity: 0.58;
+}
+
+.panel-splitter--vertical::before {
+  width: 1px;
+}
+
+.panel-splitter--horizontal::before {
+  height: 1px;
+}
+
+.panel-splitter:focus-visible::before {
+  opacity: 1;
+}

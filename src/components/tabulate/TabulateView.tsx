@@ -35,7 +35,7 @@ import {
   isNumericDuckDbType,
   reorderForDrop,
 } from "./tabulateResult";
-import "./tabulate.css";
+import { TabulateLayout } from "./TabulateLayout";
 
 interface TabulateViewProps {
   item: TabulateItem;
@@ -473,8 +473,12 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
     : t("tabulate.collapseColumns");
 
   return (
-    <div className={`sp-tabulate-view${fieldsCollapsed ? " is-fields-collapsed" : ""}`}>
-      <section className="sp-tabulate-fields-column">
+    <>
+      <TabulateLayout
+        narrow={isNarrow}
+        className={fieldsCollapsed ? "is-fields-collapsed" : undefined}
+        fields={(
+          <section className="sp-tabulate-fields-column">
         <div className="sp-panel-header sp-tabulate-collapsible-header">
           <div className="sp-tabulate-heading-copy">
             <span className="sp-panel-header-title">{t("tabulate.fields")}</span>
@@ -516,9 +520,10 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
             <i className="fa-solid fa-table-list" />
           </div>
         )}
-      </section>
-
-      <section className="sp-tabulate-roles-column">
+          </section>
+        )}
+        configuration={(
+          <section className="sp-tabulate-roles-column">
         <TabulateRoleZone
           zone="rows"
           title={t("tabulate.rows")}
@@ -586,9 +591,10 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
             <span>{t("tabulate.columnTotals")}</span>
           </label>
         </div>
-      </section>
-
-      <section className="sp-tabulate-results-column">
+          </section>
+        )}
+        results={(
+          <section className="sp-tabulate-results-column">
         <div className="sp-panel-header">
           <span className="sp-panel-header-title">{t("tabulate.results")}</span>
           <span className="sp-tabulate-header-hint">
@@ -623,7 +629,9 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
             <ResultStateCard title={resultsState.title} detail={resultsState.detail} />
           ) : null}
         </div>
-      </section>
+          </section>
+        )}
+      />
 
       {editingStatistic ? (
         <TabulateStatisticEditor
@@ -641,7 +649,7 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
           }}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 
