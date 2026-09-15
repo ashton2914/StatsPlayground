@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import i18n, { type Locale } from "../src/i18n";
 import { AnalysisView } from "../src/components/analysis/AnalysisView";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample";
 import { createDefaultFitYByXGraphConfig } from "../src/components/fitYByX/fitYByXConfig";
@@ -723,9 +724,16 @@ function collectGraphSignatures(frame: GraphDataFrame | null | undefined): strin
 
 interface AnalysisViewHarnessProps {
   mode?: "default" | "unsupportedPresentation" | "yBound" | "multiResponse" | "multiResponseBy" | "multiResponseMissingResult" | "loading" | "error";
+  summaryConfidenceLevel?: number;
+  locale?: Locale;
 }
 
-export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessProps) {
+export function AnalysisViewHarness({ mode = "default", summaryConfidenceLevel, locale = "en" }: AnalysisViewHarnessProps) {
+  useEffect(() => {
+    const previousLanguage = i18n.language;
+    void i18n.changeLanguage(locale);
+    return () => { void i18n.changeLanguage(previousLanguage); };
+  }, [locale]);
   const [dataset] = useState(createDataset());
   const [item, setItem] = useState(() => {
     if (mode === "unsupportedPresentation") return createUnsupportedPresentationDocument();
@@ -801,7 +809,17 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
             pendingResolverRef.current = resolve;
           });
         }
-        return currentResponseRef.current;
+        const response = structuredClone(currentResponseRef.current);
+        if (summaryConfidenceLevel !== undefined) {
+          for (const group of response.groups) {
+            for (const result of group.yResults) {
+              for (const block of result.blocks) {
+                if (block.summaryData) block.summaryData = { ...block.summaryData, confidenceLevel: summaryConfidenceLevel };
+              }
+            }
+          }
+        }
+        return response;
       },
       renderGraph: ({
         role,

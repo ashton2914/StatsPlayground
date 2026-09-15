@@ -85,6 +85,7 @@ impl<'a> DistributionService<'a> {
             "ecdf.weighted",
             "capability.normal.individuals",
             "fit.continuous.normal",
+            "fit.continuous.cauchy",
             "fit.continuous.lognormal",
             "fit.continuous.exponential",
             "fit.continuous.gamma",
@@ -267,6 +268,7 @@ impl<'a> DistributionService<'a> {
                         title_key: "distribution.report.summary".to_string(),
                         status: "available".to_string(),
                         summary_data: Some(DistributionSummaryDataV1 {
+                            confidence_level: request.confidence_level,
                             n: summary.n,
                             n_missing: summary.n_missing,
                             mean: summary.mean,
@@ -633,11 +635,13 @@ impl<'a> DistributionService<'a> {
                                     || capability_intervals(
                                         &process_summary,
                                         &indices,
+                                        limits.target,
                                         request.confidence_level,
                                     ),
                                     |nested| capability_intervals_with_within_degrees_of_freedom(
                                         &process_summary,
                                         &indices,
+                                        limits.target,
                                         request.confidence_level,
                                         nested.within_effective_degrees_of_freedom,
                                     ),
@@ -1524,6 +1528,7 @@ fn distribution_id(
     use crate::models::distribution::ContinuousDistributionIdV1;
     match distribution {
         ContinuousDistributionIdV1::Normal => "normal",
+        ContinuousDistributionIdV1::Cauchy => "cauchy",
         ContinuousDistributionIdV1::Lognormal => "lognormal",
         ContinuousDistributionIdV1::Exponential => "exponential",
         ContinuousDistributionIdV1::Gamma => "gamma",
@@ -1874,12 +1879,6 @@ fn validate_run_request(request: &DistributionRequestV1) -> Result<(), AppError>
             "distribution.config.normalQuantileConfidenceOutOfRange".to_string(),
         ));
     }
-    if request.continuous_fit.fit_all && !request.continuous_fit.enabled_distribution_ids.is_empty()
-    {
-        return Err(AppError::InvalidParam(
-            "distribution.config.continuousFitSelectionConflict".to_string(),
-        ));
-    }
     let mut fit_ids = HashSet::new();
     for distribution in &request.continuous_fit.enabled_distribution_ids {
         if matches!(
@@ -2168,6 +2167,7 @@ mod tests {
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: vec![ContinuousDistributionIdV1::Normal],
+            fit_all: false,
         };
         let groups = vec![DistributionGroupResult {
             group_key: Vec::new(),
@@ -2394,6 +2394,7 @@ mod tests {
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: Vec::new(),
+            fit_all: false,
         };
 
         let response = DistributionService::new(&state)
@@ -2501,6 +2502,7 @@ mod tests {
             fit_distributions: vec![
                 crate::models::distribution::ContinuousDistributionIdV1::Normal,
             ],
+            fit_all: false,
         };
         let service = DistributionService::new(&state);
         let first = service
@@ -2684,6 +2686,106 @@ mod tests {
         }
 
         #[test]
+        fn selected_cauchy_has_inference_and_curve() {
+            let state = AppState::new().expect("test state");
+            let result = execute_fit_request(
+                &state,
+                &[
+                    (-8.0, 1, 1.0),
+                    (-2.0, 1, 1.0),
+                    (0.0, 1, 1.0),
+                    (1.0, 1, 1.0),
+                    (3.0, 1, 1.0),
+                    (10.0, 1, 1.0),
+                ],
+                |request, _, _| {
+                    request.continuous_fit.enabled_distribution_ids =
+                        vec![ContinuousDistributionIdV1::Cauchy];
+                },
+            )
+            .expect("selected cauchy fit");
+            let cauchy = fit_payloads(&result)[0];
+
+            assert_eq!(cauchy.status, DistributionFitStatusV1::Available);
+            assert!(cauchy.fit_id.ends_with("-fit-cauchy"));
+            assert_eq!(cauchy.parameterization_id, "cauchy.locationScale.v1");
+            assert_eq!(cauchy.parameters.len(), 2);
+            assert!(cauchy.parameters.iter().all(|parameter| {
+                parameter.value.value.is_some_and(f64::is_finite)
+                    && parameter.standard_error.value.is_some_and(f64::is_finite)
+                    && parameter.lower_confidence.value.is_some_and(f64::is_finite)
+                    && parameter.upper_confidence.value.is_some_and(f64::is_finite)
+            }));
+            assert_eq!(
+                cauchy.fitted_curve.as_ref().map(|curve| curve.points.len()),
+                Some(256)
+            );
+        }
+
+        #[test]
+        fn cauchy_graph_packets_have_stable_identity() {
+            let state = AppState::new().expect("test state");
+            let (dataset_id, value_id, _, _) = create_value_freq_weight_dataset(
+                &state,
+                "Cauchy graph",
+                &[
+                    (-8.0, 1, 1.0),
+                    (-2.0, 1, 1.0),
+                    (0.0, 1, 1.0),
+                    (1.0, 1, 1.0),
+                    (3.0, 1, 1.0),
+                    (10.0, 1, 1.0),
+                ],
+            );
+            let generation = state
+                .db
+                .lock()
+                .expect("db")
+                .get_dataset_generation(&dataset_id)
+                .expect("generation");
+            let request = DistributionRequest {
+                dataset_id,
+                generation,
+                response_columns: vec!["value".to_string()],
+                weight_column: None,
+                freq_column: None,
+                by_columns: Vec::new(),
+                nested_subgroup_column: None,
+                confidence_level: 0.95,
+                spec_limits: HashMap::new(),
+                fit_distributions: vec![ContinuousDistributionIdV1::Cauchy],
+                fit_all: false,
+            };
+            let service = DistributionService::new(&state);
+            let first = service
+                .compute_distribution_report(&request)
+                .expect("first graph");
+            let second = service
+                .compute_distribution_report(&request)
+                .expect("repeat graph");
+            let curves = first
+                .graph_frames
+                .overview
+                .aggregates
+                .iter()
+                .filter_map(|packet| match packet {
+                    GraphAggregatePacket::PrecomputedCurve(curve) => Some(curve),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(curves.len(), 1);
+            assert!(curves[0]
+                .series_id
+                .as_deref()
+                .is_some_and(|id| id.ends_with(":fit:cauchy")));
+            assert_eq!(curves[0].source_column.as_deref(), Some(value_id.as_str()));
+            assert_eq!(
+                serde_json::to_value(&first.graph_frames).expect("first frames"),
+                serde_json::to_value(&second.graph_frames).expect("repeat frames"),
+            );
+        }
+
+        #[test]
         fn normal_fit_curve_includes_four_sigma_tails() {
             let state = AppState::new().expect("test state");
             let result = execute_fit_request(
@@ -2768,15 +2870,25 @@ mod tests {
             .expect("fit all partial failure");
 
             let payloads = fit_payloads(&result);
-            assert_eq!(payloads.len(), 5);
+            assert_eq!(payloads.len(), 6);
             let normal = payloads
                 .iter()
                 .find(|payload| payload.distribution_id == ContinuousDistributionIdV1::Normal)
                 .expect("normal fit");
             assert_eq!(normal.status, DistributionFitStatusV1::Available);
+            let cauchy = payloads
+                .iter()
+                .find(|payload| payload.distribution_id == ContinuousDistributionIdV1::Cauchy)
+                .expect("cauchy fit");
+            assert_eq!(cauchy.status, DistributionFitStatusV1::Available);
             assert!(payloads
                 .iter()
-                .filter(|payload| { payload.distribution_id != ContinuousDistributionIdV1::Normal })
+                .filter(|payload| {
+                    !matches!(
+                        payload.distribution_id,
+                        ContinuousDistributionIdV1::Normal | ContinuousDistributionIdV1::Cauchy
+                    )
+                })
                 .all(|payload| {
                     payload.status == DistributionFitStatusV1::Unavailable
                         && payload.reason_code.is_some()
@@ -2794,8 +2906,11 @@ mod tests {
             let rows = comparison["distributionFitComparisonData"]["rows"]
                 .as_array()
                 .expect("typed comparison rows");
-            assert_eq!(rows.len(), 5);
-            assert_eq!(rows[0]["distributionId"], "normal");
+            assert_eq!(rows.len(), 6);
+            assert!(matches!(
+                rows[0]["distributionId"].as_str(),
+                Some("normal" | "cauchy")
+            ));
             assert!(rows[1..].windows(2).all(|pair| {
                 pair[0]["distributionId"].as_str() <= pair[1]["distributionId"].as_str()
             }));
@@ -2818,13 +2933,16 @@ mod tests {
             .expect("fit all positive data");
             let payloads = fit_payloads(&result);
 
-            assert_eq!(payloads.len(), 5);
+            assert_eq!(payloads.len(), 6);
             for payload in payloads {
                 assert_eq!(payload.status, DistributionFitStatusV1::Available);
                 assert_eq!(payload.parameters.len(), payload.estimated_parameter_count);
                 assert!(!payload.parameters.iter().any(|parameter| {
                     parameter.parameter_id == "location"
-                        && payload.distribution_id != ContinuousDistributionIdV1::Normal
+                        && !matches!(
+                            payload.distribution_id,
+                            ContinuousDistributionIdV1::Normal | ContinuousDistributionIdV1::Cauchy
+                        )
                 }));
                 assert!(payload.parameters.iter().all(|parameter| {
                     parameter.value.value.is_some_and(f64::is_finite)
@@ -2836,7 +2954,48 @@ mod tests {
         }
 
         #[test]
-        fn validation_rejects_duplicate_unknown_and_conflicting_selection() {
+        fn fit_all_uses_full_registry_even_with_persisted_explicit_selection() {
+            let state = AppState::new().expect("test state");
+            let result = execute_fit_request(
+                &state,
+                &[
+                    (0.5, 1, 1.0),
+                    (1.0, 1, 1.0),
+                    (2.0, 1, 1.0),
+                    (4.0, 1, 1.0),
+                    (8.0, 1, 1.0),
+                ],
+                |request, _, _| {
+                    request.continuous_fit.fit_all = true;
+                    request.continuous_fit.enabled_distribution_ids =
+                        vec![ContinuousDistributionIdV1::Normal];
+                },
+            )
+            .expect("fit all with persisted selection");
+
+            let payloads = fit_payloads(&result);
+            assert_eq!(payloads.len(), 6);
+            assert!(payloads.iter().any(|payload| {
+                payload.distribution_id == ContinuousDistributionIdV1::Normal
+                    && payload.status == DistributionFitStatusV1::Available
+            }));
+
+            let comparison_blocks = result
+                .report_blocks
+                .iter()
+                .filter(|block| block.kind == "fitComparison")
+                .collect::<Vec<_>>();
+            assert_eq!(comparison_blocks.len(), 1);
+            let comparison = comparison_blocks[0]
+                .distribution_fit_comparison_data
+                .as_ref()
+                .expect("fit comparison data");
+            assert_eq!(comparison.candidate_registry_ids.len(), 6);
+            assert_eq!(comparison.rows.len(), 6);
+        }
+
+        #[test]
+        fn validation_rejects_duplicate_and_unknown_fit_selection_but_allows_fit_all_coexistence() {
             let mut duplicate = run_request();
             duplicate.continuous_fit.enabled_distribution_ids = vec![
                 ContinuousDistributionIdV1::Normal,
@@ -2859,10 +3018,7 @@ mod tests {
             conflict.continuous_fit.fit_all = true;
             conflict.continuous_fit.enabled_distribution_ids =
                 vec![ContinuousDistributionIdV1::Normal];
-            assert!(matches!(
-                validate_run_request(&conflict),
-                Err(AppError::InvalidParam(code)) if code == "distribution.config.continuousFitSelectionConflict"
-            ));
+            assert!(validate_run_request(&conflict).is_ok());
         }
 
         #[test]
@@ -3194,6 +3350,7 @@ mod tests {
                 "ecdf.weighted",
                 "capability.normal.individuals",
                 "fit.continuous.normal",
+                "fit.continuous.cauchy",
                 "fit.continuous.lognormal",
                 "fit.continuous.exponential",
                 "fit.continuous.gamma",
@@ -3201,7 +3358,6 @@ mod tests {
             ],
         );
         assert!(!capabilities.iter().any(|capability| [
-            "cauchy",
             "studentT",
             "shash",
             "johnson",
@@ -3280,6 +3436,17 @@ mod tests {
             ]
         );
         assert_eq!(result.report_blocks.len(), 6);
+        for confidence_level in [0.90, 0.95, 0.99] {
+            request.confidence_level = confidence_level;
+            let confidence_result = DistributionService::new(&state)
+                .execute_one_shot(&request, &context)
+                .expect("execute confidence report");
+            let wire = serde_json::to_value(&confidence_result).expect("serialize confidence report");
+            assert_eq!(
+                wire["groups"][0]["yResults"][0]["blocks"][0]["summaryData"]["confidenceLevel"],
+                serde_json::json!(confidence_level),
+            );
+        }
         let serialized = serde_json::to_string(&result).expect("serialize result");
         assert!(!serialized.contains("quantileBoxData"));
         assert!(!serialized.contains("stemAndLeafData"));

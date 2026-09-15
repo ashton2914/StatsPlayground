@@ -91,17 +91,19 @@ function normalizeAnalysis(value: unknown): DistributionAnalysisConfig {
     && value.confidenceLevel < 1
     ? value.confidenceLevel
     : defaults.confidenceLevel;
-  const allowedFits = new Set(["normal", "lognormal", "exponential", "gamma", "weibull"]);
+  const allowedFits = new Set(["normal", "cauchy", "lognormal", "exponential", "gamma", "weibull"]);
   const fitDistributions = Array.isArray(value.fitDistributions)
     ? [...new Set(value.fitDistributions.filter(
         (fit): fit is DistributionAnalysisConfig["fitDistributions"][number] =>
           typeof fit === "string" && allowedFits.has(fit),
       ))]
     : defaults.fitDistributions;
+  const fitAll = typeof value.fitAll === "boolean" ? value.fitAll : false;
   return {
     confidenceLevel,
     specLimits: normalizeSpecLimits(value.specLimits),
     fitDistributions,
+    fitAll,
   };
 }
 

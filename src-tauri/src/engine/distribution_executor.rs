@@ -154,7 +154,7 @@ pub(crate) fn resolve_distribution_requests(
                 histograms_only: false,
                 continuous_fit: crate::models::distribution::DistributionContinuousFitConfigV1 {
                     enabled_distribution_ids: request.fit_distributions.clone(),
-                    fit_all: false,
+                    fit_all: request.fit_all,
                     diagnostics: Default::default(),
                 },
                 visual_diagnostics: Default::default(),
@@ -733,6 +733,7 @@ mod tests {
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: Vec::new(),
+            fit_all: false,
         }
     }
 
@@ -822,6 +823,10 @@ mod tests {
     fn resolve_maps_names_to_stable_ids_and_preserves_by_order() {
         let engine = fixture_engine();
         let mut request = wire_request(&engine);
+        request.fit_all = true;
+        request.fit_distributions = vec![
+            crate::models::distribution::ContinuousDistributionIdV1::Cauchy,
+        ];
         request.nested_subgroup_column = Some("region".to_string());
         request.by_columns = vec!["batch".to_string()];
         let resolved = resolve_distribution_requests(&engine, &request).expect("resolve request");
@@ -843,6 +848,11 @@ mod tests {
         assert_eq!(
             resolved[0].nested_subgroup_column_id,
             Some(column_id(&engine, "region"))
+        );
+        assert!(resolved[0].continuous_fit.fit_all);
+        assert_eq!(
+            resolved[0].continuous_fit.enabled_distribution_ids,
+            vec![crate::models::distribution::ContinuousDistributionIdV1::Cauchy]
         );
     }
 

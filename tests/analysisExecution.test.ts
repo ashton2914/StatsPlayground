@@ -222,6 +222,7 @@ assert.deepEqual(request, {
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: ["normal"],
+  fitAll: false,
 });
 
 const fitRequest = createAnalysisExecutionRequest(fitAnalysis(), 7);
@@ -317,6 +318,18 @@ assert.equal(
 );
 assert.notEqual(
   distributionAnalysisDefinitionFingerprint(analysis({ configRevision: 2 })),
+  baseFingerprint,
+);
+assert.notEqual(
+  distributionAnalysisDefinitionFingerprint(analysis({
+    definition: {
+      ...analysis().definition,
+      analysis: {
+        ...analysis().definition.analysis,
+        fitAll: true,
+      },
+    },
+  })),
   baseFingerprint,
 );
 assert.notEqual(

@@ -33,6 +33,7 @@ function makeAnalysis(id: string, datasetId: string): AnalysisDocument {
         confidenceLevel: 0.95,
         specLimits: {},
         fitDistributions: ["normal"],
+        fitAll: false,
       },
       graphs: [],
     },
@@ -158,6 +159,7 @@ const legacyDistribution = createDistributionItem({
     confidenceLevel: 0.95,
     specLimits: {},
     fitDistributions: ["normal"],
+    fitAll: false,
   },
   createdAt: "2026-09-03T00:00:00.000Z",
 });

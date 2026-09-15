@@ -930,7 +930,8 @@ fn analysis_document_and_request(
                     .unwrap_or_default(),
                 "confidenceLevel": definition.pointer("/analysis/confidenceLevel"),
                 "specLimits": definition.pointer("/analysis/specLimits").cloned().unwrap_or_else(|| json!({})),
-                "fitDistributions": definition.pointer("/analysis/fitDistributions").cloned().unwrap_or_else(|| json!(["normal"]))
+                "fitDistributions": definition.pointer("/analysis/fitDistributions").cloned().unwrap_or_else(|| json!(["normal"])),
+                "fitAll": definition.pointer("/analysis/fitAll").cloned().unwrap_or(json!(false))
             }))
             .map_err(|error| {
                 AppError::InvalidParam(format!("invalid Workflow Distribution request: {error}"))
@@ -1362,16 +1363,82 @@ mod tests {
     use crate::services::table_transform_service::{
         TableTransformInputBinding, TableTransformProjectBinding,
     };
-    use crate::services::workflow_document_executor::WorkflowReportDependency;
+    use crate::services::workflow_document_executor::{
+        WorkflowAnalysisRequest, WorkflowReportDependency,
+    };
     use crate::services::workflow_domain::{
         WorkflowDefinition, WorkflowInputBinding, WorkflowOutputBinding,
     };
     use crate::state::AppState;
 
     use super::{
-        FrozenTableInput, WorkflowExecutor, WorkflowRunRequest, WorkflowTableExecutor,
-        WorkflowTableStep,
+        analysis_document_and_request, FrozenTableInput, WorkflowExecutor, WorkflowRunRequest,
+        WorkflowTableExecutor, WorkflowTableStep,
     };
+
+    fn distribution_analysis_configuration(fit_all: Option<bool>) -> serde_json::Value {
+        let mut configuration = serde_json::json!({
+            "analysisKind": "distribution",
+            "configRevision": 1,
+            "definition": {
+                "kind": "distribution",
+                "responses": [{ "name": "value", "type": "continuous" }],
+                "weight": null,
+                "frequency": null,
+                "by": [],
+                "analysis": {
+                    "confidenceLevel": 0.95,
+                    "specLimits": {},
+                    "fitDistributions": ["normal"]
+                }
+            },
+            "presentation": {}
+        });
+        if let Some(fit_all) = fit_all {
+            configuration["definition"]["analysis"]["fitAll"] = serde_json::json!(fit_all);
+        }
+        configuration
+    }
+
+    #[test]
+    fn distribution_analysis_request_maps_fit_all_true() {
+        let configuration = distribution_analysis_configuration(Some(true));
+
+        let (_, request) = analysis_document_and_request(
+            "analysis-1",
+            "Distribution",
+            "table-1",
+            7,
+            Some(&configuration),
+            "2026-09-14T00:00:00Z",
+        )
+        .expect("build Workflow Distribution request");
+
+        let WorkflowAnalysisRequest::Distribution(request) = request else {
+            panic!("expected Workflow Distribution request");
+        };
+        assert!(request.fit_all);
+    }
+
+    #[test]
+    fn distribution_analysis_request_defaults_missing_fit_all_to_false() {
+        let configuration = distribution_analysis_configuration(None);
+
+        let (_, request) = analysis_document_and_request(
+            "analysis-1",
+            "Distribution",
+            "table-1",
+            7,
+            Some(&configuration),
+            "2026-09-14T00:00:00Z",
+        )
+        .expect("build Workflow Distribution request");
+
+        let WorkflowAnalysisRequest::Distribution(request) = request else {
+            panic!("expected Workflow Distribution request");
+        };
+        assert!(!request.fit_all);
+    }
 
     fn seed(engine: &DuckDbEngine, id: &str, values: &[i64]) {
         engine

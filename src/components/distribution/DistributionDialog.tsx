@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { DistributionItem } from "@/types/distribution";
-import { Button, Field, NumberField, TextField } from "@/components/ui";
+import { Button, Checkbox, Field, NumberField, TextField } from "@/components/ui";
 
 import {
   createDistributionItem,
+  DISTRIBUTION_FIT_CAPABILITY_REGISTRY,
   type DistributionFieldInfo,
   findResponsesMissingCapabilitySpecs,
+  isDistributionFitImplemented,
   type DistributionRole,
 } from "./distributionConfig";
 import {
@@ -16,6 +18,8 @@ import {
   clearDistributionField,
   createDistributionDialogState,
   filterDistributionFields,
+  setDistributionFitAll,
+  toggleDistributionFit,
   type DistributionDialogState,
 } from "./distributionDialogState";
 import { DistributionRoleZone } from "./DistributionRoleZone";
@@ -193,6 +197,10 @@ export function DistributionDialog({
     });
   };
 
+  const validationMessage = state.validationError
+    ? validationErrorText(t, state.validationError)
+    : null;
+
   return (
     <div className="dialog-overlay" onClick={onCancel}>
       <div
@@ -265,22 +273,50 @@ export function DistributionDialog({
               </main>
             </div>
 
-            <NumberField
-              fieldClassName="distribution-option"
-              label={t("distribution.confidenceLevel")}
-              data-testid="distribution-confidence-level"
-              min="0.01"
-              max="0.99"
-              step="0.01"
-              value={state.analysis.confidenceLevel}
-              onValueChange={(value) => setState((current) => ({
-                ...current,
-                analysis: { ...current.analysis, confidenceLevel: value ?? 0 },
-              }))}
-            />
+            <div className="distribution-options">
+              <div className="distribution-fit-selector">
+                <span className="distribution-fit-selector-title">
+                  {t("distribution.fit.continuousFit", { defaultValue: "Continuous Fit" })}
+                </span>
+                <div className="distribution-fit-options">
+                  <Checkbox
+                    checked={state.analysis.fitAll}
+                    onChange={(event) => setState((current) => setDistributionFitAll(current, event.target.checked))}
+                  >
+                    {t("distribution.fit.fitAll", { defaultValue: "Fit All" })}
+                  </Checkbox>
+                  {DISTRIBUTION_FIT_CAPABILITY_REGISTRY.map(({ distributionId }) => (
+                    <Checkbox
+                      key={distributionId}
+                      checked={state.analysis.fitDistributions.includes(distributionId)}
+                      disabled={state.analysis.fitAll || !isDistributionFitImplemented(distributionId)}
+                      onChange={() => setState((current) => toggleDistributionFit(current, distributionId))}
+                    >
+                      {t(`distribution.fit.distributions.${distributionId}`, {
+                        defaultValue: defaultDistributionFitLabel(distributionId),
+                      })}
+                    </Checkbox>
+                  ))}
+                </div>
+              </div>
 
-            {state.validationError && (
-              <p className="distribution-run-hint" role="alert">{state.validationError}</p>
+              <NumberField
+                fieldClassName="distribution-option"
+                label={t("distribution.confidenceLevel")}
+                data-testid="distribution-confidence-level"
+                min="0.01"
+                max="0.99"
+                step="0.01"
+                value={state.analysis.confidenceLevel}
+                onValueChange={(value) => setState((current) => ({
+                  ...current,
+                  analysis: { ...current.analysis, confidenceLevel: value ?? 0 },
+                }))}
+              />
+            </div>
+
+            {validationMessage && (
+              <p className="distribution-run-hint" role="alert">{validationMessage}</p>
             )}
           </div>
 
@@ -321,4 +357,45 @@ export function DistributionDialog({
       </div>
     </div>
   );
+}
+
+function validationErrorText(
+  t: ReturnType<typeof useTranslation>["t"],
+  error: DistributionDialogState["validationError"],
+): string {
+  switch (error) {
+    case "duplicateRole":
+      return t("distribution.errors.roleDuplicate", { defaultValue: "A column cannot occupy multiple roles" });
+    case "fitSelectionRequired":
+      return t("distribution.errors.fitSelectionRequired", { defaultValue: "Select at least one continuous fit" });
+    case "invalidBy":
+      return t("distribution.invalidBy", { defaultValue: "By must be nominal or ordinal." });
+    case "invalidFrequency":
+      return t("distribution.invalidFrequency", { defaultValue: "Frequency must be numeric and integer-compatible." });
+    case "invalidResponse":
+      return t("distribution.invalidResponse", { defaultValue: "Response must be continuous." });
+    case "invalidWeight":
+      return t("distribution.invalidWeight", { defaultValue: "Weight must be numeric." });
+    case "missingResponse":
+      return t("distribution.errors.yRequired", { defaultValue: "At least one response is required" });
+    default:
+      return t("distribution.invalidConfig", { defaultValue: "Assign at least one valid Y column." });
+  }
+}
+
+function defaultDistributionFitLabel(distributionId: DistributionItem["analysis"]["fitDistributions"][number]): string {
+  switch (distributionId) {
+    case "normal":
+      return "Normal";
+    case "cauchy":
+      return "Cauchy";
+    case "lognormal":
+      return "Lognormal";
+    case "exponential":
+      return "Exponential";
+    case "gamma":
+      return "Gamma";
+    case "weibull":
+      return "Weibull";
+  }
 }

@@ -33,7 +33,7 @@ const item: DistributionItem = {
   weight: null,
   frequency: null,
   by: [],
-  analysis: { confidenceLevel: 0.95, specLimits: {}, fitDistributions: [] },
+  analysis: { confidenceLevel: 0.95, specLimits: {}, fitDistributions: [], fitAll: false },
   graphs: { overview: graph, boxPlot: graph, ecdf: graph, normalQuantile: graph },
   createdAt: "2026-09-02T00:00:00.000Z",
 };

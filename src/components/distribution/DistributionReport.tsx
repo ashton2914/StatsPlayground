@@ -7,6 +7,8 @@ import {
   AnalysisTable,
   AnalysisText,
 } from "@/components/analysis/presentation";
+import { distributionFitColor } from "@/graphCore/distributionFitStyle";
+import { getGraphTheme } from "@/graphCore/theme";
 import type {
   DistributionGroupResult,
   DistributionGroupValueV1,
@@ -171,6 +173,21 @@ export function ReportBlock({
       data-analysis-surface={getReportSurfaceKind(block)}
     >
       <AnalysisStack>
+      {block.distributionFitData && (
+        <AnalysisText data-testid={`distribution-fit-report-title-${block.blockId}`}>
+          <span
+            className="distribution-fit-report-swatch"
+            aria-hidden="true"
+            style={{
+              backgroundColor: distributionFitColor(
+                block.distributionFitData.distributionId,
+                getGraphTheme().categorical,
+              ),
+            }}
+          />
+          <span className="distribution-fit-report-label">{blockTitle}</span>
+        </AnalysisText>
+      )}
       {compatibilityStatus && (
         <AnalysisText>
           {t(`distribution.compatibility.${compatibilityStatus}`)}
@@ -200,25 +217,24 @@ function SummaryDataTables({
 }) {
   const { t } = useTranslation();
   return (
-    <AnalysisStack>
-      <SummaryTable title={t("distribution.report.location")} rows={[
-        ["n", summaryData.n], ["nMissing", summaryData.nMissing],
-        ["mean", summaryData.mean], ["median", summaryData.median],
-        ["mode", summaryData.modeIsUnique
-          ? summaryData.primaryMode
-          : t("distribution.statistics.noUniqueMode")], ["minimum", summaryData.minimum],
-        ["maximum", summaryData.maximum],
-      ]} />
-      <SummaryTable title={t("distribution.report.variation")} rows={[
-        ["stdDev", summaryData.stdDev], ["stdError", summaryData.stdError],
-        ["meanCiLower", summaryData.meanCiLower], ["meanCiUpper", summaryData.meanCiUpper],
-        ["range", summaryData.range], ["iqr", summaryData.iqr], ["mad", summaryData.mad],
-      ]} />
-    </AnalysisStack>
+    <SummaryTable
+      title={t("distribution.report.summaryStatistics")}
+      confidenceLevel={summaryData.confidenceLevel ?? 0.95}
+      rows={[
+        ["n", summaryData.n],
+        ["nMissing", summaryData.nMissing],
+        ["mean", summaryData.mean],
+        ["median", summaryData.median],
+        ["stdDev", summaryData.stdDev],
+        ["stdError", summaryData.stdError],
+        ["meanCiLower", summaryData.meanCiLower],
+        ["meanCiUpper", summaryData.meanCiUpper],
+      ]}
+    />
   );
 }
 
-function SummaryTable({ title, rows }: { title: string; rows: Array<[string, number | string | null]> }) {
+function SummaryTable({ title, rows, confidenceLevel }: { title: string; rows: Array<[string, number | string | null]>; confidenceLevel: number }) {
   const { t } = useTranslation();
   return (
     <AnalysisTable
@@ -231,7 +247,7 @@ function SummaryTable({ title, rows }: { title: string; rows: Array<[string, num
       rows={rows.map(([label, value]) => ({
         key: label,
         cells: [
-          t(`distribution.statistics.${label}`),
+          t(`distribution.statistics.${label}`, { confidence: `${Number((confidenceLevel * 100).toFixed(6))}%` }),
           typeof value === "number" ? formatNumber(value) : value ?? "-",
         ],
       }))}
