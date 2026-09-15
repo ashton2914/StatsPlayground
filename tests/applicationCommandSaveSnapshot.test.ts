@@ -31,6 +31,8 @@ function assertSourceExcludes(source: string, needle: string, message: string): 
 }
 
 const applicationRuntimeSource = readSource("../src/applicationCommands/applicationRuntime.ts");
+const ioCommandsSource = readSource("../src/applicationCommands/ioCommands.ts");
+const ioServiceSource = readSource("../src/services/ioService.ts");
 const policySource = readSource("../src/applicationCommands/policy.ts");
 const workspaceSource = readSource("../src/components/Workspace.tsx");
 
@@ -40,6 +42,16 @@ assertSourceIncludes(applicationRuntimeSource, '"table.exportCsv"', "Application
 
 assertSourceIncludes(policySource, "requireConfirmation", "Command policy must classify commands that require confirmation");
 assertSourceIncludes(policySource, "requestId", "Confirmation policy must be keyed by runtime requestId rather than command input");
+assertSourceIncludes(
+  ioCommandsSource,
+  "ioService.exportCsvAuthorized(input.datasetId, input.rootId, input.relativePath, trusted.overwriteConfirmed)",
+  "Default IO command dependencies must project trusted overwrite confirmation into ioService.exportCsvAuthorized",
+);
+assertSourceIncludes(
+  ioServiceSource,
+  'invoke<void>("export_csv_authorized", { datasetId, rootId, relativePath, overwriteConfirmed })',
+  "ioService.exportCsvAuthorized must project overwriteConfirmed into the Tauri command payload",
+);
 
 function assertSourceIncludesAny(source: string, needles: string[], message: string): void {
   assert.equal(needles.some((needle) => source.includes(needle)), true, message);

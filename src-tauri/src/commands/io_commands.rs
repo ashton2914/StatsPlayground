@@ -89,9 +89,10 @@ pub fn export_csv_authorized(
     dataset_id: String,
     root_id: String,
     relative_path: String,
+    overwrite_confirmed: bool,
 ) -> Result<(), AppError> {
     let service = IoService::new(&state);
-    service.export_csv_authorized(&dataset_id, &root_id, &relative_path)
+    service.export_csv_authorized(&dataset_id, &root_id, &relative_path, overwrite_confirmed)
 }
 
 #[tauri::command(async)]

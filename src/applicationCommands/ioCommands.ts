@@ -34,8 +34,8 @@ export function createIoCommandHandlers(
     },
     inspectCsvTarget: (input) =>
       ioService.inspectAuthorizedCsvTarget(input.datasetId, input.rootId, input.relativePath),
-    exportCsv: async (input) => {
-      await ioService.exportCsvAuthorized(input.datasetId, input.rootId, input.relativePath);
+    exportCsv: async (input, trusted) => {
+      await ioService.exportCsvAuthorized(input.datasetId, input.rootId, input.relativePath, trusted.overwriteConfirmed);
     },
     ...dependencyOverrides,
   };

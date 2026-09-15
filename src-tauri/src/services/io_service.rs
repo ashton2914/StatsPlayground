@@ -10,9 +10,11 @@ use crate::services::path_authorization_service::{
 };
 use crate::state::AppState;
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 
 const AUTHORIZED_EXPORT_TEMP_PREFIX: &str = ".statsplayground-export-";
+const AUTHORIZED_EXPORT_STAGING_FILE: &str = "staged.csv";
 
 pub struct IoService<'a> {
     state: &'a AppState,
@@ -87,7 +89,7 @@ mod tests {
             .expect("authorize root");
 
         service
-            .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv")
+            .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv", false)
             .expect("export csv");
 
         let nested = export_root.join("nested");
@@ -117,7 +119,7 @@ mod tests {
             .expect("authorize root");
 
         service
-            .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv")
+            .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv", true)
             .expect("replace csv");
 
         let contents = std::fs::read_to_string(nested.join("alpha.csv")).expect("read csv");
@@ -150,6 +152,7 @@ mod tests {
                 &dataset_id,
                 &grant.root_id,
                 "nested/alpha.csv",
+                false,
                 || {
                     std::fs::create_dir_all(&nested).expect("nested dir");
                     std::fs::write(&target, b"racing-bytes").expect("race target");
@@ -158,9 +161,116 @@ mod tests {
             )
             .expect_err("create-new publish must reject a racing target");
 
-        assert!(matches!(error, AppError::FileIO(_)));
+        assert!(matches!(error, AppError::InvalidParam(_) | AppError::FileIO(_)));
         assert_eq!(std::fs::read(&target).expect("read racing target"), b"racing-bytes");
         assert_directory_entries(&nested, &["alpha.csv"]);
+    }
+
+    #[test]
+    fn export_csv_authorized_rejects_unconfirmed_overwrite_and_preserves_original_bytes() {
+        let state = AppState::new().expect("create app state");
+        let data = DataService::new(&state);
+        let dataset_id = seed_export_dataset(
+            &data,
+            "Alpha",
+            vec![vec![serde_json::json!("ada"), serde_json::json!(1)]],
+        );
+        let temp = TempDir::new().expect("temp dir");
+        let export_root = temp.path().join("exports");
+        let nested = export_root.join("nested");
+        let target = nested.join("alpha.csv");
+        std::fs::create_dir_all(&nested).expect("nested dir");
+        std::fs::write(&target, b"original-bytes").expect("seed target");
+        let service = IoService::new(&state);
+        let grant = service
+            .authorize_output_root(&export_root.to_string_lossy())
+            .expect("authorize root");
+
+        let error = service
+            .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv", false)
+            .expect_err("overwrite must require trusted confirmation");
+
+        assert!(matches!(error, AppError::InvalidParam(_) | AppError::FileIO(_)));
+        assert_eq!(std::fs::read(&target).expect("read seeded target"), b"original-bytes");
+        assert_directory_entries(&nested, &["alpha.csv"]);
+    }
+
+    #[test]
+    fn export_csv_authorized_staging_leaf_is_absent_before_exporter_runs_and_staging_dir_is_cleaned_on_success() {
+        let temp = TempDir::new().expect("temp dir");
+        let export_root = temp.path().join("exports");
+        std::fs::create_dir_all(&export_root).expect("export root");
+        let state = AppState::new().expect("create app state");
+        let service = IoService::new(&state);
+        let grant = service
+            .authorize_output_root(&export_root.to_string_lossy())
+            .expect("authorize root");
+        let observed_staging_dir = std::cell::RefCell::new(None::<std::path::PathBuf>);
+
+        service
+            .export_csv_authorized_with_exporter_and_publish_hook(
+                &grant.root_id,
+                "nested/alpha.csv",
+                false,
+                |staging_leaf| {
+                    observed_staging_dir.replace(staging_leaf.parent().map(std::path::Path::to_path_buf));
+                    assert!(!staging_leaf.exists(), "staging leaf must not exist before exporter runs");
+                    std::fs::write(staging_leaf, b"label,value\nada,1\n").expect("write staged csv");
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .expect("export csv");
+
+        let nested = export_root.join("nested");
+        let contents = std::fs::read_to_string(nested.join("alpha.csv")).expect("read csv");
+        assert!(contents.contains("label,value"));
+        assert!(contents.contains("ada,1"));
+        assert_directory_entries(&nested, &["alpha.csv"]);
+
+        let staging_dir = observed_staging_dir
+            .borrow()
+            .clone()
+            .expect("observe staging dir");
+        assert!(!staging_dir.exists(), "staging directory must be removed after publish");
+    }
+
+    #[test]
+    fn export_csv_authorized_staging_dir_is_cleaned_on_export_failure() {
+        let temp = TempDir::new().expect("temp dir");
+        let export_root = temp.path().join("exports");
+        std::fs::create_dir_all(&export_root).expect("export root");
+        let state = AppState::new().expect("create app state");
+        let service = IoService::new(&state);
+        let grant = service
+            .authorize_output_root(&export_root.to_string_lossy())
+            .expect("authorize root");
+        let observed_staging_dir = std::cell::RefCell::new(None::<std::path::PathBuf>);
+
+        let error = service
+            .export_csv_authorized_with_exporter_and_publish_hook(
+                &grant.root_id,
+                "nested/alpha.csv",
+                false,
+                |staging_leaf| {
+                    observed_staging_dir.replace(staging_leaf.parent().map(std::path::Path::to_path_buf));
+                    assert!(!staging_leaf.exists(), "staging leaf must not exist before exporter runs");
+                    std::fs::write(staging_leaf, b"partial-bytes").expect("write partial bytes");
+                    Err(AppError::FileIO("injected export failure".to_string()))
+                },
+                || Ok(()),
+            )
+            .expect_err("injected exporter failure must abort export");
+
+        assert!(matches!(error, AppError::FileIO(_)));
+        let staging_dir = observed_staging_dir
+            .borrow()
+            .clone()
+            .expect("observe staging dir");
+        assert!(!staging_dir.exists(), "staging directory must be removed after export failure");
+        assert!(!export_root.join("nested").join("alpha.csv").exists());
+        assert_directory_entries(&export_root, &["nested"]);
+        assert_directory_entries(&export_root.join("nested"), &[]);
     }
 
     #[test]
@@ -580,8 +690,20 @@ impl<'a> IoService<'a> {
         dataset_id: &str,
         root_id: &str,
         relative_path: &str,
+        overwrite_confirmed: bool,
     ) -> Result<(), AppError> {
-        self.export_csv_authorized_with_publish_hook(dataset_id, root_id, relative_path, || Ok(()))
+        self.export_csv_authorized_with_exporter_and_publish_hook(
+            root_id,
+            relative_path,
+            overwrite_confirmed,
+            |staging_leaf| {
+                let staging_path = staging_leaf.to_str().ok_or_else(|| {
+                    AppError::FileIO("temporary export path is not valid UTF-8".to_string())
+                })?;
+                self.export_csv(dataset_id, staging_path)
+            },
+            || Ok(()),
+        )
     }
 
     fn export_csv_authorized_with_publish_hook<F>(
@@ -589,46 +711,56 @@ impl<'a> IoService<'a> {
         dataset_id: &str,
         root_id: &str,
         relative_path: &str,
+        overwrite_confirmed: bool,
         before_publish: F,
     ) -> Result<(), AppError>
     where
         F: FnOnce() -> Result<(), AppError>,
     {
-        let resolved = {
-            let authorizer = self.lock_path_authorization()?;
-            authorizer.resolve_output(root_id, relative_path)?
-        };
-        let parent = resolved.path.parent().ok_or_else(|| {
+        self.export_csv_authorized_with_exporter_and_publish_hook(
+            root_id,
+            relative_path,
+            overwrite_confirmed,
+            |staging_leaf| {
+                let staging_path = staging_leaf.to_str().ok_or_else(|| {
+                    AppError::FileIO("temporary export path is not valid UTF-8".to_string())
+                })?;
+                self.export_csv(dataset_id, staging_path)
+            },
+            before_publish,
+        )
+    }
+
+    fn export_csv_authorized_with_exporter_and_publish_hook<E, F>(
+        &self,
+        root_id: &str,
+        relative_path: &str,
+        overwrite_confirmed: bool,
+        export_to_staging: E,
+        before_publish: F,
+    ) -> Result<(), AppError>
+    where
+        E: FnOnce(&Path) -> Result<(), AppError>,
+        F: FnOnce() -> Result<(), AppError>,
+    {
+        let initial = self.resolve_authorized_output(root_id, relative_path)?;
+        authorize_overwrite_status(&initial.status, overwrite_confirmed)?;
+
+        let parent = initial.path.parent().ok_or_else(|| {
             AppError::FileIO("resolved output path has no parent directory".to_string())
         })?;
+        fs::create_dir_all(parent)?;
 
-        std::fs::create_dir_all(parent)?;
-        let temp_path = create_authorized_export_temp_path(parent)?;
-        let temp_path_result = temp_path
-            .to_str()
-            .ok_or_else(|| AppError::FileIO("temporary export path is not valid UTF-8".to_string()));
-        let temp_path_str = match temp_path_result {
-            Ok(path) => path,
-            Err(error) => {
-                cleanup_authorized_export_tempfile(&temp_path);
-                return Err(error);
-            }
-        };
+        let staging_dir = create_authorized_export_staging_dir(parent)?;
+        let staging_leaf = staging_dir.path().join(AUTHORIZED_EXPORT_STAGING_FILE);
 
-        if let Err(error) = self.export_csv(dataset_id, temp_path_str) {
-            cleanup_authorized_export_tempfile(&temp_path);
-            return Err(error);
-        }
+        export_to_staging(&staging_leaf)?;
+        verify_staged_export_leaf(&staging_leaf)?;
 
-        let publish_result = before_publish()
-            .and_then(|_| self.revalidate_authorized_output(root_id, relative_path))
-            .and_then(|_| publish_authorized_export(&temp_path, &resolved.path, &resolved.status));
-        if let Err(error) = publish_result {
-            cleanup_authorized_export_tempfile(&temp_path);
-            return Err(error);
-        }
-
-        Ok(())
+        before_publish()?;
+        let revalidated = self.resolve_authorized_output(root_id, relative_path)?;
+        authorize_overwrite_status(&revalidated.status, overwrite_confirmed)?;
+        publish_authorized_export(&staging_leaf, &revalidated.path, &revalidated.status)
     }
 
     fn lock_path_authorization(
@@ -838,36 +970,45 @@ impl<'a> IoService<'a> {
         db.export_csv_zip_subset(output_path, subset, archive_paths)
     }
 
-    fn revalidate_authorized_output(
+    fn resolve_authorized_output(
         &self,
         root_id: &str,
         relative_path: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<crate::services::path_authorization_service::ResolvedOutputPath, AppError> {
         let authorizer = self.lock_path_authorization()?;
-        authorizer.resolve_output(root_id, relative_path)?;
-        Ok(())
+        authorizer.resolve_output(root_id, relative_path)
     }
 }
 
-fn create_authorized_export_temp_path(parent: &Path) -> Result<std::path::PathBuf, AppError> {
-    let named_temp = tempfile::Builder::new()
+fn authorize_overwrite_status(
+    status: &OutputPathStatus,
+    overwrite_confirmed: bool,
+) -> Result<(), AppError> {
+    if matches!(status, OutputPathStatus::OverwriteExisting) && !overwrite_confirmed {
+        return Err(AppError::InvalidParam(
+            "authorized CSV overwrite requires trusted confirmation".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn create_authorized_export_staging_dir(parent: &Path) -> Result<tempfile::TempDir, AppError> {
+    let staging_dir = tempfile::Builder::new()
         .prefix(AUTHORIZED_EXPORT_TEMP_PREFIX)
-        .suffix(".csv")
-        .tempfile_in(parent)
+        .tempdir_in(parent)
         .map_err(|error| AppError::FileIO(error.to_string()))?;
-    let (file, path) = named_temp
-        .keep()
-        .map_err(|error| AppError::FileIO(error.error.to_string()))?;
-    drop(file);
-    Ok(path)
+    set_private_staging_permissions(staging_dir.path())?;
+    Ok(staging_dir)
 }
 
-fn cleanup_authorized_export_tempfile(path: &Path) {
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => {}
+fn verify_staged_export_leaf(path: &Path) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| AppError::FileIO(error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::FileIO(
+            "staged export must be a regular non-symlink file".to_string(),
+        ));
     }
+    Ok(())
 }
 
 fn publish_authorized_export(
@@ -894,6 +1035,19 @@ fn publish_authorized_export_overwrite(temp_path: &Path, output_path: &Path) -> 
 #[cfg(unix)]
 fn atomic_replace_file(temp_path: &Path, output_path: &Path) -> Result<(), AppError> {
     std::fs::rename(temp_path, output_path).map_err(|error| AppError::FileIO(error.to_string()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_staging_permissions(path: &Path) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| AppError::FileIO(error.to_string()))
+}
+
+#[cfg(not(unix))]
+fn set_private_staging_permissions(_path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 

@@ -52,7 +52,7 @@ export interface ApplicationRuntimeDependencies {
       datasetId: string,
       rootId: string,
       relativePath: string,
-      trusted?: { overwriteConfirmed: boolean; targetStatus: "createNew" | "overwriteExisting" },
+      trusted: { overwriteConfirmed: boolean; targetStatus: "createNew" | "overwriteExisting" },
     ) => Promise<void>;
   };
 }

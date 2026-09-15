@@ -28,8 +28,13 @@ export const ioService = {
       relativePath,
     }),
 
-  exportCsvAuthorized: (datasetId: string, rootId: string, relativePath: string) =>
-    invoke<void>("export_csv_authorized", { datasetId, rootId, relativePath }),
+  exportCsvAuthorized: (
+    datasetId: string,
+    rootId: string,
+    relativePath: string,
+    overwriteConfirmed: boolean,
+  ) =>
+    invoke<void>("export_csv_authorized", { datasetId, rootId, relativePath, overwriteConfirmed }),
 
   /** 从 SQLite 数据库导入所有表 */
   importSqlite: (filePath: string) =>
