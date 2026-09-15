@@ -71,3 +71,26 @@ Branch: `issue/188-mcp-command-layer`
   - `M tests/analysisKindRegistry.test.ts`
   - `M tests/applicationCommandAnalysis.test.ts`
   - `?? src/utils/cloneValue.ts`
+
+## Commit
+
+7. `bash -lc 'cd /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer && git add src/applicationCommands/analysisCommands.ts src/applicationCommands/applicationRuntime.ts src/applicationCommands/types.ts src/components/analysis/analysisExecutors.ts src/components/analysis/analysisGraphPolicies.ts src/components/analysis/useAnalysisExecution.ts src/stores/useAnalysisStore.ts src/types/fitModel.ts src/utils/cloneValue.ts tests/analysisExecution.test.ts tests/analysisKindRegistry.test.ts tests/applicationCommandAnalysis.test.ts docs/superpowers/reports/2026-09-15-mcp-command-layer/task-7-execution.md && git commit -m "fix(analysis): preserve command execution contracts"'`
+   - Exit code: `0`
+   - Result: `[issue/188-mcp-command-layer 7b004d5] fix(analysis): preserve command execution contracts`
+
+8. `bash -lc 'cd /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer && git rev-parse HEAD'`
+   - Exit code: `0`
+   - Result: `7b004d5d8062a2999399d0eb2be31378ecccf7c1`
+
+9. `bash -lc 'cd /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer && git --no-pager show --stat --oneline --format=fuller HEAD'`
+   - Exit code: `0`
+   - Result summary:
+     - commit: `7b004d5`
+     - subject: `fix(analysis): preserve command execution contracts`
+     - files changed: `13`
+     - insertions: `910`
+     - deletions: `42`
+
+10. `bash -lc 'cd /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer && git --no-pager status --short --untracked-files=all'`
+    - Exit code: `0`
+    - Result: clean working tree
