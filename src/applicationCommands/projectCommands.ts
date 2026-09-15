@@ -37,8 +37,8 @@ const MAX_TABLE_PREVIEW_LIMIT = 200;
 const PATH_FIELD_KEYS = new Set(["filePath", "sourcePath"]);
 const URL_TOKEN_PATTERN = /\b(?:https?|ftp|file):\/\/[^\s"']+/gi;
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_])([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+)/g;
-const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9_])(\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\\/:*?"<>|\r\n]+)+)/g;
-const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_./-])(\/(?:Users|home|var|private|tmp|etc|opt|Volumes|Applications|Library|System|usr|bin|sbin|dev|cores|net|Network|root)(?:\/[^\\/:*?"<>|\r\n]+)+)/g;
+const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9_])(\\\\[^\\/\s]+\\[^\\/:*?"<>|\r\n]+(?:\\[^\\/:*?"<>|\r\n]+)+)/g;
+const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_./-])(\/(?:[^\/\r\n\s][^\/\r\n]*)(?:\/[^\/\r\n]+)+)/g;
 
 export interface ProjectCommandDependencies {
   getProjectState: () => {

@@ -257,10 +257,13 @@ function createDeps(overrides: Partial<ProjectCommandDependencies> = {}): Projec
       name: "Report redact",
       markdown: [
         "Keep URL https://example.com/foo/bar and relative/data.csv unchanged.",
+        "Keep ordinary relative token folder/item unchanged.",
         "POSIX roots: /etc/hosts and /opt/local/bin/tool",
+        "Arbitrary POSIX roots: /srv/build/output.csv and /data/Team Share/input.csv",
         "Mounted volume with spaces: /Volumes/Work Disk/A Folder/input.csv",
         "Windows with spaces: C:\\Program Files\\Stats Playground\\input.csv",
         "UNC path: \\\\server\\share\\Folder Name\\input.csv",
+        "UNC with spaced share: \\\\server\\share name\\Folder Name\\input.csv",
       ].join("\n"),
       createdAt: "2026-09-15T00:00:00.000Z",
       updatedAt: "2026-09-15T00:00:00.000Z",
@@ -271,11 +274,15 @@ function createDeps(overrides: Partial<ProjectCommandDependencies> = {}): Projec
   const serialized = JSON.stringify(fetched);
   assert.equal(serialized.includes("/etc/hosts"), false);
   assert.equal(serialized.includes("/opt/local/bin/tool"), false);
+  assert.equal(serialized.includes("/srv/build/output.csv"), false);
+  assert.equal(serialized.includes("/data/Team Share/input.csv"), false);
   assert.equal(serialized.includes("/Volumes/Work Disk/A Folder/input.csv"), false);
   assert.equal(serialized.includes("C:\\Program Files\\Stats Playground\\input.csv"), false);
   assert.equal(serialized.includes("\\\\server\\share\\Folder Name\\input.csv"), false);
+  assert.equal(serialized.includes("\\\\server\\share name\\Folder Name\\input.csv"), false);
   assert.equal(serialized.includes("https://example.com/foo/bar"), true);
   assert.equal(serialized.includes("relative/data.csv"), true);
+  assert.equal(serialized.includes("folder/item"), true);
 }
 
 {
