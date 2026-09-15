@@ -210,13 +210,44 @@ const dialogDataset: DatasetMeta = {
 export function HypothesisTestDialogHarness() {
   dataService.getColumns = async () => [
     ["Value", "DOUBLE"],
+    ["Value 2", "DOUBLE"],
     ["Group", "VARCHAR"],
     ["Subject", "VARCHAR"],
   ];
   return (
     <HypothesisTestDialog
       mode="create"
+      dataset={{ ...dialogDataset, colCount: 4 }}
+      defaultName="Hypothesis Test 1"
+      onCancel={() => {}}
+      onSubmit={() => {}}
+    />
+  );
+}
+
+export function HypothesisTestWideDialogHarness() {
+  dataService.getColumns = async () => [
+    ["Measure 1", "DECIMAL(18, 4)"],
+    ["Measure 2", "DECIMAL(18, 4)"],
+    ["Measure 3", "DECIMAL(18, 4)"],
+  ];
+  return (
+    <HypothesisTestDialog
+      mode="create"
       dataset={dialogDataset}
+      defaultName="Hypothesis Test 1"
+      onCancel={() => {}}
+      onSubmit={() => {}}
+    />
+  );
+}
+
+export function HypothesisTestUnsupportedDialogHarness() {
+  dataService.getColumns = async () => [["Measure 1", "DECIMAL(18, 4)"]];
+  return (
+    <HypothesisTestDialog
+      mode="create"
+      dataset={{ ...dialogDataset, colCount: 1 }}
       defaultName="Hypothesis Test 1"
       onCancel={() => {}}
       onSubmit={() => {}}

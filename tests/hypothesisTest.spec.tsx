@@ -1,6 +1,11 @@
 import { expect, test, type Locator } from "@playwright/experimental-ct-react";
 
-import { HypothesisTestDialogHarness, HypothesisTestHarness } from "./HypothesisTestHarness";
+import {
+  HypothesisTestDialogHarness,
+  HypothesisTestHarness,
+  HypothesisTestUnsupportedDialogHarness,
+  HypothesisTestWideDialogHarness,
+} from "./HypothesisTestHarness";
 
 function relativeLuminance(color: string) {
   const channels = color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [];
@@ -71,6 +76,31 @@ test("keeps charts and wide tables inside a narrow viewport", async ({ mount, pa
   }));
   expect(overflow.document, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
   expect(overflow.body, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
+});
+
+test("initializes an all-decimal dataset as a wide hypothesis test", async ({ mount }) => {
+  const component = await mount(<HypothesisTestWideDialogHarness />);
+
+  await expect(component.getByRole("button", { name: "Wide", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(component.locator("select[multiple] option:checked")).toHaveText(["Measure 1", "Measure 2"]);
+  await expect(component.getByRole("button", { name: "Create", exact: true })).toBeEnabled();
+});
+
+test("describes both supported layouts when the dataset is insufficient", async ({ mount }) => {
+  const component = await mount(<HypothesisTestUnsupportedDialogHarness />);
+
+  await expect(component.getByRole("alert")).toContainText(
+    "A continuous response with a categorical condition, or at least two continuous measurements, is required.",
+  );
+});
+
+test("prefers long layout when continuous and categorical fields are available", async ({ mount }) => {
+  const component = await mount(<HypothesisTestDialogHarness />);
+
+  await expect(component.getByRole("button", { name: "Long", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(component.getByLabel("Response")).toHaveValue("Value");
+  await expect(component.getByLabel("Condition")).toHaveValue("Group");
+  await expect(component.getByRole("button", { name: "Create", exact: true })).toBeEnabled();
 });
 
 test("keeps selected and unselected method selectors visually distinct", async ({ mount }) => {
