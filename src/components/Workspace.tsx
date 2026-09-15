@@ -15,6 +15,7 @@ import {
 import { useDataLinkStore } from "@/stores/useDataLinkStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 import { dataService } from "@/services/dataService";
+import { startApplicationCommandBridge } from "@/services/applicationCommandBridge";
 import { ioService } from "@/services/ioService";
 import { mcpManagementService } from "@/services/mcpManagementService";
 import { projectService } from "@/services/projectService";
@@ -453,6 +454,22 @@ export function Workspace() {
   useEffect(() => applicationRuntime.registerPendingEffectsDrain(async () => {
     await reportUpdateQueueRef.current.catch(() => undefined);
   }), []);
+
+  useEffect(() => {
+    let mounted = true;
+    let dispose: (() => Promise<void>) | null = null;
+    void startApplicationCommandBridge().then((bridge) => {
+      if (!mounted) {
+        void bridge.dispose();
+        return;
+      }
+      dispose = () => bridge.dispose();
+    }).catch(() => undefined);
+    return () => {
+      mounted = false;
+      void dispose?.();
+    };
+  }, []);
 
   const handleReportMarkdownChange = useCallback((id: string, markdown: string) => {
     if (readOnly) {

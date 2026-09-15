@@ -2,6 +2,7 @@ mod commands;
 pub mod connectors;
 mod engine;
 mod error;
+mod mcp;
 mod models;
 mod services;
 mod state;
@@ -22,7 +23,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .manage(app_state)
+        .setup(|app| {
+            mcp::broker::configure_tauri_broker(app)
+                .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
+        })
         .invoke_handler(tauri::generate_handler![
+            commands::mcp_commands::register_application_command_dispatcher,
+            commands::mcp_commands::complete_application_command,
+            commands::mcp_commands::unregister_application_command_dispatcher,
             commands::data_link_commands::test_postgres_connection,
             commands::data_link_commands::test_server_connection,
             commands::data_link_commands::list_server_source_objects,

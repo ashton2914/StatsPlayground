@@ -4,6 +4,7 @@ pub mod fit_model;
 pub mod fit_y_by_x;
 pub mod graph_data;
 pub mod hypothesis_test;
+pub mod mcp;
 pub mod project;
 pub mod save;
 pub mod stats;
