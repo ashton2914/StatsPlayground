@@ -2,6 +2,25 @@ import { expect, test } from "@playwright/experimental-ct-react";
 
 import { PanelSplitterHarness } from "./PanelSplitterHarness";
 
+test("PanelSplitter hides its divider line until the user interacts", async ({ mount }) => {
+  const component = await mount(
+    <PanelSplitterHarness
+      orientation="vertical"
+      min={200}
+      max={360}
+      defaultValue={240}
+      unit="px"
+      label="Resize test panel"
+    />,
+  );
+
+  const separator = component.getByRole("separator", { name: "Resize test panel" });
+
+  await expect(separator).toHaveCSS("--panel-splitter-line-opacity", "0");
+  await separator.hover();
+  await expect(separator).toHaveCSS("--panel-splitter-line-opacity", "0.45");
+});
+
 test("PanelSplitter drags, clamps, and commits with the requested orientation and direction", async ({ mount }) => {
   const component = await mount(
     <PanelSplitterHarness
