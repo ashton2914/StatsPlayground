@@ -197,6 +197,7 @@ const request: TabulateRequest = {
   let runCalls = 0;
   let createTableCalls = 0;
   let beginCommitCalls = 0;
+  let buildExportRequestCalls = 0;
   const generations = [8, 8, 9];
 
   const runtime = createApplicationRuntime({
@@ -248,6 +249,10 @@ const request: TabulateRequest = {
         beginCommitCalls += 1;
         throw new Error("createTable should not be called when rerun result is stale");
       },
+      buildExportRequest: () => {
+        buildExportRequestCalls += 1;
+        throw new Error("buildExportRequest should not be called when rerun result is stale");
+      },
     },
   });
 
@@ -276,9 +281,21 @@ const request: TabulateRequest = {
   );
 
   assert.equal(runCalls, 1, "stale or missing cache must trigger rerun before export");
+  assert.equal(buildExportRequestCalls, 0, "stale rerun rejection must occur before export request build");
   assert.equal(createTableCalls, 0, "stale rerun result must reject before table.create");
   assert.equal(beginCommitCalls, 0, "stale rerun result must reject before beginCommit");
   assert.equal(cache.get("tab-1")?.sourceGeneration, 8);
+
+  const postRejectInspect = await runtime.execute(
+    {
+      type: "project.inspect",
+      input: {},
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(postRejectInspect.projectRevision, 30, "stale rerun rejection must not advance runtime revision");
+  assert.equal(postRejectInspect.data.projectRevision, 30, "project state revision must remain unchanged after rejection");
 }
 
 {
