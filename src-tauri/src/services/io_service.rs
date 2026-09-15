@@ -6,11 +6,13 @@ use crate::models::data_link::{
 };
 use crate::models::table::DatasetMeta;
 use crate::services::path_authorization_service::{
-    AuthorizedCsvTargetInspection, OutputRootGrant, PathAuthorizationService,
+    AuthorizedCsvTargetInspection, OutputPathStatus, OutputRootGrant, PathAuthorizationService,
 };
 use crate::state::AppState;
 use std::collections::HashMap;
 use std::path::Path;
+
+const AUTHORIZED_EXPORT_TEMP_PREFIX: &str = ".statsplayground-export-";
 
 pub struct IoService<'a> {
     state: &'a AppState,
@@ -24,6 +26,7 @@ mod tests {
     use crate::services::data_service::DataService;
     use std::collections::{BTreeSet, HashMap};
     use std::io::Read;
+    use tempfile::TempDir;
 
     fn seed_export_dataset(
         service: &DataService<'_>,
@@ -46,6 +49,118 @@ mod tests {
             .create_table(name, &[], &[])
             .expect("seed empty export dataset")
             .id
+    }
+
+    fn assert_directory_entries(path: &Path, expected: &[&str]) {
+        let names = std::fs::read_dir(path)
+            .expect("read dir")
+            .map(|entry| {
+                entry
+                    .expect("dir entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_names = expected
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(names, expected_names);
+    }
+
+    #[test]
+    fn export_csv_authorized_create_new_publishes_csv_without_temp_leaks() {
+        let state = AppState::new().expect("create app state");
+        let data = DataService::new(&state);
+        let dataset_id = seed_export_dataset(
+            &data,
+            "Alpha",
+            vec![vec![serde_json::json!("ada"), serde_json::json!(1)]],
+        );
+        let temp = TempDir::new().expect("temp dir");
+        let export_root = temp.path().join("exports");
+        std::fs::create_dir_all(&export_root).expect("export root");
+        let service = IoService::new(&state);
+        let grant = service
+            .authorize_output_root(&export_root.to_string_lossy())
+            .expect("authorize root");
+
+        service
+            .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv")
+            .expect("export csv");
+
+        let nested = export_root.join("nested");
+        let contents = std::fs::read_to_string(nested.join("alpha.csv")).expect("read csv");
+        assert!(contents.contains("label,value"));
+        assert!(contents.contains("ada,1"));
+        assert_directory_entries(&nested, &["alpha.csv"]);
+    }
+
+    #[test]
+    fn export_csv_authorized_replaces_existing_target_without_temp_leaks() {
+        let state = AppState::new().expect("create app state");
+        let data = DataService::new(&state);
+        let dataset_id = seed_export_dataset(
+            &data,
+            "Alpha",
+            vec![vec![serde_json::json!("ada"), serde_json::json!(1)]],
+        );
+        let temp = TempDir::new().expect("temp dir");
+        let export_root = temp.path().join("exports");
+        let nested = export_root.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested dir");
+        std::fs::write(nested.join("alpha.csv"), b"stale-bytes").expect("seed target");
+        let service = IoService::new(&state);
+        let grant = service
+            .authorize_output_root(&export_root.to_string_lossy())
+            .expect("authorize root");
+
+        service
+            .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv")
+            .expect("replace csv");
+
+        let contents = std::fs::read_to_string(nested.join("alpha.csv")).expect("read csv");
+        assert!(contents.contains("label,value"));
+        assert!(contents.contains("ada,1"));
+        assert_directory_entries(&nested, &["alpha.csv"]);
+    }
+
+    #[test]
+    fn export_csv_authorized_create_new_rejects_racing_target_and_preserves_bytes() {
+        let state = AppState::new().expect("create app state");
+        let data = DataService::new(&state);
+        let dataset_id = seed_export_dataset(
+            &data,
+            "Alpha",
+            vec![vec![serde_json::json!("ada"), serde_json::json!(1)]],
+        );
+        let temp = TempDir::new().expect("temp dir");
+        let export_root = temp.path().join("exports");
+        std::fs::create_dir_all(&export_root).expect("export root");
+        let nested = export_root.join("nested");
+        let target = nested.join("alpha.csv");
+        let service = IoService::new(&state);
+        let grant = service
+            .authorize_output_root(&export_root.to_string_lossy())
+            .expect("authorize root");
+
+        let error = service
+            .export_csv_authorized_with_publish_hook(
+                &dataset_id,
+                &grant.root_id,
+                "nested/alpha.csv",
+                || {
+                    std::fs::create_dir_all(&nested).expect("nested dir");
+                    std::fs::write(&target, b"racing-bytes").expect("race target");
+                    Ok(())
+                },
+            )
+            .expect_err("create-new publish must reject a racing target");
+
+        assert!(matches!(error, AppError::FileIO(_)));
+        assert_eq!(std::fs::read(&target).expect("read racing target"), b"racing-bytes");
+        assert_directory_entries(&nested, &["alpha.csv"]);
     }
 
     #[test]
@@ -466,20 +581,54 @@ impl<'a> IoService<'a> {
         root_id: &str,
         relative_path: &str,
     ) -> Result<(), AppError> {
+        self.export_csv_authorized_with_publish_hook(dataset_id, root_id, relative_path, || Ok(()))
+    }
+
+    fn export_csv_authorized_with_publish_hook<F>(
+        &self,
+        dataset_id: &str,
+        root_id: &str,
+        relative_path: &str,
+        before_publish: F,
+    ) -> Result<(), AppError>
+    where
+        F: FnOnce() -> Result<(), AppError>,
+    {
         let resolved = {
             let authorizer = self.lock_path_authorization()?;
             authorizer.resolve_output(root_id, relative_path)?
         };
+        let parent = resolved.path.parent().ok_or_else(|| {
+            AppError::FileIO("resolved output path has no parent directory".to_string())
+        })?;
 
-        if let Some(parent) = resolved.path.parent() {
-            std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent)?;
+        let temp_path = create_authorized_export_temp_path(parent)?;
+        let temp_path_result = temp_path
+            .to_str()
+            .ok_or_else(|| AppError::FileIO("temporary export path is not valid UTF-8".to_string()));
+        let temp_path_str = match temp_path_result {
+            Ok(path) => path,
+            Err(error) => {
+                cleanup_authorized_export_tempfile(&temp_path);
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = self.export_csv(dataset_id, temp_path_str) {
+            cleanup_authorized_export_tempfile(&temp_path);
+            return Err(error);
         }
 
-        let output_path = resolved
-            .path
-            .to_str()
-            .ok_or_else(|| AppError::FileIO("resolved output path is not valid UTF-8".to_string()))?;
-        self.export_csv(dataset_id, output_path)
+        let publish_result = before_publish()
+            .and_then(|_| self.revalidate_authorized_output(root_id, relative_path))
+            .and_then(|_| publish_authorized_export(&temp_path, &resolved.path, &resolved.status));
+        if let Err(error) = publish_result {
+            cleanup_authorized_export_tempfile(&temp_path);
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     fn lock_path_authorization(
@@ -688,4 +837,118 @@ impl<'a> IoService<'a> {
             .map_err(|e| AppError::Database(e.to_string()))?;
         db.export_csv_zip_subset(output_path, subset, archive_paths)
     }
+
+    fn revalidate_authorized_output(
+        &self,
+        root_id: &str,
+        relative_path: &str,
+    ) -> Result<(), AppError> {
+        let authorizer = self.lock_path_authorization()?;
+        authorizer.resolve_output(root_id, relative_path)?;
+        Ok(())
+    }
+}
+
+fn create_authorized_export_temp_path(parent: &Path) -> Result<std::path::PathBuf, AppError> {
+    let named_temp = tempfile::Builder::new()
+        .prefix(AUTHORIZED_EXPORT_TEMP_PREFIX)
+        .suffix(".csv")
+        .tempfile_in(parent)
+        .map_err(|error| AppError::FileIO(error.to_string()))?;
+    let (file, path) = named_temp
+        .keep()
+        .map_err(|error| AppError::FileIO(error.error.to_string()))?;
+    drop(file);
+    Ok(path)
+}
+
+fn cleanup_authorized_export_tempfile(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {}
+    }
+}
+
+fn publish_authorized_export(
+    temp_path: &Path,
+    output_path: &Path,
+    initial_status: &OutputPathStatus,
+) -> Result<(), AppError> {
+    match initial_status {
+        OutputPathStatus::CreateNew => publish_authorized_export_create_new(temp_path, output_path),
+        OutputPathStatus::OverwriteExisting => publish_authorized_export_overwrite(temp_path, output_path),
+    }
+}
+
+fn publish_authorized_export_create_new(temp_path: &Path, output_path: &Path) -> Result<(), AppError> {
+    std::fs::hard_link(temp_path, output_path).map_err(|error| AppError::FileIO(error.to_string()))?;
+    std::fs::remove_file(temp_path).map_err(|error| AppError::FileIO(error.to_string()))?;
+    Ok(())
+}
+
+fn publish_authorized_export_overwrite(temp_path: &Path, output_path: &Path) -> Result<(), AppError> {
+    atomic_replace_file(temp_path, output_path)
+}
+
+#[cfg(unix)]
+fn atomic_replace_file(temp_path: &Path, output_path: &Path) -> Result<(), AppError> {
+    std::fs::rename(temp_path, output_path).map_err(|error| AppError::FileIO(error.to_string()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn atomic_replace_file(temp_path: &Path, output_path: &Path) -> Result<(), AppError> {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+
+    type Bool = i32;
+    type Dword = u32;
+    type Lpcwstr = *const u16;
+    type Lpvoid = *mut std::ffi::c_void;
+
+    const MOVEFILE_WRITE_THROUGH: Dword = 0x0000_0008;
+
+    extern "system" {
+        fn MoveFileExW(existing_file_name: Lpcwstr, new_file_name: Lpcwstr, flags: Dword) -> Bool;
+        fn ReplaceFileW(
+            replaced_file_name: Lpcwstr,
+            replacement_file_name: Lpcwstr,
+            backup_file_name: Lpcwstr,
+            replace_flags: Dword,
+            exclude: Lpvoid,
+            reserved: Lpvoid,
+        ) -> Bool;
+    }
+
+    fn wide(path: &Path) -> Vec<u16> {
+        OsStr::new(path)
+            .encode_wide()
+            .chain(once(0))
+            .collect::<Vec<_>>()
+    }
+
+    let temp_wide = wide(temp_path);
+    let output_wide = wide(output_path);
+    let replaced = unsafe {
+        ReplaceFileW(
+            output_wide.as_ptr(),
+            temp_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced != 0 {
+        return Ok(());
+    }
+
+    let moved = unsafe { MoveFileExW(temp_wide.as_ptr(), output_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if moved != 0 {
+        return Ok(());
+    }
+
+    Err(AppError::FileIO(std::io::Error::last_os_error().to_string()))
 }

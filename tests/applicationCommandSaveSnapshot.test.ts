@@ -113,6 +113,16 @@ async function waitForInspectionResolver(
   return inspectionResolvers.shift()!;
 }
 
+async function waitForRuntimeRequestStatus(
+  runtime: { snapshot: () => Array<{ requestId: string; status: string }> },
+  requestId: string,
+  status: string,
+): Promise<void> {
+  while (runtime.snapshot().find((entry) => entry.requestId === requestId)?.status !== status) {
+    await Promise.resolve();
+  }
+}
+
 {
   const callOrder: string[] = [];
   const builtRequest = { token: "save-request" };
@@ -309,6 +319,95 @@ async function waitForInspectionResolver(
   );
 
   assert.equal(exportCalls, 0, "CSV export must not overwrite after a false->true target race without request-bound confirmation");
+}
+
+{
+  let exportCalls = 0;
+  const runtime = createApplicationRuntime({
+    io: {
+      inspectCsvTarget: async () => ({ targetExists: true }),
+      exportCsv: async () => {
+        exportCalls += 1;
+      },
+    },
+  } as never);
+
+  const pending = (runtime as never as {
+    execute: (command: unknown, actor: { kind: "ui" }) => Promise<unknown>;
+    snapshot: () => Array<{ requestId: string; command: string; status: string }>;
+    confirm: (requestId: string, allow: boolean) => boolean;
+  }).execute(
+    {
+      type: "table.exportCsv",
+      input: {
+        datasetId: "table-1",
+        rootId: "root-1",
+        relativePath: "exports/table-1.csv",
+        overwriteConfirmed: true,
+      },
+    },
+    { kind: "ui" },
+  );
+
+  const requestId = (runtime as never as {
+    snapshot: () => Array<{ requestId: string; command: string; status: string }>;
+  }).snapshot().find((entry) => entry.command === "table.exportCsv")?.requestId ?? "";
+  await waitForRuntimeRequestStatus(runtime as never as { snapshot: () => Array<{ requestId: string; status: string }> }, requestId, "awaiting-confirmation");
+  assert.equal((runtime as never as { confirm: (requestId: string, allow: boolean) => boolean }).confirm(requestId, false), true);
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "user_denied",
+  );
+
+  assert.equal(exportCalls, 0, "ApplicationCommand input must not be able to forge overwrite authorization");
+}
+
+{
+  let receivedTrustedExport:
+    | { overwriteConfirmed: boolean; targetStatus: "createNew" | "overwriteExisting" }
+    | null = null;
+  const runtime = createApplicationRuntime({
+    io: {
+      inspectCsvTarget: async () => ({ targetExists: true }),
+      exportCsv: async (
+        _datasetId: string,
+        _rootId: string,
+        _relativePath: string,
+        trusted: { overwriteConfirmed: boolean; targetStatus: "createNew" | "overwriteExisting" },
+      ) => {
+        receivedTrustedExport = trusted;
+      },
+    },
+  } as never);
+
+  const pending = (runtime as never as {
+    execute: (command: unknown, actor: { kind: "ui" }) => Promise<unknown> & { requestId?: string };
+    snapshot: () => Array<{ requestId: string; status: string }>;
+    confirm: (requestId: string, allow: boolean) => boolean;
+  }).execute(
+    {
+      type: "table.exportCsv",
+      input: {
+        datasetId: "table-1",
+        rootId: "root-1",
+        relativePath: "exports/table-1.csv",
+      },
+    },
+    { kind: "ui" },
+  );
+
+  const requestId = (runtime as never as {
+    snapshot: () => Array<{ requestId: string; command: string; status: string }>;
+  }).snapshot().find((entry) => entry.command === "table.exportCsv")?.requestId ?? "";
+  await waitForRuntimeRequestStatus(runtime as never as { snapshot: () => Array<{ requestId: string; status: string }> }, requestId, "awaiting-confirmation");
+  assert.equal((runtime as never as { confirm: (requestId: string, allow: boolean) => boolean }).confirm(requestId, true), true);
+  await pending;
+
+  assert.deepEqual(
+    receivedTrustedExport,
+    { overwriteConfirmed: true, targetStatus: "overwriteExisting" },
+    "Trusted overwrite intent must be projected through the internal export service contract",
+  );
 }
 
 {

@@ -11,7 +11,10 @@ import { useHistoryStore } from "@/stores/useHistoryStore";
 export interface IoCommandDependencies {
   createSnapshot: (name?: string) => Promise<{ id?: string | null; name?: string | null; createdAt?: string | null }>;
   inspectCsvTarget: (input: TableExportCsvInput) => Promise<{ targetExists: boolean }>;
-  exportCsv: (input: TableExportCsvInput) => Promise<void>;
+  exportCsv: (
+    input: TableExportCsvInput,
+    trusted: { overwriteConfirmed: boolean; targetStatus: "createNew" | "overwriteExisting" },
+  ) => Promise<void>;
 }
 
 export function createIoCommandHandlers(
@@ -75,7 +78,10 @@ export function createIoCommandHandlers(
       );
     }
 
-    await dependencies.exportCsv(input);
+    await dependencies.exportCsv(input, {
+      overwriteConfirmed: confirmationGranted,
+      targetStatus,
+    });
     return {
       targetStatus,
     };

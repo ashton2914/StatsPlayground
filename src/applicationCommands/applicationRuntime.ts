@@ -48,7 +48,12 @@ export interface ApplicationRuntimeDependencies {
   report?: Partial<ReportCommandDependencies>;
   tabulate?: Partial<TabulateCommandDependencies>;
   io?: Partial<IoCommandDependencies> & {
-    exportCsv?: (datasetId: string, rootId: string, relativePath: string) => Promise<{ targetExists: boolean }>;
+    exportCsv?: (
+      datasetId: string,
+      rootId: string,
+      relativePath: string,
+      trusted?: { overwriteConfirmed: boolean; targetStatus: "createNew" | "overwriteExisting" },
+    ) => Promise<void>;
   };
 }
 
@@ -75,8 +80,8 @@ export function createApplicationRuntime(
     inspectCsvTarget: dependencies.io?.inspectCsvTarget
       ?? (dependencies.io?.exportCsv ? async () => ({ targetExists: false }) : undefined),
     exportCsv: dependencies.io?.exportCsv
-      ? async (input) => {
-          await dependencies.io?.exportCsv?.(input.datasetId, input.rootId, input.relativePath);
+      ? async (input, trusted) => {
+          await dependencies.io?.exportCsv?.(input.datasetId, input.rootId, input.relativePath, trusted);
         }
       : undefined,
   });
