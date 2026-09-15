@@ -745,4 +745,75 @@ async function waitForRequestStatus(
   }]);
 }
 
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  runtime.register(
+    "test.mutate",
+    async () => ({ changed: true, data: { id: "ok" }, warnings: [] }),
+    { mode: "mutation" },
+  );
+  runtime.register(
+    "test.other",
+    async () => {
+      throw new CommandExecutionError("execution_failed", "planned failure");
+    },
+    { mode: "mutation" },
+  );
+  runtime.register(
+    "test.slow",
+    async (_input, context) => {
+      if (context.signal.aborted) {
+        throw new CommandExecutionError("cancelled", "cancelled");
+      }
+      return { changed: true, data: { id: "cancel" }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+
+  for (let index = 0; index < 80; index += 1) {
+    await runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
+  }
+  for (let index = 0; index < 20; index += 1) {
+    await assert.rejects(
+      runtime.execute({ type: "test.other", input: {} }, { kind: "ui" }),
+      (error: unknown) => error instanceof CommandExecutionError && error.code === "execution_failed",
+    );
+  }
+  for (let index = 0; index < 20; index += 1) {
+    const controller = new AbortController();
+    const pending = runtime.execute(
+      { type: "test.slow", input: {} },
+      { kind: "ui" },
+      { signal: controller.signal },
+    );
+    controller.abort();
+    await assert.rejects(
+      pending,
+      (error: unknown) => error instanceof CommandExecutionError && error.code === "cancelled",
+    );
+  }
+  await runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
+  await assert.rejects(
+    runtime.execute({ type: "test.other", input: {} }, { kind: "ui" }),
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "execution_failed",
+  );
+  const controller = new AbortController();
+  const pending = runtime.execute(
+    { type: "test.slow", input: {} },
+    { kind: "ui" },
+    { signal: controller.signal },
+  );
+  controller.abort();
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "cancelled",
+  );
+
+  const snapshot = runtime.snapshot();
+  assert.ok(snapshot.length <= 32, `settled request observation must be bounded, got ${snapshot.length}`);
+  assert.equal(snapshot.some((entry) => entry.status === "succeeded"), true);
+  assert.equal(snapshot.some((entry) => entry.status === "failed"), true);
+  assert.equal(snapshot.some((entry) => entry.status === "cancelled"), true);
+}
+
 console.log("application command runtime tests passed");

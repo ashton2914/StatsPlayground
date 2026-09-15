@@ -34,6 +34,14 @@ type CommandHandler<
 
 type RequestStatus = CommandLifecycleStatus;
 
+const RECENT_TERMINAL_REQUEST_LIMIT = 32;
+
+interface RuntimeRequestSnapshot {
+  requestId: string;
+  command: string;
+  status: RequestStatus;
+}
+
 interface RuntimeRequest<TData> {
   requestId: string;
   command: string;
@@ -109,6 +117,10 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
   private readonly handlers = new Map<string, RegisteredCommand>();
 
   private readonly requests = new Map<string, RuntimeRequest<unknown>>();
+
+  private readonly terminalRequests = new Map<string, RuntimeRequestSnapshot>();
+
+  private readonly terminalRequestOrder: string[] = [];
 
   private readonly idempotencyCache = new Map<string, CommandResult<unknown>>();
 
@@ -293,7 +305,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
   }
 
   snapshot(): Array<{ requestId: string; command: string; status: RequestStatus }> {
-    return [...this.requests.values()].map((request) => ({
+    return [...this.terminalRequests.values(), ...this.requests.values()].map((request) => ({
       requestId: request.requestId,
       command: request.command,
       status: request.status,
@@ -353,6 +365,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     const confirmationSignal = new Promise<boolean>((resolve) => {
       resolveConfirmation = resolve;
     });
+    const runtime = this;
 
     const request: RuntimeRequest<TData> & { promise: Promise<CommandResult<TData>> } = {
       requestId: input.requestId,
@@ -375,11 +388,13 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       resolve(value) {
         if (request.settled) return;
         request.settled = true;
+        runtime.archiveSettledRequest(request);
         resolvePromise?.(value);
       },
       reject(error) {
         if (request.settled) return;
         request.settled = true;
+        runtime.archiveSettledRequest(request);
         rejectPromise?.(error);
       },
       promise,
@@ -546,6 +561,24 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
   private rejectRequest(request: RuntimeRequest<unknown>, error: CommandExecutionError): void {
     request.reject(error);
+  }
+
+  private archiveSettledRequest(request: RuntimeRequest<unknown>): void {
+    this.requests.delete(request.requestId);
+    if (!this.terminalRequests.has(request.requestId)) {
+      this.terminalRequestOrder.push(request.requestId);
+    }
+    this.terminalRequests.set(request.requestId, {
+      requestId: request.requestId,
+      command: request.command,
+      status: request.status,
+    });
+    while (this.terminalRequestOrder.length > RECENT_TERMINAL_REQUEST_LIMIT) {
+      const evicted = this.terminalRequestOrder.shift();
+      if (evicted) {
+        this.terminalRequests.delete(evicted);
+      }
+    }
   }
 }
 

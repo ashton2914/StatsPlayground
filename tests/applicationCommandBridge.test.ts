@@ -285,6 +285,77 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
 {
   const listeners: Record<string, Listener> = {};
   const invocations: Array<{ command: string; args?: unknown }> = [];
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => {
+        throw new CommandExecutionError(
+          "path_not_authorized",
+          "blocked roots: / C:\\ D:/ \\\\server\\share \\\\server\\share\\ while keeping https://example.test/a/b and safe/a/b",
+          true,
+          {
+            "/": "posix-root-key",
+            posixRoot: "/",
+            driveBackslashRoot: "C:\\",
+            driveSlashRoot: "D:/",
+            uncShareRoot: "\\\\server\\share",
+            uncShareRootTrailing: "\\\\server\\share\\",
+            nested: [
+              { value: "prefix / suffix" },
+              ["C:\\", "D:/", "\\\\server\\share", "./relative", "safe/a/b"],
+              "https://example.test/a/b",
+            ],
+            code: "path_not_authorized",
+            retryable: true,
+            count: 3,
+          },
+        );
+      },
+    },
+    listen: async (eventName, listener) => {
+      listeners[eventName] = listener as Listener;
+      return () => undefined;
+    },
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      return undefined as never;
+    },
+  });
+  await bridge.start();
+  listeners["application-command-request"]({
+    payload: {
+      requestId: "rust-request-root-paths",
+      command: { type: "project.inspect", input: {} } as never,
+    },
+  });
+
+  await Promise.resolve();
+  const payload = invocations.at(-1)?.args as {
+    update?: { response?: { message?: string; details?: Record<string, unknown> } };
+  };
+  const response = payload.update?.response;
+  assert.ok(response);
+  assert.equal(response.message?.includes("https://example.test/a/b"), true);
+  assert.equal(response.message?.includes("safe/a/b"), true);
+  assert.equal(response.message?.includes(" C:\\"), false);
+  assert.equal(response.message?.includes(" D:/"), false);
+  assert.equal(response.message?.includes("\\\\server\\share"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(response.details ?? {}, "/"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(response.details ?? {}, "[redacted-path]"), true);
+  assert.equal(JSON.stringify(response.details).includes('"/"'), false);
+  assert.equal(JSON.stringify(response.details).includes('"C:\\\\"'), false);
+  assert.equal(JSON.stringify(response.details).includes('"D:/"'), false);
+  assert.equal(JSON.stringify(response.details).includes("\\\\\\\\server\\\\share"), false);
+  assert.equal(JSON.stringify(response.details).includes("https://example.test/a/b"), true);
+  assert.equal(JSON.stringify(response.details).includes("safe/a/b"), true);
+  assert.equal(JSON.stringify(response.details).includes("./relative"), true);
+  assert.equal(response.details?.code, "path_not_authorized");
+  assert.equal(response.details?.retryable, true);
+  assert.equal(response.details?.count, 3);
+}
+
+{
+  const listeners: Record<string, Listener> = {};
+  const invocations: Array<{ command: string; args?: unknown }> = [];
   const execution = deferred<CommandResult<unknown>>();
 
   const bridge = createApplicationCommandBridge({

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
@@ -135,7 +135,7 @@ struct BrokerInner<E: ApplicationCommandEventEmitter> {
 }
 
 struct CommittedOutcomes {
-    responses: HashMap<String, McpCommandResponse>,
+    responses: HashMap<String, ApplicationCommandResponse>,
     order: VecDeque<String>,
 }
 
@@ -183,6 +183,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
                     max_pending: config.max_pending.max(1),
                     max_concurrent,
                     max_committed_outcomes: config.max_committed_outcomes.max(1),
+                    commit_grace_timeout_ms: config.commit_grace_timeout_ms.max(1),
                 },
             }),
         }
@@ -307,20 +308,34 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
         let Some(mut entry) = pending.remove(&completion.request_id) else {
-            return Ok(false);
+            return self.update_retained_outcome(completion.request_id, completion.response);
         };
         let request_id = completion.request_id.clone();
         if entry.retain_committed_outcome {
-            if let ApplicationCommandResponse::Success(result) = &completion.response {
-                let response = McpCommandResponse::from_result(request_id.clone(), result.clone());
-                self.retain_committed_outcome(request_id, response)?;
-            }
+            self.retain_committed_outcome(request_id, completion.response.clone())?;
         }
         if let Some(sender) = entry.completion.take() {
             sender.send(completion.response).map_err(|_| {
                 AppError::FileIO("Application command response channel closed".to_string())
             })?;
         }
+        Ok(true)
+    }
+
+    fn update_retained_outcome(
+        &self,
+        request_id: String,
+        response: ApplicationCommandResponse,
+    ) -> Result<bool, AppError> {
+        let mut outcomes = self
+            .inner
+            .committed_outcomes
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        if !outcomes.responses.contains_key(&request_id) {
+            return Ok(false);
+        }
+        outcomes.responses.insert(request_id, response);
         Ok(true)
     }
 
@@ -339,7 +354,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
     pub fn committed_outcome(
         &self,
         request_id: &str,
-    ) -> Result<Option<McpCommandResponse>, AppError> {
+    ) -> Result<Option<ApplicationCommandResponse>, AppError> {
         self.inner
             .committed_outcomes
             .lock()
@@ -350,7 +365,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
     fn retain_committed_outcome(
         &self,
         request_id: String,
-        response: McpCommandResponse,
+        response: ApplicationCommandResponse,
     ) -> Result<(), AppError> {
         let mut outcomes = self
             .inner
@@ -417,6 +432,8 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         let mut completion_rx = completion_rx;
         let mut cancellation_forwarded = false;
         let mut timeout_elapsed = false;
+        let mut commit_grace_elapsed = false;
+        let commit_grace_timeout = Duration::from_millis(self.inner.config.commit_grace_timeout_ms);
         let result = loop {
             tokio::select! {
                 response = &mut completion_rx => break self.response_to_result(request_id.clone(), response),
@@ -434,10 +451,38 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
                     }
                     break Err(AppError::Busy("Application command timeout".to_string()));
                 }
+                _ = tokio::time::sleep(commit_grace_timeout), if (timeout_elapsed || cancellation_forwarded) && !commit_grace_elapsed => {
+                    commit_grace_elapsed = true;
+                    break self.record_uncertain_outcome(&request_id);
+                }
             }
         };
         drop(permit);
         result
+    }
+
+    fn record_uncertain_outcome(&self, request_id: &str) -> Result<McpCommandResponse, AppError> {
+        let removed = self.remove_pending(request_id)?;
+        if removed.is_some() {
+            self.retain_committed_outcome(
+                request_id.to_string(),
+                ApplicationCommandResponse::Error(Self::uncertain_outcome_error(request_id)),
+            )?;
+        }
+        Err(AppError::ApplicationCommand(Self::uncertain_outcome_error(
+            request_id,
+        )))
+    }
+
+    fn uncertain_outcome_error(request_id: &str) -> McpCommandError {
+        McpCommandError {
+            code: "outcome_uncertain".to_string(),
+            message:
+                "Application command commit outcome is uncertain; the commit may have occurred"
+                    .to_string(),
+            retryable: true,
+            details: Some(json!({ "requestId": request_id })),
+        }
     }
 
     fn response_to_result(
@@ -620,6 +665,14 @@ mod tests {
                 ..McpCommandBrokerConfig::default()
             },
         );
+        (broker, emitter)
+    }
+
+    fn broker_with_config(
+        config: McpCommandBrokerConfig,
+    ) -> (McpCommandBroker<RecordingEmitter>, RecordingEmitter) {
+        let emitter = RecordingEmitter::default();
+        let broker = McpCommandBroker::new_for_tests(emitter.clone(), config);
         (broker, emitter)
     }
 
@@ -1199,5 +1252,270 @@ mod tests {
                 .expect("retained lookup")
                 .is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn post_commit_timeout_returns_uncertain_frees_capacity_and_late_success_updates_lookup()
+    {
+        let (broker, emitter) = broker_with_config(McpCommandBrokerConfig {
+            max_pending: 1,
+            max_concurrent: 1,
+            max_committed_outcomes: 2,
+            commit_grace_timeout_ms: 10,
+        });
+        broker.register_dispatcher().expect("register dispatcher");
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+
+        let committing = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("uncertain-success"),
+                        Duration::from_millis(5),
+                        progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let request_id = emitter.requests()[0].request_id.clone();
+        broker
+            .record_progress(ApplicationCommandProgress {
+                request_id: request_id.clone(),
+                status: ApplicationCommandStatus::Committing,
+                stage: "commit".to_string(),
+                message: None,
+                percent: None,
+            })
+            .expect("record committing");
+
+        let uncertain = tokio::time::timeout(Duration::from_millis(100), committing)
+            .await
+            .expect("commit grace must be finite")
+            .expect("dispatch task");
+        assert!(matches!(
+            uncertain,
+            Err(crate::error::AppError::ApplicationCommand(error))
+                if error.code == "outcome_uncertain"
+                    && error.message.contains("may have occurred")
+                    && !error.message.contains("rollback")
+                    && error.details == Some(json!({ "requestId": request_id.clone() }))
+        ));
+        assert!(matches!(
+            broker.committed_outcome(&request_id).expect("uncertain lookup"),
+            Some(ApplicationCommandResponse::Error(error)) if error.code == "outcome_uncertain"
+        ));
+
+        let (next_progress_tx, _next_progress_rx) = mpsc::unbounded_channel();
+        let next = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("after-uncertain"),
+                        Duration::from_secs(5),
+                        next_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let next_request_id = emitter.requests()[1].request_id.clone();
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: next_request_id,
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 7,
+                    data: json!({ "next": true }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete next request");
+        next.await.expect("next task").expect("next result");
+
+        assert!(matches!(
+            broker.complete_application_command(McpBrokerCompletion {
+                request_id: request_id.clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: true,
+                    project_revision: 8,
+                    data: json!({ "late": "success" }),
+                    warnings: vec![],
+                }),
+            }),
+            Ok(true)
+        ));
+        assert!(matches!(
+            broker.committed_outcome(&request_id).expect("late success lookup"),
+            Some(ApplicationCommandResponse::Success(result))
+                if result.data == json!({ "late": "success" })
+        ));
+    }
+
+    #[tokio::test]
+    async fn post_commit_late_error_is_recorded_truthfully_and_retention_is_bounded() {
+        let (broker, emitter) = broker_with_config(McpCommandBrokerConfig {
+            max_pending: 2,
+            max_concurrent: 2,
+            max_committed_outcomes: 2,
+            commit_grace_timeout_ms: 5,
+        });
+        broker.register_dispatcher().expect("register dispatcher");
+        let mut retained_ids = Vec::new();
+
+        for index in 0..3 {
+            let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+            let pending = tokio::spawn({
+                let broker = broker.clone();
+                async move {
+                    broker
+                        .dispatch(
+                            test_command(&format!("late-error-{index}")),
+                            Duration::from_millis(1),
+                            progress_tx,
+                            McpCancellationToken::new(),
+                        )
+                        .await
+                }
+            });
+            while emitter.requests().len() <= index {
+                tokio::task::yield_now().await;
+            }
+            let request_id = emitter.requests()[index].request_id.clone();
+            broker
+                .record_progress(ApplicationCommandProgress {
+                    request_id: request_id.clone(),
+                    status: ApplicationCommandStatus::Committing,
+                    stage: "commit".to_string(),
+                    message: None,
+                    percent: None,
+                })
+                .expect("record committing");
+            let result = pending.await.expect("pending task");
+            assert!(matches!(
+                result,
+                Err(crate::error::AppError::ApplicationCommand(error))
+                    if error.code == "outcome_uncertain" && !error.message.contains("rollback")
+            ));
+            broker
+                .complete_application_command(McpBrokerCompletion {
+                    request_id: request_id.clone(),
+                    response: ApplicationCommandResponse::Error(McpCommandError {
+                        code: "execution_failed".to_string(),
+                        message:
+                            "Frontend reported failure after commit began; commit may have occurred"
+                                .to_string(),
+                        retryable: true,
+                        details: Some(json!({ "phase": "postCommit" })),
+                    }),
+                })
+                .expect("record late error");
+            retained_ids.push(request_id);
+        }
+
+        assert_eq!(
+            broker.committed_outcome(&retained_ids[0]).expect("evicted"),
+            None
+        );
+        for request_id in retained_ids.iter().skip(1) {
+            assert!(matches!(
+                broker.committed_outcome(request_id).expect("retained late error"),
+                Some(ApplicationCommandResponse::Error(error))
+                    if error.code == "execution_failed"
+                        && error.message.contains("may have occurred")
+                        && !error.message.contains("rollback")
+            ));
+        }
+        assert!(matches!(
+            broker.complete_application_command(McpBrokerCompletion {
+                request_id: retained_ids[0].clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: true,
+                    project_revision: 99,
+                    data: json!({ "evicted": true }),
+                    warnings: vec![],
+                }),
+            }),
+            Ok(false)
+        ));
+    }
+
+    #[tokio::test]
+    async fn post_commit_explicit_cancellation_uses_bounded_uncertain_outcome_path() {
+        let (broker, emitter) = broker_with_config(McpCommandBrokerConfig {
+            max_pending: 1,
+            max_concurrent: 1,
+            max_committed_outcomes: 1,
+            commit_grace_timeout_ms: 5,
+        });
+        broker.register_dispatcher().expect("register dispatcher");
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let token = McpCancellationToken::new();
+        let pending = tokio::spawn({
+            let broker = broker.clone();
+            let token = token.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("cancel-after-commit"),
+                        Duration::from_secs(5),
+                        progress_tx,
+                        token,
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let request_id = emitter.requests()[0].request_id.clone();
+        broker
+            .record_progress(ApplicationCommandProgress {
+                request_id: request_id.clone(),
+                status: ApplicationCommandStatus::Committing,
+                stage: "commit".to_string(),
+                message: None,
+                percent: None,
+            })
+            .expect("record committing");
+        token.cancel();
+
+        let result = tokio::time::timeout(Duration::from_millis(100), pending)
+            .await
+            .expect("post-commit cancellation must be bounded")
+            .expect("dispatch task");
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::ApplicationCommand(error))
+                if error.code == "outcome_uncertain"
+                    && error.details == Some(json!({ "requestId": request_id.clone() }))
+        ));
+        assert_eq!(emitter.cancellation_requests(), vec![request_id.clone()]);
+
+        assert!(matches!(
+            broker.complete_application_command(McpBrokerCompletion {
+                request_id: request_id.clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: true,
+                    project_revision: 11,
+                    data: json!({ "cancelLateSuccess": true }),
+                    warnings: vec![],
+                }),
+            }),
+            Ok(true)
+        ));
+        assert!(matches!(
+            broker.committed_outcome(&request_id).expect("retained success"),
+            Some(ApplicationCommandResponse::Success(result))
+                if result.data == json!({ "cancelLateSuccess": true })
+        ));
     }
 }

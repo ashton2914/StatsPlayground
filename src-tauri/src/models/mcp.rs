@@ -7,6 +7,7 @@ pub struct McpCommandBrokerConfig {
     pub max_pending: usize,
     pub max_concurrent: usize,
     pub max_committed_outcomes: usize,
+    pub commit_grace_timeout_ms: u64,
 }
 
 impl Default for McpCommandBrokerConfig {
@@ -15,6 +16,7 @@ impl Default for McpCommandBrokerConfig {
             max_pending: 32,
             max_concurrent: 4,
             max_committed_outcomes: 4,
+            commit_grace_timeout_ms: 250,
         }
     }
 }

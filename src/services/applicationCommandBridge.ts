@@ -9,9 +9,10 @@ const APPLICATION_COMMAND_REQUEST_EVENT = "application-command-request";
 const APPLICATION_COMMAND_CANCEL_EVENT = "application-command-cancel";
 const MCP_SESSION_ID = "application-command-broker";
 const URL_TOKEN_PATTERN = /\b(?:https?|ftp|file):\/\/[^\s"']+/gi;
-const WINDOWS_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_])([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+)/g;
-const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9_])(\\\\[^\\/\s]+\\[^\\/:*?"<>|\r\n]+(?:\\[^\\/:*?"<>|\r\n]+)+)/g;
-const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_./-])(\/(?:[^\/\r\n\s][^\/\r\n]*)(?:\/[^\/\r\n]+)*)/g;
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_])([A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/]?)*)/g;
+const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9_])(\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\\/:*?"<>|\r\n\s]+)*(?:\\)?)/g;
+const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_./-])(\/(?:[^\/\r\n\s]+)(?:\/[^\/\r\n\s]+)*)/g;
+const POSIX_ROOT_PATH_PATTERN = /(^|[^A-Za-z0-9_./-])\/(?=$|[\s,;:)\]}])/g;
 
 type Runtime = Pick<ApplicationCommandRuntime<ApplicationCommandRegistry>, "execute">;
 type Listen = typeof listen;
@@ -283,7 +284,8 @@ function redactPathLikeSegments(text: string): string {
   return text
     .replace(WINDOWS_UNC_PATH_PATTERN, "$1[redacted-path]")
     .replace(WINDOWS_ABSOLUTE_PATH_PATTERN, "$1[redacted-path]")
-    .replace(POSIX_ABSOLUTE_PATH_PATTERN, "$1[redacted-path]");
+    .replace(POSIX_ABSOLUTE_PATH_PATTERN, "$1[redacted-path]")
+    .replace(POSIX_ROOT_PATH_PATTERN, "$1[redacted-path]");
 }
 
 function redactAbsolutePaths(text: string): string {
