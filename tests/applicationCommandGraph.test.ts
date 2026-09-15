@@ -277,7 +277,7 @@ async function createGraphForActor(actor: CommandActor) {
   let dirty = false;
   let replaceCalls = 0;
 
-  const runtime = createApplicationRuntime({
+  const runtimeDependencies = {
     initialRevision: 12,
     project: {
       getProjectState: () => ({
@@ -321,9 +321,10 @@ async function createGraphForActor(actor: CommandActor) {
       historyUpdateMessage: (name: string) => `Updated graph ${name}`,
       normalizeGraph: normalizeStoredGraphBuilderItem,
     },
-  } as any);
+  } satisfies ApplicationRuntimeDependencies;
+  const runtime = createApplicationRuntime(runtimeDependencies);
 
-  const result = await (runtime as any).execute(
+  const result = await runtime.execute(
     {
       type: "graph.update",
       input: {
@@ -357,7 +358,7 @@ async function createGraphForActor(actor: CommandActor) {
   const historyEntries: string[] = [];
   let dirty = false;
 
-  const runtime = createApplicationRuntime({
+  const runtimeDependencies = {
     initialRevision: 12,
     project: {
       getProjectState: () => ({
@@ -400,10 +401,11 @@ async function createGraphForActor(actor: CommandActor) {
       historyUpdateMessage: (name: string) => `Updated graph ${name}`,
       normalizeGraph: normalizeGraphBuilderItem,
     },
-  } as any);
+  } satisfies ApplicationRuntimeDependencies;
+  const runtime = createApplicationRuntime(runtimeDependencies);
 
   await assert.rejects(
-    (runtime as any).execute(
+    runtime.execute(
       {
         type: "graph.update",
         input: {
