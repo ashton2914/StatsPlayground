@@ -976,6 +976,10 @@ pub struct DistributionQuantileValueV1 {
 pub struct DistributionYResultV1 {
     pub y_column: DistributionColumnRefV1,
     pub y_name: String,
+    #[serde(default)]
+    pub source_rows: u64,
+    #[serde(default)]
+    pub processed_rows: u64,
     pub quantiles: Vec<DistributionQuantileValueV1>,
     pub blocks: Vec<DistributionReportBlockV1>,
 }
@@ -994,6 +998,10 @@ pub struct DistributionGroupResultV1 {
 pub struct DistributionYResult {
     pub y_column: DistributionColumnRefV1,
     pub y_name: String,
+    #[serde(default)]
+    pub source_rows: u64,
+    #[serde(default)]
+    pub processed_rows: u64,
     pub quantiles: Vec<DistributionQuantileValueV1>,
     pub blocks: Vec<DistributionReportBlock>,
 }
