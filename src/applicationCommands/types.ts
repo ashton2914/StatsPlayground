@@ -100,6 +100,16 @@ export interface TableDescribeResult {
   };
 }
 
+export interface TableCreateInput {
+  request: import("@/types/data").CreateManagedTableRequest;
+  preview?: {
+    offset?: number;
+    limit: number;
+  };
+}
+
+export type TableCreateResult = TableDescribeResult;
+
 export type ProjectDocumentKind = "tableTransform" | "graph" | "analysis" | "tabulate" | "report";
 
 export interface ProjectDocumentListInput {
@@ -188,6 +198,7 @@ export interface CommandExecutionContext {
 
 export type ApplicationCommandRegistry = {
   "project.inspect": { input: ProjectInspectInput; data: ProjectInspectResult };
+  "table.create": { input: TableCreateInput; data: TableCreateResult };
   "table.list": { input: TableListInput; data: TableListResult };
   "table.describe": { input: TableDescribeInput; data: TableDescribeResult };
   "document.list": { input: ProjectDocumentListInput; data: ProjectDocumentListResult };

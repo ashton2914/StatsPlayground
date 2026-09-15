@@ -1,7 +1,8 @@
 use crate::error::AppError;
 use crate::models::table::{
-    CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult, TableQueryResult, TableWindowRequest,
-    TableWindowResult,
+    ColumnDisplayProps, ColumnDisplayPropsWithoutIndex, CreateManagedTableRequest,
+    CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult, TableQueryResult,
+    TableWindowRequest, TableWindowResult,
 };
 use crate::services::spprj_archive::{
     normalize_unsafe_portable_basename, validate_portable_basename,
@@ -61,8 +62,55 @@ pub struct DataService<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::table::CreateTableFromRowsRequest;
+    use crate::models::table::{
+        ColumnDisplayPropsWithoutIndex, ColumnFormatInfo, CreateManagedTableRequest,
+        CreateTableColumn, CreateTableFromRowsRequest,
+    };
     use crate::state::AppState;
+    use duckdb::params;
+
+    fn metadata_dataset_count(state: &AppState, dataset_id: &str) -> i64 {
+        let db = state.db.lock().expect("db lock");
+        db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _meta_datasets WHERE id = $1",
+                params![dataset_id],
+                |row| row.get(0),
+            )
+            .expect("metadata count")
+    }
+
+    fn physical_table_exists(state: &AppState, dataset_id: &str) -> bool {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let db = state.db.lock().expect("db lock");
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = $1",
+                params![table_name],
+                |row| row.get(0),
+            )
+            .expect("table existence count");
+        count == 1
+    }
+
+    fn metadata_total_dataset_count(state: &AppState) -> i64 {
+        let db = state.db.lock().expect("db lock");
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM _meta_datasets", [], |row| row.get(0))
+            .expect("dataset total count")
+    }
+
+    fn physical_table_count(state: &AppState) -> i64 {
+        let db = state.db.lock().expect("db lock");
+        db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'dataset_%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("physical dataset table count")
+    }
 
     fn tiny_rows_request(name: &str) -> CreateTableFromRowsRequest {
         CreateTableFromRowsRequest {
@@ -201,6 +249,200 @@ mod tests {
             "untitled"
         );
     }
+
+    #[test]
+    fn create_managed_table_persists_display_props_and_opaque_extras() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let request = CreateManagedTableRequest {
+            name: "Managed Table".to_string(),
+            columns: vec![
+                CreateTableColumn {
+                    name: "length".to_string(),
+                    column_type: "DOUBLE".to_string(),
+                    display: Some(ColumnDisplayPropsWithoutIndex {
+                        width: Some(144.0),
+                        format: Some(ColumnFormatInfo {
+                            kind: "currency".to_string(),
+                            decimals: Some(3),
+                            currency: Some("USD".to_string()),
+                        }),
+                        extras: Some(std::collections::BTreeMap::from([
+                            ("unit".to_string(), serde_json::json!({ "symbol": "mm" })),
+                            (
+                                "spec".to_string(),
+                                serde_json::json!({ "lower": 1.2, "upper": 3.4 }),
+                            ),
+                            (
+                                "range".to_string(),
+                                serde_json::json!({ "preferred": [1.5, 2.5] }),
+                            ),
+                            (
+                                "notes".to_string(),
+                                serde_json::json!({ "text": "critical" }),
+                            ),
+                            (
+                                "valueOrder".to_string(),
+                                serde_json::json!({ "values": ["EV", "DV", "PQ"] }),
+                            ),
+                            (
+                                "opaque".to_string(),
+                                serde_json::json!({ "nested": { "a": [1, true, "x"] } }),
+                            ),
+                        ])),
+                    }),
+                },
+                CreateTableColumn {
+                    name: "build".to_string(),
+                    column_type: "VARCHAR".to_string(),
+                    display: Some(ColumnDisplayPropsWithoutIndex {
+                        width: Some(220.0),
+                        format: Some(ColumnFormatInfo {
+                            kind: "asis".to_string(),
+                            decimals: None,
+                            currency: None,
+                        }),
+                        extras: Some(std::collections::BTreeMap::from([(
+                            "valueOrder".to_string(),
+                            serde_json::json!({ "values": ["EV", "DV"] }),
+                        )])),
+                    }),
+                },
+            ],
+            rows: vec![
+                vec![serde_json::json!(1.234), serde_json::json!("EV")],
+                vec![serde_json::Value::Null, serde_json::json!("DV")],
+            ],
+        };
+
+        let meta = service
+            .create_managed_table(&request)
+            .expect("managed table created");
+
+        assert_eq!(meta.source_type, "manual");
+        assert_eq!(meta.row_count, 2);
+        assert_eq!(meta.col_count, 2);
+        assert_eq!(metadata_dataset_count(&state, &meta.id), 1);
+        assert!(physical_table_exists(&state, &meta.id));
+
+        let display = state
+            .column_display
+            .lock()
+            .expect("display lock")
+            .get(&meta.id)
+            .cloned()
+            .expect("display persisted");
+        assert_eq!(display.len(), 2);
+        assert_eq!(display[0].col_index, 0);
+        assert_eq!(display[0].width, Some(144.0));
+        assert_eq!(
+            display[0].format.as_ref().and_then(|value| value.decimals),
+            Some(3)
+        );
+        assert_eq!(
+            display[0].format.as_ref().and_then(|value| value.currency.clone()),
+            Some("USD".to_string())
+        );
+        assert_eq!(
+            display[0].extras.as_ref().expect("extras")["unit"],
+            serde_json::json!({ "symbol": "mm" })
+        );
+        assert_eq!(
+            display[0].extras.as_ref().expect("extras")["opaque"],
+            serde_json::json!({ "nested": { "a": [1, true, "x"] } })
+        );
+        assert_eq!(display[1].col_index, 1);
+        assert_eq!(display[1].width, Some(220.0));
+        assert_eq!(
+            display[1].extras.as_ref().expect("extras")["valueOrder"],
+            serde_json::json!({ "values": ["EV", "DV"] })
+        );
+    }
+
+    #[test]
+    fn create_managed_table_rejects_malformed_rows_without_side_effects() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let datasets_before = metadata_total_dataset_count(&state);
+        let physical_before = physical_table_count(&state);
+        let request = CreateManagedTableRequest {
+            name: "Bad Rows".to_string(),
+            columns: vec![
+                CreateTableColumn {
+                    name: "left".to_string(),
+                    column_type: "DOUBLE".to_string(),
+                    display: None,
+                },
+                CreateTableColumn {
+                    name: "right".to_string(),
+                    column_type: "DOUBLE".to_string(),
+                    display: None,
+                },
+            ],
+            rows: vec![
+                vec![serde_json::json!(1.0), serde_json::json!(2.0)],
+                vec![serde_json::json!(3.0)],
+            ],
+        };
+
+        let error = service
+            .create_managed_table(&request)
+            .expect_err("malformed row width must fail");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("width")));
+        assert_eq!(metadata_total_dataset_count(&state), datasets_before);
+        assert_eq!(physical_table_count(&state), physical_before);
+        assert!(
+            state
+                .column_display
+                .lock()
+                .expect("display lock")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn create_managed_table_rejects_invalid_display_and_rolls_back_everything() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let datasets_before = metadata_total_dataset_count(&state);
+        let physical_before = physical_table_count(&state);
+        let request = CreateManagedTableRequest {
+            name: "Display Failure".to_string(),
+            columns: vec![CreateTableColumn {
+                name: "amount".to_string(),
+                column_type: "DOUBLE".to_string(),
+                display: Some(ColumnDisplayPropsWithoutIndex {
+                    width: Some(f64::NAN),
+                    format: Some(ColumnFormatInfo {
+                        kind: "currency".to_string(),
+                        decimals: Some(2),
+                        currency: Some("USD".to_string()),
+                    }),
+                    extras: Some(std::collections::BTreeMap::from([(
+                        "unit".to_string(),
+                        serde_json::json!({ "symbol": "$" }),
+                    )])),
+                }),
+            }],
+            rows: vec![vec![serde_json::json!(10.0)]],
+        };
+
+        let error = service
+            .create_managed_table(&request)
+            .expect_err("invalid display must fail");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("width")));
+        assert_eq!(metadata_total_dataset_count(&state), datasets_before);
+        assert_eq!(physical_table_count(&state), physical_before);
+        assert!(
+            state
+                .column_display
+                .lock()
+                .expect("display lock")
+                .is_empty()
+        );
+    }
 }
 
 impl<'a> DataService<'a> {
@@ -242,6 +484,48 @@ impl<'a> DataService<'a> {
         Self::validate_create_dataset_name_boundary(&resolved)?;
         db.validate_dataset_name(&resolved, None)?;
         Ok(resolved)
+    }
+
+    fn validate_display_without_index(display: &ColumnDisplayPropsWithoutIndex) -> Result<(), AppError> {
+        if let Some(width) = display.width {
+            if !width.is_finite() || width <= 0.0 {
+                return Err(AppError::InvalidParam(
+                    "display width must be finite and greater than 0".into(),
+                ));
+            }
+        }
+
+        if let Some(format) = &display.format {
+            let kind = format.kind.trim();
+            if kind.is_empty() {
+                return Err(AppError::InvalidParam("display format kind must be non-empty".into()));
+            }
+            if let Some(decimals) = format.decimals {
+                if decimals > 20 {
+                    return Err(AppError::InvalidParam(
+                        "display decimals must be between 0 and 20".into(),
+                    ));
+                }
+            }
+            if kind.eq_ignore_ascii_case("currency") {
+                let currency = format.currency.as_deref().map(str::trim).unwrap_or("");
+                if currency.is_empty() {
+                    return Err(AppError::InvalidParam(
+                        "display currency format requires currency code".into(),
+                    ));
+                }
+            }
+        }
+
+        if let Some(extras) = &display.extras {
+            for key in extras.keys() {
+                if key.trim().is_empty() {
+                    return Err(AppError::InvalidParam("display extras keys must be non-empty".into()));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn list_datasets(&self) -> Result<Vec<DatasetMeta>, AppError> {
@@ -350,14 +634,25 @@ impl<'a> DataService<'a> {
         column_names: &[String],
         column_types: &[String],
     ) -> Result<DatasetMeta, AppError> {
-        let db = self
-            .state
-            .db
-            .lock()
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        let id = uuid::Uuid::new_v4().to_string();
-        let resolved_name = Self::resolve_create_dataset_name(&db, name)?;
-        db.create_empty_table(&id, &resolved_name, column_names, column_types)
+        if column_names.len() != column_types.len() {
+            return Err(AppError::InvalidParam(
+                "Column names and types length mismatch".into(),
+            ));
+        }
+        let request = CreateManagedTableRequest {
+            name: name.to_string(),
+            columns: column_names
+                .iter()
+                .zip(column_types.iter())
+                .map(|(column_name, column_type)| crate::models::table::CreateTableColumn {
+                    name: column_name.clone(),
+                    column_type: column_type.clone(),
+                    display: None,
+                })
+                .collect(),
+            rows: Vec::new(),
+        };
+        self.create_managed_table(&request)
     }
 
     pub fn create_table_from_sql_query(
@@ -379,15 +674,113 @@ impl<'a> DataService<'a> {
         &self,
         request: &CreateTableFromRowsRequest,
     ) -> Result<DatasetMeta, AppError> {
+        if request.column_names.len() != request.column_types.len() {
+            return Err(AppError::InvalidParam(
+                "Column names and types length mismatch".into(),
+            ));
+        }
+        let managed = CreateManagedTableRequest {
+            name: request.name.clone(),
+            columns: request
+                .column_names
+                .iter()
+                .zip(request.column_types.iter())
+                .map(|(column_name, column_type)| crate::models::table::CreateTableColumn {
+                    name: column_name.clone(),
+                    column_type: column_type.clone(),
+                    display: None,
+                })
+                .collect(),
+            rows: request.rows.clone(),
+        };
+        self.create_managed_table(&managed)
+    }
+
+    pub fn create_managed_table(
+        &self,
+        request: &CreateManagedTableRequest,
+    ) -> Result<DatasetMeta, AppError> {
+        if request.columns.is_empty() {
+            if !request.rows.is_empty() {
+                return Err(AppError::InvalidParam(
+                    "rows are not allowed when creating a table without columns".into(),
+                ));
+            }
+        }
+
+        if !request.columns.is_empty() {
+            for (row_index, row) in request.rows.iter().enumerate() {
+                if row.len() != request.columns.len() {
+                    return Err(AppError::InvalidParam(format!(
+                        "row {} has width {}, expected {}",
+                        row_index + 1,
+                        row.len(),
+                        request.columns.len()
+                    )));
+                }
+            }
+        }
+
+        let mut display_props = Vec::new();
+        for (col_index, column) in request.columns.iter().enumerate() {
+            if column.name.trim().is_empty() {
+                return Err(AppError::InvalidParam(format!(
+                    "column {} name must be non-empty",
+                    col_index + 1
+                )));
+            }
+            if let Some(display) = &column.display {
+                Self::validate_display_without_index(display)?;
+                display_props.push(ColumnDisplayProps {
+                    col_index,
+                    width: display.width,
+                    format: display.format.clone(),
+                    extras: display.extras.clone(),
+                });
+            }
+        }
+
         let db = self
             .state
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
         let id = uuid::Uuid::new_v4().to_string();
-        let mut resolved_request = request.clone();
-        resolved_request.name = Self::resolve_create_dataset_name(&db, &request.name)?;
-        db.create_table_from_rows(&id, &resolved_request)
+        let resolved_name = Self::resolve_create_dataset_name(&db, &request.name)?;
+
+        let created = if request.columns.is_empty() {
+            db.create_empty_table(&id, &resolved_name, &[], &[])?
+        } else {
+            let resolved_request = CreateTableFromRowsRequest {
+                name: resolved_name,
+                column_names: request.columns.iter().map(|column| column.name.clone()).collect(),
+                column_types: request
+                    .columns
+                    .iter()
+                    .map(|column| column.column_type.clone())
+                    .collect(),
+                rows: request.rows.clone(),
+            };
+            db.create_table_from_rows(&id, &resolved_request)?
+        };
+        drop(db);
+
+        let mut display_guard = match self.state.column_display.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                if let Ok(db_guard) = self.state.db.lock() {
+                    let _ = db_guard.delete_dataset(&id);
+                }
+                return Err(AppError::Database(error.to_string()));
+            }
+        };
+        if display_props.is_empty() {
+            display_guard.remove(&id);
+        } else {
+            display_guard.insert(id.clone(), display_props);
+        }
+
+        Ok(created)
     }
 
     pub fn add_row(&self, dataset_id: &str) -> Result<i64, AppError> {

@@ -125,6 +125,20 @@ export interface ColumnDisplayProps {
   extras?: Record<string, unknown>;
 }
 
+export type ColumnDisplayPropsWithoutIndex = Omit<ColumnDisplayProps, "colIndex">;
+
+export interface CreateTableColumn {
+  name: string;
+  columnType: string;
+  display?: ColumnDisplayPropsWithoutIndex;
+}
+
+export interface CreateManagedTableRequest {
+  name: string;
+  columns: CreateTableColumn[];
+  rows: Array<Array<string | number | boolean | null>>;
+}
+
 export interface CreateTableFromRowsRequest {
   name: string;
   columnNames: string[];

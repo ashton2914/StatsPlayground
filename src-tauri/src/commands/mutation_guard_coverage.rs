@@ -146,6 +146,10 @@ mod tests {
                 CommandClass::Mutation,
             ),
             (
+                "commands::data_commands::create_managed_table",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::data_commands::create_table",
                 CommandClass::Mutation,
             ),
@@ -417,12 +421,13 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 49] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 50] {
         [
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
             ("data_commands.rs", "create_table_from_sql_query"),
             ("data_commands.rs", "create_table_from_rows"),
+            ("data_commands.rs", "create_managed_table"),
             ("data_commands.rs", "create_table"),
             ("data_commands.rs", "add_row"),
             ("data_commands.rs", "add_rows"),
