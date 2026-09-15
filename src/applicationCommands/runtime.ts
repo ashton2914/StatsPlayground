@@ -468,10 +468,16 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
         requestId: request.requestId,
         signal: request.controller.signal,
         reportProgress: (progress) => {
+          if (request.controller.signal.aborted && !request.committed) {
+            return;
+          }
           request.status = "running";
           observer?.onProgress?.(progress);
         },
         beginCommit: () => {
+          if (request.controller.signal.aborted && !request.committed) {
+            throw new CommandExecutionError("cancelled", "Command cancelled");
+          }
           request.committed = true;
           request.status = "committing";
           observer?.onStatusChange?.({
@@ -490,6 +496,10 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
           },
         },
       };
+
+      if (request.controller.signal.aborted && !request.committed) {
+        throw new CommandExecutionError("cancelled", "Command cancelled");
+      }
 
       const handlerResult = await registered.run(command.input, runtimeContext);
 

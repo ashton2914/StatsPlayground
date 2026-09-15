@@ -149,11 +149,13 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
   const invocations: Array<{ command: string; args?: unknown }> = [];
   const execution = deferred<CommandResult<unknown>>();
   let capturedSignal: AbortSignal | undefined;
+  let capturedProgress: ((progress: CommandProgress) => void) | undefined;
 
   const bridge = createApplicationCommandBridge({
     runtime: {
       execute: (_command, _actor, context) => {
         capturedSignal = context?.signal;
+        capturedProgress = context?.onProgress;
         return withRequestId(execution.promise, "runtime-request-2") as never;
       },
     },
@@ -182,25 +184,102 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
   assert.equal(capturedSignal?.aborted, false);
   cancelListeners["application-command-cancel"]({ payload: { requestId: "rust-request-2" } });
   assert.equal(capturedSignal?.aborted, true);
-  execution.reject(new CommandExecutionError("cancelled", "Command cancelled"));
+  capturedProgress?.({ stage: "late", message: "/Users/ashton/secret.csv", percent: 1 });
+  execution.resolve({
+    requestId: "runtime-request-2",
+    command: "project.inspect",
+    changed: true,
+    projectRevision: 99,
+    data: { late: true },
+    warnings: [],
+  });
   await Promise.resolve();
   await Promise.resolve();
-  assert.deepEqual(invocations.at(-1), {
-    command: "complete_application_command",
-    args: {
-      update: {
-        kind: "complete",
-        requestId: "rust-request-2",
-        response: {
-          kind: "error",
-          code: "cancelled",
-          message: "Command cancelled",
-          retryable: false,
-          details: undefined,
-        },
+  assert.deepEqual(invocations, [{ command: "register_application_command_dispatcher", args: undefined }]);
+}
+
+{
+  const listeners: Record<string, Listener> = {};
+  const invocations: Array<{ command: string; args?: unknown }> = [];
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => {
+        throw new CommandExecutionError(
+          "execution_failed",
+          "failed at /Users/ashton/private/input.csv",
+          true,
+          {
+            posix: "/Users/ashton/private/input.csv",
+            windows: "C:\\Users\\ashton\\private\\input.csv",
+            unc: "\\\\server\\share\\private\\input.csv",
+            safeCode: "revision_conflict",
+            retryable: true,
+            count: 2,
+            nested: [{ cause: new Error("ordinary cause mentions C:\\temp\\secret.txt") }],
+          },
+        );
       },
     },
+    listen: async (eventName, listener) => {
+      listeners[eventName] = listener as Listener;
+      return () => undefined;
+    },
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      return undefined as never;
+    },
   });
+  await bridge.start();
+  listeners["application-command-request"]({
+    payload: {
+      requestId: "rust-request-paths",
+      command: { type: "project.inspect", input: {} } as never,
+    },
+  });
+
+  await Promise.resolve();
+  const serialized = JSON.stringify(invocations.at(-1)?.args);
+  assert.equal(serialized.includes("/Users/ashton"), false);
+  assert.equal(serialized.includes("C:\\\\Users"), false);
+  assert.equal(serialized.includes("\\\\\\\\server\\\\share"), false);
+  assert.match(serialized, /revision_conflict/);
+  assert.match(serialized, /\"retryable\":true/);
+  assert.match(serialized, /\"count\":2/);
+}
+
+{
+  const listeners: Record<string, Listener> = {};
+  const invocations: Array<{ command: string; args?: unknown }> = [];
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => {
+        throw Object.assign(new Error("handler failed"), {
+          cause: new Error("ordinary cause includes \\\\server\\share\\secret.csv"),
+        });
+      },
+    },
+    listen: async (eventName, listener) => {
+      listeners[eventName] = listener as Listener;
+      return () => undefined;
+    },
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      return undefined as never;
+    },
+  });
+  await bridge.start();
+  listeners["application-command-request"]({
+    payload: {
+      requestId: "rust-request-generic-cause",
+      command: { type: "project.inspect", input: {} } as never,
+    },
+  });
+
+  await Promise.resolve();
+  const serialized = JSON.stringify(invocations.at(-1)?.args);
+  assert.equal(serialized.includes("\\\\\\\\server\\\\share"), false);
+  assert.match(serialized, /handler failed/);
+  assert.match(serialized, /\[redacted-path\]/);
 }
 
 {
@@ -297,6 +376,71 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
   await assert.rejects(bridge.start(), /register failed/);
   assert.deepEqual(unlistenCalls.sort(), ["application-command-cancel", "application-command-request"]);
   assert.deepEqual(invocations, [{ command: "register_application_command_dispatcher", args: undefined }]);
+}
+
+{
+  const listenerSets: Array<Record<string, Listener | CancelListener>> = [];
+  const unlistenCalls: string[] = [];
+  const invocations: Array<{ command: string; args?: unknown }> = [];
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => withRequestId(Promise.resolve({
+        requestId: "runtime-restarted",
+        command: "project.inspect",
+        changed: false,
+        projectRevision: 1,
+        data: {},
+        warnings: [],
+      }), "runtime-restarted") as never,
+    },
+    listen: async (eventName, listener) => {
+      let current = listenerSets.at(-1);
+      if (!current || current[eventName]) {
+        current = {};
+        listenerSets.push(current);
+      }
+      current[eventName] = listener as Listener | CancelListener;
+      return () => {
+        unlistenCalls.push(`${eventName}:${listenerSets.indexOf(current)}`);
+      };
+    },
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      return undefined as never;
+    },
+  });
+
+  const first = await bridge.start();
+  const duplicate = await bridge.start();
+  assert.equal(first, duplicate);
+  await Promise.all([first.dispose(), duplicate.dispose()]);
+  const second = await bridge.start();
+  assert.notEqual(second, first);
+  listenerSets[1]["application-command-request"]?.({
+    payload: {
+      requestId: "rust-request-restarted",
+      command: { type: "project.inspect", input: {} } as never,
+    },
+  } as never);
+  await Promise.resolve();
+  await second.dispose();
+
+  assert.equal(listenerSets.length, 2);
+  assert.deepEqual(invocations.filter((entry) => entry.command === "register_application_command_dispatcher"), [
+    { command: "register_application_command_dispatcher", args: undefined },
+    { command: "register_application_command_dispatcher", args: undefined },
+  ]);
+  assert.deepEqual(invocations.filter((entry) => entry.command === "unregister_application_command_dispatcher"), [
+    { command: "unregister_application_command_dispatcher", args: undefined },
+    { command: "unregister_application_command_dispatcher", args: undefined },
+  ]);
+  assert.deepEqual(unlistenCalls.sort(), [
+    "application-command-cancel:0",
+    "application-command-cancel:1",
+    "application-command-request:0",
+    "application-command-request:1",
+  ]);
+  assert.equal(invocations.some((entry) => JSON.stringify(entry.args ?? {}).includes("rust-request-restarted")), true);
 }
 
 {

@@ -644,6 +644,48 @@ async function waitForRequestStatus(
 }
 
 {
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  let releaseHandler: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => {
+    releaseHandler = resolve;
+  });
+  let mutatedAfterCancel = false;
+
+  runtime.register(
+    "test.commit",
+    async (_input, context) => {
+      await gate;
+      context.beginCommit();
+      mutatedAfterCancel = true;
+      return { changed: true, data: { committed: true }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+
+  const running = runtime.execute({ type: "test.commit", input: {} }, { kind: "ui" });
+  const requestId = runtime.snapshot().find((entry) => entry.command === "test.commit")?.requestId;
+  assert.ok(requestId);
+
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const status = runtime.snapshot().find((entry) => entry.requestId === requestId)?.status;
+    if (status === "running") {
+      break;
+    }
+    await Promise.resolve();
+  }
+
+  assert.equal(runtime.cancel(requestId!), true);
+  releaseHandler?.();
+
+  await assert.rejects(
+    running,
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "cancelled",
+  );
+  assert.equal(mutatedAfterCancel, false);
+  assert.equal(runtime.snapshot().find((entry) => entry.requestId === requestId)?.status, "cancelled");
+}
+
+{
   const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 5 });
   let cancelInsideCommit = false;
 

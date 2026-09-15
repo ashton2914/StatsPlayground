@@ -312,7 +312,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         let request_id = completion.request_id.clone();
         if entry.retain_committed_outcome {
             if let ApplicationCommandResponse::Success(result) = &completion.response {
-            let response = McpCommandResponse::from_result(request_id.clone(), result.clone());
+                let response = McpCommandResponse::from_result(request_id.clone(), result.clone());
                 self.retain_committed_outcome(request_id, response)?;
             }
         }
@@ -466,11 +466,14 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             let Some(entry) = pending.get_mut(request_id) else {
                 return Ok(false);
             };
-            entry.cancellation_token.cancel();
             if entry.committing {
                 entry.retain_committed_outcome = true;
+                true
+            } else {
+                entry.cancellation_token.cancel();
+                pending.remove(request_id);
+                false
             }
-            true
         };
         self.inner
             .emitter
@@ -479,21 +482,30 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
     }
 
     fn mark_timeout_elapsed(&self, request_id: &str) -> Result<bool, AppError> {
-        let mut pending = self
-            .inner
-            .pending
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?;
-        let Some(entry) = pending.get_mut(request_id) else {
-            return Ok(false);
+        let should_wait = {
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            let Some(entry) = pending.get_mut(request_id) else {
+                return Ok(false);
+            };
+            if entry.committing {
+                entry.retain_committed_outcome = true;
+                true
+            } else {
+                entry.cancellation_token.cancel();
+                pending.remove(request_id);
+                false
+            }
         };
-        if entry.committing {
-            entry.retain_committed_outcome = true;
-            Ok(true)
-        } else {
-            pending.remove(request_id);
-            Ok(false)
+        if !should_wait {
+            self.inner
+                .emitter
+                .emit_application_command_cancel(request_id.to_string())?;
         }
+        Ok(should_wait)
     }
 }
 
@@ -575,7 +587,10 @@ mod tests {
             Ok(())
         }
 
-        fn emit_application_command_cancel(&self, request_id: String) -> Result<(), crate::error::AppError> {
+        fn emit_application_command_cancel(
+            &self,
+            request_id: String,
+        ) -> Result<(), crate::error::AppError> {
             self.cancellations
                 .lock()
                 .expect("test cancellation emitter lock")
@@ -797,6 +812,20 @@ mod tests {
             matches!(timeout_result, Err(crate::error::AppError::Busy(message)) if message.contains("timeout"))
         );
         let timed_out_request_id = emitter.requests()[0].request_id.clone();
+        assert_eq!(
+            emitter.cancellation_requests(),
+            vec![timed_out_request_id.clone()]
+        );
+        assert!(matches!(
+            broker.record_progress(ApplicationCommandProgress {
+                request_id: timed_out_request_id.clone(),
+                status: ApplicationCommandStatus::Running,
+                stage: "late".to_string(),
+                message: Some("late progress".to_string()),
+                percent: Some(0.9),
+            }),
+            Ok(false)
+        ));
         assert!(matches!(
             broker.complete_application_command(McpBrokerCompletion {
                 request_id: timed_out_request_id,
@@ -853,7 +882,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn running_cancellation_emits_correlated_frontend_cancel_and_waits_for_final_outcome() {
+    async fn running_cancellation_emits_correlated_frontend_cancel_and_ignores_late_precommit_outcome(
+    ) {
         let (broker, emitter) = broker(2, 2);
         broker.register_dispatcher().expect("register dispatcher");
         let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
@@ -881,10 +911,13 @@ mod tests {
         while emitter.cancellation_requests().is_empty() {
             tokio::task::yield_now().await;
         }
-        assert_eq!(emitter.cancellation_requests(), vec![running_request_id.clone()]);
+        assert_eq!(
+            emitter.cancellation_requests(),
+            vec![running_request_id.clone()]
+        );
         assert!(matches!(
             broker.cancellation_requested(&running_request_id),
-            Ok(true)
+            Ok(false)
         ));
         assert!(matches!(
             broker.complete_application_command(McpBrokerCompletion {
@@ -896,11 +929,13 @@ mod tests {
                     warnings: vec![],
                 }),
             }),
-            Ok(true)
+            Ok(false)
         ));
-        let committed_after_cancel = running.await.expect("running task").expect("final outcome");
-        assert_eq!(committed_after_cancel.request_id, running_request_id);
-        assert_eq!(committed_after_cancel.data, json!({ "committedAfterCancel": true }));
+        let cancelled = running.await.expect("running task");
+        assert!(matches!(
+            cancelled,
+            Err(crate::error::AppError::Cancelled(message)) if message.contains("cancelled")
+        ));
     }
 
     #[tokio::test]
@@ -972,9 +1007,7 @@ mod tests {
                 .expect("forward post-commit cancellation"),
             true
         );
-        assert!(emitter
-            .cancellation_requests()
-            .contains(&commit_request_id));
+        assert!(emitter.cancellation_requests().contains(&commit_request_id));
         assert!(matches!(
             broker.complete_application_command(McpBrokerCompletion {
                 request_id: commit_request_id.clone(),
@@ -1008,11 +1041,22 @@ mod tests {
         broker.register_dispatcher().expect("register dispatcher");
 
         for (index, (code, retryable, details)) in [
-            ("revision_conflict", true, json!({ "expected": 4, "actual": 5 })),
+            (
+                "revision_conflict",
+                true,
+                json!({ "expected": 4, "actual": 5 }),
+            ),
             ("user_denied", false, json!({ "policy": "confirmation" })),
             ("read_only", false, json!({ "mode": "readOnly" })),
-            ("path_not_authorized", true, json!({ "rootId": "export-root" })),
-        ].into_iter().enumerate() {
+            (
+                "path_not_authorized",
+                true,
+                json!({ "rootId": "export-root" }),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
             let pending = tokio::spawn({
                 let broker = broker.clone();
@@ -1086,7 +1130,12 @@ mod tests {
             })
             .expect("complete normal success");
         normal.await.expect("normal task").expect("normal response");
-        assert_eq!(broker.committed_outcome(&normal_request_id).expect("normal lookup"), None);
+        assert_eq!(
+            broker
+                .committed_outcome(&normal_request_id)
+                .expect("normal lookup"),
+            None
+        );
 
         let mut retained_ids = Vec::new();
         for index in 0..5 {
@@ -1117,7 +1166,12 @@ mod tests {
                     percent: None,
                 })
                 .expect("record committing");
-            assert_eq!(broker.mark_timeout_elapsed(&request_id).expect("mark timeout"), true);
+            assert_eq!(
+                broker
+                    .mark_timeout_elapsed(&request_id)
+                    .expect("mark timeout"),
+                true
+            );
             broker
                 .complete_application_command(McpBrokerCompletion {
                     request_id: request_id.clone(),
@@ -1133,9 +1187,17 @@ mod tests {
             retained_ids.push(request_id);
         }
 
-        assert_eq!(broker.committed_outcome(&retained_ids[0]).expect("evicted lookup"), None);
+        assert_eq!(
+            broker
+                .committed_outcome(&retained_ids[0])
+                .expect("evicted lookup"),
+            None
+        );
         for request_id in retained_ids.iter().skip(1) {
-            assert!(broker.committed_outcome(request_id).expect("retained lookup").is_some());
+            assert!(broker
+                .committed_outcome(request_id)
+                .expect("retained lookup")
+                .is_some());
         }
     }
 }
