@@ -1,7 +1,7 @@
 # Issue 188 MCP Application Command Layer Design
 
 **Date:** 2026-09-15
-**Status:** Approved design, pending written-spec review
+**Status:** Approved
 **Issue:** https://github.com/ashton2914/StatsPlayground/issues/188
 
 ## Purpose
