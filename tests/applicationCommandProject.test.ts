@@ -258,6 +258,8 @@ function createDeps(overrides: Partial<ProjectCommandDependencies> = {}): Projec
       markdown: [
         "Keep URL https://example.com/foo/bar and relative/data.csv unchanged.",
         "Keep ordinary relative token folder/item unchanged.",
+        "Single-segment absolute POSIX token one: /secret.",
+        "Single-segment absolute POSIX token two: /mnt,",
         "POSIX roots: /etc/hosts and /opt/local/bin/tool",
         "Arbitrary POSIX roots: /srv/build/output.csv and /data/Team Share/input.csv",
         "Mounted volume with spaces: /Volumes/Work Disk/A Folder/input.csv",
@@ -272,6 +274,8 @@ function createDeps(overrides: Partial<ProjectCommandDependencies> = {}): Projec
 
   const fetched = await handlers.getProjectDocument({ kind: "report", id: "rp-redact" });
   const serialized = JSON.stringify(fetched);
+  assert.equal(serialized.includes("/secret"), false);
+  assert.equal(serialized.includes("/mnt"), false);
   assert.equal(serialized.includes("/etc/hosts"), false);
   assert.equal(serialized.includes("/opt/local/bin/tool"), false);
   assert.equal(serialized.includes("/srv/build/output.csv"), false);
