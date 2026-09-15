@@ -2,7 +2,7 @@ import { selectWorkspaceDocument } from "@/components/analysis/analysisWorkspace
 import { formatStatisticLabel } from "@/components/tabulate/TabulateStatisticEditor";
 import { buildTabulateExportRequest } from "@/components/tabulate/tabulateResult";
 import { throwIfCommandCancelled } from "@/applicationCommands/cancellation";
-import { createTableCommandHandlers, type TableCommandDependencies } from "@/applicationCommands/tableCommands";
+import { createTableCommandHandlers } from "@/applicationCommands/tableCommands";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
 import type {
   CommandWarning,
@@ -39,6 +39,7 @@ export function fingerprintTabulateRequest(request: TabulateRequest): string {
     rowFields: request.rowFields,
     columnFields: request.columnFields,
     statistics: request.statistics.map((statistic) => ({
+      id: statistic.id,
       field: statistic.field,
       kind: statistic.kind,
       quantile: statistic.quantile ?? null,
@@ -160,6 +161,7 @@ async function executeTabulateRun(
   throwIfCommandCancelled(controls?.signal);
 
   const sourceGenerationAfter = await dependencies.getDatasetGeneration(input.request.datasetId);
+  throwIfCommandCancelled(controls?.signal);
   const completedAt = dependencies.createNowIso();
 
   dependencies.setLatestResult(input.tabulateId, {
@@ -300,6 +302,17 @@ export function createTabulateCommandHandlers(
         tabulateId: input.tabulateId,
         request: input.request,
       }, { signal: controls?.signal });
+      if (!runOutcome.data.cacheValid) {
+        throw new CommandExecutionError(
+          "execution_failed",
+          "Source table changed during tabulate rerun; retry after source stabilizes",
+          true,
+          {
+            tabulateId: input.tabulateId,
+            sourceGenerationBefore: runOutcome.data.sourceGeneration,
+          },
+        );
+      }
       warnings = [...warnings, ...runOutcome.warnings];
       result = runOutcome.data.result;
       effectiveSourceGeneration = runOutcome.data.sourceGeneration;
