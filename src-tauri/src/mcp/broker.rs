@@ -237,6 +237,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         if let Some(control) = &command.control {
             reject_absolute_paths(control)?;
         }
+        let deadline = tokio::time::Instant::now() + timeout;
 
         let request_id = format!("mcp-{}", Uuid::new_v4());
         let (completion_tx, completion_rx) = oneshot::channel();
@@ -251,7 +252,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             },
         )?;
 
-        let permit = match self.acquire_slot(&cancellation_token).await {
+        let permit = match self.acquire_slot(&cancellation_token, deadline).await {
             Ok(permit) => permit,
             Err(error) => {
                 self.remove_pending(&request_id)?;
@@ -273,7 +274,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             request_id,
             completion_rx,
             cancellation_token,
-            timeout,
+            deadline,
             permit,
         )
         .await
@@ -387,13 +388,18 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
     async fn acquire_slot(
         &self,
         cancellation_token: &McpCancellationToken,
+        deadline: tokio::time::Instant,
     ) -> Result<OwnedSemaphorePermit, AppError> {
         tokio::select! {
+            biased;
             permit = self.inner.semaphore.clone().acquire_owned() => {
                 permit.map_err(|error| AppError::Busy(error.to_string()))
             }
             _ = cancellation_token.cancelled() => {
                 Err(AppError::Cancelled("Application command cancelled".to_string()))
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                Err(AppError::Busy("Application command timeout".to_string()))
             }
         }
     }
@@ -426,13 +432,12 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         request_id: String,
         completion_rx: oneshot::Receiver<ApplicationCommandResponse>,
         cancellation_token: McpCancellationToken,
-        timeout: Duration,
+        deadline: tokio::time::Instant,
         permit: OwnedSemaphorePermit,
     ) -> Result<McpCommandResponse, AppError> {
         let mut completion_rx = completion_rx;
         let mut cancellation_forwarded = false;
         let mut timeout_elapsed = false;
-        let mut commit_grace_elapsed = false;
         let commit_grace_timeout = Duration::from_millis(self.inner.config.commit_grace_timeout_ms);
         let result = loop {
             tokio::select! {
@@ -444,15 +449,14 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
                     }
                     break Err(AppError::Cancelled("Application command cancelled".to_string()));
                 }
-                _ = tokio::time::sleep(timeout), if !timeout_elapsed && !cancellation_forwarded => {
+                _ = tokio::time::sleep_until(deadline), if !timeout_elapsed && !cancellation_forwarded => {
                     timeout_elapsed = true;
                     if self.mark_timeout_elapsed(&request_id)? {
                         continue;
                     }
                     break Err(AppError::Busy("Application command timeout".to_string()));
                 }
-                _ = tokio::time::sleep(commit_grace_timeout), if (timeout_elapsed || cancellation_forwarded) && !commit_grace_elapsed => {
-                    commit_grace_elapsed = true;
+                _ = tokio::time::sleep(commit_grace_timeout), if timeout_elapsed || cancellation_forwarded => {
                     break self.record_uncertain_outcome(&request_id);
                 }
             }
@@ -566,7 +570,12 @@ fn reject_absolute_paths(value: &Value) -> Result<(), AppError> {
             Ok(())
         }
         Value::Object(values) => {
-            for value in values.values() {
+            for (key, value) in values {
+                if looks_like_absolute_path(key) {
+                    return Err(AppError::InvalidParam(
+                        "Application command payload must not contain absolute paths".to_string(),
+                    ));
+                }
                 reject_absolute_paths(value)?;
             }
             Ok(())
@@ -578,6 +587,7 @@ fn reject_absolute_paths(value: &Value) -> Result<(), AppError> {
 fn looks_like_absolute_path(text: &str) -> bool {
     text.starts_with('/')
         || text.starts_with('~')
+        || text.starts_with("\\\\")
         || text.get(1..3) == Some(":\\")
         || text.get(1..3) == Some(":/")
 }
@@ -932,6 +942,193 @@ mod tests {
         assert!(
             matches!(cancelled, Err(crate::error::AppError::Cancelled(message)) if message.contains("cancelled"))
         );
+    }
+
+    #[tokio::test]
+    async fn queued_dispatch_timeout_covers_semaphore_wait_without_frontend_cancel_or_emit() {
+        let (broker, emitter) = broker(2, 1);
+        broker.register_dispatcher().expect("register dispatcher");
+        let (first_progress_tx, _first_progress_rx) = mpsc::unbounded_channel();
+
+        let first = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("holding-permit"),
+                        Duration::from_secs(5),
+                        first_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let first_request_id = emitter.requests()[0].request_id.clone();
+
+        let (second_progress_tx, _second_progress_rx) = mpsc::unbounded_channel();
+        let second = tokio::time::timeout(
+            Duration::from_millis(100),
+            broker.dispatch(
+                test_command("queued-timeout"),
+                Duration::from_millis(5),
+                second_progress_tx,
+                McpCancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("queued timeout must be bounded by caller timeout");
+        assert!(matches!(
+            second,
+            Err(crate::error::AppError::Busy(message)) if message.contains("timeout")
+        ));
+        assert_eq!(emitter.requests().len(), 1);
+        assert_eq!(emitter.cancellation_requests(), Vec::<String>::new());
+
+        let (third_progress_tx, _third_progress_rx) = mpsc::unbounded_channel();
+        let third = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("capacity-reused"),
+                        Duration::from_secs(5),
+                        third_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: first_request_id,
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 12,
+                    data: json!({ "first": true }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete holding request");
+        first.await.expect("first task").expect("first result");
+
+        while emitter.requests().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let third_request = emitter.requests()[1].clone();
+        assert_eq!(third_request.command.input, json!({ "marker": "capacity-reused" }));
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: third_request.request_id,
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 13,
+                    data: json!({ "third": true }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete reused-capacity request");
+        third.await.expect("third task").expect("third result");
+    }
+
+    #[tokio::test]
+    async fn permit_available_at_timeout_boundary_emits_and_completes_at_most_once() {
+        let (broker, emitter) = broker(2, 1);
+        broker.register_dispatcher().expect("register dispatcher");
+        let (first_progress_tx, _first_progress_rx) = mpsc::unbounded_channel();
+
+        let first = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("boundary-holder"),
+                        Duration::from_secs(5),
+                        first_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let first_request_id = emitter.requests()[0].request_id.clone();
+
+        let (second_progress_tx, _second_progress_rx) = mpsc::unbounded_channel();
+        let second = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("boundary-queued"),
+                        Duration::from_millis(30),
+                        second_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: first_request_id,
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 20,
+                    data: json!({ "first": true }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete boundary holder");
+        first.await.expect("first task").expect("first result");
+
+        tokio::task::yield_now().await;
+        let boundary_request_id = emitter
+            .requests()
+            .iter()
+            .find(|request| request.command.input == json!({ "marker": "boundary-queued" }))
+            .map(|request| request.request_id.clone());
+        if let Some(request_id) = boundary_request_id {
+            broker
+                .complete_application_command(McpBrokerCompletion {
+                    request_id,
+                    response: ApplicationCommandResponse::Success(McpCommandResult {
+                        changed: false,
+                        project_revision: 21,
+                        data: json!({ "boundary": true }),
+                        warnings: vec![],
+                    }),
+                })
+                .expect("complete boundary request");
+        }
+
+        let second_result = tokio::time::timeout(Duration::from_millis(100), second)
+            .await
+            .expect("boundary request must resolve")
+            .expect("second task");
+        let requests = emitter.requests();
+        let boundary_requests = requests
+            .iter()
+            .filter(|request| request.command.input == json!({ "marker": "boundary-queued" }))
+            .count();
+        assert!(boundary_requests <= 1);
+        match second_result {
+            Ok(response) => {
+                assert_eq!(boundary_requests, 1);
+                assert_eq!(response.data, json!({ "boundary": true }));
+            }
+            Err(crate::error::AppError::Busy(message)) => {
+                assert_eq!(boundary_requests, 0);
+                assert!(message.contains("timeout"));
+            }
+            Err(error) => panic!("unexpected boundary result: {error:?}"),
+        }
+        assert!(emitter.cancellation_requests().is_empty());
     }
 
     #[tokio::test]
@@ -1517,5 +1714,120 @@ mod tests {
             Some(ApplicationCommandResponse::Success(result))
                 if result.data == json!({ "cancelLateSuccess": true })
         ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_absolute_path_keys_recursively_without_frontend_emit() {
+        let cases = [
+            json!({ "/": "root-only" }),
+            json!({ "/srv/private/input.csv": "posix" }),
+            json!({ "safe": { "C:\\": "drive-root" } }),
+            json!({ "safe": { "C:/": "drive-root-slash" } }),
+            json!({ "safe": { "C:\\Users\\ashton\\private.csv": "drive" } }),
+            json!({ "safe": [{ "C:/Users/ashton/private.csv": "drive-slash" }] }),
+            json!({ "safe": { "\\\\server\\share": "unc-root" } }),
+            json!({ "safe": { "nested": { "\\\\server\\share\\private.csv": "unc" } } }),
+        ];
+
+        for (index, input) in cases.into_iter().enumerate() {
+            let (broker, emitter) = broker(1, 1);
+            broker.register_dispatcher().expect("register dispatcher");
+            let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+            let result = broker
+                .dispatch(
+                    ApplicationCommandEnvelope {
+                        command_type: "project.inspect".to_string(),
+                        input,
+                        control: None,
+                    },
+                    Duration::from_millis(20),
+                    progress_tx,
+                    McpCancellationToken::new(),
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(crate::error::AppError::InvalidParam(message))
+                    if message == "Application command payload must not contain absolute paths"
+                        && !message.contains("/srv")
+                        && !message.contains("C:")
+                        && !message.contains("server")
+            ), "case {index} should reject absolute path keys without echoing the path");
+            assert_eq!(emitter.requests().len(), 0, "case {index} must not emit");
+            assert_eq!(
+                emitter.cancellation_requests().len(),
+                0,
+                "case {index} must not cancel work that never emitted"
+            );
+        }
+
+        let (broker, emitter) = broker(1, 1);
+        broker.register_dispatcher().expect("register dispatcher");
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let result = broker
+            .dispatch(
+                ApplicationCommandEnvelope {
+                    command_type: "project.inspect".to_string(),
+                    input: json!({ "safe": true }),
+                    control: Some(json!({ "safe": { "/private/control": "bad" } })),
+                },
+                Duration::from_millis(20),
+                progress_tx,
+                McpCancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(crate::error::AppError::InvalidParam(message))
+                if message == "Application command payload must not contain absolute paths"
+                    && !message.contains("/private")
+        ));
+        assert_eq!(emitter.requests().len(), 0);
+        assert_eq!(emitter.cancellation_requests().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_allows_safe_relative_and_property_keys() {
+        let (broker, emitter) = broker(1, 1);
+        broker.register_dispatcher().expect("register dispatcher");
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let pending = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        ApplicationCommandEnvelope {
+                            command_type: "project.inspect".to_string(),
+                            input: json!({
+                                "relative/path.csv": "ok",
+                                "C:relative": "ok",
+                                "server\\share": "ok",
+                                "property.name": { "nested-key": true }
+                            }),
+                            control: None,
+                        },
+                        Duration::from_secs(5),
+                        progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let request_id = emitter.requests()[0].request_id.clone();
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id,
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 1,
+                    data: json!({ "safe": true }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete safe-key request");
+        pending.await.expect("safe-key task").expect("safe-key result");
     }
 }
