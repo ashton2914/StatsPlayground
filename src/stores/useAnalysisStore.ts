@@ -34,6 +34,10 @@ function ensureNormalFit(analysis: AnalysisDocument): AnalysisDocument {
   };
 }
 
+export function normalizePersistedAnalysisDocument(analysis: AnalysisDocument): AnalysisDocument {
+  return ensureNormalFit(analysis);
+}
+
 function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentPatch): AnalysisDocument {
   const shared = {
     ...(patch.name !== undefined ? { name: patch.name } : {}),

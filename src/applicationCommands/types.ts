@@ -296,6 +296,7 @@ export interface AnalysisRunInput {
 
 export interface AnalysisRunResult {
   item: import("@/types/analysis").AnalysisDocument;
+  definition: import("@/types/analysis").AnalysisDocument["definition"];
   dataset: import("@/types/data").DatasetMeta;
   state: import("@/components/analysis/useAnalysisExecution").AnalysisExecutionState;
 }

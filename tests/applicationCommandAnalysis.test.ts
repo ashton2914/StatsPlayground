@@ -6,6 +6,7 @@ import {
   createAnalysisCommandHandlers,
 } from "@/applicationCommands/analysisCommands";
 import type { AnalysisCommandDependencies } from "@/applicationCommands/analysisCommands";
+import { createApplicationRuntime } from "@/applicationCommands/applicationRuntime";
 import type { AnalysisDocument, AnalysisKind } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type { DistributionReportResponse } from "@/types/distribution";
@@ -92,6 +93,19 @@ function fitModelResult(): FitModelResult {
     reason: "insufficientRows",
     usedRows: 0,
     excludedRows: 0,
+  };
+}
+
+function updateDistributionOverviewGraph(document: Extract<AnalysisDocument, { analysisKind: "distribution" }>) {
+  return {
+    ...document.definition.graphs.overview,
+    modeStates: {
+      ...document.definition.graphs.overview.modeStates,
+      twoD: {
+        ...document.definition.graphs.overview.modeStates.twoD,
+        xAxis: { min: 1, max: 4 },
+      },
+    },
   };
 }
 
@@ -292,6 +306,7 @@ async function verifyKindLifecycle(kind: AnalysisKind): Promise<void> {
   assert.equal(runResult.item.id, createdFirst.item.id);
   assert.equal(runResult.dataset.id, fixture.create.sourceDatasetId);
   assert.equal(runResult.state.status, "success", `${kind} run must resolve through the shared execution controller`);
+  assert.deepEqual(runResult.definition, runResult.item.definition);
 }
 
 for (const kind of Object.keys(analysisCommandFixtures) as AnalysisKind[]) {
@@ -317,5 +332,163 @@ for (const kind of Object.keys(analysisCommandFixtures) as AnalysisKind[]) {
   const runResult = await handlers.run({ analysisId: created.item.id });
   assert.equal(runResult.state.status, "loading", "stale analysis results must be synchronously masked before paint");
 }
+
+function createRuntimeHarness() {
+  const harness = createHarness();
+  let projectRevision = 0;
+  let clockTick = 0;
+  const runtime = createApplicationRuntime({
+    revision: {
+      get: () => projectRevision,
+      set: (nextRevision) => {
+        projectRevision = nextRevision;
+      },
+    },
+    analysis: {
+      ...harness.dependencies,
+      createNowIso: () => `2026-09-15T12:00:00.${String(clockTick++).padStart(3, "0")}Z`,
+    },
+  });
+  return {
+    harness,
+    runtime,
+    get projectRevision() {
+      return projectRevision;
+    },
+  };
+}
+
+async function testAnalysisRuntimeNoOpAndGraphOnlyRevisionBehavior(): Promise<void> {
+  const runtimeHarness = createRuntimeHarness();
+  const created = await runtimeHarness.runtime.execute(
+    {
+      type: "analysis.create",
+      input: analysisCommandFixtures.distribution.create,
+    },
+    { kind: "ui" },
+  );
+  assert.equal(created.projectRevision, 1);
+  const createdItem = created.data.item as Extract<AnalysisDocument, { analysisKind: "distribution" }>;
+
+  const graphOnly = await runtimeHarness.runtime.execute(
+    {
+      type: "analysis.update",
+      input: {
+        analysisId: createdItem.id,
+        analysisKind: "distribution",
+        expectedConfigRevision: createdItem.configRevision,
+        draft: {
+          responses: createdItem.definition.responses,
+          weight: createdItem.definition.weight,
+          frequency: createdItem.definition.frequency,
+          by: createdItem.definition.by,
+          nestedSubgroup: createdItem.definition.nestedSubgroup,
+          analysis: createdItem.definition.analysis,
+          graphs: {
+            ...createdItem.definition.graphs,
+            overview: updateDistributionOverviewGraph(createdItem),
+          },
+        },
+      },
+      control: { expectedProjectRevision: 1 },
+    },
+    { kind: "ui" },
+  );
+  assert.equal(graphOnly.changed, true);
+  assert.equal(graphOnly.projectRevision, 2);
+  assert.equal(graphOnly.data.item.configRevision, createdItem.configRevision);
+  assert.equal(runtimeHarness.harness.analyses[0]?.configRevision, createdItem.configRevision);
+  assert.notEqual(graphOnly.data.item.updatedAt, createdItem.updatedAt);
+
+  const noOp = await runtimeHarness.runtime.execute(
+    {
+      type: "analysis.update",
+      input: {
+        analysisId: createdItem.id,
+        analysisKind: "distribution",
+        expectedConfigRevision: graphOnly.data.item.configRevision,
+        draft: {
+          responses: graphOnly.data.item.definition.responses,
+          weight: graphOnly.data.item.definition.weight,
+          frequency: graphOnly.data.item.definition.frequency,
+          by: graphOnly.data.item.definition.by,
+          nestedSubgroup: graphOnly.data.item.definition.nestedSubgroup,
+          analysis: graphOnly.data.item.definition.analysis,
+          graphs: graphOnly.data.item.definition.graphs,
+        },
+      },
+      control: { expectedProjectRevision: 2 },
+    },
+    { kind: "ui" },
+  );
+  assert.equal(noOp.changed, false);
+  assert.equal(noOp.projectRevision, 2);
+  assert.equal(noOp.data.item.updatedAt, graphOnly.data.item.updatedAt);
+  assert.equal(runtimeHarness.harness.historyEntries.length, 2);
+}
+
+async function testAnalysisRuntimeRunPreservesFitModelSettingsAndCancellation(): Promise<void> {
+  const runtimeHarness = createRuntimeHarness();
+  let lastRequest: import("@/types/fitModel").FitModelRequest | null = null;
+
+  const created = await runtimeHarness.runtime.execute(
+    {
+      type: "analysis.create",
+      input: analysisCommandFixtures.fitModel.create,
+    },
+    { kind: "ui" },
+  );
+  const updated = await runtimeHarness.runtime.execute(
+    {
+      type: "analysis.update",
+      input: analysisCommandFixtures.fitModel.update(created.data.item.id, created.data.item.configRevision),
+      control: { expectedProjectRevision: created.projectRevision },
+    },
+    { kind: "ui" },
+  );
+
+  runtimeHarness.harness.dependencies.executionRuntime.runFitModel = async (request) => {
+    lastRequest = request;
+    return fitModelResult();
+  };
+  const runResult = await runtimeHarness.runtime.execute(
+    {
+      type: "analysis.run",
+      input: { analysisId: updated.data.item.id },
+    },
+    { kind: "ui" },
+  );
+  assert.equal(runResult.data.item.analysisKind, "fitModel");
+  assert.equal(runResult.data.definition.kind, "fitModel");
+  assert.equal(runResult.data.definition.confidenceLevel, 0.9);
+  assert.equal(runResult.data.state.status, "success");
+  assert.equal(runResult.data.state.status === "success" && runResult.data.state.request.confidenceLevel, 0.9);
+  assert.equal(lastRequest?.confidenceLevel, 0.9);
+
+  let resolvePending: ((result: FitModelResult) => void) | null = null;
+  runtimeHarness.harness.dependencies.executionRuntime.runFitModel = async (request) => {
+    lastRequest = request;
+    return new Promise<FitModelResult>((resolve) => {
+      resolvePending = resolve;
+    });
+  };
+  const abortController = new AbortController();
+  const cancelledRun = runtimeHarness.runtime.execute(
+    {
+      type: "analysis.run",
+      input: { analysisId: updated.data.item.id },
+    },
+    { kind: "ui" },
+    { signal: abortController.signal },
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  abortController.abort();
+  resolvePending?.(fitModelResult());
+  await assert.rejects(cancelledRun, /cancelled/i);
+}
+
+await testAnalysisRuntimeNoOpAndGraphOnlyRevisionBehavior();
+await testAnalysisRuntimeRunPreservesFitModelSettingsAndCancellation();
 
 console.log("application command analysis lifecycle OK");

@@ -1,5 +1,6 @@
 import type { AnalysisDocumentByKind, AnalysisDocumentPatch, AnalysisKind } from "@/types/analysis";
 import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
+import { cloneValue } from "@/utils/cloneValue";
 
 export type AnalysisGraphRoleByKind = {
   distribution: "overview";
@@ -40,7 +41,7 @@ export const analysisGraphPolicies = {
       patch: {
         presentation: {
           ...document.presentation,
-          graph: structuredClone(graph),
+          graph: cloneValue(graph),
         },
         updatedAt,
       },

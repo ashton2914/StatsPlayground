@@ -187,9 +187,9 @@ export function createApplicationRuntime(
 
   runtime.register(
     "analysis.run",
-    async (input) => ({
+    async (input, context) => ({
       changed: false,
-      data: await analysisHandlers.run(input),
+      data: await analysisHandlers.run(input, { signal: context.signal }),
       warnings: [],
     }),
     { mode: "read", risk: "low" },

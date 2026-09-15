@@ -20,12 +20,13 @@ import type {
 import type { FitYByXRequest, FitYByXResponse } from "@/types/fitYByX";
 import type { FitModelRequest, FitModelResult } from "@/types/fitModel";
 import type { HypothesisTestRequest, HypothesisTestResponse } from "@/types/hypothesisTest";
+import { cloneValue } from "@/utils/cloneValue";
 
 function normalizeDistributionAnalysisForFrontend(
   analysis: DistributionItem["analysis"],
 ): DistributionItem["analysis"] {
   return {
-    ...structuredClone(analysis),
+    ...cloneValue(analysis),
     specLimits: {},
   };
 }
@@ -233,9 +234,9 @@ const fitModelExecutor = {
     datasetId: document.source.datasetId,
     generation,
     responseColumn: document.definition.response.name,
-    terms: structuredClone(document.definition.terms),
+    terms: cloneValue(document.definition.terms),
     centeringMethod: document.definition.centeringMethod,
-    confidenceLevel: 0.95,
+    confidenceLevel: document.definition.confidenceLevel,
   }),
   fingerprint: (document) => JSON.stringify(stableDistributionReportValue({
     analysisKind: document.analysisKind,
@@ -256,7 +257,9 @@ const fitModelExecutor = {
     if (!dependencies.runFitModel) throw new Error("Fit Model compute dependency is unavailable.");
     return dependencies.runFitModel(request);
   },
-  responseMatches: (_response, _request) => true,
+  responseMatches: (response, request) => response.kind !== "fitted"
+    || (response.responseColumn === request.responseColumn
+      && response.confidenceLevel === request.confidenceLevel),
   responseIdentityError: "Fit Model response identity did not match the request.",
   normalizeError: (error) => {
     if (error instanceof Error && error.message.trim()) return error.message;
@@ -267,7 +270,7 @@ const fitModelExecutor = {
 } satisfies AnalysisExecutor<"fitModel">;
 
 function hypothesisTestFingerprint(document: HypothesisTestAnalysisDocument): string {
-  const definition = structuredClone(document.definition);
+  const definition = cloneValue(document.definition);
   if (definition.manualSelection) definition.manualSelection.reason = null;
   return JSON.stringify(stableDistributionReportValue({
     analysisKind: document.analysisKind,
@@ -287,7 +290,7 @@ const hypothesisTestExecutor = {
       datasetId: document.source.datasetId,
       generation,
       configRevision: document.configRevision,
-      definition: structuredClone(document.definition),
+      definition: cloneValue(document.definition),
       requestFingerprint,
     };
   },

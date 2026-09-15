@@ -46,7 +46,7 @@ export interface FitModelRequest {
   responseColumn: string;
   terms: FitModelTerm[];
   centeringMethod: FitModelCenteringMethod;
-  confidenceLevel: 0.95;
+  confidenceLevel: number;
 }
 
 export type FitModelSavedMetric =

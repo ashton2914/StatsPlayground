@@ -7,6 +7,7 @@ import { createFitModelAnalysisDocument } from "../src/components/analysis/adapt
 import { createFitYByXItem } from "../src/components/fitYByX/fitYByXConfig.ts";
 import type { DatasetMeta } from "../src/types/data.ts";
 import type { DistributionReportResponse } from "../src/types/distribution.ts";
+import type { FitModelResult } from "../src/types/fitModel.ts";
 import type { FitYByXResponse } from "../src/types/fitYByX.ts";
 import type { HypothesisTestAnalysisDocument } from "../src/types/analysis.ts";
 import type { HypothesisTestResponse } from "../src/types/hypothesisTest.ts";
@@ -100,9 +101,72 @@ function fitModelAnalysis() {
       centeringMethod: "mean",
       createdAt: "2026-09-03T00:00:00.000Z",
     },
-    confidenceLevel: 0.95,
+    confidenceLevel: 0.9,
     updatedAt: "2026-09-03T00:00:00.000Z",
   });
+}
+
+function fitModelResult(overrides: Partial<FitModelResult> = {}): FitModelResult {
+  return {
+    kind: "fitted",
+    usedRows: 8,
+    excludedRows: 0,
+    availableSavedMetrics: [],
+    confidenceLevel: 0.9,
+    responseColumn: "Strength",
+    predictorColumns: ["Temperature"],
+    terms: [],
+    centering: { method: "mean", centers: [] },
+    snapshot: {
+      coefficientTermIds: [],
+      coefficients: [],
+      covariance: null,
+      meanSquareError: null,
+      errorDegreesOfFreedom: 0,
+      confidenceLevel: 0.9,
+      terms: [],
+      centering: { method: "mean", centers: [] },
+      predictorRanges: [],
+    },
+    diagnostics: {
+      lackOfFit: {
+        sumOfSquaresError: 0,
+        sumOfSquaresPureError: 0,
+        sumOfSquaresLackOfFit: 0,
+        errorDegreesOfFreedom: 0,
+        pureErrorDegreesOfFreedom: 0,
+        lackOfFitDegreesOfFreedom: 0,
+        meanSquarePureError: null,
+        meanSquareLackOfFit: null,
+        fRatio: null,
+        pValue: null,
+        reason: "noReplicates",
+      },
+      featureVif: [],
+      rows: [],
+      rowsSampled: false,
+      sourceRowCount: 8,
+      qqRows: [],
+      qqRowsSampled: false,
+      qqSourceRowCount: 8,
+      qqReason: null,
+    },
+    summaryOfFit: {
+      rSquared: null,
+      adjustedRSquared: null,
+      rootMeanSquareError: null,
+      meanOfResponse: 0,
+      observationCount: 8,
+      modelDegreesOfFreedom: 0,
+      errorDegreesOfFreedom: 0,
+    },
+    anova: [],
+    parameterEstimates: [],
+    plotRows: [],
+    plotRowsSampled: false,
+    warnings: [],
+    ...overrides,
+  } as FitModelResult;
 }
 
 function hypothesisAnalysis(): HypothesisTestAnalysisDocument {
@@ -245,7 +309,7 @@ assert.deepEqual(fitModelRequest, {
     { kind: "power", columnNames: ["Temperature"], exponent: 2 },
   ],
   centeringMethod: "mean",
-  confidenceLevel: 0.95,
+  confidenceLevel: 0.9,
 });
 
 const hypothesisRequest = createAnalysisExecutionRequest(hypothesisAnalysis(), 7);
@@ -272,7 +336,7 @@ for (const changed of [
   { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, construct: { kind: "manual" as const } } },
   { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, terms: [{ kind: "main" as const, columnNames: ["Pressure"] as [string] }] } },
   { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, centeringMethod: "none" as const } },
-  { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, confidenceLevel: 0.9 } },
+  { ...fitModelAnalysis(), definition: { ...fitModelAnalysis().definition, confidenceLevel: 0.95 } },
 ]) {
   assert.notEqual(fitModelAnalysisDefinitionFingerprint(changed), fitModelFingerprint);
 }
@@ -457,6 +521,22 @@ async function testFitModelMigrationIssueDoesNotExecute(): Promise<void> {
   assert.equal(controller.getState().status, "error");
 }
 
+async function testFitModelIdentityFence(): Promise<void> {
+  const mismatch = createAnalysisExecutionController({
+    getDatasetGeneration: async () => 7,
+    runFitModel: async () => fitModelResult({ responseColumn: "Yield" }),
+  });
+  await mismatch.load(fitModelAnalysis(), dataset());
+  assert.equal(mismatch.getState().status, "error");
+
+  const confidenceMismatch = createAnalysisExecutionController({
+    getDatasetGeneration: async () => 7,
+    runFitModel: async () => fitModelResult({ confidenceLevel: 0.95 }),
+  });
+  await confidenceMismatch.load(fitModelAnalysis(), dataset());
+  assert.equal(confidenceMismatch.getState().status, "error");
+}
+
 async function testHypothesisTestIdentityAndStaleFences(): Promise<void> {
   const item = hypothesisAnalysis();
   const expectedRequest = createAnalysisExecutionRequest(item, 7);
@@ -590,6 +670,7 @@ await testLoadingSuccessAndError();
 await testLatestRequestAndEchoFences();
 await testFitYByXEchoFence();
 await testFitModelMigrationIssueDoesNotExecute();
+await testFitModelIdentityFence();
 await testHypothesisTestIdentityAndStaleFences();
 await testAnalysisAndDatasetFenceChecks();
 await testSharedNonHookExecutionMasksStaleResults();

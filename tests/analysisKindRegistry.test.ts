@@ -53,6 +53,68 @@ const registries = {
   commandFixture: analysisCommandFixtures,
 };
 
+function validateSchema(
+  schema: { type: string; const?: unknown; nullable?: boolean; minItems?: number; minLength?: number; required?: string[]; properties?: Record<string, unknown>; items?: unknown },
+  value: unknown,
+  path = "$",
+): string[] {
+  const errors: string[] = [];
+  if (value === null && schema.nullable) {
+    return errors;
+  }
+  if (schema.const !== undefined && value !== schema.const) {
+    errors.push(`${path} must equal ${String(schema.const)}`);
+    return errors;
+  }
+  if (schema.type === "object") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      errors.push(`${path} must be an object`);
+      return errors;
+    }
+    const record = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) {
+      if (!(key in record)) {
+        errors.push(`${path}.${key} is required`);
+      }
+    }
+    for (const [key, propertySchema] of Object.entries(schema.properties ?? {})) {
+      if (key in record) {
+        errors.push(...validateSchema(propertySchema as never, record[key], `${path}.${key}`));
+      }
+    }
+    return errors;
+  }
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) {
+      errors.push(`${path} must be an array`);
+      return errors;
+    }
+    if (schema.minItems != null && value.length < schema.minItems) {
+      errors.push(`${path} must contain at least ${schema.minItems} items`);
+    }
+    if (schema.items) {
+      value.forEach((entry, index) => {
+        errors.push(...validateSchema(schema.items as never, entry, `${path}[${index}]`));
+      });
+    }
+    return errors;
+  }
+  if (schema.type === "string") {
+    if (typeof value !== "string") {
+      errors.push(`${path} must be a string`);
+      return errors;
+    }
+    if (schema.minLength != null && value.length < schema.minLength) {
+      errors.push(`${path} must be at least ${schema.minLength} characters`);
+    }
+    return errors;
+  }
+  if (schema.type === "number" && typeof value !== "number") {
+    errors.push(`${path} must be a number`);
+  }
+  return errors;
+}
+
 assert.equal(manifest.schemaVersion, 1);
 assert.deepEqual(manifestKinds, ["distribution", "fitModel", "fitYByX", "hypothesisTest"]);
 
@@ -87,7 +149,76 @@ for (const entry of manifest.kinds) {
     entry.analysisKind,
     `${entry.analysisKind} command fixture must target its manifest kind`,
   );
+  assert.deepEqual(
+    validateSchema(analysisCommandSchemas[entry.analysisKind].create, analysisCommandFixtures[entry.analysisKind].create),
+    [],
+    `${entry.analysisKind} create fixture must satisfy its executable schema`,
+  );
+  assert.deepEqual(
+    validateSchema(analysisCommandSchemas[entry.analysisKind].update, analysisCommandFixtures[entry.analysisKind].update("analysis-1", 1)),
+    [],
+    `${entry.analysisKind} update fixture must satisfy its executable schema`,
+  );
+  assert.deepEqual(
+    validateSchema(analysisCommandSchemas[entry.analysisKind].run, analysisCommandFixtures[entry.analysisKind].run("analysis-1")),
+    [],
+    `${entry.analysisKind} run fixture must satisfy its executable schema`,
+  );
 }
+
+assert.match(JSON.stringify(analysisCommandSchemas.distribution.create), /responses/);
+assert.match(JSON.stringify(analysisCommandSchemas.distribution.create), /fitDistributions/);
+assert.match(JSON.stringify(analysisCommandSchemas.fitYByX.create), /factor/);
+assert.match(JSON.stringify(analysisCommandSchemas.fitModel.create), /centeringMethod/);
+assert.match(JSON.stringify(analysisCommandSchemas.fitModel.create), /terms/);
+assert.match(JSON.stringify(analysisCommandSchemas.hypothesisTest.create), /selectorVersion/);
+
+assert.notDeepEqual(
+  validateSchema(analysisCommandSchemas.distribution.create, {
+    ...analysisCommandFixtures.distribution.create,
+    draft: {
+      ...analysisCommandFixtures.distribution.create.draft,
+      responses: [],
+    },
+  }),
+  [],
+  "distribution schema must reject empty responses",
+);
+assert.notDeepEqual(
+  validateSchema(analysisCommandSchemas.fitYByX.create, {
+    ...analysisCommandFixtures.fitYByX.create,
+    draft: {
+      response: analysisCommandFixtures.fitYByX.create.draft.response,
+      confidenceLevel: analysisCommandFixtures.fitYByX.create.draft.confidenceLevel,
+    },
+  }),
+  [],
+  "fitYByX schema must require a factor field",
+);
+assert.notDeepEqual(
+  validateSchema(analysisCommandSchemas.fitModel.create, {
+    ...analysisCommandFixtures.fitModel.create,
+    draft: {
+      ...analysisCommandFixtures.fitModel.create.draft,
+      terms: [],
+    },
+  }),
+  [],
+  "fitModel schema must reject missing model terms",
+);
+assert.notDeepEqual(
+  validateSchema(analysisCommandSchemas.hypothesisTest.create, {
+    ...analysisCommandFixtures.hypothesisTest.create,
+    draft: {
+      definition: {
+        ...analysisCommandFixtures.hypothesisTest.create.draft.definition,
+        selectorVersion: "",
+      },
+    },
+  }),
+  [],
+  "hypothesisTest schema must reject an empty selectorVersion",
+);
 
 assert.throws(
   () => assertRegisteredAnalysisKind("unknown" as AnalysisKind),

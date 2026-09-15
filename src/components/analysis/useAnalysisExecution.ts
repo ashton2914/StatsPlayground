@@ -411,7 +411,9 @@ export function createAnalysisExecutionController(
   };
 }
 
-export interface UseAnalysisExecutionRuntime extends Partial<AnalysisExecutionControllerDependencies> {}
+export interface UseAnalysisExecutionRuntime extends Partial<AnalysisExecutionControllerDependencies> {
+  signal?: AbortSignal;
+}
 
 export async function resolveAnalysisExecutionDependencies(
   item: AnalysisDocument,
@@ -460,9 +462,27 @@ export async function executeAnalysisWithFence(
       snapshot = { state, fence };
     },
   });
+  const cancellationSignal = dependencies?.signal;
+  const abortPromise = cancellationSignal == null
+    ? null
+    : new Promise<never>((_resolve, reject) => {
+      const abort = () => {
+        controller.cancel();
+        const error = new Error("Analysis execution cancelled");
+        error.name = "AbortError";
+        reject(error);
+      };
+      if (cancellationSignal.aborted) {
+        abort();
+        return;
+      }
+      cancellationSignal.addEventListener("abort", abort, { once: true });
+    });
 
   try {
-    await controller.load(item, dataset);
+    await (abortPromise == null
+      ? controller.load(item, dataset)
+      : Promise.race([controller.load(item, dataset), abortPromise]));
   } finally {
     controller.dispose();
   }

@@ -23,13 +23,14 @@ import {
   executeAnalysisWithFence,
   type UseAnalysisExecutionRuntime,
 } from "@/components/analysis/useAnalysisExecution";
+import { analysisExecutors } from "@/components/analysis/analysisExecutors";
 import { selectWorkspaceDocument } from "@/components/analysis/analysisWorkspaceLifecycle";
 import { createDefaultFitYByXGraphConfig, createFitYByXItem } from "@/components/fitYByX/fitYByXConfig";
 import { createFitModelItem, toFitModelFieldInfo } from "@/components/fitModel";
 import i18n from "@/i18n";
 import { dataService } from "@/services/dataService";
 import { buildDistributionFieldInfo } from "@/components/tablePropertyManagerRequest";
-import { useAnalysisStore } from "@/stores/useAnalysisStore";
+import { normalizePersistedAnalysisDocument, useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useProjectStore } from "@/stores/useProjectStore";
@@ -45,6 +46,7 @@ import type {
 import type { ColumnDisplayProps, DatasetMeta } from "@/types/data";
 import type { DistributionItem } from "@/types/distribution";
 import type { HypothesisTestAnalysisPresentation } from "@/types/hypothesisTest";
+import { cloneValue } from "@/utils/cloneValue";
 import { resolveProjectBasenameForKind } from "@/utils/projectFileNaming";
 
 interface AnalysisCreateAdapterContext {
@@ -75,6 +77,21 @@ export interface AnalysisCommandSchema<Kind extends AnalysisKind> {
   analysisKind: Kind;
   supportsGraphPresentation: boolean;
   supportsReportEmbedding: boolean;
+  create: AnalysisCommandJsonSchema;
+  update: AnalysisCommandJsonSchema;
+  run: AnalysisCommandJsonSchema;
+}
+
+export interface AnalysisCommandJsonSchema {
+  type: "object" | "array" | "string" | "number" | "boolean" | "null";
+  const?: unknown;
+  nullable?: boolean;
+  minLength?: number;
+  minItems?: number;
+  required?: string[];
+  properties?: Record<string, AnalysisCommandJsonSchema>;
+  items?: AnalysisCommandJsonSchema;
+  additionalProperties?: boolean;
 }
 
 export interface AnalysisCommandFixture<Kind extends AnalysisKind> {
@@ -176,7 +193,22 @@ function resolveAnalysis(dependencies: AnalysisCommandDependencies, analysisId: 
 }
 
 function clone<T>(value: T): T {
-  return structuredClone(value);
+  return cloneValue(value);
+}
+
+function analysisExecutionFingerprint(document: AnalysisDocument): string {
+  if (document.analysisKind === "distribution") return analysisExecutors.distribution.fingerprint(document);
+  if (document.analysisKind === "fitYByX") return analysisExecutors.fitYByX.fingerprint(document);
+  if (document.analysisKind === "fitModel") return analysisExecutors.fitModel.fingerprint(document);
+  return analysisExecutors.hypothesisTest.fingerprint(document);
+}
+
+function createNextConfigRevision(current: AnalysisDocument, next: AnalysisDocument): number {
+  return current.configRevision + (
+    analysisExecutionFingerprint(current) === analysisExecutionFingerprint(next)
+      ? 0
+      : 1
+  );
 }
 
 function createFitYByXDefinition(
@@ -214,15 +246,57 @@ function createFitModelDefinition(
 }
 
 function createAnalysisPatch(current: AnalysisDocument, next: AnalysisDocument): AnalysisDocumentPatch {
-  const patch: AnalysisDocumentPatch = {
-    updatedAt: next.updatedAt,
-  };
-  if (current.name !== next.name) patch.name = next.name;
-  if (JSON.stringify(current.source) !== JSON.stringify(next.source)) patch.source = clone(next.source);
-  if (JSON.stringify(current.definition) !== JSON.stringify(next.definition)) patch.definition = clone(next.definition);
-  if (JSON.stringify(current.presentation) !== JSON.stringify(next.presentation)) patch.presentation = clone(next.presentation);
-  if (current.configRevision !== next.configRevision) patch.configRevision = next.configRevision;
+  const patch: AnalysisDocumentPatch = {};
+  let changed = false;
+  if (current.name !== next.name) {
+    patch.name = next.name;
+    changed = true;
+  }
+  if (JSON.stringify(current.source) !== JSON.stringify(next.source)) {
+    patch.source = clone(next.source);
+    changed = true;
+  }
+  if (JSON.stringify(current.definition) !== JSON.stringify(next.definition)) {
+    patch.definition = clone(next.definition);
+    changed = true;
+  }
+  if (JSON.stringify(current.presentation) !== JSON.stringify(next.presentation)) {
+    patch.presentation = clone(next.presentation);
+    changed = true;
+  }
+  if (current.configRevision !== next.configRevision) {
+    patch.configRevision = next.configRevision;
+    changed = true;
+  }
+  if (!changed) {
+    return {};
+  }
+  patch.updatedAt = next.updatedAt;
   return patch;
+}
+
+function hasAnalysisPatchChanges(patch: AnalysisDocumentPatch): boolean {
+  return Object.keys(patch).some((key) => key !== "updatedAt");
+}
+
+function stringSchema(minLength = 1): AnalysisCommandJsonSchema {
+  return { type: "string", minLength };
+}
+
+function fieldRefSchema(): AnalysisCommandJsonSchema {
+  return {
+    type: "object",
+    required: ["name", "type"],
+    properties: {
+      name: stringSchema(),
+      type: { type: "string" },
+    },
+    additionalProperties: false,
+  };
+}
+
+function graphSchema(): AnalysisCommandJsonSchema {
+  return { type: "object" };
 }
 
 function creationHistoryMessage(kind: AnalysisKind, name: string, source: string): string {
@@ -343,12 +417,14 @@ export const analysisUpdateValidators = {
         analysis: clone(input.draft.analysis),
         graphs: clone(input.draft.graphs),
       };
-      const definitionChanged = JSON.stringify(current.definition) !== JSON.stringify(nextDefinition);
-      return {
+      const next = {
         ...current,
         definition: nextDefinition,
         updatedAt,
-        configRevision: current.configRevision + (definitionChanged ? 1 : 0),
+      } as AnalysisDocumentByKind["distribution"];
+      return {
+        ...next,
+        configRevision: createNextConfigRevision(current, next),
       };
     },
   },
@@ -358,26 +434,31 @@ export const analysisUpdateValidators = {
       const nextGraph = clone(input.draft.graph ?? current.presentation.graph);
       const definitionChanged = JSON.stringify(current.definition) !== JSON.stringify(nextDefinition);
       const presentationChanged = JSON.stringify(current.presentation.graph) !== JSON.stringify(nextGraph);
-      return {
+      const next = {
         ...current,
         definition: nextDefinition,
         presentation: presentationChanged
           ? { ...current.presentation, graph: nextGraph }
           : current.presentation,
         updatedAt,
-        configRevision: current.configRevision + (definitionChanged ? 1 : 0),
+      } as AnalysisDocumentByKind["fitYByX"];
+      return {
+        ...next,
+        configRevision: definitionChanged ? createNextConfigRevision(current, next) : current.configRevision,
       };
     },
   },
   fitModel: {
     buildNext(current, input, updatedAt) {
       const nextDefinition = createFitModelDefinition(input.draft, current);
-      const definitionChanged = JSON.stringify(current.definition) !== JSON.stringify(nextDefinition);
-      return {
+      const next = {
         ...current,
         definition: nextDefinition,
         updatedAt,
-        configRevision: current.configRevision + (definitionChanged ? 1 : 0),
+      } as AnalysisDocumentByKind["fitModel"];
+      return {
+        ...next,
+        configRevision: createNextConfigRevision(current, next),
       };
     },
   },
@@ -387,12 +468,15 @@ export const analysisUpdateValidators = {
       const nextPresentation: HypothesisTestAnalysisPresentation = clone(input.draft.presentation ?? current.presentation);
       const definitionChanged = JSON.stringify(current.definition) !== JSON.stringify(nextDefinition);
       const presentationChanged = JSON.stringify(current.presentation) !== JSON.stringify(nextPresentation);
-      return {
+      const next = {
         ...current,
         definition: nextDefinition,
         presentation: presentationChanged ? nextPresentation : current.presentation,
         updatedAt,
-        configRevision: current.configRevision + (definitionChanged ? 1 : 0),
+      } as AnalysisDocumentByKind["hypothesisTest"];
+      return {
+        ...next,
+        configRevision: definitionChanged ? createNextConfigRevision(current, next) : current.configRevision,
       };
     },
   },
@@ -403,21 +487,295 @@ export const analysisCommandSchemas = {
     analysisKind: "distribution",
     supportsGraphPresentation: true,
     supportsReportEmbedding: true,
+    create: {
+      type: "object",
+      required: ["analysisKind", "sourceDatasetId", "draft"],
+      properties: {
+        analysisKind: { type: "string", const: "distribution" },
+        sourceDatasetId: stringSchema(),
+        draft: {
+          type: "object",
+          required: ["responses", "analysis", "graphs"],
+          properties: {
+            responses: { type: "array", minItems: 1, items: fieldRefSchema() },
+            analysis: {
+              type: "object",
+              required: ["confidenceLevel", "fitDistributions"],
+              properties: {
+                confidenceLevel: { type: "number" },
+                fitDistributions: { type: "array", minItems: 1, items: stringSchema() },
+              },
+            },
+            graphs: {
+              type: "object",
+              required: ["overview", "boxPlot", "ecdf", "normalQuantile"],
+              properties: {
+                overview: graphSchema(),
+                boxPlot: graphSchema(),
+                ecdf: graphSchema(),
+                normalQuantile: graphSchema(),
+              },
+            },
+          },
+        },
+      },
+    },
+    update: {
+      type: "object",
+      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+      properties: {
+        analysisId: stringSchema(),
+        analysisKind: { type: "string", const: "distribution" },
+        expectedConfigRevision: { type: "number" },
+        draft: {
+          type: "object",
+          required: ["responses", "analysis", "graphs"],
+          properties: {
+            responses: { type: "array", minItems: 1, items: fieldRefSchema() },
+            analysis: {
+              type: "object",
+              required: ["confidenceLevel", "fitDistributions"],
+              properties: {
+                confidenceLevel: { type: "number" },
+                fitDistributions: { type: "array", minItems: 1, items: stringSchema() },
+              },
+            },
+            graphs: {
+              type: "object",
+              required: ["overview", "boxPlot", "ecdf", "normalQuantile"],
+              properties: {
+                overview: graphSchema(),
+                boxPlot: graphSchema(),
+                ecdf: graphSchema(),
+                normalQuantile: graphSchema(),
+              },
+            },
+          },
+        },
+      },
+    },
+    run: {
+      type: "object",
+      required: ["analysisId"],
+      properties: {
+        analysisId: stringSchema(),
+      },
+    },
   },
   fitYByX: {
     analysisKind: "fitYByX",
     supportsGraphPresentation: true,
     supportsReportEmbedding: true,
+    create: {
+      type: "object",
+      required: ["analysisKind", "sourceDatasetId", "draft"],
+      properties: {
+        analysisKind: { type: "string", const: "fitYByX" },
+        sourceDatasetId: stringSchema(),
+        draft: {
+          type: "object",
+          required: ["response", "factor", "confidenceLevel"],
+          properties: {
+            response: fieldRefSchema(),
+            factor: fieldRefSchema(),
+            confidenceLevel: { type: "number" },
+            graph: graphSchema(),
+          },
+        },
+      },
+    },
+    update: {
+      type: "object",
+      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+      properties: {
+        analysisId: stringSchema(),
+        analysisKind: { type: "string", const: "fitYByX" },
+        expectedConfigRevision: { type: "number" },
+        draft: {
+          type: "object",
+          required: ["response", "factor", "confidenceLevel"],
+          properties: {
+            response: fieldRefSchema(),
+            factor: fieldRefSchema(),
+            confidenceLevel: { type: "number" },
+            graph: graphSchema(),
+          },
+        },
+      },
+    },
+    run: {
+      type: "object",
+      required: ["analysisId"],
+      properties: {
+        analysisId: stringSchema(),
+      },
+    },
   },
   fitModel: {
     analysisKind: "fitModel",
     supportsGraphPresentation: false,
     supportsReportEmbedding: false,
+    create: {
+      type: "object",
+      required: ["analysisKind", "sourceDatasetId", "draft"],
+      properties: {
+        analysisKind: { type: "string", const: "fitModel" },
+        sourceDatasetId: stringSchema(),
+        draft: {
+          type: "object",
+          required: ["response", "construct", "terms", "centeringMethod"],
+          properties: {
+            response: fieldRefSchema(),
+            construct: {
+              type: "object",
+              required: ["kind"],
+              properties: { kind: stringSchema() },
+            },
+            terms: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                required: ["kind", "columnNames"],
+                properties: {
+                  kind: stringSchema(),
+                  columnNames: { type: "array", minItems: 1, items: stringSchema() },
+                },
+              },
+            },
+            centeringMethod: stringSchema(),
+            confidenceLevel: { type: "number" },
+          },
+        },
+      },
+    },
+    update: {
+      type: "object",
+      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+      properties: {
+        analysisId: stringSchema(),
+        analysisKind: { type: "string", const: "fitModel" },
+        expectedConfigRevision: { type: "number" },
+        draft: {
+          type: "object",
+          required: ["response", "construct", "terms", "centeringMethod"],
+          properties: {
+            response: fieldRefSchema(),
+            construct: {
+              type: "object",
+              required: ["kind"],
+              properties: { kind: stringSchema() },
+            },
+            terms: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                required: ["kind", "columnNames"],
+                properties: {
+                  kind: stringSchema(),
+                  columnNames: { type: "array", minItems: 1, items: stringSchema() },
+                },
+              },
+            },
+            centeringMethod: stringSchema(),
+            confidenceLevel: { type: "number" },
+          },
+        },
+      },
+    },
+    run: {
+      type: "object",
+      required: ["analysisId"],
+      properties: {
+        analysisId: stringSchema(),
+      },
+    },
   },
   hypothesisTest: {
     analysisKind: "hypothesisTest",
     supportsGraphPresentation: false,
     supportsReportEmbedding: true,
+    create: {
+      type: "object",
+      required: ["analysisKind", "sourceDatasetId", "draft"],
+      properties: {
+        analysisKind: { type: "string", const: "hypothesisTest" },
+        sourceDatasetId: stringSchema(),
+        draft: {
+          type: "object",
+          required: ["definition"],
+          properties: {
+            definition: {
+              type: "object",
+              required: ["kind", "roles", "studyDesign", "selectionMode", "alpha", "confidenceLevel", "selectorVersion"],
+              properties: {
+                kind: { type: "string", const: "hypothesisTest" },
+                roles: {
+                  type: "object",
+                  required: ["layout", "response"],
+                  properties: {
+                    layout: stringSchema(),
+                    response: fieldRefSchema(),
+                    condition: fieldRefSchema(),
+                    subject: { ...fieldRefSchema(), nullable: true },
+                  },
+                },
+                studyDesign: stringSchema(),
+                selectionMode: stringSchema(),
+                alpha: { type: "number" },
+                confidenceLevel: { type: "number" },
+                selectorVersion: stringSchema(),
+              },
+            },
+          },
+        },
+      },
+    },
+    update: {
+      type: "object",
+      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+      properties: {
+        analysisId: stringSchema(),
+        analysisKind: { type: "string", const: "hypothesisTest" },
+        expectedConfigRevision: { type: "number" },
+        draft: {
+          type: "object",
+          required: ["definition"],
+          properties: {
+            definition: {
+              type: "object",
+              required: ["kind", "roles", "studyDesign", "selectionMode", "alpha", "confidenceLevel", "selectorVersion"],
+              properties: {
+                kind: { type: "string", const: "hypothesisTest" },
+                roles: {
+                  type: "object",
+                  required: ["layout", "response"],
+                  properties: {
+                    layout: stringSchema(),
+                    response: fieldRefSchema(),
+                    condition: fieldRefSchema(),
+                    subject: { ...fieldRefSchema(), nullable: true },
+                  },
+                },
+                studyDesign: stringSchema(),
+                selectionMode: stringSchema(),
+                alpha: { type: "number" },
+                confidenceLevel: { type: "number" },
+                selectorVersion: stringSchema(),
+              },
+            },
+          },
+        },
+      },
+    },
+    run: {
+      type: "object",
+      required: ["analysisId"],
+      properties: {
+        analysisId: stringSchema(),
+      },
+    },
   },
 } satisfies { [Kind in AnalysisKind]: AnalysisCommandSchema<Kind> };
 
@@ -672,7 +1030,7 @@ export function createAnalysisCommandHandlers(
     input: AnalysisUpdateInput,
     controls?: { beginCommit?: () => void },
   ): { changed: boolean; data: AnalysisCommandResult } {
-    const current = resolveAnalysis(resolvedDependencies, input.analysisId);
+    const current = normalizePersistedAnalysisDocument(resolveAnalysis(resolvedDependencies, input.analysisId));
     assertRegisteredAnalysisKind(input.analysisKind);
     if (current.analysisKind !== input.analysisKind) {
       throw new CommandExecutionError("invalid_input", "analysisKind must match the persisted document");
@@ -685,28 +1043,39 @@ export function createAnalysisCommandHandlers(
       });
     }
 
-    const next = analysisUpdateValidators[input.analysisKind].buildNext(current as never, input as never, resolvedDependencies.createNowIso()) as AnalysisDocument;
-    if (JSON.stringify(current) === JSON.stringify(next)) {
+    const next = normalizePersistedAnalysisDocument(
+      analysisUpdateValidators[input.analysisKind].buildNext(
+        current as never,
+        input as never,
+        resolvedDependencies.createNowIso(),
+      ) as AnalysisDocument,
+    );
+    const patch = createAnalysisPatch(current, next);
+    if (!hasAnalysisPatchChanges(patch)) {
       return { changed: false, data: { item: current } };
     }
 
     controls?.beginCommit?.();
-    resolvedDependencies.updateAnalysis(current.id, createAnalysisPatch(current, next));
+    resolvedDependencies.updateAnalysis(current.id, patch);
     resolvedDependencies.markDirty();
     resolvedDependencies.recordAction(updateHistoryMessage(next.name));
 
     return { changed: true, data: { item: next } };
   }
 
-  async function run(input: AnalysisRunInput): Promise<AnalysisRunResult> {
-    const item = resolveAnalysis(resolvedDependencies, input.analysisId);
+  async function run(
+    input: AnalysisRunInput,
+    controls?: { signal?: AbortSignal },
+  ): Promise<AnalysisRunResult> {
+    const item = normalizePersistedAnalysisDocument(resolveAnalysis(resolvedDependencies, input.analysisId));
     const dataset = resolveDataset(resolvedDependencies, item.source.datasetId);
     const state = (await executeAnalysisWithFence(item, dataset, {
       ...resolvedDependencies.executionRuntime,
+      signal: controls?.signal,
       getCurrentAnalysis: () => resolvedDependencies.getCurrentAnalysis(item.id),
       getCurrentDataset: () => resolvedDependencies.getCurrentDataset(dataset.id),
     })).state;
-    return { item, dataset, state };
+    return { item, definition: clone(item.definition), dataset, state };
   }
 
   return { create, update, run };
