@@ -278,6 +278,20 @@ for (const entry of manifest.kinds) {
 }
 
 {
+  const minimalDistributionCreate: any = clone(analysisCommandFixtures.distribution.create);
+  minimalDistributionCreate.draft.name = "DIM1 Analysis";
+  minimalDistributionCreate.draft.weight = { name: "Weight", type: "continuous" };
+  minimalDistributionCreate.draft.frequency = { name: "Frequency", type: "continuous" };
+  minimalDistributionCreate.draft.by = [{ name: "Site", type: "nominal" }];
+  minimalDistributionCreate.draft.nestedSubgroup = { name: "Lot", type: "nominal" };
+  delete minimalDistributionCreate.draft.analysis;
+  delete minimalDistributionCreate.draft.graphs;
+  assertAccepts(
+    analysisCommandSchemas.distribution.create,
+    minimalDistributionCreate,
+    "distribution create schema must accept the canonical minimal draft without optional analysis/graphs",
+  );
+
   const validDistributionCreate: any = clone(analysisCommandFixtures.distribution.create);
   validDistributionCreate.draft.name = "DIM1 Analysis";
   validDistributionCreate.draft.weight = { name: "Weight", type: "continuous" };
@@ -318,6 +332,18 @@ for (const entry of manifest.kinds) {
     analysisCommandSchemas.fitYByX.create,
     validFitYByXCreate,
     "fitYByX create schema must accept optional graph transport",
+  );
+
+  const minimalEmbeddedGraphCreate: any = clone(analysisCommandFixtures.fitYByX.create);
+  minimalEmbeddedGraphCreate.draft.name = "Fit Y by X 2";
+  minimalEmbeddedGraphCreate.draft.graph = clone(analysisCommandFixtures.distribution.create.draft.graphs.overview);
+  delete minimalEmbeddedGraphCreate.draft.graph.filters;
+  delete minimalEmbeddedGraphCreate.draft.graph.sampling;
+  delete minimalEmbeddedGraphCreate.draft.graph.groupThemeSlots;
+  assertAccepts(
+    analysisCommandSchemas.fitYByX.create,
+    minimalEmbeddedGraphCreate,
+    "fitYByX create schema must accept the minimal embedded graph transport",
   );
 
   const invalidFitYByXGraph = clone(validFitYByXCreate);
@@ -468,11 +494,13 @@ for (const entry of manifest.kinds) {
   );
 }
 
-assert.throws(
-  () => assertRegisteredAnalysisKind("unknown" as AnalysisKind),
-  /Unknown analysis kind/,
-  "unknown kinds must be rejected instead of entering a generic fallback",
-);
+for (const unknownKind of ["unknown", "toString", "__proto__"] as const) {
+  assert.throws(
+    () => assertRegisteredAnalysisKind(unknownKind as AnalysisKind),
+    /Unknown analysis kind/,
+    `${unknownKind} must be rejected instead of entering a generic fallback`,
+  );
+}
 
 assert.notEqual(analysisReportPolicies.distribution, null, "Distribution must register Report embedding");
 assert.notEqual(analysisReportPolicies.fitYByX, null, "Fit Y by X must register Report embedding");

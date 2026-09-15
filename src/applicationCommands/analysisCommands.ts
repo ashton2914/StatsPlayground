@@ -536,7 +536,7 @@ function graphSchema(): AnalysisCommandJsonSchema {
     ],
   } satisfies AnalysisCommandJsonSchema;
   return objectSchema({
-    required: ["mode", "modeStates", "filters", "sampling"],
+    required: ["mode", "modeStates"],
     properties: {
       mode: enumSchema(["2d", "3d", "multivariate"]),
       modeStates: objectSchema({
@@ -571,7 +571,7 @@ function updateHistoryMessage(name: string): string {
 }
 
 export function assertRegisteredAnalysisKind(kind: string): asserts kind is AnalysisKind {
-  if (!(kind in analysisCreateAdapters)) {
+  if (!Object.prototype.hasOwnProperty.call(analysisCreateAdapters, kind)) {
     throw new Error(`Unknown analysis kind: ${kind}`);
   }
 }
@@ -769,7 +769,7 @@ export const analysisCommandSchemas = (() => {
     additionalProperties: false,
   });
   const distributionDraftCreateSchema = objectSchema({
-    required: ["responses", "weight", "frequency", "by", "nestedSubgroup", "analysis", "graphs"],
+    required: ["responses", "weight", "frequency", "by", "nestedSubgroup"],
     properties: {
       name: stringSchema(),
       responses: arraySchema(fieldRefSchema(), { minItems: 1 }),
