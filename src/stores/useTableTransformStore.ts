@@ -26,13 +26,17 @@ export interface TableTransformStore {
   ) => void;
   createAndRun: (
     draft: TableTransformDraft,
+    controls?: { beginCommit?: () => void },
   ) => Promise<TableTransformExecutionResult>;
   rebindAndRun: (
     transformId: string,
     role: string,
     tableDocumentId: string,
   ) => Promise<TableTransformExecutionResult>;
-  rerun: (transformId: string) => Promise<TableTransformExecutionResult>;
+  rerun: (
+    transformId: string,
+    controls?: { beginCommit?: () => void },
+  ) => Promise<TableTransformExecutionResult>;
   remove: (transformId: string) => void;
   reset: () => void;
 }
@@ -102,9 +106,10 @@ function stateCreator(
         bindings: clone(bindings),
         pendingById: {},
       }),
-      createAndRun: async (draft) => {
+      createAndRun: async (draft, controls) => {
         const requestKey = `create:${draft.name}`;
         const token = beginRequest(requestKey);
+        controls?.beginCommit?.();
         const result = await dependencies.service.createAndRun(
           clone(draft),
           clone(dependencies.getLineage()),
@@ -129,10 +134,11 @@ function stateCreator(
         );
         return applyResult(result, token, transformId);
       },
-      rerun: async (transformId) => {
+      rerun: async (transformId, controls) => {
         const definition = findDefinition(get(), transformId);
         const binding = findBinding(get(), transformId);
         const token = beginRequest(transformId);
+        controls?.beginCommit?.();
         const result = await dependencies.service.run(
           clone(definition),
           clone(binding),

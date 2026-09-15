@@ -305,11 +305,9 @@ export function Workspace() {
   const tabulates = useTabulateStore((s) => s.items);
   const workflows = useWorkflowStore((s) => s.workflows);
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
-  const createAndRunTableTransform = useTableTransformStore((s) => s.createAndRun);
   const tableTransforms = useTableTransformStore((s) => s.definitions);
   const tableTransformBindings = useTableTransformStore((s) => s.bindings);
   const rebindTableTransform = useTableTransformStore((s) => s.rebindAndRun);
-  const rerunTableTransform = useTableTransformStore((s) => s.rerun);
   const deleteTableTransform = useTableTransformStore((s) => s.remove);
   const loadTableTransforms = useTableTransformStore((s) => s.loadFromProject);
   const resetTableTransforms = useTableTransformStore((s) => s.reset);
@@ -2736,11 +2734,15 @@ export function Workspace() {
                     markDirty();
                   }}
                   onRerun={async () => {
-                    await rerunTableTransform(definition.id);
-                    await refreshDatasets();
+                    await applicationRuntime.execute(
+                      {
+                        type: "tableTransform.run",
+                        input: { transformId: definition.id },
+                      },
+                      { kind: "ui" },
+                    );
                     setTableKey((key) => key + 1);
                     invalidateData();
-                    markDirty();
                   }}
                   onOpenOutput={(tableDocumentId) => activateWorkspaceDocument("dataset", tableDocumentId)}
                 />
@@ -2871,11 +2873,14 @@ export function Workspace() {
           activeDatasetId={activeDatasetId}
           onClose={() => setShowTableTransformDialog(false)}
           onSubmit={async (draft) => {
-            const execution = await createAndRunTableTransform(draft);
-            await refreshDatasets();
-            if (execution.output) activateWorkspaceDocument("dataset", execution.output.id);
+            await applicationRuntime.execute(
+              {
+                type: "tableTransform.create",
+                input: { draft },
+              },
+              { kind: "ui" },
+            );
             invalidateData();
-            markDirty();
           }}
         />
       )}
@@ -2885,11 +2890,17 @@ export function Workspace() {
           datasets={datasets}
           tableFolders={tableFolders}
           onClose={() => setShowSqlQuery(false)}
-          onCreated={async (dataset) => {
-            await refreshDatasets();
-            activateWorkspaceDocument("dataset", dataset.id);
-            markDirty();
-            recordAction(t("history.sqlQueryTableCreated", { name: dataset.name }));
+          onCreateTable={async ({ sql, name }) => {
+            await applicationRuntime.execute(
+              {
+                type: "sql.createTable",
+                input: {
+                  sql,
+                  name,
+                },
+              },
+              { kind: "ui" },
+            );
             setShowSqlQuery(false);
           }}
         />

@@ -110,6 +110,33 @@ export interface TableCreateInput {
 
 export type TableCreateResult = TableDescribeResult;
 
+export interface TableTransformCreateInput {
+  draft: import("@/types/tableTransform").TableTransformDraft;
+}
+
+export interface TableTransformRunInput {
+  transformId: string;
+}
+
+export interface TableTransformCommandData {
+  execution: import("@/types/tableTransform").TableTransformExecutionResult;
+  definition: import("@/types/tableTransform").TableTransformDefinition;
+  binding: import("@/types/tableTransform").TableTransformBindingState;
+  outputTable: TableDescribeResult | null;
+  targetDatasetGeneration: number | null;
+}
+
+export interface SqlCreateTableInput {
+  sql: string;
+  name: string;
+}
+
+export interface SqlCreateTableResult {
+  datasetId: string;
+  datasetName: string;
+  outputTable: TableDescribeResult | null;
+}
+
 export type ProjectDocumentKind = "tableTransform" | "graph" | "analysis" | "tabulate" | "report";
 
 export interface ProjectDocumentListInput {
@@ -199,6 +226,9 @@ export interface CommandExecutionContext {
 export type ApplicationCommandRegistry = {
   "project.inspect": { input: ProjectInspectInput; data: ProjectInspectResult };
   "table.create": { input: TableCreateInput; data: TableCreateResult };
+  "tableTransform.create": { input: TableTransformCreateInput; data: TableTransformCommandData };
+  "tableTransform.run": { input: TableTransformRunInput; data: TableTransformCommandData };
+  "sql.createTable": { input: SqlCreateTableInput; data: SqlCreateTableResult };
   "table.list": { input: TableListInput; data: TableListResult };
   "table.describe": { input: TableDescribeInput; data: TableDescribeResult };
   "document.list": { input: ProjectDocumentListInput; data: ProjectDocumentListResult };

@@ -4,6 +4,11 @@ import {
 } from "@/applicationCommands/projectCommands";
 import { createApplicationCommandRuntime } from "@/applicationCommands/runtime";
 import { createTableCommandHandlers, type TableCommandDependencies } from "@/applicationCommands/tableCommands";
+import {
+  createTableTransformCommandHandlers,
+  type TableTransformCommandDependencies,
+} from "@/applicationCommands/tableTransformCommands";
+import { createSqlCommandHandlers, type SqlCommandDependencies } from "@/applicationCommands/sqlCommands";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type {
   ApplicationCommandRegistry,
@@ -19,6 +24,8 @@ export interface ApplicationRuntimeDependencies {
   };
   project?: ProjectCommandDependencies;
   table?: Omit<TableCommandDependencies, "projectHandlers" | "projectDependencies">;
+  tableTransform?: Omit<TableTransformCommandDependencies, "projectHandlers" | "projectDependencies">;
+  sql?: Omit<SqlCommandDependencies, "projectHandlers" | "projectDependencies">;
 }
 
 export function createApplicationRuntime(
@@ -33,6 +40,14 @@ export function createApplicationRuntime(
   const projectHandlers = createProjectCommandHandlers(dependencies.project);
   const tableHandlers = createTableCommandHandlers({
     ...dependencies.table,
+    projectHandlers,
+  });
+  const tableTransformHandlers = createTableTransformCommandHandlers({
+    ...dependencies.tableTransform,
+    projectHandlers,
+  });
+  const sqlHandlers = createSqlCommandHandlers({
+    ...dependencies.sql,
     projectHandlers,
   });
 
@@ -50,6 +65,45 @@ export function createApplicationRuntime(
     "table.create",
     async (input, context) => {
       const outcome = await tableHandlers.createTable(input, { beginCommit: () => context.beginCommit() });
+      return {
+        changed: true,
+        data: outcome.result,
+        warnings: outcome.warnings,
+      };
+    },
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "tableTransform.create",
+    async (input, context) => {
+      const outcome = await tableTransformHandlers.create(input, { beginCommit: () => context.beginCommit() });
+      return {
+        changed: true,
+        data: outcome.data,
+        warnings: outcome.warnings,
+      };
+    },
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "tableTransform.run",
+    async (input, context) => {
+      const outcome = await tableTransformHandlers.run(input, { beginCommit: () => context.beginCommit() });
+      return {
+        changed: true,
+        data: outcome.data,
+        warnings: outcome.warnings,
+      };
+    },
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "sql.createTable",
+    async (input, context) => {
+      const outcome = await sqlHandlers.createTable(input, { beginCommit: () => context.beginCommit() });
       return {
         changed: true,
         data: outcome.result,
