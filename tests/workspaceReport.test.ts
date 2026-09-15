@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 type JsonObject = Record<string, unknown>;
 
-const TEST_FILE_DIR = resolve(process.cwd(), "tests");
+const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(TEST_FILE_DIR, relativePath), "utf8").replace(/\r\n/g, "\n");
@@ -55,69 +56,39 @@ assertSourceIncludes(workspaceSource, "handleCreateReport", "Workspace must expo
 
 assertSourceIncludes(workspaceSource, "activeReportId", "Workspace must track the active report document");
 assertSourceIncludes(workspaceSource, "clearWorkspaceDocumentSelection", "Opening or resetting the workspace must clear the active report");
-assertSourceIncludes(workspaceSource, 'activateWorkspaceDocument("report", id)', "Selecting or creating a report must activate it");
+assertSourceIncludes(workspaceSource, 'activateWorkspaceDocument("report", item.id)', "Selecting a report must activate it");
 assertSourceIncludes(workspaceSource, "activeReportId === item.id", "DIRECTORY rows must highlight the active report");
 
 assertSourceIncludes(workspaceSource, "reports: reportItems", "Project save payload must include reports");
 assertSourceIncludes(workspaceSource, "reportFolders", "Project save/open payloads must include report folder assignments");
-assertSourceIncludes(workspaceSource, "setReportFolder", "Workspace must move reports through the folder store");
+assertSourceIncludes(workspaceSource, "fsSetReportFolder", "Drop handling must assign reports into folders");
 assertSourceIncludes(workspaceSource, "loadReportsFromProject((result.reports ?? [])", "Project open must load saved reports");
 assertSourceIncludes(workspaceSource, "resetReports()", "Project close/open reset must clear the report store");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Prune must include live Analysis and report ids");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Prune must include live report ids");
 
-assertSourceIncludes(workspaceSource, '| { kind: "report"; id: string }', "Drag payload and context menu unions must include reports");
-assertSourceIncludes(workspaceSource, "reportsByParent", "Tree grouping must include reports by folder");
-assertSourceIncludes(workspaceSource, "fsSetReportFolder", "Drop handling must assign reports into folders");
-assertSourceIncludes(workspaceSource, "history.newReport", "Creation must record report history");
-assertSourceIncludes(workspaceSource, "history.renameReport", "Rename must record report history");
-assertSourceIncludes(workspaceSource, "history.deleteReport", "Delete must record report history");
+assertSourceIncludes(workspaceSource, "reportUpdateQueueRef", "Workspace must queue report updates so document revisions are read at execution time");
+assertSourceIncludes(workspaceSource, 'type: "report.update"', "Workspace report edits must execute the shared report.update command");
+assertSourceIncludes(workspaceSource, "getDocumentRevision(id)", "Workspace must read the runtime report document revision before update");
+assertSourceIncludes(workspaceSource, "applicationRuntime.flushPendingEffects();", "Workspace must flush runtime report effects before leaving a report selection or before save/teardown");
+assertSourceIncludes(workspaceSource, 'type: "report.create"', "Workspace report creation must execute the shared report.create command");
+assertSourceIncludes(workspaceSource, "await flushPendingReportHistory();", "Workspace must await pending report command/history work before destructive transitions");
+
 const renameReportSource = sourceBetween("const report = useReportStore.getState().items.find", "const oldName = datasets.find");
-assertSourceOrder(renameReportSource, ["flushPendingReportHistory();", "renameReport(id, basename);", "history.renameReport"], "Report rename history order");
-const deleteReportSource = sourceBetween("const handleDeleteReport", "const handleDeleteDataset");
-assertSourceOrder(deleteReportSource, ["flushPendingReportHistory();", "deleteReport(id);", "history.deleteReport"], "Report delete history order");
-const flushReportHistorySource = sourceBetween("const flushPendingReportHistory", "const scheduleReportHistory");
-assertSourceOrder(
-  flushReportHistorySource,
-  ["pendingReportHistoryRef.current = null;", "window.clearTimeout(reportHistoryTimerRef.current);", "reportHistoryTimerRef.current = null;", "recordAction("],
-  "Flushing report history must cancel the delayed duplicate before recording",
-);
-assertSourceIncludes(
-  sourceBetween("const handleCloseProject", "const handleOpenAnother"),
-  "flushPendingReportHistory();",
-  "Closing a project must flush pending report history before reset",
-);
-assertSourceIncludes(
-  sourceBetween("const handleOpenAnother", "// ---- Folder-aware export helpers"),
-  "flushPendingReportHistory();",
-  "Opening another project must flush pending report history before reset",
-);
-assertSourceIncludes(
-  workspaceSource,
-  'kind === "report"',
-  "Report naming must have an explicit resolver branch",
-);
-assertSourceIncludes(
-  workspaceSource,
-  "reportItems.map((item) => item.name)",
-  "Report rename must de-duplicate within the .sprp namespace",
-);
+assertSourceOrder(renameReportSource, ["await flushPendingReportHistory();", "renameReport(id, basename);", "history.renameReport"], "Report rename history order");
+const deleteReportSource = sourceBetween("const handleDeleteReport", "const handleDeleteAnalysis");
+assertSourceOrder(deleteReportSource, ["await flushPendingReportHistory();", "deleteReport(id);", "history.deleteReport"], "Report delete history order");
+assertSourceIncludes(sourceBetween("const handleSave = async () => {", "handleSaveRef.current = handleSave;"), "await flushPendingReportHistory();", "Saving must flush pending report updates/history before buildSaveProjectRequest reads live stores");
+assertSourceIncludes(sourceBetween("const handleCloseProject", "const handleOpenAnother"), "await flushPendingReportHistory();", "Closing a project must flush pending report history before reset");
+assertSourceIncludes(sourceBetween("const handleOpenAnother", "const singleExportBaseName"), "await flushPendingReportHistory();", "Opening another project must flush pending report history before reset");
 
-assertSourceIncludes(workspaceSource, "schemaVersion: 1", "New reports must start at schema version 1");
-assertSourceIncludes(workspaceSource, 'name: allocateProjectBasename(', "New reports must allocate an independent basename through the shared naming policy");
-assertSourceIncludes(workspaceSource, '".sprp"', "Report lifecycle must preserve the .sprp extension contract");
+assertSourceIncludes(workspaceSource, 'kind === "report"', "Report naming must have an explicit resolver branch");
+assertSourceIncludes(workspaceSource, "reportItems.map((item) => item.name)", "Report rename must de-duplicate within the .sprp namespace");
 assertSourceIncludes(workspaceSource, 'projectFileExtension("report")', "DIRECTORY rows must render the immutable .sprp suffix");
-assertSourceIncludes(workspaceSource, "createdAt: timestamp", "New reports must use one timestamp for createdAt");
-assertSourceIncludes(workspaceSource, "updatedAt: timestamp", "New reports must use the same timestamp for updatedAt");
-assertSourceIncludes(workspaceSource, "markdown: \"\"", "New reports must start with empty markdown");
 
 const reportViewSource = readSource("../src/components/report/ReportView.tsx");
 assertSourceIncludes(reportViewSource, "ReportView", "ReportView component must exist");
 assertSourceIncludes(reportViewSource, "item: ReportItem", "ReportView must accept a ReportItem prop");
-assertSourceIncludes(
-  workspaceSource,
-  "distributionOptions={distributionAnalysisItems.map",
-  "Workspace must offer Distribution Analysis documents in the Report insert toolbar",
-);
+assertSourceIncludes(workspaceSource, "distributionOptions={distributionAnalysisItems.map", "Workspace must offer Distribution Analysis documents in the Report insert toolbar");
 
 const projectNamingSource = readSource("../src/utils/projectFileNaming.ts");
 assertSourceIncludes(projectNamingSource, 'if (kind === "report") return ".sprp";', "Shared naming must map reports to .sprp");
@@ -135,6 +106,7 @@ const requiredLocalePaths = [
   "history.newReport",
   "history.renameReport",
   "history.deleteReport",
+  "history.editReport",
   "workspace.reportMissing",
   "report.placeholder",
 ];

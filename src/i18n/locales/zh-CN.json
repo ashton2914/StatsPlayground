@@ -230,6 +230,7 @@
     "newGraph": "新建图形 \"{{name}}\" (数据源: {{source}})",
     "newReport": "新建报告 \"{{name}}\"",
     "newAnalysis": "新建分析 \"{{name}}\"",
+    "editGraph": "编辑图形 \"{{name}}\"",
     "editReport": "编辑报告 \"{{name}}\"",
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "新建拟合 Y by X \"{{name}}\" (数据源: {{source}})",

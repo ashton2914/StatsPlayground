@@ -234,6 +234,7 @@
     "newGraph": "New graph \"{{name}}\" (source: {{source}})",
     "newReport": "New report \"{{name}}\"",
     "newAnalysis": "New analysis \"{{name}}\"",
+    "editGraph": "Edit graph \"{{name}}\"",
     "editReport": "Edit report \"{{name}}\"",
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "New Fit Y by X \"{{name}}\" (source: {{source}})",

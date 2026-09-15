@@ -172,6 +172,35 @@ export interface TabulateExportTableResult {
   sourceGeneration: number;
 }
 
+export interface GraphCreateInput {
+  sourceDatasetId: string;
+}
+
+export interface GraphCommandResult {
+  item: import("@/types/graphBuilder").GraphBuilderItem;
+  documentRevision: number;
+}
+
+export interface GraphUpdateInput {
+  graphId: string;
+  expectedDocumentRevision: number;
+  definition: import("@/types/graphBuilder").GraphBuilderItem;
+}
+
+export interface ReportCreateInput {
+}
+
+export interface ReportCommandResult {
+  item: import("@/types/report").ReportItem;
+  documentRevision: number;
+}
+
+export interface ReportUpdateInput {
+  reportId: string;
+  expectedDocumentRevision: number;
+  markdown: string;
+}
+
 export type ProjectDocumentKind = "tableTransform" | "graph" | "analysis" | "tabulate" | "report";
 
 export interface ProjectDocumentListInput {
@@ -264,6 +293,10 @@ export type ApplicationCommandRegistry = {
   "tableTransform.create": { input: TableTransformCreateInput; data: TableTransformCommandData };
   "tableTransform.run": { input: TableTransformRunInput; data: TableTransformCommandData };
   "sql.createTable": { input: SqlCreateTableInput; data: SqlCreateTableResult };
+  "graph.create": { input: GraphCreateInput; data: GraphCommandResult };
+  "graph.update": { input: GraphUpdateInput; data: GraphCommandResult };
+  "report.create": { input: ReportCreateInput; data: ReportCommandResult };
+  "report.update": { input: ReportUpdateInput; data: ReportCommandResult };
   "tabulate.create": { input: TabulateCreateInput; data: TabulateCreateResult };
   "tabulate.run": { input: TabulateRunInput; data: TabulateRunResult };
   "tabulate.exportTable": { input: TabulateExportTableInput; data: TabulateExportTableResult };

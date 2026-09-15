@@ -10,6 +10,14 @@ import {
 } from "@/applicationCommands/tableTransformCommands";
 import { createSqlCommandHandlers, type SqlCommandDependencies } from "@/applicationCommands/sqlCommands";
 import {
+  createGraphCommandHandlers,
+  type GraphCommandDependencies,
+} from "@/applicationCommands/graphCommands";
+import {
+  createReportCommandHandlers,
+  type ReportCommandDependencies,
+} from "@/applicationCommands/reportCommands";
+import {
   createTabulateCommandHandlers,
   type TabulateCommandDependencies,
 } from "@/applicationCommands/tabulateCommands";
@@ -30,12 +38,18 @@ export interface ApplicationRuntimeDependencies {
   table?: Omit<TableCommandDependencies, "projectHandlers" | "projectDependencies">;
   tableTransform?: Omit<TableTransformCommandDependencies, "projectHandlers" | "projectDependencies">;
   sql?: Omit<SqlCommandDependencies, "projectHandlers" | "projectDependencies">;
+  graph?: Partial<GraphCommandDependencies>;
+  report?: Partial<ReportCommandDependencies>;
   tabulate?: Partial<TabulateCommandDependencies>;
+}
+
+export interface RegisteredApplicationRuntime extends ReturnType<typeof createApplicationCommandRuntime<ApplicationCommandRegistry>> {
+  flushPendingEffects(): void;
 }
 
 export function createApplicationRuntime(
   dependencies: ApplicationRuntimeDependencies = {},
-) {
+): RegisteredApplicationRuntime {
   const runtime = createApplicationCommandRuntime<ApplicationCommandRegistry>({
     initialRevision: dependencies.initialRevision,
     policy: dependencies.policy,
@@ -54,6 +68,12 @@ export function createApplicationRuntime(
   const sqlHandlers = createSqlCommandHandlers({
     ...dependencies.sql,
     projectHandlers,
+  });
+  const graphHandlers = createGraphCommandHandlers({
+    ...dependencies.graph,
+  });
+  const reportHandlers = createReportCommandHandlers({
+    ...dependencies.report,
   });
   const tabulateHandlers = createTabulateCommandHandlers({
     createTable: (input, controls) => tableHandlers.createTable(input, controls),
@@ -126,6 +146,52 @@ export function createApplicationRuntime(
         changed: true,
         data: outcome.result,
         warnings: outcome.warnings,
+      };
+    },
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "graph.create",
+    async (input, context) => ({
+      changed: true,
+      data: graphHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      warnings: [],
+    }),
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "graph.update",
+    async (input, context) => {
+      const outcome = graphHandlers.update(input, { beginCommit: () => context.beginCommit() });
+      return {
+        changed: outcome.changed,
+        data: outcome.data,
+        warnings: [],
+      };
+    },
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "report.create",
+    async (input, context) => ({
+      changed: true,
+      data: reportHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      warnings: [],
+    }),
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "report.update",
+    async (input, context) => {
+      const outcome = reportHandlers.update(input, { beginCommit: () => context.beginCommit() });
+      return {
+        changed: outcome.changed,
+        data: outcome.data,
+        warnings: [],
       };
     },
     { mode: "mutation", risk: "low" },
@@ -210,7 +276,11 @@ export function createApplicationRuntime(
     { mode: "read", risk: "low" },
   );
 
-  return runtime;
+  return Object.assign(runtime, {
+    flushPendingEffects() {
+      reportHandlers.flushPendingHistory();
+    },
+  });
 }
 
 const projectRevisionAdapter = {

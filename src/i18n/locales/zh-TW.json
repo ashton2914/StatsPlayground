@@ -228,6 +228,7 @@
     "newGraph": "新增圖形 \"{{name}}\"（資料來源：{{source}}）",
     "newReport": "新增報告 \"{{name}}\"",
     "newAnalysis": "新增分析 \"{{name}}\"",
+    "editGraph": "編輯圖形 \"{{name}}\"",
     "editReport": "編輯報告 \"{{name}}\"",
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "新增配適 Y by X \"{{name}}\"（資料來源：{{source}}）",

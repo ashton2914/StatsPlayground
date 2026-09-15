@@ -89,11 +89,6 @@ import {
   useWorkspaceSelectionStore,
 } from "@/stores/useWorkspaceSelectionStore";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
-import {
-  createDefaultGraph2DState,
-  createDefaultGraph3DState,
-  createDefaultMultivariateGraphState,
-} from "@/components/graphBuilder/graphBuilderMode";
 import type { AnalysisDocument, FitModelAnalysisDocument, FitYByXAnalysisDocument, HypothesisTestAnalysisDocument } from "@/types/analysis";
 import type { FitYByXItem } from "@/types/fitYByX";
 import type { FitModelPrefill } from "@/types/fitModel";
@@ -321,15 +316,11 @@ export function Workspace() {
   const deleteGraphBuildersByDataset = useGraphBuilderStore((s) => s.deleteByDataset);
   const resetGraphBuilders = useGraphBuilderStore((s) => s.reset);
   const loadGraphBuildersFromProject = useGraphBuilderStore((s) => s.loadFromProject);
-  const gbCounter = useGraphBuilderStore((s) => s.counter);
-  const bumpGbCounter = useGraphBuilderStore((s) => s.bumpCounter);
   const reportItems = useReportStore((s) => s.items);
-  const addReport = useReportStore((s) => s.addItem);
   const renameReport = useReportStore((s) => s.renameItem);
   const deleteReport = useReportStore((s) => s.deleteItem);
   const resetReports = useReportStore((s) => s.reset);
   const loadReportsFromProject = useReportStore((s) => s.loadFromProject);
-  const nextReportName = useReportStore((s) => s.nextName);
   const analysisItems = useAnalysisStore((s) => s.items);
   const fitYByXAnalysisItems = analysisItems.filter(isFitYByXAnalysisDocument);
   const hypothesisTestAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "hypothesisTest");
@@ -447,8 +438,7 @@ export function Workspace() {
   const [tableKey, setTableKey] = useState(0);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
-  const reportHistoryTimerRef = useRef<number | null>(null);
-  const pendingReportHistoryRef = useRef<{ id: string; name: string } | null>(null);
+  const reportUpdateQueueRef = useRef(Promise.resolve());
 
   /** Record an action to history (synchronous — no IPC) */
   const recordAction = useCallback((desc: string) => {
@@ -456,6 +446,10 @@ export function Workspace() {
   }, [recordHistory]);
 
   const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
+    const currentActiveReportId = useWorkspaceSelectionStore.getState().selection.activeReportId;
+    if (currentActiveReportId && currentActiveReportId !== selection.activeReportId) {
+      applicationRuntime.flushPendingEffects();
+    }
     loadWorkspaceSelection(selection);
     setActiveDataset(selection.activeDatasetId);
   }, [loadWorkspaceSelection, setActiveDataset]);
@@ -468,54 +462,40 @@ export function Workspace() {
     applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
   }, [applyWorkspaceDocumentSelection]);
 
-  const flushPendingReportHistory = useCallback(() => {
-    const pending = pendingReportHistoryRef.current;
-    if (!pending) {
-      return;
-    }
-    pendingReportHistoryRef.current = null;
-    if (reportHistoryTimerRef.current !== null) {
-      window.clearTimeout(reportHistoryTimerRef.current);
-      reportHistoryTimerRef.current = null;
-    }
-    recordAction(t("history.editReport", {
-      defaultValue: 'Edit report "{{name}}"',
-      name: pending.name,
-    }));
-  }, [recordAction, t]);
-
-  const scheduleReportHistory = useCallback((id: string, name: string) => {
-    pendingReportHistoryRef.current = { id, name };
-    if (reportHistoryTimerRef.current !== null) {
-      window.clearTimeout(reportHistoryTimerRef.current);
-    }
-    reportHistoryTimerRef.current = window.setTimeout(() => {
-      flushPendingReportHistory();
-    }, 700);
-  }, [flushPendingReportHistory]);
+  const flushPendingReportHistory = useCallback(async () => {
+    await reportUpdateQueueRef.current.catch(() => undefined);
+    applicationRuntime.flushPendingEffects();
+  }, []);
 
   const handleReportMarkdownChange = useCallback((id: string, markdown: string) => {
     if (readOnly) {
       return;
     }
-    const current = useReportStore.getState().items.find((item) => item.id === id);
-    if (!current || current.markdown === markdown) {
-      return;
-    }
-    useReportStore.getState().updateMarkdown(id, markdown, new Date().toISOString());
-    markDirty();
-    scheduleReportHistory(id, current.name);
-  }, [markDirty, readOnly, scheduleReportHistory]);
-
-  useEffect(() => {
-    const pending = pendingReportHistoryRef.current;
-    if (pending && activeReportId !== pending.id) {
-      flushPendingReportHistory();
-    }
-  }, [activeReportId, flushPendingReportHistory]);
+    reportUpdateQueueRef.current = reportUpdateQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const current = useReportStore.getState().items.find((item) => item.id === id);
+        if (!current || current.markdown === markdown) {
+          return;
+        }
+        const expectedDocumentRevision = useReportStore.getState().getDocumentRevision(id);
+        await applicationRuntime.execute(
+          {
+            type: "report.update",
+            input: {
+              reportId: id,
+              expectedDocumentRevision,
+              markdown,
+            },
+          },
+          { kind: "ui" },
+        );
+      })
+      .catch(() => undefined);
+  }, [readOnly]);
 
   useEffect(() => () => {
-    flushPendingReportHistory();
+    void flushPendingReportHistory();
   }, [flushPendingReportHistory]);
 
   useEffect(() => {
@@ -753,54 +733,25 @@ export function Workspace() {
   handleCreateTableRef.current = handleCreateTable;
 
   /** 新建一个图表构建器项，绑定到当前选中数据表 */
-  const handleCreateGraphBuilder = () => {
+  const handleCreateGraphBuilder = async () => {
     if (readOnly) return;
     if (!activeDatasetId) {
       alert(t("alert.selectDatasetFirst"));
       return;
     }
-    const ds = datasets.find((d) => d.id === activeDatasetId);
-    if (!ds) return;
-    const nextNum = gbCounter + 1;
-    bumpGbCounter(nextNum);
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `gb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Per-table sequential numbering: scan existing graph builders bound to
-    // the same dataset, look at names matching `${ds.name} - Graph<N>`, and
-    // pick the next N.
-    const prefix = `${ds.name} - Graph`;
-    const perTableMax = graphBuilders
-      .filter((g) => g.sourceDatasetId === ds.id)
-      .reduce((max, g) => {
-        if (!g.name.startsWith(prefix)) return max;
-        const n = parseInt(g.name.slice(prefix.length), 10);
-        return Number.isFinite(n) && n > max ? n : max;
-      }, 0);
-    const name = allocateProjectBasename(
-      `${ds.name} - Graph${perTableMax + 1}`,
-      ".spgh",
-      graphBuilders.map((item) => item.name),
-    );
-    const item: GraphBuilderItem = {
-      id,
-      name,
-      sourceDatasetId: ds.id,
-      mode: "2d",
-      modeStates: {
-        twoD: createDefaultGraph2DState(),
-        threeD: createDefaultGraph3DState(),
-        multivariate: createDefaultMultivariateGraphState(),
-      },
-      createdAt: new Date().toISOString(),
-    };
-    addGraphBuilder(item);
-    activateWorkspaceDocument("graph", id);
-    markDirty();
-    recordAction(t("history.newGraph", { name, source: ds.name }));
-    setRenamingId(id);
-    setRenameValue(name);
+    try {
+      const result = await applicationRuntime.execute(
+        {
+          type: "graph.create",
+          input: { sourceDatasetId: activeDatasetId },
+        },
+        { kind: "ui" },
+      );
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    } catch {
+      alert(t("alert.importGraphFailed") + t("common.error", { defaultValue: "Error" }));
+    }
   };
 
   const handleCreateTabulate = () => {
@@ -946,27 +897,17 @@ export function Workspace() {
     setRenameValue(created.name);
   };
 
-  const handleCreateReport = () => {
+  const handleCreateReport = async () => {
     if (readOnly) return;
-    const timestamp = new Date().toISOString();
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const item: ReportItem = {
-      schemaVersion: 1,
-      id,
-      name: allocateProjectBasename(nextReportName(), ".sprp", reportItems.map((entry) => entry.name)),
-      markdown: "",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    addReport(item);
-    activateWorkspaceDocument("report", id);
-    markDirty();
-    recordAction(t("history.newReport", { name: item.name }));
-    setRenamingId(id);
-    setRenameValue(item.name);
+    const result = await applicationRuntime.execute(
+      {
+        type: "report.create",
+        input: {},
+      },
+      { kind: "ui" },
+    );
+    setRenamingId(result.data.item.id);
+    setRenameValue(result.data.item.name);
   };
 
   const handleCreateAnalysisSample = async () => {
@@ -1252,7 +1193,7 @@ export function Workspace() {
     }
     const report = useReportStore.getState().items.find((it) => it.id === id);
     if (report) {
-      flushPendingReportHistory();
+      await flushPendingReportHistory();
       const resolved = resolveProjectBasename(trimmed, "report", report.name);
       if (resolved.error !== null) {
         alert(resolved.error);
@@ -1334,9 +1275,9 @@ export function Workspace() {
     if (item) recordAction(t("history.deleteTabulate", { name: item.name }));
   };
 
-  const handleDeleteReport = (id: string) => {
+  const handleDeleteReport = async (id: string) => {
     const item = useReportStore.getState().items.find((entry) => entry.id === id);
-    flushPendingReportHistory();
+    await flushPendingReportHistory();
     deleteReport(id);
     if (activeReportId === id) clearWorkspaceDocumentSelection();
     markDirty();
@@ -1465,7 +1406,7 @@ export function Workspace() {
 
   const handleSave = async () => {
     if (saving) return;
-    flushPendingReportHistory();
+    await flushPendingReportHistory();
     try {
       if (!project?.filePath) {
         const filePath = await save({
@@ -1630,7 +1571,7 @@ export function Workspace() {
   };
 
   const handleCloseProject = async () => {
-    flushPendingReportHistory();
+    await flushPendingReportHistory();
     clearWorkspaceDocumentSelection();
     setDirty(false);
     resetRevision();
@@ -1655,7 +1596,7 @@ export function Workspace() {
       multiple: false,
     });
     if (selected) {
-      flushPendingReportHistory();
+      await flushPendingReportHistory();
       clearWorkspaceDocumentSelection();
       setDirty(false);
       resetRevision();
