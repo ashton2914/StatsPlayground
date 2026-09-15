@@ -65,7 +65,6 @@ import {
   createAnalysisSampleDocument,
 } from "./analysis/analysisSample";
 import {
-  buildAnalysisProjectPayload,
   createWorkspaceAnalysisGraphConfigPatch,
   createEmptyWorkspaceDocumentSelection,
   getAnalysisCreationHistoryKey,
@@ -85,6 +84,7 @@ import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTableTransformStore } from "@/stores/useTableTransformStore";
+import { useWorkspaceSelectionStore } from "@/stores/useWorkspaceSelectionStore";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import {
   createDefaultGraph2DState,
@@ -125,6 +125,7 @@ import {
   shouldApplyDistributionCreateMetadataLoad,
   shouldApplyDistributionEditMetadataLoad,
 } from "./workspaceDistributionMetadata";
+import { buildSaveProjectRequest } from "@/applicationCommands/projectSnapshot";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -282,12 +283,14 @@ export function Workspace() {
     initProject,
     dirty,
     markDirty,
+    setDirty,
+    resetRevision,
     readOnly,
     saving,
     saveProgress,
     saveError,
   } = useProjectStore();
-  const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
+  const { datasets, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
   const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory, invalidateData } = useHistoryStore();
   const graphBuilders = useGraphBuilderStore((s) => s.items);
@@ -297,7 +300,6 @@ export function Workspace() {
   const resetDatasetFilters = useDatasetFilterStore((s) => s.reset);
   const tabulates = useTabulateStore((s) => s.items);
   const workflows = useWorkflowStore((s) => s.workflows);
-  const logicalFolders = useWorkflowStore((s) => s.logicalFolders);
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
   const createAndRunTableTransform = useTableTransformStore((s) => s.createAndRun);
   const tableTransforms = useTableTransformStore((s) => s.definitions);
@@ -351,12 +353,14 @@ export function Workspace() {
   }), [analysisItems, datasets, graphBuilders, reportItems, tableTransformBindings, tableTransforms, tabulates]);
   const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
-  /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
-  const [activeGraphBuilderId, setActiveGraphBuilderId] = useState<string | null>(null);
-  const [activeTableTransformId, setActiveTableTransformId] = useState<string | null>(null);
-  const [activeReportId, setActiveReportId] = useState<string | null>(null);
-  const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
-  const [activeTabulateId, setActiveTabulateId] = useState<string | null>(null);
+  const workspaceSelection = useWorkspaceSelectionStore((state) => state.selection);
+  const loadWorkspaceSelection = useWorkspaceSelectionStore((state) => state.load);
+  const activeDatasetId = workspaceSelection.activeDatasetId;
+  const activeTableTransformId = workspaceSelection.activeTableTransformId;
+  const activeGraphBuilderId = workspaceSelection.activeGraphBuilderId;
+  const activeReportId = workspaceSelection.activeReportId;
+  const activeAnalysisId = workspaceSelection.activeAnalysisId;
+  const activeTabulateId = workspaceSelection.activeTabulateId;
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showPrefs, setShowPrefs] = useState(false);
@@ -451,13 +455,9 @@ export function Workspace() {
   }, [recordHistory]);
 
   const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
+    loadWorkspaceSelection(selection);
     setActiveDataset(selection.activeDatasetId);
-    setActiveTableTransformId(selection.activeTableTransformId);
-    setActiveGraphBuilderId(selection.activeGraphBuilderId);
-    setActiveReportId(selection.activeReportId);
-    setActiveAnalysisId(selection.activeAnalysisId);
-    setActiveTabulateId(selection.activeTabulateId);
-  }, [setActiveDataset]);
+  }, [loadWorkspaceSelection, setActiveDataset]);
 
   const activateWorkspaceDocument = useCallback((kind: WorkspaceDocumentKind, id: string) => {
     applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
@@ -1314,7 +1314,7 @@ export function Workspace() {
   const handleDeleteGraphBuilder = (id: string) => {
     const it = useGraphBuilderStore.getState().items.find((x) => x.id === id);
     deleteGraphBuilder(id);
-    if (activeGraphBuilderId === id) setActiveGraphBuilderId(null);
+    if (activeGraphBuilderId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (it) recordAction(t("history.deleteGraph", { name: it.name }));
   };
@@ -1323,7 +1323,7 @@ export function Workspace() {
     if (readOnly) return;
     const item = useTableTransformStore.getState().definitions.find((entry) => entry.id === id);
     deleteTableTransform(id);
-    if (activeTableTransformId === id) setActiveTableTransformId(null);
+    if (activeTableTransformId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteTableTransform", { name: item.name }));
   };
@@ -1331,7 +1331,7 @@ export function Workspace() {
   const handleDeleteTabulate = (id: string) => {
     const item = useTabulateStore.getState().items.find((entry) => entry.id === id);
     deleteTabulate(id);
-    if (activeTabulateId === id) setActiveTabulateId(null);
+    if (activeTabulateId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteTabulate", { name: item.name }));
   };
@@ -1340,7 +1340,7 @@ export function Workspace() {
     const item = useReportStore.getState().items.find((entry) => entry.id === id);
     flushPendingReportHistory();
     deleteReport(id);
-    if (activeReportId === id) setActiveReportId(null);
+    if (activeReportId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteReport", { name: item.name }));
   };
@@ -1349,7 +1349,7 @@ export function Workspace() {
     if (readOnly) return;
     const item = useAnalysisStore.getState().items.find((entry) => entry.id === id);
     deleteAnalysis(id);
-    if (activeAnalysisId === id) setActiveAnalysisId(null);
+    if (activeAnalysisId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteAnalysis", { name: item.name }));
   };
@@ -1365,16 +1365,10 @@ export function Workspace() {
     });
     await dataService.deleteDataset(id);
     removeDatasetFilters(id);
-    if (activeDatasetId === id) setActiveDataset(null);
+    if (activeDatasetId === id) clearWorkspaceDocumentSelection();
     // 联动删除引用此数据表的图表
     deleteGraphBuildersByDataset(id);
-    if (activeGraphBuilderId) {
-      const stillExists = useGraphBuilderStore
-        .getState()
-        .items.find((it) => it.id === activeGraphBuilderId);
-      if (!stillExists) setActiveGraphBuilderId(null);
-    }
-    if (retainedActiveAnalysisId) setActiveAnalysisId(retainedActiveAnalysisId);
+    if (retainedActiveAnalysisId) activateWorkspaceDocument("analysis", retainedActiveAnalysisId);
     await refreshDatasets();
     markDirty();
     recordAction(t("history.deleteTable", { name }));
@@ -1469,22 +1463,6 @@ export function Workspace() {
   const handleSave = async () => {
     if (saving) return;
     flushPendingReportHistory();
-    const { snapshots } = useHistoryStore.getState();
-    const gbItems = useGraphBuilderStore.getState().items;
-    const datasetFilters = useDatasetFilterStore.getState().toProjectPayload();
-    // History is session-only (not persisted); only snapshots are saved.
-    // Per issue #7 folder routing for both tables and graphs flows OUT-OF-BAND
-    // via the folderPayload — the file bodies (.sptb / .spgh) themselves
-    // never carry a `folder` field. The backend uses tableFolders and
-    // graphFolders to derive each file's path inside the archive.
-    const folderPayload = {
-      folders,
-      tableFolders,
-      graphFolders,
-      reportFolders,
-      tabulateFolders,
-      ...buildAnalysisProjectPayload({ analyses: analysisItems, analysisFolders }),
-    };
     try {
       if (!project?.filePath) {
         const filePath = await save({
@@ -1493,56 +1471,9 @@ export function Workspace() {
           filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
         });
         if (!filePath) return; // User cancelled
-        await saveProject({
-          filePath: filePath as string,
-          history: [],
-          snapshots,
-          datasetFilters,
-          graphBuilders: gbItems,
-          fitYByX: [],
-          tabulates,
-          distributions: [],
-          analyses: folderPayload.analyses,
-          folders: folderPayload.folders,
-          tableFolders: folderPayload.tableFolders,
-          graphFolders: folderPayload.graphFolders,
-          fitYByXFolders: {},
-          reportFolders: folderPayload.reportFolders,
-          tabulateFolders: folderPayload.tabulateFolders,
-          reports: reportItems,
-          distributionFolders: folderPayload.distributionFolders,
-          analysisFolders: folderPayload.analysisFolders,
-          workflows,
-          logicalFolders,
-          workflowRuns,
-          tableTransforms,
-          tableTransformBindings,
-        });
+        await saveProject(buildSaveProjectRequest(filePath as string));
       } else {
-        await saveProject({
-          history: [],
-          snapshots,
-          datasetFilters,
-          graphBuilders: gbItems,
-          fitYByX: [],
-          tabulates,
-          distributions: [],
-          analyses: folderPayload.analyses,
-          folders: folderPayload.folders,
-          tableFolders: folderPayload.tableFolders,
-          graphFolders: folderPayload.graphFolders,
-          fitYByXFolders: {},
-          reportFolders: folderPayload.reportFolders,
-          tabulateFolders: folderPayload.tabulateFolders,
-          reports: reportItems,
-          distributionFolders: folderPayload.distributionFolders,
-          analysisFolders: folderPayload.analysisFolders,
-          workflows,
-          logicalFolders,
-          workflowRuns,
-          tableTransforms,
-          tableTransformBindings,
-        });
+        await saveProject(buildSaveProjectRequest());
       }
       showToast(t("common.saved"), 1500);
     } catch (error) {
@@ -1698,6 +1629,8 @@ export function Workspace() {
   const handleCloseProject = async () => {
     flushPendingReportHistory();
     clearWorkspaceDocumentSelection();
+    setDirty(false);
+    resetRevision();
     resetHistory();
     resetGraphBuilders();
     resetReports();
@@ -1721,6 +1654,8 @@ export function Workspace() {
     if (selected) {
       flushPendingReportHistory();
       clearWorkspaceDocumentSelection();
+      setDirty(false);
+      resetRevision();
       resetHistory();
       resetGraphBuilders();
       resetReports();

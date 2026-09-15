@@ -3,6 +3,136 @@ export interface MutationControl {
   idempotencyKey?: string;
 }
 
+export interface ProjectInspectInput {
+  includeCapabilities?: boolean;
+}
+
+export interface ProjectInspectResult {
+  project: {
+    name: string;
+    createdAt: string;
+    fileName: string | null;
+    hasProjectPath: boolean;
+  } | null;
+  dirty: boolean;
+  readOnly: boolean;
+  projectRevision: number;
+  counts: {
+    tables: number;
+    tableTransforms: number;
+    graphs: number;
+    analyses: number;
+    tabulates: number;
+    reports: number;
+  };
+  capabilities?: {
+    table: {
+      list: boolean;
+      describe: boolean;
+      describePreview: boolean;
+    };
+    document: {
+      list: boolean;
+      get: boolean;
+    };
+    project: {
+      inspect: boolean;
+    };
+  };
+}
+
+export interface TableListInput {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface TableListItem {
+  id: string;
+  name: string;
+  sourceType: string;
+  rowCount: number;
+  colCount: number;
+  generation: number;
+  createdAt: string;
+  updatedAt: string;
+  sourceName: string | null;
+}
+
+export interface TableListResult {
+  items: TableListItem[];
+  nextCursor: string | null;
+}
+
+export interface TableDescribeInput {
+  datasetId: string;
+  preview?: {
+    offset?: number;
+    limit: number;
+  };
+}
+
+export interface TableDescribeResult {
+  dataset: TableListItem;
+  generation: number;
+  columns: Array<{
+    colIndex: number;
+    colName: string;
+    colType: string;
+    width?: number;
+    format?: {
+      kind: string;
+      decimals?: number;
+      currency?: string;
+    };
+    extras?: Record<string, unknown>;
+  }>;
+  preview?: {
+    offset: number;
+    limit: number;
+    totalRows: number;
+    rows: Array<{
+      rowIndex: number;
+      cells: Array<{
+        colIndex: number;
+        value: unknown;
+      }>;
+    }>;
+  };
+}
+
+export type ProjectDocumentKind = "tableTransform" | "graph" | "analysis" | "tabulate" | "report";
+
+export interface ProjectDocumentListInput {
+  kind?: ProjectDocumentKind;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ProjectDocumentSummary {
+  kind: ProjectDocumentKind;
+  id: string;
+  name: string;
+  sourceDatasetId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ProjectDocumentListResult {
+  items: ProjectDocumentSummary[];
+  nextCursor: string | null;
+}
+
+export interface ProjectDocumentGetInput {
+  kind: ProjectDocumentKind;
+  id: string;
+}
+
+export interface ProjectDocumentGetResult {
+  kind: ProjectDocumentKind;
+  id: string;
+  document: unknown;
+}
+
 export type CommandActor =
   | { kind: "ui" }
   | { kind: "mcp"; sessionId: string; clientId?: string };
@@ -56,7 +186,15 @@ export interface CommandExecutionContext {
   beginCommit(): void;
 }
 
-export type ApplicationCommandType = never;
+export type ApplicationCommandRegistry = {
+  "project.inspect": { input: ProjectInspectInput; data: ProjectInspectResult };
+  "table.list": { input: TableListInput; data: TableListResult };
+  "table.describe": { input: TableDescribeInput; data: TableDescribeResult };
+  "document.list": { input: ProjectDocumentListInput; data: ProjectDocumentListResult };
+  "document.get": { input: ProjectDocumentGetInput; data: ProjectDocumentGetResult };
+};
+
+export type ApplicationCommandType = Extract<keyof ApplicationCommandRegistry, string>;
 
 export type CommandRegistryShape = Record<string, { input: unknown; data: unknown }>;
 
