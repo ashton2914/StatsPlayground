@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { analysisEditorRegistry } from "../src/components/analysis/analysisEditorRegistry.ts";
-import { analysisExecutors } from "../src/components/analysis/analysisExecutors.ts";
-import { analysisGraphPolicies } from "../src/components/analysis/analysisGraphPolicies.ts";
-import { analysisKindDescriptors } from "../src/components/analysis/analysisKindDescriptors.ts";
-import { analysisReportPolicies } from "../src/components/analysis/analysisReportPolicies.ts";
-import { analysisViewContracts } from "../src/components/analysis/analysisViewContracts.ts";
 import {
   analysisCommandFixtures,
   analysisCommandSchemas,
   analysisCreateAdapters,
   analysisUpdateValidators,
   assertRegisteredAnalysisKind,
+  type AnalysisCommandJsonSchema,
 } from "../src/applicationCommands/analysisCommands.ts";
+import { analysisEditorRegistry } from "../src/components/analysis/analysisEditorRegistry.ts";
+import { analysisExecutors } from "../src/components/analysis/analysisExecutors.ts";
+import { analysisGraphPolicies } from "../src/components/analysis/analysisGraphPolicies.ts";
+import { analysisKindDescriptors } from "../src/components/analysis/analysisKindDescriptors.ts";
+import { analysisReportPolicies } from "../src/components/analysis/analysisReportPolicies.ts";
+import { analysisViewContracts } from "../src/components/analysis/analysisViewContracts.ts";
 import type { AnalysisKind } from "../src/types/analysis.ts";
 
 interface AnalysisKindManifestEntry {
@@ -29,6 +30,24 @@ interface AnalysisKindManifestEntry {
 interface AnalysisKindManifest {
   schemaVersion: number;
   kinds: AnalysisKindManifestEntry[];
+}
+
+type ExecutableJsonType = "object" | "array" | "string" | "number" | "boolean" | "null";
+
+interface ExecutableSchema {
+  type: ExecutableJsonType | ExecutableJsonType[];
+  const?: unknown;
+  enum?: unknown[];
+  oneOf?: ExecutableSchema[];
+  minLength?: number;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  required?: string[];
+  properties?: Record<string, ExecutableSchema>;
+  items?: ExecutableSchema;
+  additionalProperties?: boolean | ExecutableSchema;
 }
 
 const manifest = JSON.parse(readFileSync(
@@ -53,66 +72,122 @@ const registries = {
   commandFixture: analysisCommandFixtures,
 };
 
+function clone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+function describeType(value: unknown): ExecutableJsonType {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "string") return "string";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return "object";
+}
+
+function typeMatches(schema: ExecutableSchema, value: unknown): boolean {
+  const expected = Array.isArray(schema.type) ? schema.type : [schema.type];
+  const actual = describeType(value);
+  return expected.includes(actual);
+}
+
 function validateSchema(
-  schema: { type: string; const?: unknown; nullable?: boolean; minItems?: number; minLength?: number; required?: string[]; properties?: Record<string, unknown>; items?: unknown },
+  schema: ExecutableSchema,
   value: unknown,
   path = "$",
 ): string[] {
   const errors: string[] = [];
-  if (value === null && schema.nullable) {
+
+  if (schema.oneOf) {
+    const matches = schema.oneOf.filter((candidate) => validateSchema(candidate, value, path).length === 0);
+    if (matches.length !== 1) {
+      errors.push(`${path}: expected exactly one oneOf branch to match, got ${matches.length}`);
+      return errors;
+    }
+  }
+
+  if (!typeMatches(schema, value)) {
+    const expected = Array.isArray(schema.type) ? schema.type.join("|") : schema.type;
+    errors.push(`${path}: expected ${expected}, got ${describeType(value)}`);
     return errors;
   }
+
   if (schema.const !== undefined && value !== schema.const) {
-    errors.push(`${path} must equal ${String(schema.const)}`);
-    return errors;
+    errors.push(`${path}: expected const ${JSON.stringify(schema.const)}`);
   }
-  if (schema.type === "object") {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      errors.push(`${path} must be an object`);
-      return errors;
-    }
-    const record = value as Record<string, unknown>;
-    for (const key of schema.required ?? []) {
-      if (!(key in record)) {
-        errors.push(`${path}.${key} is required`);
-      }
-    }
-    for (const [key, propertySchema] of Object.entries(schema.properties ?? {})) {
-      if (key in record) {
-        errors.push(...validateSchema(propertySchema as never, record[key], `${path}.${key}`));
-      }
-    }
-    return errors;
+  if (schema.enum && !schema.enum.some((entry) => entry === value)) {
+    errors.push(`${path}: expected one of ${schema.enum.map((entry) => JSON.stringify(entry)).join(", ")}`);
   }
-  if (schema.type === "array") {
-    if (!Array.isArray(value)) {
-      errors.push(`${path} must be an array`);
-      return errors;
+  if (typeof value === "string" && schema.minLength !== undefined && value.length < schema.minLength) {
+    errors.push(`${path}: expected minLength ${schema.minLength}`);
+  }
+  if (typeof value === "number") {
+    if (schema.minimum !== undefined && value < schema.minimum) {
+      errors.push(`${path}: expected minimum ${schema.minimum}`);
     }
-    if (schema.minItems != null && value.length < schema.minItems) {
-      errors.push(`${path} must contain at least ${schema.minItems} items`);
+    if (schema.maximum !== undefined && value > schema.maximum) {
+      errors.push(`${path}: expected maximum ${schema.maximum}`);
+    }
+  }
+  if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      errors.push(`${path}: expected minItems ${schema.minItems}`);
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      errors.push(`${path}: expected maxItems ${schema.maxItems}`);
     }
     if (schema.items) {
       value.forEach((entry, index) => {
-        errors.push(...validateSchema(schema.items as never, entry, `${path}[${index}]`));
+        errors.push(...validateSchema(schema.items!, entry, `${path}[${index}]`));
       });
     }
-    return errors;
   }
-  if (schema.type === "string") {
-    if (typeof value !== "string") {
-      errors.push(`${path} must be a string`);
-      return errors;
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const properties = schema.properties ?? {};
+    for (const key of schema.required ?? []) {
+      if (!(key in record)) {
+        errors.push(`${path}.${key}: missing required property`);
+      }
     }
-    if (schema.minLength != null && value.length < schema.minLength) {
-      errors.push(`${path} must be at least ${schema.minLength} characters`);
+    for (const [key, propertySchema] of Object.entries(properties)) {
+      if (key in record) {
+        errors.push(...validateSchema(propertySchema, record[key], `${path}.${key}`));
+      }
     }
-    return errors;
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(record)) {
+        if (!(key in properties)) {
+          errors.push(`${path}.${key}: additional property is not allowed`);
+        }
+      }
+    } else if (typeof schema.additionalProperties === "object" && schema.additionalProperties !== null) {
+      for (const key of Object.keys(record)) {
+        if (!(key in properties)) {
+          errors.push(...validateSchema(schema.additionalProperties, record[key], `${path}.${key}`));
+        }
+      }
+    }
   }
-  if (schema.type === "number" && typeof value !== "number") {
-    errors.push(`${path} must be a number`);
-  }
+
   return errors;
+}
+
+function assertAccepts(schema: AnalysisCommandJsonSchema, value: unknown, message: string): void {
+  assert.deepEqual(validateSchema(schema as ExecutableSchema, value), [], message);
+}
+
+function assertRejects(schema: AnalysisCommandJsonSchema, value: unknown, message: string): void {
+  assert.notEqual(validateSchema(schema as ExecutableSchema, value).length, 0, message);
+}
+
+function objectProperty(schema: AnalysisCommandJsonSchema, path: string[]): ExecutableSchema {
+  let current: ExecutableSchema | undefined = schema as ExecutableSchema;
+  for (const segment of path) {
+    current = current?.properties?.[segment];
+    assert.ok(current, `schema path must exist: ${path.join(".")}`);
+  }
+  return current;
 }
 
 assert.equal(manifest.schemaVersion, 1);
@@ -149,76 +224,249 @@ for (const entry of manifest.kinds) {
     entry.analysisKind,
     `${entry.analysisKind} command fixture must target its manifest kind`,
   );
-  assert.deepEqual(
-    validateSchema(analysisCommandSchemas[entry.analysisKind].create, analysisCommandFixtures[entry.analysisKind].create),
-    [],
+  assertAccepts(
+    analysisCommandSchemas[entry.analysisKind].create,
+    analysisCommandFixtures[entry.analysisKind].create,
     `${entry.analysisKind} create fixture must satisfy its executable schema`,
   );
-  assert.deepEqual(
-    validateSchema(analysisCommandSchemas[entry.analysisKind].update, analysisCommandFixtures[entry.analysisKind].update("analysis-1", 1)),
-    [],
+  assertAccepts(
+    analysisCommandSchemas[entry.analysisKind].update,
+    analysisCommandFixtures[entry.analysisKind].update("analysis-1", 1),
     `${entry.analysisKind} update fixture must satisfy its executable schema`,
   );
-  assert.deepEqual(
-    validateSchema(analysisCommandSchemas[entry.analysisKind].run, analysisCommandFixtures[entry.analysisKind].run("analysis-1")),
-    [],
+  assertAccepts(
+    analysisCommandSchemas[entry.analysisKind].run,
+    analysisCommandFixtures[entry.analysisKind].run("analysis-1"),
     `${entry.analysisKind} run fixture must satisfy its executable schema`,
   );
 }
 
-assert.match(JSON.stringify(analysisCommandSchemas.distribution.create), /responses/);
-assert.match(JSON.stringify(analysisCommandSchemas.distribution.create), /fitDistributions/);
-assert.match(JSON.stringify(analysisCommandSchemas.fitYByX.create), /factor/);
-assert.match(JSON.stringify(analysisCommandSchemas.fitModel.create), /centeringMethod/);
-assert.match(JSON.stringify(analysisCommandSchemas.fitModel.create), /terms/);
-assert.match(JSON.stringify(analysisCommandSchemas.hypothesisTest.create), /selectorVersion/);
+{
+  const distributionCreateDraft = objectProperty(analysisCommandSchemas.distribution.create, ["draft"]);
+  const distributionAnalysis = objectProperty(distributionCreateDraft as AnalysisCommandJsonSchema, ["analysis"]);
+  const distributionGraphs = objectProperty(distributionCreateDraft as AnalysisCommandJsonSchema, ["graphs"]);
+  for (const optionalField of ["name", "weight", "frequency", "by", "nestedSubgroup"]) {
+    assert.ok(distributionCreateDraft.properties?.[optionalField], `distribution create must project draft.${optionalField}`);
+  }
+  assert.ok(distributionAnalysis.properties?.specLimits, "distribution create must project analysis.specLimits");
+  assert.deepEqual(
+    Object.keys(distributionGraphs.properties ?? {}).sort(),
+    ["boxPlot", "ecdf", "normalQuantile", "overview"],
+    "distribution create must project every distribution graph role",
+  );
+}
 
-assert.notDeepEqual(
-  validateSchema(analysisCommandSchemas.distribution.create, {
-    ...analysisCommandFixtures.distribution.create,
-    draft: {
-      ...analysisCommandFixtures.distribution.create.draft,
-      responses: [],
+{
+  const fitYByXCreateDraft = objectProperty(analysisCommandSchemas.fitYByX.create, ["draft"]);
+  assert.ok(fitYByXCreateDraft.properties?.name, "fitYByX create must project draft.name");
+  assert.ok(fitYByXCreateDraft.properties?.graph, "fitYByX create must project draft.graph");
+}
+
+{
+  const fitModelCreateDraft = objectProperty(analysisCommandSchemas.fitModel.create, ["draft"]);
+  assert.ok(fitModelCreateDraft.properties?.name, "fitModel create must project draft.name");
+  assert.ok(fitModelCreateDraft.properties?.construct, "fitModel create must project draft.construct");
+  assert.ok(fitModelCreateDraft.properties?.terms, "fitModel create must project draft.terms");
+}
+
+{
+  const hypothesisCreateDraft = objectProperty(analysisCommandSchemas.hypothesisTest.create, ["draft"]);
+  const hypothesisUpdateDraft = objectProperty(analysisCommandSchemas.hypothesisTest.update, ["draft"]);
+  assert.ok(hypothesisCreateDraft.properties?.name, "hypothesis-test create must project draft.name");
+  assert.ok(hypothesisCreateDraft.properties?.definition, "hypothesis-test create must project draft.definition");
+  assert.ok(hypothesisUpdateDraft.properties?.presentation, "hypothesis-test update must project draft.presentation");
+}
+
+{
+  const validDistributionCreate: any = clone(analysisCommandFixtures.distribution.create);
+  validDistributionCreate.draft.name = "DIM1 Analysis";
+  validDistributionCreate.draft.weight = { name: "Weight", type: "continuous" };
+  validDistributionCreate.draft.frequency = { name: "Frequency", type: "continuous" };
+  validDistributionCreate.draft.by = [{ name: "Site", type: "nominal" }];
+  validDistributionCreate.draft.nestedSubgroup = { name: "Lot", type: "nominal" };
+  validDistributionCreate.draft.analysis.specLimits = {
+    DIM1: { lsl: 80, target: 100, usl: 120 },
+  };
+  assertAccepts(
+    analysisCommandSchemas.distribution.create,
+    validDistributionCreate,
+    "distribution create schema must accept every transport draft field",
+  );
+
+  const invalidDistributionGraph = clone(validDistributionCreate);
+  invalidDistributionGraph.draft.graphs.overview = { mode: "4d" } as never;
+  assertRejects(
+    analysisCommandSchemas.distribution.create,
+    invalidDistributionGraph,
+    "distribution create schema must reject invalid embedded graph shapes",
+  );
+
+  const invalidDistributionGraphRole = clone(validDistributionCreate);
+  delete (invalidDistributionGraphRole.draft.graphs as Partial<typeof invalidDistributionGraphRole.draft.graphs>).normalQuantile;
+  assertRejects(
+    analysisCommandSchemas.distribution.create,
+    invalidDistributionGraphRole,
+    "distribution create schema must reject missing graph roles",
+  );
+}
+
+{
+  const validFitYByXCreate: any = clone(analysisCommandFixtures.fitYByX.create);
+  validFitYByXCreate.draft.name = "Fit Y by X 1";
+  validFitYByXCreate.draft.graph = clone(analysisCommandFixtures.distribution.create.draft.graphs.overview);
+  assertAccepts(
+    analysisCommandSchemas.fitYByX.create,
+    validFitYByXCreate,
+    "fitYByX create schema must accept optional graph transport",
+  );
+
+  const invalidFitYByXGraph = clone(validFitYByXCreate);
+  invalidFitYByXGraph.draft.graph = { mode: "2d" } as never;
+  assertRejects(
+    analysisCommandSchemas.fitYByX.create,
+    invalidFitYByXGraph,
+    "fitYByX create schema must reject incomplete embedded graph transport",
+  );
+}
+
+{
+  const validFitModelCreate: any = clone(analysisCommandFixtures.fitModel.create);
+  validFitModelCreate.draft.name = "Fit Model 1";
+  validFitModelCreate.draft.construct = { kind: "factorialToDegree", degree: 2 };
+  validFitModelCreate.draft.terms = [
+    { kind: "main", columnNames: ["Temperature"] },
+    { kind: "interaction", columnNames: ["Temperature", "Pressure"] },
+    { kind: "power", columnNames: ["Temperature"], exponent: 2 },
+  ];
+  assertAccepts(
+    analysisCommandSchemas.fitModel.create,
+    validFitModelCreate,
+    "fitModel create schema must accept full construct and term unions",
+  );
+
+  for (const validConstruct of [
+    { kind: "manual" },
+    { kind: "fullFactorial" },
+    { kind: "factorialToDegree", degree: 3 },
+    { kind: "responseSurface" },
+  ] as const) {
+    const candidate = clone(validFitModelCreate);
+    candidate.draft.construct = validConstruct;
+    assertAccepts(analysisCommandSchemas.fitModel.create, candidate, `fitModel create must accept construct ${validConstruct.kind}`);
+  }
+
+  const invalidConstructMissingDegree = clone(validFitModelCreate);
+  invalidConstructMissingDegree.draft.construct = { kind: "factorialToDegree" } as never;
+  assertRejects(
+    analysisCommandSchemas.fitModel.create,
+    invalidConstructMissingDegree,
+    "fitModel create schema must reject factorialToDegree without degree",
+  );
+
+  const invalidConstructExtraField = clone(validFitModelCreate);
+  invalidConstructExtraField.draft.construct = { kind: "manual", degree: 2 } as never;
+  assertRejects(
+    analysisCommandSchemas.fitModel.create,
+    invalidConstructExtraField,
+    "fitModel create schema must reject construct fields from another variant",
+  );
+
+  const invalidMainTerm = clone(validFitModelCreate);
+  invalidMainTerm.draft.terms = [{ kind: "main", columnNames: ["Temperature", "Pressure"] } as never];
+  assertRejects(
+    analysisCommandSchemas.fitModel.create,
+    invalidMainTerm,
+    "fitModel create schema must reject main terms with multiple columns",
+  );
+
+  const invalidInteractionTerm = clone(validFitModelCreate);
+  invalidInteractionTerm.draft.terms = [{ kind: "interaction", columnNames: ["Temperature"] } as never];
+  assertRejects(
+    analysisCommandSchemas.fitModel.create,
+    invalidInteractionTerm,
+    "fitModel create schema must reject interaction terms with fewer than two columns",
+  );
+
+  const invalidPowerTerm = clone(validFitModelCreate);
+  invalidPowerTerm.draft.terms = [{ kind: "power", columnNames: ["Temperature"], exponent: 3 } as never];
+  assertRejects(
+    analysisCommandSchemas.fitModel.create,
+    invalidPowerTerm,
+    "fitModel create schema must reject unsupported power exponents",
+  );
+}
+
+{
+  const validHypothesisCreate: any = clone(analysisCommandFixtures.hypothesisTest.create);
+  validHypothesisCreate.draft.name = "Hypothesis Test 1";
+  assertAccepts(
+    analysisCommandSchemas.hypothesisTest.create,
+    validHypothesisCreate,
+    "hypothesis-test create schema must accept draft name and full long-layout definition",
+  );
+
+  const validWideHypothesisCreate = clone(validHypothesisCreate);
+  validWideHypothesisCreate.draft.definition.roles = {
+    layout: "wide",
+    measurements: [
+      { name: "Before", type: "continuous" },
+      { name: "After", type: "continuous" },
+    ],
+    subject: { name: "PairId", type: "id" },
+  };
+  validWideHypothesisCreate.draft.definition.studyDesign = "pairedOrBlocked";
+  assertAccepts(
+    analysisCommandSchemas.hypothesisTest.create,
+    validWideHypothesisCreate,
+    "hypothesis-test create schema must accept the wide roles variant",
+  );
+
+  const validHypothesisUpdate: any = clone(analysisCommandFixtures.hypothesisTest.update("analysis-1", 1));
+  validHypothesisUpdate.draft.presentation = {
+    schemaVersion: 1,
+    layout: "hypothesis-test-v1",
+    activeResultTab: "audit",
+    collapsedSections: ["audit", "methodEvidence"],
+    graphs: {
+      showRawData: true,
+      showIntervals: false,
+      showDiagnostics: true,
     },
-  }),
-  [],
-  "distribution schema must reject empty responses",
-);
-assert.notDeepEqual(
-  validateSchema(analysisCommandSchemas.fitYByX.create, {
-    ...analysisCommandFixtures.fitYByX.create,
-    draft: {
-      response: analysisCommandFixtures.fitYByX.create.draft.response,
-      confidenceLevel: analysisCommandFixtures.fitYByX.create.draft.confidenceLevel,
+    tableSort: {
+      key: "pValue",
+      direction: "descending",
     },
-  }),
-  [],
-  "fitYByX schema must require a factor field",
-);
-assert.notDeepEqual(
-  validateSchema(analysisCommandSchemas.fitModel.create, {
-    ...analysisCommandFixtures.fitModel.create,
-    draft: {
-      ...analysisCommandFixtures.fitModel.create.draft,
-      terms: [],
-    },
-  }),
-  [],
-  "fitModel schema must reject missing model terms",
-);
-assert.notDeepEqual(
-  validateSchema(analysisCommandSchemas.hypothesisTest.create, {
-    ...analysisCommandFixtures.hypothesisTest.create,
-    draft: {
-      definition: {
-        ...analysisCommandFixtures.hypothesisTest.create.draft.definition,
-        selectorVersion: "",
-      },
-    },
-  }),
-  [],
-  "hypothesisTest schema must reject an empty selectorVersion",
-);
+  };
+  assertAccepts(
+    analysisCommandSchemas.hypothesisTest.update,
+    validHypothesisUpdate,
+    "hypothesis-test update schema must accept optional presentation transport",
+  );
+
+  const invalidHypothesisRoles = clone(validWideHypothesisCreate);
+  invalidHypothesisRoles.draft.definition.roles = {
+    layout: "wide",
+    response: { name: "Strength", type: "continuous" },
+    condition: { name: "Site", type: "nominal" },
+    subject: null,
+  } as never;
+  assertRejects(
+    analysisCommandSchemas.hypothesisTest.create,
+    invalidHypothesisRoles,
+    "hypothesis-test create schema must reject invalid roles variants",
+  );
+
+  const invalidHypothesisPresentation = clone(validHypothesisUpdate);
+  invalidHypothesisPresentation.draft.presentation = {
+    ...invalidHypothesisPresentation.draft.presentation,
+    activeResultTab: "summary",
+  } as never;
+  assertRejects(
+    analysisCommandSchemas.hypothesisTest.update,
+    invalidHypothesisPresentation,
+    "hypothesis-test update schema must reject invalid presentation discriminators",
+  );
+}
 
 assert.throws(
   () => assertRegisteredAnalysisKind("unknown" as AnalysisKind),

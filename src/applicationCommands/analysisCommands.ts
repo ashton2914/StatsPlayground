@@ -82,16 +82,22 @@ export interface AnalysisCommandSchema<Kind extends AnalysisKind> {
   run: AnalysisCommandJsonSchema;
 }
 
+type AnalysisCommandJsonType = "object" | "array" | "string" | "number" | "boolean" | "null";
+
 export interface AnalysisCommandJsonSchema {
-  type: "object" | "array" | "string" | "number" | "boolean" | "null";
+  type: AnalysisCommandJsonType | AnalysisCommandJsonType[];
   const?: unknown;
-  nullable?: boolean;
+  enum?: unknown[];
+  oneOf?: AnalysisCommandJsonSchema[];
   minLength?: number;
+  minimum?: number;
+  maximum?: number;
   minItems?: number;
+  maxItems?: number;
   required?: string[];
   properties?: Record<string, AnalysisCommandJsonSchema>;
   items?: AnalysisCommandJsonSchema;
-  additionalProperties?: boolean;
+  additionalProperties?: boolean | AnalysisCommandJsonSchema;
 }
 
 export interface AnalysisCommandFixture<Kind extends AnalysisKind> {
@@ -283,20 +289,271 @@ function stringSchema(minLength = 1): AnalysisCommandJsonSchema {
   return { type: "string", minLength };
 }
 
-function fieldRefSchema(): AnalysisCommandJsonSchema {
+function booleanSchema(): AnalysisCommandJsonSchema {
+  return { type: "boolean" };
+}
+
+function numberSchema(options: { minimum?: number; maximum?: number } = {}): AnalysisCommandJsonSchema {
   return {
-    type: "object",
-    required: ["name", "type"],
-    properties: {
-      name: stringSchema(),
-      type: { type: "string" },
-    },
-    additionalProperties: false,
+    type: "number",
+    ...(options.minimum !== undefined ? { minimum: options.minimum } : {}),
+    ...(options.maximum !== undefined ? { maximum: options.maximum } : {}),
   };
 }
 
+function enumSchema(values: readonly string[]): AnalysisCommandJsonSchema {
+  return { type: "string", enum: [...values] };
+}
+
+function arraySchema(
+  items: AnalysisCommandJsonSchema,
+  options: { minItems?: number; maxItems?: number } = {},
+): AnalysisCommandJsonSchema {
+  return {
+    type: "array",
+    items,
+    ...(options.minItems !== undefined ? { minItems: options.minItems } : {}),
+    ...(options.maxItems !== undefined ? { maxItems: options.maxItems } : {}),
+  };
+}
+
+function objectSchema(input: {
+  required?: string[];
+  properties?: Record<string, AnalysisCommandJsonSchema>;
+  additionalProperties?: boolean | AnalysisCommandJsonSchema;
+}): AnalysisCommandJsonSchema {
+  return {
+    type: "object",
+    ...(input.required ? { required: input.required } : {}),
+    ...(input.properties ? { properties: input.properties } : {}),
+    ...(input.additionalProperties !== undefined ? { additionalProperties: input.additionalProperties } : {}),
+  };
+}
+
+function nullableSchema(schema: AnalysisCommandJsonSchema): AnalysisCommandJsonSchema {
+  return {
+    oneOf: [schema, { type: "null" }],
+    type: Array.isArray(schema.type) ? [...schema.type, "null"] : [schema.type, "null"],
+  };
+}
+
+function fieldRefSchema(): AnalysisCommandJsonSchema {
+  return objectSchema({
+    required: ["name", "type"],
+    properties: {
+      columnId: stringSchema(),
+      name: stringSchema(),
+      type: enumSchema(["continuous", "nominal", "ordinal", "datetime", "id"]),
+    },
+    additionalProperties: false,
+  });
+}
+
 function graphSchema(): AnalysisCommandJsonSchema {
-  return { type: "object" };
+  const chartElementSchema = objectSchema({
+    required: ["kind", "enabled"],
+    properties: {
+      kind: enumSchema([
+        "points",
+        "line",
+        "bar",
+        "heatmap",
+        "correlationMatrix",
+        "histogram",
+        "normalCurve",
+        "boxplot",
+        "smoother",
+        "fitline",
+        "surface",
+        "contour3d",
+        "scatter3d",
+      ]),
+      enabled: booleanSchema(),
+      options: objectSchema({ additionalProperties: true }),
+      correlationMethod: enumSchema(["pearson", "spearman", "kendall"]),
+    },
+    additionalProperties: false,
+  });
+  const filterRuleSchema = {
+    type: ["object"],
+    oneOf: [
+      objectSchema({
+        required: ["kind", "field", "min", "max"],
+        properties: {
+          kind: { type: "string", const: "continuous" },
+          field: fieldRefSchema(),
+          min: nullableSchema(numberSchema()),
+          max: nullableSchema(numberSchema()),
+        },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["kind", "field", "selected"],
+        properties: {
+          kind: { type: "string", const: "categorical" },
+          field: fieldRefSchema(),
+          selected: arraySchema(stringSchema()),
+          exclude: booleanSchema(),
+        },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["kind", "field", "start", "end"],
+        properties: {
+          kind: { type: "string", const: "date" },
+          field: fieldRefSchema(),
+          start: nullableSchema(stringSchema()),
+          end: nullableSchema(stringSchema()),
+        },
+        additionalProperties: false,
+      }),
+    ],
+  } satisfies AnalysisCommandJsonSchema;
+  const filterRuleItemSchema = objectSchema({
+    required: ["id", "op", "rule"],
+    properties: {
+      id: stringSchema(),
+      op: enumSchema(["AND", "OR"]),
+      rule: filterRuleSchema,
+      height: numberSchema({ minimum: 0 }),
+    },
+    additionalProperties: false,
+  });
+  const twoDEncodingSchema = objectSchema({
+    properties: {
+      x: fieldRefSchema(),
+      y: fieldRefSchema(),
+      color: fieldRefSchema(),
+      size: fieldRefSchema(),
+      overlay: fieldRefSchema(),
+      groupX: fieldRefSchema(),
+      groupY: fieldRefSchema(),
+      wrap: fieldRefSchema(),
+    },
+    additionalProperties: false,
+  });
+  const threeDEncodingSchema = objectSchema({
+    properties: {
+      x: fieldRefSchema(),
+      y: fieldRefSchema(),
+      z: fieldRefSchema(),
+      color: fieldRefSchema(),
+      size: fieldRefSchema(),
+      overlay: fieldRefSchema(),
+      groupX: fieldRefSchema(),
+      groupY: fieldRefSchema(),
+      groupZ: fieldRefSchema(),
+      wrap: fieldRefSchema(),
+    },
+    additionalProperties: false,
+  });
+  const axisConfigSchema = objectSchema({
+    properties: {
+      min: numberSchema(),
+      max: numberSchema(),
+      tickInterval: numberSchema(),
+      decimals: numberSchema({ minimum: 0 }),
+      inverse: booleanSchema(),
+      minorTickCount: numberSchema({ minimum: 0 }),
+      showAxisLine: booleanSchema(),
+      tickPosition: enumSchema(["inside", "outside"]),
+    },
+    additionalProperties: true,
+  });
+  const refLineSchema = objectSchema({
+    required: ["id", "label", "style", "color", "width"],
+    properties: {
+      id: stringSchema(),
+      x: numberSchema(),
+      y: numberSchema(),
+      label: { type: "string" },
+      style: enumSchema(["solid", "dashed", "dotted"]),
+      color: stringSchema(),
+      width: numberSchema({ minimum: 0 }),
+    },
+    additionalProperties: false,
+  });
+  const twoDStateSchema = objectSchema({
+    required: ["encoding", "multiX", "multiY", "elements", "smootherLambda"],
+    properties: {
+      encoding: twoDEncodingSchema,
+      transposed: booleanSchema(),
+      multiX: arraySchema(fieldRefSchema()),
+      multiY: arraySchema(fieldRefSchema()),
+      elements: arraySchema(chartElementSchema, { minItems: 1 }),
+      smootherLambda: numberSchema(),
+      groupStyles: objectSchema({ additionalProperties: true }),
+      hiddenGroups: arraySchema(stringSchema()),
+      refLinesY: arraySchema(refLineSchema),
+      refLinesX: arraySchema(refLineSchema),
+      autoSpecLinesY: booleanSchema(),
+      autoSpecLinesX: booleanSchema(),
+      autoSpecLines: booleanSchema(),
+      yAxis: axisConfigSchema,
+      xAxis: axisConfigSchema,
+    },
+    additionalProperties: false,
+  });
+  const threeDStateSchema = objectSchema({
+    required: ["encoding", "elements", "smootherLambda"],
+    properties: {
+      encoding: threeDEncodingSchema,
+      elements: arraySchema(chartElementSchema, { minItems: 1 }),
+      smootherLambda: numberSchema(),
+      groupStyles: objectSchema({ additionalProperties: true }),
+      hiddenGroups: arraySchema(stringSchema()),
+    },
+    additionalProperties: false,
+  });
+  const multivariateStateSchema = objectSchema({
+    required: ["columns", "chartType", "correlationMethod"],
+    properties: {
+      columns: arraySchema(fieldRefSchema()),
+      chartType: { type: "string", const: "correlationMatrix" },
+      correlationMethod: enumSchema(["pearson", "spearman", "kendall"]),
+    },
+    additionalProperties: false,
+  });
+  const samplingSchema = {
+    type: ["object"],
+    oneOf: [
+      objectSchema({
+        required: ["mode"],
+        properties: {
+          mode: { type: "string", const: "full" },
+        },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["mode", "size", "seed"],
+        properties: {
+          mode: { type: "string", const: "sample" },
+          size: numberSchema({ minimum: 1 }),
+          seed: numberSchema({ minimum: 0 }),
+        },
+        additionalProperties: false,
+      }),
+    ],
+  } satisfies AnalysisCommandJsonSchema;
+  return objectSchema({
+    required: ["mode", "modeStates", "filters", "sampling"],
+    properties: {
+      mode: enumSchema(["2d", "3d", "multivariate"]),
+      modeStates: objectSchema({
+        required: ["twoD", "threeD", "multivariate"],
+        properties: {
+          twoD: twoDStateSchema,
+          threeD: threeDStateSchema,
+          multivariate: multivariateStateSchema,
+        },
+        additionalProperties: false,
+      }),
+      filters: arraySchema(filterRuleItemSchema),
+      sampling: samplingSchema,
+      groupThemeSlots: objectSchema({ additionalProperties: true }),
+    },
+    additionalProperties: false,
+  });
 }
 
 function creationHistoryMessage(kind: AnalysisKind, name: string, source: string): string {
@@ -482,302 +739,412 @@ export const analysisUpdateValidators = {
   },
 } satisfies { [Kind in AnalysisKind]: AnalysisUpdateValidator<Kind> };
 
-export const analysisCommandSchemas = {
-  distribution: {
-    analysisKind: "distribution",
-    supportsGraphPresentation: true,
-    supportsReportEmbedding: true,
-    create: {
-      type: "object",
-      required: ["analysisKind", "sourceDatasetId", "draft"],
-      properties: {
-        analysisKind: { type: "string", const: "distribution" },
-        sourceDatasetId: stringSchema(),
-        draft: {
-          type: "object",
-          required: ["responses", "analysis", "graphs"],
-          properties: {
-            responses: { type: "array", minItems: 1, items: fieldRefSchema() },
-            analysis: {
-              type: "object",
-              required: ["confidenceLevel", "fitDistributions"],
-              properties: {
-                confidenceLevel: { type: "number" },
-                fitDistributions: { type: "array", minItems: 1, items: stringSchema() },
-              },
-            },
-            graphs: {
-              type: "object",
-              required: ["overview", "boxPlot", "ecdf", "normalQuantile"],
-              properties: {
-                overview: graphSchema(),
-                boxPlot: graphSchema(),
-                ecdf: graphSchema(),
-                normalQuantile: graphSchema(),
-              },
-            },
-          },
+export const analysisCommandSchemas = (() => {
+  const specLimitsOverrideSchema = objectSchema({
+    required: ["lsl", "target", "usl"],
+    properties: {
+      lsl: nullableSchema(numberSchema()),
+      target: nullableSchema(numberSchema()),
+      usl: nullableSchema(numberSchema()),
+    },
+    additionalProperties: false,
+  });
+  const distributionConfigSchema = objectSchema({
+    required: ["confidenceLevel", "specLimits", "fitDistributions"],
+    properties: {
+      confidenceLevel: numberSchema(),
+      specLimits: objectSchema({ additionalProperties: specLimitsOverrideSchema }),
+      fitDistributions: arraySchema(enumSchema(["normal", "lognormal", "exponential", "gamma", "weibull"]), { minItems: 1 }),
+    },
+    additionalProperties: false,
+  });
+  const distributionGraphsSchema = objectSchema({
+    required: ["overview", "boxPlot", "ecdf", "normalQuantile"],
+    properties: {
+      overview: graphSchema(),
+      boxPlot: graphSchema(),
+      ecdf: graphSchema(),
+      normalQuantile: graphSchema(),
+    },
+    additionalProperties: false,
+  });
+  const distributionDraftCreateSchema = objectSchema({
+    required: ["responses", "weight", "frequency", "by", "nestedSubgroup", "analysis", "graphs"],
+    properties: {
+      name: stringSchema(),
+      responses: arraySchema(fieldRefSchema(), { minItems: 1 }),
+      weight: nullableSchema(fieldRefSchema()),
+      frequency: nullableSchema(fieldRefSchema()),
+      by: arraySchema(fieldRefSchema()),
+      nestedSubgroup: nullableSchema(fieldRefSchema()),
+      analysis: distributionConfigSchema,
+      graphs: distributionGraphsSchema,
+    },
+    additionalProperties: false,
+  });
+  const distributionDraftUpdateSchema = objectSchema({
+    required: ["responses", "weight", "frequency", "by", "nestedSubgroup", "analysis", "graphs"],
+    properties: {
+      responses: arraySchema(fieldRefSchema(), { minItems: 1 }),
+      weight: nullableSchema(fieldRefSchema()),
+      frequency: nullableSchema(fieldRefSchema()),
+      by: arraySchema(fieldRefSchema()),
+      nestedSubgroup: nullableSchema(fieldRefSchema()),
+      analysis: distributionConfigSchema,
+      graphs: distributionGraphsSchema,
+    },
+    additionalProperties: false,
+  });
+  const fitYByXDraftCreateSchema = objectSchema({
+    required: ["response", "factor", "confidenceLevel"],
+    properties: {
+      name: stringSchema(),
+      response: fieldRefSchema(),
+      factor: fieldRefSchema(),
+      confidenceLevel: numberSchema(),
+      graph: graphSchema(),
+    },
+    additionalProperties: false,
+  });
+  const fitYByXDraftUpdateSchema = objectSchema({
+    required: ["response", "factor", "confidenceLevel"],
+    properties: {
+      response: fieldRefSchema(),
+      factor: fieldRefSchema(),
+      confidenceLevel: numberSchema(),
+      graph: graphSchema(),
+    },
+    additionalProperties: false,
+  });
+  const fitModelConstructSchema = {
+    type: ["object"],
+    oneOf: [
+      objectSchema({
+        required: ["kind"],
+        properties: {
+          kind: { type: "string", const: "manual" },
         },
-      },
-    },
-    update: {
-      type: "object",
-      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
-      properties: {
-        analysisId: stringSchema(),
-        analysisKind: { type: "string", const: "distribution" },
-        expectedConfigRevision: { type: "number" },
-        draft: {
-          type: "object",
-          required: ["responses", "analysis", "graphs"],
-          properties: {
-            responses: { type: "array", minItems: 1, items: fieldRefSchema() },
-            analysis: {
-              type: "object",
-              required: ["confidenceLevel", "fitDistributions"],
-              properties: {
-                confidenceLevel: { type: "number" },
-                fitDistributions: { type: "array", minItems: 1, items: stringSchema() },
-              },
-            },
-            graphs: {
-              type: "object",
-              required: ["overview", "boxPlot", "ecdf", "normalQuantile"],
-              properties: {
-                overview: graphSchema(),
-                boxPlot: graphSchema(),
-                ecdf: graphSchema(),
-                normalQuantile: graphSchema(),
-              },
-            },
-          },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["kind"],
+        properties: {
+          kind: { type: "string", const: "fullFactorial" },
         },
-      },
-    },
-    run: {
-      type: "object",
-      required: ["analysisId"],
-      properties: {
-        analysisId: stringSchema(),
-      },
-    },
-  },
-  fitYByX: {
-    analysisKind: "fitYByX",
-    supportsGraphPresentation: true,
-    supportsReportEmbedding: true,
-    create: {
-      type: "object",
-      required: ["analysisKind", "sourceDatasetId", "draft"],
-      properties: {
-        analysisKind: { type: "string", const: "fitYByX" },
-        sourceDatasetId: stringSchema(),
-        draft: {
-          type: "object",
-          required: ["response", "factor", "confidenceLevel"],
-          properties: {
-            response: fieldRefSchema(),
-            factor: fieldRefSchema(),
-            confidenceLevel: { type: "number" },
-            graph: graphSchema(),
-          },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["kind", "degree"],
+        properties: {
+          kind: { type: "string", const: "factorialToDegree" },
+          degree: numberSchema({ minimum: 1 }),
         },
-      },
-    },
-    update: {
-      type: "object",
-      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
-      properties: {
-        analysisId: stringSchema(),
-        analysisKind: { type: "string", const: "fitYByX" },
-        expectedConfigRevision: { type: "number" },
-        draft: {
-          type: "object",
-          required: ["response", "factor", "confidenceLevel"],
-          properties: {
-            response: fieldRefSchema(),
-            factor: fieldRefSchema(),
-            confidenceLevel: { type: "number" },
-            graph: graphSchema(),
-          },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["kind"],
+        properties: {
+          kind: { type: "string", const: "responseSurface" },
         },
-      },
-    },
-    run: {
-      type: "object",
-      required: ["analysisId"],
-      properties: {
-        analysisId: stringSchema(),
-      },
-    },
-  },
-  fitModel: {
-    analysisKind: "fitModel",
-    supportsGraphPresentation: false,
-    supportsReportEmbedding: false,
-    create: {
-      type: "object",
-      required: ["analysisKind", "sourceDatasetId", "draft"],
-      properties: {
-        analysisKind: { type: "string", const: "fitModel" },
-        sourceDatasetId: stringSchema(),
-        draft: {
-          type: "object",
-          required: ["response", "construct", "terms", "centeringMethod"],
-          properties: {
-            response: fieldRefSchema(),
-            construct: {
-              type: "object",
-              required: ["kind"],
-              properties: { kind: stringSchema() },
-            },
-            terms: {
-              type: "array",
-              minItems: 1,
-              items: {
-                type: "object",
-                required: ["kind", "columnNames"],
-                properties: {
-                  kind: stringSchema(),
-                  columnNames: { type: "array", minItems: 1, items: stringSchema() },
-                },
-              },
-            },
-            centeringMethod: stringSchema(),
-            confidenceLevel: { type: "number" },
-          },
+        additionalProperties: false,
+      }),
+    ],
+  } satisfies AnalysisCommandJsonSchema;
+  const fitModelTermSchema = {
+    type: ["object"],
+    oneOf: [
+      objectSchema({
+        required: ["kind", "columnNames"],
+        properties: {
+          kind: { type: "string", const: "main" },
+          columnNames: arraySchema(stringSchema(), { minItems: 1, maxItems: 1 }),
         },
-      },
-    },
-    update: {
-      type: "object",
-      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
-      properties: {
-        analysisId: stringSchema(),
-        analysisKind: { type: "string", const: "fitModel" },
-        expectedConfigRevision: { type: "number" },
-        draft: {
-          type: "object",
-          required: ["response", "construct", "terms", "centeringMethod"],
-          properties: {
-            response: fieldRefSchema(),
-            construct: {
-              type: "object",
-              required: ["kind"],
-              properties: { kind: stringSchema() },
-            },
-            terms: {
-              type: "array",
-              minItems: 1,
-              items: {
-                type: "object",
-                required: ["kind", "columnNames"],
-                properties: {
-                  kind: stringSchema(),
-                  columnNames: { type: "array", minItems: 1, items: stringSchema() },
-                },
-              },
-            },
-            centeringMethod: stringSchema(),
-            confidenceLevel: { type: "number" },
-          },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["kind", "columnNames"],
+        properties: {
+          kind: { type: "string", const: "interaction" },
+          columnNames: arraySchema(stringSchema(), { minItems: 2 }),
         },
-      },
-    },
-    run: {
-      type: "object",
-      required: ["analysisId"],
-      properties: {
-        analysisId: stringSchema(),
-      },
-    },
-  },
-  hypothesisTest: {
-    analysisKind: "hypothesisTest",
-    supportsGraphPresentation: false,
-    supportsReportEmbedding: true,
-    create: {
-      type: "object",
-      required: ["analysisKind", "sourceDatasetId", "draft"],
-      properties: {
-        analysisKind: { type: "string", const: "hypothesisTest" },
-        sourceDatasetId: stringSchema(),
-        draft: {
-          type: "object",
-          required: ["definition"],
-          properties: {
-            definition: {
-              type: "object",
-              required: ["kind", "roles", "studyDesign", "selectionMode", "alpha", "confidenceLevel", "selectorVersion"],
-              properties: {
-                kind: { type: "string", const: "hypothesisTest" },
-                roles: {
-                  type: "object",
-                  required: ["layout", "response"],
-                  properties: {
-                    layout: stringSchema(),
-                    response: fieldRefSchema(),
-                    condition: fieldRefSchema(),
-                    subject: { ...fieldRefSchema(), nullable: true },
-                  },
-                },
-                studyDesign: stringSchema(),
-                selectionMode: stringSchema(),
-                alpha: { type: "number" },
-                confidenceLevel: { type: "number" },
-                selectorVersion: stringSchema(),
-              },
-            },
-          },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["kind", "columnNames", "exponent"],
+        properties: {
+          kind: { type: "string", const: "power" },
+          columnNames: arraySchema(stringSchema(), { minItems: 1, maxItems: 1 }),
+          exponent: { type: "number", const: 2 },
         },
-      },
+        additionalProperties: false,
+      }),
+    ],
+  } satisfies AnalysisCommandJsonSchema;
+  const fitModelDraftCreateSchema = objectSchema({
+    required: ["response", "construct", "terms", "centeringMethod"],
+    properties: {
+      name: stringSchema(),
+      response: fieldRefSchema(),
+      construct: fitModelConstructSchema,
+      terms: arraySchema(fitModelTermSchema, { minItems: 1 }),
+      centeringMethod: enumSchema(["none", "mean"]),
+      confidenceLevel: numberSchema(),
     },
-    update: {
-      type: "object",
-      required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
-      properties: {
-        analysisId: stringSchema(),
-        analysisKind: { type: "string", const: "hypothesisTest" },
-        expectedConfigRevision: { type: "number" },
-        draft: {
-          type: "object",
-          required: ["definition"],
-          properties: {
-            definition: {
-              type: "object",
-              required: ["kind", "roles", "studyDesign", "selectionMode", "alpha", "confidenceLevel", "selectorVersion"],
-              properties: {
-                kind: { type: "string", const: "hypothesisTest" },
-                roles: {
-                  type: "object",
-                  required: ["layout", "response"],
-                  properties: {
-                    layout: stringSchema(),
-                    response: fieldRefSchema(),
-                    condition: fieldRefSchema(),
-                    subject: { ...fieldRefSchema(), nullable: true },
-                  },
-                },
-                studyDesign: stringSchema(),
-                selectionMode: stringSchema(),
-                alpha: { type: "number" },
-                confidenceLevel: { type: "number" },
-                selectorVersion: stringSchema(),
-              },
-            },
-          },
+    additionalProperties: false,
+  });
+  const fitModelDraftUpdateSchema = objectSchema({
+    required: ["response", "construct", "terms", "centeringMethod"],
+    properties: {
+      response: fieldRefSchema(),
+      construct: fitModelConstructSchema,
+      terms: arraySchema(fitModelTermSchema, { minItems: 1 }),
+      centeringMethod: enumSchema(["none", "mean"]),
+      confidenceLevel: numberSchema(),
+    },
+    additionalProperties: false,
+  });
+  const hypothesisRolesSchema = {
+    type: ["object"],
+    oneOf: [
+      objectSchema({
+        required: ["layout", "response", "condition", "subject"],
+        properties: {
+          layout: { type: "string", const: "long" },
+          response: fieldRefSchema(),
+          condition: fieldRefSchema(),
+          subject: nullableSchema(fieldRefSchema()),
         },
-      },
+        additionalProperties: false,
+      }),
+      objectSchema({
+        required: ["layout", "measurements", "subject"],
+        properties: {
+          layout: { type: "string", const: "wide" },
+          measurements: arraySchema(fieldRefSchema(), { minItems: 1 }),
+          subject: nullableSchema(fieldRefSchema()),
+        },
+        additionalProperties: false,
+      }),
+    ],
+  } satisfies AnalysisCommandJsonSchema;
+  const hypothesisManualSelectionSchema = nullableSchema(objectSchema({
+    required: ["methodId", "reason"],
+    properties: {
+      methodId: enumSchema([
+        "studentTwoSampleT",
+        "welchTwoSampleT",
+        "mannWhitneyU",
+        "oneWayAnova",
+        "welchAnova",
+        "kruskalWallis",
+        "pairedT",
+        "wilcoxonSignedRank",
+        "randomizedBlockAnova",
+        "friedman",
+      ]),
+      reason: nullableSchema(stringSchema()),
     },
-    run: {
-      type: "object",
-      required: ["analysisId"],
-      properties: {
-        analysisId: stringSchema(),
-      },
+    additionalProperties: false,
+  }));
+  const hypothesisDefinitionSchema = objectSchema({
+    required: [
+      "kind",
+      "roles",
+      "studyDesign",
+      "selectionMode",
+      "manualSelection",
+      "alternative",
+      "alpha",
+      "confidenceLevel",
+      "levelOrder",
+      "referenceLevel",
+      "postHoc",
+      "selectorVersion",
+    ],
+    properties: {
+      kind: { type: "string", const: "hypothesisTest" },
+      roles: hypothesisRolesSchema,
+      studyDesign: enumSchema(["independent", "pairedOrBlocked"]),
+      selectionMode: enumSchema(["automatic", "guided", "manual"]),
+      manualSelection: hypothesisManualSelectionSchema,
+      alternative: enumSchema(["twoSided", "less", "greater"]),
+      alpha: numberSchema({ minimum: 0, maximum: 1 }),
+      confidenceLevel: numberSchema({ minimum: 0, maximum: 1 }),
+      levelOrder: arraySchema(stringSchema()),
+      referenceLevel: nullableSchema(stringSchema()),
+      postHoc: enumSchema(["automatic", "off"]),
+      selectorVersion: { type: "string", const: "1" },
     },
-  },
-} satisfies { [Kind in AnalysisKind]: AnalysisCommandSchema<Kind> };
+    additionalProperties: false,
+  });
+  const hypothesisPresentationSchema = objectSchema({
+    required: ["schemaVersion", "layout", "activeResultTab", "collapsedSections", "graphs", "tableSort"],
+    properties: {
+      schemaVersion: { type: "number", const: 1 },
+      layout: { type: "string", const: "hypothesis-test-v1" },
+      activeResultTab: enumSchema(["results", "diagnostics", "audit"]),
+      collapsedSections: arraySchema(enumSchema(["methodEvidence", "sensitivity", "postHoc", "exclusions", "audit"])),
+      graphs: objectSchema({
+        required: ["showRawData", "showIntervals", "showDiagnostics"],
+        properties: {
+          showRawData: booleanSchema(),
+          showIntervals: booleanSchema(),
+          showDiagnostics: booleanSchema(),
+        },
+        additionalProperties: false,
+      }),
+      tableSort: nullableSchema(objectSchema({
+        required: ["key", "direction"],
+        properties: {
+          key: stringSchema(),
+          direction: enumSchema(["ascending", "descending"]),
+        },
+        additionalProperties: false,
+      })),
+    },
+    additionalProperties: false,
+  });
+  return {
+    distribution: {
+      analysisKind: "distribution",
+      supportsGraphPresentation: true,
+      supportsReportEmbedding: true,
+      create: objectSchema({
+        required: ["analysisKind", "sourceDatasetId", "draft"],
+        properties: {
+          analysisKind: { type: "string", const: "distribution" },
+          sourceDatasetId: stringSchema(),
+          draft: distributionDraftCreateSchema,
+        },
+        additionalProperties: false,
+      }),
+      update: objectSchema({
+        required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+        properties: {
+          analysisId: stringSchema(),
+          analysisKind: { type: "string", const: "distribution" },
+          expectedConfigRevision: numberSchema(),
+          draft: distributionDraftUpdateSchema,
+        },
+        additionalProperties: false,
+      }),
+      run: objectSchema({
+        required: ["analysisId"],
+        properties: {
+          analysisId: stringSchema(),
+        },
+        additionalProperties: false,
+      }),
+    },
+    fitYByX: {
+      analysisKind: "fitYByX",
+      supportsGraphPresentation: true,
+      supportsReportEmbedding: true,
+      create: objectSchema({
+        required: ["analysisKind", "sourceDatasetId", "draft"],
+        properties: {
+          analysisKind: { type: "string", const: "fitYByX" },
+          sourceDatasetId: stringSchema(),
+          draft: fitYByXDraftCreateSchema,
+        },
+        additionalProperties: false,
+      }),
+      update: objectSchema({
+        required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+        properties: {
+          analysisId: stringSchema(),
+          analysisKind: { type: "string", const: "fitYByX" },
+          expectedConfigRevision: numberSchema(),
+          draft: fitYByXDraftUpdateSchema,
+        },
+        additionalProperties: false,
+      }),
+      run: objectSchema({
+        required: ["analysisId"],
+        properties: {
+          analysisId: stringSchema(),
+        },
+        additionalProperties: false,
+      }),
+    },
+    fitModel: {
+      analysisKind: "fitModel",
+      supportsGraphPresentation: false,
+      supportsReportEmbedding: false,
+      create: objectSchema({
+        required: ["analysisKind", "sourceDatasetId", "draft"],
+        properties: {
+          analysisKind: { type: "string", const: "fitModel" },
+          sourceDatasetId: stringSchema(),
+          draft: fitModelDraftCreateSchema,
+        },
+        additionalProperties: false,
+      }),
+      update: objectSchema({
+        required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+        properties: {
+          analysisId: stringSchema(),
+          analysisKind: { type: "string", const: "fitModel" },
+          expectedConfigRevision: numberSchema(),
+          draft: fitModelDraftUpdateSchema,
+        },
+        additionalProperties: false,
+      }),
+      run: objectSchema({
+        required: ["analysisId"],
+        properties: {
+          analysisId: stringSchema(),
+        },
+        additionalProperties: false,
+      }),
+    },
+    hypothesisTest: {
+      analysisKind: "hypothesisTest",
+      supportsGraphPresentation: false,
+      supportsReportEmbedding: true,
+      create: objectSchema({
+        required: ["analysisKind", "sourceDatasetId", "draft"],
+        properties: {
+          analysisKind: { type: "string", const: "hypothesisTest" },
+          sourceDatasetId: stringSchema(),
+          draft: objectSchema({
+            required: ["definition"],
+            properties: {
+              name: stringSchema(),
+              definition: hypothesisDefinitionSchema,
+            },
+            additionalProperties: false,
+          }),
+        },
+        additionalProperties: false,
+      }),
+      update: objectSchema({
+        required: ["analysisId", "analysisKind", "expectedConfigRevision", "draft"],
+        properties: {
+          analysisId: stringSchema(),
+          analysisKind: { type: "string", const: "hypothesisTest" },
+          expectedConfigRevision: numberSchema(),
+          draft: objectSchema({
+            required: ["definition"],
+            properties: {
+              definition: hypothesisDefinitionSchema,
+              presentation: hypothesisPresentationSchema,
+            },
+            additionalProperties: false,
+          }),
+        },
+        additionalProperties: false,
+      }),
+      run: objectSchema({
+        required: ["analysisId"],
+        properties: {
+          analysisId: stringSchema(),
+        },
+        additionalProperties: false,
+      }),
+    },
+  } satisfies { [Kind in AnalysisKind]: AnalysisCommandSchema<Kind> };
+})();
 
 export const analysisCommandFixtures = {
   distribution: {

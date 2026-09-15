@@ -34,7 +34,7 @@ const workspaceSource = readSource("../src/components/Workspace.tsx");
 assertSourceIncludes(workspaceSource, "useAnalysisStore", "Workspace must consume the analysis store");
 assertSourceIncludes(workspaceSource, "AnalysisView", "Workspace must render the Analysis main-pane view");
 assertSourceIncludes(workspaceSource, "activeAnalysisId", "Workspace must track the active Analysis document");
-assertSourceIncludes(workspaceSource, "addAnalysis", "Workspace must add Analysis documents");
+assertSourceIncludes(workspaceSource, 'type: "analysis.create"', "Workspace must create Analysis documents through the shared application command layer");
 assertSourceIncludes(workspaceSource, "loadAnalyses", "Project open must load saved Analysis documents");
 assertSourceIncludes(workspaceSource, "resetAnalyses", "Project close/open reset must clear the Analysis store");
 assertSourceIncludes(workspaceSource, "analysisFolders", "Project save/open payloads must include Analysis folder assignments");
@@ -67,6 +67,7 @@ const distributionCreateHandler = workspaceSource.match(
 )?.[0] ?? "";
 assertSourceIncludes(distributionCreateHandler, 'type: "analysis.create"', "Distribution creation must delegate to the shared application command layer");
 assertSourceIncludes(distributionCreateHandler, 'analysisKind: "distribution"', "Distribution creation must target the distribution Analysis kind");
+assert.equal(distributionCreateHandler.includes("addAnalysis(created)"), false, "Distribution creation must not bypass the shared command layer");
 assert.equal(distributionCreateHandler.includes("addDistribution"), false, "Distribution creation must not enter the legacy store");
 assertSourceIncludes(workspaceSource, "nextDistributionAnalysisName", "Distribution default names must come from the Analysis namespace");
 assert.equal(workspaceSource.includes("deleteAnalysisByDataset"), false, "Deleting a source table must not cascade-delete saved Analysis documents");

@@ -47,18 +47,20 @@ import {
   type DistributionFieldInfo,
   type DistributionManagePropertiesRequest,
 } from "./distribution";
+import {
+  createDefaultDistributionAnalysisConfig,
+  createDefaultDistributionGraphs,
+} from "./distribution/distributionConfig";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
 import { applyWorkflowRunCommit } from "./workflow/workflowRunCommit";
 import {
   ANALYSIS_SAMPLE_COLUMN,
   createAnalysisSample,
-  createAnalysisSampleDocument,
 } from "./analysis/analysisSample";
 import {
   buildAnalysisProjectPayload,
   createEmptyWorkspaceDocumentSelection,
-  getAnalysisCreationHistoryKey,
   getRetainedActiveAnalysisIdAfterDatasetDeletion,
   hydrateAnalysisProjectPayload,
   selectWorkspaceDocument,
@@ -305,7 +307,6 @@ export function Workspace() {
   const fitYByXAnalysisItems = analysisItems.filter(isFitYByXAnalysisDocument);
   const hypothesisTestAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "hypothesisTest");
   const distributionAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "distribution");
-  const addAnalysis = useAnalysisStore((s) => s.addAnalysis);
   const updateAnalysis = useAnalysisStore((s) => s.updateAnalysis);
   const deleteAnalysis = useAnalysisStore((s) => s.removeAnalysis);
   const loadAnalyses = useAnalysisStore((s) => s.loadAnalyses);
@@ -883,12 +884,6 @@ export function Workspace() {
 
   const handleCreateAnalysisSample = async () => {
     if (readOnly) return;
-    const timestamp = new Date().toISOString();
-    const createId = (prefix: string) => (
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    );
     const tableName = allocateProjectBasename(
       "DIM1 Sample",
       ".sptb",
@@ -901,7 +896,6 @@ export function Workspace() {
     );
 
     let createdDatasetId: string | null = null;
-    let addedAnalysisId: string | null = null;
     try {
       const sample = createAnalysisSample(112, 200);
       const dataset = await dataService.createTableFromRows({
@@ -912,20 +906,27 @@ export function Workspace() {
       });
       createdDatasetId = dataset.id;
       await refreshDatasets();
-      const analysis = createAnalysisSampleDocument({
-        datasetId: dataset.id,
-        analysisId: createId("analysis"),
-        analysisName,
-        createdAt: timestamp,
-      });
-
-      addAnalysis(analysis);
-      addedAnalysisId = analysis.id;
-      activateWorkspaceDocument("analysis", analysis.id);
-      markDirty();
-      recordAction(t(getAnalysisCreationHistoryKey("sample"), { name: analysis.name }));
+      await applicationRuntime.execute(
+        {
+          type: "analysis.create",
+          input: {
+            analysisKind: "distribution",
+            sourceDatasetId: dataset.id,
+            draft: {
+              name: analysisName,
+              responses: [{ name: ANALYSIS_SAMPLE_COLUMN, type: "continuous" }],
+              weight: null,
+              frequency: null,
+              by: [],
+              nestedSubgroup: null,
+              analysis: createDefaultDistributionAnalysisConfig(),
+              graphs: createDefaultDistributionGraphs({ name: ANALYSIS_SAMPLE_COLUMN, type: "continuous" }),
+            },
+          },
+        },
+        { kind: "ui" },
+      );
     } catch (error) {
-      if (addedAnalysisId) deleteAnalysis(addedAnalysisId);
       if (createdDatasetId) {
         try {
           await dataService.deleteDataset(createdDatasetId);

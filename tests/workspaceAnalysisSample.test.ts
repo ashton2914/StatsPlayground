@@ -26,17 +26,27 @@ for (const required of [
   "dataService.createTableFromRows({",
   "columnNames: [ANALYSIS_SAMPLE_COLUMN]",
   'columnTypes: ["DOUBLE"]',
-  "createAnalysisSampleDocument({",
-  "addAnalysis(analysis)",
   "await refreshDatasets()",
+  "applicationRuntime.execute(",
+  'type: "analysis.create"',
+  'analysisKind: "distribution"',
+  "sourceDatasetId: dataset.id",
+  "name: analysisName",
+  'responses: [{ name: ANALYSIS_SAMPLE_COLUMN, type: "continuous" }]',
+  "analysis: createDefaultDistributionAnalysisConfig()",
+  'graphs: createDefaultDistributionGraphs({ name: ANALYSIS_SAMPLE_COLUMN, type: "continuous" })',
   "dataService.deleteDataset(createdDatasetId)",
-  'activateWorkspaceDocument("analysis", analysis.id)',
-  'getAnalysisCreationHistoryKey("sample")',
-  "markDirty()",
 ]) {
   assert.equal(handler.includes(required), true, `sample handler must include ${required}`);
 }
 for (const forbidden of [
+  "createAnalysisSampleDocument({",
+  "addAnalysis(analysis)",
+  "deleteAnalysis(addedAnalysisId)",
+  'activateWorkspaceDocument("analysis", analysis.id)',
+  'getAnalysisCreationHistoryKey("sample")',
+  "markDirty()",
+  "recordAction(",
   "createAnalysisSampleDistribution({",
   "addDistribution(distribution)",
   "addGraphBuilder(graph)",
@@ -48,16 +58,8 @@ for (const forbidden of [
 assert.match(workspace, /menu\.analysisSample/);
 assert.match(workspace, /onClick=\{readOnly \? undefined : handleCreateAnalysisSample\}/);
 assert.ok(
-  handler.indexOf("await refreshDatasets()") < handler.indexOf("addAnalysis(analysis)"),
-  "backend table registration must succeed before the analysis is added",
-);
-assert.ok(
-  handler.indexOf("if (addedAnalysisId) deleteAnalysis(addedAnalysisId)") < handler.indexOf("await dataService.deleteDataset(createdDatasetId)"),
-  "sample creation rollback must remove the Analysis before deleting the dataset",
-);
-assert.ok(
-  handler.indexOf('activateWorkspaceDocument("analysis", analysis.id)') < handler.indexOf('getAnalysisCreationHistoryKey("sample")'),
-  "sample creation must activate the saved Analysis before recording sample history",
+  handler.indexOf("await refreshDatasets()") < handler.indexOf("applicationRuntime.execute("),
+  "backend table registration must succeed before the runtime analysis.create call",
 );
 
 for (const locale of ["en", "vi", "zh-CN", "zh-TW"]) {
