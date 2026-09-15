@@ -599,6 +599,8 @@ export interface DistributionQuantileValueV1 {
 export interface DistributionYResultV1 {
   yColumn: DistributionColumnRefV1;
   yName: string;
+  sourceRows?: number;
+  processedRows?: number;
   quantiles: DistributionQuantileValueV1[];
   blocks: DistributionReportBlockV1[];
 }
