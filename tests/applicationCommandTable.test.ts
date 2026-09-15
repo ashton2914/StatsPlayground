@@ -247,106 +247,155 @@ assert.deepEqual(ui.result.data.columns[0], {
 }
 
 {
-  let createCalls = 0;
-  let refreshCalls = 0;
-  let dirty = false;
-  let dirtyTransitions = 0;
-  let actionCalls = 0;
-  let activationCalls = 0;
-  const runtime = createApplicationRuntime({
-    initialRevision: 3,
-    project: {
-      getProjectState: () => ({
-        project: {
-          name: "Task3",
-          filePath: "/Users/ashton/projects/task3.spprj",
-          createdAt: "2026-09-15T00:00:00.000Z",
-        },
-        dirty,
-        readOnly: false,
-        projectRevision: 3,
-      }),
-      listDatasets: () => [],
-      listTableTransforms: () => [],
-      listGraphs: () => [],
-      listReports: () => [],
-      listAnalyses: () => [],
-      listTabulates: () => [],
-      getColumns: async () => [],
-      getColumnDisplayProps: async () => [],
-      getDatasetGeneration: async () => 1,
-    },
-    table: {
-      createManagedTable: async () => {
-        createCalls += 1;
-        return {
-          dataset: {
-            id: "tbl-created-once",
-            name: "Created Once",
-            sourcePath: null,
-            sourceType: "manual",
-            rowCount: 1,
-            colCount: 1,
-            generation: 2,
-            createdAt: "2026-09-15T00:00:00.000Z",
-            updatedAt: "2026-09-15T00:00:00.000Z",
-          },
-          generation: 2,
-          columns: [{
-            colIndex: 0,
-            colName: "amount",
-            colType: "DOUBLE",
-            width: 120,
-            format: { kind: "currency", decimals: 2, currency: "USD" },
-            extras: { unit: { symbol: "$" } },
-          }],
-        };
-      },
-      refreshDatasets: async () => {
-        refreshCalls += 1;
-        throw new Error("refresh boom");
-      },
-      markDirty: () => {
-        if (!dirty) dirtyTransitions += 1;
-        dirty = true;
-      },
-      recordAction: () => {
-        actionCalls += 1;
-      },
-      activateDataset: () => {
-        activationCalls += 1;
-      },
-      historyMessage: () => "history-message",
-    },
-  });
-
-  const result = await runtime.execute(
+  const cases = [
     {
-      type: "table.create",
-      input: {
-        request: {
-          name: "Created Once",
-          columns: [{ name: "amount", columnType: "double" }],
-          rows: [[1]],
-        },
+      stage: "refresh",
+      expectedWarning: {
+        code: "table_create_refresh_failed",
+        message: "Table created, but dataset refresh failed",
       },
     },
-    { kind: "ui" },
-  );
+    {
+      stage: "dirty",
+      expectedWarning: {
+        code: "table_create_mark_dirty_failed",
+        message: "Table created, but dirty state update failed",
+      },
+    },
+    {
+      stage: "selection",
+      expectedWarning: {
+        code: "table_create_activate_dataset_failed",
+        message: "Table created, but dataset activation failed",
+      },
+    },
+    {
+      stage: "history",
+      expectedWarning: {
+        code: "table_create_history_failed",
+        message: "Table created, but history recording failed",
+      },
+    },
+  ] as const;
 
-  assert.equal(result.changed, true);
-  assert.equal(result.projectRevision, 4);
-  assert.equal(result.data.dataset.id, "tbl-created-once");
-  assert.equal(result.data.columns[0]?.colType, "DOUBLE");
-  assert.equal(createCalls, 1, "create should run exactly once");
-  assert.equal(refreshCalls, 1, "refresh should run exactly once");
-  assert.equal(dirtyTransitions, 1, "dirty transition should happen exactly once after commit");
-  assert.equal(actionCalls, 1, "history should be recorded once after commit");
-  assert.equal(activationCalls, 1, "selection should activate once after commit");
-  assert.deepEqual(result.warnings, [{
-    code: "table_create_refresh_failed",
-    message: "Table created, but dataset refresh failed",
-  }]);
+  for (const testCase of cases) {
+    let createCalls = 0;
+    let refreshCalls = 0;
+    let dirty = false;
+    let dirtyTransitions = 0;
+    let markDirtyCalls = 0;
+    let actionCalls = 0;
+    let activationCalls = 0;
+
+    const runtime = createApplicationRuntime({
+      initialRevision: 11,
+      project: {
+        getProjectState: () => ({
+          project: {
+            name: "Task3",
+            filePath: "/Users/ashton/projects/task3.spprj",
+            createdAt: "2026-09-15T00:00:00.000Z",
+          },
+          dirty,
+          readOnly: false,
+          projectRevision: 11,
+        }),
+        listDatasets: () => [],
+        listTableTransforms: () => [],
+        listGraphs: () => [],
+        listReports: () => [],
+        listAnalyses: () => [],
+        listTabulates: () => [],
+        getColumns: async () => [],
+        getColumnDisplayProps: async () => [],
+        getDatasetGeneration: async () => 1,
+      },
+      table: {
+        createManagedTable: async () => {
+          createCalls += 1;
+          return {
+            dataset: {
+              id: "tbl-created-once",
+              name: "Created Once",
+              sourcePath: null,
+              sourceType: "manual",
+              rowCount: 1,
+              colCount: 1,
+              generation: 2,
+              createdAt: "2026-09-15T00:00:00.000Z",
+              updatedAt: "2026-09-15T00:00:00.000Z",
+            },
+            generation: 2,
+            columns: [{
+              colIndex: 0,
+              colName: "amount",
+              colType: "DOUBLE",
+              width: 120,
+              format: { kind: "currency", decimals: 2, currency: "USD" },
+              extras: { unit: { symbol: "$" } },
+            }],
+          };
+        },
+        refreshDatasets: async () => {
+          refreshCalls += 1;
+          if (testCase.stage === "refresh") {
+            throw new Error("refresh boom");
+          }
+        },
+        markDirty: () => {
+          markDirtyCalls += 1;
+          if (testCase.stage === "dirty") {
+            throw new Error("dirty boom");
+          }
+          if (!dirty) dirtyTransitions += 1;
+          dirty = true;
+        },
+        recordAction: () => {
+          actionCalls += 1;
+          if (testCase.stage === "history") {
+            throw new Error("history boom");
+          }
+        },
+        activateDataset: () => {
+          activationCalls += 1;
+          if (testCase.stage === "selection") {
+            throw new Error("selection boom");
+          }
+        },
+        historyMessage: () => "history-message",
+      },
+    });
+
+    const result = await runtime.execute(
+      {
+        type: "table.create",
+        input: {
+          request: {
+            name: "Created Once",
+            columns: [{ name: "amount", columnType: "double" }],
+            rows: [[1]],
+          },
+        },
+      },
+      { kind: "ui" },
+    );
+
+    assert.equal(result.changed, true);
+    assert.equal(result.projectRevision, 12);
+    assert.equal(result.data.dataset.id, "tbl-created-once");
+    assert.equal(result.data.columns[0]?.colType, "DOUBLE");
+    assert.equal(createCalls, 1, `${testCase.stage}: create should run exactly once`);
+    assert.equal(refreshCalls, 1, `${testCase.stage}: refresh should run exactly once`);
+    assert.equal(markDirtyCalls, 1, `${testCase.stage}: markDirty should be attempted once`);
+    assert.equal(activationCalls, 1, `${testCase.stage}: activate should be attempted once`);
+    assert.equal(actionCalls, 1, `${testCase.stage}: history should be attempted once`);
+    if (testCase.stage === "dirty") {
+      assert.equal(dirtyTransitions, 0, "dirty: transition should not be updated when markDirty throws");
+    } else {
+      assert.equal(dirtyTransitions, 1, `${testCase.stage}: dirty transition should happen exactly once`);
+    }
+    assert.deepEqual(result.warnings, [testCase.expectedWarning]);
+  }
 }
 
 console.log("application command table parity tests passed");

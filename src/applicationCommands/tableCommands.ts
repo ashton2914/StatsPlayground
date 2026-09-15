@@ -35,6 +35,39 @@ export interface TableCommandDependencies {
 const MIN_TABLE_PREVIEW_LIMIT = 1;
 const MAX_TABLE_PREVIEW_LIMIT = 200;
 
+type PostCommitStage = "refresh" | "dirty" | "selection" | "history";
+
+const POST_COMMIT_WARNINGS: Record<PostCommitStage, CommandWarning> = {
+  refresh: {
+    code: "table_create_refresh_failed",
+    message: "Table created, but dataset refresh failed",
+  },
+  dirty: {
+    code: "table_create_mark_dirty_failed",
+    message: "Table created, but dirty state update failed",
+  },
+  selection: {
+    code: "table_create_activate_dataset_failed",
+    message: "Table created, but dataset activation failed",
+  },
+  history: {
+    code: "table_create_history_failed",
+    message: "Table created, but history recording failed",
+  },
+};
+
+async function runPostCommitEffect(
+  stage: PostCommitStage,
+  effect: () => void | Promise<void>,
+  warnings: CommandWarning[],
+): Promise<void> {
+  try {
+    await effect();
+  } catch {
+    warnings.push(POST_COMMIT_WARNINGS[stage]);
+  }
+}
+
 export function createTableCommandHandlers(
   dependencies: Partial<TableCommandDependencies> = {},
 ) {
@@ -128,18 +161,14 @@ export function createTableCommandHandlers(
     controls?.beginCommit?.();
     const created = await resolvedDependencies.createManagedTable(input.request);
     const warnings: CommandWarning[] = [];
-    try {
-      await resolvedDependencies.refreshDatasets();
-    } catch {
-      warnings.push({
-        code: "table_create_refresh_failed",
-        message: "Table created, but dataset refresh failed",
-      });
-    }
-
-    resolvedDependencies.markDirty();
-    resolvedDependencies.activateDataset(created.dataset.id);
-    resolvedDependencies.recordAction(resolvedDependencies.historyMessage(created.dataset.name));
+    await runPostCommitEffect("refresh", () => resolvedDependencies.refreshDatasets(), warnings);
+    await runPostCommitEffect("dirty", () => resolvedDependencies.markDirty(), warnings);
+    await runPostCommitEffect("selection", () => resolvedDependencies.activateDataset(created.dataset.id), warnings);
+    await runPostCommitEffect(
+      "history",
+      () => resolvedDependencies.recordAction(resolvedDependencies.historyMessage(created.dataset.name)),
+      warnings,
+    );
     return { result: buildCreateResult(created, input), warnings };
   }
 
