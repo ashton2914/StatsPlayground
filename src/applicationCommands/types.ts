@@ -22,11 +22,20 @@ export interface CommandResult<T> {
 }
 
 export type CommandErrorCode =
-  | "cancelled"
-  | "policy_denied"
+  | "app_not_ready"
+  | "project_required"
+  | "project_path_required"
+  | "read_only"
+  | "invalid_input"
+  | "not_found"
   | "revision_conflict"
-  | "unknown_command"
-  | "handler_failed";
+  | "path_not_authorized"
+  | "confirmation_required"
+  | "user_denied"
+  | "queue_full"
+  | "timeout"
+  | "cancelled"
+  | "execution_failed";
 
 export interface CommandError {
   code: CommandErrorCode;

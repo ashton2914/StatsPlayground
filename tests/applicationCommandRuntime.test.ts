@@ -13,6 +13,7 @@ type TestRegistry = {
   "test.read": { input: Record<string, never>; data: { ok: true } };
   "test.slow": { input: Record<string, never>; data: { id: string } };
   "test.commit": { input: Record<string, never>; data: { committed: true } };
+  "test.other": { input: Record<string, never>; data: { marker: "other" } };
 };
 
 const MCP_ACTOR: CommandActor = { kind: "mcp", sessionId: "session-a" };
@@ -51,7 +52,80 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
 
 {
   const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  let runCount = 0;
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  runtime.register(
+    "test.slow",
+    async () => {
+      runCount += 1;
+      await gate;
+      return { changed: true, data: { id: "once" }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+
+  const one = runtime.execute(
+    { type: "test.slow", input: {}, control: { idempotencyKey: "same" } },
+    { kind: "mcp", sessionId: "session-a" },
+  );
+  const two = runtime.execute(
+    { type: "test.slow", input: {}, control: { idempotencyKey: "same" } },
+    { kind: "mcp", sessionId: "session-a" },
+  );
+
+  release?.();
+  const [first, second] = await Promise.all([one, two]);
+
+  assert.equal(runCount, 1);
+  assert.deepEqual(second, first);
+  assert.equal(first.projectRevision, 1);
+}
+
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  let mutateCount = 0;
+  let otherCount = 0;
+
+  runtime.register(
+    "test.mutate",
+    async () => {
+      mutateCount += 1;
+      return { changed: true, data: { id: "mutate" }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+  runtime.register(
+    "test.other",
+    async () => {
+      otherCount += 1;
+      return { changed: true, data: { marker: "other" }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+
+  const first = await runtime.execute(
+    { type: "test.mutate", input: {}, control: { idempotencyKey: "same" } },
+    { kind: "mcp", sessionId: "session-z" },
+  );
+  const second = await runtime.execute(
+    { type: "test.other", input: {}, control: { idempotencyKey: "same" } },
+    { kind: "mcp", sessionId: "session-z" },
+  );
+
+  assert.equal(mutateCount, 1);
+  assert.equal(otherCount, 1);
+  assert.equal(first.data.id, "mutate");
+  assert.equal(second.data.marker, "other");
+}
+
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
   const trace: string[] = [];
+  let state = "before";
   let releaseFirst: (() => void) | null = null;
   const firstGate = new Promise<void>((resolve) => {
     releaseFirst = resolve;
@@ -62,6 +136,7 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
     async () => {
       trace.push("first:start");
       await firstGate;
+      state = "after";
       trace.push("first:end");
       return { changed: true, data: { id: "first" }, warnings: [] };
     },
@@ -76,14 +151,22 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
     },
     { mode: "mutation" },
   );
+  runtime.register(
+    "test.read",
+    async () => ({ changed: false, data: { ok: state === "after" }, warnings: [] }),
+    { mode: "read" },
+  );
 
   const firstPromise = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
+  const readPromise = runtime.execute({ type: "test.read", input: {} }, { kind: "ui" });
   const secondPromise = runtime.execute({ type: "test.slow", input: {} }, { kind: "ui" });
   releaseFirst?.();
 
-  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+  const [first, readResult, second] = await Promise.all([firstPromise, readPromise, secondPromise]);
 
   assert.deepEqual(trace, ["first:start", "first:end", "second:start", "second:end"]);
+  assert.equal(readResult.data.ok, true);
+  assert.equal(readResult.projectRevision, 1);
   assert.equal(first.projectRevision, 1);
   assert.equal(second.projectRevision, 2);
 }
@@ -121,9 +204,97 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
 
   await assert.rejects(
     runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" }),
-    (error: unknown) => error instanceof CommandExecutionError && error.code === "policy_denied",
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "user_denied",
   );
   assert.equal(callCount, 0);
+}
+
+{
+  let resolvePolicy: ((decision: { allowed: boolean; reason?: string }) => void) | null = null;
+  const asyncPolicy: CommandPolicy = {
+    canExecute() {
+      return new Promise((resolve) => {
+        resolvePolicy = resolve;
+      });
+    },
+  };
+  const runtime = createApplicationCommandRuntime<TestRegistry>({
+    initialRevision: 0,
+    policy: asyncPolicy,
+  });
+  runtime.register(
+    "test.mutate",
+    async () => ({ changed: true, data: { id: "ok" }, warnings: [] }),
+    { mode: "mutation" },
+  );
+
+  const pending = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
+  const waiting = runtime.snapshot().find((entry) => entry.command === "test.mutate");
+  assert.equal(waiting?.status, "awaiting-confirmation");
+
+  resolvePolicy?.({ allowed: true });
+  const result = await pending;
+  const done = runtime.snapshot().find((entry) => entry.requestId === result.requestId);
+  assert.equal(done?.status, "succeeded");
+}
+
+{
+  let resolvePolicy: ((decision: { allowed: boolean; reason?: string }) => void) | null = null;
+  const asyncPolicy: CommandPolicy = {
+    canExecute() {
+      return new Promise((resolve) => {
+        resolvePolicy = resolve;
+      });
+    },
+  };
+  const runtime = createApplicationCommandRuntime<TestRegistry>({
+    initialRevision: 0,
+    policy: asyncPolicy,
+  });
+  let handlerCalls = 0;
+  runtime.register(
+    "test.mutate",
+    async () => {
+      handlerCalls += 1;
+      return { changed: true, data: { id: "nope" }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+
+  const pending = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
+  const waiting = runtime.snapshot().find((entry) => entry.command === "test.mutate");
+  assert.equal(waiting?.status, "awaiting-confirmation");
+
+  resolvePolicy?.({ allowed: false, reason: "denied" });
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "user_denied",
+  );
+  assert.equal(handlerCalls, 0);
+}
+
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  await assert.rejects(
+    runtime.execute({ type: "test.missing" as keyof TestRegistry, input: {} as Record<string, never> }, { kind: "ui" }),
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "invalid_input",
+  );
+}
+
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  runtime.register(
+    "test.mutate",
+    async () => {
+      throw new Error("boom");
+    },
+    { mode: "mutation" },
+  );
+
+  await assert.rejects(
+    runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" }),
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "execution_failed",
+  );
 }
 
 {
@@ -226,6 +397,14 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
   const running = runtime.execute({ type: "test.slow", input: {} }, { kind: "ui" });
   const requestId = (await runtime.snapshot()).find((entry) => entry.command === "test.slow")?.requestId;
   assert.ok(requestId);
+
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const status = runtime.snapshot().find((entry) => entry.requestId === requestId)?.status;
+    if (status === "running") {
+      break;
+    }
+    await Promise.resolve();
+  }
 
   runtime.cancel(requestId!);
   releaseHandler?.();

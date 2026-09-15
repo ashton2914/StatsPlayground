@@ -1,4 +1,10 @@
-import { allowAllCommandPolicy, type CommandMode, type CommandPolicy, type CommandPolicyMetadata } from "./policy";
+import {
+  allowAllCommandPolicy,
+  type CommandMode,
+  type CommandPolicy,
+  type CommandPolicyDecision,
+  type CommandPolicyMetadata,
+} from "./policy";
 import type {
   ApplicationCommand,
   CommandActor,
@@ -93,6 +99,8 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
   private readonly idempotencyCache = new Map<string, CommandResult<unknown>>();
 
+  private readonly idempotencyInFlight = new Map<string, Promise<CommandResult<unknown>>>();
+
   private mutationTail: Promise<void> = Promise.resolve();
 
   private projectRevision: number;
@@ -127,27 +135,19 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
   ): Promise<CommandResult<TRegistry[TType]["data"]>> {
     const registered = this.handlers.get(command.type);
     if (!registered) {
-      throw new CommandExecutionError("unknown_command", `Unknown command: ${command.type}`);
+      throw new CommandExecutionError("invalid_input", `Unknown command: ${command.type}`);
     }
 
-    const idempotencyKey = this.buildIdempotencyKey(actor, command.control?.idempotencyKey);
+    const idempotencyKey = this.buildIdempotencyKey(actor, command.type, command.control?.idempotencyKey);
     if (idempotencyKey) {
       const existing = this.idempotencyCache.get(idempotencyKey);
       if (existing) {
         return existing as CommandResult<TRegistry[TType]["data"]>;
       }
-    }
-
-    const policyEvaluation = this.policy.canExecute({
-      command: command.type,
-      actor,
-      metadata: registered.metadata,
-    });
-    const policyDecision = policyEvaluation instanceof Promise
-      ? await policyEvaluation
-      : policyEvaluation;
-    if (!policyDecision.allowed) {
-      throw new CommandExecutionError("policy_denied", policyDecision.reason ?? "Command denied by policy");
+      const inFlight = this.idempotencyInFlight.get(idempotencyKey);
+      if (inFlight) {
+        return inFlight as Promise<CommandResult<TRegistry[TType]["data"]>>;
+      }
     }
 
     const requestId = this.nextRequestId();
@@ -162,6 +162,8 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       mode: registered.metadata.mode,
     });
 
+    const policyDecision = this.resolvePolicyDecision(command.type, actor, registered.metadata, request);
+
     if (context?.signal) {
       if (context.signal.aborted) {
         this.cancel(requestId);
@@ -172,20 +174,27 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       }
     }
 
-    if (registered.metadata.mode === "read") {
-      await this.runRequest(command, registered, request, context?.onProgress);
-      return request.promise as Promise<CommandResult<TRegistry[TType]["data"]>>;
-    }
-
     this.mutationTail = this.mutationTail.then(
-      () => this.runRequest(command, registered, request, context?.onProgress),
-      () => this.runRequest(command, registered, request, context?.onProgress),
+      () => this.runRequest(command, registered, request, policyDecision, context?.onProgress),
+      () => this.runRequest(command, registered, request, policyDecision, context?.onProgress),
     ).then(
       () => undefined,
       () => undefined,
     );
 
-    return request.promise as Promise<CommandResult<TRegistry[TType]["data"]>>;
+    const requestPromise = request.promise as Promise<CommandResult<TRegistry[TType]["data"]>>;
+    if (idempotencyKey) {
+      this.idempotencyInFlight.set(idempotencyKey, requestPromise as Promise<CommandResult<unknown>>);
+      requestPromise.then((result) => {
+        this.idempotencyCache.set(idempotencyKey, result as CommandResult<unknown>);
+      }).catch(() => undefined).finally(() => {
+        if (this.idempotencyInFlight.get(idempotencyKey) === requestPromise) {
+          this.idempotencyInFlight.delete(idempotencyKey);
+        }
+      });
+    }
+
+    return requestPromise;
   }
 
   cancel(requestId: string): boolean {
@@ -199,7 +208,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     }
 
     request.controller.abort();
-    if (request.status === "queued") {
+    if (request.status === "queued" || request.status === "awaiting-confirmation") {
       request.status = "cancelled";
       this.rejectRequest(request, new CommandExecutionError("cancelled", "Command cancelled"));
     }
@@ -214,10 +223,28 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     }));
   }
 
-  private buildIdempotencyKey(actor: CommandActor, idempotencyKey: string | undefined): string | null {
+  private buildIdempotencyKey(
+    actor: CommandActor,
+    commandType: string,
+    idempotencyKey: string | undefined,
+  ): string | null {
     if (!idempotencyKey) return null;
     if (actor.kind !== "mcp") return null;
-    return `${actor.sessionId}:${idempotencyKey}`;
+    return `${actor.sessionId}:${commandType}:${idempotencyKey}`;
+  }
+
+  private resolvePolicyDecision(
+    command: string,
+    actor: CommandActor,
+    metadata: CommandPolicyMetadata,
+    request: RuntimeRequest<unknown>,
+  ): Promise<CommandPolicyDecision> {
+    const evaluation = this.policy.canExecute({ command, actor, metadata });
+    if (evaluation instanceof Promise) {
+      request.status = "awaiting-confirmation";
+      return evaluation;
+    }
+    return Promise.resolve(evaluation);
   }
 
   private nextRequestId(): string {
@@ -273,6 +300,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     command: ApplicationCommand<TRegistry, TType>,
     registered: RegisteredCommand,
     request: RuntimeRequest<TRegistry[TType]["data"]>,
+    policyDecision: Promise<CommandPolicyDecision>,
     onProgress?: (progress: CommandProgress) => void,
   ): Promise<void> {
     if (request.settled || request.status === "cancelled") {
@@ -280,6 +308,17 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     }
 
     try {
+      const decision = await policyDecision;
+      if (request.settled) {
+        return;
+      }
+      if (!decision.allowed) {
+        throw new CommandExecutionError("user_denied", decision.reason ?? "Command denied by policy");
+      }
+
+      if (request.status === "awaiting-confirmation") {
+        request.status = "queued";
+      }
       request.status = "running";
 
       if (request.mode === "mutation") {
@@ -326,11 +365,6 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
       request.status = "succeeded";
       request.resolve(result);
-
-      const idempotencyKey = this.buildIdempotencyKey(request.actor, request.control.idempotencyKey);
-      if (idempotencyKey) {
-        this.idempotencyCache.set(idempotencyKey, result);
-      }
     } catch (error) {
       if (request.settled) return;
 
@@ -347,7 +381,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       }
 
       request.status = "failed";
-      request.reject(new CommandExecutionError("handler_failed", "Command handler failed", false, {
+      request.reject(new CommandExecutionError("execution_failed", "Command handler failed", false, {
         cause: error instanceof Error ? error.message : String(error),
       }));
     }
