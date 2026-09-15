@@ -20,6 +20,8 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
 
 {
   const datasets: DatasetMeta[] = [dataset("tbl-source", "Sales", 1)];
+  const events: string[] = [];
+  let runtime!: ReturnType<typeof createApplicationRuntime>;
   let createCalls = 0;
   let refreshCalls = 0;
   let dirtyTransitions = 0;
@@ -27,7 +29,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
   let selectionCalls = 0;
   const history: string[] = [];
 
-  const runtime = createApplicationRuntime({
+  runtime = createApplicationRuntime({
     initialRevision: 4,
     project: {
       getProjectState: () => ({
@@ -56,7 +58,11 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
       getDatasetGeneration: async (datasetId) => datasetId === "tbl-sql" ? 8 : 1,
     },
     sql: {
+      preflightCreateTableFromSqlQuery: async () => {
+        events.push("preflight");
+      },
       createTableFromSqlQuery: async (sql, name) => {
+        events.push(`mutation:${runtime.snapshot()[0]?.status ?? "unknown"}`);
         createCalls += 1;
         assert.equal(sql, "SELECT revenue, region FROM Sales");
         assert.equal(name, "Revenue By Region");
@@ -98,6 +104,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
   assert.equal(dirtyTransitions, 1);
   assert.equal(selectionCalls, 1);
   assert.equal(history.length, 1);
+  assert.deepEqual(events, ["preflight", "mutation:committing"]);
   assert.equal(result.projectRevision, 5);
   assert.equal(result.data.datasetId, "tbl-sql");
   assert.equal(result.data.datasetName, "Revenue By Region");
@@ -115,6 +122,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
 
 {
   let createCalls = 0;
+  let preflightCalls = 0;
   let refreshCalls = 0;
   let dirtyCalls = 0;
   let selectionCalls = 0;
@@ -151,6 +159,10 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
       getDatasetGeneration: async () => 1,
     },
     sql: {
+      preflightCreateTableFromSqlQuery: async () => {
+        preflightCalls += 1;
+        throw new Error("Invalid parameter: Only a single managed-table SELECT statement is allowed");
+      },
       createTableFromSqlQuery: async () => {
         createCalls += 1;
         throw new Error("Only a single managed-table SELECT statement is allowed");
@@ -168,7 +180,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
         selectionCalls += 1;
       },
       historyMessage: () => "history",
-    },
+    } as any,
   });
 
   await assert.rejects(
@@ -187,12 +199,136 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
       && error.message.includes("single managed-table SELECT"),
   );
 
-  assert.equal(createCalls, 1);
+  assert.equal(preflightCalls, 1);
+  assert.equal(createCalls, 0);
   assert.equal(refreshCalls, 0);
   assert.equal(dirtyCalls, 0);
   assert.equal(selectionCalls, 0);
   assert.equal(historyCalls, 0);
   assert.equal(revision, 9);
+}
+
+{
+  let createCalls = 0;
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 2,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task4",
+          filePath: "/Users/ashton/projects/task4.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: 2,
+      }),
+      listDatasets: () => [],
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => [],
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 1,
+    },
+    sql: {
+      preflightCreateTableFromSqlQuery: async () => {},
+      createTableFromSqlQuery: async () => {
+        createCalls += 1;
+        throw new Error("Database error: disk I/O failed");
+      },
+      refreshDatasets: async () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateDataset: () => {},
+      historyMessage: () => "history",
+    },
+  });
+
+  await assert.rejects(
+    runtime.execute(
+      {
+        type: "sql.createTable",
+        input: {
+          sql: "SELECT 1 AS value",
+          name: "Bad Infra",
+        },
+      },
+      { kind: "ui" },
+    ),
+    (error) => error instanceof CommandExecutionError
+      && error.code === "execution_failed"
+      && error.message.includes("disk I/O failed"),
+  );
+
+  assert.equal(createCalls, 1);
+}
+
+{
+  let preflightCalls = 0;
+  let createCalls = 0;
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 2,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task4",
+          filePath: "/Users/ashton/projects/task4.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: 2,
+      }),
+      listDatasets: () => [],
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => [],
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 1,
+    },
+    sql: {
+      preflightCreateTableFromSqlQuery: async () => {
+        preflightCalls += 1;
+        throw new Error("Database error: lock wait timeout");
+      },
+      createTableFromSqlQuery: async () => {
+        createCalls += 1;
+        return dataset("unused", "unused", 1);
+      },
+      refreshDatasets: async () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateDataset: () => {},
+      historyMessage: () => "history",
+    },
+  });
+
+  await assert.rejects(
+    runtime.execute(
+      {
+        type: "sql.createTable",
+        input: {
+          sql: "SELECT 1 AS value",
+          name: "Infra Preflight",
+        },
+      },
+      { kind: "ui" },
+    ),
+    (error) => error instanceof CommandExecutionError
+      && error.code === "execution_failed"
+      && error.message.includes("lock wait timeout"),
+  );
+
+  assert.equal(preflightCalls, 1);
+  assert.equal(createCalls, 0);
 }
 
 {
@@ -223,6 +359,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
       getDatasetGeneration: async () => 16,
     },
     sql: {
+      preflightCreateTableFromSqlQuery: async () => {},
       createTableFromSqlQuery: async (sql, name) => {
         sqlArg = sql;
         const created = dataset("tbl-sql-2", name, 16);

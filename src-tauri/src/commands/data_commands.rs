@@ -131,6 +131,16 @@ pub fn create_table_from_sql_query(
 }
 
 #[tauri::command]
+pub fn preflight_create_table_from_sql_query(
+    state: State<'_, AppState>,
+    sql: String,
+    name: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.preflight_create_table_from_sql_query(&sql, &name)
+}
+
+#[tauri::command]
 pub fn create_table(
     state: State<'_, AppState>,
     name: String,

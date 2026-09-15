@@ -1316,6 +1316,18 @@ impl DuckDbEngine {
         })
     }
 
+    pub fn preflight_create_table_from_sql_query(
+        &self,
+        sql: &str,
+        name: &str,
+    ) -> Result<(), AppError> {
+        let sql = self.validate_query_against_visible_tables(sql)?;
+        let snapshot = self.build_isolated_snapshot_connection()?;
+        let _ = self.collect_sql_query_schema(&snapshot, &sql)?;
+        self.validate_dataset_name(name, None)?;
+        Ok(())
+    }
+
     pub fn locate_table_row(
         &self,
         dataset_id: &str,

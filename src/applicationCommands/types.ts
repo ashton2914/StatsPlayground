@@ -120,8 +120,8 @@ export interface TableTransformRunInput {
 
 export interface TableTransformCommandData {
   execution: import("@/types/tableTransform").TableTransformExecutionResult;
-  definition: import("@/types/tableTransform").TableTransformDefinition;
-  binding: import("@/types/tableTransform").TableTransformBindingState;
+  definition: import("@/types/tableTransform").TableTransformDefinition | null;
+  binding: import("@/types/tableTransform").TableTransformBindingState | null;
   outputTable: TableDescribeResult | null;
   targetDatasetGeneration: number | null;
 }

@@ -21,6 +21,10 @@ export const dataService = {
     invoke<SqlQueryResult>("execute_sql_query", { sql, page, pageSize }),
 
   /** 根据 SQL 查询创建数据表 */
+  preflightCreateTableFromSqlQuery: (sql: string, name: string) =>
+    invoke<void>("preflight_create_table_from_sql_query", { sql, name }),
+
+  /** 根据 SQL 查询创建数据表 */
   createTableFromSqlQuery: (sql: string, name: string) =>
     invoke<DatasetMeta>("create_table_from_sql_query", { sql, name }),
 

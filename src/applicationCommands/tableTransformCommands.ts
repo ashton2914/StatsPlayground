@@ -1,6 +1,7 @@
 import type { ProjectCommandDependencies } from "@/applicationCommands/projectCommands";
 import { createProjectCommandHandlers } from "@/applicationCommands/projectCommands";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
+import { mapTauriAppError } from "@/applicationCommands/tauriError";
 import type {
   CommandWarning,
   TableTransformCommandData,
@@ -21,13 +22,15 @@ import type {
 } from "@/types/tableTransform";
 
 export interface TableTransformCommandDependencies {
+  preflightCreateAndRun: (
+    input: TableTransformCreateInput["draft"],
+  ) => Promise<void>;
+  preflightRun: (transformId: string) => Promise<void>;
   createAndRun: (
     input: TableTransformCreateInput["draft"],
-    controls?: { beginCommit?: () => void },
   ) => Promise<TableTransformExecutionResult>;
   rerun: (
     transformId: string,
-    controls?: { beginCommit?: () => void },
   ) => Promise<TableTransformExecutionResult>;
   listDefinitions: () => TableTransformDefinition[];
   listBindings: () => TableTransformBindingState[];
@@ -64,6 +67,11 @@ const OUTPUT_READ_WARNING: CommandWarning = {
   message: "Table transform completed, but output inspection failed",
 };
 
+const COMMITTED_STATE_WARNING: CommandWarning = {
+  code: "table_transform_committed_state_unavailable",
+  message: "Table transform completed, but committed definition or binding could not be resolved",
+};
+
 async function runWarningSafe(
   effect: () => void | Promise<void>,
   warnings: CommandWarning[],
@@ -76,11 +84,19 @@ async function runWarningSafe(
   }
 }
 
-function resolveCommittedState(dependencies: TableTransformCommandDependencies, definitionId: string) {
+function resolveCommittedState(
+  dependencies: TableTransformCommandDependencies,
+  definitionId: string,
+  warnings: CommandWarning[],
+) {
   const definition = dependencies.listDefinitions().find((item) => item.id === definitionId);
   const binding = dependencies.listBindings().find((item) => item.definitionId === definitionId);
   if (!definition || !binding) {
-    throw new CommandExecutionError("execution_failed", `Table transform state ${definitionId} was not persisted`);
+    warnings.push(COMMITTED_STATE_WARNING);
+    return {
+      definition: null,
+      binding: null,
+    };
   }
   return { definition, binding };
 }
@@ -89,8 +105,10 @@ export function createTableTransformCommandHandlers(
   dependencies: Partial<TableTransformCommandDependencies> = {},
 ) {
   const resolvedDependencies: TableTransformCommandDependencies = {
-    createAndRun: (draft, controls) => useTableTransformStore.getState().createAndRun(draft, controls),
-    rerun: (transformId, controls) => useTableTransformStore.getState().rerun(transformId, controls),
+    preflightCreateAndRun: (draft) => useTableTransformStore.getState().preflightCreateAndRun(draft),
+    preflightRun: (transformId) => useTableTransformStore.getState().preflightRun(transformId),
+    createAndRun: (draft) => useTableTransformStore.getState().createAndRun(draft),
+    rerun: (transformId) => useTableTransformStore.getState().rerun(transformId),
     listDefinitions: () => useTableTransformStore.getState().definitions,
     listBindings: () => useTableTransformStore.getState().bindings,
     refreshDatasets: () => useDataStore.getState().refreshDatasets(),
@@ -112,7 +130,7 @@ export function createTableTransformCommandHandlers(
     execution: TableTransformExecutionResult,
     warnings: CommandWarning[],
   ): Promise<TableTransformCommandData> {
-    const persisted = resolveCommittedState(resolvedDependencies, execution.definitionId);
+    const persisted = resolveCommittedState(resolvedDependencies, execution.definitionId, warnings);
     let outputTable = null;
     if (execution.output) {
       try {
@@ -134,7 +152,20 @@ export function createTableTransformCommandHandlers(
     input: TableTransformCreateInput,
     controls?: { beginCommit?: () => void },
   ): Promise<{ data: TableTransformCommandData; warnings: CommandWarning[] }> {
-    const execution = await resolvedDependencies.createAndRun(input.draft, controls);
+    try {
+      await resolvedDependencies.preflightCreateAndRun(input.draft);
+    } catch (error) {
+      throw mapTauriAppError(error);
+    }
+
+    controls?.beginCommit?.();
+
+    let execution: TableTransformExecutionResult;
+    try {
+      execution = await resolvedDependencies.createAndRun(input.draft);
+    } catch (error) {
+      throw mapTauriAppError(error);
+    }
     const warnings: CommandWarning[] = [];
 
     await runWarningSafe(
@@ -174,7 +205,20 @@ export function createTableTransformCommandHandlers(
       throw new CommandExecutionError("invalid_input", "transformId is required");
     }
 
-    const execution = await resolvedDependencies.rerun(input.transformId, controls);
+    try {
+      await resolvedDependencies.preflightRun(input.transformId);
+    } catch (error) {
+      throw mapTauriAppError(error);
+    }
+
+    controls?.beginCommit?.();
+
+    let execution: TableTransformExecutionResult;
+    try {
+      execution = await resolvedDependencies.rerun(input.transformId);
+    } catch (error) {
+      throw mapTauriAppError(error);
+    }
     const warnings: CommandWarning[] = [];
     await runWarningSafe(
       () => resolvedDependencies.refreshDatasets(),

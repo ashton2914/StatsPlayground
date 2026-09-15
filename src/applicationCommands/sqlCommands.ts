@@ -1,4 +1,5 @@
 import { CommandExecutionError } from "@/applicationCommands/runtime";
+import { mapTauriAppError } from "@/applicationCommands/tauriError";
 import type { SqlCreateTableInput, SqlCreateTableResult } from "@/applicationCommands/types";
 import type { ProjectCommandDependencies } from "@/applicationCommands/projectCommands";
 import { createProjectCommandHandlers } from "@/applicationCommands/projectCommands";
@@ -20,12 +21,8 @@ const SQL_OUTPUT_WARNING: CommandWarning = {
   message: "Table created from SQL, but output inspection failed",
 };
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
 export interface SqlCommandDependencies {
+  preflightCreateTableFromSqlQuery: typeof dataService.preflightCreateTableFromSqlQuery;
   createTableFromSqlQuery: typeof dataService.createTableFromSqlQuery;
   refreshDatasets: () => Promise<void>;
   markDirty: () => void;
@@ -40,6 +37,7 @@ export function createSqlCommandHandlers(
   dependencies: Partial<SqlCommandDependencies> = {},
 ) {
   const resolvedDependencies: SqlCommandDependencies = {
+    preflightCreateTableFromSqlQuery: dataService.preflightCreateTableFromSqlQuery,
     createTableFromSqlQuery: dataService.createTableFromSqlQuery,
     refreshDatasets: () => useDataStore.getState().refreshDatasets(),
     markDirty: () => useProjectStore.getState().markDirty(),
@@ -67,13 +65,19 @@ export function createSqlCommandHandlers(
       throw new CommandExecutionError("invalid_input", "name is required");
     }
 
+    try {
+      await resolvedDependencies.preflightCreateTableFromSqlQuery(input.sql, input.name);
+    } catch (error) {
+      throw mapTauriAppError(error);
+    }
+
     controls?.beginCommit?.();
 
     let created;
     try {
       created = await resolvedDependencies.createTableFromSqlQuery(input.sql, input.name);
     } catch (error) {
-      throw new CommandExecutionError("invalid_input", errorMessage(error));
+      throw mapTauriAppError(error);
     }
 
     const warnings: CommandWarning[] = [];

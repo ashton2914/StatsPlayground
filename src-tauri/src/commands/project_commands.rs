@@ -76,6 +76,18 @@ pub(crate) fn create_table_transform_entry(
     })
 }
 
+pub(crate) fn preflight_create_table_transform_entry(
+    state: &AppState,
+    draft: TableTransformDraft,
+    input_bindings: Vec<TableTransformInputBinding>,
+) -> Result<(), AppError> {
+    let engine = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    TableTransformService::new(&engine).preflight_create_from_draft(&draft, input_bindings)
+}
+
 fn run_table_transform_entry(
     state: &AppState,
     definition: TableTransformDefinition,
@@ -94,6 +106,18 @@ fn run_table_transform_entry(
         execution,
         lineage_graph,
     })
+}
+
+fn preflight_run_table_transform_entry(
+    state: &AppState,
+    definition: TableTransformDefinition,
+    binding: TableTransformProjectBinding,
+) -> Result<(), AppError> {
+    let engine = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    TableTransformService::new(&engine).preflight_run(&definition, &binding)
 }
 
 fn rebind_table_transform_entry(
@@ -301,6 +325,16 @@ pub fn create_table_transform(
 }
 
 #[tauri::command]
+pub fn preflight_create_table_transform(
+    state: State<'_, AppState>,
+    draft: TableTransformDraft,
+    input_bindings: Vec<TableTransformInputBinding>,
+    _lineage_graph: ProjectLineageGraph,
+) -> Result<(), AppError> {
+    preflight_create_table_transform_entry(state.inner(), draft, input_bindings)
+}
+
+#[tauri::command]
 pub fn run_table_transform(
     state: State<'_, AppState>,
     definition: TableTransformDefinition,
@@ -308,6 +342,16 @@ pub fn run_table_transform(
     lineage_graph: ProjectLineageGraph,
 ) -> Result<TableTransformCommandResult, AppError> {
     run_table_transform_entry(state.inner(), definition, binding, lineage_graph)
+}
+
+#[tauri::command]
+pub fn preflight_run_table_transform(
+    state: State<'_, AppState>,
+    definition: TableTransformDefinition,
+    binding: TableTransformProjectBinding,
+    _lineage_graph: ProjectLineageGraph,
+) -> Result<(), AppError> {
+    preflight_run_table_transform_entry(state.inner(), definition, binding)
 }
 
 #[tauri::command]
@@ -566,7 +610,9 @@ mod tests {
     fn table_transform_commands_are_registered() {
         let source = include_str!("../lib.rs");
         for command in [
+            "preflight_create_table_transform",
             "create_table_transform",
+            "preflight_run_table_transform",
             "run_table_transform",
             "rebind_table_transform",
             "export_table_transform",
@@ -577,5 +623,119 @@ mod tests {
                 "{command} must be registered"
             );
         }
+    }
+
+    #[test]
+    fn preflight_create_table_transform_has_no_side_effects() {
+        let state = AppState::new().expect("create state");
+        {
+            let engine = state.db.lock().expect("lock database");
+            engine
+                .create_empty_table(
+                    "source-table",
+                    "Source",
+                    &["value".to_string()],
+                    &["BIGINT".to_string()],
+                )
+                .expect("create source");
+        }
+
+        let before = {
+            let engine = state.db.lock().expect("lock database");
+            engine.list_datasets().expect("list before")
+        };
+
+        let draft = TableTransformDraft {
+            name: "Reusable sort".to_string(),
+            output_name: "Sorted output".to_string(),
+            operation: TableTransformOperation::Sort {
+                sort_columns: vec![SortColumn {
+                    column: "value".to_string(),
+                    direction: SortDirection::Ascending,
+                }],
+            },
+        };
+
+        super::preflight_create_table_transform_entry(
+            &state,
+            draft,
+            vec![TableTransformInputBinding {
+                role: "source".to_string(),
+                table_document_id: "source-table".to_string(),
+            }],
+        )
+        .expect("preflight should succeed");
+
+        let after = {
+            let engine = state.db.lock().expect("lock database");
+            engine.list_datasets().expect("list after")
+        };
+
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before[0].id, after[0].id);
+        assert_eq!(before[0].name, after[0].name);
+    }
+
+    #[test]
+    fn preflight_run_table_transform_matches_run_validation_errors() {
+        let state = AppState::new().expect("create state");
+        {
+            let engine = state.db.lock().expect("lock database");
+            engine
+                .create_empty_table(
+                    "source-table",
+                    "Source",
+                    &["value".to_string()],
+                    &["BIGINT".to_string()],
+                )
+                .expect("create source");
+        }
+
+        let draft = TableTransformDraft {
+            name: "Reusable sort".to_string(),
+            output_name: "Sorted output".to_string(),
+            operation: TableTransformOperation::Sort {
+                sort_columns: vec![SortColumn {
+                    column: "value".to_string(),
+                    direction: SortDirection::Ascending,
+                }],
+            },
+        };
+
+        let created = super::create_table_transform_entry(
+            &state,
+            draft,
+            vec![TableTransformInputBinding {
+                role: "source".to_string(),
+                table_document_id: "source-table".to_string(),
+            }],
+            ProjectLineageGraph::default(),
+        )
+        .expect("create transform");
+
+        let mut stale_binding = created.execution.binding.clone();
+        stale_binding.definition_revision += 1;
+
+        let datasets_before = {
+            let engine = state.db.lock().expect("lock database");
+            engine.list_datasets().expect("list before")
+        };
+
+        let error = super::preflight_run_table_transform_entry(
+            &state,
+            created.definition,
+            stale_binding,
+        )
+        .expect_err("stale definition should fail in preflight");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("stale table transform definition revision")));
+
+        let datasets_after = {
+            let engine = state.db.lock().expect("lock database");
+            engine.list_datasets().expect("list after")
+        };
+        assert_eq!(datasets_before.len(), datasets_after.len());
+        assert_eq!(datasets_before[0].id, datasets_after[0].id);
+        assert_eq!(datasets_before[0].name, datasets_after[0].name);
     }
 }

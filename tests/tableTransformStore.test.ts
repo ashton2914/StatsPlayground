@@ -154,6 +154,8 @@ async function main() {
   let lineage = structuredClone(EMPTY_LINEAGE);
   const calls: Array<{ kind: string; inputs?: TableTransformInputBinding[] }> = [];
   const service = {
+    preflightCreateAndRun: async () => {},
+    preflightRun: async () => {},
     createAndRun: async (draft: TableTransformDraft) => {
       calls.push({ kind: "create", inputs: draft.inputBindings });
       return commandResult("succeeded");
@@ -211,6 +213,107 @@ async function main() {
   older.resolve(commandResult("succeeded", binding(undefined, 2)));
   await olderRun;
   assert.equal(fencedStore.getState().bindings[0]?.outputGeneration, 3);
+
+  const createA = deferred<TableTransformCommandResult>();
+  const createB = deferred<TableTransformCommandResult>();
+  let createCount = 0;
+  const sameNameStore = createTableTransformStore({
+    service: {
+      ...service,
+      createAndRun: async () => (++createCount === 1 ? createA.promise : createB.promise),
+    },
+    getLineage: () => lineage,
+    setLineage: (next) => { lineage = next; },
+  });
+
+  const concurrentDraft = {
+    name: "Shared Name",
+    outputName: "Shared Output",
+    operation: definition().operation,
+    inputBindings: binding().inputs,
+  } satisfies TableTransformDraft;
+
+  const createOne = sameNameStore.getState().createAndRun(concurrentDraft);
+  const createTwo = sameNameStore.getState().createAndRun(concurrentDraft);
+
+  createA.resolve({
+    definition: { ...definition(), id: "transform-A", name: "Shared Name A", output: { tableDocumentId: "output-A", name: "Output A" } },
+    execution: {
+      ...commandResult("succeeded", {
+        definitionId: "transform-A",
+        definitionRevision: 1,
+        inputs: [{ role: "source", tableDocumentId: "source-a" }],
+        outputGeneration: 2,
+      }).execution,
+      definitionId: "transform-A",
+      output: {
+        id: "output-A",
+        name: "Output A",
+        sourcePath: null,
+        sourceType: "query",
+        rowCount: 1,
+        colCount: 1,
+        generation: 2,
+        createdAt: "2026-09-08T00:00:00Z",
+        updatedAt: "2026-09-08T00:00:00Z",
+      },
+      binding: {
+        definitionId: "transform-A",
+        definitionRevision: 1,
+        inputs: [{ role: "source", tableDocumentId: "source-a" }],
+        outputGeneration: 2,
+      },
+      runState: {
+        definitionRevision: 1,
+        status: "succeeded",
+        outputGeneration: 2,
+      },
+    },
+    lineageGraph: EMPTY_LINEAGE,
+  });
+
+  createB.resolve({
+    definition: { ...definition(), id: "transform-B", name: "Shared Name B", output: { tableDocumentId: "output-B", name: "Output B" } },
+    execution: {
+      ...commandResult("succeeded", {
+        definitionId: "transform-B",
+        definitionRevision: 1,
+        inputs: [{ role: "source", tableDocumentId: "source-a" }],
+        outputGeneration: 3,
+      }).execution,
+      definitionId: "transform-B",
+      output: {
+        id: "output-B",
+        name: "Output B",
+        sourcePath: null,
+        sourceType: "query",
+        rowCount: 1,
+        colCount: 1,
+        generation: 3,
+        createdAt: "2026-09-08T00:00:00Z",
+        updatedAt: "2026-09-08T00:00:00Z",
+      },
+      binding: {
+        definitionId: "transform-B",
+        definitionRevision: 1,
+        inputs: [{ role: "source", tableDocumentId: "source-a" }],
+        outputGeneration: 3,
+      },
+      runState: {
+        definitionRevision: 1,
+        status: "succeeded",
+        outputGeneration: 3,
+      },
+    },
+    lineageGraph: EMPTY_LINEAGE,
+  });
+
+  await createOne;
+  await createTwo;
+  assert.equal(sameNameStore.getState().definitions.length, 2);
+  assert.equal(sameNameStore.getState().bindings.length, 2);
+  assert.equal(sameNameStore.getState().definitions.some((item) => item.id === "transform-A"), true);
+  assert.equal(sameNameStore.getState().definitions.some((item) => item.id === "transform-B"), true);
 
   lineage = lineageWithTransform();
   const pendingRemoval = deferred<TableTransformCommandResult>();

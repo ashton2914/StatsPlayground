@@ -130,6 +130,8 @@ const draft: TableTransformDraft = {
       getDatasetGeneration: async (datasetId) => datasetId === "tbl-out" ? 4 : 1,
     },
     tableTransform: {
+      preflightCreateAndRun: async () => {},
+      preflightRun: async () => {},
       createAndRun: async () => {
         createAndRunCalls += 1;
         const definition = makeDefinition();
@@ -176,14 +178,15 @@ const draft: TableTransformDraft = {
   assert.equal(activations[0], "tbl-out");
   assert.equal(result.projectRevision, 10);
   assert.equal(result.data.execution.definitionId, "tt-1");
-  assert.equal(result.data.definition.id, "tt-1");
-  assert.equal(result.data.binding.definitionId, "tt-1");
+  assert.equal(result.data.definition?.id, "tt-1");
+  assert.equal(result.data.binding?.definitionId, "tt-1");
   assert.equal(result.data.outputTable?.dataset.id, "tbl-out");
   assert.equal(result.data.outputTable?.generation, 4);
 }
 
 {
   let called = 0;
+  let preflightCalled = 0;
   const runtime = createApplicationRuntime({
     initialRevision: 3,
     project: {
@@ -208,6 +211,11 @@ const draft: TableTransformDraft = {
       getDatasetGeneration: async () => 1,
     },
     tableTransform: {
+      preflightCreateAndRun: async () => {
+        preflightCalled += 1;
+        throw new Error("Invalid parameter: transform input table document id is required");
+      },
+      preflightRun: async () => {},
       createAndRun: async () => {
         called += 1;
         return makeExecution(1);
@@ -220,7 +228,7 @@ const draft: TableTransformDraft = {
       recordAction: () => {},
       activateDataset: () => {},
       historyMessage: () => "history",
-    },
+    } as any,
   });
 
   await assert.rejects(
@@ -235,7 +243,132 @@ const draft: TableTransformDraft = {
     (error) => error instanceof CommandExecutionError && error.code === "revision_conflict",
   );
 
+  assert.equal(preflightCalled, 0);
   assert.equal(called, 0);
+}
+
+{
+  let preflightCalled = 0;
+  let createCalled = 0;
+  const runtime = createApplicationRuntime({
+    initialRevision: 3,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task4",
+          filePath: "/Users/ashton/projects/task4.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: 3,
+      }),
+      listDatasets: () => [],
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => [],
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 1,
+    },
+    tableTransform: {
+      preflightCreateAndRun: async () => {
+        preflightCalled += 1;
+        throw new Error("Invalid parameter: transform input table document id is required");
+      },
+      preflightRun: async () => {},
+      createAndRun: async () => {
+        createCalled += 1;
+        return makeExecution(1);
+      },
+      rerun: async () => makeExecution(1),
+      listDefinitions: () => [makeDefinition()],
+      listBindings: () => [makeBinding(1)],
+      refreshDatasets: async () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateDataset: () => {},
+      historyMessage: () => "history",
+    } as any,
+  });
+
+  await assert.rejects(
+    runtime.execute(
+      {
+        type: "tableTransform.create",
+        input: { draft },
+        control: { expectedProjectRevision: 3 },
+      },
+      { kind: "ui" },
+    ),
+    (error) => error instanceof CommandExecutionError
+      && error.code === "invalid_input"
+      && error.message.includes("table document id is required"),
+  );
+
+  assert.equal(preflightCalled, 1);
+  assert.equal(createCalled, 0);
+}
+
+{
+  const events: string[] = [];
+  let runtime!: ReturnType<typeof createApplicationRuntime>;
+
+  runtime = createApplicationRuntime({
+    initialRevision: 5,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task4",
+          filePath: "/Users/ashton/projects/task4.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: 5,
+      }),
+      listDatasets: () => [makeDataset("tbl-source", "Source", 1), makeDataset("tbl-out", "Sorted Output", 2)],
+      listTableTransforms: () => [makeDefinition()],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => [],
+      getColumns: async () => [["value", "DOUBLE"]],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 2,
+    },
+    tableTransform: {
+      preflightCreateAndRun: async () => {
+        events.push("preflight");
+      },
+      preflightRun: async () => {},
+      createAndRun: async () => {
+        events.push(`mutation:${runtime.snapshot()[0]?.status ?? "unknown"}`);
+        return makeExecution(2);
+      },
+      rerun: async () => makeExecution(2),
+      listDefinitions: () => [makeDefinition()],
+      listBindings: () => [makeBinding(2)],
+      refreshDatasets: async () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateDataset: () => {},
+      historyMessage: () => "history",
+    },
+  });
+
+  await runtime.execute(
+    {
+      type: "tableTransform.create",
+      input: { draft },
+      control: { expectedProjectRevision: 5 },
+    },
+    { kind: "ui" },
+  );
+
+  assert.deepEqual(events, ["preflight", "mutation:committing"]);
 }
 
 {
@@ -266,6 +399,8 @@ const draft: TableTransformDraft = {
       getDatasetGeneration: async () => 7,
     },
     tableTransform: {
+      preflightCreateAndRun: async () => {},
+      preflightRun: async () => {},
       createAndRun: async () => makeExecution(6),
       rerun: async (transformId) => {
         rerunCalls += 1;
@@ -295,6 +430,77 @@ const draft: TableTransformDraft = {
   assert.equal(result.projectRevision, 13);
   assert.equal(result.data.execution.runState.outputGeneration, 7);
   assert.equal(result.data.targetDatasetGeneration, 7);
+}
+
+{
+  const runtime = createApplicationRuntime({
+    initialRevision: 21,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task4",
+          filePath: "/Users/ashton/projects/task4.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: true,
+        readOnly: false,
+        projectRevision: 21,
+      }),
+      listDatasets: () => [makeDataset("tbl-source", "Source", 1)],
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => [],
+      getColumns: async () => [["value", "DOUBLE"]],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 1,
+    },
+    tableTransform: {
+      preflightCreateAndRun: async () => {},
+      preflightRun: async () => {},
+      createAndRun: async () => ({
+        definitionId: "missing-definition",
+        status: "succeeded",
+        output: makeDataset("tbl-out", "Sorted Output", 2),
+        schemaReports: [],
+        binding: {
+          definitionId: "missing-definition",
+          definitionRevision: 1,
+          inputs: [{ role: "source", tableDocumentId: "tbl-source" }],
+          outputGeneration: 2,
+        },
+        runState: {
+          definitionRevision: 1,
+          status: "succeeded",
+          outputGeneration: 2,
+        },
+      }),
+      rerun: async () => makeExecution(1),
+      listDefinitions: () => [],
+      listBindings: () => [],
+      refreshDatasets: async () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateDataset: () => {},
+      historyMessage: () => "history",
+    },
+  });
+
+  const result = await runtime.execute(
+    {
+      type: "tableTransform.create",
+      input: { draft },
+      control: { expectedProjectRevision: 21 },
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(result.projectRevision, 22);
+  assert.equal(result.data.execution.definitionId, "missing-definition");
+  assert.equal(result.data.definition, null);
+  assert.equal(result.data.binding, null);
+  assert.equal(result.warnings.some((warning) => warning.code === "table_transform_committed_state_unavailable"), true);
 }
 
 console.log("application command table transform tests passed");

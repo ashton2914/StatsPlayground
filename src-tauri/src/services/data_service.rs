@@ -249,6 +249,46 @@ mod tests {
     }
 
     #[test]
+    fn preflight_sql_create_rejects_invalid_query_without_side_effects() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        service
+            .create_table("Seed", &["value".to_string()], &["VARCHAR".to_string()])
+            .expect("seed create");
+
+        let datasets_before = metadata_total_dataset_count(&state);
+        let physical_before = physical_table_count(&state);
+
+        let error = service
+            .preflight_create_table_from_sql_query("SELECT 1; SELECT 2", "Bad")
+            .expect_err("preflight must reject multi-statement query");
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+        assert_eq!(metadata_total_dataset_count(&state), datasets_before);
+        assert_eq!(physical_table_count(&state), physical_before);
+    }
+
+    #[test]
+    fn preflight_sql_create_rejects_reserved_row_id_without_side_effects() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        service
+            .create_table("Seed", &["value".to_string()], &["VARCHAR".to_string()])
+            .expect("seed create");
+
+        let datasets_before = metadata_total_dataset_count(&state);
+        let physical_before = physical_table_count(&state);
+
+        let error = service
+            .preflight_create_table_from_sql_query("SELECT 1 AS \"_row_id\"", "Bad")
+            .expect_err("reserved row id must fail preflight");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("reserved name _row_id")));
+        assert_eq!(metadata_total_dataset_count(&state), datasets_before);
+        assert_eq!(physical_table_count(&state), physical_before);
+    }
+
+    #[test]
     fn import_name_normalization_is_deterministic_for_unsafe_stems() {
         assert_eq!(
             normalize_unsafe_portable_basename("NUL.txt", "untitled"),
@@ -843,6 +883,20 @@ impl<'a> DataService<'a> {
         let id = uuid::Uuid::new_v4().to_string();
         let resolved_name = Self::resolve_create_dataset_name(&db, name)?;
         db.create_table_from_sql_query(&id, &resolved_name, sql)
+    }
+
+    pub fn preflight_create_table_from_sql_query(
+        &self,
+        sql: &str,
+        name: &str,
+    ) -> Result<(), AppError> {
+        let db = self
+            .state
+            .db
+            .lock()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let resolved_name = Self::resolve_create_dataset_name(&db, name)?;
+        db.preflight_create_table_from_sql_query(sql, &resolved_name)
     }
 
     pub fn create_table_from_rows(

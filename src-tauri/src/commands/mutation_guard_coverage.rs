@@ -142,6 +142,10 @@ mod tests {
                 CommandClass::Mutation,
             ),
             (
+                "commands::data_commands::preflight_create_table_from_sql_query",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::data_commands::create_table_from_rows",
                 CommandClass::Mutation,
             ),
@@ -368,8 +372,16 @@ mod tests {
                 CommandClass::Mutation,
             ),
             (
+                "commands::project_commands::preflight_create_table_transform",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::project_commands::run_table_transform",
                 CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::preflight_run_table_transform",
+                CommandClass::ReadOnly,
             ),
             (
                 "commands::project_commands::rebind_table_transform",
