@@ -8442,13 +8442,15 @@ impl DuckDbEngine {
                         response.name
                     )));
                 }
-                column_type(condition)?;
-                let condition_role = self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
-                if !matches!(condition_role.to_ascii_lowercase().as_str(), "nominal" | "ordinal") {
-                    return Err(AppError::InvalidParam(format!(
-                        "hypothesis test condition must be categorical: {}",
-                        condition.name
-                    )));
+                let condition_type = column_type(condition)?;
+                if is_numeric_type(condition_type) || is_temporal_type(condition_type) {
+                    let condition_role = self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
+                    if !matches!(condition_role.to_ascii_lowercase().as_str(), "nominal" | "ordinal") {
+                        return Err(AppError::InvalidParam(format!(
+                            "hypothesis test condition must be categorical: {}",
+                            condition.name
+                        )));
+                    }
                 }
                 if let Some(subject) = subject {
                     column_type(subject)?;
@@ -9023,6 +9025,11 @@ fn is_numeric_type(data_type: &str) -> bool {
             | "DECIMAL"
             | "NUMERIC"
     )
+}
+
+fn is_temporal_type(data_type: &str) -> bool {
+    let data_type = data_type.to_ascii_uppercase();
+    data_type.contains("DATE") || data_type.contains("TIME") || data_type.contains("TIMESTAMP")
 }
 
 fn base_data_type(data_type: &str) -> &str {
@@ -10468,6 +10475,110 @@ mod tests {
         assert_eq!(rows[0].response, Some(10.0));
         assert_eq!(rows[1].response, None);
         assert_eq!(rows[1].condition.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn read_hypothesis_test_rows_accepts_text_condition_with_default_role() {
+        use crate::engine::hypothesis_test::normalize::HypothesisTestRows;
+        use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
+
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_y_by_x_dataset(
+            &engine,
+            "hypothesis-text-condition",
+            &["response", "condition"],
+            &["DOUBLE", "VARCHAR"],
+            r#"
+            INSERT INTO "dataset_hypothesis_text_condition" (_row_id, response, condition) VALUES
+                (1, 10.0, 'A');
+            "#,
+            1,
+        );
+        assert_eq!(
+            engine.fit_y_by_x_column_role("hypothesis-text-condition", "condition").unwrap(),
+            "continuous"
+        );
+
+        let rows = engine.read_hypothesis_test_rows(
+            "hypothesis-text-condition",
+            &HypothesisTestRoles::Long {
+                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
+                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
+                subject: None,
+            },
+        ).expect("text condition should not require categorical role metadata");
+
+        let HypothesisTestRows::Long(rows) = rows else {
+            panic!("expected long rows");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].condition.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn read_hypothesis_test_rows_rejects_temporal_condition_with_continuous_role() {
+        use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
+
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_y_by_x_dataset(
+            &engine,
+            "hypothesis-temporal-condition",
+            &["response", "condition"],
+            &["DOUBLE", "DATE"],
+            r#"
+            INSERT INTO "dataset_hypothesis_temporal_condition" (_row_id, response, condition) VALUES
+                (1, 10.0, DATE '2026-09-15');
+            "#,
+            1,
+        );
+
+        let error = engine.read_hypothesis_test_rows(
+            "hypothesis-temporal-condition",
+            &HypothesisTestRoles::Long {
+                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
+                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "datetime".into() },
+                subject: None,
+            },
+        ).expect_err("temporal condition should require categorical role metadata");
+
+        assert!(matches!(
+            error,
+            AppError::InvalidParam(message)
+                if message == "hypothesis test condition must be categorical: condition"
+        ));
+    }
+
+    #[test]
+    fn read_hypothesis_test_rows_rejects_numeric_condition_with_continuous_role() {
+        use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
+
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        seed_fit_y_by_x_dataset(
+            &engine,
+            "hypothesis-numeric-condition",
+            &["response", "condition"],
+            &["DOUBLE", "DOUBLE"],
+            r#"
+            INSERT INTO "dataset_hypothesis_numeric_condition" (_row_id, response, condition) VALUES
+                (1, 10.0, 1.0);
+            "#,
+            1,
+        );
+
+        let error = engine.read_hypothesis_test_rows(
+            "hypothesis-numeric-condition",
+            &HypothesisTestRoles::Long {
+                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
+                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
+                subject: None,
+            },
+        ).expect_err("numeric condition should require categorical role metadata");
+
+        assert!(matches!(
+            error,
+            AppError::InvalidParam(message)
+                if message == "hypothesis test condition must be categorical: condition"
+        ));
     }
 
     #[test]
