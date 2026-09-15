@@ -84,7 +84,10 @@ import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTableTransformStore } from "@/stores/useTableTransformStore";
-import { useWorkspaceSelectionStore } from "@/stores/useWorkspaceSelectionStore";
+import {
+  resolveSelectionAfterDatasetDeletion,
+  useWorkspaceSelectionStore,
+} from "@/stores/useWorkspaceSelectionStore";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 import {
   createDefaultGraph2DState,
@@ -1363,12 +1366,17 @@ export function Workspace() {
       deletedDatasetId: id,
       activeAnalysis: activeAnalysis ?? null,
     });
+    const selectionAfterDelete = resolveSelectionAfterDatasetDeletion({
+      selection: useWorkspaceSelectionStore.getState().selection,
+      deletedDatasetId: id,
+      graphItems: useGraphBuilderStore.getState().items,
+      retainedActiveAnalysisId,
+    });
     await dataService.deleteDataset(id);
     removeDatasetFilters(id);
-    if (activeDatasetId === id) clearWorkspaceDocumentSelection();
     // 联动删除引用此数据表的图表
     deleteGraphBuildersByDataset(id);
-    if (retainedActiveAnalysisId) activateWorkspaceDocument("analysis", retainedActiveAnalysisId);
+    applyWorkspaceDocumentSelection(selectionAfterDelete);
     await refreshDatasets();
     markDirty();
     recordAction(t("history.deleteTable", { name }));

@@ -15,6 +15,34 @@ export interface WorkspaceSelectionState {
   load: (selection: WorkspaceDocumentSelection) => void;
 }
 
+export interface DatasetLinkedGraphItem {
+  id: string;
+  sourceDatasetId: string;
+}
+
+export function resolveSelectionAfterDatasetDeletion(input: {
+  selection: WorkspaceDocumentSelection;
+  deletedDatasetId: string;
+  graphItems: readonly DatasetLinkedGraphItem[];
+  retainedActiveAnalysisId: string | null;
+}): WorkspaceDocumentSelection {
+  if (input.retainedActiveAnalysisId) {
+    return selectWorkspaceDocument("analysis", input.retainedActiveAnalysisId);
+  }
+
+  const activeGraphId = input.selection.activeGraphBuilderId;
+  const activeGraphBelongsToDeletedDataset = activeGraphId
+    ? input.graphItems.some((graph) => graph.id === activeGraphId && graph.sourceDatasetId === input.deletedDatasetId)
+    : false;
+  const activeDatasetIsDeleted = input.selection.activeDatasetId === input.deletedDatasetId;
+
+  if (activeDatasetIsDeleted || activeGraphBelongsToDeletedDataset) {
+    return createEmptyWorkspaceDocumentSelection();
+  }
+
+  return structuredClone(input.selection);
+}
+
 export type WorkspaceSelectionStoreState = WorkspaceSelectionState;
 
 export function createWorkspaceSelectionStore(): StoreApi<WorkspaceSelectionStoreState> {

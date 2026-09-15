@@ -5,7 +5,10 @@ import {
   selectWorkspaceDocument,
   type WorkspaceDocumentSelection,
 } from "@/components/analysis/analysisWorkspaceLifecycle";
-import { useWorkspaceSelectionStore } from "@/stores/useWorkspaceSelectionStore";
+import {
+  resolveSelectionAfterDatasetDeletion,
+  useWorkspaceSelectionStore,
+} from "@/stores/useWorkspaceSelectionStore";
 
 function reset() {
   useWorkspaceSelectionStore.getState().clear();
@@ -46,5 +49,43 @@ assert.deepEqual(
   useWorkspaceSelectionStore.getState().selection,
   createEmptyWorkspaceDocumentSelection(),
 );
+
+{
+  const selectedGraphOnly: WorkspaceDocumentSelection = {
+    activeDatasetId: null,
+    activeTableTransformId: null,
+    activeGraphBuilderId: "graph-deleting-dataset",
+    activeReportId: null,
+    activeAnalysisId: null,
+    activeTabulateId: null,
+  };
+
+  const cleared = resolveSelectionAfterDatasetDeletion({
+    selection: selectedGraphOnly,
+    deletedDatasetId: "dataset-1",
+    graphItems: [{ id: "graph-deleting-dataset", sourceDatasetId: "dataset-1" }],
+    retainedActiveAnalysisId: null,
+  });
+
+  assert.deepEqual(cleared, createEmptyWorkspaceDocumentSelection());
+
+  const preserved = resolveSelectionAfterDatasetDeletion({
+    selection: selectedGraphOnly,
+    deletedDatasetId: "dataset-1",
+    graphItems: [{ id: "graph-deleting-dataset", sourceDatasetId: "dataset-2" }],
+    retainedActiveAnalysisId: null,
+  });
+
+  assert.deepEqual(preserved, selectedGraphOnly);
+
+  const retainedAnalysis = resolveSelectionAfterDatasetDeletion({
+    selection: selectWorkspaceDocument("analysis", "analysis-a"),
+    deletedDatasetId: "dataset-1",
+    graphItems: [],
+    retainedActiveAnalysisId: "analysis-a",
+  });
+
+  assert.deepEqual(retainedAnalysis, selectWorkspaceDocument("analysis", "analysis-a"));
+}
 
 console.log("workspace selection store tests passed");

@@ -34,7 +34,11 @@ const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
 const MIN_TABLE_PREVIEW_LIMIT = 1;
 const MAX_TABLE_PREVIEW_LIMIT = 200;
-const ABSOLUTE_PATH_PATTERN = /([A-Za-z]:\\[^\s"']+|\/(Users|home|var|private|tmp)\/[^\s"']+)/g;
+const PATH_FIELD_KEYS = new Set(["filePath", "sourcePath"]);
+const URL_TOKEN_PATTERN = /\b(?:https?|ftp|file):\/\/[^\s"']+/gi;
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_])([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+)/g;
+const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9_])(\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\\/:*?"<>|\r\n]+)+)/g;
+const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9_./-])(\/(?:Users|home|var|private|tmp|etc|opt|Volumes|Applications|Library|System|usr|bin|sbin|dev|cores|net|Network|root)(?:\/[^\\/:*?"<>|\r\n]+)+)/g;
 
 export interface ProjectCommandDependencies {
   getProjectState: () => {
@@ -61,8 +65,30 @@ function basename(path: string | null | undefined): string | null {
   return parts[parts.length - 1] ?? null;
 }
 
+function redactPathLikeSegments(text: string): string {
+  return text
+    .replace(WINDOWS_UNC_PATH_PATTERN, "$1[redacted-path]")
+    .replace(WINDOWS_ABSOLUTE_PATH_PATTERN, "$1[redacted-path]")
+    .replace(POSIX_ABSOLUTE_PATH_PATTERN, "$1[redacted-path]");
+}
+
 function redactAbsolutePaths(text: string): string {
-  return text.replace(ABSOLUTE_PATH_PATTERN, "[redacted-path]");
+  let result = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null = URL_TOKEN_PATTERN.exec(text);
+
+  while (match) {
+    const tokenStart = match.index;
+    const tokenEnd = tokenStart + match[0].length;
+    result += redactPathLikeSegments(text.slice(cursor, tokenStart));
+    result += match[0];
+    cursor = tokenEnd;
+    match = URL_TOKEN_PATTERN.exec(text);
+  }
+
+  result += redactPathLikeSegments(text.slice(cursor));
+  URL_TOKEN_PATTERN.lastIndex = 0;
+  return result;
 }
 
 function sanitizeValue<T>(value: T): T {
@@ -75,7 +101,7 @@ function sanitizeValue<T>(value: T): T {
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (key === "filePath" || key === "sourcePath") continue;
+      if (PATH_FIELD_KEYS.has(key)) continue;
       out[key] = sanitizeValue(entry);
     }
     return out as T;
@@ -109,9 +135,14 @@ function paginateByCursor<T extends { id: string }>(items: T[], cursor: string |
   items: T[];
   nextCursor: string | null;
 } {
-  const start = cursor
-    ? Math.max(0, items.findIndex((item) => item.id === cursor) + 1)
-    : 0;
+  let start = 0;
+  if (cursor) {
+    const index = items.findIndex((item) => item.id === cursor);
+    if (index < 0) {
+      throw new CommandExecutionError("invalid_input", `Unknown cursor: ${cursor}`);
+    }
+    start = index + 1;
+  }
   const page = items.slice(start, start + limit);
   return {
     items: page,

@@ -11,6 +11,7 @@ import {
   createProjectCommandHandlers,
   type ProjectCommandDependencies,
 } from "@/applicationCommands/projectCommands";
+import { CommandExecutionError } from "@/applicationCommands/runtime";
 
 function createDataset(input: Partial<DatasetMeta> & Pick<DatasetMeta, "id" | "name">): DatasetMeta {
   return {
@@ -246,6 +247,51 @@ function createDeps(overrides: Partial<ProjectCommandDependencies> = {}): Projec
     assert.equal(fetched.kind, kind);
     assert.equal(JSON.stringify(fetched).includes("/Users/"), false);
   }
+}
+
+{
+  const handlers = createProjectCommandHandlers(createDeps({
+    listReports: () => [{
+      schemaVersion: 1,
+      id: "rp-redact",
+      name: "Report redact",
+      markdown: [
+        "Keep URL https://example.com/foo/bar and relative/data.csv unchanged.",
+        "POSIX roots: /etc/hosts and /opt/local/bin/tool",
+        "Mounted volume with spaces: /Volumes/Work Disk/A Folder/input.csv",
+        "Windows with spaces: C:\\Program Files\\Stats Playground\\input.csv",
+        "UNC path: \\\\server\\share\\Folder Name\\input.csv",
+      ].join("\n"),
+      createdAt: "2026-09-15T00:00:00.000Z",
+      updatedAt: "2026-09-15T00:00:00.000Z",
+    }],
+  }));
+
+  const fetched = await handlers.getProjectDocument({ kind: "report", id: "rp-redact" });
+  const serialized = JSON.stringify(fetched);
+  assert.equal(serialized.includes("/etc/hosts"), false);
+  assert.equal(serialized.includes("/opt/local/bin/tool"), false);
+  assert.equal(serialized.includes("/Volumes/Work Disk/A Folder/input.csv"), false);
+  assert.equal(serialized.includes("C:\\Program Files\\Stats Playground\\input.csv"), false);
+  assert.equal(serialized.includes("\\\\server\\share\\Folder Name\\input.csv"), false);
+  assert.equal(serialized.includes("https://example.com/foo/bar"), true);
+  assert.equal(serialized.includes("relative/data.csv"), true);
+}
+
+{
+  const handlers = createProjectCommandHandlers(createDeps());
+  await assert.rejects(
+    handlers.listProjectTables({ cursor: "does-not-exist", limit: 5 }),
+    (error) => error instanceof CommandExecutionError && error.code === "invalid_input",
+  );
+}
+
+{
+  const handlers = createProjectCommandHandlers(createDeps());
+  await assert.rejects(
+    handlers.listProjectDocuments({ cursor: "missing-cursor", limit: 5 }),
+    (error) => error instanceof CommandExecutionError && error.code === "invalid_input",
+  );
 }
 
 console.log("application command project tests passed");
