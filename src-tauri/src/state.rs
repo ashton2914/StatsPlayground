@@ -5,6 +5,7 @@ use crate::engine::duckdb_engine::DuckDbEngine;
 use crate::error::AppError;
 use crate::models::project::ProjectInfo;
 use crate::models::table::ColumnDisplayProps;
+use crate::services::path_authorization_service::PathAuthorizationService;
 use crate::services::save_coordinator::SaveCoordinator;
 use crate::services::workflow_executor::WorkflowRunCommitPacket;
 
@@ -20,6 +21,7 @@ pub struct AppState {
     pub project: RwLock<Option<ProjectInfo>>,
     /// Per-dataset column display properties (dataset_id → vec of props)
     pub column_display: Mutex<HashMap<String, Vec<ColumnDisplayProps>>>,
+    pub path_authorization: Mutex<PathAuthorizationService>,
     pub save_coordinator: SaveCoordinator,
     pub workflow_run_journal: Mutex<HashMap<String, WorkflowRunJournalEntry>>,
 }
@@ -31,6 +33,7 @@ impl AppState {
             db: Mutex::new(engine),
             project: RwLock::new(None),
             column_display: Mutex::new(HashMap::new()),
+            path_authorization: Mutex::new(PathAuthorizationService::default()),
             save_coordinator: SaveCoordinator::new(),
             workflow_run_journal: Mutex::new(HashMap::new()),
         })

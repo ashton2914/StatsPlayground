@@ -5,8 +5,12 @@ use crate::models::data_link::{
     SourceObjectRef, SqliteImportSelection,
 };
 use crate::models::table::DatasetMeta;
+use crate::services::path_authorization_service::{
+    AuthorizedCsvTargetInspection, OutputRootGrant, PathAuthorizationService,
+};
 use crate::state::AppState;
 use std::collections::HashMap;
+use std::path::Path;
 
 pub struct IoService<'a> {
     state: &'a AppState,
@@ -431,6 +435,60 @@ impl<'a> IoService<'a> {
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
         db.export_csv(dataset_id, output_path)
+    }
+
+    pub fn authorize_output_root(&self, root_path: &str) -> Result<OutputRootGrant, AppError> {
+        let mut authorizer = self.lock_path_authorization()?;
+        authorizer.authorize_output_root(Path::new(root_path))
+    }
+
+    pub fn revoke_output_root(&self, root_id: &str) -> Result<(), AppError> {
+        let mut authorizer = self.lock_path_authorization()?;
+        authorizer.revoke_output_root(root_id)
+    }
+
+    pub fn inspect_authorized_csv_target(
+        &self,
+        root_id: &str,
+        relative_path: &str,
+    ) -> Result<AuthorizedCsvTargetInspection, AppError> {
+        let authorizer = self.lock_path_authorization()?;
+        let resolved = authorizer.resolve_output(root_id, relative_path)?;
+        Ok(AuthorizedCsvTargetInspection {
+            target_exists: resolved.status
+                == crate::services::path_authorization_service::OutputPathStatus::OverwriteExisting,
+        })
+    }
+
+    pub fn export_csv_authorized(
+        &self,
+        dataset_id: &str,
+        root_id: &str,
+        relative_path: &str,
+    ) -> Result<(), AppError> {
+        let resolved = {
+            let authorizer = self.lock_path_authorization()?;
+            authorizer.resolve_output(root_id, relative_path)?
+        };
+
+        if let Some(parent) = resolved.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let output_path = resolved
+            .path
+            .to_str()
+            .ok_or_else(|| AppError::FileIO("resolved output path is not valid UTF-8".to_string()))?;
+        self.export_csv(dataset_id, output_path)
+    }
+
+    fn lock_path_authorization(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, PathAuthorizationService>, AppError> {
+        self.state
+            .path_authorization
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))
     }
 
     pub fn import_sqlite<F>(

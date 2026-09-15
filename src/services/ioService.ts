@@ -1,10 +1,35 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DatasetMeta } from "@/types/data";
 
+interface AuthorizedOutputRootGrant {
+  rootId: string;
+  displayName: string;
+}
+
+interface AuthorizedCsvTargetInspection {
+  targetExists: boolean;
+}
+
 export const ioService = {
   /** 导出数据集为 CSV */
   exportCsv: (datasetId: string, outputPath: string) =>
     invoke<void>("export_csv", { datasetId, outputPath }),
+
+  authorizeCsvExportRoot: (rootPath: string) =>
+    invoke<AuthorizedOutputRootGrant>("authorize_csv_export_root", { rootPath }),
+
+  revokeCsvExportRoot: (rootId: string) =>
+    invoke<void>("revoke_csv_export_root", { rootId }),
+
+  inspectAuthorizedCsvTarget: (datasetId: string, rootId: string, relativePath: string) =>
+    invoke<AuthorizedCsvTargetInspection>("inspect_authorized_csv_target", {
+      datasetId,
+      rootId,
+      relativePath,
+    }),
+
+  exportCsvAuthorized: (datasetId: string, rootId: string, relativePath: string) =>
+    invoke<void>("export_csv_authorized", { datasetId, rootId, relativePath }),
 
   /** 从 SQLite 数据库导入所有表 */
   importSqlite: (filePath: string) =>

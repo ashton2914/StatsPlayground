@@ -53,6 +53,47 @@ pub fn export_csv(
     export_csv_entry(state.inner(), &dataset_id, &output_path)
 }
 
+#[tauri::command]
+pub fn authorize_csv_export_root(
+    state: State<'_, AppState>,
+    root_path: String,
+) -> Result<crate::services::path_authorization_service::OutputRootGrant, AppError> {
+    let service = IoService::new(&state);
+    service.authorize_output_root(&root_path)
+}
+
+#[tauri::command]
+pub fn revoke_csv_export_root(
+    state: State<'_, AppState>,
+    root_id: String,
+) -> Result<(), AppError> {
+    let service = IoService::new(&state);
+    service.revoke_output_root(&root_id)
+}
+
+#[tauri::command]
+pub fn inspect_authorized_csv_target(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    root_id: String,
+    relative_path: String,
+) -> Result<crate::services::path_authorization_service::AuthorizedCsvTargetInspection, AppError> {
+    let _ = dataset_id;
+    let service = IoService::new(&state);
+    service.inspect_authorized_csv_target(&root_id, &relative_path)
+}
+
+#[tauri::command]
+pub fn export_csv_authorized(
+    state: State<'_, AppState>,
+    dataset_id: String,
+    root_id: String,
+    relative_path: String,
+) -> Result<(), AppError> {
+    let service = IoService::new(&state);
+    service.export_csv_authorized(&dataset_id, &root_id, &relative_path)
+}
+
 #[tauri::command(async)]
 pub fn import_sqlite(
     app: AppHandle,

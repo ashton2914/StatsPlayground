@@ -4,6 +4,7 @@ import {
   CommandExecutionError,
   createApplicationCommandRuntime,
   type ApplicationCommand,
+  type ApplicationCommandRuntime,
   type CommandActor,
 } from "@/applicationCommands/runtime";
 import type { CommandPolicy } from "@/applicationCommands/policy";
@@ -24,6 +25,16 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
     input: {},
     control,
   };
+}
+
+async function waitForRequestStatus(
+  runtime: ApplicationCommandRuntime<TestRegistry>,
+  requestId: string,
+  status: string,
+): Promise<void> {
+  while (runtime.snapshot().find((entry) => entry.requestId === requestId)?.status !== status) {
+    await Promise.resolve();
+  }
 }
 
 {
@@ -276,14 +287,52 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
     { mode: "mutation" },
   );
 
-  const pending = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
-  const waiting = runtime.snapshot().find((entry) => entry.command === "test.mutate");
-  assert.equal(waiting?.status, "awaiting-confirmation");
+  const pending = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" }) as Promise<{
+    requestId: string;
+  }> & { requestId?: string };
+  assert.match(pending.requestId ?? "", /^cmd-/, "Pending command promises must expose their runtime requestId immediately");
+
+  const waiting = runtime.snapshot().find((entry) => entry.requestId === pending.requestId);
+  assert.equal(waiting?.status, "queued");
 
   resolvePolicy?.({ allowed: true });
   const result = await pending;
   const done = runtime.snapshot().find((entry) => entry.requestId === result.requestId);
   assert.equal(done?.status, "succeeded");
+}
+
+{
+  let resolvePolicy: ((decision: { allowed: boolean; reason?: string; requireConfirmation?: boolean }) => void) | null = null;
+  const asyncPolicy: CommandPolicy = {
+    canExecute() {
+      return new Promise((resolve) => {
+        resolvePolicy = resolve;
+      });
+    },
+  };
+  const runtime = createApplicationCommandRuntime<TestRegistry>({
+    initialRevision: 0,
+    policy: asyncPolicy,
+  });
+  runtime.register(
+    "test.mutate",
+    async () => ({ changed: true, data: { id: "confirmed" }, warnings: [] }),
+    { mode: "mutation" },
+  );
+
+  const pending = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" }) as Promise<{
+    requestId: string;
+  }> & { requestId?: string };
+  const requestId = pending.requestId ?? "";
+  assert.equal(runtime.snapshot().find((entry) => entry.requestId === requestId)?.status, "queued");
+
+  resolvePolicy?.({ allowed: true, requireConfirmation: true, reason: "need-confirmation" });
+  await waitForRequestStatus(runtime, requestId, "awaiting-confirmation");
+
+  assert.equal(runtime.confirm(requestId, true), true);
+  const result = await pending;
+  assert.equal(result.requestId, requestId);
+  assert.equal(runtime.snapshot().find((entry) => entry.requestId === requestId)?.status, "succeeded");
 }
 
 {
@@ -311,7 +360,7 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
 
   const pending = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
   const waiting = runtime.snapshot().find((entry) => entry.command === "test.mutate");
-  assert.equal(waiting?.status, "awaiting-confirmation");
+  assert.equal(waiting?.status, "queued");
 
   resolvePolicy?.({ allowed: false, reason: "denied" });
   await assert.rejects(
@@ -364,7 +413,7 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
       (error) => ({ ok: false as const, error }),
     );
     const firstSnapshot = runtime.snapshot().find((entry) => entry.command === "test.mutate");
-    assert.equal(firstSnapshot?.status, "awaiting-confirmation");
+    assert.equal(firstSnapshot?.status, "queued");
 
     // Let the queued operation enter runRequest and block on policy awaiting.
     await Promise.resolve();

@@ -2,6 +2,7 @@ import {
   createProjectCommandHandlers,
   type ProjectCommandDependencies,
 } from "@/applicationCommands/projectCommands";
+import { createIoCommandHandlers, type IoCommandDependencies } from "@/applicationCommands/ioCommands";
 import { createApplicationCommandRuntime } from "@/applicationCommands/runtime";
 import { createTableCommandHandlers, type TableCommandDependencies } from "@/applicationCommands/tableCommands";
 import {
@@ -25,11 +26,11 @@ import {
   createTabulateCommandHandlers,
   type TabulateCommandDependencies,
 } from "@/applicationCommands/tabulateCommands";
+import { createDefaultCommandPolicy, type CommandPolicy } from "@/applicationCommands/policy";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type {
   ApplicationCommandRegistry,
 } from "@/applicationCommands/types";
-import type { CommandPolicy } from "@/applicationCommands/policy";
 
 export interface ApplicationRuntimeDependencies {
   initialRevision?: number;
@@ -38,7 +39,7 @@ export interface ApplicationRuntimeDependencies {
     get: () => number;
     set: (revision: number) => void;
   };
-  project?: ProjectCommandDependencies;
+  project?: Partial<ProjectCommandDependencies>;
   table?: Omit<TableCommandDependencies, "projectHandlers" | "projectDependencies">;
   tableTransform?: Omit<TableTransformCommandDependencies, "projectHandlers" | "projectDependencies">;
   sql?: Omit<SqlCommandDependencies, "projectHandlers" | "projectDependencies">;
@@ -46,6 +47,9 @@ export interface ApplicationRuntimeDependencies {
   graph?: Partial<GraphCommandDependencies>;
   report?: Partial<ReportCommandDependencies>;
   tabulate?: Partial<TabulateCommandDependencies>;
+  io?: Partial<IoCommandDependencies> & {
+    exportCsv?: (datasetId: string, rootId: string, relativePath: string) => Promise<{ targetExists: boolean }>;
+  };
 }
 
 export interface RegisteredApplicationRuntime extends ReturnType<typeof createApplicationCommandRuntime<ApplicationCommandRegistry>> {
@@ -57,14 +61,40 @@ export interface RegisteredApplicationRuntime extends ReturnType<typeof createAp
 export function createApplicationRuntime(
   dependencies: ApplicationRuntimeDependencies = {},
 ): RegisteredApplicationRuntime {
+  const pendingEffectsDrains = new Set<() => Promise<void> | void>();
+  let reportHandlers!: ReturnType<typeof createReportCommandHandlers>;
+  const drainPendingEffects = async () => {
+    for (const drain of pendingEffectsDrains) {
+      await drain();
+    }
+    await Promise.resolve(reportHandlers.flushPendingHistory());
+  };
+
+  const ioHandlers = createIoCommandHandlers({
+    createSnapshot: dependencies.io?.createSnapshot,
+    inspectCsvTarget: dependencies.io?.inspectCsvTarget
+      ?? (dependencies.io?.exportCsv ? async () => ({ targetExists: false }) : undefined),
+    exportCsv: dependencies.io?.exportCsv
+      ? async (input) => {
+          await dependencies.io?.exportCsv?.(input.datasetId, input.rootId, input.relativePath);
+        }
+      : undefined,
+  });
   const runtime = createApplicationCommandRuntime<ApplicationCommandRegistry>({
     initialRevision: dependencies.initialRevision,
-    policy: dependencies.policy,
+    policy: dependencies.policy ?? createDefaultCommandPolicy({
+      shouldConfirmCsvExport: async (input) => {
+        const result = await ioHandlers.inspectTableExportCsvTarget(input);
+        return result.targetStatus === "overwriteExisting";
+      },
+    }),
     revision: dependencies.revision,
   });
-  const pendingEffectsDrains = new Set<() => Promise<void> | void>();
 
-  const projectHandlers = createProjectCommandHandlers(dependencies.project);
+  const projectHandlers = createProjectCommandHandlers({
+    flushPendingHistory: drainPendingEffects,
+    ...dependencies.project,
+  });
   const tableHandlers = createTableCommandHandlers({
     ...dependencies.table,
     projectHandlers,
@@ -83,7 +113,7 @@ export function createApplicationRuntime(
   const graphHandlers = createGraphCommandHandlers({
     ...dependencies.graph,
   });
-  const reportHandlers = createReportCommandHandlers({
+  reportHandlers = createReportCommandHandlers({
     ...dependencies.report,
   });
   const tabulateHandlers = createTabulateCommandHandlers({
@@ -99,6 +129,16 @@ export function createApplicationRuntime(
       warnings: [],
     }),
     { mode: "read", risk: "low" },
+  );
+
+  runtime.register(
+    "project.save",
+    async (input) => ({
+      changed: true,
+      data: await projectHandlers.saveProjectCommand(input),
+      warnings: [],
+    }),
+    { mode: "mutation", risk: "low" },
   );
 
   runtime.register(
@@ -281,6 +321,26 @@ export function createApplicationRuntime(
   );
 
   runtime.register(
+    "snapshot.create",
+    async (input) => ({
+      changed: true,
+      data: await ioHandlers.createSnapshot(input),
+      warnings: [],
+    }),
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "table.exportCsv",
+    async (input) => ({
+      changed: false,
+      data: await ioHandlers.exportTableCsv(input),
+      warnings: [],
+    }),
+    { mode: "read", risk: "high" },
+  );
+
+  runtime.register(
     "table.list",
     async (input) => ({
       changed: false,
@@ -319,13 +379,6 @@ export function createApplicationRuntime(
     }),
     { mode: "read", risk: "low" },
   );
-
-  const drainPendingEffects = async () => {
-    for (const drain of pendingEffectsDrains) {
-      await drain();
-    }
-    await Promise.resolve(reportHandlers.flushPendingHistory());
-  };
 
   return Object.assign(runtime, {
     registerPendingEffectsDrain(drain: () => Promise<void> | void) {

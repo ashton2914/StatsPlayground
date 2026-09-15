@@ -16,6 +16,7 @@ import { useDataLinkStore } from "@/stores/useDataLinkStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 import { dataService } from "@/services/dataService";
 import { ioService } from "@/services/ioService";
+import { mcpManagementService } from "@/services/mcpManagementService";
 import { projectService } from "@/services/projectService";
 import { openUpdateUrl } from "@/services/updateDownload";
 import { DataTableView } from "./DataTableView";
@@ -59,7 +60,6 @@ import {
   createAnalysisSample,
 } from "./analysis/analysisSample";
 import {
-  buildAnalysisProjectPayload,
   createEmptyWorkspaceDocumentSelection,
   getRetainedActiveAnalysisIdAfterDatasetDeletion,
   hydrateAnalysisProjectPayload,
@@ -260,7 +260,6 @@ export function Workspace() {
   const { t } = useTranslation();
   const {
     project,
-    saveProject,
     initProject,
     dirty,
     markDirty,
@@ -273,7 +272,7 @@ export function Workspace() {
   } = useProjectStore();
   const { datasets, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
-  const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory, invalidateData } = useHistoryStore();
+  const { record: recordHistory, restoreSnapshot, deleteSnapshot, reset: resetHistory, invalidateData } = useHistoryStore();
   const graphBuilders = useGraphBuilderStore((s) => s.items);
   const removeDatasetFilters = useDatasetFilterStore((s) => s.removeDataset);
   const renameDatasetFilterColumn = useDatasetFilterStore((s) => s.renameColumn);
@@ -1435,78 +1434,26 @@ export function Workspace() {
 
   const handleSave = async () => {
     if (saving) return;
-    await flushPendingReportHistory();
-    const snapshots = useHistoryStore.getState().snapshots;
-    const datasetFilters = useDatasetFilterStore.getState().toProjectPayload();
-    const gbItems = useGraphBuilderStore.getState().items;
-    const logicalFolders = useWorkflowStore.getState().logicalFolders;
-    const folderPayload = {
-      folders,
-      tableFolders,
-      graphFolders,
-      reportFolders,
-      tabulateFolders,
-      ...buildAnalysisProjectPayload({ analyses: analysisItems, analysisFolders }),
-    };
     try {
+      let filePath = project?.filePath;
       if (!project?.filePath) {
-        const filePath = await save({
+        const selectedFilePath = await save({
           title: t("welcome.saveProjectDialog"),
           defaultPath: "Untitled Project.spprj",
           filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
         });
-        if (!filePath) return; // User cancelled
-        await saveProject({
-          filePath: filePath as string,
-          history: [],
-          snapshots,
-          datasetFilters,
-          graphBuilders: gbItems,
-          fitYByX: [],
-          tabulates,
-          distributions: [],
-          analyses: folderPayload.analyses,
-          folders: folderPayload.folders,
-          tableFolders: folderPayload.tableFolders,
-          graphFolders: folderPayload.graphFolders,
-          fitYByXFolders: {},
-          reportFolders: folderPayload.reportFolders,
-          tabulateFolders: folderPayload.tabulateFolders,
-          reports: reportItems,
-          distributionFolders: folderPayload.distributionFolders,
-          analysisFolders: folderPayload.analysisFolders,
-          workflows,
-          logicalFolders,
-          workflowRuns,
-          tableTransforms,
-          tableTransformBindings,
-        });
-      } else {
-        await saveProject({
-          history: [],
-          snapshots,
-          datasetFilters,
-          graphBuilders: gbItems,
-          fitYByX: [],
-          tabulates,
-          distributions: [],
-          analyses: folderPayload.analyses,
-          folders: folderPayload.folders,
-          tableFolders: folderPayload.tableFolders,
-          graphFolders: folderPayload.graphFolders,
-          fitYByXFolders: {},
-          reportFolders: folderPayload.reportFolders,
-          tabulateFolders: folderPayload.tabulateFolders,
-          reports: reportItems,
-          distributionFolders: folderPayload.distributionFolders,
-          analysisFolders: folderPayload.analysisFolders,
-          workflows,
-          logicalFolders,
-          workflowRuns,
-          tableTransforms,
-          tableTransformBindings,
-        });
+        if (!selectedFilePath) return;
+        filePath = selectedFilePath as string;
       }
+
+      await applicationRuntime.execute(
+        {
+          type: "project.save",
+          input: { filePath },
+          control: { expectedProjectRevision: useProjectStore.getState().projectRevision },
+        },
+        { kind: "ui" },
+      );
       showToast(t("common.saved"), 1500);
     } catch (error) {
       alert(`${t("menu.save")}: ${String(error)}`);
@@ -1847,7 +1794,7 @@ export function Workspace() {
     return t(`tableExport.pickerTitle.${format}`, { defaultValue: defaultTitle });
   }, [t]);
 
-  const handleTableExport = async (plan: TableExportPlan): Promise<boolean> => {
+  const handleExportTables = async (plan: TableExportPlan) => {
     let outputPath: string | null = null;
     const pickerTitle = tableExportPickerTitle(plan.format);
 
@@ -1879,7 +1826,32 @@ export function Workspace() {
 
     if (plan.format === "csv") {
       if (plan.mode === "single-file") {
-        await ioService.exportCsv(plan.datasetIds[0]!, outputPath);
+        const separatorIndex = Math.max(outputPath.lastIndexOf("/"), outputPath.lastIndexOf("\\"));
+        const rootPath = separatorIndex >= 0 ? outputPath.slice(0, separatorIndex) : ".";
+        const relativePath = separatorIndex >= 0 ? outputPath.slice(separatorIndex + 1) : outputPath;
+        const authorization = await ioService.authorizeCsvExportRoot(rootPath);
+
+        try {
+          const exportCommand = applicationRuntime.execute(
+            {
+              type: "table.exportCsv",
+              input: {
+                datasetId: plan.datasetIds[0]!,
+                rootId: authorization.rootId,
+                relativePath,
+              },
+            },
+            { kind: "ui" },
+          );
+          const requestId = await waitForCommandConfirmation(exportCommand.requestId, exportCommand);
+          if (requestId) {
+            const allowOverwrite = window.confirm(t("common.confirmOverwrite", { defaultValue: "Overwrite the existing file?" }));
+            mcpManagementService.confirmCommandRequest(requestId, allowOverwrite);
+          }
+          await exportCommand;
+        } finally {
+          await ioService.revokeCsvExportRoot(authorization.rootId);
+        }
         return true;
       }
       await ioService.exportCsvZipSubset(outputPath, plan.datasetIds, plan.archivePaths);
@@ -1898,6 +1870,59 @@ export function Workspace() {
 
     await projectService.exportTablesSptbZip(plan.datasetIds, outputPath, plan.archivePaths);
     return true;
+  };
+
+  const waitForCommandConfirmation = async (requestId: string, commandPromise: Promise<unknown>) => {
+    let settled = false;
+    commandPromise.finally(() => {
+      settled = true;
+    }).catch(() => undefined);
+
+    while (!settled) {
+      const pendingRequest = mcpManagementService.listCommandRequests()
+        .find((request) => request.requestId === requestId && request.status === "awaiting-confirmation");
+      if (pendingRequest) {
+        return pendingRequest.requestId;
+      }
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    }
+
+    return null;
+  };
+
+  const handleCreateSnapshot = async () => {
+    if (readOnly) return;
+    setBusyMessage(t("workspace.creatingSnapshot"));
+    const unlisten = await listen<{
+      datasetIndex: number;
+      datasetTotal: number;
+      datasetName: string;
+    }>("snapshot-progress", (event) => {
+      const { datasetIndex, datasetTotal, datasetName } = event.payload;
+      if (datasetTotal > 0 && datasetIndex < datasetTotal) {
+        setBusyMessage(`${t("workspace.creatingSnapshot")} ${t("workspace.importProgressTable", { i: datasetIndex + 1, total: datasetTotal, name: datasetName })}`);
+      }
+    });
+
+    try {
+      await applicationRuntime.execute(
+        {
+          type: "snapshot.create",
+          input: {},
+        },
+        { kind: "ui" },
+      );
+    } finally {
+      unlisten();
+      setBusyMessage(null);
+    }
+  };
+
+  const handleSnapshotContextMenu = (menu: SnapshotMenuData) => {
+    setSnapMenu(menu);
+    setConfirmDeleteSnapId(null);
   };
 
   // ---- Folder mutation helpers wired to the side-panel UI ----------------
@@ -2502,26 +2527,7 @@ export function Workspace() {
         <button
           className={`menu-bar-snapshot${dirty ? " menu-bar-snapshot-dirty" : ""}`}
           disabled={readOnly}
-          onClick={async () => {
-            if (readOnly) return;
-            setBusyMessage(t("workspace.creatingSnapshot"));
-            const unlisten = await listen<{
-              datasetIndex: number;
-              datasetTotal: number;
-              datasetName: string;
-            }>("snapshot-progress", (event) => {
-              const { datasetIndex, datasetTotal, datasetName } = event.payload;
-              if (datasetTotal > 0 && datasetIndex < datasetTotal) {
-                setBusyMessage(`${t("workspace.creatingSnapshot")} ${t("workspace.importProgressTable", { i: datasetIndex + 1, total: datasetTotal, name: datasetName })}`);
-              }
-            });
-            try {
-              await createSnapshot();
-            } finally {
-              unlisten();
-              setBusyMessage(null);
-            }
-          }}
+          onClick={handleCreateSnapshot}
           title={t("workspace.createSnapshotTitle")}
         >
           <i className="fa-solid fa-camera" aria-hidden="true" />
@@ -2625,7 +2631,7 @@ export function Workspace() {
           ) : (
             <HistoryPanel
               setBusyMessage={setBusyMessage}
-              onSnapshotMenu={(menu) => { setSnapMenu(menu); setConfirmDeleteSnapId(null); }}
+              onSnapshotMenu={handleSnapshotContextMenu}
               snapRenameRef={snapRenameRef}
             />
           )}
@@ -2930,7 +2936,7 @@ export function Workspace() {
           datasets={datasets}
           tableFolders={tableFolders}
           projectName={project?.name ?? "export"}
-          onExport={handleTableExport}
+          onExport={handleExportTables}
           onClose={() => setShowTableExport(false)}
         />
       )}

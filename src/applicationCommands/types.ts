@@ -7,6 +7,17 @@ export interface ProjectInspectInput {
   includeCapabilities?: boolean;
 }
 
+export interface ProjectSaveInput {
+  filePath?: string;
+}
+
+export interface ProjectSaveResult {
+  name: string;
+  createdAt: string;
+  fileName: string | null;
+  hasProjectPath: boolean;
+}
+
 export interface ProjectInspectResult {
   project: {
     name: string;
@@ -170,6 +181,26 @@ export interface TabulateExportTableResult {
   reran: boolean;
   requestFingerprint: string;
   sourceGeneration: number;
+}
+
+export interface SnapshotCreateInput {
+  name?: string;
+}
+
+export interface SnapshotCreateResult {
+  snapshotId: string | null;
+  snapshotName: string | null;
+  createdAt: string | null;
+}
+
+export interface TableExportCsvInput {
+  datasetId: string;
+  rootId: string;
+  relativePath: string;
+}
+
+export interface TableExportCsvResult {
+  targetStatus: "createNew" | "overwriteExisting";
 }
 
 export interface GraphCreateInput {
@@ -414,6 +445,7 @@ export interface CommandExecutionContext {
 
 export type ApplicationCommandRegistry = {
   "project.inspect": { input: ProjectInspectInput; data: ProjectInspectResult };
+  "project.save": { input: ProjectSaveInput; data: ProjectSaveResult };
   "table.create": { input: TableCreateInput; data: TableCreateResult };
   "tableTransform.create": { input: TableTransformCreateInput; data: TableTransformCommandData };
   "tableTransform.run": { input: TableTransformRunInput; data: TableTransformCommandData };
@@ -428,6 +460,8 @@ export type ApplicationCommandRegistry = {
   "tabulate.create": { input: TabulateCreateInput; data: TabulateCreateResult };
   "tabulate.run": { input: TabulateRunInput; data: TabulateRunResult };
   "tabulate.exportTable": { input: TabulateExportTableInput; data: TabulateExportTableResult };
+  "snapshot.create": { input: SnapshotCreateInput; data: SnapshotCreateResult };
+  "table.exportCsv": { input: TableExportCsvInput; data: TableExportCsvResult };
   "table.list": { input: TableListInput; data: TableListResult };
   "table.describe": { input: TableDescribeInput; data: TableDescribeResult };
   "document.list": { input: ProjectDocumentListInput; data: ProjectDocumentListResult };

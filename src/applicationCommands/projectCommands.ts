@@ -1,5 +1,8 @@
 import { CommandExecutionError } from "@/applicationCommands/runtime";
+import { buildAnalysisProjectPayload } from "@/components/analysis/analysisWorkspaceLifecycle";
 import type {
+  ProjectSaveInput,
+  ProjectSaveResult,
   ProjectDocumentGetInput,
   ProjectDocumentGetResult,
   ProjectDocumentKind,
@@ -15,13 +18,18 @@ import type {
   TableListResult,
 } from "@/applicationCommands/types";
 import { dataService } from "@/services/dataService";
+import { projectService, type SaveProjectRequest } from "@/services/projectService";
 import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useDataStore } from "@/stores/useDataStore";
+import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
+import { useFolderStore } from "@/stores/useFolderStore";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
+import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useReportStore } from "@/stores/useReportStore";
 import { useTableTransformStore } from "@/stores/useTableTransformStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
+import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { ColumnDisplayProps, DatasetMeta } from "@/types/data";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
@@ -57,6 +65,9 @@ export interface ProjectCommandDependencies {
   getColumnDisplayProps: (datasetId: string) => Promise<ColumnDisplayProps[]>;
   getDatasetGeneration: (datasetId: string) => Promise<number>;
   queryTableWindow?: typeof dataService.queryTableWindow;
+  buildSaveProjectRequest: (filePath?: string) => SaveProjectRequest;
+  flushPendingHistory: () => Promise<void> | void;
+  saveProjectCommand: (request: SaveProjectRequest) => Promise<ProjectSaveResult>;
 }
 
 function basename(path: string | null | undefined): string | null {
@@ -107,6 +118,54 @@ function sanitizeValue<T>(value: T): T {
     return out as T;
   }
   return value;
+}
+
+function summarizeProjectForSave(project: ProjectInfo | null): ProjectSaveResult {
+  if (!project) {
+    throw new CommandExecutionError("project_required", "A project must be open before saving");
+  }
+  return {
+    name: project.name,
+    createdAt: project.createdAt,
+    fileName: basename(project.filePath),
+    hasProjectPath: Boolean(project.filePath),
+  };
+}
+
+export function buildSaveProjectRequest(filePath?: string): SaveProjectRequest {
+  const historyStore = useHistoryStore.getState();
+  const folderStore = useFolderStore.getState();
+  const workflowStore = useWorkflowStore.getState();
+  const analysisProjectPayload = buildAnalysisProjectPayload({
+    analyses: useAnalysisStore.getState().items,
+    analysisFolders: folderStore.analysisFolders,
+  });
+
+  return {
+    filePath,
+    history: [],
+    snapshots: historyStore.snapshots,
+    datasetFilters: useDatasetFilterStore.getState().toProjectPayload(),
+    graphBuilders: useGraphBuilderStore.getState().items,
+    fitYByX: [],
+    tabulates: useTabulateStore.getState().items,
+    distributions: [],
+    analyses: analysisProjectPayload.analyses,
+    folders: folderStore.folders,
+    tableFolders: folderStore.tableFolders,
+    graphFolders: folderStore.graphFolders,
+    fitYByXFolders: {},
+    tabulateFolders: folderStore.tabulateFolders,
+    reportFolders: folderStore.reportFolders,
+    reports: useReportStore.getState().items,
+    distributionFolders: analysisProjectPayload.distributionFolders,
+    analysisFolders: analysisProjectPayload.analysisFolders,
+    workflows: workflowStore.workflows,
+    logicalFolders: workflowStore.logicalFolders,
+    workflowRuns: workflowStore.workflowRuns,
+    tableTransforms: useTableTransformStore.getState().definitions,
+    tableTransformBindings: useTableTransformStore.getState().bindings,
+  };
 }
 
 function normalizePageLimit(limit: number | undefined): number {
@@ -202,7 +261,9 @@ function summarizeDocuments(input: {
 }
 
 export function createProjectCommandHandlers(
-  dependencies: ProjectCommandDependencies = {
+  dependencyOverrides: Partial<ProjectCommandDependencies> = {},
+) {
+  const dependencies: ProjectCommandDependencies = {
     getProjectState: () => {
       const state = useProjectStore.getState();
       return {
@@ -222,8 +283,15 @@ export function createProjectCommandHandlers(
     getColumnDisplayProps: dataService.getColumnDisplayProps,
     getDatasetGeneration: dataService.getDatasetGeneration,
     queryTableWindow: dataService.queryTableWindow,
-  },
-) {
+    buildSaveProjectRequest,
+    flushPendingHistory: () => undefined,
+    saveProjectCommand: async (request) => {
+      await projectService.saveProject(request);
+      return summarizeProjectForSave(useProjectStore.getState().project);
+    },
+    ...dependencyOverrides,
+  };
+
   async function inspectProject(input: ProjectInspectInput): Promise<ProjectInspectResult> {
     const state = dependencies.getProjectState();
     const datasets = dependencies.listDatasets();
@@ -273,6 +341,16 @@ export function createProjectCommandHandlers(
     }
 
     return sanitizeValue(output);
+  }
+
+  async function saveProjectCommand(input: ProjectSaveInput): Promise<ProjectSaveResult> {
+    const state = dependencies.getProjectState();
+    await dependencies.flushPendingHistory();
+    const request = dependencies.buildSaveProjectRequest(input.filePath ?? state.project?.filePath ?? undefined);
+    if (!request.filePath && !state.project?.filePath) {
+      throw new CommandExecutionError("project_path_required", "Project save requires a destination path");
+    }
+    return dependencies.saveProjectCommand(request);
   }
 
   async function listProjectTables(input: TableListInput): Promise<TableListResult> {
@@ -391,6 +469,7 @@ export function createProjectCommandHandlers(
 
   return {
     inspectProject,
+    saveProjectCommand,
     listProjectTables,
     describeProjectTable,
     listProjectDocuments,
@@ -400,6 +479,10 @@ export function createProjectCommandHandlers(
 
 export function inspectProject(input: ProjectInspectInput): Promise<ProjectInspectResult> {
   return createProjectCommandHandlers().inspectProject(input);
+}
+
+export function saveProjectCommand(input: ProjectSaveInput): Promise<ProjectSaveResult> {
+  return createProjectCommandHandlers().saveProjectCommand(input);
 }
 
 export function listProjectTables(input: TableListInput): Promise<TableListResult> {

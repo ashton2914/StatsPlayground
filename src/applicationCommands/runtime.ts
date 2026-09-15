@@ -50,7 +50,9 @@ interface RuntimeRequest<TData> {
   committed: boolean;
   settled: boolean;
   cancellationSignal: Promise<void>;
+  confirmationSignal: Promise<boolean>;
   signalCancellation(): void;
+  resolveConfirmation(allow: boolean): void;
   resolve(value: CommandResult<TData>): void;
   reject(error: unknown): void;
 }
@@ -59,6 +61,10 @@ interface RegisteredCommand {
   run: (input: unknown, context: CommandExecutionContext) => Promise<CommandHandlerResult<unknown>>;
   metadata: CommandPolicyMetadata;
 }
+
+export type PendingCommandResult<TData> = Promise<CommandResult<TData>> & {
+  readonly requestId: string;
+};
 
 interface RuntimeRevisionAdapter {
   get: () => number;
@@ -75,7 +81,8 @@ export interface ApplicationCommandRuntime<TRegistry extends CommandRegistryShap
     command: ApplicationCommand<TRegistry, TType>,
     actor: CommandActor,
     context?: { signal?: AbortSignal; onProgress?: (progress: CommandProgress) => void },
-  ): Promise<CommandResult<TRegistry[TType]["data"]>>;
+  ): PendingCommandResult<TRegistry[TType]["data"]>;
+  confirm(requestId: string, allow: boolean): boolean;
   cancel(requestId: string): boolean;
   snapshot(): Array<{ requestId: string; command: string; status: RequestStatus }>;
 }
@@ -153,25 +160,43 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     });
   }
 
-  async execute<TType extends Extract<keyof TRegistry, string>>(
+  execute<TType extends Extract<keyof TRegistry, string>>(
     command: ApplicationCommand<TRegistry, TType>,
     actor: CommandActor,
     context?: { signal?: AbortSignal; onProgress?: (progress: CommandProgress) => void },
-  ): Promise<CommandResult<TRegistry[TType]["data"]>> {
+  ): PendingCommandResult<TRegistry[TType]["data"]> {
     const registered = this.handlers.get(command.type);
     if (!registered) {
-      throw new CommandExecutionError("invalid_input", `Unknown command: ${command.type}`);
+      const failed = Promise.reject(
+        new CommandExecutionError("invalid_input", `Unknown command: ${command.type}`),
+      ) as PendingCommandResult<TRegistry[TType]["data"]>;
+      Object.defineProperty(failed, "requestId", {
+        value: "",
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+      return failed;
     }
 
     const idempotencyKey = this.buildIdempotencyKey(actor, command.type, command.control?.idempotencyKey);
     if (idempotencyKey) {
       const existing = this.idempotencyCache.get(idempotencyKey);
       if (existing) {
-        return existing as CommandResult<TRegistry[TType]["data"]>;
+        const cached = Promise.resolve(
+          existing as CommandResult<TRegistry[TType]["data"]>,
+        ) as PendingCommandResult<TRegistry[TType]["data"]>;
+        Object.defineProperty(cached, "requestId", {
+          value: "",
+          enumerable: true,
+          configurable: false,
+          writable: false,
+        });
+        return cached;
       }
       const inFlight = this.idempotencyInFlight.get(idempotencyKey);
       if (inFlight) {
-        return inFlight as Promise<CommandResult<TRegistry[TType]["data"]>>;
+        return inFlight as PendingCommandResult<TRegistry[TType]["data"]>;
       }
     }
 
@@ -187,7 +212,14 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       mode: registered.metadata.mode,
     });
 
-    const policyDecision = this.resolvePolicyDecision(command.type, actor, registered.metadata, request);
+    const policyDecision = this.resolvePolicyDecision(
+      requestId,
+      command.type,
+      actor,
+      command.input,
+      registered.metadata,
+      request,
+    );
     policyDecision.catch(() => undefined);
 
     if (context?.signal) {
@@ -208,7 +240,13 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       () => undefined,
     );
 
-    const requestPromise = request.promise as Promise<CommandResult<TRegistry[TType]["data"]>>;
+    const requestPromise = request.promise as PendingCommandResult<TRegistry[TType]["data"]>;
+    Object.defineProperty(requestPromise, "requestId", {
+      value: requestId,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
     if (idempotencyKey) {
       this.idempotencyInFlight.set(idempotencyKey, requestPromise as Promise<CommandResult<unknown>>);
       requestPromise.then((result) => {
@@ -242,6 +280,15 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     return true;
   }
 
+  confirm(requestId: string, allow: boolean): boolean {
+    const request = this.requests.get(requestId);
+    if (!request || request.settled || request.status !== "awaiting-confirmation") {
+      return false;
+    }
+    request.resolveConfirmation(allow);
+    return true;
+  }
+
   snapshot(): Array<{ requestId: string; command: string; status: RequestStatus }> {
     return [...this.requests.values()].map((request) => ({
       requestId: request.requestId,
@@ -261,14 +308,16 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
   }
 
   private resolvePolicyDecision(
+    requestId: string,
     command: string,
     actor: CommandActor,
+    input: unknown,
     metadata: CommandPolicyMetadata,
     request: RuntimeRequest<unknown>,
   ): Promise<CommandPolicyDecision> {
-    const evaluation = this.policy.canExecute({ command, actor, metadata });
+    const evaluation = this.policy.canExecute({ requestId, command, actor, input, metadata });
+    void request;
     if (evaluation instanceof Promise) {
-      request.status = "awaiting-confirmation";
       return evaluation;
     }
     return Promise.resolve(evaluation);
@@ -289,6 +338,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     let resolvePromise: ((value: CommandResult<TData>) => void) | null = null;
     let rejectPromise: ((reason?: unknown) => void) | null = null;
     let resolveCancellation: (() => void) | null = null;
+    let resolveConfirmation: ((allow: boolean) => void) | null = null;
 
     const promise = new Promise<CommandResult<TData>>((resolve, reject) => {
       resolvePromise = resolve;
@@ -296,6 +346,9 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     });
     const cancellationSignal = new Promise<void>((resolve) => {
       resolveCancellation = resolve;
+    });
+    const confirmationSignal = new Promise<boolean>((resolve) => {
+      resolveConfirmation = resolve;
     });
 
     const request: RuntimeRequest<TData> & { promise: Promise<CommandResult<TData>> } = {
@@ -309,8 +362,12 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       committed: false,
       settled: false,
       cancellationSignal,
+      confirmationSignal,
       signalCancellation() {
         resolveCancellation?.();
+      },
+      resolveConfirmation(allow) {
+        resolveConfirmation?.(allow);
       },
       resolve(value) {
         if (request.settled) return;
@@ -367,6 +424,20 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       }
       if (!decision.allowed) {
         throw new CommandExecutionError("user_denied", decision.reason ?? "Command denied by policy");
+      }
+
+      if (decision.requireConfirmation) {
+        request.status = "awaiting-confirmation";
+        const confirmationOutcome = await Promise.race([
+          request.confirmationSignal.then((allow) => ({ kind: "confirmation" as const, allow })),
+          request.cancellationSignal.then(() => ({ kind: "cancelled" as const })),
+        ]);
+        if (confirmationOutcome.kind === "cancelled") {
+          throw new CommandExecutionError("cancelled", "Command cancelled");
+        }
+        if (!confirmationOutcome.allow) {
+          throw new CommandExecutionError("user_denied", decision.reason ?? "Command denied by policy");
+        }
       }
 
       if (request.status === "awaiting-confirmation") {
