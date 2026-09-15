@@ -129,7 +129,7 @@ import {
   shouldApplyDistributionEditMetadataLoad,
 } from "./workspaceDistributionMetadata";
 import { buildSaveProjectRequest } from "@/applicationCommands/projectSnapshot";
-import { createTableCommandHandlers } from "@/applicationCommands/tableCommands";
+import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -537,15 +537,6 @@ export function Workspace() {
     [analysisItems, tabulates],
   );
 
-  const tableCommandHandlers = useMemo(() => createTableCommandHandlers({
-    createManagedTable: dataService.createManagedTable,
-    refreshDatasets,
-    markDirty,
-    recordAction,
-    activateDataset: (datasetId) => activateWorkspaceDocument("dataset", datasetId),
-    historyMessage: (name) => t("history.newTable", { name }),
-  }), [activateWorkspaceDocument, markDirty, recordAction, refreshDatasets, t]);
-
   const withProjectExtension = useCallback((basename: string, kind: ProjectDocumentKind): string => {
     return `${basename}${projectFileExtension(kind)}`;
   }, []);
@@ -744,13 +735,20 @@ export function Workspace() {
       return;
     }
     const name = resolved.basename;
-    const created = await tableCommandHandlers.createTable({
-      request: {
-        name,
-        columns: [],
-        rows: [],
+    const result = await applicationRuntime.execute(
+      {
+        type: "table.create",
+        input: {
+          request: {
+            name,
+            columns: [],
+            rows: [],
+          },
+        },
       },
-    });
+      { kind: "ui" },
+    );
+    const created = result.data;
     // Enter rename mode
     setRenamingId(created.dataset.id);
     setRenameValue(created.dataset.name);

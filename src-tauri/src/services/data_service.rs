@@ -59,6 +59,19 @@ pub struct DataService<'a> {
     state: &'a AppState,
 }
 
+const SUPPORTED_MANUAL_TABLE_TYPES: &[&str] = &[
+    "VARCHAR",
+    "INTEGER",
+    "BIGINT",
+    "DOUBLE",
+    "BOOLEAN",
+    "DATE",
+    "TIMESTAMP",
+];
+
+const SUPPORTED_DISPLAY_FORMAT_KINDS: &[&str] =
+    &["asis", "fixed", "percent", "scientific", "currency"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +456,110 @@ mod tests {
                 .is_empty()
         );
     }
+
+    #[test]
+    fn create_managed_table_rejects_unsupported_but_canonicalizable_sql_type_without_side_effects() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let datasets_before = metadata_total_dataset_count(&state);
+        let physical_before = physical_table_count(&state);
+        let request = CreateManagedTableRequest {
+            name: "Unsupported Type".to_string(),
+            columns: vec![CreateTableColumn {
+                name: "amount".to_string(),
+                column_type: "DECIMAL(10,2)".to_string(),
+                display: None,
+            }],
+            rows: vec![vec![serde_json::json!(1.23)]],
+        };
+
+        let error = service
+            .create_managed_table(&request)
+            .expect_err("unsupported canonical SQL type must be rejected");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("unsupported column type")));
+        assert_eq!(metadata_total_dataset_count(&state), datasets_before);
+        assert_eq!(physical_table_count(&state), physical_before);
+        assert!(
+            state
+                .column_display
+                .lock()
+                .expect("display lock")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn create_managed_table_rejects_unknown_display_format_kind_without_side_effects() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let datasets_before = metadata_total_dataset_count(&state);
+        let physical_before = physical_table_count(&state);
+        let request = CreateManagedTableRequest {
+            name: "Unknown Format".to_string(),
+            columns: vec![CreateTableColumn {
+                name: "amount".to_string(),
+                column_type: "DOUBLE".to_string(),
+                display: Some(ColumnDisplayPropsWithoutIndex {
+                    width: Some(120.0),
+                    format: Some(ColumnFormatInfo {
+                        kind: "datetime".to_string(),
+                        decimals: None,
+                        currency: None,
+                    }),
+                    extras: None,
+                }),
+            }],
+            rows: vec![vec![serde_json::json!(1.23)]],
+        };
+
+        let error = service
+            .create_managed_table(&request)
+            .expect_err("unknown display format kind must be rejected");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("unsupported display format kind")));
+        assert_eq!(metadata_total_dataset_count(&state), datasets_before);
+        assert_eq!(physical_table_count(&state), physical_before);
+        assert!(
+            state
+                .column_display
+                .lock()
+                .expect("display lock")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn create_managed_table_when_display_lock_is_poisoned_fails_before_db_mutation() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.column_display.lock().expect("display lock");
+            panic!("poison display lock");
+        }));
+        assert!(state.column_display.is_poisoned());
+
+        let datasets_before = metadata_total_dataset_count(&state);
+        let physical_before = physical_table_count(&state);
+        let request = CreateManagedTableRequest {
+            name: "Poisoned Display Lock".to_string(),
+            columns: vec![CreateTableColumn {
+                name: "value".to_string(),
+                column_type: "DOUBLE".to_string(),
+                display: None,
+            }],
+            rows: vec![vec![serde_json::json!(1.0)]],
+        };
+
+        let error = service
+            .create_managed_table(&request)
+            .expect_err("poisoned display lock must fail");
+
+        assert!(matches!(error, AppError::Database(_)));
+        assert_eq!(metadata_total_dataset_count(&state), datasets_before);
+        assert_eq!(physical_table_count(&state), physical_before);
+    }
 }
 
 impl<'a> DataService<'a> {
@@ -499,6 +616,14 @@ impl<'a> DataService<'a> {
             let kind = format.kind.trim();
             if kind.is_empty() {
                 return Err(AppError::InvalidParam("display format kind must be non-empty".into()));
+            }
+            if !SUPPORTED_DISPLAY_FORMAT_KINDS
+                .iter()
+                .any(|supported| kind.eq_ignore_ascii_case(supported))
+            {
+                return Err(AppError::InvalidParam(format!(
+                    "unsupported display format kind: {kind}"
+                )));
             }
             if let Some(decimals) = format.decimals {
                 if decimals > 20 {
@@ -721,7 +846,19 @@ impl<'a> DataService<'a> {
             }
         }
 
+        let db = self
+            .state
+            .db
+            .lock()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut display_guard = self
+            .state
+            .column_display
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+
         let mut display_props = Vec::new();
+        let mut canonical_column_types = Vec::with_capacity(request.columns.len());
         for (col_index, column) in request.columns.iter().enumerate() {
             if column.name.trim().is_empty() {
                 return Err(AppError::InvalidParam(format!(
@@ -729,22 +866,35 @@ impl<'a> DataService<'a> {
                     col_index + 1
                 )));
             }
+
+            let canonical_type = db.canonicalize_column_type_for_create(&column.column_type)?;
+            if !SUPPORTED_MANUAL_TABLE_TYPES
+                .iter()
+                .any(|supported| canonical_type.eq_ignore_ascii_case(supported))
+            {
+                return Err(AppError::InvalidParam(format!(
+                    "unsupported column type: {}",
+                    column.column_type
+                )));
+            }
+            canonical_column_types.push(canonical_type);
+
             if let Some(display) = &column.display {
                 Self::validate_display_without_index(display)?;
+                let format = display.format.as_ref().map(|value| {
+                    let mut normalized = value.clone();
+                    normalized.kind = normalized.kind.trim().to_ascii_lowercase();
+                    normalized
+                });
                 display_props.push(ColumnDisplayProps {
                     col_index,
                     width: display.width,
-                    format: display.format.clone(),
+                    format,
                     extras: display.extras.clone(),
                 });
             }
         }
 
-        let db = self
-            .state
-            .db
-            .lock()
-            .map_err(|e| AppError::Database(e.to_string()))?;
         let id = uuid::Uuid::new_v4().to_string();
         let resolved_name = Self::resolve_create_dataset_name(&db, &request.name)?;
 
@@ -754,26 +904,12 @@ impl<'a> DataService<'a> {
             let resolved_request = CreateTableFromRowsRequest {
                 name: resolved_name,
                 column_names: request.columns.iter().map(|column| column.name.clone()).collect(),
-                column_types: request
-                    .columns
-                    .iter()
-                    .map(|column| column.column_type.clone())
-                    .collect(),
+                column_types: canonical_column_types,
                 rows: request.rows.clone(),
             };
             db.create_table_from_rows(&id, &resolved_request)?
         };
-        drop(db);
 
-        let mut display_guard = match self.state.column_display.lock() {
-            Ok(guard) => guard,
-            Err(error) => {
-                if let Ok(db_guard) = self.state.db.lock() {
-                    let _ = db_guard.delete_dataset(&id);
-                }
-                return Err(AppError::Database(error.to_string()));
-            }
-        };
         if display_props.is_empty() {
             display_guard.remove(&id);
         } else {

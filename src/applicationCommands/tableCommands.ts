@@ -9,6 +9,7 @@ import type {
   TableDescribeInput,
   TableDescribeResult,
   TableListInput,
+  TableListItem,
   TableListResult,
 } from "@/applicationCommands/types";
 import { dataService } from "@/services/dataService";
@@ -30,7 +31,9 @@ export interface TableCommandDependencies {
 }
 
 export function createTableCommandHandlers(
-  dependencies: TableCommandDependencies = {
+  dependencies: Partial<TableCommandDependencies> = {},
+) {
+  const resolvedDependencies: TableCommandDependencies = {
     createManagedTable: dataService.createManagedTable,
     refreshDatasets: () => useDataStore.getState().refreshDatasets(),
     markDirty: () => useProjectStore.getState().markDirty(),
@@ -41,12 +44,67 @@ export function createTableCommandHandlers(
       useDataStore.getState().setActiveDataset(selection.activeDatasetId);
     },
     historyMessage: (name) => `Created table ${name}`,
-  },
-) {
-  const projectHandlers = dependencies.projectHandlers
-    ?? createProjectCommandHandlers(dependencies.projectDependencies);
+    ...dependencies,
+  };
 
-  async function createTable(input: TableCreateInput): Promise<TableCreateResult> {
+  const projectHandlers = resolvedDependencies.projectHandlers
+    ?? createProjectCommandHandlers(resolvedDependencies.projectDependencies);
+
+  function toTableListItem(dataset: Awaited<ReturnType<typeof dataService.createManagedTable>>): TableListItem {
+    return {
+      id: dataset.id,
+      name: dataset.name,
+      sourceType: dataset.sourceType,
+      rowCount: dataset.rowCount,
+      colCount: dataset.colCount,
+      generation: dataset.generation,
+      createdAt: dataset.createdAt,
+      updatedAt: dataset.updatedAt,
+      sourceName: null,
+    };
+  }
+
+  function buildCreateResult(
+    created: Awaited<ReturnType<typeof dataService.createManagedTable>>,
+    input: TableCreateInput,
+  ): TableCreateResult {
+    const columns = input.request.columns.map((column, colIndex) => ({
+      colIndex,
+      colName: column.name,
+      colType: column.columnType,
+      width: column.display?.width,
+      format: column.display?.format,
+      extras: column.display?.extras,
+    }));
+
+    const result: TableCreateResult = {
+      dataset: toTableListItem(created),
+      generation: created.generation,
+      columns,
+    };
+
+    if (input.preview) {
+      const offset = input.preview.offset ?? 0;
+      const limit = input.preview.limit;
+      const rows = input.request.rows.slice(offset, offset + limit);
+      result.preview = {
+        offset,
+        limit,
+        totalRows: input.request.rows.length,
+        rows: rows.map((row, rowOffset) => ({
+          rowIndex: offset + rowOffset,
+          cells: row.map((value, colIndex) => ({ colIndex, value })),
+        })),
+      };
+    }
+
+    return result;
+  }
+
+  async function createTable(
+    input: TableCreateInput,
+    controls?: { beginCommit?: () => void },
+  ): Promise<TableCreateResult> {
     if (input.request.columns.length !== 0 && input.request.rows.length > 0) {
       for (const row of input.request.rows) {
         if (row.length !== input.request.columns.length) {
@@ -55,18 +113,14 @@ export function createTableCommandHandlers(
       }
     }
 
-    const created = await dependencies.createManagedTable(input.request);
-    await dependencies.refreshDatasets();
+    controls?.beginCommit?.();
+    const created = await resolvedDependencies.createManagedTable(input.request);
+    await resolvedDependencies.refreshDatasets();
 
-    const described = await projectHandlers.describeProjectTable({
-      datasetId: created.id,
-      preview: input.preview,
-    });
-
-    dependencies.markDirty();
-    dependencies.activateDataset(created.id);
-    dependencies.recordAction(dependencies.historyMessage(created.name));
-    return described;
+    resolvedDependencies.markDirty();
+    resolvedDependencies.activateDataset(created.id);
+    resolvedDependencies.recordAction(resolvedDependencies.historyMessage(created.name));
+    return buildCreateResult(created, input);
   }
 
   return {

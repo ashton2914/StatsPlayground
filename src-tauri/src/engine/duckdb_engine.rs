@@ -3379,6 +3379,13 @@ impl DuckDbEngine {
             .ok_or_else(|| AppError::InvalidParam("column type produced no schema".into()))
     }
 
+    pub fn canonicalize_column_type_for_create(
+        &self,
+        column_type: &str,
+    ) -> Result<String, AppError> {
+        self.canonicalize_column_type(column_type)
+    }
+
     fn collect_sql_query_schema(
         &self,
         conn: &Connection,
