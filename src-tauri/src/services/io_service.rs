@@ -273,6 +273,109 @@ mod tests {
         assert_directory_entries(&export_root.join("nested"), &[]);
     }
 
+    #[test]
+    fn authorized_export_staging_windows_creation_contract() {
+        let source = include_str!("io_service.rs");
+        let windows = source.split_once("\nmod windows_acl {").expect("Windows ACL module").1;
+        let creator = source.split_once("\nfn create_authorized_export_staging_dir").expect("staging creator").1;
+        assert!(
+            creator.contains("windows_acl::create_private_current_user_directory(parent)"),
+            "Windows staging must use native create-time security, not tempdir_in followed by ACL replacement"
+        );
+        assert!(!windows.contains("SetNamedSecurityInfoW"), "no post-create ACL replacement");
+        assert!(!windows.contains("tempdir_in("), "Windows must not create an inherited-ACL TempDir");
+        assert!(windows.contains("CreateDirectoryW(path_wide.as_ptr(), security_attributes)"));
+        let prepare = windows.find("SetSecurityDescriptorControl(").expect("protected descriptor");
+        let create = windows.find("create_directory(&path, &security_attributes)").expect("create-time attributes");
+        assert!(prepare < create, "DACL protection must precede native creation");
+        assert!(windows.contains("SetSecurityDescriptorDacl(descriptor_ptr, 1, dacl.0, 0)"));
+        assert!(windows.contains("SetSecurityDescriptorOwner(descriptor_ptr, current_user.sid, 0)"));
+        assert!(windows.contains("lpSecurityDescriptor: descriptor_ptr"));
+        assert!(windows.contains("Err(ERROR_ALREADY_EXISTS) => continue"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn authorized_export_staging_windows_attributes_precede_creation() {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
+        use windows_sys::Win32::Security::{
+            EqualSid, GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+            GetSecurityDescriptorOwner, ACCESS_ALLOWED_ACE, CONTAINER_INHERIT_ACE,
+            OBJECT_INHERIT_ACE, SE_DACL_PROTECTED,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+        use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
+
+        let temp = TempDir::new().expect("temp dir");
+        let mut attempts = 0;
+        let mut collision = None;
+        let staging = windows_acl::create_private_current_user_directory_with(
+            temp.path(),
+            |path, attributes| {
+                assert!(!path.exists(), "descriptor must be ready before the directory exists");
+                assert_eq!(attributes.nLength as usize, std::mem::size_of_val(attributes));
+                assert_eq!(attributes.bInheritHandle, 0);
+                let mut control = 0;
+                let mut revision = 0;
+                let mut present = 0;
+                let mut defaulted = 0;
+                let mut dacl = std::ptr::null_mut();
+                let mut owner = std::ptr::null_mut();
+                unsafe {
+                    assert_ne!(GetSecurityDescriptorControl(attributes.lpSecurityDescriptor, &mut control, &mut revision), 0);
+                    assert_ne!(GetSecurityDescriptorDacl(attributes.lpSecurityDescriptor, &mut present, &mut dacl, &mut defaulted), 0);
+                    assert_ne!(GetSecurityDescriptorOwner(attributes.lpSecurityDescriptor, &mut owner, &mut defaulted), 0);
+                }
+                assert_ne!(control & SE_DACL_PROTECTED, 0);
+                assert_ne!(present, 0);
+                assert!(!dacl.is_null());
+                assert!(!owner.is_null());
+                let mut ace = std::ptr::null_mut();
+                unsafe {
+                    assert_eq!((*dacl).AceCount, 1);
+                    assert_ne!(GetAce(dacl, 0, &mut ace), 0);
+                    let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+                    assert_eq!(u32::from(allowed.Header.AceType), ACCESS_ALLOWED_ACE_TYPE);
+                    assert_eq!(u32::from(allowed.Header.AceFlags), CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE);
+                    assert_eq!(allowed.Mask, FILE_ALL_ACCESS);
+                    assert_ne!(EqualSid((&allowed.SidStart as *const u32).cast_mut().cast(), owner), 0);
+                }
+                attempts += 1;
+                if attempts == 1 {
+                    std::fs::create_dir(path).expect("collision fixture");
+                    std::fs::write(path.join("keep"), b"keep").expect("collision contents");
+                    collision = Some(path.to_path_buf());
+                    assert_eq!(windows_acl::create_directory(path, attributes), Err(ERROR_ALREADY_EXISTS));
+                    Err(ERROR_ALREADY_EXISTS)
+                } else {
+                    windows_acl::create_directory(path, attributes)
+                }
+            },
+        ).expect("retry collision with a new path");
+        assert_eq!(attempts, 2);
+        let staging_path = staging.path().to_path_buf();
+        let inspection = inspect_windows_staging_dir_acl(&staging_path).expect("inspect created directory");
+        assert!(inspection.owner_is_current_user && inspection.dacl_is_protected);
+        assert!(inspection.current_user_has_full_control && inspection.only_current_user_allows_access);
+        std::fs::create_dir(staging_path.join("child")).expect("create child directory");
+        std::fs::write(staging_path.join("child/data"), b"private").expect("create child file");
+        for child in [staging_path.join("child"), staging_path.join("child/data")] {
+            let child_acl = inspect_windows_staging_dir_acl(&child).expect("inspect inherited child ACL");
+            assert!(child_acl.current_user_has_full_control && child_acl.only_current_user_allows_access);
+        }
+        drop(staging);
+        assert!(!staging_path.exists());
+        assert_eq!(std::fs::read(collision.expect("collision path").join("keep")).unwrap(), b"keep");
+
+        let mut failed_attempts = 0;
+        let result = windows_acl::create_private_current_user_directory_with(temp.path(), |_, _| {
+            failed_attempts += 1;
+            Err(ERROR_ACCESS_DENIED)
+        });
+        assert!(result.is_err());
+        assert_eq!(failed_attempts, 1, "only name collisions may be retried");
+    }
+
     #[cfg(windows)]
     #[test]
     fn authorized_export_staging_dir_has_protected_current_user_windows_acl() {
@@ -1020,13 +1123,41 @@ fn authorize_overwrite_status(
     Ok(())
 }
 
+#[cfg(unix)]
 fn create_authorized_export_staging_dir(parent: &Path) -> Result<tempfile::TempDir, AppError> {
+    use std::os::unix::fs::PermissionsExt;
+
     let staging_dir = tempfile::Builder::new()
         .prefix(AUTHORIZED_EXPORT_TEMP_PREFIX)
         .tempdir_in(parent)
         .map_err(|error| AppError::FileIO(error.to_string()))?;
-    set_private_staging_permissions(staging_dir.path())?;
+    fs::set_permissions(staging_dir.path(), fs::Permissions::from_mode(0o700))
+        .map_err(|error| AppError::FileIO(error.to_string()))?;
     Ok(staging_dir)
+}
+
+#[cfg(windows)]
+fn create_authorized_export_staging_dir(parent: &Path) -> Result<WindowsStagingDir, AppError> {
+    windows_acl::create_private_current_user_directory(parent)
+}
+
+#[cfg(windows)]
+struct WindowsStagingDir {
+    path: std::path::PathBuf,
+}
+
+#[cfg(windows)]
+impl WindowsStagingDir {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsStagingDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn verify_staged_export_leaf(path: &Path) -> Result<(), AppError> {
@@ -1066,21 +1197,8 @@ fn atomic_replace_file(temp_path: &Path, output_path: &Path) -> Result<(), AppEr
     Ok(())
 }
 
-#[cfg(unix)]
-fn set_private_staging_permissions(path: &Path) -> Result<(), AppError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|error| AppError::FileIO(error.to_string()))
-}
-
-#[cfg(windows)]
-fn set_private_staging_permissions(path: &Path) -> Result<(), AppError> {
-    windows_acl::set_private_current_user_directory_acl(path)
-}
-
 #[cfg(not(any(unix, windows)))]
-fn set_private_staging_permissions(_path: &Path) -> Result<(), AppError> {
+fn create_authorized_export_staging_dir(_parent: &Path) -> Result<tempfile::TempDir, AppError> {
     Err(AppError::FileIO(
         "private export staging permissions are not implemented on this platform".to_string(),
     ))
@@ -1104,78 +1222,113 @@ fn inspect_windows_staging_dir_acl(
 
 #[cfg(windows)]
 mod windows_acl {
-    use super::{AppError, Path};
+    use super::{AppError, Path, WindowsStagingDir, AUTHORIZED_EXPORT_TEMP_PREFIX};
     use std::ffi::OsStr;
     use std::iter::once;
     use std::mem::MaybeUninit;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::{null, null_mut};
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, HLOCAL};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, LocalFree, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER,
+        ERROR_SUCCESS, HANDLE, HLOCAL,
+    };
     use windows_sys::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
-        NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        GetNamedSecurityInfoW, SetEntriesInAclW, EXPLICIT_ACCESS_W,
+        NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT,
         TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{
         AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-        GetTokenInformation, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION,
-        DACL_SECURITY_INFORMATION, FILE_ALL_ACCESS, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+        GetTokenInformation, InitializeSecurityDescriptor, IsValidSid, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TokenUser, ACCESS_ALLOWED_ACE, ACL,
+        ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE,
+        OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
     };
-    use windows_sys::Win32::System::Memory::{LocalAlloc, LocalFree, LMEM_FIXED};
+    use windows_sys::Win32::Storage::FileSystem::{CreateDirectoryW, FILE_ALL_ACCESS};
+    use windows_sys::Win32::System::Memory::{LocalAlloc, LMEM_FIXED};
+    use windows_sys::Win32::System::SystemServices::{
+        ACCESS_ALLOWED_ACE_TYPE, SECURITY_DESCRIPTOR_REVISION,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    pub(super) fn create_private_current_user_directory(parent: &Path) -> Result<WindowsStagingDir, AppError> {
+        create_private_current_user_directory_with(parent, create_directory)
+    }
 
-    pub(super) fn set_private_current_user_directory_acl(path: &Path) -> Result<(), AppError> {
+    pub(super) fn create_private_current_user_directory_with(
+        parent: &Path,
+        mut create_directory: impl FnMut(&Path, &SECURITY_ATTRIBUTES) -> Result<(), u32>,
+    ) -> Result<WindowsStagingDir, AppError> {
         let current_user = CurrentUserSid::new()?;
-        let path_wide = wide_path(path);
-        let mut trustee = TRUSTEE_W {
+        let trustee = TRUSTEE_W {
             pMultipleTrustee: null_mut(),
             MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
             TrusteeForm: TRUSTEE_IS_SID,
             TrusteeType: TRUSTEE_IS_USER,
-            ptstrName: current_user.sid as *mut _,
+            ptstrName: current_user.sid.cast::<u16>(),
         };
-        let mut explicit_access = EXPLICIT_ACCESS_W {
+        let explicit_access = EXPLICIT_ACCESS_W {
             grfAccessPermissions: FILE_ALL_ACCESS,
             grfAccessMode: SET_ACCESS,
-            grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            grfInheritance: CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
             Trustee: trustee,
         };
         let mut dacl: *mut ACL = null_mut();
-        let acl_status = unsafe { SetEntriesInAclW(1, &mut explicit_access, null_mut(), &mut dacl) };
+        let acl_status = unsafe { SetEntriesInAclW(1, &explicit_access, null(), &mut dacl) };
         if acl_status != ERROR_SUCCESS {
             return Err(last_acl_error("build private staging DACL", acl_status));
         }
         let dacl = LocalAcl(dacl);
 
-        let status = unsafe {
-            SetNamedSecurityInfoW(
-                path_wide.as_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                null_mut(),
-                null_mut(),
-                dacl.0,
-                null_mut(),
-            )
-        };
-        if status != ERROR_SUCCESS {
-            return Err(last_acl_error("apply private staging DACL", status));
+        let mut descriptor = MaybeUninit::<SECURITY_DESCRIPTOR>::uninit();
+        let descriptor_ptr = descriptor.as_mut_ptr().cast();
+        if unsafe { InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) } == 0 {
+            return Err(last_io_error("initialize private staging descriptor"));
         }
+        if unsafe { SetSecurityDescriptorOwner(descriptor_ptr, current_user.sid, 0) } == 0 {
+            return Err(last_io_error("set private staging owner"));
+        }
+        if unsafe { SetSecurityDescriptorDacl(descriptor_ptr, 1, dacl.0, 0) } == 0 {
+            return Err(last_io_error("set private staging DACL"));
+        }
+        if unsafe { SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED) } == 0 {
+            return Err(last_io_error("protect private staging DACL"));
+        }
+        let security_attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor_ptr,
+            bInheritHandle: 0,
+        };
 
-        let inspection = inspect_private_current_user_directory_acl(path)?;
-        if inspection.owner_is_current_user
-            && inspection.dacl_is_protected
-            && inspection.current_user_has_full_control
-            && inspection.only_current_user_allows_access
-        {
+        for _attempt in 0..32 {
+            let path = parent.join(format!("{AUTHORIZED_EXPORT_TEMP_PREFIX}{}", uuid::Uuid::new_v4()));
+            match create_directory(&path, &security_attributes) {
+                Ok(()) => {
+                    let staging = WindowsStagingDir { path };
+                    let inspection = inspect_private_current_user_directory_acl(staging.path())?;
+                    if inspection.owner_is_current_user
+                        && inspection.dacl_is_protected
+                        && inspection.current_user_has_full_control
+                        && inspection.only_current_user_allows_access
+                    {
+                        return Ok(staging);
+                    }
+                    return Err(AppError::FileIO("private export staging ACL verification failed".to_string()));
+                }
+                Err(ERROR_ALREADY_EXISTS) => continue,
+                Err(status) => return Err(last_acl_error("create private staging directory", status)),
+            }
+        }
+        Err(AppError::FileIO("private export staging name collisions exhausted".to_string()))
+    }
+
+    pub(super) fn create_directory(path: &Path, security_attributes: &SECURITY_ATTRIBUTES) -> Result<(), u32> {
+        let path_wide = wide_path(path);
+        if unsafe { CreateDirectoryW(path_wide.as_ptr(), security_attributes) } != 0 {
             Ok(())
         } else {
-            Err(AppError::FileIO(
-                "private export staging ACL verification failed".to_string(),
-            ))
+            Err(unsafe { GetLastError() })
         }
     }
 
@@ -1234,6 +1387,9 @@ mod windows_acl {
             return Err(last_io_error("read staging DACL information"));
         }
         let info = unsafe { info.assume_init() };
+        if info.AceCount != 1 {
+            return Ok((false, false));
+        }
         let mut current_user_has_full_control = false;
 
         for index in 0..info.AceCount {
@@ -1243,12 +1399,14 @@ mod windows_acl {
                 return Err(last_io_error("read staging DACL ACE"));
             }
             let header = unsafe { *(ace as *const windows_sys::Win32::Security::ACE_HEADER) };
-            if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
-                continue;
+            if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
+                || u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0
+            {
+                return Ok((false, false));
             }
 
             let allowed = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
-            let sid = unsafe { &allowed.SidStart as *const u32 as PSID };
+            let sid = &allowed.SidStart as *const u32 as PSID;
             let is_current_user = unsafe { EqualSid(sid, current_user_sid) } != 0;
             if !is_current_user {
                 return Ok((current_user_has_full_control, false));
@@ -1268,7 +1426,7 @@ mod windows_acl {
 
     impl CurrentUserSid {
         fn new() -> Result<Self, AppError> {
-            let mut token: HANDLE = 0;
+            let mut token: HANDLE = null_mut();
             let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
             if opened == 0 {
                 return Err(last_io_error("open current process token"));
@@ -1276,23 +1434,28 @@ mod windows_acl {
             let token = TokenHandle(token);
 
             let mut needed = 0u32;
-            unsafe {
-                GetTokenInformation(token.0, TOKEN_USER, null_mut(), 0, &mut needed);
-            }
-            if needed == 0 {
+            let sized = unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut needed) };
+            if sized != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
+                || needed < std::mem::size_of::<TOKEN_USER>() as u32
+            {
                 return Err(last_io_error("size current user token"));
             }
             let buffer_handle = unsafe { LocalAlloc(LMEM_FIXED, needed as usize) };
-            if buffer_handle == 0 {
+            if buffer_handle.is_null() {
                 return Err(last_io_error("allocate current user token buffer"));
             }
-            let buffer = buffer_handle as *mut std::ffi::c_void;
-            let ok = unsafe { GetTokenInformation(token.0, TOKEN_USER, buffer, needed, &mut needed) };
+            let buffer = buffer_handle;
+            let ok = unsafe { GetTokenInformation(token.0, TokenUser, buffer, needed, &mut needed) };
             if ok == 0 {
+                let error = last_io_error("read current user token");
                 unsafe { LocalFree(buffer_handle) };
-                return Err(last_io_error("read current user token"));
+                return Err(error);
             }
             let token_user = unsafe { &*(buffer as *const TOKEN_USER) };
+            if token_user.User.Sid.is_null() || unsafe { IsValidSid(token_user.User.Sid) } == 0 {
+                unsafe { LocalFree(buffer_handle) };
+                return Err(AppError::FileIO("invalid current user SID".to_string()));
+            }
             Ok(Self {
                 sid: token_user.User.Sid,
                 buffer: buffer_handle,
@@ -1323,7 +1486,7 @@ mod windows_acl {
     impl Drop for LocalAcl {
         fn drop(&mut self) {
             unsafe {
-                LocalFree(self.0 as isize);
+                LocalFree(self.0.cast());
             }
         }
     }
@@ -1345,7 +1508,7 @@ mod windows_acl {
     impl Drop for LocalSecurityDescriptor {
         fn drop(&mut self) {
             unsafe {
-                LocalFree(self.0 as isize);
+                LocalFree(self.0);
             }
         }
     }
@@ -1371,25 +1534,7 @@ fn atomic_replace_file(temp_path: &Path, output_path: &Path) -> Result<(), AppEr
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
-
-    type Bool = i32;
-    type Dword = u32;
-    type Lpcwstr = *const u16;
-    type Lpvoid = *mut std::ffi::c_void;
-
-    const MOVEFILE_WRITE_THROUGH: Dword = 0x0000_0008;
-
-    extern "system" {
-        fn MoveFileExW(existing_file_name: Lpcwstr, new_file_name: Lpcwstr, flags: Dword) -> Bool;
-        fn ReplaceFileW(
-            replaced_file_name: Lpcwstr,
-            replacement_file_name: Lpcwstr,
-            backup_file_name: Lpcwstr,
-            replace_flags: Dword,
-            exclude: Lpvoid,
-            reserved: Lpvoid,
-        ) -> Bool;
-    }
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH};
 
     fn wide(path: &Path) -> Vec<u16> {
         OsStr::new(path)
