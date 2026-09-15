@@ -6,6 +6,7 @@ use serde_json::Value;
 pub struct McpCommandBrokerConfig {
     pub max_pending: usize,
     pub max_concurrent: usize,
+    pub max_committed_outcomes: usize,
 }
 
 impl Default for McpCommandBrokerConfig {
@@ -13,6 +14,7 @@ impl Default for McpCommandBrokerConfig {
         Self {
             max_pending: 32,
             max_concurrent: 4,
+            max_committed_outcomes: 4,
         }
     }
 }
@@ -32,6 +34,12 @@ pub struct ApplicationCommandEnvelope {
 pub struct ApplicationCommandRequestEvent {
     pub request_id: String,
     pub command: ApplicationCommandEnvelope,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationCommandCancelEvent {
+    pub request_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]

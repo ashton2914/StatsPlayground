@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,18 +10,21 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::models::mcp::{
-    ApplicationCommandEnvelope, ApplicationCommandProgress, ApplicationCommandRequestEvent,
-    ApplicationCommandResponse, ApplicationCommandStatus, McpBrokerCompletion,
-    McpCommandBrokerConfig, McpCommandError, McpCommandResponse,
+    ApplicationCommandCancelEvent, ApplicationCommandEnvelope, ApplicationCommandProgress,
+    ApplicationCommandRequestEvent, ApplicationCommandResponse, ApplicationCommandStatus,
+    McpBrokerCompletion, McpCommandBrokerConfig, McpCommandError, McpCommandResponse,
 };
 
 const APPLICATION_COMMAND_REQUEST_EVENT: &str = "application-command-request";
+const APPLICATION_COMMAND_CANCEL_EVENT: &str = "application-command-cancel";
 
 pub trait ApplicationCommandEventEmitter: Clone + Send + Sync + 'static {
     fn emit_application_command_request(
         &self,
         event: ApplicationCommandRequestEvent,
     ) -> Result<(), AppError>;
+
+    fn emit_application_command_cancel(&self, request_id: String) -> Result<(), AppError>;
 }
 
 #[derive(Clone, Default)]
@@ -53,6 +56,21 @@ impl ApplicationCommandEventEmitter for TauriApplicationCommandEventEmitter {
             .ok_or_else(|| AppError::Busy("Application command bridge is not ready".to_string()))?;
         app_handle
             .emit(APPLICATION_COMMAND_REQUEST_EVENT, event)
+            .map_err(|error| AppError::InvalidParam(error.to_string()))
+    }
+
+    fn emit_application_command_cancel(&self, request_id: String) -> Result<(), AppError> {
+        let app_handle = self
+            .app_handle
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .clone()
+            .ok_or_else(|| AppError::Busy("Application command bridge is not ready".to_string()))?;
+        app_handle
+            .emit(
+                APPLICATION_COMMAND_CANCEL_EVENT,
+                ApplicationCommandCancelEvent { request_id },
+            )
             .map_err(|error| AppError::InvalidParam(error.to_string()))
     }
 }
@@ -111,9 +129,14 @@ struct BrokerInner<E: ApplicationCommandEventEmitter> {
     emitter: E,
     ready: AtomicBool,
     pending: Mutex<HashMap<String, PendingEntry>>,
-    committed_outcomes: Mutex<HashMap<String, McpCommandResponse>>,
+    committed_outcomes: Mutex<CommittedOutcomes>,
     semaphore: Arc<Semaphore>,
     config: McpCommandBrokerConfig,
+}
+
+struct CommittedOutcomes {
+    responses: HashMap<String, McpCommandResponse>,
+    order: VecDeque<String>,
 }
 
 struct PendingEntry {
@@ -121,6 +144,7 @@ struct PendingEntry {
     progress_sender: mpsc::UnboundedSender<ApplicationCommandProgress>,
     cancellation_token: McpCancellationToken,
     committing: bool,
+    retain_committed_outcome: bool,
 }
 
 impl McpCommandBroker<TauriApplicationCommandEventEmitter> {
@@ -150,11 +174,15 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
                 emitter,
                 ready: AtomicBool::new(false),
                 pending: Mutex::new(HashMap::new()),
-                committed_outcomes: Mutex::new(HashMap::new()),
+                committed_outcomes: Mutex::new(CommittedOutcomes {
+                    responses: HashMap::new(),
+                    order: VecDeque::new(),
+                }),
                 semaphore: Arc::new(Semaphore::new(max_concurrent)),
                 config: McpCommandBrokerConfig {
                     max_pending: config.max_pending.max(1),
                     max_concurrent,
+                    max_committed_outcomes: config.max_committed_outcomes.max(1),
                 },
             }),
         }
@@ -218,6 +246,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
                 progress_sender,
                 cancellation_token: cancellation_token.clone(),
                 committing: false,
+                retain_committed_outcome: false,
             },
         )?;
 
@@ -281,13 +310,11 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             return Ok(false);
         };
         let request_id = completion.request_id.clone();
-        if let ApplicationCommandResponse::Success(result) = &completion.response {
+        if entry.retain_committed_outcome {
+            if let ApplicationCommandResponse::Success(result) = &completion.response {
             let response = McpCommandResponse::from_result(request_id.clone(), result.clone());
-            self.inner
-                .committed_outcomes
-                .lock()
-                .map_err(|error| AppError::Database(error.to_string()))?
-                .insert(request_id, response);
+                self.retain_committed_outcome(request_id, response)?;
+            }
         }
         if let Some(sender) = entry.completion.take() {
             sender.send(completion.response).map_err(|_| {
@@ -317,7 +344,29 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             .committed_outcomes
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))
-            .map(|outcomes| outcomes.get(request_id).cloned())
+            .map(|outcomes| outcomes.responses.get(request_id).cloned())
+    }
+
+    fn retain_committed_outcome(
+        &self,
+        request_id: String,
+        response: McpCommandResponse,
+    ) -> Result<(), AppError> {
+        let mut outcomes = self
+            .inner
+            .committed_outcomes
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        if !outcomes.responses.contains_key(&request_id) {
+            outcomes.order.push_back(request_id.clone());
+        }
+        outcomes.responses.insert(request_id, response);
+        while outcomes.order.len() > self.inner.config.max_committed_outcomes {
+            if let Some(evicted) = outcomes.order.pop_front() {
+                outcomes.responses.remove(&evicted);
+            }
+        }
+        Ok(())
     }
 
     async fn acquire_slot(
@@ -365,10 +414,27 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         timeout: Duration,
         permit: OwnedSemaphorePermit,
     ) -> Result<McpCommandResponse, AppError> {
-        let result = tokio::select! {
-            response = completion_rx => self.response_to_result(request_id.clone(), response),
-            _ = cancellation_token.cancelled() => self.handle_cancellation(request_id.clone()).await,
-            _ = tokio::time::sleep(timeout) => self.handle_timeout(request_id.clone()).await,
+        let mut completion_rx = completion_rx;
+        let mut cancellation_forwarded = false;
+        let mut timeout_elapsed = false;
+        let result = loop {
+            tokio::select! {
+                response = &mut completion_rx => break self.response_to_result(request_id.clone(), response),
+                _ = cancellation_token.cancelled(), if !cancellation_forwarded => {
+                    cancellation_forwarded = true;
+                    if self.forward_cancellation(&request_id)? {
+                        continue;
+                    }
+                    break Err(AppError::Cancelled("Application command cancelled".to_string()));
+                }
+                _ = tokio::time::sleep(timeout), if !timeout_elapsed && !cancellation_forwarded => {
+                    timeout_elapsed = true;
+                    if self.mark_timeout_elapsed(&request_id)? {
+                        continue;
+                    }
+                    break Err(AppError::Busy("Application command timeout".to_string()));
+                }
+            }
         };
         drop(permit);
         result
@@ -386,59 +452,47 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             ApplicationCommandResponse::Error(error) if error.code == "cancelled" => {
                 Err(AppError::Cancelled(error.message))
             }
-            ApplicationCommandResponse::Error(error) => Err(AppError::InvalidParam(error.message)),
+            ApplicationCommandResponse::Error(error) => Err(AppError::ApplicationCommand(error)),
         }
     }
 
-    async fn handle_cancellation(
-        &self,
-        request_id: String,
-    ) -> Result<McpCommandResponse, AppError> {
-        if let Some(outcome) = self.committed_outcome(&request_id)? {
-            return Ok(outcome);
-        }
-        if self.is_committing(&request_id)? {
-            return self.wait_for_committed_outcome(request_id).await;
-        }
-        self.remove_pending(&request_id)?;
-        Err(AppError::Cancelled(
-            "Application command cancelled".to_string(),
-        ))
-    }
-
-    async fn handle_timeout(&self, request_id: String) -> Result<McpCommandResponse, AppError> {
-        if let Some(outcome) = self.committed_outcome(&request_id)? {
-            return Ok(outcome);
-        }
-        if self.is_committing(&request_id)? {
-            return self.wait_for_committed_outcome(request_id).await;
-        }
-        self.remove_pending(&request_id)?;
-        Err(AppError::Busy("Application command timeout".to_string()))
-    }
-
-    fn is_committing(&self, request_id: &str) -> Result<bool, AppError> {
+    fn forward_cancellation(&self, request_id: &str) -> Result<bool, AppError> {
+        let should_wait = {
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            let Some(entry) = pending.get_mut(request_id) else {
+                return Ok(false);
+            };
+            entry.cancellation_token.cancel();
+            if entry.committing {
+                entry.retain_committed_outcome = true;
+            }
+            true
+        };
         self.inner
+            .emitter
+            .emit_application_command_cancel(request_id.to_string())?;
+        Ok(should_wait)
+    }
+
+    fn mark_timeout_elapsed(&self, request_id: &str) -> Result<bool, AppError> {
+        let mut pending = self
+            .inner
             .pending
             .lock()
-            .map_err(|error| AppError::Database(error.to_string()))
-            .map(|pending| {
-                pending
-                    .get(request_id)
-                    .map(|entry| entry.committing)
-                    .unwrap_or(false)
-            })
-    }
-
-    async fn wait_for_committed_outcome(
-        &self,
-        request_id: String,
-    ) -> Result<McpCommandResponse, AppError> {
-        loop {
-            if let Some(outcome) = self.committed_outcome(&request_id)? {
-                return Ok(outcome);
-            }
-            tokio::task::yield_now().await;
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let Some(entry) = pending.get_mut(request_id) else {
+            return Ok(false);
+        };
+        if entry.committing {
+            entry.retain_committed_outcome = true;
+            Ok(true)
+        } else {
+            pending.remove(request_id);
+            Ok(false)
         }
     }
 }
@@ -496,11 +550,19 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingEmitter {
         events: Arc<Mutex<Vec<ApplicationCommandRequestEvent>>>,
+        cancellations: Arc<Mutex<Vec<String>>>,
     }
 
     impl RecordingEmitter {
         fn requests(&self) -> Vec<ApplicationCommandRequestEvent> {
             self.events.lock().expect("test emitter lock").clone()
+        }
+
+        fn cancellation_requests(&self) -> Vec<String> {
+            self.cancellations
+                .lock()
+                .expect("test cancellation emitter lock")
+                .clone()
         }
     }
 
@@ -510,6 +572,14 @@ mod tests {
             event: ApplicationCommandRequestEvent,
         ) -> Result<(), crate::error::AppError> {
             self.events.lock().expect("test emitter lock").push(event);
+            Ok(())
+        }
+
+        fn emit_application_command_cancel(&self, request_id: String) -> Result<(), crate::error::AppError> {
+            self.cancellations
+                .lock()
+                .expect("test cancellation emitter lock")
+                .push(request_id);
             Ok(())
         }
     }
@@ -532,6 +602,7 @@ mod tests {
             McpCommandBrokerConfig {
                 max_pending,
                 max_concurrent,
+                ..McpCommandBrokerConfig::default()
             },
         );
         (broker, emitter)
@@ -758,7 +829,23 @@ mod tests {
         while emitter.requests().len() < 2 {
             tokio::task::yield_now().await;
         }
+        let cancelled_request_id = emitter.requests()[1].request_id.clone();
         cancel_token.cancel();
+        while emitter.cancellation_requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        assert!(matches!(
+            broker.complete_application_command(McpBrokerCompletion {
+                request_id: cancelled_request_id,
+                response: ApplicationCommandResponse::Error(McpCommandError {
+                    code: "cancelled".to_string(),
+                    message: "Command cancelled".to_string(),
+                    retryable: false,
+                    details: None,
+                }),
+            }),
+            Ok(true)
+        ));
         let cancelled = queued.await.expect("queued task");
         assert!(
             matches!(cancelled, Err(crate::error::AppError::Cancelled(message)) if message.contains("cancelled"))
@@ -766,7 +853,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn running_cancellation_unregister_and_post_commit_outcomes_are_discoverable() {
+    async fn running_cancellation_emits_correlated_frontend_cancel_and_waits_for_final_outcome() {
         let (broker, emitter) = broker(2, 2);
         broker.register_dispatcher().expect("register dispatcher");
         let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
@@ -791,26 +878,35 @@ mod tests {
         }
         let running_request_id = emitter.requests()[0].request_id.clone();
         token.cancel();
+        while emitter.cancellation_requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(emitter.cancellation_requests(), vec![running_request_id.clone()]);
         assert!(matches!(
             broker.cancellation_requested(&running_request_id),
             Ok(true)
         ));
         assert!(matches!(
             broker.complete_application_command(McpBrokerCompletion {
-                request_id: running_request_id,
-                response: ApplicationCommandResponse::Error(McpCommandError {
-                    code: "cancelled".to_string(),
-                    message: "Command cancelled".to_string(),
-                    retryable: false,
-                    details: None,
+                request_id: running_request_id.clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: true,
+                    project_revision: 3,
+                    data: json!({ "committedAfterCancel": true }),
+                    warnings: vec![],
                 }),
             }),
             Ok(true)
         ));
-        assert!(matches!(
-            running.await.expect("running task"),
-            Err(crate::error::AppError::Cancelled(_))
-        ));
+        let committed_after_cancel = running.await.expect("running task").expect("final outcome");
+        assert_eq!(committed_after_cancel.request_id, running_request_id);
+        assert_eq!(committed_after_cancel.data, json!({ "committedAfterCancel": true }));
+    }
+
+    #[tokio::test]
+    async fn unregister_and_post_commit_outcomes_are_discoverable_without_false_rollback() {
+        let (broker, emitter) = broker(2, 2);
+        broker.register_dispatcher().expect("register dispatcher");
 
         let (unregister_progress_tx, _unregister_progress_rx) = mpsc::unbounded_channel();
         let unregistering = tokio::spawn({
@@ -826,7 +922,7 @@ mod tests {
                     .await
             }
         });
-        while emitter.requests().len() < 2 {
+        while emitter.requests().is_empty() {
             tokio::task::yield_now().await;
         }
         broker
@@ -856,10 +952,10 @@ mod tests {
                     .await
             }
         });
-        while emitter.requests().len() < 3 {
+        while emitter.requests().len() < 2 {
             tokio::task::yield_now().await;
         }
-        let commit_request_id = emitter.requests()[2].request_id.clone();
+        let commit_request_id = emitter.requests()[1].request_id.clone();
         assert!(matches!(
             broker.record_progress(ApplicationCommandProgress {
                 request_id: commit_request_id.clone(),
@@ -870,7 +966,15 @@ mod tests {
             }),
             Ok(true)
         ));
-        commit_token.cancel();
+        assert_eq!(
+            broker
+                .forward_cancellation(&commit_request_id)
+                .expect("forward post-commit cancellation"),
+            true
+        );
+        assert!(emitter
+            .cancellation_requests()
+            .contains(&commit_request_id));
         assert!(matches!(
             broker.complete_application_command(McpBrokerCompletion {
                 request_id: commit_request_id.clone(),
@@ -896,5 +1000,142 @@ mod tests {
                 .is_some(),
             true
         );
+    }
+
+    #[tokio::test]
+    async fn structured_application_command_errors_preserve_code_retryability_and_details() {
+        let (broker, emitter) = broker(4, 4);
+        broker.register_dispatcher().expect("register dispatcher");
+
+        for (index, (code, retryable, details)) in [
+            ("revision_conflict", true, json!({ "expected": 4, "actual": 5 })),
+            ("user_denied", false, json!({ "policy": "confirmation" })),
+            ("read_only", false, json!({ "mode": "readOnly" })),
+            ("path_not_authorized", true, json!({ "rootId": "export-root" })),
+        ].into_iter().enumerate() {
+            let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+            let pending = tokio::spawn({
+                let broker = broker.clone();
+                async move {
+                    broker
+                        .dispatch(
+                            test_command(&format!("error-{index}")),
+                            Duration::from_secs(5),
+                            progress_tx,
+                            McpCancellationToken::new(),
+                        )
+                        .await
+                }
+            });
+            while emitter.requests().len() <= index {
+                tokio::task::yield_now().await;
+            }
+            let request_id = emitter.requests()[index].request_id.clone();
+            broker
+                .complete_application_command(McpBrokerCompletion {
+                    request_id,
+                    response: ApplicationCommandResponse::Error(McpCommandError {
+                        code: code.to_string(),
+                        message: format!("{code} message"),
+                        retryable,
+                        details: Some(details.clone()),
+                    }),
+                })
+                .expect("complete error");
+            let result = pending.await.expect("dispatch task");
+            assert!(matches!(
+                result,
+                Err(crate::error::AppError::ApplicationCommand(error))
+                    if error.code == code && error.retryable == retryable && error.details == Some(details)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_outcomes_are_bounded_and_skip_routine_success_retention() {
+        let (broker, emitter) = broker(8, 8);
+        broker.register_dispatcher().expect("register dispatcher");
+
+        let (normal_progress_tx, _normal_progress_rx) = mpsc::unbounded_channel();
+        let normal = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("normal-success"),
+                        Duration::from_secs(5),
+                        normal_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let normal_request_id = emitter.requests()[0].request_id.clone();
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: normal_request_id.clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 1,
+                    data: json!({ "normal": true }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete normal success");
+        normal.await.expect("normal task").expect("normal response");
+        assert_eq!(broker.committed_outcome(&normal_request_id).expect("normal lookup"), None);
+
+        let mut retained_ids = Vec::new();
+        for index in 0..5 {
+            let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+            let pending = tokio::spawn({
+                let broker = broker.clone();
+                async move {
+                    broker
+                        .dispatch(
+                            test_command(&format!("late-{index}")),
+                            Duration::from_secs(5),
+                            progress_tx,
+                            McpCancellationToken::new(),
+                        )
+                        .await
+                }
+            });
+            while emitter.requests().len() < index + 2 {
+                tokio::task::yield_now().await;
+            }
+            let request_id = emitter.requests()[index + 1].request_id.clone();
+            broker
+                .record_progress(ApplicationCommandProgress {
+                    request_id: request_id.clone(),
+                    status: ApplicationCommandStatus::Committing,
+                    stage: "commit".to_string(),
+                    message: None,
+                    percent: None,
+                })
+                .expect("record committing");
+            assert_eq!(broker.mark_timeout_elapsed(&request_id).expect("mark timeout"), true);
+            broker
+                .complete_application_command(McpBrokerCompletion {
+                    request_id: request_id.clone(),
+                    response: ApplicationCommandResponse::Success(McpCommandResult {
+                        changed: true,
+                        project_revision: index as u64 + 2,
+                        data: json!({ "late": index }),
+                        warnings: vec![],
+                    }),
+                })
+                .expect("complete late success");
+            pending.await.expect("late task").expect("late response");
+            retained_ids.push(request_id);
+        }
+
+        assert_eq!(broker.committed_outcome(&retained_ids[0]).expect("evicted lookup"), None);
+        for request_id in retained_ids.iter().skip(1) {
+            assert!(broker.committed_outcome(request_id).expect("retained lookup").is_some());
+        }
     }
 }

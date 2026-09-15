@@ -436,6 +436,23 @@ export interface CommandProgress {
   percent?: number;
 }
 
+export type CommandLifecycleStatus =
+  | "queued"
+  | "running"
+  | "awaiting-confirmation"
+  | "committing"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface CommandStatusChange {
+  requestId: string;
+  status: CommandLifecycleStatus;
+  stage: string;
+  message?: string;
+  percent?: number;
+}
+
 export interface TrustedCommandExecutionContext {
   requestId: string;
   policy: {

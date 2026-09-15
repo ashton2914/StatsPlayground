@@ -15,7 +15,6 @@ import {
 import { useDataLinkStore } from "@/stores/useDataLinkStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 import { dataService } from "@/services/dataService";
-import { startApplicationCommandBridge } from "@/services/applicationCommandBridge";
 import { ioService } from "@/services/ioService";
 import { mcpManagementService } from "@/services/mcpManagementService";
 import { projectService } from "@/services/projectService";
@@ -122,6 +121,7 @@ import {
   createWorkspaceCommandHandlers,
   waitForWorkspaceCommandConfirmation,
 } from "./workspaceCommandHandlers";
+import { mountApplicationCommandBridge } from "./workspaceApplicationCommandBridge";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -456,18 +456,9 @@ export function Workspace() {
   }), []);
 
   useEffect(() => {
-    let mounted = true;
-    let dispose: (() => Promise<void>) | null = null;
-    void startApplicationCommandBridge().then((bridge) => {
-      if (!mounted) {
-        void bridge.dispose();
-        return;
-      }
-      dispose = () => bridge.dispose();
-    }).catch(() => undefined);
+    const bridge = mountApplicationCommandBridge();
     return () => {
-      mounted = false;
-      void dispose?.();
+      void bridge.dispose();
     };
   }, []);
 

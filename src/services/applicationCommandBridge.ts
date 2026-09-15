@@ -2,10 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
-import { CommandExecutionError, type ApplicationCommandRuntime, type CommandProgress } from "@/applicationCommands/runtime";
+import { CommandExecutionError, type ApplicationCommandRuntime, type CommandProgress, type CommandStatusChange } from "@/applicationCommands/runtime";
 import type { ApplicationCommand, ApplicationCommandRegistry } from "@/applicationCommands/types";
 
 const APPLICATION_COMMAND_REQUEST_EVENT = "application-command-request";
+const APPLICATION_COMMAND_CANCEL_EVENT = "application-command-cancel";
 const MCP_SESSION_ID = "application-command-broker";
 
 type Runtime = Pick<ApplicationCommandRuntime<ApplicationCommandRegistry>, "execute">;
@@ -17,6 +18,10 @@ interface ApplicationCommandRequestPayload {
   command: ApplicationCommand<ApplicationCommandRegistry>;
 }
 
+interface ApplicationCommandCancelPayload {
+  requestId: string;
+}
+
 interface ApplicationCommandBridgeDependencies {
   runtime: Runtime;
   listen: Listen;
@@ -25,7 +30,6 @@ interface ApplicationCommandBridgeDependencies {
 
 export interface ApplicationCommandBridgeHandle {
   start(): Promise<ApplicationCommandBridgeDisposer>;
-  cancel(requestId: string): Promise<boolean>;
 }
 
 export interface ApplicationCommandBridgeDisposer {
@@ -36,12 +40,34 @@ export function createApplicationCommandBridge(
   dependencies: ApplicationCommandBridgeDependencies,
 ): ApplicationCommandBridgeHandle {
   let started: Promise<ApplicationCommandBridgeDisposer> | null = null;
-  let unlisten: UnlistenFn | null = null;
+  let requestUnlisten: UnlistenFn | null = null;
+  let cancelUnlisten: UnlistenFn | null = null;
   let disposed = false;
   const controllers = new Map<string, AbortController>();
 
   const complete = async (update: unknown): Promise<void> => {
     await dependencies.invoke("complete_application_command", { update });
+  };
+
+  const emitProgress = (requestId: string, progress: {
+    status: string;
+    stage: string;
+    message?: string;
+    percent?: number;
+  }): void => {
+    const update: Record<string, unknown> = {
+      kind: "progress",
+      requestId,
+      status: toBrokerStatus(progress.status),
+      stage: progress.stage,
+    };
+    if (progress.message !== undefined) update.message = progress.message;
+    if (progress.percent !== undefined) update.percent = progress.percent;
+    void complete(update).catch(() => undefined);
+  };
+
+  const cancelCommand = (payload: ApplicationCommandCancelPayload): void => {
+    controllers.get(payload.requestId)?.abort();
   };
 
   const runCommand = (payload: ApplicationCommandRequestPayload): void => {
@@ -50,14 +76,21 @@ export function createApplicationCommandBridge(
     controllers.set(payload.requestId, controller);
 
     const onProgress = (progress: CommandProgress) => {
-      void complete({
-        kind: "progress",
-        requestId: payload.requestId,
+      emitProgress(payload.requestId, {
         status: "running",
         stage: progress.stage,
         message: progress.message,
         percent: progress.percent,
-      }).catch(() => undefined);
+      });
+    };
+
+    const onStatusChange = (status: CommandStatusChange) => {
+      emitProgress(payload.requestId, {
+        status: status.status,
+        stage: status.stage,
+        message: status.message,
+        percent: status.percent,
+      });
     };
 
     let commandPromise: Promise<unknown>;
@@ -65,7 +98,7 @@ export function createApplicationCommandBridge(
       commandPromise = dependencies.runtime.execute(
         payload.command,
         { kind: "mcp", sessionId: MCP_SESSION_ID, clientId: payload.requestId },
-        { signal: controller.signal, onProgress },
+        { signal: controller.signal, onProgress, onStatusChange },
       );
     } catch (error) {
       controllers.delete(payload.requestId);
@@ -97,11 +130,24 @@ export function createApplicationCommandBridge(
     async start() {
       if (started) return started;
       started = (async () => {
-        await dependencies.invoke("register_application_command_dispatcher");
-        unlisten = await dependencies.listen<ApplicationCommandRequestPayload>(
-          APPLICATION_COMMAND_REQUEST_EVENT,
-          (event) => runCommand(event.payload),
-        );
+        try {
+          requestUnlisten = await dependencies.listen<ApplicationCommandRequestPayload>(
+            APPLICATION_COMMAND_REQUEST_EVENT,
+            (event) => runCommand(event.payload),
+          );
+          cancelUnlisten = await dependencies.listen<ApplicationCommandCancelPayload>(
+            APPLICATION_COMMAND_CANCEL_EVENT,
+            (event) => cancelCommand(event.payload),
+          );
+          await dependencies.invoke("register_application_command_dispatcher");
+        } catch (error) {
+          requestUnlisten?.();
+          cancelUnlisten?.();
+          requestUnlisten = null;
+          cancelUnlisten = null;
+          started = null;
+          throw error;
+        }
         return {
           async dispose() {
             if (disposed) return;
@@ -110,21 +156,22 @@ export function createApplicationCommandBridge(
               controller.abort();
             }
             controllers.clear();
-            unlisten?.();
-            unlisten = null;
+            requestUnlisten?.();
+            cancelUnlisten?.();
+            requestUnlisten = null;
+            cancelUnlisten = null;
             await dependencies.invoke("unregister_application_command_dispatcher");
           },
         };
       })();
       return started;
     },
-    async cancel(requestId: string) {
-      const controller = controllers.get(requestId);
-      if (!controller) return false;
-      controller.abort();
-      return true;
-    },
   };
+}
+
+function toBrokerStatus(status: string): string {
+  if (status === "awaiting-confirmation") return "awaitingConfirmation";
+  return status;
 }
 
 function toSuccessResponse(result: unknown): unknown {

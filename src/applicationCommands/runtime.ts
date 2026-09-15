@@ -10,9 +10,11 @@ import type {
   CommandActor,
   CommandErrorCode,
   CommandExecutionContext,
+  CommandLifecycleStatus,
   CommandProgress,
   CommandRegistryShape,
   CommandResult,
+  CommandStatusChange,
   CommandWarning,
 } from "./types";
 
@@ -30,14 +32,7 @@ type CommandHandler<
   context: CommandExecutionContext,
 ) => Promise<CommandHandlerResult<TRegistry[TType]["data"]>>;
 
-type RequestStatus =
-  | "queued"
-  | "running"
-  | "awaiting-confirmation"
-  | "committing"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
+type RequestStatus = CommandLifecycleStatus;
 
 interface RuntimeRequest<TData> {
   requestId: string;
@@ -80,7 +75,11 @@ export interface ApplicationCommandRuntime<TRegistry extends CommandRegistryShap
   execute<TType extends Extract<keyof TRegistry, string>>(
     command: ApplicationCommand<TRegistry, TType>,
     actor: CommandActor,
-    context?: { signal?: AbortSignal; onProgress?: (progress: CommandProgress) => void },
+    context?: {
+      signal?: AbortSignal;
+      onProgress?: (progress: CommandProgress) => void;
+      onStatusChange?: (status: CommandStatusChange) => void;
+    },
   ): PendingCommandResult<TRegistry[TType]["data"]>;
   confirm(requestId: string, allow: boolean): boolean;
   cancel(requestId: string): boolean;
@@ -163,7 +162,11 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
   execute<TType extends Extract<keyof TRegistry, string>>(
     command: ApplicationCommand<TRegistry, TType>,
     actor: CommandActor,
-    context?: { signal?: AbortSignal; onProgress?: (progress: CommandProgress) => void },
+    context?: {
+      signal?: AbortSignal;
+      onProgress?: (progress: CommandProgress) => void;
+      onStatusChange?: (status: CommandStatusChange) => void;
+    },
   ): PendingCommandResult<TRegistry[TType]["data"]> {
     const registered = this.handlers.get(command.type);
     if (!registered) {
@@ -233,8 +236,8 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     }
 
     this.mutationTail = this.mutationTail.then(
-      () => this.runRequest(command, registered, request, policyDecision, context?.onProgress),
-      () => this.runRequest(command, registered, request, policyDecision, context?.onProgress),
+      () => this.runRequest(command, registered, request, policyDecision, context),
+      () => this.runRequest(command, registered, request, policyDecision, context),
     ).then(
       () => undefined,
       () => undefined,
@@ -393,7 +396,10 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     registered: RegisteredCommand,
     request: RuntimeRequest<TRegistry[TType]["data"]>,
     policyDecision: Promise<CommandPolicyDecision>,
-    onProgress?: (progress: CommandProgress) => void,
+    observer?: {
+      onProgress?: (progress: CommandProgress) => void;
+      onStatusChange?: (status: CommandStatusChange) => void;
+    },
   ): Promise<void> {
     if (request.settled || request.status === "cancelled") {
       return;
@@ -463,11 +469,16 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
         signal: request.controller.signal,
         reportProgress: (progress) => {
           request.status = "running";
-          onProgress?.(progress);
+          observer?.onProgress?.(progress);
         },
         beginCommit: () => {
           request.committed = true;
           request.status = "committing";
+          observer?.onStatusChange?.({
+            requestId: request.requestId,
+            status: "committing",
+            stage: "commit",
+          });
         },
         trusted: {
           requestId: request.requestId,
@@ -540,6 +551,8 @@ export type {
   ApplicationCommand,
   CommandActor,
   CommandExecutionContext,
+  CommandLifecycleStatus,
   CommandProgress,
   CommandResult,
+  CommandStatusChange,
 } from "./types";

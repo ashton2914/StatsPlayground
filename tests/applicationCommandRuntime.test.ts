@@ -665,4 +665,42 @@ async function waitForRequestStatus(
   assert.equal(state?.status, "succeeded");
 }
 
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  const statusEvents: Array<{ requestId: string; status: string; stage: string }> = [];
+  let commitStatusWasObservedBeforeIrreversibleWork = false;
+
+  runtime.register(
+    "test.commit",
+    async (_input, context) => {
+      context.beginCommit();
+      commitStatusWasObservedBeforeIrreversibleWork = statusEvents.some((event) => (
+        event.requestId === context.requestId
+        && event.status === "committing"
+        && event.stage === "commit"
+      ));
+      return { changed: true, data: { committed: true }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+
+  const result = await runtime.execute(
+    { type: "test.commit", input: {} },
+    { kind: "mcp", sessionId: "session-a" },
+    {
+      onStatusChange: (event) => {
+        statusEvents.push(event);
+      },
+    } as never,
+  );
+
+  assert.equal(result.projectRevision, 1);
+  assert.equal(commitStatusWasObservedBeforeIrreversibleWork, true);
+  assert.deepEqual(statusEvents.filter((event) => event.status === "committing"), [{
+    requestId: result.requestId,
+    status: "committing",
+    stage: "commit",
+  }]);
+}
+
 console.log("application command runtime tests passed");
