@@ -931,7 +931,7 @@ fn analysis_document_and_request(
                 "confidenceLevel": definition.pointer("/analysis/confidenceLevel"),
                 "specLimits": definition.pointer("/analysis/specLimits").cloned().unwrap_or_else(|| json!({})),
                 "fitDistributions": definition.pointer("/analysis/fitDistributions").cloned().unwrap_or_else(|| json!(["normal"])),
-                "fitAll": definition.pointer("/analysis/fitAll").cloned().unwrap_or_else(|| json!(false))
+                "fitAll": definition.pointer("/analysis/fitAll").cloned().unwrap_or(json!(false))
             }))
             .map_err(|error| {
                 AppError::InvalidParam(format!("invalid Workflow Distribution request: {error}"))

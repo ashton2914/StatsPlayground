@@ -1506,16 +1506,17 @@ mod tests {
     #[test]
     fn cpm_intervals_reject_unrepresentable_uncertainty() {
         for (sigma, mean) in [(1e-320, 1e308), (1e-200, 1e100)] {
-            let interval = cpm_log_delta_interval(
-                &available(1.0),
-                Some(sigma),
+            let point = available(1.0);
+            let interval = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+                point_value: &point,
+                sigma: Some(sigma),
                 mean,
-                Some(0.0),
-                10,
-                9.0,
-                0.05,
-                "logDeltaCpm.v1",
-            );
+                target: Some(0.0),
+                n: 10,
+                degrees_of_freedom: 9.0,
+                alpha: 0.05,
+                method: "logDeltaCpm.v1",
+            });
             for endpoint in [&interval.lower, &interval.upper] {
                 assert_eq!(endpoint.state, NumericStateV1::Unavailable);
                 assert_eq!(endpoint.value, None);
@@ -1965,26 +1966,26 @@ pub fn capability_intervals(
         alpha,
         "wald.v1",
     );
-    let cpm_within = cpm_log_delta_interval(
-        &indices.cpm_within,
-        summary.within_sigma,
-        summary.mean,
+    let cpm_within = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+        point_value: &indices.cpm_within,
+        sigma: summary.within_sigma,
+        mean: summary.mean,
         target,
-        summary.n,
-        within_degrees_of_freedom,
+        n: summary.n,
+        degrees_of_freedom: within_degrees_of_freedom,
         alpha,
-        "movingRangeEffectiveDfLogDeltaCpm.v1",
-    );
-    let cpm_overall = cpm_log_delta_interval(
-        &indices.cpm_overall,
-        summary.overall_sigma,
-        summary.mean,
+        method: "movingRangeEffectiveDfLogDeltaCpm.v1",
+    });
+    let cpm_overall = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+        point_value: &indices.cpm_overall,
+        sigma: summary.overall_sigma,
+        mean: summary.mean,
         target,
-        summary.n,
-        overall_degrees_of_freedom,
+        n: summary.n,
+        degrees_of_freedom: overall_degrees_of_freedom,
         alpha,
-        "logDeltaCpm.v1",
-    );
+        method: "logDeltaCpm.v1",
+    });
 
     NormalCapabilityIntervalsV1 {
         confidence_level,
@@ -2084,16 +2085,16 @@ pub fn capability_intervals_with_within_degrees_of_freedom(
         &intervals.cpu,
         "movingRangeEffectiveDfWald.v1",
     );
-    intervals.cpm_within = cpm_log_delta_interval(
-        &indices.cpm_within,
-        summary.within_sigma,
-        summary.mean,
+    intervals.cpm_within = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+        point_value: &indices.cpm_within,
+        sigma: summary.within_sigma,
+        mean: summary.mean,
         target,
-        summary.n,
-        within_degrees_of_freedom,
+        n: summary.n,
+        degrees_of_freedom: within_degrees_of_freedom,
         alpha,
-        "movingRangeEffectiveDfLogDeltaCpm.v1",
-    );
+        method: "movingRangeEffectiveDfLogDeltaCpm.v1",
+    });
     intervals
 }
 
@@ -2658,16 +2659,28 @@ fn cpm_scaled_components(sigma: f64, mean: f64, target: f64) -> (f64, f64, f64) 
     (scale, sigma / scale, scaled_delta)
 }
 
-fn cpm_log_delta_interval(
-    point_value: &TypedValueV1,
+struct CpmLogDeltaIntervalInput<'a> {
+    point_value: &'a TypedValueV1,
     sigma: Option<f64>,
     mean: f64,
     target: Option<f64>,
     n: u64,
     degrees_of_freedom: f64,
     alpha: f64,
-    method: &str,
-) -> CapabilityIntervalV1 {
+    method: &'a str,
+}
+
+fn cpm_log_delta_interval(input: CpmLogDeltaIntervalInput<'_>) -> CapabilityIntervalV1 {
+    let CpmLogDeltaIntervalInput {
+        point_value,
+        sigma,
+        mean,
+        target,
+        n,
+        degrees_of_freedom,
+        alpha,
+        method,
+    } = input;
     if matches!(
         point_value.state,
         NumericStateV1::NotApplicable | NumericStateV1::Unbounded
