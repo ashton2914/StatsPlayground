@@ -38,14 +38,18 @@ function maxTabulateSuffix(items: readonly TabulateItem[]): number {
   }, 0);
 }
 
+function hasOwnProperty(object: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
 function hasDefinitionPatch(patch: Partial<TabulateItem>): boolean {
   return (
-    Object.hasOwn(patch, "sourceDatasetId")
-    || Object.hasOwn(patch, "rowFields")
-    || Object.hasOwn(patch, "columnFields")
-    || Object.hasOwn(patch, "statistics")
-    || Object.hasOwn(patch, "includeRowTotals")
-    || Object.hasOwn(patch, "includeColumnTotals")
+    hasOwnProperty(patch, "sourceDatasetId")
+    || hasOwnProperty(patch, "rowFields")
+    || hasOwnProperty(patch, "columnFields")
+    || hasOwnProperty(patch, "statistics")
+    || hasOwnProperty(patch, "includeRowTotals")
+    || hasOwnProperty(patch, "includeColumnTotals")
   );
 }
 
