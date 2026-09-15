@@ -202,15 +202,17 @@ test("Continuous Fit selector disables individual fits without clearing them", a
   const lognormal = component.getByRole("checkbox", { name: "Lognormal", exact: true });
 
   await expect(normal).toBeChecked();
-  await expect(cauchy).toBeDisabled();
+  await expect(cauchy).toBeEnabled();
   await expect(cauchy).not.toBeChecked();
   await lognormal.check();
   await fitAll.check();
 
   await expect(normal).toBeDisabled();
+  await expect(cauchy).toBeDisabled();
   await expect(lognormal).toBeDisabled();
 
   await fitAll.uncheck();
+  await expect(cauchy).toBeEnabled();
   await expect(cauchy).not.toBeChecked();
   await expect(lognormal).toBeChecked();
 
@@ -221,7 +223,7 @@ test("Continuous Fit selector disables individual fits without clearing them", a
   expect(saved?.analysis.fitDistributions).toEqual(["normal", "lognormal"]);
 });
 
-test("Continuous Fit exposes disabled Cauchy while leaving implemented fits selectable", async ({ mount }) => {
+test("Continuous Fit exposes Cauchy and the other implemented fits as selectable", async ({ mount }) => {
   const component = await mount(
     <DistributionDialog {...dialogProps({ columns: missingSpecColumns })} />,
   );
@@ -233,7 +235,7 @@ test("Continuous Fit exposes disabled Cauchy while leaving implemented fits sele
   const weibull = component.getByRole("checkbox", { name: "Weibull", exact: true });
 
   await expect(cauchy).toBeVisible();
-  await expect(cauchy).toBeDisabled();
+  await expect(cauchy).toBeEnabled();
   await expect(normal).toBeEnabled();
   await expect(weibull).toBeEnabled();
 });

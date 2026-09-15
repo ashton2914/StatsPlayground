@@ -177,8 +177,10 @@ test("configRevision-only changes fence stale results and force re-execution on 
   await expect.poll(() => frameTitleText(responseFrame)).toBe("DIM1");
   await expect(responseFrame.getByRole("button", { name: "Distribution", exact: true })).toHaveCount(1);
   await expect(responseFrame.getByRole("button", { name: "Overall", exact: true })).toHaveCount(1);
-  await expect(responseFrame.locator(".analysis-ui-table")).toHaveCount(3);
-  const summary = component.getByRole("table", { name: "Summary Statistics" });
+  await expect(responseFrame.locator(".analysis-ui-table")).toHaveCount(2);
+  const summary = component
+    .getByRole("rowheader", { name: "N", exact: true })
+    .locator("xpath=ancestor::table");
   await expect(summary).toBeVisible();
   await expect(summary.locator("tbody tr")).toHaveCount(8);
   for (const label of ["N", "N Missing", "Mean", "Median", "Std Dev", "Std Error", "Lower 95% Mean", "Upper 95% Mean"]) {
