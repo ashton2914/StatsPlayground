@@ -1,3 +1,4 @@
+import semver from "semver";
 import { useTranslation } from "react-i18next";
 
 import type { ReleaseUpdate } from "@/services/updateCheckCore";
@@ -7,6 +8,11 @@ interface Props {
   update: ReleaseUpdate;
   onIgnore: () => void;
   onDownload: () => void;
+}
+
+function formatVersionLabel(version: string): string {
+  const normalized = semver.valid(version);
+  return normalized ? `v${normalized}` : version;
 }
 
 export function UpdatePrompt({ currentVersion, update, onIgnore, onDownload }: Props) {
@@ -24,11 +30,11 @@ export function UpdatePrompt({ currentVersion, update, onIgnore, onDownload }: P
           <dl className="sp-update-version-list">
             <div>
               <dt>{t("update.currentVersion", { defaultValue: "Current version" })}</dt>
-              <dd>{currentVersion}</dd>
+              <dd>{formatVersionLabel(currentVersion)}</dd>
             </div>
             <div>
               <dt>{t("update.newVersion", { defaultValue: "New version" })}</dt>
-              <dd>{update.version}</dd>
+              <dd>{formatVersionLabel(update.version)}</dd>
             </div>
           </dl>
           {!update.directDownload && (
