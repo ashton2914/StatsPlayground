@@ -51,6 +51,7 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 proptest = "1.7.0"
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.dev]
 incremental = true

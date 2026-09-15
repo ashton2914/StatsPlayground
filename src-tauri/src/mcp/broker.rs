@@ -252,13 +252,9 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             },
         )?;
 
-        let permit = match self.acquire_slot(&cancellation_token, deadline).await {
-            Ok(permit) => permit,
-            Err(error) => {
-                self.remove_pending(&request_id)?;
-                return Err(error);
-            }
-        };
+        let permit = self
+            .acquire_slot(&request_id, &cancellation_token, deadline)
+            .await?;
 
         let event = ApplicationCommandRequestEvent {
             request_id: request_id.clone(),
@@ -387,19 +383,28 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
 
     async fn acquire_slot(
         &self,
+        request_id: &str,
         cancellation_token: &McpCancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<OwnedSemaphorePermit, AppError> {
         tokio::select! {
             biased;
-            permit = self.inner.semaphore.clone().acquire_owned() => {
-                permit.map_err(|error| AppError::Busy(error.to_string()))
+            _ = tokio::time::sleep_until(deadline) => {
+                self.remove_pending(request_id)?;
+                Err(AppError::Busy("Application command timeout".to_string()))
             }
             _ = cancellation_token.cancelled() => {
+                self.remove_pending(request_id)?;
                 Err(AppError::Cancelled("Application command cancelled".to_string()))
             }
-            _ = tokio::time::sleep_until(deadline) => {
-                Err(AppError::Busy("Application command timeout".to_string()))
+            permit = self.inner.semaphore.clone().acquire_owned() => {
+                let permit = permit.map_err(|error| AppError::Busy(error.to_string()))?;
+                if tokio::time::Instant::now() >= deadline {
+                    drop(permit);
+                    self.remove_pending(request_id)?;
+                    return Err(AppError::Busy("Application command timeout".to_string()));
+                }
+                Ok(permit)
             }
         }
     }
@@ -601,7 +606,10 @@ pub fn configure_tauri_broker(app: &tauri::App) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
     use std::time::Duration;
 
     use serde_json::json;
@@ -684,6 +692,27 @@ mod tests {
         let emitter = RecordingEmitter::default();
         let broker = McpCommandBroker::new_for_tests(emitter.clone(), config);
         (broker, emitter)
+    }
+
+    fn pending_count<E: ApplicationCommandEventEmitter>(broker: &McpCommandBroker<E>) -> usize {
+        broker.inner.pending.lock().expect("pending lock").len()
+    }
+
+    fn noop_raw_waker() -> RawWaker {
+        fn clone(_: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
+        fn wake(_: *const ()) {}
+        fn wake_by_ref(_: *const ()) {}
+        fn drop(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+
+    fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+        let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+        let mut context = Context::from_waker(&waker);
+        future.poll(&mut context)
     }
 
     #[tokio::test]
@@ -1019,7 +1048,10 @@ mod tests {
             tokio::task::yield_now().await;
         }
         let third_request = emitter.requests()[1].clone();
-        assert_eq!(third_request.command.input, json!({ "marker": "capacity-reused" }));
+        assert_eq!(
+            third_request.command.input,
+            json!({ "marker": "capacity-reused" })
+        );
         broker
             .complete_application_command(McpBrokerCompletion {
                 request_id: third_request.request_id,
@@ -1034,8 +1066,8 @@ mod tests {
         third.await.expect("third task").expect("third result");
     }
 
-    #[tokio::test]
-    async fn permit_available_at_timeout_boundary_emits_and_completes_at_most_once() {
+    #[tokio::test(start_paused = true)]
+    async fn queued_dispatch_deadline_wins_when_permit_and_timeout_are_ready_together() {
         let (broker, emitter) = broker(2, 1);
         broker.register_dispatcher().expect("register dispatcher");
         let (first_progress_tx, _first_progress_rx) = mpsc::unbounded_channel();
@@ -1059,21 +1091,17 @@ mod tests {
         let first_request_id = emitter.requests()[0].request_id.clone();
 
         let (second_progress_tx, _second_progress_rx) = mpsc::unbounded_channel();
-        let second = tokio::spawn({
-            let broker = broker.clone();
-            async move {
-                broker
-                    .dispatch(
-                        test_command("boundary-queued"),
-                        Duration::from_millis(30),
-                        second_progress_tx,
-                        McpCancellationToken::new(),
-                    )
-                    .await
-            }
-        });
+        let second_token = McpCancellationToken::new();
+        let second = broker.dispatch(
+            test_command("boundary-queued"),
+            Duration::from_millis(30),
+            second_progress_tx,
+            second_token,
+        );
+        tokio::pin!(second);
+        assert!(matches!(poll_once(second.as_mut()), Poll::Pending));
+        assert_eq!(pending_count(&broker), 2);
 
-        tokio::time::sleep(Duration::from_millis(30)).await;
         broker
             .complete_application_command(McpBrokerCompletion {
                 request_id: first_request_id,
@@ -1086,49 +1114,52 @@ mod tests {
             })
             .expect("complete boundary holder");
         first.await.expect("first task").expect("first result");
+        assert_eq!(pending_count(&broker), 1);
 
-        tokio::task::yield_now().await;
-        let boundary_request_id = emitter
-            .requests()
-            .iter()
-            .find(|request| request.command.input == json!({ "marker": "boundary-queued" }))
-            .map(|request| request.request_id.clone());
-        if let Some(request_id) = boundary_request_id {
-            broker
-                .complete_application_command(McpBrokerCompletion {
-                    request_id,
-                    response: ApplicationCommandResponse::Success(McpCommandResult {
-                        changed: false,
-                        project_revision: 21,
-                        data: json!({ "boundary": true }),
-                        warnings: vec![],
-                    }),
-                })
-                .expect("complete boundary request");
-        }
-
-        let second_result = tokio::time::timeout(Duration::from_millis(100), second)
-            .await
-            .expect("boundary request must resolve")
-            .expect("second task");
-        let requests = emitter.requests();
-        let boundary_requests = requests
-            .iter()
-            .filter(|request| request.command.input == json!({ "marker": "boundary-queued" }))
-            .count();
-        assert!(boundary_requests <= 1);
-        match second_result {
-            Ok(response) => {
-                assert_eq!(boundary_requests, 1);
-                assert_eq!(response.data, json!({ "boundary": true }));
-            }
-            Err(crate::error::AppError::Busy(message)) => {
-                assert_eq!(boundary_requests, 0);
-                assert!(message.contains("timeout"));
-            }
-            Err(error) => panic!("unexpected boundary result: {error:?}"),
-        }
+        tokio::time::advance(Duration::from_millis(30)).await;
+        let second_result = poll_once(second.as_mut());
+        assert!(matches!(
+            second_result,
+            Poll::Ready(Err(crate::error::AppError::Busy(message))) if message.contains("timeout")
+        ));
+        assert_eq!(pending_count(&broker), 0);
+        assert_eq!(emitter.requests().len(), 1);
         assert!(emitter.cancellation_requests().is_empty());
+
+        let (third_progress_tx, _third_progress_rx) = mpsc::unbounded_channel();
+        let third = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("capacity-reused-after-boundary-timeout"),
+                        Duration::from_secs(5),
+                        third_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let third_request = emitter.requests()[1].clone();
+        assert_eq!(
+            third_request.command.input,
+            json!({ "marker": "capacity-reused-after-boundary-timeout" })
+        );
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: third_request.request_id,
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 22,
+                    data: json!({ "third": true }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete reused-capacity request");
+        third.await.expect("third task").expect("third result");
     }
 
     #[tokio::test]
@@ -1745,14 +1776,17 @@ mod tests {
                     McpCancellationToken::new(),
                 )
                 .await;
-            assert!(matches!(
-                result,
-                Err(crate::error::AppError::InvalidParam(message))
-                    if message == "Application command payload must not contain absolute paths"
-                        && !message.contains("/srv")
-                        && !message.contains("C:")
-                        && !message.contains("server")
-            ), "case {index} should reject absolute path keys without echoing the path");
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::error::AppError::InvalidParam(message))
+                        if message == "Application command payload must not contain absolute paths"
+                            && !message.contains("/srv")
+                            && !message.contains("C:")
+                            && !message.contains("server")
+                ),
+                "case {index} should reject absolute path keys without echoing the path"
+            );
             assert_eq!(emitter.requests().len(), 0, "case {index} must not emit");
             assert_eq!(
                 emitter.cancellation_requests().len(),
@@ -1828,6 +1862,9 @@ mod tests {
                 }),
             })
             .expect("complete safe-key request");
-        pending.await.expect("safe-key task").expect("safe-key result");
+        pending
+            .await
+            .expect("safe-key task")
+            .expect("safe-key result");
     }
 }
