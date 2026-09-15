@@ -248,6 +248,32 @@ useTabulateStore.getState().updateItem("tab-2", { rowFields: ["Build"] });
 assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null);
 
 useTabulateStore.getState().setLatestResult("tab-2", {
+  requestFingerprint: "fp-undef",
+  sourceGeneration: 5,
+  completedAt: "2026-09-15T00:00:00.000Z",
+  result: {
+    rowMembers: [["Region"]],
+    columnMembers: [["Channel"]],
+    statistics: [],
+    cells: [],
+    rowTotals: [],
+    columnTotals: [],
+    grandTotals: [],
+    cellCount: 0,
+    limit: 10000,
+  },
+});
+const explicitUndefinedDefinitionPatch = {
+  rowFields: undefined,
+} as unknown as Partial<TabulateItem>;
+useTabulateStore.getState().updateItem("tab-2", explicitUndefinedDefinitionPatch);
+assert.equal(
+  useTabulateStore.getState().getLatestResult("tab-2"),
+  null,
+  "own-key definition patch with undefined value must invalidate latest cache",
+);
+
+useTabulateStore.getState().setLatestResult("tab-2", {
   requestFingerprint: "fp-2",
   sourceGeneration: 4,
   completedAt: "2026-09-15T00:00:00.000Z",
