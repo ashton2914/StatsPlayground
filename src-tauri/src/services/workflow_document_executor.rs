@@ -806,6 +806,7 @@ mod tests {
                     weight_column: None,
                     freq_column: None,
                     by_columns: vec![],
+                    nested_subgroup_column: None,
                     confidence_level: 0.95,
                     spec_limits: HashMap::new(),
                     fit_distributions: vec![DistributionFitKind::Normal],

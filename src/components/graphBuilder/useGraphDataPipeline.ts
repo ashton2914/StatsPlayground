@@ -17,7 +17,7 @@ import {
   type GraphElementRequest,
   type GraphViewport,
 } from "../../types/graphData.ts";
-import type { GraphBuilderItem } from "../../types/graphBuilder.ts";
+import type { GraphBuilderItem, GraphRuntimeItem } from "../../types/graphBuilder.ts";
 import type { DatasetMeta, TableWindowFilter } from "../../types/data";
 import type { FilterRuleItem } from "../../types/filter";
 
@@ -615,7 +615,7 @@ function isFitYByXAnalysisGraph(
   return kinds.has("boxplot") || kinds.has("fitline");
 }
 
-export function deriveGraphRequestParts(item: GraphBuilderItem): {
+export function deriveGraphRequestParts(item: GraphRuntimeItem): {
   fields: GraphFieldBinding[];
   filters: TableWindowFilter[];
   elements: GraphElementRequest[];
@@ -672,7 +672,7 @@ interface GraphRequestPlan {
   executable: boolean;
 }
 
-function deriveGraphRequestPlan(item: GraphBuilderItem): GraphRequestPlan {
+function deriveGraphRequestPlan(item: GraphRuntimeItem): GraphRequestPlan {
   const parts = deriveGraphRequestParts(item);
   return {
     ...parts,
@@ -680,7 +680,7 @@ function deriveGraphRequestPlan(item: GraphBuilderItem): GraphRequestPlan {
   };
 }
 
-export function deriveGraphRequestIdentity(item: GraphBuilderItem): string {
+export function deriveGraphRequestIdentity(item: GraphRuntimeItem): string {
   return JSON.stringify(deriveGraphRequestPlan(item));
 }
 
@@ -733,7 +733,7 @@ function deriveActiveMultiFields(item: GraphBuilderItem): GraphFieldBinding[] {
   return out;
 }
 
-export function deriveFields(item: GraphBuilderItem): GraphFieldBinding[] {
+export function deriveFields(item: GraphRuntimeItem): GraphFieldBinding[] {
   if (item.mode === "multivariate") {
     const fields: GraphFieldBinding[] = [];
     const seen = new Set<string>();
@@ -911,7 +911,7 @@ export function createStreamStartCancellationCoordinator(
 }
 
 export function useGraphDataPipeline(
-  item: GraphBuilderItem,
+  item: GraphRuntimeItem,
   dataset: DatasetMeta,
   viewport: GraphViewport,
   enabled = true,

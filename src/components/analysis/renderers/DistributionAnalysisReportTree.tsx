@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { createDistributionGraphBuilderConfig } from "@/components/analysis/distributionCompositeGraph";
+import {
+  createDistributionGraphBuilderConfig,
+  createProcessCapabilityGraphBuilderConfig,
+} from "@/components/analysis/distributionCompositeGraph";
 import {
   AnalysisFrame,
   AnalysisGraph,
@@ -10,7 +13,10 @@ import {
 } from "@/components/analysis/presentation";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
 import { createEmbeddedGraphItem } from "@/components/graphBuilder/graphBuilderMode";
-import { getDistributionResponseCompositeGraphFrame } from "@/graphCore/distributionAdapter";
+import {
+  getDistributionResponseCompositeGraphFrame,
+  getProcessCapabilityGraphFrame,
+} from "@/graphCore/distributionAdapter";
 import type { FieldRef } from "@/graphCore/types";
 import type { DistributionAnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
@@ -182,7 +188,46 @@ function ResponseFrame({
                 }}
                 renderGraph={renderGraph}
               />
-              <DistributionResponseReport result={responseResult} />
+              <DistributionResponseReport
+                result={responseResult}
+                renderProcessCapabilityGraph={(capability) => capability.chartData ? (
+                  <AnalysisGraph
+                    title={t("distribution.report.processCapability", { defaultValue: "Process Capability" })}
+                    graphRole="processCapability"
+                    data-analysis-block="graph"
+                    contentClassName="analysis-graph-distribution"
+                    strategy={{
+                      mode: "builder",
+                      runtimeProps: {
+                        item: createEmbeddedGraphItem({
+                          id: `analysis-graph:${item.id}:${encodeURIComponent(groupIdentity)}:${responseIdentity}:processCapability`,
+                          name: `${responseField.name} Process Capability`,
+                          sourceDatasetId: item.source.datasetId,
+                          config: createProcessCapabilityGraphBuilderConfig(
+                            item.definition.graphs.overview,
+                            responseField,
+                            persistedResponse,
+                            capability.chartData,
+                          ),
+                          createdAt: item.createdAt,
+                        }),
+                        dataset,
+                        panelLayout: "fit",
+                        externalDataState: {
+                          status: "ready",
+                          frame: getProcessCapabilityGraphFrame(capability, {
+                            datasetId: item.source.datasetId,
+                            generation: dataset.generation,
+                            responseColumn: responseResult.yColumn.columnId,
+                          }),
+                          error: null,
+                        },
+                      },
+                    }}
+                    renderGraph={renderGraph}
+                  />
+                ) : null}
+              />
             </>
             )
           : <AnalysisText>{t("distribution.graph.unavailable", { defaultValue: "Graph unavailable for this response." })}</AnalysisText>}

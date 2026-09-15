@@ -62,6 +62,7 @@ const config: DistributionAnalysisConfigV1 = {
   weightColumnId: "col-weight",
   frequencyColumnId: "col-freq",
   byColumnIds: ["col-group", "col-date"],
+  nestedSubgroupColumnId: null,
   filterExpr: { kind: "isNull", fieldId: "col-group", negate: true },
   confidenceLevel: 0.95,
   histogramsOnly: false,
@@ -155,6 +156,31 @@ assert.equal(
 );
 assert.equal(
   validateDistributionConfig({ ...config, weightColumnId: "col-y" }, columns)[0]?.code,
+  "distribution.config.roleConflict",
+);
+assert.deepEqual(
+  validateDistributionConfig(
+    {
+      ...config,
+      byColumnIds: ["col-date"],
+      nestedSubgroupColumnId: "col-group",
+    },
+    columns,
+  ),
+  [],
+);
+assert.equal(
+  validateDistributionConfig(
+    { ...config, nestedSubgroupColumnId: "col-group" },
+    columns,
+  )[0]?.code,
+  "distribution.config.roleConflict",
+);
+assert.equal(
+  validateDistributionConfig(
+    { ...config, nestedSubgroupColumnId: "col-y" },
+    columns,
+  ).find((error) => error.fieldPath === "nestedSubgroupColumnId")?.code,
   "distribution.config.roleConflict",
 );
 assert.equal(
@@ -434,13 +460,25 @@ assert.equal(canAssignDistributionRole("by", groupField, []), true);
 assert.equal(canAssignDistributionRole("by", ordinalGroupField, []), true);
 assert.equal(canAssignDistributionRole("by", responseField, []), "invalidBy");
 assert.equal(canAssignDistributionRole("by", groupField, [groupField.field]), "duplicateRole");
+assert.equal(canAssignDistributionRole("nestedSubgroup", groupField, []), true);
+assert.equal(canAssignDistributionRole("nestedSubgroup", ordinalGroupField, []), true);
+assert.equal(canAssignDistributionRole("nestedSubgroup", responseField, []), "invalidNestedSubgroup");
+assert.equal(canAssignDistributionRole("nestedSubgroup", groupField, [groupField.field]), "duplicateRole");
 
 assert.deepEqual(validateDistributionRoles({
   responses: [responseField.field, secondResponseField.field],
   weight: weightField.field,
   frequency: frequencyField.field,
   by: [groupField.field, ordinalGroupField.field],
+  nestedSubgroup: null,
 }, [responseField, secondResponseField, weightField, frequencyField, groupField, ordinalGroupField]), { ok: true });
+assert.deepEqual(validateDistributionRoles({
+  responses: [responseField.field],
+  weight: null,
+  frequency: null,
+  by: [groupField.field],
+  nestedSubgroup: groupField.field,
+}, [responseField, groupField]), { ok: false, error: "duplicateRole" });
 assert.deepEqual(validateDistributionRoles({ responses: [], weight: null, frequency: null, by: [] }, []), {
   ok: false,
   error: "missingResponse",

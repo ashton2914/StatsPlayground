@@ -2397,6 +2397,7 @@ mod tests {
             weight,
             frequency,
             contribution: weight * frequency as f64,
+            nested_subgroup: None,
         }
     }
 

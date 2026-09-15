@@ -82,11 +82,15 @@ export function createProjectStore(
       set({ loading: true });
       try {
         const result = await deps.projectService.openProject(filePath);
+        const datasetFilterMigrationConflicts = result.datasetFilterMigrationConflicts ?? [];
         const normalizedResult: OpenProjectResult = {
           ...result,
+          datasetFilters: result.datasetFilters ?? {},
+          datasetFilterMigrationConflicts,
           documentNameMigrations: result.documentNameMigrations ?? [],
           datasetNameMigrations: result.datasetNameMigrations ?? [],
-          requiresMigration: result.requiresMigration ?? false,
+          requiresMigration: (result.requiresMigration ?? false)
+            || datasetFilterMigrationConflicts.length > 0,
         };
         set({
           project: normalizedResult.project,

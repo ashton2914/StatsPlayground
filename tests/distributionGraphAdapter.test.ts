@@ -7,10 +7,15 @@ import {
   getDistributionGraphFrame,
   getDistributionGroupName,
   getDistributionResponseCompositeGraphFrame,
+  getProcessCapabilityGraphFrame,
   mapDistributionCompositeExternalDataState,
   mapDistributionExternalDataState,
 } from "../src/graphCore/distributionAdapter.ts";
-import type { DistributionGroupResult, DistributionReportResponse } from "../src/types/distribution.ts";
+import type {
+  DistributionGroupResult,
+  DistributionReportResponse,
+  ProcessCapabilityDataV1,
+} from "../src/types/distribution.ts";
 import type { GraphDataFrame } from "../src/types/graphData.ts";
 
 function frame(role: string): GraphDataFrame {
@@ -358,6 +363,89 @@ for (const [sourceColumn, selected] of [["col-a", duplicateNameAFrame], ["col-b"
 }
 
 assert.deepEqual(graphFrames, originalGraphFrames);
+
+const capabilityData = {
+  processSummary: {
+    n: 4,
+  },
+  chartData: {
+    bins: [
+      { lower: 0, upper: 2, count: 1, probability: 0.25, density: 0.125, belowCount: 0, aboveCount: 0 },
+      { lower: 2, upper: 4, count: 3, probability: 0.75, density: 0.375, belowCount: 0, aboveCount: 0 },
+    ],
+    specificationLines: { lsl: 0.5, target: 2, usl: 3.5, source: "columnProperty" },
+    overallDensity: {
+      state: "available",
+      reasonCode: null,
+      coordinates: [{ x: 0, y: 0.1 }, { x: 4, y: 0.2 }],
+    },
+    withinDensity: {
+      state: "available",
+      reasonCode: null,
+      coordinates: [{ x: 0, y: 0.15 }, { x: 4, y: 0.25 }],
+    },
+    provenance: {
+      capabilityMethod: "capability.normal.individuals",
+      normalDensityMethod: "normal.pdf.closedForm.v1",
+      computationId: "capability-computation-1",
+      specFingerprint: "spec:sha256:test",
+    },
+  },
+} as ProcessCapabilityDataV1;
+
+const capabilityFrame = getProcessCapabilityGraphFrame(
+  capabilityData,
+  { datasetId: "dataset-1", generation: 4, responseColumn: "DIM1" },
+);
+assert.equal(capabilityFrame.requestId, "capability-computation-1:process-capability");
+assert.equal(capabilityFrame.sourceRows, 4);
+assert.equal(capabilityFrame.processedRows, 4);
+assert.deepEqual(capabilityFrame.aggregates.map((packet) => packet.kind), [
+  "histogram",
+  "precomputedCurve",
+  "precomputedCurve",
+]);
+const capabilityHistogram = capabilityFrame.aggregates.find((packet) => packet.kind === "histogram");
+const capabilityCurves = capabilityFrame.aggregates.filter((packet) => packet.kind === "precomputedCurve");
+assert.deepEqual(capabilityHistogram && {
+  binPolicy: capabilityHistogram.binPolicy,
+  sourceColumn: capabilityHistogram.sourceColumn,
+  yColumn: capabilityHistogram.yColumn,
+  binCount: capabilityHistogram.binCount,
+  binWidth: capabilityHistogram.binWidth,
+  totalCount: capabilityHistogram.totalCount,
+  bins: capabilityHistogram.bins,
+}, {
+  binPolicy: "preserve",
+  sourceColumn: "DIM1",
+  yColumn: "Count",
+  binCount: 2,
+  binWidth: 2,
+  totalCount: 4,
+  bins: [
+    { sourceColumn: "DIM1", binStart: 0, binEnd: 2, count: 1 },
+    { sourceColumn: "DIM1", binStart: 2, binEnd: 4, count: 3 },
+  ],
+});
+assert.deepEqual(capabilityCurves.map((packet) => ({
+  seriesId: packet.seriesId,
+  seriesName: packet.seriesName,
+  sourceColumn: packet.sourceColumn,
+  points: packet.points,
+})), [
+  {
+    seriesId: "capability-computation-1:overall",
+    seriesName: "Overall Normal",
+    sourceColumn: "DIM1",
+    points: [{ x: 0, y: 0.8 }, { x: 4, y: 1.6 }],
+  },
+  {
+    seriesId: "capability-computation-1:within",
+    seriesName: "Within Normal",
+    sourceColumn: "DIM1",
+    points: [{ x: 0, y: 1.2 }, { x: 4, y: 2 }],
+  },
+]);
 
 const source = readFileSync(
   new URL("../src/graphCore/distributionAdapter.ts", import.meta.url),

@@ -96,6 +96,7 @@ export function createAnalysisSampleDocument(input: {
     weight: distribution.weight,
     frequency: distribution.frequency,
     by: structuredClone(distribution.by),
+    nestedSubgroup: structuredClone(distribution.nestedSubgroup),
     analysis: structuredClone(distribution.analysis),
     graphs: structuredClone(distribution.graphs),
   };

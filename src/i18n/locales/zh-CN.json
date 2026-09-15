@@ -1,4 +1,5 @@
 {
+  "capability": { "nestedSubgroupMissingLabels": { "v1": "子组标签缺失的行保留在整体结果中，但不参与组内移动极差计算。" } },
   "hypothesisTest": {
     "title": "假设检验",
     "analysisName": "分析名称",
@@ -343,6 +344,7 @@
     "cancelImport": "取消导入",
     "cancellingImport": "正在取消…",
     "datasetNameMigrations": "打开项目时已重命名 {{count}} 个重复的数据表名称。保存项目以持久化这些更新后的名称。",
+    "datasetFilterMigrationConflict": "以下数据表的旧图形筛选器存在冲突，已被清空：{{names}}。请保存项目以持久化此次迁移。",
     "importProgressTable": "表 {{i}}/{{total}}: {{name}}",
     "importProgressRows": "行",
     "createSnapshotTitle": "创建快照",
@@ -439,6 +441,7 @@
     "title": "分布",
     "searchColumns": "搜索列",
     "frequencyShort": "频数",
+    "nestedSubgroupShort": "子组",
     "confidenceLevel": "置信水平",
     "saving": "正在保存...",
     "loadFieldsFailed": "加载字段失败: {{message}}",
@@ -446,7 +449,7 @@
     "roleLabel": "{{role}} 角色",
     "roleEmpty": "拖放或指定一列",
     "removeFromRole": "从 {{role}} 中移除 {{column}}",
-    "roles": { "y": "Y，响应", "weight": "权重", "frequency": "频数", "by": "分组" },
+    "roles": { "y": "Y，响应", "weight": "权重", "frequency": "频数", "by": "分组", "nestedSubgroup": "嵌套子组" },
     "missingSpecs": {
       "title": "缺少规格限",
       "message": "这些响应在表列属性中没有有限的 LSL 或 USL：",
@@ -505,7 +508,7 @@
       "unknownCapabilityVersion": "未知能力版本", "yRequired": "至少需要一个响应变量", "columnUnknown": "列不可用",
       "roleDuplicate": "同一列不能占用多个角色", "yTypeIncompatible": "响应变量必须为连续型",
       "confidenceOutOfRange": "置信水平超出范围", "fitSelectionRequired": "请至少选择一个连续拟合", "roleConflict": "列角色冲突", "weightTypeIncompatible": "权重必须为数值型",
-      "freqNotIntegerCompatible": "频数必须兼容整数", "duplicateCapability": "能力重复", "duplicateCapabilityOverride": "能力覆盖重复"
+      "freqNotIntegerCompatible": "频数必须兼容整数", "nestedSubgroupTypeIncompatible": "嵌套子组必须为分类列", "duplicateCapability": "能力重复", "duplicateCapabilityOverride": "能力覆盖重复"
     },
     "errors": {
       "unknownContinuousFitCapability": "未知连续拟合能力", "duplicateContinuousFitCapability": "连续拟合能力重复",
@@ -514,7 +517,7 @@
       "unknownCapabilityVersion": "未知能力版本", "invalidCapabilityOverride": "能力覆盖无效",
       "yRequired": "至少需要一个响应变量", "columnUnknown": "列不可用", "roleDuplicate": "同一列不能占用多个角色",
       "yTypeIncompatible": "响应变量必须为连续型", "confidenceOutOfRange": "置信水平超出范围", "fitSelectionRequired": "请至少选择一个连续拟合", "roleConflict": "列角色冲突",
-      "weightTypeIncompatible": "权重必须为数值型", "freqNotIntegerCompatible": "频数必须兼容整数",
+      "weightTypeIncompatible": "权重必须为数值型", "freqNotIntegerCompatible": "频数必须兼容整数", "nestedSubgroupTypeIncompatible": "嵌套子组必须为分类列",
       "duplicateCapability": "能力重复", "duplicateCapabilityOverride": "能力覆盖重复"
     }
   },

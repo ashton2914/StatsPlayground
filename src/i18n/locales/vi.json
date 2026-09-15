@@ -1,4 +1,5 @@
 {
+  "capability": { "nestedSubgroupMissingLabels": { "v1": "Các hàng thiếu nhãn nhóm con vẫn thuộc kết quả tổng thể nhưng không tham gia tính khoảng trượt nội nhóm." } },
   "hypothesisTest": {
     "title": "Kiểm định giả thuyết",
     "analysisName": "Tên phân tích",
@@ -340,6 +341,7 @@
     "cancelImport": "Hủy nhập",
     "cancellingImport": "Đang hủy…",
     "datasetNameMigrations": "Đã đổi tên {{count}} bảng có tên trùng khi mở dự án này. Hãy lưu dự án để ghi lại các tên đã cập nhật.",
+    "datasetFilterMigrationConflict": "Các bộ lọc Đồ thị cũ bị xung đột đã được xóa cho các bảng sau: {{names}}. Hãy lưu dự án để ghi lại quá trình chuyển đổi này.",
     "importProgressTable": "Bảng {{i}}/{{total}}: {{name}}",
     "importProgressRows": "hàng",
     "createSnapshotTitle": "Tạo ảnh chụp",
@@ -433,11 +435,11 @@
     }
   },
   "distribution": {
-    "title": "Phân phối", "searchColumns": "Tìm cột", "frequencyShort": "Tần số", "confidenceLevel": "Mức tin cậy",
+    "title": "Phân phối", "searchColumns": "Tìm cột", "frequencyShort": "Tần số", "nestedSubgroupShort": "Nhóm con", "confidenceLevel": "Mức tin cậy",
     "saving": "Đang lưu...", "loadFieldsFailed": "Không thể tải trường: {{message}}", "roleLabel": "Vai trò {{role}}",
     "graph": { "unavailable": "Biểu đồ không khả dụng cho phản hồi này." },
     "roleEmpty": "Thả hoặc gán một cột", "removeFromRole": "Xóa {{column}} khỏi {{role}}",
-    "roles": { "y": "Y, đáp ứng", "weight": "Trọng số", "frequency": "Tần số", "by": "Theo nhóm" },
+    "roles": { "y": "Y, đáp ứng", "weight": "Trọng số", "frequency": "Tần số", "by": "Theo nhóm", "nestedSubgroup": "Nhóm con lồng nhau" },
     "missingSpecs": {
       "title": "Thiếu giới hạn đặc tính kỹ thuật",
       "message": "Các biến phản hồi này không có LSL hoặc USL hữu hạn trong thuộc tính cột của bảng:",
@@ -500,7 +502,7 @@
       "unknownCapabilityVersion": "Phiên bản năng lực không xác định", "yRequired": "Cần ít nhất một biến đáp ứng", "columnUnknown": "Cột không khả dụng",
       "roleDuplicate": "Một cột không thể có nhiều vai trò", "yTypeIncompatible": "Biến đáp ứng phải liên tục",
       "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "fitSelectionRequired": "Hãy chọn ít nhất một độ khớp liên tục", "roleConflict": "Vai trò cột xung đột", "weightTypeIncompatible": "Trọng số phải là số",
-      "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên", "duplicateCapability": "Năng lực bị trùng", "duplicateCapabilityOverride": "Ghi đè năng lực bị trùng"
+      "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên", "nestedSubgroupTypeIncompatible": "Nhóm con lồng nhau phải là cột phân loại", "duplicateCapability": "Năng lực bị trùng", "duplicateCapabilityOverride": "Ghi đè năng lực bị trùng"
     },
     "errors": {
       "unknownContinuousFitCapability": "Năng lực khớp liên tục không xác định", "duplicateContinuousFitCapability": "Năng lực khớp liên tục bị trùng",
@@ -509,7 +511,7 @@
       "unknownCapabilityVersion": "Phiên bản năng lực không xác định", "invalidCapabilityOverride": "Ghi đè năng lực không hợp lệ",
       "yRequired": "Cần ít nhất một biến đáp ứng", "columnUnknown": "Cột không khả dụng", "roleDuplicate": "Một cột không thể có nhiều vai trò",
       "yTypeIncompatible": "Biến đáp ứng phải liên tục", "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "fitSelectionRequired": "Hãy chọn ít nhất một độ khớp liên tục", "roleConflict": "Vai trò cột xung đột",
-      "weightTypeIncompatible": "Trọng số phải là số", "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên",
+      "weightTypeIncompatible": "Trọng số phải là số", "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên", "nestedSubgroupTypeIncompatible": "Nhóm con lồng nhau phải là cột phân loại",
       "duplicateCapability": "Năng lực bị trùng", "duplicateCapabilityOverride": "Ghi đè năng lực bị trùng"
     }
   },

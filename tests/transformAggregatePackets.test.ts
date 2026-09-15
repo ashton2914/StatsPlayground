@@ -362,6 +362,62 @@ function frameScatterValues(panel: { option: unknown }): Array<{
 }
 
 {
+  const curveElementId = "capability-1:normal-curves";
+  const spec: GraphSpec = {
+    encoding: { x: { name: "measurement", type: "continuous" } },
+    elements: [
+      { kind: "histogram", enabled: true, options: { histStyle: "bar" } },
+      { kind: "normalCurve", enabled: true, options: { elementId: curveElementId } },
+    ],
+  };
+  const frame = baseFrame([
+    {
+      kind: "histogram",
+      binPolicy: "preserve" as const,
+      yColumn: "Count",
+      sourceColumn: "measurement-id",
+      binCount: 2,
+      minValue: 0,
+      maxValue: 2,
+      missingCount: 0,
+      binWidth: 1,
+      totalCount: 10,
+      bins: [
+        { sourceColumn: "measurement-id", binStart: 0, binEnd: 1, count: 3 },
+        { sourceColumn: "measurement-id", binStart: 1, binEnd: 2, count: 7 },
+      ],
+    },
+    ...[
+      { seriesId: "capability-1:overall", seriesName: "Overall Normal", peak: 6 },
+      { seriesId: "capability-1:within", seriesName: "Within Normal", peak: 7 },
+    ].map(({ seriesId, seriesName, peak }) => ({
+      kind: "precomputedCurve" as const,
+      elementId: curveElementId,
+      seriesId,
+      seriesName,
+      sourceColumn: "measurement-id",
+      interpolation: "linear" as const,
+      points: [{ x: 0, y: 0.2 }, { x: 1, y: peak }, { x: 2, y: 0.2 }],
+    })),
+  ]);
+
+  const option = buildGraph(spec, baseData(["measurement"], []), theme, undefined, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  const bars = series.find((entry) => entry.type === "bar");
+  const curves = series.filter((entry) => entry.type === "line");
+
+  assert.deepEqual(bars?.data, [[0.5, 3], [1.5, 7]]);
+  assert.equal(bars?.__histBinWidth, 1);
+  assert.deepEqual(
+    curves.map((entry) => entry.id),
+    ["capability-1:overall", "capability-1:within"],
+  );
+  assert.ok(curves.every((entry) => !("color" in (entry.lineStyle as Record<string, unknown>))));
+  assert.ok(curves.every((entry) => Array.isArray(entry.data) && entry.data.length === 3));
+}
+
+{
   const spec: GraphSpec = {
     encoding: {
       x: { name: "x", type: "continuous" },

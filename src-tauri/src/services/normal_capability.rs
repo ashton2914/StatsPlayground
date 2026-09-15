@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use statrs::distribution::{ChiSquared, ContinuousCDF, Normal};
+use std::collections::BTreeMap;
 
 use crate::error::AppError;
 use crate::services::distribution_kernel::HistogramBinDataV1;
@@ -42,6 +43,17 @@ pub struct NormalProcessSummaryV1 {
     pub d2: f64,
     pub within_sigma: Option<f64>,
     pub overall_sigma: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NestedNormalProcessSummaryV1 {
+    pub summary: NormalProcessSummaryV1,
+    pub subgroup_count: u64,
+    pub moving_range_count: u64,
+    pub adjacent_moving_range_pair_count: u64,
+    pub missing_label_count: u64,
+    pub singleton_subgroup_count: u64,
+    pub within_effective_degrees_of_freedom: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -320,6 +332,61 @@ pub fn normal_process_summary(observations_in_row_order: &[f64]) -> NormalProces
         d2,
         within_sigma: moving_range_average.map(|value| value / d2),
         overall_sigma,
+    }
+}
+
+pub fn normal_process_summary_with_nested_subgroups(
+    observations_in_row_order: &[(f64, Option<&str>)],
+) -> NestedNormalProcessSummaryV1 {
+    let values = observations_in_row_order
+        .iter()
+        .map(|(value, _)| *value)
+        .collect::<Vec<_>>();
+    let mut summary = normal_process_summary(&values);
+    let mut subgroups = BTreeMap::<&str, Vec<f64>>::new();
+    for (value, label) in observations_in_row_order {
+        if let Some(label) = label {
+            subgroups.entry(label).or_default().push(*value);
+        }
+    }
+
+    let moving_range_count = subgroups
+        .values()
+        .map(|subgroup| subgroup.len().saturating_sub(1) as u64)
+        .sum::<u64>();
+    let subgroup_count = subgroups.len() as u64;
+    let missing_label_count = observations_in_row_order
+        .iter()
+        .filter(|(_, label)| label.is_none())
+        .count() as u64;
+    let singleton_subgroup_count = subgroups
+        .values()
+        .filter(|subgroup| subgroup.len() == 1)
+        .count() as u64;
+    let adjacent_moving_range_pair_count = subgroups
+        .values()
+        .map(|subgroup| subgroup.len().saturating_sub(2) as u64)
+        .sum::<u64>();
+    let moving_range_sum = compensated_sum(subgroups.values().flat_map(|subgroup| {
+        subgroup.windows(2).map(|pair| (pair[1] - pair[0]).abs())
+    }));
+    summary.moving_range_average = (moving_range_count > 0)
+        .then(|| moving_range_sum / moving_range_count as f64);
+    let within_effective_degrees_of_freedom = (moving_range_count > 0).then(|| {
+        moving_range_effective_degrees_of_freedom(
+            moving_range_count,
+            adjacent_moving_range_pair_count,
+        )
+    });
+    summary.within_sigma = summary.moving_range_average.map(|value| value / summary.d2);
+    NestedNormalProcessSummaryV1 {
+        summary,
+        subgroup_count,
+        moving_range_count,
+        adjacent_moving_range_pair_count,
+        missing_label_count,
+        singleton_subgroup_count,
+        within_effective_degrees_of_freedom,
     }
 }
 
@@ -837,6 +904,153 @@ mod tests {
         assert!((summary.d2 - 2.0 / std::f64::consts::PI.sqrt()).abs() < 1e-12);
         let sorted = normal_process_summary(&[1.0, 2.0, 10.0]);
         assert_ne!(summary.moving_range_average, sorted.moving_range_average);
+    }
+
+    #[test]
+    fn nested_subgroups_pool_only_within_label_moving_ranges() {
+        let summary = normal_process_summary_with_nested_subgroups(&[
+            (1.0, Some("A")),
+            (10.0, Some("B")),
+            (3.0, Some("A")),
+            (14.0, Some("B")),
+            (100.0, None),
+        ]);
+
+        assert_eq!(summary.summary.n, 5);
+        assert_eq!(summary.summary.moving_range_average, Some(3.0));
+        assert_eq!(summary.moving_range_count, 2);
+        assert_eq!(summary.adjacent_moving_range_pair_count, 0);
+        assert!(summary.summary.within_sigma.is_some());
+        assert!(
+            (summary
+                .within_effective_degrees_of_freedom
+                .expect("effective df")
+                - 2.0 / (std::f64::consts::PI - 2.0))
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn one_nested_subgroup_is_equivalent_to_legacy_moving_ranges() {
+        let legacy = normal_process_summary(&[1.0, 10.0, 2.0, 8.0]);
+        let nested = normal_process_summary_with_nested_subgroups(&[
+            (1.0, Some("A")),
+            (10.0, Some("A")),
+            (2.0, Some("A")),
+            (8.0, Some("A")),
+        ]);
+
+        assert_eq!(nested.summary.moving_range_average, legacy.moving_range_average);
+        assert_eq!(nested.summary.within_sigma, legacy.within_sigma);
+        assert_eq!(
+            nested.within_effective_degrees_of_freedom,
+            Some(moving_range_effective_degrees_of_freedom(3, 2)),
+        );
+    }
+
+    #[test]
+    fn nested_effective_df_replaces_only_within_intervals() {
+        let summary = normal_process_summary(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: Some(3.0),
+            usl: Some(6.0),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        let indices = capability_indices(&summary, &limits);
+        let legacy = capability_intervals(&summary, &indices, limits.target, 0.95);
+        let nested = capability_intervals_with_within_degrees_of_freedom(
+            &summary,
+            &indices,
+            limits.target,
+            0.95,
+            Some(2.0),
+        );
+
+        assert_ne!(nested.cp, legacy.cp);
+        assert_ne!(nested.cpm_within, legacy.cpm_within);
+        assert_eq!(nested.pp, legacy.pp);
+        assert_eq!(nested.cpm_overall, legacy.cpm_overall);
+        assert_eq!(nested.provenance.within_effective_degrees_of_freedom, Some(2.0));
+
+        let no_ranges = capability_intervals_with_within_degrees_of_freedom(
+            &summary,
+            &indices,
+            limits.target,
+            0.95,
+            None,
+        );
+        assert_eq!(no_ranges.cp.lower.state, NumericStateV1::Unavailable);
+        assert_eq!(
+            no_ranges.cpm_within.lower.state,
+            NumericStateV1::Unavailable
+        );
+        assert_eq!(no_ranges.pp, legacy.pp);
+        assert_eq!(no_ranges.provenance.within_effective_degrees_of_freedom, None);
+    }
+
+    #[test]
+    fn nested_singletons_leave_within_outputs_unavailable_and_overall_available() {
+        let observations = [(1.0, Some("A")), (3.0, Some("B")), (2.0, None)];
+        let nested = normal_process_summary_with_nested_subgroups(&observations);
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: None,
+            usl: Some(4.0),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        let values = observations
+            .iter()
+            .map(|(value, _)| *value)
+            .collect::<Vec<_>>();
+        let indices = capability_indices(&nested.summary, &limits);
+        let intervals = capability_intervals_with_within_degrees_of_freedom(
+            &nested.summary,
+            &indices,
+            limits.target,
+            0.95,
+            nested.within_effective_degrees_of_freedom,
+        );
+        let nonconformance =
+            nonconformance_metrics(&nested.summary, &limits, &values, 0.95);
+        let chart = capability_chart_data(
+            &limits,
+            &nested.summary,
+            &values,
+            &[HistogramBinDataV1 {
+                lower: 1.0,
+                upper: 3.0,
+                count: 3.0,
+                probability: 1.0,
+                density: 0.5,
+            }],
+            "nested-singletons",
+            "spec",
+        );
+
+        assert_eq!(nested.moving_range_count, 0);
+        assert_eq!(nested.singleton_subgroup_count, 2);
+        assert_eq!(nested.missing_label_count, 1);
+        assert_eq!(nested.summary.within_sigma, None);
+        assert_eq!(indices.cp.state, NumericStateV1::Unavailable);
+        assert_eq!(indices.pp.state, NumericStateV1::Available);
+        assert_eq!(intervals.cp.lower.state, NumericStateV1::Unavailable);
+        assert_eq!(intervals.pp.lower.state, NumericStateV1::Available);
+        assert_eq!(
+            nonconformance.expected_within.total.proportion.state,
+            NumericStateV1::Unavailable,
+        );
+        assert_eq!(
+            nonconformance.expected_overall.total.proportion.state,
+            NumericStateV1::Available,
+        );
+        assert_eq!(nonconformance.observed.total.count.value, Some(0));
+        assert_eq!(chart.overall_density.state, NumericStateV1::Available);
+        assert_eq!(
+            chart.within_density.expect("within density state").state,
+            NumericStateV1::Unavailable,
+        );
     }
 
     #[test]
@@ -1641,8 +1855,12 @@ pub fn capability_intervals(
                 .to_string(),
         inverse_cdf_algorithm_id: "statrs.inverseCdf.v1".to_string(),
         method_version: "1.2.0".to_string(),
-        within_effective_degrees_of_freedom: (summary.n >= 3)
-            .then(|| moving_range_effective_degrees_of_freedom(summary.n)),
+        within_effective_degrees_of_freedom: (summary.n >= 3).then(|| {
+            moving_range_effective_degrees_of_freedom(
+                summary.n.saturating_sub(1),
+                summary.n.saturating_sub(2),
+            )
+        }),
     };
     let alpha = 1.0 - confidence_level;
     let overall_degrees_of_freedom = summary.n.saturating_sub(1) as f64;
@@ -1703,7 +1921,10 @@ pub fn capability_intervals(
         };
     }
 
-    let within_degrees_of_freedom = moving_range_effective_degrees_of_freedom(summary.n);
+    let within_degrees_of_freedom = moving_range_effective_degrees_of_freedom(
+        summary.n.saturating_sub(1),
+        summary.n.saturating_sub(2),
+    );
     let cp = chi_square_interval(
         &indices.cp,
         within_degrees_of_freedom,
@@ -1787,13 +2008,106 @@ pub fn capability_intervals(
     }
 }
 
-fn moving_range_effective_degrees_of_freedom(n: u64) -> f64 {
-    let moving_range_count = n.saturating_sub(1) as f64;
+pub fn capability_intervals_with_within_degrees_of_freedom(
+    summary: &NormalProcessSummaryV1,
+    indices: &NormalCapabilityIndicesV1,
+    target: Option<f64>,
+    confidence_level: f64,
+    within_degrees_of_freedom: Option<f64>,
+) -> NormalCapabilityIntervalsV1 {
+    let mut intervals = capability_intervals(summary, indices, target, confidence_level);
+    intervals.provenance.parameterization =
+        "withinNestedMovingRangeEffectiveDf, overallChiSquared(df=n-1), standardNormal(0,1), cpmLogDeltaApproximation"
+            .to_string();
+    intervals.provenance.method_version = "2.0.0".to_string();
+    intervals.provenance.within_effective_degrees_of_freedom = within_degrees_of_freedom;
+    if summary.n < 3 {
+        return intervals;
+    }
+
+    let Some(within_degrees_of_freedom) = within_degrees_of_freedom
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        intervals.cp = unavailable_interval_from_point(
+            &indices.cp,
+            "capability.nestedSubgroupNoMovingRanges.v1",
+            Some("movingRangeEffectiveDfChiSquare.v1"),
+        );
+        intervals.cpl = unavailable_interval_from_point(
+            &indices.cpl,
+            "capability.nestedSubgroupNoMovingRanges.v1",
+            Some("movingRangeEffectiveDfWald.v1"),
+        );
+        intervals.cpu = unavailable_interval_from_point(
+            &indices.cpu,
+            "capability.nestedSubgroupNoMovingRanges.v1",
+            Some("movingRangeEffectiveDfWald.v1"),
+        );
+        intervals.cpk = unavailable_interval_from_point(
+            &indices.cpk,
+            "capability.nestedSubgroupNoMovingRanges.v1",
+            Some("movingRangeEffectiveDfWald.v1"),
+        );
+        intervals.cpm_within = unavailable_interval_from_point(
+            &indices.cpm_within,
+            "capability.nestedSubgroupNoMovingRanges.v1",
+            Some("movingRangeEffectiveDfLogDeltaCpm.v1"),
+        );
+        return intervals;
+    };
+
+    let alpha = 1.0 - confidence_level;
+    intervals.cp = chi_square_interval(
+        &indices.cp,
+        within_degrees_of_freedom,
+        alpha,
+        "movingRangeEffectiveDfChiSquare.v1",
+    );
+    intervals.cpl = wald_interval(
+        &indices.cpl,
+        summary.n,
+        within_degrees_of_freedom,
+        alpha,
+        "movingRangeEffectiveDfWald.v1",
+    );
+    intervals.cpu = wald_interval(
+        &indices.cpu,
+        summary.n,
+        within_degrees_of_freedom,
+        alpha,
+        "movingRangeEffectiveDfWald.v1",
+    );
+    intervals.cpk = combine_performance_interval(
+        &indices.cpl,
+        &indices.cpu,
+        &intervals.cpl,
+        &intervals.cpu,
+        "movingRangeEffectiveDfWald.v1",
+    );
+    intervals.cpm_within = cpm_log_delta_interval(
+        &indices.cpm_within,
+        summary.within_sigma,
+        summary.mean,
+        target,
+        summary.n,
+        within_degrees_of_freedom,
+        alpha,
+        "movingRangeEffectiveDfLogDeltaCpm.v1",
+    );
+    intervals
+}
+
+fn moving_range_effective_degrees_of_freedom(
+    moving_range_count: u64,
+    adjacent_moving_range_pair_count: u64,
+) -> f64 {
+    let moving_range_count = moving_range_count as f64;
+    let adjacent_moving_range_pair_count = adjacent_moving_range_pair_count as f64;
     let d2 = 2.0 / std::f64::consts::PI.sqrt();
     let variance = 2.0 * (1.0 - 2.0 / std::f64::consts::PI);
     let adjacent_covariance = 1.0 / 3.0 + (2.0 * 3.0_f64.sqrt() - 4.0) / std::f64::consts::PI;
     let relative_variance = (moving_range_count * variance
-        + 2.0 * (moving_range_count - 1.0) * adjacent_covariance)
+        + 2.0 * adjacent_moving_range_pair_count * adjacent_covariance)
         / (moving_range_count * moving_range_count * d2 * d2);
     1.0 / (2.0 * relative_variance)
 }

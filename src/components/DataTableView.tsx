@@ -6,6 +6,7 @@ import type { TableQueryResult, ColumnDisplayProps } from "@/types/data";
 import { EXTRA_DEFS, EXTRA_KINDS, type ExtraKind, summarizeExtraKinds, extraKindLabel, extraFieldLabel } from "@/types/columnExtras";
 import { ManageExtrasDialog } from "./ManageExtrasDialog";
 import { useDataStore } from "@/stores/useDataStore";
+import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useTableZoomStore } from "@/stores/useTableZoomStore";
@@ -70,6 +71,7 @@ const EMPTY_NUM_SET: ReadonlySet<number> = new Set<number>();
 // is the string `"row,col"` keyed by display-row index + column index — the
 // same coordinate space used by `activeCell` and `selection`.
 const EMPTY_CELL_SET: ReadonlySet<string> = new Set<string>();
+const EMPTY_FILTERS: FilterRuleItem[] = [];
 const cellKey = (row: number, col: number) => `${row},${col}`;
 
 type FormatKind = "asis" | "fixed" | "percent" | "scientific" | "currency";
@@ -798,12 +800,8 @@ export function DataTableView({
   const [cornerSelected, setCornerSelected] = useState(false);
   const autoScrollRef = useRef<number | null>(null);
 
-  // Local Data Filter (shared module). Replaces the old per-column
-  // popover filter. State held locally on the view; not persisted across
-  // sessions for now — the dataset can shift indices arbitrarily and the
-  // rules are cheap to re-add. Rule shape matches the Graph Builder so
-  // future cross-view sharing is just a state lift.
-  const [tableFilters, setTableFilters] = useState<FilterRuleItem[]>([]);
+  const tableFilters = useDatasetFilterStore((state) => state.byDataset[datasetId] ?? EMPTY_FILTERS);
+  const replaceDatasetFilters = useDatasetFilterStore((state) => state.replaceFilters);
   const tableFiltersRef = useRef<FilterRuleItem[]>([]);
   tableFiltersRef.current = tableFilters;
   const [showTableFilters, setShowTableFilters] = useState(false);
@@ -841,6 +839,10 @@ export function DataTableView({
     [datasetRevision],
   );
   const { markDirty, readOnly } = useProjectStore();
+  const handleTableFiltersChange = useCallback((next: FilterRuleItem[]) => {
+    if (readOnly) return;
+    if (replaceDatasetFilters(datasetId, next)) markDirty();
+  }, [datasetId, markDirty, readOnly, replaceDatasetFilters]);
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
   const {
@@ -1070,8 +1072,7 @@ export function DataTableView({
 
   useEffect(() => {
     skipFilterReloadRef.current = true;
-    tableFiltersRef.current = [];
-    void load([], 0);
+    void load(tableFiltersRef.current, 0);
     setActiveCell(null);
     setEditCell(null);
     setSelectedRows(EMPTY_NUM_SET);
@@ -1085,7 +1086,6 @@ export function DataTableView({
     setShowInsertMultiCols(false);
     setRenameCol(null);
     setShowAddCol(false);
-    setTableFilters([]);
     setShowTableFilters(false);
   }, [datasetId, load]);
 
@@ -4284,7 +4284,7 @@ export function DataTableView({
               data={tableFilterData}
               columns={tableFilterFields}
               filters={tableFilters}
-              onChange={setTableFilters}
+              onChange={handleTableFiltersChange}
               onClose={() => setShowTableFilters(false)}
               width={tableFilterWidth}
               categoricalMode="exclude"

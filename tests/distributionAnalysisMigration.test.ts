@@ -21,9 +21,11 @@ const legacy = createDistributionItem({
   weight: null,
   frequency: null,
   by: [{ name: "Cavity", type: "nominal" }],
+  nestedSubgroup: { name: "Lot", type: "nominal" },
   columns: [
     { name: "DIM1", sqlType: "DOUBLE", integerCompatible: false, colIndex: 0, field: response },
     { name: "Cavity", sqlType: "VARCHAR", integerCompatible: false, colIndex: 1, field: { name: "Cavity", type: "nominal" } },
+    { name: "Lot", sqlType: "VARCHAR", integerCompatible: false, colIndex: 2, field: { name: "Lot", type: "nominal" } },
   ],
   analysis: {
     confidenceLevel: 0.99,
@@ -66,6 +68,7 @@ assert.deepEqual(migrated.definition.responses, legacy.responses);
 assert.deepEqual(migrated.definition.weight, legacy.weight);
 assert.deepEqual(migrated.definition.frequency, legacy.frequency);
 assert.deepEqual(migrated.definition.by, legacy.by);
+assert.deepEqual(migrated.definition.nestedSubgroup, legacy.nestedSubgroup);
 assert.deepEqual(migrated.definition.analysis, {
   ...legacy.analysis,
   specLimits: {},

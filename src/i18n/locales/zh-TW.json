@@ -1,4 +1,5 @@
 {
+  "capability": { "nestedSubgroupMissingLabels": { "v1": "子組標籤缺失的資料列保留在整體結果中，但不參與組內移動全距計算。" } },
   "hypothesisTest": {
     "title": "假設檢定",
     "analysisName": "分析名稱",
@@ -340,6 +341,7 @@
     "cancelImport": "取消匯入",
     "cancellingImport": "正在取消…",
     "datasetNameMigrations": "開啟專案時已重新命名 {{count}} 個重複的資料表名稱。請儲存專案以保留這些更新後的名稱。",
+    "datasetFilterMigrationConflict": "以下資料表的舊圖形篩選器存在衝突，已被清除：{{names}}。請儲存專案以保留此次移轉。",
     "importProgressTable": "資料表 {{i}}/{{total}}：{{name}}",
     "importProgressRows": "列",
     "createSnapshotTitle": "建立快照",
@@ -433,11 +435,11 @@
     }
   },
   "distribution": {
-    "title": "分佈", "searchColumns": "搜尋欄位", "frequencyShort": "頻數", "confidenceLevel": "信賴水準",
+    "title": "分佈", "searchColumns": "搜尋欄位", "frequencyShort": "頻數", "nestedSubgroupShort": "子組", "confidenceLevel": "信賴水準",
     "saving": "正在儲存...", "loadFieldsFailed": "載入欄位失敗：{{message}}", "roleLabel": "{{role}} 角色",
     "graph": { "unavailable": "此反應的圖形無法使用。" },
     "roleEmpty": "拖放或指定一個欄位", "removeFromRole": "從 {{role}} 移除 {{column}}",
-    "roles": { "y": "Y，反應", "weight": "權重", "frequency": "頻數", "by": "分組" },
+    "roles": { "y": "Y，反應", "weight": "權重", "frequency": "頻數", "by": "分組", "nestedSubgroup": "巢狀子組" },
     "missingSpecs": {
       "title": "缺少規格限",
       "message": "這些反應在資料表欄位屬性中沒有有限的 LSL 或 USL：",
@@ -495,7 +497,7 @@
       "unknownCapabilityVersion": "未知能力版本", "yRequired": "至少需要一個反應變數", "columnUnknown": "欄位不可用",
       "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
       "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
-      "freqNotIntegerCompatible": "頻數必須相容整數", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
+      "freqNotIntegerCompatible": "頻數必須相容整數", "nestedSubgroupTypeIncompatible": "巢狀子組必須為分類欄位", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     },
     "errors": {
       "unknownContinuousFitCapability": "未知連續配適能力", "duplicateContinuousFitCapability": "連續配適能力重複",
@@ -504,7 +506,7 @@
       "unknownCapabilityVersion": "未知能力版本", "invalidCapabilityOverride": "能力覆寫無效", "yRequired": "至少需要一個反應變數",
       "columnUnknown": "欄位不可用", "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
       "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
-      "freqNotIntegerCompatible": "頻數必須相容整數", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
+      "freqNotIntegerCompatible": "頻數必須相容整數", "nestedSubgroupTypeIncompatible": "巢狀子組必須為分類欄位", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     }
   },
   "fitYByX": {

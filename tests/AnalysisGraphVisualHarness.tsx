@@ -12,6 +12,7 @@ const item = { id: "visual-graph", name: "DIM1" } as GraphRuntimeProps["item"];
 const dataset = { id: "dataset-1", name: "Sample" } as GraphRuntimeProps["dataset"];
 const responses = ["DIM1"];
 const data = { columns: ["__sp_variable__", "__sp_value__"], rows: [] };
+const capabilityData = { columns: ["DIM1"], rows: [] };
 
 const compositeSpec: GraphSpec = {
   encoding: {
@@ -22,6 +23,23 @@ const compositeSpec: GraphSpec = {
     { kind: "histogram", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewHistogram } },
     { kind: "normalCurve", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves } },
     { kind: "boxplot", enabled: true, options: { elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.boxPlot } },
+  ],
+};
+
+const capabilityCurveElementId = "capability-visual:normal-curves";
+const capabilitySpec: GraphSpec = {
+  encoding: {
+    x: { name: "DIM1", type: "continuous" },
+  },
+  refLinesX: [
+    { x: 88, label: "LSL", style: "dashed", color: "#E53935", width: 1.5 },
+    { x: 103, label: "Target", style: "solid", color: "#00C853", width: 1.5 },
+    { x: 118, label: "USL", style: "dashed", color: "#E53935", width: 1.5 },
+  ],
+  autoSpecLinesX: false,
+  elements: [
+    { kind: "histogram", enabled: true, options: {} },
+    { kind: "normalCurve", enabled: true, options: { elementId: capabilityCurveElementId } },
   ],
 };
 
@@ -114,6 +132,50 @@ const compositeFrame = getDistributionCompositeGraphFrame({
   },
 });
 
+const capabilityFrame: GraphDataFrame = {
+  ...productionFrame,
+  requestId: "capability-visual:process-capability",
+  aggregates: [
+    {
+      kind: "histogram",
+      yColumn: "Count",
+      sourceColumn: "DIM1",
+      binCount: 6,
+      minValue: 85,
+      maxValue: 121,
+      missingCount: 0,
+      binWidth: 6,
+      totalCount: 10,
+      bins: [1, 2, 4, 2, 1, 0].map((count, index) => ({
+        sourceColumn: "DIM1",
+        binStart: 85 + index * 6,
+        binEnd: 91 + index * 6,
+        count,
+      })),
+    },
+    ...[
+      { id: "overall", name: "Overall Normal", peak: 4.2 },
+      { id: "within", name: "Within Normal", peak: 5.1 },
+    ].map(({ id, name, peak }) => ({
+      kind: "precomputedCurve" as const,
+      elementId: capabilityCurveElementId,
+      seriesId: `capability-visual:${id}`,
+      seriesName: name,
+      sourceColumn: "DIM1",
+      interpolation: "linear" as const,
+      points: [
+        { x: 85, y: 0.15 },
+        { x: 91, y: 0.8 },
+        { x: 97, y: peak * 0.7 },
+        { x: 103, y: peak },
+        { x: 109, y: peak * 0.7 },
+        { x: 115, y: 0.8 },
+        { x: 121, y: 0.15 },
+      ],
+    })),
+  ],
+};
+
 class VisualErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null as string | null };
 
@@ -144,6 +206,22 @@ export function AnalysisGraphVisualHarness() {
             spec={compositeSpec}
             data={data}
             frame={compositeFrame}
+            panelLayout={props.panelLayout}
+            brushMode={props.brushMode}
+            onAxisRangeChange={props.onAxisRangeChange}
+          />
+        )}
+      />
+      <AnalysisGraph
+        title="Process Capability"
+        graphRole="processCapability"
+        contentClassName="analysis-graph-distribution"
+        strategy={{ mode: "builder", runtimeProps: { item, dataset, panelLayout: "fit" } }}
+        renderGraph={(props) => (
+          <Graph
+            spec={capabilitySpec}
+            data={capabilityData}
+            frame={capabilityFrame}
             panelLayout={props.panelLayout}
             brushMode={props.brushMode}
             onAxisRangeChange={props.onAxisRangeChange}

@@ -21,6 +21,7 @@ use crate::models::distribution::{
     ProcessCapabilityExpectedTailV1, ProcessCapabilityIndicesV1,
     ProcessCapabilityIntervalProvenanceV1, ProcessCapabilityIntervalV1,
     ProcessCapabilityIntervalsV1, ProcessCapabilityNonconformanceV1,
+    ProcessCapabilityNestedSubgroupV1,
     ProcessCapabilityObservedNonconformanceV1, ProcessCapabilityObservedTailV1,
     ProcessCapabilityProportionIntervalV1, ProcessCapabilitySpecificationLinesV1,
     ProcessCapabilitySpecificationV1, ProcessCapabilityStabilityIndexV1,
@@ -46,8 +47,10 @@ use crate::services::distribution_kernel::{
     tukey_box, weighted_ecdf, weighted_type6, NormalQuantileKernelStatusV1,
 };
 use crate::services::normal_capability::{
-    capability_chart_data, capability_indices, capability_intervals, nonconformance_metrics,
-    normal_process_summary, resolve_specification_limits, stability_index,
+    capability_chart_data, capability_indices, capability_intervals,
+    capability_intervals_with_within_degrees_of_freedom, nonconformance_metrics,
+    normal_process_summary, normal_process_summary_with_nested_subgroups,
+    resolve_specification_limits, stability_index,
     CapabilityDensitySeriesV1, CapabilityIntervalV1, NormalCapabilityChartDataV1,
     NormalCapabilityIntervalsV1, NormalNonconformanceV1, NumericStateV1, SpecificationOverrideV1,
     SpecificationSourceV1, TypedCountV1, TypedValueV1,
@@ -596,14 +599,51 @@ impl<'a> DistributionService<'a> {
                                 ordered.sort_by_key(|value| value.row_id);
                                 let values =
                                     ordered.iter().map(|value| value.y).collect::<Vec<_>>();
-                                let process_summary = normal_process_summary(&values);
+                                let nested_summary = if request.nested_subgroup_column_id.is_some() {
+                                    let labels = ordered
+                                        .iter()
+                                        .map(|observation| {
+                                            observation
+                                                .nested_subgroup
+                                                .as_ref()
+                                                .map(serde_json::to_string)
+                                                .transpose()
+                                                .map_err(|error| AppError::Stats(error.to_string()))
+                                        })
+                                        .collect::<Result<Vec<_>, _>>()?;
+                                    let nested_observations = ordered
+                                        .iter()
+                                        .zip(&labels)
+                                        .map(|(observation, label)| {
+                                            (observation.y, label.as_deref())
+                                        })
+                                        .collect::<Vec<_>>();
+                                    Some(normal_process_summary_with_nested_subgroups(
+                                        &nested_observations,
+                                    ))
+                                } else {
+                                    None
+                                };
+                                let process_summary = nested_summary
+                                    .as_ref()
+                                    .map(|nested| nested.summary.clone())
+                                    .unwrap_or_else(|| normal_process_summary(&values));
                                 let stability = stability_index(&process_summary);
                                 let indices = capability_indices(&process_summary, limits);
-                                let intervals = capability_intervals(
-                                    &process_summary,
-                                    &indices,
-                                    limits.target,
-                                    request.confidence_level,
+                                let intervals = nested_summary.as_ref().map_or_else(
+                                    || capability_intervals(
+                                        &process_summary,
+                                        &indices,
+                                        limits.target,
+                                        request.confidence_level,
+                                    ),
+                                    |nested| capability_intervals_with_within_degrees_of_freedom(
+                                        &process_summary,
+                                        &indices,
+                                        limits.target,
+                                        request.confidence_level,
+                                        nested.within_effective_degrees_of_freedom,
+                                    ),
                                 );
                                 let nonconformance = nonconformance_metrics(
                                     &process_summary,
@@ -660,10 +700,36 @@ impl<'a> DistributionService<'a> {
                                         chart_data: Some(map_capability_chart_data(
                                             capability_chart,
                                         )),
+                                        nested_subgroup: request
+                                            .nested_subgroup_column_id
+                                            .as_ref()
+                                            .zip(nested_summary.as_ref())
+                                            .map(|(column_id, nested)| {
+                                                ProcessCapabilityNestedSubgroupV1 {
+                                                    method_version: "2.0.0".to_string(),
+                                                    column_id: column_id.clone(),
+                                                    subgroup_count: nested.subgroup_count,
+                                                    moving_range_count: nested.moving_range_count,
+                                                    adjacent_moving_range_pair_count: nested
+                                                        .adjacent_moving_range_pair_count,
+                                                    missing_label_count: nested.missing_label_count,
+                                                    singleton_subgroup_count: nested
+                                                        .singleton_subgroup_count,
+                                                }
+                                            }),
                                         warnings: specification
                                             .warning
                                             .clone()
                                             .into_iter()
+                                            .chain(
+                                                nested_summary
+                                                    .as_ref()
+                                                    .filter(|nested| nested.missing_label_count > 0)
+                                                    .map(|_| {
+                                                        "capability.nestedSubgroupMissingLabels.v1"
+                                                            .to_string()
+                                                    }),
+                                            )
                                             .collect(),
                                     }),
                                     distribution_fit_data: None,
@@ -1979,6 +2045,7 @@ mod tests {
             weight_column_id: None,
             frequency_column_id: None,
             by_column_ids: Vec::new(),
+            nested_subgroup_column_id: None,
             filter_expr: crate::models::distribution::FilterExprV1::And { exprs: Vec::new() },
             confidence_level: 0.95,
             histograms_only: false,
@@ -2095,6 +2162,7 @@ mod tests {
             weight_column: None,
             freq_column: None,
             by_columns: Vec::new(),
+            nested_subgroup_column: None,
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: vec![ContinuousDistributionIdV1::Normal],
@@ -2321,6 +2389,7 @@ mod tests {
             weight_column: Some("weight".to_string()),
             freq_column: None,
             by_columns: Vec::new(),
+            nested_subgroup_column: None,
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: Vec::new(),
@@ -2426,6 +2495,7 @@ mod tests {
             weight_column: None,
             freq_column: None,
             by_columns: vec!["region".to_string()],
+            nested_subgroup_column: None,
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: vec![
@@ -2679,6 +2749,7 @@ mod tests {
                 weight_column: None,
                 freq_column: None,
                 by_columns: Vec::new(),
+                nested_subgroup_column: None,
                 confidence_level: 0.95,
                 spec_limits: HashMap::new(),
                 fit_distributions: vec![ContinuousDistributionIdV1::Cauchy],
@@ -3810,6 +3881,99 @@ mod tests {
                 )
             })
         }));
+    }
+
+    #[test]
+    fn process_capability_uses_nested_subgroup_moving_ranges() {
+        let state = AppState::new().expect("test state");
+        let data = DataService::new(&state);
+        let dataset = data
+            .create_table(
+                "Nested Capability",
+                &["value".into(), "subgroup".into()],
+                &["DOUBLE".into(), "VARCHAR".into()],
+            )
+            .expect("create dataset");
+        for (value, subgroup) in [
+            ("1", "A"),
+            ("10", "B"),
+            ("3", "A"),
+            ("14", "B"),
+            ("7", "C"),
+        ] {
+            let row_id = data.add_row(&dataset.id).expect("add row");
+            data.update_cell(&dataset.id, row_id, "value", value)
+                .expect("update value");
+            data.update_cell(&dataset.id, row_id, "subgroup", subgroup)
+                .expect("update subgroup");
+        }
+        let missing_label_row = data.add_row(&dataset.id).expect("add missing-label row");
+        data.update_cell(&dataset.id, missing_label_row, "value", "7")
+            .expect("update missing-label value");
+        let descriptors = state
+            .db
+            .lock()
+            .expect("db")
+            .get_distribution_columns(&dataset.id)
+            .expect("columns");
+        let value = descriptors.iter().find(|column| column.name == "value").expect("value");
+        let subgroup = descriptors
+            .iter()
+            .find(|column| column.name == "subgroup")
+            .expect("subgroup");
+        state.column_display.lock().expect("display props").insert(
+            dataset.id.clone(),
+            vec![crate::models::table::ColumnDisplayProps {
+                col_index: value.index as usize,
+                width: None,
+                format: None,
+                extras: Some(std::collections::BTreeMap::from([(
+                    "spec".to_string(),
+                    serde_json::json!({ "lsl": 0.0, "usl": 15.0 }),
+                )])),
+            }],
+        );
+        let mut request = run_request();
+        request.source_dataset_id = Some(dataset.id);
+        request.y_columns[0].column_id = value.column_id.clone();
+        request.weight_column_id = None;
+        request.frequency_column_id = None;
+        request.nested_subgroup_column_id = Some(subgroup.column_id.clone());
+        request.enabled_capability_ids = vec!["capability.normal.individuals".to_string()];
+
+        let result = DistributionService::new(&state)
+            .execute_one_shot(&request, &one_shot_context(request.config_revision))
+            .expect("execute distribution");
+        let capability = result.report_blocks
+            .iter()
+            .find_map(|block| block.capability_data.as_ref())
+            .expect("capability data");
+
+        assert_eq!(capability.process_summary.moving_range_average, Some(3.0));
+        assert_eq!(capability.process_summary.mean, 7.0);
+        assert_eq!(capability.nonconformance.observed.total.count.value, Some(0));
+        assert_eq!(
+            capability.warnings,
+            vec!["capability.nestedSubgroupMissingLabels.v1".to_string()],
+        );
+        let nested = capability.nested_subgroup.as_ref().expect("nested subgroup provenance");
+        assert_eq!(nested.method_version, "2.0.0");
+        assert_eq!(nested.column_id, subgroup.column_id);
+        assert_eq!(nested.subgroup_count, 3);
+        assert_eq!(nested.moving_range_count, 2);
+        assert_eq!(nested.adjacent_moving_range_pair_count, 0);
+        assert_eq!(nested.missing_label_count, 1);
+        assert_eq!(nested.singleton_subgroup_count, 1);
+        assert!(
+            (capability
+                .intervals
+                .provenance
+                .within_effective_degrees_of_freedom
+                .expect("effective df")
+                - 2.0 / (std::f64::consts::PI - 2.0))
+                .abs()
+                < 1e-12,
+        );
     }
 
     #[test]

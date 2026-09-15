@@ -25,6 +25,7 @@ export interface DistributionDialogState {
   weight: FieldRef | null;
   frequency: FieldRef | null;
   by: FieldRef[];
+  nestedSubgroup: FieldRef | null;
   analysis: DistributionAnalysisConfig;
   validationError: DistributionDialogValidationError | null;
 }
@@ -52,6 +53,7 @@ export function createDistributionDialogState(
     weight: null,
     frequency: null,
     by: [],
+    nestedSubgroup: null,
     analysis: structuredClone(analysis),
     validationError: null,
   };
@@ -63,6 +65,7 @@ function occupiedFields(state: DistributionDialogState): FieldRef[] {
     ...(state.weight ? [state.weight] : []),
     ...(state.frequency ? [state.frequency] : []),
     ...state.by,
+    ...(state.nestedSubgroup ? [state.nestedSubgroup] : []),
   ];
 }
 

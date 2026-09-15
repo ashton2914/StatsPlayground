@@ -85,6 +85,27 @@ test("creates one persisted Distribution definition from role assignments", asyn
   expect(saved?.graphs.overview.modeStates.twoD.encoding.x?.name).toBe("Value");
 });
 
+test("persists and reopens a nested subgroup role", async ({ mount }) => {
+  let saved: DistributionItem | null = null;
+  const component = await mount(
+    <DistributionDialog
+      {...dialogProps({ onSubmit: (item: DistributionItem) => { saved = item; } })}
+    />,
+  );
+
+  await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+  await component.getByTestId("distribution-column-Group").getByRole("button", { name: "Subgroup", exact: true }).click();
+  await component.getByRole("button", { name: "Save" }).click();
+
+  expect(saved?.nestedSubgroup).toEqual({ name: "Group", type: "nominal" });
+  await component.unmount();
+
+  const reopened = await mount(
+    <DistributionDialog {...dialogProps({ initialItem: saved })} />,
+  );
+  await expect(reopened.getByTestId("distribution-role-nestedSubgroup")).toContainText("Group");
+});
+
 test("edits a definition without changing its stable identity", async ({ mount }) => {
   let saved: DistributionItem | null = null;
   const initialItem = createDistributionItem({
@@ -143,7 +164,7 @@ test("uses shared controls without collapsing the desktop dialog", async ({ moun
   const bounds = await dialog.boundingBox();
   expect(bounds?.width).toBeGreaterThanOrEqual(850);
   await expect(dialog.locator(".ui-input")).toHaveCount(3);
-  await expect(dialog.locator(".ui-button")).toHaveCount(14);
+  await expect(dialog.locator(".ui-button")).toHaveCount(17);
   await expect(component.getByRole("spinbutton", { name: "Confidence level" })).toBeVisible();
 
   const responseZone = await component.getByTestId("distribution-role-response").boundingBox();

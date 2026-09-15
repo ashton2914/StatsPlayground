@@ -19,6 +19,7 @@ pub(crate) struct PreparedObservationV1 {
     pub weight: f64,
     pub frequency: u64,
     pub contribution: f64,
+    pub nested_subgroup: Option<DistributionGroupValueV1>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +60,7 @@ pub(crate) fn resolve_distribution_requests(
         .chain(request.weight_column.iter())
         .chain(request.freq_column.iter())
         .chain(request.by_columns.iter())
+        .chain(request.nested_subgroup_column.iter())
     {
         if !user_columns.contains_key(name) || !descriptors.contains_key(name) {
             return Err(AppError::InvalidParam(
@@ -105,6 +107,11 @@ pub(crate) fn resolve_distribution_requests(
         .iter()
         .map(|name| column_id(name))
         .collect::<Result<Vec<_>, _>>()?;
+    let nested_subgroup_column_id = request
+        .nested_subgroup_column
+        .as_deref()
+        .map(&column_id)
+        .transpose()?;
 
     request
         .response_columns
@@ -141,6 +148,7 @@ pub(crate) fn resolve_distribution_requests(
                 weight_column_id: weight_column_id.clone(),
                 frequency_column_id: frequency_column_id.clone(),
                 by_column_ids: by_column_ids.clone(),
+                nested_subgroup_column_id: nested_subgroup_column_id.clone(),
                 filter_expr: FilterExprV1::And { exprs: Vec::new() },
                 confidence_level: request.confidence_level,
                 histograms_only: false,
@@ -183,6 +191,7 @@ fn validate_wire_request(request: &DistributionRequest) -> Result<(), AppError> 
         .chain(request.weight_column.iter())
         .chain(request.freq_column.iter())
         .chain(request.by_columns.iter())
+        .chain(request.nested_subgroup_column.iter())
     {
         if name.trim().is_empty() {
             return Err(AppError::InvalidParam(
@@ -317,6 +326,11 @@ pub(crate) fn prepare_continuous_groups(
         .iter()
         .map(|column_id| resolve_column(&metadata, column_id))
         .collect::<Result<Vec<_>, _>>()?;
+    let nested_subgroup_name = request
+        .nested_subgroup_column_id
+        .as_deref()
+        .map(|column_id| resolve_column(&metadata, column_id))
+        .transpose()?;
     let mut filter_params = Vec::new();
     let filter_sql = compile_filter(&request.filter_expr, &metadata, &mut filter_params)?;
 
@@ -325,6 +339,9 @@ pub(crate) fn prepare_continuous_groups(
         select_columns.push(quote_identifier(column));
     }
     if let Some(column) = frequency_name {
+        select_columns.push(quote_identifier(column));
+    }
+    if let Some(column) = nested_subgroup_name {
         select_columns.push(quote_identifier(column));
     }
     select_columns.extend(by_names.iter().map(|column| quote_identifier(column)));
@@ -365,6 +382,17 @@ pub(crate) fn prepare_continuous_groups(
             let value = row.get::<_, Value>(offset)?;
             offset += 1;
             Some(value)
+        } else {
+            None
+        };
+        let nested_subgroup = if nested_subgroup_name.is_some() {
+            let value = row.get::<_, Value>(offset)?;
+            offset += 1;
+            if matches!(value, Value::Null) {
+                None
+            } else {
+                Some(value_to_group(value)?)
+            }
         } else {
             None
         };
@@ -435,6 +463,7 @@ pub(crate) fn prepare_continuous_groups(
             weight,
             frequency,
             contribution,
+            nested_subgroup,
         });
         add_estimated_bytes(
             &mut estimated_bytes,
@@ -700,6 +729,7 @@ mod tests {
             weight_column: Some("weight".to_string()),
             freq_column: Some("freq".to_string()),
             by_columns: vec!["region".to_string(), "batch".to_string()],
+            nested_subgroup_column: None,
             confidence_level: 0.95,
             spec_limits: HashMap::new(),
             fit_distributions: Vec::new(),
@@ -797,6 +827,8 @@ mod tests {
         request.fit_distributions = vec![
             crate::models::distribution::ContinuousDistributionIdV1::Cauchy,
         ];
+        request.nested_subgroup_column = Some("region".to_string());
+        request.by_columns = vec!["batch".to_string()];
         let resolved = resolve_distribution_requests(&engine, &request).expect("resolve request");
 
         assert_eq!(resolved.len(), 1);
@@ -811,7 +843,11 @@ mod tests {
         );
         assert_eq!(
             resolved[0].by_column_ids,
-            vec![column_id(&engine, "region"), column_id(&engine, "batch")]
+            vec![column_id(&engine, "batch")]
+        );
+        assert_eq!(
+            resolved[0].nested_subgroup_column_id,
+            Some(column_id(&engine, "region"))
         );
         assert!(resolved[0].continuous_fit.fit_all);
         assert_eq!(
@@ -835,6 +871,7 @@ mod tests {
             weight_column_id: Some(column_id(engine, "weight")),
             frequency_column_id: Some(column_id(engine, "freq")),
             by_column_ids: Vec::new(),
+            nested_subgroup_column_id: None,
             filter_expr: FilterExprV1::And { exprs: Vec::new() },
             confidence_level: 0.95,
             histograms_only: false,
@@ -898,6 +935,39 @@ mod tests {
         assert_eq!(groups[0].source_rows, 2);
         assert_eq!(groups[0].n_missing, 1);
         assert_eq!(groups[0].observations.len(), 1);
+    }
+
+    #[test]
+    fn nested_subgroup_is_attached_to_observations_without_changing_by_key() {
+        let engine = fixture_engine();
+        engine
+            .conn()
+            .execute_batch(
+                "INSERT INTO dataset_distribution_fixture VALUES
+                    (1, 10.0, 1.0, 1, 'A', 1),
+                    (2, 20.0, 1.0, 1, NULL, 1);",
+            )
+            .expect("seed rows");
+        let mut request = request(&engine);
+        request.nested_subgroup_column_id = Some(column_id(&engine, "region"));
+        request.by_column_ids = vec![column_id(&engine, "batch")];
+
+        let groups = prepare_continuous_groups(&engine, &request, &y_column(&request))
+            .expect("prepare groups");
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].key, vec![DistributionGroupValueV1::Number { value: 1.0 }]);
+        assert_eq!(
+            groups[0]
+                .observations
+                .iter()
+                .map(|observation| observation.nested_subgroup.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Some(DistributionGroupValueV1::Text { value: "A".to_string() }),
+                None,
+            ]
+        );
     }
 
     #[test]

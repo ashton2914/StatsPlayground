@@ -8,6 +8,7 @@ import type {
   Graph3DState,
   GraphBuilderItem,
   GraphBuilderMode,
+  GraphRuntimeItem,
   GraphSlotKey,
   MultivariateGraphState,
 } from "@/types/graphBuilder";
@@ -78,14 +79,18 @@ export function createEmbeddedGraphItem(input: {
   sourceDatasetId: string;
   config: EmbeddedGraphConfig;
   createdAt: string;
-}): GraphBuilderItem {
-  return normalizeGraphBuilderItem({
+}): GraphRuntimeItem {
+  const filters = input.config.filters === undefined
+    ? undefined
+    : clone(input.config.filters);
+  const item = normalizeGraphBuilderItem({
     ...clone(input.config),
     id: input.id,
     name: input.name,
     sourceDatasetId: input.sourceDatasetId,
     createdAt: input.createdAt,
   });
+  return filters === undefined ? item : { ...item, filters };
 }
 
 function withOptional<T extends object, K extends string, V>(
@@ -374,7 +379,6 @@ function normalizeCurrentModeItem(item: GraphBuilderItem): GraphBuilderItem {
         correlationMethod: normalizeCorrelationMethod(multivariateInput.correlationMethod),
       },
     },
-    filters: Array.isArray(item.filters) ? clone(item.filters) : undefined,
     sampling: normalizeSampling(item.sampling),
     groupThemeSlots: isObject(item.groupThemeSlots) ? clone(item.groupThemeSlots) : undefined,
     createdAt: item.createdAt,
@@ -418,7 +422,6 @@ export function normalizeGraphBuilderItem(item: unknown): GraphBuilderItem {
         threeD,
         multivariate,
       },
-      filters: Array.isArray(source.filters) ? clone(source.filters) : undefined,
       sampling: normalizeSampling(source.sampling as GraphSampling | undefined),
       groupThemeSlots: isObject(source.groupThemeSlots)
         ? clone(source.groupThemeSlots) as GraphBuilderItem["groupThemeSlots"]
@@ -482,7 +485,6 @@ export function normalizeGraphBuilderItem(item: unknown): GraphBuilderItem {
       threeD,
       multivariate,
     },
-    filters: Array.isArray(source.filters) ? clone(source.filters) : undefined,
     sampling: normalizeSampling(source.sampling as GraphSampling | undefined),
     groupThemeSlots: isObject(source.groupThemeSlots)
       ? clone(source.groupThemeSlots) as GraphBuilderItem["groupThemeSlots"]

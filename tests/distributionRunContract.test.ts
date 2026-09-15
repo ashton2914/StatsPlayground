@@ -14,6 +14,7 @@ const request: DistributionRequest = {
   weightColumn: "weight",
   freqColumn: null,
   byColumns: ["batch", "site"],
+  nestedSubgroupColumn: null,
   confidenceLevel: 0.95,
   specLimits: {
     value: { lsl: 0, target: 5, usl: 10 },
@@ -63,6 +64,7 @@ assert.deepEqual(Object.keys(request), [
   "weightColumn",
   "freqColumn",
   "byColumns",
+  "nestedSubgroupColumn",
   "confidenceLevel",
   "specLimits",
   "fitDistributions",

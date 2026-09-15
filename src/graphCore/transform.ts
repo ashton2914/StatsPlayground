@@ -5008,6 +5008,7 @@ function buildSingleOption(
       // range when faceted) so stacked / overlaid per-group series
       // share identical bin centers and widths.
       const packetModeA = frameBackedAggregateMode && !!histogramPacket;
+      const preservePacketBins = packetModeA && histogramPacket.binPolicy === "preserve";
       const summaryModeA = frameBackedAggregateMode && !!summaryPacket && hasNormalCurve;
       const allXs = packetModeA || summaryModeA ? [] : data.rows.map((r) => toNum(r[xIdx]));
       // Pick bin count so bar edges align with the X axis minor-tick
@@ -5103,8 +5104,12 @@ function buildSingleOption(
         Number.isFinite(userXStep as number) && (userXStep as number) > 0
           ? (userXStep as number)
           : niceStep(xSpan, BIN_GRID_TARGET_TICKS);
-      const width =
+      const tickAlignedWidth =
         xMajorStep > 0 && xMinorSplit > 0 ? xMajorStep / xMinorSplit : 1;
+      const preservedWidth = preservePacketBins && histogramPacket.bins[0]
+        ? histogramPacket.bins[0].binEnd - histogramPacket.bins[0].binStart
+        : 0;
+      const width = preservedWidth > 0 ? preservedWidth : tickAlignedWidth;
       const gridLo = Number.isFinite(xLoForBins)
         ? Math.floor(xLoForBins / width) * width
         : 0;
@@ -5112,10 +5117,16 @@ function buildSingleOption(
         ? Math.ceil(xHiForBins / width) * width
         : gridLo + width;
       const binCountA = Math.max(1, Math.round((gridHi - gridLo) / width));
-      const centers: number[] = new Array(binCountA);
-      for (let i = 0; i < binCountA; i++) centers[i] = gridLo + width * (i + 0.5);
-      const totalCounts = new Array<number>(binCountA).fill(0);
-      if (packetModeA) {
+      const centers: number[] = preservePacketBins
+        ? histogramPacket.bins.map((bin) => (bin.binStart + bin.binEnd) / 2)
+        : new Array(binCountA);
+      if (!preservePacketBins) {
+        for (let i = 0; i < binCountA; i++) centers[i] = gridLo + width * (i + 0.5);
+      }
+      const totalCounts = preservePacketBins
+        ? histogramPacket.bins.map((bin) => Math.max(0, Number(bin.count) || 0))
+        : new Array<number>(binCountA).fill(0);
+      if (packetModeA && !preservePacketBins) {
         for (const bin of histogramPacket.bins) {
           const center = (bin.binStart + bin.binEnd) / 2;
           const idx = Math.floor((center - gridLo) / width);
@@ -5138,6 +5149,14 @@ function buildSingleOption(
       const binOntoGrid = (vals: number[], groupKey?: string): number[] => {
         const buckets = new Array<number>(centers.length).fill(0);
         if (centers.length === 0 || width <= 0) return buckets;
+        if (preservePacketBins) {
+          return histogramPacket.bins.map((bin) => {
+            const packetGroup = String(bin.group ?? DEFAULT_GROUP_KEY);
+            return groupKey && packetGroup !== groupKey
+              ? 0
+              : Math.max(0, Number(bin.count) || 0);
+          });
+        }
         if (packetModeA) {
           for (const bin of histogramPacket.bins) {
             const packetGroup = String(bin.group ?? DEFAULT_GROUP_KEY);
@@ -5294,21 +5313,36 @@ function buildSingleOption(
           const packetSummary = summaryPacket?.summaries.find((entry) =>
             !grouping || String(entry.group ?? DEFAULT_GROUP_KEY) === slot.key
           );
-          const curvePacket = normalCurvePackets.find((packet) =>
+          const curvePackets = normalCurvePackets.filter((packet) =>
             !grouping || String(packet.group ?? DEFAULT_GROUP_KEY) === slot.key
           );
           const rawSummary = meanStd(gxs);
-          const points: [number, number][] = curvePacket
-            ? curvePacket.points.map((point) => [point.x, point.y])
-            : normalCurve(
+          const points: [number, number][] = curvePackets.length === 1
+            ? curvePackets[0].points.map((point) => [point.x, point.y])
+            : curvePackets.length === 0
+              ? normalCurve(
                 packetSummary?.mean ?? rawSummary.mean,
                 packetSummary?.stddev ?? rawSummary.std,
                 packetSummary?.count ?? rawSummary.n,
                 width,
                 packetSummary?.min ?? xDataLo,
                 packetSummary?.max ?? xDataHi,
+              )
+              : [];
+          if (curvePackets.length > 1) {
+            for (const packet of curvePackets) {
+              const packetStyle = resolvedStyleFor(packet.seriesId ?? packet.seriesName ?? slot.key);
+              const packetSeries = buildPrecomputedCurveSeries(
+                packet,
+                packet.seriesName ?? slot.key,
+                packetStyle,
+                theme.categorical,
               );
-          if (points.length > 0) {
+              const lineStyle = { ...(packetSeries.lineStyle as Record<string, unknown>) };
+              delete lineStyle.color;
+              series.push({ ...packetSeries, lineStyle });
+            }
+          } else if (points.length > 0) {
             if (showNormalSigmaBands) {
               const bandOpacity = [0.1, 0.16, 0.24, 0.24, 0.16, 0.1];
               normalSigmaBands(
@@ -5401,7 +5435,7 @@ function buildSingleOption(
         grid: {
           left: 56,
           right: 24,
-          top: 32,
+          top: normalCurvePackets.length > 1 ? 56 : 32,
           bottom: 48,
           show: true,
           borderColor: theme.axisLine,
@@ -5413,6 +5447,13 @@ function buildSingleOption(
         // edge); `confine` then keeps the tooltip inside the chart's
         // bounding box so it still visually anchors to the data point.
         tooltip: { trigger: "axis", confine: true, appendToBody: true },
+        ...(normalCurvePackets.length > 1 ? {
+          legend: {
+            top: 8,
+            data: normalCurvePackets.map((packet) => packet.seriesName ?? packet.seriesId ?? packet.elementId),
+            textStyle: { color: theme.fgPrimary },
+          },
+        } : {}),
         xAxis: mergeAxis(
           {
             type: "value",

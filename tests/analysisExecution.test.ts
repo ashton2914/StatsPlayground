@@ -218,6 +218,7 @@ assert.deepEqual(request, {
   weightColumn: null,
   freqColumn: null,
   byColumns: [],
+  nestedSubgroupColumn: null,
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: ["normal"],
@@ -338,6 +339,20 @@ assert.notEqual(
       responses: [{ name: "DIM2", type: "continuous" }],
     },
   })),
+  baseFingerprint,
+);
+const nestedSubgroupAnalysis = analysis({
+  definition: {
+    ...analysis().definition,
+    nestedSubgroup: { name: "Lot", type: "nominal" },
+  },
+});
+assert.equal(
+  createAnalysisExecutionRequest(nestedSubgroupAnalysis, 7).nestedSubgroupColumn,
+  "Lot",
+);
+assert.notEqual(
+  distributionAnalysisDefinitionFingerprint(nestedSubgroupAnalysis),
   baseFingerprint,
 );
 assert.equal(

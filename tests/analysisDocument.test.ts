@@ -6,7 +6,10 @@ import {
   createAnalysisEditorPatch,
   toAnalysisEditorItem,
 } from "../src/components/analysis/analysisEditorRegistry.ts";
-import { createDistributionGraphBuilderConfig } from "../src/components/analysis/distributionCompositeGraph.ts";
+import {
+  createDistributionGraphBuilderConfig,
+  createProcessCapabilityGraphBuilderConfig,
+} from "../src/components/analysis/distributionCompositeGraph.ts";
 import { createDefaultFitYByXGraphConfig } from "../src/components/fitYByX/fitYByXConfig.ts";
 import { createEmbeddedGraphItem } from "../src/components/graphBuilder/graphBuilderMode.ts";
 import { canExecuteGraphRequest, deriveGraphRequestParts } from "../src/components/graphBuilder/useGraphDataPipeline.ts";
@@ -27,6 +30,7 @@ assert.deepEqual(analysis.definition.responses, [{ name: "DIM1", type: "continuo
 assert.equal(analysis.definition.weight, null);
 assert.equal(analysis.definition.frequency, null);
 assert.deepEqual(analysis.definition.by, []);
+assert.equal(analysis.definition.nestedSubgroup, null);
 assert.deepEqual(analysis.definition.analysis, {
   confidenceLevel: 0.95,
   specLimits: {},
@@ -127,6 +131,26 @@ const singleResponseItem = createEmbeddedGraphItem({
 const singleResponseRequest = deriveGraphRequestParts(singleResponseItem);
 assert.deepEqual(singleResponseRequest.fields, [{ role: "multiX0", column: "DIM1" }]);
 assert.equal(canExecuteGraphRequest(singleResponseItem, singleResponseRequest.fields, singleResponseRequest.elements), true);
+const secondResponse = { name: "DIM2", type: "continuous" as const };
+const capabilityConfig = createProcessCapabilityGraphBuilderConfig(
+  analysis.definition.graphs.overview,
+  secondResponse,
+  analysis.definition.responses[0]!,
+  {
+    bins: [],
+    specificationLines: { lsl: null, target: null, usl: null, source: "columnProperty" },
+    overallDensity: { state: "available", reasonCode: null, coordinates: [] },
+    withinDensity: null,
+    provenance: {
+      capabilityMethod: "normalIndividualsMovingRange.v1",
+      normalDensityMethod: "normalPdf.v1",
+      computationId: "capability-2",
+      specFingerprint: "spec-2",
+    },
+  },
+);
+assert.deepEqual(capabilityConfig.modeStates.twoD.encoding.x, secondResponse);
+assert.deepEqual(capabilityConfig.modeStates.twoD.xAxis, { min: 55, max: 145 });
 const multiResponseConfig = createDistributionGraphBuilderConfig(
   analysis.definition.graphs.overview,
   analysis.definition.graphs.boxPlot,

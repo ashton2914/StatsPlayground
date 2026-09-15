@@ -21,13 +21,14 @@ import type {
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS } from "@/types/graphData";
 import type { EmbeddedGraphConfig } from "@/types/graphBuilder";
 
-export type DistributionRole = "response" | "weight" | "frequency" | "by";
+export type DistributionRole = "response" | "weight" | "frequency" | "by" | "nestedSubgroup";
 export type DistributionRoleValidationError =
   | "missingResponse"
   | "invalidResponse"
   | "invalidWeight"
   | "invalidFrequency"
   | "invalidBy"
+  | "invalidNestedSubgroup"
   | "duplicateRole";
 
 export type DistributionAnalysisValidationError = "fitSelectionRequired";
@@ -46,6 +47,7 @@ export interface DistributionRoleBindings {
   weight: FieldRef | null;
   frequency: FieldRef | null;
   by: FieldRef[];
+  nestedSubgroup?: FieldRef | null;
 }
 
 export type DistributionRoleValidationResult =
@@ -120,6 +122,7 @@ export function canAssignDistributionRole(
     return "invalidFrequency";
   }
   if (role === "by" && !isCategoricalField(field)) return "invalidBy";
+  if (role === "nestedSubgroup" && !isCategoricalField(field)) return "invalidNestedSubgroup";
   return true;
 }
 
@@ -127,7 +130,8 @@ function invalidDistributionRoleError(role: DistributionRole): Exclude<Distribut
   if (role === "response") return "invalidResponse";
   if (role === "weight") return "invalidWeight";
   if (role === "frequency") return "invalidFrequency";
-  return "invalidBy";
+  if (role === "by") return "invalidBy";
+  return "invalidNestedSubgroup";
 }
 
 export function validateDistributionRoles(
@@ -142,6 +146,9 @@ export function validateDistributionRoles(
     ...(roles.weight ? [["weight", roles.weight] as [DistributionRole, FieldRef]] : []),
     ...(roles.frequency ? [["frequency", roles.frequency] as [DistributionRole, FieldRef]] : []),
     ...roles.by.map((field): [DistributionRole, FieldRef] => ["by", field]),
+    ...(roles.nestedSubgroup
+      ? [["nestedSubgroup", roles.nestedSubgroup] as [DistributionRole, FieldRef]]
+      : []),
   ];
   for (const [role, field] of assignments) {
     const metadata = byName.get(field.name);
@@ -240,6 +247,7 @@ export function createDistributionItem(input: {
   weight: FieldRef | null;
   frequency: FieldRef | null;
   by: FieldRef[];
+  nestedSubgroup?: FieldRef | null;
   columns: readonly DistributionFieldInfo[];
   analysis?: DistributionAnalysisConfig;
   createdAt: string;
@@ -249,6 +257,7 @@ export function createDistributionItem(input: {
     weight: input.weight,
     frequency: input.frequency,
     by: input.by,
+    nestedSubgroup: input.nestedSubgroup ?? null,
   };
   const validation = validateDistributionRoles(roles, input.columns);
   if (!validation.ok) throw new DistributionRoleValidationErrorClass(validation.error);
@@ -260,6 +269,7 @@ export function createDistributionItem(input: {
     weight: clone(input.weight),
     frequency: clone(input.frequency),
     by: clone(input.by),
+    nestedSubgroup: clone(input.nestedSubgroup ?? null),
     analysis: normalizeDistributionAnalysisConfigValue(input.analysis),
     graphs: createDefaultDistributionGraphs(input.responses[0]!),
     createdAt: input.createdAt,
@@ -379,6 +389,7 @@ export function normalizeDistributionAnalysisConfig(
 ): DistributionAnalysisConfigV1 {
   return {
     ...config,
+    nestedSubgroupColumnId: config.nestedSubgroupColumnId ?? null,
     continuousFit: config.continuousFit ?? createDefaultDistributionContinuousFitConfig(),
     visualDiagnostics: config.visualDiagnostics ?? createDefaultDistributionVisualDiagnosticsConfig(),
   };
@@ -666,6 +677,33 @@ export function validateDistributionConfig(
   };
   validateSingleton(config.weightColumnId, "weightColumnId");
   validateSingleton(config.frequencyColumnId, "frequencyColumnId");
+
+  if (config.nestedSubgroupColumnId) {
+    const fieldPath = "nestedSubgroupColumnId";
+    if (occupied.has(config.nestedSubgroupColumnId)) {
+      errors.push(error(
+        "distribution.config.roleConflict",
+        "distribution.errors.roleConflict",
+        fieldPath,
+      ));
+    } else {
+      occupied.add(config.nestedSubgroupColumnId);
+      const column = byId.get(config.nestedSubgroupColumnId);
+      if (!column) {
+        errors.push(error(
+          "distribution.config.columnUnknown",
+          "distribution.errors.columnUnknown",
+          fieldPath,
+        ));
+      } else if (column.modelingType !== "nominal" && column.modelingType !== "ordinal") {
+        errors.push(error(
+          "distribution.config.nestedSubgroupTypeIncompatible",
+          "distribution.errors.nestedSubgroupTypeIncompatible",
+          fieldPath,
+        ));
+      }
+    }
+  }
 
   config.byColumnIds.forEach((columnId, index) => {
     if (occupied.has(columnId)) {

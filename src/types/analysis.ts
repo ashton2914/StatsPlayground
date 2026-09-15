@@ -44,6 +44,7 @@ export interface DistributionAnalysisDefinition {
   weight: FieldRef | null;
   frequency: FieldRef | null;
   by: FieldRef[];
+  nestedSubgroup: FieldRef | null;
   analysis: DistributionAnalysisConfig;
   graphs: DistributionItem["graphs"];
 }

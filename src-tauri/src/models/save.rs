@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::models::project::ProjectInfo;
 use crate::models::table::{ColumnDisplayProps, DatasetMeta};
+use crate::services::spprj_archive::DatasetFilters;
 use crate::services::table_transform_domain::TableTransformDefinition;
 use crate::services::table_transform_service::TableTransformProjectBinding;
 use crate::services::workflow_domain::{LogicalFolder, WorkflowDefinition, WorkflowRun};
@@ -37,6 +38,8 @@ pub struct SaveProjectRequest {
     #[serde(default)]
     pub analysis_folders: HashMap<String, String>,
     pub tabulate_folders: HashMap<String, String>,
+    #[serde(default)]
+    pub dataset_filters: DatasetFilters,
     #[serde(default)]
     pub workflows: Vec<WorkflowDefinition>,
     #[serde(default)]

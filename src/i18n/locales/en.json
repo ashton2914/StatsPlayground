@@ -1,4 +1,9 @@
 {
+  "capability": {
+    "nestedSubgroupMissingLabels": {
+      "v1": "Rows with missing subgroup labels remain in Overall results but do not contribute to Within moving ranges."
+    }
+  },
   "hypothesisTest": {
     "title": "Hypothesis Test",
     "analysisName": "Analysis name",
@@ -343,6 +348,7 @@
     "cancelImport": "Cancel import",
     "cancellingImport": "Cancelling…",
     "datasetNameMigrations": "Renamed {{count}} duplicate dataset name(s) while opening this project. Save to persist the updated names.",
+    "datasetFilterMigrationConflict": "Conflicting legacy Graph filters were cleared for these tables: {{names}}. Save the project to persist this migration.",
     "importProgressTable": "Table {{i}}/{{total}}: {{name}}",
     "importProgressRows": "rows",
     "createSnapshotTitle": "Create snapshot",
@@ -450,6 +456,7 @@
     "title": "Distribution",
     "searchColumns": "Search columns",
     "frequencyShort": "Freq",
+    "nestedSubgroupShort": "Subgroup",
     "confidenceLevel": "Confidence level",
     "saving": "Saving...",
     "loadFieldsFailed": "Failed to load fields: {{message}}",
@@ -461,7 +468,8 @@
       "y": "Y, Response",
       "weight": "Weight",
       "frequency": "Frequency",
-      "by": "By"
+      "by": "By",
+      "nestedSubgroup": "Nested Subgroup"
     },
     "missingSpecs": {
       "title": "Missing specification limits",
@@ -620,6 +628,7 @@
       "roleConflict": "Column roles conflict",
       "weightTypeIncompatible": "Weight must be numeric",
       "freqNotIntegerCompatible": "Frequency must be integer-compatible",
+      "nestedSubgroupTypeIncompatible": "Nested subgroup must be categorical",
       "duplicateCapability": "Duplicate capability",
       "duplicateCapabilityOverride": "Duplicate capability override"
     },
@@ -640,6 +649,7 @@
       "roleConflict": "Column roles conflict",
       "weightTypeIncompatible": "Weight must be numeric",
       "freqNotIntegerCompatible": "Frequency must be integer-compatible",
+      "nestedSubgroupTypeIncompatible": "Nested subgroup must be categorical",
       "duplicateCapability": "Duplicate capability",
       "duplicateCapabilityOverride": "Duplicate capability override"
     }

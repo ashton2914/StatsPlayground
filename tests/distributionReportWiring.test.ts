@@ -41,6 +41,7 @@ assert.match(reportSource, /SummaryDataTables/);
 assert.match(reportSource, /DistributionResponseReport/);
 assert.match(reportSource, /ContinuousFitComparisonReport/);
 assert.match(reportSource, /ProcessCapabilityReport/);
+assert.match(reportSource, /renderProcessCapabilityGraph/);
 assert.doesNotMatch(reportSource, /<table|<caption|<details|reportTable\.css/);
 assert.match(continuousFitSource, /AnalysisTable/);
 assert.match(continuousFitSource, /AnalysisStack/);
@@ -72,8 +73,17 @@ assert.match(analysisTreeSource, /AnalysisGraph/);
 assert.match(analysisTreeSource, /AnalysisStack/);
 assert.match(analysisTreeSource, /AnalysisText/);
 assert.match(analysisTreeSource, /createDistributionGraphBuilderConfig/);
+assert.match(analysisTreeSource, /createProcessCapabilityGraphBuilderConfig/);
 assert.match(analysisTreeSource, /getDistributionResponseCompositeGraphFrame/);
+assert.match(analysisTreeSource, /getProcessCapabilityGraphFrame/);
+assert.match(analysisTreeSource, /graphRole="processCapability"/);
+assert.match(analysisTreeSource, /renderProcessCapabilityGraph/);
+assert.match(
+  analysisTreeSource,
+  /createProcessCapabilityGraphBuilderConfig\(\s*item\.definition\.graphs\.overview,\s*responseField,\s*persistedResponse,\s*capability\.chartData,/,
+);
 assert.doesNotMatch(analysisTreeSource, /<table|<caption|<details|useDistributionReport|useDistributionStore|DistributionView/);
+assert.doesNotMatch(analysisTreeSource, /echarts|EChartsOption|renderItem/);
 assert.doesNotMatch(analysisTreeSource, /Math\.(mean|median|round|sqrt)|simple-statistics|jstat/);
 assert.match(analysisResultsSource, /DistributionAnalysisReportTree/);
 assert.doesNotMatch(analysisResultsSource, /AnalysisTextBlock/);
