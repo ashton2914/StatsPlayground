@@ -177,3 +177,43 @@ Complete for the Task 6 review findings in `task-6-review.md`: 3 Important findi
 
 - Commit message: `fix(documents): drain report effects and unify graph no-op semantics`
 - Commit SHA: recorded from `HEAD` immediately after commit creation.
+
+## Fix Round 2
+
+### Status
+
+Complete for the remaining Minor from `task-6-re-review-1.md`: the graph regression harness no longer uses `as any` casts.
+
+### RED Evidence
+
+- The targeted graph test file originally wrapped `createApplicationRuntime(...)` and `runtime.execute(...)` in `as any`, which bypassed the real `ApplicationRuntimeDependencies` and registry contracts.
+- After the edit, `tests/applicationCommandGraph.test.ts` now declares a real `runtimeDependencies` fixture with `satisfies ApplicationRuntimeDependencies` and calls `runtime.execute(...)` directly.
+
+### Fixes
+
+- Imported `ApplicationRuntimeDependencies` into `tests/applicationCommandGraph.test.ts` and typed the per-actor runtime fixture with `satisfies` instead of a cast.
+- Kept the existing dependency overrides intact; the test now compiles against the real `createApplicationRuntime` surface and the typed command registry without weakening production types.
+
+### Exact Validation Outputs
+
+- `get_errors` on `tests/applicationCommandGraph.test.ts`: `No errors found`
+- `grep_search` for `as any` in `tests/applicationCommandGraph.test.ts`: no matches
+- `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/applicationCommandGraph.test.ts`: `application command graph lifecycle OK`
+- `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/applicationCommandReport.test.ts`: `application command report lifecycle OK`
+- `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/workspaceReport.test.ts`: `Workspace report integration contract passed`
+- `npm run build --prefix /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer`: build succeeded; Vite still emitted the pre-existing mixed dynamic/static import and chunk-size warnings
+
+### Self-Review
+
+- The test harness now checks the real runtime and registry contracts instead of masking them with casts.
+- No production code was changed for this round.
+- The new typing is local to the regression test and keeps the fixture shape explicit.
+
+### Concerns
+
+- The worktree still has unrelated tracked changes outside this task; they were left untouched.
+- Vite build warnings remain unchanged and are unrelated to this fix.
+
+### Commit
+
+- Commit message: `test(application): remove graph runtime casts`

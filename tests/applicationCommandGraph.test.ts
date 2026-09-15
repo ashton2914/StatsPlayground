@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { createApplicationRuntime } from "@/applicationCommands/applicationRuntime";
+import { createApplicationRuntime, type ApplicationRuntimeDependencies } from "@/applicationCommands/applicationRuntime";
 import { CommandExecutionError, type CommandActor } from "@/applicationCommands/runtime";
 import {
   createDefaultGraph2DState,
@@ -52,7 +52,7 @@ async function createGraphForActor(actor: CommandActor) {
   let dirty = false;
   let dirtyTransitions = 0;
 
-  const runtime = createApplicationRuntime({
+  const runtimeDependencies = {
     initialRevision: 4,
     project: {
       getProjectState: () => ({
@@ -103,9 +103,11 @@ async function createGraphForActor(actor: CommandActor) {
       historyCreateMessage: (name: string, sourceName: string) => `Created graph ${name} from ${sourceName}`,
       normalizeGraph: normalizeStoredGraphBuilderItem,
     },
-  } as any);
+  } satisfies ApplicationRuntimeDependencies;
 
-  const result = await (runtime as any).execute(
+  const runtime = createApplicationRuntime(runtimeDependencies);
+
+  const result = await runtime.execute(
     {
       type: "graph.create",
       input: { sourceDatasetId: "ds-1" },
@@ -156,7 +158,7 @@ async function createGraphForActor(actor: CommandActor) {
   let dirty = false;
   let dirtyTransitions = 0;
 
-  const runtime = createApplicationRuntime({
+  const runtimeDependencies = {
     initialRevision: 9,
     project: {
       getProjectState: () => ({
@@ -202,9 +204,11 @@ async function createGraphForActor(actor: CommandActor) {
       historyUpdateMessage: (name: string) => `Updated graph ${name}`,
       normalizeGraph: normalizeStoredGraphBuilderItem,
     },
-  } as any);
+  } satisfies ApplicationRuntimeDependencies;
 
-  const result = await (runtime as any).execute(
+  const runtime = createApplicationRuntime(runtimeDependencies);
+
+  const result = await runtime.execute(
     {
       type: "graph.update",
       input: {
