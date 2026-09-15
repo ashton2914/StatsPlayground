@@ -314,6 +314,34 @@ async function main() {
   assert.equal(sameNameStore.getState().bindings.length, 2);
   assert.equal(sameNameStore.getState().definitions.some((item) => item.id === "transform-A"), true);
   assert.equal(sameNameStore.getState().definitions.some((item) => item.id === "transform-B"), true);
+  assert.deepEqual(
+    Object.keys(sameNameStore.getState().pendingById).filter((key) => key.startsWith("create:")),
+    [],
+  );
+
+  const rejectedStore = createTableTransformStore({
+    service: {
+      ...service,
+      createAndRun: async () => {
+        throw new Error("service unavailable");
+      },
+    },
+    getLineage: () => lineage,
+    setLineage: (next) => { lineage = next; },
+  });
+  await assert.rejects(
+    rejectedStore.getState().createAndRun({
+      name: "Rejected create",
+      outputName: "Rejected output",
+      operation: definition().operation,
+      inputBindings: binding().inputs,
+    }),
+    /service unavailable/,
+  );
+  assert.deepEqual(
+    Object.keys(rejectedStore.getState().pendingById).filter((key) => key.startsWith("create:")),
+    [],
+  );
 
   lineage = lineageWithTransform();
   const pendingRemoval = deferred<TableTransformCommandResult>();

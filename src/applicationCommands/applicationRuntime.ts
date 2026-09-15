@@ -77,7 +77,10 @@ export function createApplicationRuntime(
   runtime.register(
     "tableTransform.create",
     async (input, context) => {
-      const outcome = await tableTransformHandlers.create(input, { beginCommit: () => context.beginCommit() });
+      const outcome = await tableTransformHandlers.create(input, {
+        signal: context.signal,
+        beginCommit: () => context.beginCommit(),
+      });
       return {
         changed: true,
         data: outcome.data,
@@ -90,7 +93,10 @@ export function createApplicationRuntime(
   runtime.register(
     "tableTransform.run",
     async (input, context) => {
-      const outcome = await tableTransformHandlers.run(input, { beginCommit: () => context.beginCommit() });
+      const outcome = await tableTransformHandlers.run(input, {
+        signal: context.signal,
+        beginCommit: () => context.beginCommit(),
+      });
       return {
         changed: true,
         data: outcome.data,
@@ -103,7 +109,10 @@ export function createApplicationRuntime(
   runtime.register(
     "sql.createTable",
     async (input, context) => {
-      const outcome = await sqlHandlers.createTable(input, { beginCommit: () => context.beginCommit() });
+      const outcome = await sqlHandlers.createTable(input, {
+        signal: context.signal,
+        beginCommit: () => context.beginCommit(),
+      });
       return {
         changed: true,
         data: outcome.result,

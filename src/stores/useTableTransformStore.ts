@@ -73,6 +73,16 @@ function stateCreator(
       return token;
     };
 
+    const endRequest = (requestKey: string, token: number): void => {
+      set((state) => {
+        if (state.pendingById[requestKey] !== token) {
+          return state;
+        }
+        const { [requestKey]: _removed, ...pendingById } = state.pendingById;
+        return { ...state, pendingById };
+      });
+    };
+
     const applyResult = (
       result: TableTransformCommandResult,
       token: number,
@@ -125,11 +135,15 @@ function stateCreator(
         createRequestCounter += 1;
         const requestKey = `create:${createRequestCounter}`;
         const token = beginRequest(requestKey);
-        const result = await dependencies.service.createAndRun(
-          clone(draft),
-          clone(dependencies.getLineage()),
-        );
-        return applyResult(result, token, requestKey);
+        try {
+          const result = await dependencies.service.createAndRun(
+            clone(draft),
+            clone(dependencies.getLineage()),
+          );
+          return applyResult(result, token, requestKey);
+        } finally {
+          endRequest(requestKey, token);
+        }
       },
       rebindAndRun: async (transformId, role, tableDocumentId) => {
         const definition = findDefinition(get(), transformId);

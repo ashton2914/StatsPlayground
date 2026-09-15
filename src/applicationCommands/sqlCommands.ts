@@ -1,4 +1,5 @@
 import { CommandExecutionError } from "@/applicationCommands/runtime";
+import { throwIfCommandCancelled } from "@/applicationCommands/cancellation";
 import { mapTauriAppError } from "@/applicationCommands/tauriError";
 import type { SqlCreateTableInput, SqlCreateTableResult } from "@/applicationCommands/types";
 import type { ProjectCommandDependencies } from "@/applicationCommands/projectCommands";
@@ -56,7 +57,7 @@ export function createSqlCommandHandlers(
 
   async function createTable(
     input: SqlCreateTableInput,
-    controls?: { beginCommit?: () => void },
+    controls?: { signal?: AbortSignal; beginCommit?: () => void },
   ): Promise<{ result: SqlCreateTableResult; warnings: CommandWarning[] }> {
     if (!input.sql.trim()) {
       throw new CommandExecutionError("invalid_input", "sql is required");
@@ -71,6 +72,7 @@ export function createSqlCommandHandlers(
       throw mapTauriAppError(error);
     }
 
+    throwIfCommandCancelled(controls?.signal);
     controls?.beginCommit?.();
 
     let created;

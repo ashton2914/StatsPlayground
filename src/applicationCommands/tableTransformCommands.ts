@@ -1,6 +1,7 @@
 import type { ProjectCommandDependencies } from "@/applicationCommands/projectCommands";
 import { createProjectCommandHandlers } from "@/applicationCommands/projectCommands";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
+import { throwIfCommandCancelled } from "@/applicationCommands/cancellation";
 import { mapTauriAppError } from "@/applicationCommands/tauriError";
 import type {
   CommandWarning,
@@ -150,7 +151,7 @@ export function createTableTransformCommandHandlers(
 
   async function create(
     input: TableTransformCreateInput,
-    controls?: { beginCommit?: () => void },
+    controls?: { signal?: AbortSignal; beginCommit?: () => void },
   ): Promise<{ data: TableTransformCommandData; warnings: CommandWarning[] }> {
     try {
       await resolvedDependencies.preflightCreateAndRun(input.draft);
@@ -158,6 +159,7 @@ export function createTableTransformCommandHandlers(
       throw mapTauriAppError(error);
     }
 
+    throwIfCommandCancelled(controls?.signal);
     controls?.beginCommit?.();
 
     let execution: TableTransformExecutionResult;
@@ -199,7 +201,7 @@ export function createTableTransformCommandHandlers(
 
   async function run(
     input: TableTransformRunInput,
-    controls?: { beginCommit?: () => void },
+    controls?: { signal?: AbortSignal; beginCommit?: () => void },
   ): Promise<{ data: TableTransformCommandData; warnings: CommandWarning[] }> {
     if (!input.transformId) {
       throw new CommandExecutionError("invalid_input", "transformId is required");
@@ -211,6 +213,7 @@ export function createTableTransformCommandHandlers(
       throw mapTauriAppError(error);
     }
 
+    throwIfCommandCancelled(controls?.signal);
     controls?.beginCommit?.();
 
     let execution: TableTransformExecutionResult;

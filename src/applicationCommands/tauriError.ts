@@ -12,25 +12,48 @@ function stripPrefix(message: string, prefix: string): string {
   return message.slice(prefix.length).trim() || message;
 }
 
+const SAFE_EXECUTION_FAILURE = "Command service failed";
+const SAFE_CANCELLED = "Command cancelled";
+const SAFE_READ_ONLY = "Project is read-only";
+const SAFE_INVALID_INPUT = "Invalid parameter";
+
+function containsPathLikeContent(value: string): boolean {
+  return /(?:^|[\s"'`])(\/[^\s"'`]+|[a-zA-Z]:\\[^\s"'`]+|\\\\[^\s"'`]+\\[^\s"'`]+)/.test(value);
+}
+
+function safeInvalidInputMessage(detail: string): string {
+  if (!detail || containsPathLikeContent(detail)) {
+    return SAFE_INVALID_INPUT;
+  }
+  return detail;
+}
+
 export function mapTauriAppError(error: unknown): CommandExecutionError {
   if (error instanceof CommandExecutionError) return error;
 
   const message = toErrorMessage(error);
-  const mappings: Array<{ prefix: string; code: CommandErrorCode }> = [
-    { prefix: "Invalid parameter:", code: "invalid_input" },
-    { prefix: "Read-only:", code: "read_only" },
-    { prefix: "Cancelled:", code: "cancelled" },
-    { prefix: "Database error:", code: "execution_failed" },
-    { prefix: "File I/O error:", code: "execution_failed" },
-    { prefix: "Stats error:", code: "execution_failed" },
-    { prefix: "Busy:", code: "execution_failed" },
-  ];
+  if (message.startsWith("Invalid parameter:")) {
+    return new CommandExecutionError("invalid_input", safeInvalidInputMessage(stripPrefix(message, "Invalid parameter:")));
+  }
+  if (message.startsWith("Read-only:")) {
+    return new CommandExecutionError("read_only", SAFE_READ_ONLY);
+  }
+  if (message.startsWith("Cancelled:")) {
+    return new CommandExecutionError("cancelled", SAFE_CANCELLED);
+  }
 
-  for (const mapping of mappings) {
-    if (message.startsWith(mapping.prefix)) {
-      return new CommandExecutionError(mapping.code, stripPrefix(message, mapping.prefix));
+  const executionPrefixes: string[] = [
+    "Database error:",
+    "File I/O error:",
+    "Stats error:",
+    "Busy:",
+  ];
+  for (const prefix of executionPrefixes) {
+    if (message.startsWith(prefix)) {
+      return new CommandExecutionError("execution_failed", SAFE_EXECUTION_FAILURE);
     }
   }
 
-  return new CommandExecutionError("execution_failed", message);
+  const _unknownCode: CommandErrorCode = "execution_failed";
+  return new CommandExecutionError(_unknownCode, SAFE_EXECUTION_FAILURE);
 }

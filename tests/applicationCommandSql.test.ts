@@ -18,6 +18,118 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function assertNoPathLeak(value: string): void {
+  assert.equal(value.includes("/Users/"), false);
+  assert.equal(value.includes("/etc/"), false);
+  assert.equal(value.includes("C:\\\\"), false);
+  assert.equal(value.includes("\\\\\\\\"), false);
+}
+
+{
+  let preflightCalls = 0;
+  let createCalls = 0;
+  let refreshCalls = 0;
+  let dirtyCalls = 0;
+  let selectionCalls = 0;
+  let historyCalls = 0;
+  const preflightGate = deferred<void>();
+  const preflightStarted = deferred<void>();
+  let revision = 40;
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 40,
+    revision: {
+      get: () => revision,
+      set: (next) => {
+        revision = next;
+      },
+    },
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task4",
+          filePath: "/Users/ashton/projects/task4.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: revision,
+      }),
+      listDatasets: () => [],
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => [],
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 1,
+    },
+    sql: {
+      preflightCreateTableFromSqlQuery: async () => {
+        preflightCalls += 1;
+        preflightStarted.resolve();
+        await preflightGate.promise;
+      },
+      createTableFromSqlQuery: async () => {
+        createCalls += 1;
+        return dataset("tbl-unused", "unused", 1);
+      },
+      refreshDatasets: async () => {
+        refreshCalls += 1;
+      },
+      markDirty: () => {
+        dirtyCalls += 1;
+      },
+      recordAction: () => {
+        historyCalls += 1;
+      },
+      activateDataset: () => {
+        selectionCalls += 1;
+      },
+      historyMessage: () => "history",
+    },
+  });
+
+  const abortController = new AbortController();
+  const pending = runtime.execute(
+    {
+      type: "sql.createTable",
+      input: {
+        sql: "SELECT 1 AS value",
+        name: "Cancelled",
+      },
+      control: { expectedProjectRevision: 40 },
+    },
+    { kind: "ui" },
+    { signal: abortController.signal },
+  );
+
+  await preflightStarted.promise;
+  abortController.abort();
+  preflightGate.resolve();
+
+  await assert.rejects(
+    pending,
+    (error) => error instanceof CommandExecutionError && error.code === "cancelled",
+  );
+  assert.equal(preflightCalls, 1);
+  assert.equal(createCalls, 0);
+  assert.equal(refreshCalls, 0);
+  assert.equal(dirtyCalls, 0);
+  assert.equal(selectionCalls, 0);
+  assert.equal(historyCalls, 0);
+  assert.equal(revision, 40);
+}
+
 {
   const datasets: DatasetMeta[] = [dataset("tbl-source", "Sales", 1)];
   const events: string[] = [];
@@ -238,7 +350,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
       preflightCreateTableFromSqlQuery: async () => {},
       createTableFromSqlQuery: async () => {
         createCalls += 1;
-        throw new Error("Database error: disk I/O failed");
+        throw new Error("Database error: disk I/O failed at /Users/ashton/private.db");
       },
       refreshDatasets: async () => {},
       markDirty: () => {},
@@ -261,7 +373,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
     ),
     (error) => error instanceof CommandExecutionError
       && error.code === "execution_failed"
-      && error.message.includes("disk I/O failed"),
+      && error.message === "Command service failed",
   );
 
   assert.equal(createCalls, 1);
@@ -297,7 +409,7 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
     sql: {
       preflightCreateTableFromSqlQuery: async () => {
         preflightCalls += 1;
-        throw new Error("Database error: lock wait timeout");
+        throw new Error("Database error: lock wait timeout at /etc/secret.db");
       },
       createTableFromSqlQuery: async () => {
         createCalls += 1;
@@ -324,11 +436,78 @@ function dataset(id: string, name: string, generation: number): DatasetMeta {
     ),
     (error) => error instanceof CommandExecutionError
       && error.code === "execution_failed"
-      && error.message.includes("lock wait timeout"),
+      && error.message === "Command service failed",
   );
 
   assert.equal(preflightCalls, 1);
   assert.equal(createCalls, 0);
+}
+
+{
+  const pathPayloads = [
+    "/Users/ashton/private/data.db",
+    "/etc/passwd",
+    "C:\\Users\\ashton\\secret.db",
+    "\\\\server\\share\\secrets.db",
+  ];
+
+  for (const payload of pathPayloads) {
+    const runtime = createApplicationRuntime({
+      initialRevision: 7,
+      project: {
+        getProjectState: () => ({
+          project: {
+            name: "Task4",
+            filePath: "/Users/ashton/projects/task4.spprj",
+            createdAt: "2026-09-15T00:00:00.000Z",
+          },
+          dirty: false,
+          readOnly: false,
+          projectRevision: 7,
+        }),
+        listDatasets: () => [],
+        listTableTransforms: () => [],
+        listGraphs: () => [],
+        listReports: () => [],
+        listAnalyses: () => [],
+        listTabulates: () => [],
+        getColumns: async () => [],
+        getColumnDisplayProps: async () => [],
+        getDatasetGeneration: async () => 1,
+      },
+      sql: {
+        preflightCreateTableFromSqlQuery: async () => {
+          throw new Error(`Database error: denied ${payload}`);
+        },
+        createTableFromSqlQuery: async () => dataset("unused", "unused", 1),
+        refreshDatasets: async () => {},
+        markDirty: () => {},
+        recordAction: () => {},
+        activateDataset: () => {},
+        historyMessage: () => "history",
+      },
+    });
+
+    await assert.rejects(
+      runtime.execute(
+        {
+          type: "sql.createTable",
+          input: {
+            sql: "SELECT 1 AS value",
+            name: "No Leak",
+          },
+        },
+        { kind: "ui" },
+      ),
+      (error) => {
+        if (!(error instanceof CommandExecutionError)) return false;
+        assert.equal(error.code, "execution_failed");
+        assert.equal(error.message, "Command service failed");
+        assertNoPathLeak(error.message);
+        return true;
+      },
+    );
+  }
 }
 
 {
