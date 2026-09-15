@@ -950,6 +950,8 @@ pub struct ProcessCapabilityDataV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DistributionSummaryDataV1 {
+    #[serde(default = "default_summary_confidence_level")]
+    pub confidence_level: f64,
     pub n: u64,
     pub n_missing: u64,
     pub mean: f64,
@@ -965,6 +967,10 @@ pub struct DistributionSummaryDataV1 {
     pub range: f64,
     pub iqr: f64,
     pub mad: f64,
+}
+
+fn default_summary_confidence_level() -> f64 {
+    0.95
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1196,6 +1202,25 @@ mod tests {
                 valid_rows: 0,
                 budget: GRAPH_SCATTER_RENDER_BUDGET,
             },
+        }
+    }
+
+    #[test]
+    fn summary_confidence_preserves_explicit_values_and_defaults_legacy_payload() {
+        let legacy = json!({
+            "n": 5, "nMissing": 0, "mean": 3.0, "stdDev": 1.5, "stdError": 0.7,
+            "meanCiLower": 1.0, "meanCiUpper": 5.0, "minimum": 1.0, "maximum": 5.0,
+            "median": 3.0, "primaryMode": 1.0, "modeIsUnique": false,
+            "range": 4.0, "iqr": 2.0, "mad": 1.0
+        });
+        let summary: DistributionSummaryDataV1 = serde_json::from_value(legacy.clone()).expect("legacy summary");
+        assert_eq!(summary.confidence_level, 0.95);
+        for confidence in [0.9, 0.95, 0.99] {
+            let mut payload = legacy.clone();
+            payload["confidenceLevel"] = json!(confidence);
+            let summary: DistributionSummaryDataV1 = serde_json::from_value(payload.clone()).expect("summary");
+            assert_eq!(summary.confidence_level, confidence);
+            assert_eq!(serde_json::to_value(summary).expect("summary wire"), payload);
         }
     }
 

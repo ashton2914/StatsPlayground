@@ -4792,6 +4792,7 @@ function buildSingleOption(
           points: [number, number][];
           sigmaBands: [number, number][][];
           maxWeight: number;
+          color?: string;
         };
         const byGroup = new Map<string, NormalCatInfo[]>();
         const maxByCat = new Map<string, number>();
@@ -4802,12 +4803,27 @@ function buildSingleOption(
               String(entry.category ?? "") === cat &&
               (!grouping || String(entry.group ?? DEFAULT_GROUP_KEY) === slot.key)
             );
-            const curvePacket = normalCurvePackets.find((packet) =>
+            const curvePackets = normalCurvePackets.filter((packet) =>
               String(packet.category ?? packet.sourceColumn ?? "") === cat
               && (!grouping || String(packet.group ?? DEFAULT_GROUP_KEY) === slot.key)
             );
+            if (curvePackets.length > 0) {
+              for (const packet of curvePackets) {
+                const points: [number, number][] = packet.points.map((point) => [point.x, point.y]);
+                if (points.length === 0) continue;
+                const distributionId = distributionIdFromFitSeriesId(packet.seriesId);
+                let maxWeight = 0;
+                for (const point of points) if (point[1] > maxWeight) maxWeight = point[1];
+                infos.push({
+                  cat, points, sigmaBands: [], maxWeight,
+                  color: distributionId ? distributionFitColor(distributionId, theme.categorical) : undefined,
+                });
+                maxByCat.set(cat, Math.max(maxByCat.get(cat) ?? 0, maxWeight));
+              }
+              continue;
+            }
             let values: number[] = [];
-            if (!packetEntry && !curvePacket) {
+            if (!packetEntry) {
               values = slot.rowIdxs
                 .filter((index) => String(data.rows[index]?.[xIdx] ?? "") === cat)
                 .map((index) => toNum(data.rows[index]?.[yIdx]))
@@ -4817,9 +4833,7 @@ function buildSingleOption(
             const mean = packetEntry?.mean ?? raw.mean;
             const std = packetEntry?.stddev ?? raw.std;
             const count = packetEntry?.count ?? raw.n;
-            const points: [number, number][] = curvePacket
-              ? curvePacket.points.map((point) => [point.x, point.y])
-              : normalCurve(
+            const points: [number, number][] = normalCurve(
                   mean,
                   std,
                   count,
@@ -4828,7 +4842,7 @@ function buildSingleOption(
                   packetEntry?.max ?? dataHi,
                 );
             if (points.length === 0) continue;
-            const sigmaBands = showNormalSigmaBands && !curvePacket
+            const sigmaBands = showNormalSigmaBands
               ? normalSigmaBands(mean, std, count, yWidth)
               : [];
             let maxWeight = 0;
@@ -4942,7 +4956,7 @@ function buildSingleOption(
               return {
                 type: "polyline",
                 shape: { points: shapePoints },
-                style: { stroke: strokeColor, fill: null, lineWidth: 2 },
+                style: { stroke: info.color ?? strokeColor, fill: null, lineWidth: 2 },
               };
             },
             z: 3,
@@ -5329,9 +5343,9 @@ function buildSingleOption(
                 packetSummary?.max ?? xDataHi,
               )
               : [];
-          if (curvePackets.length > 1) {
+          if (curvePackets.length > 1 || curvePackets.some((packet) => distributionIdFromFitSeriesId(packet.seriesId))) {
             for (const packet of curvePackets) {
-              const packetStyle = resolvedStyleFor(packet.seriesId ?? packet.seriesName ?? slot.key);
+              const packetStyle = resolvedStyleFor(slot.key);
               const packetSeries = buildPrecomputedCurveSeries(
                 packet,
                 packet.seriesName ?? slot.key,
@@ -5339,7 +5353,7 @@ function buildSingleOption(
                 theme.categorical,
               );
               const lineStyle = { ...(packetSeries.lineStyle as Record<string, unknown>) };
-              delete lineStyle.color;
+              if (packet.elementId.endsWith(":normal-curves")) delete lineStyle.color;
               series.push({ ...packetSeries, lineStyle });
             }
           } else if (points.length > 0) {

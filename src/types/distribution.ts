@@ -577,6 +577,7 @@ export interface ProcessCapabilityNonconformanceV1 {
 }
 
 export interface DistributionSummaryDataV1 {
+  confidenceLevel?: number;
   n: number;
   nMissing: number;
   mean: number;

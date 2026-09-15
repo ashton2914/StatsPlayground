@@ -340,6 +340,30 @@ test("Distribution response tree renders one top-level frame per response when B
   await expect(component.locator(`output[data-testid='graph-sources:${fallbackGraphId}']`)).toHaveText("legacy-301A-F02");
 });
 
+for (const locale of ["en", "zh-CN", "zh-TW", "vi"] as const) {
+  for (const [confidenceLevel, percent] of [[0.9, "90%"], [0.95, "95%"], [0.99, "99%"], [undefined, "95%"]] as const) {
+    test(`Summary confidence labels ${locale} ${confidenceLevel ?? "legacy"}`, async ({ mount }) => {
+      const component = await mount(<AnalysisViewHarness summaryConfidenceLevel={confidenceLevel} locale={locale} />);
+      const overall = component.locator('[data-analysis-surface="overall"]');
+      const toggle = overall.locator(":scope > button");
+      if (await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
+      const summary = overall.locator(".analysis-ui-table-compact table");
+      const labels = {
+        en: [`Lower ${percent} Mean`, `Upper ${percent} Mean`],
+        "zh-CN": [`均值 ${percent} 下限`, `均值 ${percent} 上限`],
+        "zh-TW": [`平均值 ${percent} 下限`, `平均值 ${percent} 上限`],
+        vi: [`Cận dưới ${percent} của trung bình`, `Cận trên ${percent} của trung bình`],
+      }[locale];
+      await expect(summary.locator("tbody tr")).toHaveCount(8);
+      for (const [index, label] of labels.entries()) {
+        const heading = summary.getByRole("rowheader", { name: label, exact: true });
+        await expect(heading).toBeVisible();
+        await expect(heading.locator("..").getByRole("cell")).toHaveText(index === 0 ? "99.198" : "102.891");
+      }
+    });
+  }
+}
+
 test("Distribution response tree shows one unavailable state for a missing response result", async ({ mount }) => {
   const component = await mount(<AnalysisViewHarness mode="multiResponseMissingResult" />);
   const documentFrame = component.locator("[data-analysis-document]");
@@ -516,6 +540,20 @@ test("fits the painted Distribution graph without an internal vertical scroller"
   const frames = component.locator(".analysis-ui-graph");
   const compositeCanvas = component.locator("[data-graph-role='distributionComposite'] canvas");
   const capabilityCanvas = component.locator("[data-graph-role='processCapability'] canvas");
+  const expectFitPixels = async () => {
+    for (const color of ["#4a6cf7", "#ef8a3a", "#2ca678", "#e74c3c", "#9168d6", "#c4ad36"]) {
+      await expect.poll(() => compositeCanvas.evaluate((node, hex) => {
+        const context = (node as HTMLCanvasElement).getContext("2d")!;
+        const pixels = context.getImageData(0, 0, context.canvas.width, context.canvas.height).data;
+        const channels = [1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16));
+        let count = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          if (pixels[index + 3] > 200 && channels.every((channel, offset) => Math.abs(pixels[index + offset] - channel) < 8)) count++;
+        }
+        return count;
+      }, color), { message: `fitted curve ${color} must be painted` }).toBeGreaterThan(5);
+    }
+  };
 
   await expect.poll(() => browserErrors, { message: "AnalysisView must mount without browser errors" }).toEqual([]);
   await expect(page.getByTestId("visual-error")).toHaveCount(0);
@@ -524,6 +562,7 @@ test("fits the painted Distribution graph without an internal vertical scroller"
   await expect(capabilityCanvas).toHaveCount(1);
   await expect.poll(() => paintedPixelCount(compositeCanvas)).toBeGreaterThan(1_000);
   await expect.poll(() => paintedPixelCount(capabilityCanvas)).toBeGreaterThan(1_000);
+  await expectFitPixels();
   await expect.poll(() => frames.evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).overflowY)))
     .toEqual(["visible", "visible"]);
   await expect.poll(() => component.locator(".gc-graph")
@@ -551,6 +590,7 @@ test("fits the painted Distribution graph without an internal vertical scroller"
   await page.mouse.move(0, 0);
   await page.screenshot({ path: "test-results/analysis-distribution-fit-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 480, height: 900 });
+  await expectFitPixels();
   await expect(frames).toHaveCount(2);
   await expect.poll(() => component.locator(".gc-graph")
     .evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).overflowY)))

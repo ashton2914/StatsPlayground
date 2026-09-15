@@ -268,6 +268,7 @@ impl<'a> DistributionService<'a> {
                         title_key: "distribution.report.summary".to_string(),
                         status: "available".to_string(),
                         summary_data: Some(DistributionSummaryDataV1 {
+                            confidence_level: request.confidence_level,
                             n: summary.n,
                             n_missing: summary.n_missing,
                             mean: summary.mean,
@@ -3435,6 +3436,17 @@ mod tests {
             ]
         );
         assert_eq!(result.report_blocks.len(), 6);
+        for confidence_level in [0.90, 0.95, 0.99] {
+            request.confidence_level = confidence_level;
+            let confidence_result = DistributionService::new(&state)
+                .execute_one_shot(&request, &context)
+                .expect("execute confidence report");
+            let wire = serde_json::to_value(&confidence_result).expect("serialize confidence report");
+            assert_eq!(
+                wire["groups"][0]["yResults"][0]["blocks"][0]["summaryData"]["confidenceLevel"],
+                serde_json::json!(confidence_level),
+            );
+        }
         let serialized = serde_json::to_string(&result).expect("serialize result");
         assert!(!serialized.contains("quantileBoxData"));
         assert!(!serialized.contains("stemAndLeafData"));

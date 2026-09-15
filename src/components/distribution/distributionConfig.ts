@@ -384,13 +384,21 @@ export function createDefaultDistributionContinuousFitConfig(): DistributionCont
   };
 }
 
+function createLegacyDistributionContinuousFitConfig(): DistributionContinuousFitConfigV1 {
+  return {
+    enabledDistributionIds: [],
+    fitAll: false,
+    diagnostics: { goodnessOfFit: false, qqPlot: false, cdfPlot: false, ppPlot: false },
+  };
+}
+
 export function normalizeDistributionAnalysisConfig(
   config: DistributionAnalysisConfigV1,
 ): DistributionAnalysisConfigV1 {
   return {
     ...config,
     nestedSubgroupColumnId: config.nestedSubgroupColumnId ?? null,
-    continuousFit: config.continuousFit ?? createDefaultDistributionContinuousFitConfig(),
+    continuousFit: config.continuousFit ?? createLegacyDistributionContinuousFitConfig(),
     visualDiagnostics: config.visualDiagnostics ?? createDefaultDistributionVisualDiagnosticsConfig(),
   };
 }
@@ -633,7 +641,7 @@ export function validateDistributionConfig(
     config.visualDiagnostics ?? createDefaultDistributionVisualDiagnosticsConfig();
   errors.push(...validateDistributionVisualDiagnosticsConfig(visualDiagnostics));
 
-  const continuousFit = config.continuousFit ?? createDefaultDistributionContinuousFitConfig();
+  const continuousFit = config.continuousFit ?? createLegacyDistributionContinuousFitConfig();
   errors.push(...validateDistributionContinuousFitConfig(continuousFit));
 
   const occupied = new Set(yIds);

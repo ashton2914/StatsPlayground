@@ -514,8 +514,8 @@
       "maximum": "Maximum",
       "stdDev": "Std Dev",
       "stdError": "Std Error",
-      "meanCiLower": "Lower 95% Mean",
-      "meanCiUpper": "Upper 95% Mean",
+      "meanCiLower": "Lower {{confidence}} Mean",
+      "meanCiUpper": "Upper {{confidence}} Mean",
       "range": "Range",
       "iqr": "Interquartile Range",
       "mad": "Median Absolute Deviation"

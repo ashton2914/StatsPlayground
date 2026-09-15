@@ -4,6 +4,7 @@ import { AnalysisGraph } from "../src/components/analysis/presentation";
 import type { GraphRuntimeProps } from "../src/components/graphBuilder/GraphRuntime";
 import { Graph, type GraphSpec } from "../src/graphCore";
 import { getDistributionCompositeGraphFrame } from "../src/graphCore/distributionAdapter";
+import { DISTRIBUTION_FIT_ORDER } from "../src/graphCore/distributionFitStyle";
 import { DISTRIBUTION_GRAPH_ELEMENT_IDS, type GraphDataFrame } from "../src/types/graphData";
 
 import "../src/components/analysis/analysis.css";
@@ -74,11 +75,11 @@ const productionFrame: GraphDataFrame = {
           count,
         }))),
     },
-    ...responses.map((sourceColumn) => ({
+    ...responses.flatMap((sourceColumn) => DISTRIBUTION_FIT_ORDER.map((distributionId, fitIndex) => ({
       kind: "precomputedCurve" as const,
       elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves,
-      seriesId: `fit-${sourceColumn}`,
-      seriesName: `${sourceColumn} - Normal`,
+      seriesId: `${sourceColumn}:fit:${distributionId}`,
+      seriesName: `${sourceColumn} - ${distributionId}`,
       group: sourceColumn,
       category: sourceColumn,
       sourceColumn,
@@ -91,8 +92,8 @@ const productionFrame: GraphDataFrame = {
         { x: 105, y: 6.5 },
         { x: 111, y: 2.2 },
         { x: 121, y: 0.2 },
-      ],
-    })),
+      ].map((point) => ({ ...point, y: point.y * (1 - fitIndex * 0.12) })),
+    }))),
     {
       kind: "boxPlot",
       yColumn: "__sp_y",

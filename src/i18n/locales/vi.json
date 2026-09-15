@@ -459,8 +459,8 @@
     "statistics": {
       "n": "N", "nMissing": "Số thiếu", "mean": "Trung bình", "median": "Trung vị", "mode": "Mốt",
       "noUniqueMode": "Không có mốt duy nhất", "minimum": "Nhỏ nhất", "maximum": "Lớn nhất", "stdDev": "Độ lệch chuẩn",
-      "stdError": "Sai số chuẩn", "meanCiLower": "Cận dưới 95% của trung bình",
-      "meanCiUpper": "Cận trên 95% của trung bình", "range": "Khoảng biến thiên", "iqr": "Khoảng tứ phân vị",
+      "stdError": "Sai số chuẩn", "meanCiLower": "Cận dưới {{confidence}} của trung bình",
+      "meanCiUpper": "Cận trên {{confidence}} của trung bình", "range": "Khoảng biến thiên", "iqr": "Khoảng tứ phân vị",
       "mad": "Độ lệch tuyệt đối trung vị"
     },
     "compatibility": {

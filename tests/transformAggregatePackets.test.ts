@@ -158,6 +158,130 @@ function panelSeries(option: Record<string, unknown>): Array<Record<string, unkn
   );
 }
 
+for (const categorical of [false, true]) {
+  for (const fitIds of [DISTRIBUTION_FIT_ORDER, ["cauchy"] as const]) {
+    for (const grouped of [false, true]) {
+      const palette = ["#101010", "#202020", "#303030", "#404040", "#505050", "#606060"];
+      const groups = grouped ? ["East", "West"] : [undefined];
+      const responses = ["responseA", "responseB"];
+      const elementId = "distribution.overview.fittedCurves";
+      for (const response of categorical ? [undefined] : responses) {
+        const categories = response ? [response] : responses;
+        const spec: GraphSpec = {
+          encoding: {
+            x: { name: categorical ? "response" : response!, type: categorical ? "nominal" : "continuous" },
+            ...(categorical ? { y: { name: "value", type: "continuous" as const } } : {}),
+            ...(grouped ? { color: { name: "region", type: "nominal" as const } } : {}),
+          },
+          elements: [
+            { kind: "histogram", enabled: true },
+            { kind: "normalCurve", enabled: true, options: { elementId, showSigmaBands: false } },
+          ],
+          styles: { East: { line: { color: "#aa1100" } }, West: { line: { color: "#007744" } } },
+        };
+        const packets = categories.flatMap((category) => groups.flatMap((group) => fitIds.map((fitId, index) => ({
+          kind: "precomputedCurve" as const,
+          elementId,
+          seriesId: `${category}:${group ?? "Overall"}:fit:${fitId}`,
+          seriesName: `${category} ${group ?? "Overall"} ${fitId}`,
+          category,
+          sourceColumn: category,
+          group,
+          interpolation: "linear" as const,
+          points: [{ x: 0, y: 0.1 }, { x: 1, y: index + 1 }, { x: 2, y: 0.1 }],
+        }))));
+        const frame = baseFrame([{
+          kind: "histogram",
+          binPolicy: "preserve",
+          ...(categorical ? { xColumn: "response", yColumn: "value" } : { xColumn: response }),
+          minValue: 0,
+          maxValue: 2,
+          binWidth: 1,
+          totalCount: categories.length * groups.length * 10,
+          bins: categories.flatMap((category) => groups.flatMap((group) => [
+            { category, group, sourceColumn: category, binStart: 0, binEnd: 1, count: 4 },
+            { category, group, sourceColumn: category, binStart: 1, binEnd: 2, count: 6 },
+          ])),
+        }, ...packets]);
+        const option = buildGraph(spec, baseData(categorical ? ["response", "value", "region"] : [response!, "region"], []),
+          { ...theme, categorical: palette }, { response: responses }, frame).panels[0].option as Record<string, unknown>;
+        const series = panelSeries(option);
+        if (categorical) {
+          const curves = series.filter((entry) => String(entry.id).startsWith("__normal_cat_"));
+          const strokes: string[] = [];
+          for (const curve of curves) {
+            const renderItem = curve.renderItem as (params: unknown, api: unknown) => any;
+            for (let dataIndex = 0; dataIndex < (curve.data as unknown[]).length; dataIndex++) {
+              const shape = renderItem({ dataIndex, seriesId: curve.id }, {
+                coord: ([category, value]: [string, number]) => [responses.indexOf(category) * 100 + 50, 200 - value * 50],
+                size: () => [100, 50],
+              });
+              assert.equal(shape?.type, "polyline");
+              assert.ok(shape.shape.points.length >= 2);
+              strokes.push(shape.style.stroke);
+            }
+          }
+          assert.equal(strokes.length, packets.length, "normalCurve must render every category/group/model packet");
+          assert.deepEqual(strokes.sort(), packets.map((packet) => distributionFitColor(
+            fitIds.find((fitId) => packet.seriesId.endsWith(`:fit:${fitId}`))!, palette,
+          )).sort());
+        } else {
+          for (const packet of packets) {
+            const curve = series.find((entry) => entry.id === packet.seriesId);
+            assert.ok(curve, `normalCurve must retain packet identity ${packet.seriesId}`);
+            assert.deepEqual(curve.data, packet.points.map((point) => [point.x, point.y]));
+            assert.equal((curve.lineStyle as { color: string }).color,
+              distributionFitColor(fitIds.find((fitId) => packet.seriesId.endsWith(`:fit:${fitId}`))!, palette));
+          }
+        }
+      }
+    }
+  }
+}
+
+for (const categorical of [false, true]) {
+  const spec: GraphSpec = {
+    encoding: {
+      x: { name: categorical ? "category" : "value", type: categorical ? "nominal" : "continuous" },
+      ...(categorical ? { y: { name: "value", type: "continuous" as const } } : {}),
+      color: { name: "region", type: "nominal" },
+    },
+    elements: [
+      { kind: "histogram", enabled: true },
+      { kind: "normalCurve", enabled: true, options: { elementId: "ordinary-curves" } },
+    ],
+    styles: { East: { line: { color: "#aa1100" } }, West: { line: { color: "#007744" } } },
+  };
+  const frame = baseFrame([{
+    kind: "histogram", minValue: 0, maxValue: 2, totalCount: 20,
+    bins: ["East", "West"].map((group) => ({ category: "A", group, binStart: 0, binEnd: 2, count: 10 })),
+  }, ...["East", "West"].flatMap((group) => ["reference", "fit:normal:extra"].map((suffix) => ({
+    kind: "precomputedCurve" as const, elementId: "ordinary-curves", seriesId: `${group}:${suffix}`,
+    group, category: "A", interpolation: "linear" as const,
+    points: [{ x: 0, y: 0.1 }, { x: 1, y: 2 }, { x: 2, y: 0.1 }],
+  })))]);
+  const option = buildGraph(spec, baseData(["category", "value", "region"], []), theme, { category: ["A"] }, frame)
+    .panels[0].option as Record<string, unknown>;
+  const series = panelSeries(option);
+  for (const [group, color] of [["East", "#aa1100"], ["West", "#007744"]]) {
+    if (categorical) {
+      const curve = series.find((entry) => entry.id === `__normal_cat_${group}`)!;
+      assert.equal((curve.data as unknown[]).length, 2);
+      for (const dataIndex of [0, 1]) {
+        const shape = (curve.renderItem as (params: unknown, api: unknown) => any)({ dataIndex, seriesId: curve.id }, {
+          coord: ([, value]: [string, number]) => [50, 200 - value * 50], size: () => [100, 50],
+        });
+        assert.equal(shape.style.stroke, color, "ordinary category packets retain group color");
+      }
+    } else {
+      for (const suffix of ["reference", "fit:normal:extra"]) {
+        const curve = series.find((entry) => entry.id === `${group}:${suffix}`)!;
+        assert.equal((curve.lineStyle as { color: string }).color, color, "ordinary numeric packets retain group color");
+      }
+    }
+  }
+}
+
 function throwOnAnyRowAccess(label: string): unknown[][] {
   return new Proxy([] as unknown[][], {
     get() {

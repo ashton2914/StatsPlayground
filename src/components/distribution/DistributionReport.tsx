@@ -219,6 +219,7 @@ function SummaryDataTables({
   return (
     <SummaryTable
       title={t("distribution.report.summaryStatistics")}
+      confidenceLevel={summaryData.confidenceLevel ?? 0.95}
       rows={[
         ["n", summaryData.n],
         ["nMissing", summaryData.nMissing],
@@ -233,7 +234,7 @@ function SummaryDataTables({
   );
 }
 
-function SummaryTable({ title, rows }: { title: string; rows: Array<[string, number | string | null]> }) {
+function SummaryTable({ title, rows, confidenceLevel }: { title: string; rows: Array<[string, number | string | null]>; confidenceLevel: number }) {
   const { t } = useTranslation();
   return (
     <AnalysisTable
@@ -246,7 +247,7 @@ function SummaryTable({ title, rows }: { title: string; rows: Array<[string, num
       rows={rows.map(([label, value]) => ({
         key: label,
         cells: [
-          t(`distribution.statistics.${label}`),
+          t(`distribution.statistics.${label}`, { confidence: `${Number((confidenceLevel * 100).toFixed(6))}%` }),
           typeof value === "number" ? formatNumber(value) : value ?? "-",
         ],
       }))}
