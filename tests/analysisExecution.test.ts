@@ -14,6 +14,7 @@ import {
   createAnalysisExecutionController,
   createAnalysisExecutionRequest,
   distributionAnalysisDefinitionFingerprint,
+  executeAnalysisWithFence,
   fitModelAnalysisDefinitionFingerprint,
   fitYByXAnalysisDefinitionFingerprint,
   hypothesisTestAnalysisDefinitionFingerprint,
@@ -568,12 +569,30 @@ async function testAnalysisAndDatasetFenceChecks(): Promise<void> {
   assert.notEqual(generationController.getState().status, "success");
 }
 
+async function testSharedNonHookExecutionMasksStaleResults(): Promise<void> {
+  let currentAnalysis = analysis();
+  const currentDataset = dataset({ generation: 8, updatedAt: "2026-09-03T10:00:00.000Z" });
+
+  const result = await executeAnalysisWithFence(currentAnalysis, currentDataset, {
+    getDatasetGeneration: async () => 8,
+    compute: async (request) => {
+      currentAnalysis = { ...currentAnalysis, configRevision: currentAnalysis.configRevision + 1 };
+      return response(request.datasetId, request.generation);
+    },
+    getCurrentAnalysis: () => currentAnalysis,
+    getCurrentDataset: () => currentDataset,
+  });
+
+  assert.equal(result.state.status, "loading");
+}
+
 await testLoadingSuccessAndError();
 await testLatestRequestAndEchoFences();
 await testFitYByXEchoFence();
 await testFitModelMigrationIssueDoesNotExecute();
 await testHypothesisTestIdentityAndStaleFences();
 await testAnalysisAndDatasetFenceChecks();
+await testSharedNonHookExecutionMasksStaleResults();
 
 const hookSource = readFileSync(
   new URL("../src/components/analysis/useAnalysisExecution.ts", import.meta.url),

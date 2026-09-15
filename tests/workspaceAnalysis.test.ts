@@ -58,16 +58,15 @@ assertSourceIncludes(workspaceSource, "workspace.analysisSourceMissing", "Analys
 assertSourceIncludes(workspaceSource, "<AnalysisView item={item} dataset={ds}", "AnalysisView must receive the document and optional dataset");
 assertSourceIncludes(workspaceSource, "editingAnalysisId", "Workspace must own the active Analysis editor session");
 assertSourceIncludes(workspaceSource, "toAnalysisEditorItem", "Workspace must initialize Analysis editors through the exhaustive registry");
-assertSourceIncludes(workspaceSource, "createAnalysisEditorPatch", "Workspace must apply submitted inputs through the exhaustive registry");
+assertSourceIncludes(workspaceSource, 'type: "analysis.update"', "Workspace must apply submitted Analysis input changes through the shared application command layer");
 assertSourceIncludes(workspaceSource, "initialItem={toAnalysisEditorItem(editingAnalysis)}", "The Distribution selector must open with committed Analysis inputs");
 assertSourceIncludes(workspaceSource, "setEditingAnalysisId(null)", "Cancel and Save must close the Analysis editor session");
 assertSourceIncludes(workspaceSource, "onEditInputs={() =>", "AnalysisView must expose the shared Shell edit command to Workspace");
 const distributionCreateHandler = workspaceSource.match(
   /const handleCreateDistributionItem = [\s\S]*?(?=\n  const handleRenameSubmit)/,
 )?.[0] ?? "";
-assertSourceIncludes(distributionCreateHandler, "createDistributionAnalysisDocument", "Distribution creation must build a canonical Analysis document");
-assertSourceIncludes(distributionCreateHandler, "addAnalysis(created)", "Distribution creation must enter the Analysis store");
-assertSourceIncludes(distributionCreateHandler, 'activateWorkspaceDocument("analysis", created.id)', "Distribution creation must activate the Analysis document");
+assertSourceIncludes(distributionCreateHandler, 'type: "analysis.create"', "Distribution creation must delegate to the shared application command layer");
+assertSourceIncludes(distributionCreateHandler, 'analysisKind: "distribution"', "Distribution creation must target the distribution Analysis kind");
 assert.equal(distributionCreateHandler.includes("addDistribution"), false, "Distribution creation must not enter the legacy store");
 assertSourceIncludes(workspaceSource, "nextDistributionAnalysisName", "Distribution default names must come from the Analysis namespace");
 assert.equal(workspaceSource.includes("deleteAnalysisByDataset"), false, "Deleting a source table must not cascade-delete saved Analysis documents");

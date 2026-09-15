@@ -14,6 +14,10 @@ import {
   type GraphCommandDependencies,
 } from "@/applicationCommands/graphCommands";
 import {
+  createAnalysisCommandHandlers,
+  type AnalysisCommandDependencies,
+} from "@/applicationCommands/analysisCommands";
+import {
   createReportCommandHandlers,
   type ReportCommandDependencies,
 } from "@/applicationCommands/reportCommands";
@@ -38,6 +42,7 @@ export interface ApplicationRuntimeDependencies {
   table?: Omit<TableCommandDependencies, "projectHandlers" | "projectDependencies">;
   tableTransform?: Omit<TableTransformCommandDependencies, "projectHandlers" | "projectDependencies">;
   sql?: Omit<SqlCommandDependencies, "projectHandlers" | "projectDependencies">;
+  analysis?: Partial<AnalysisCommandDependencies>;
   graph?: Partial<GraphCommandDependencies>;
   report?: Partial<ReportCommandDependencies>;
   tabulate?: Partial<TabulateCommandDependencies>;
@@ -71,6 +76,9 @@ export function createApplicationRuntime(
   const sqlHandlers = createSqlCommandHandlers({
     ...dependencies.sql,
     projectHandlers,
+  });
+  const analysisHandlers = createAnalysisCommandHandlers({
+    ...dependencies.analysis,
   });
   const graphHandlers = createGraphCommandHandlers({
     ...dependencies.graph,
@@ -152,6 +160,39 @@ export function createApplicationRuntime(
       };
     },
     { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "analysis.create",
+    async (input, context) => ({
+      changed: true,
+      data: await analysisHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      warnings: [],
+    }),
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "analysis.update",
+    async (input, context) => {
+      const outcome = analysisHandlers.update(input, { beginCommit: () => context.beginCommit() });
+      return {
+        changed: outcome.changed,
+        data: outcome.data,
+        warnings: [],
+      };
+    },
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "analysis.run",
+    async (input) => ({
+      changed: false,
+      data: await analysisHandlers.run(input),
+      warnings: [],
+    }),
+    { mode: "read", risk: "low" },
   );
 
   runtime.register(

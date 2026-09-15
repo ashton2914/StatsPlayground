@@ -7,6 +7,13 @@ import { analysisGraphPolicies } from "../src/components/analysis/analysisGraphP
 import { analysisKindDescriptors } from "../src/components/analysis/analysisKindDescriptors.ts";
 import { analysisReportPolicies } from "../src/components/analysis/analysisReportPolicies.ts";
 import { analysisViewContracts } from "../src/components/analysis/analysisViewContracts.ts";
+import {
+  analysisCommandFixtures,
+  analysisCommandSchemas,
+  analysisCreateAdapters,
+  analysisUpdateValidators,
+  assertRegisteredAnalysisKind,
+} from "../src/applicationCommands/analysisCommands.ts";
 import type { AnalysisKind } from "../src/types/analysis.ts";
 
 interface AnalysisKindManifestEntry {
@@ -40,6 +47,10 @@ const registries = {
   editor: analysisEditorRegistry,
   graph: analysisGraphPolicies,
   report: analysisReportPolicies,
+  commandCreate: analysisCreateAdapters,
+  commandUpdate: analysisUpdateValidators,
+  commandSchema: analysisCommandSchemas,
+  commandFixture: analysisCommandFixtures,
 };
 
 assert.equal(manifest.schemaVersion, 1);
@@ -66,7 +77,23 @@ for (const entry of manifest.kinds) {
     analysisReportPolicies[entry.analysisKind] != null,
     `${entry.analysisKind} report capability must match its policy`,
   );
+  assert.equal(
+    analysisCommandSchemas[entry.analysisKind].analysisKind,
+    entry.analysisKind,
+    `${entry.analysisKind} command schema must project its manifest kind identity`,
+  );
+  assert.equal(
+    analysisCommandFixtures[entry.analysisKind].analysisKind,
+    entry.analysisKind,
+    `${entry.analysisKind} command fixture must target its manifest kind`,
+  );
 }
+
+assert.throws(
+  () => assertRegisteredAnalysisKind("unknown" as AnalysisKind),
+  /Unknown analysis kind/,
+  "unknown kinds must be rejected instead of entering a generic fallback",
+);
 
 assert.notEqual(analysisReportPolicies.distribution, null, "Distribution must register Report embedding");
 assert.notEqual(analysisReportPolicies.fitYByX, null, "Fit Y by X must register Report embedding");

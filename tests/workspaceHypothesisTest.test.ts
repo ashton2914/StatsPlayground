@@ -6,10 +6,9 @@ const source = readFileSync(resolve(process.cwd(), "src/components/Workspace.tsx
 for (const required of [
   "showHypothesisTestDialog",
   "<HypothesisTestDialog",
-  "createHypothesisTestAnalysisDocument",
-  "addAnalysis(created)",
-  'activateWorkspaceDocument("analysis", created.id)',
-  "createAnalysisEditorPatch",
+  'type: "analysis.create"',
+  'analysisKind: "hypothesisTest"',
+  'type: "analysis.update"',
   'editingAnalysis.analysisKind === "hypothesisTest"',
 ]) {
   assert.equal(source.includes(required), true, `Workspace must include ${required}`);

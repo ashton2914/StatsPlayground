@@ -176,6 +176,130 @@ export interface GraphCreateInput {
   sourceDatasetId: string;
 }
 
+export type DistributionAnalysisCreateDraft = Omit<
+  import("@/types/distribution").DistributionItem,
+  "id" | "name" | "sourceDatasetId" | "createdAt" | "analysis" | "graphs"
+> & {
+  name?: string;
+  analysis?: import("@/types/distribution").DistributionAnalysisConfig;
+  graphs?: import("@/types/distribution").DistributionItem["graphs"];
+};
+
+export interface FitYByXAnalysisCreateDraft {
+  name?: string;
+  response: import("@/graphCore/types").FieldRef;
+  factor: import("@/graphCore/types").FieldRef;
+  confidenceLevel: number;
+  graph?: import("@/types/graphBuilder").EmbeddedGraphConfig;
+}
+
+export interface FitModelAnalysisCreateDraft {
+  name?: string;
+  response: import("@/graphCore/types").FieldRef;
+  construct: import("@/types/fitModel").FitModelConstruct;
+  terms: import("@/types/fitModel").FitModelTerm[];
+  centeringMethod: import("@/types/fitModel").FitModelCenteringMethod;
+  confidenceLevel?: number;
+}
+
+export interface HypothesisTestAnalysisCreateDraft {
+  name?: string;
+  definition: import("@/types/hypothesisTest").HypothesisTestAnalysisDefinition;
+}
+
+export type AnalysisCreateInputByKind = {
+  distribution: {
+    analysisKind: "distribution";
+    sourceDatasetId: string;
+    draft: DistributionAnalysisCreateDraft;
+  };
+  fitYByX: {
+    analysisKind: "fitYByX";
+    sourceDatasetId: string;
+    draft: FitYByXAnalysisCreateDraft;
+  };
+  fitModel: {
+    analysisKind: "fitModel";
+    sourceDatasetId: string;
+    draft: FitModelAnalysisCreateDraft;
+  };
+  hypothesisTest: {
+    analysisKind: "hypothesisTest";
+    sourceDatasetId: string;
+    draft: HypothesisTestAnalysisCreateDraft;
+  };
+};
+
+export type AnalysisCreateInput = AnalysisCreateInputByKind[import("@/types/analysis").AnalysisKind];
+
+export type DistributionAnalysisUpdateDraft = Omit<
+  import("@/types/distribution").DistributionItem,
+  "id" | "name" | "sourceDatasetId" | "createdAt"
+>;
+
+export interface FitYByXAnalysisUpdateDraft {
+  response: import("@/graphCore/types").FieldRef;
+  factor: import("@/graphCore/types").FieldRef;
+  confidenceLevel: number;
+  graph?: import("@/types/graphBuilder").EmbeddedGraphConfig;
+}
+
+export interface FitModelAnalysisUpdateDraft {
+  response: import("@/graphCore/types").FieldRef;
+  construct: import("@/types/fitModel").FitModelConstruct;
+  terms: import("@/types/fitModel").FitModelTerm[];
+  centeringMethod: import("@/types/fitModel").FitModelCenteringMethod;
+  confidenceLevel?: number;
+}
+
+export interface HypothesisTestAnalysisUpdateDraft {
+  definition: import("@/types/hypothesisTest").HypothesisTestAnalysisDefinition;
+  presentation?: import("@/types/hypothesisTest").HypothesisTestAnalysisPresentation;
+}
+
+export type AnalysisUpdateInputByKind = {
+  distribution: {
+    analysisId: string;
+    analysisKind: "distribution";
+    expectedConfigRevision: number;
+    draft: DistributionAnalysisUpdateDraft;
+  };
+  fitYByX: {
+    analysisId: string;
+    analysisKind: "fitYByX";
+    expectedConfigRevision: number;
+    draft: FitYByXAnalysisUpdateDraft;
+  };
+  fitModel: {
+    analysisId: string;
+    analysisKind: "fitModel";
+    expectedConfigRevision: number;
+    draft: FitModelAnalysisUpdateDraft;
+  };
+  hypothesisTest: {
+    analysisId: string;
+    analysisKind: "hypothesisTest";
+    expectedConfigRevision: number;
+    draft: HypothesisTestAnalysisUpdateDraft;
+  };
+};
+
+export type AnalysisUpdateInput = AnalysisUpdateInputByKind[import("@/types/analysis").AnalysisKind];
+
+export interface AnalysisCommandResult {
+  item: import("@/types/analysis").AnalysisDocument;
+}
+
+export interface AnalysisRunInput {
+  analysisId: string;
+}
+
+export interface AnalysisRunResult {
+  item: import("@/types/analysis").AnalysisDocument;
+  dataset: import("@/types/data").DatasetMeta;
+  state: import("@/components/analysis/useAnalysisExecution").AnalysisExecutionState;
+}
+
 export interface GraphCommandResult {
   item: import("@/types/graphBuilder").GraphBuilderItem;
   documentRevision: number;
@@ -293,6 +417,9 @@ export type ApplicationCommandRegistry = {
   "tableTransform.create": { input: TableTransformCreateInput; data: TableTransformCommandData };
   "tableTransform.run": { input: TableTransformRunInput; data: TableTransformCommandData };
   "sql.createTable": { input: SqlCreateTableInput; data: SqlCreateTableResult };
+  "analysis.create": { input: AnalysisCreateInput; data: AnalysisCommandResult };
+  "analysis.update": { input: AnalysisUpdateInput; data: AnalysisCommandResult };
+  "analysis.run": { input: AnalysisRunInput; data: AnalysisRunResult };
   "graph.create": { input: GraphCreateInput; data: GraphCommandResult };
   "graph.update": { input: GraphUpdateInput; data: GraphCommandResult };
   "report.create": { input: ReportCreateInput; data: ReportCommandResult };

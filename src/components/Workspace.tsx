@@ -33,24 +33,15 @@ import { FitYByXRoleDialog } from "./fitYByX";
 import { HypothesisTestDialog } from "./hypothesisTest";
 import {
   FitModelRoleDialog,
-  createFitModelItem,
-  toFitModelFieldInfo,
   type FitModelCreateDefinition,
 } from "./fitModel";
 import { ReportView } from "./report";
 import { AnalysisView } from "./analysis/AnalysisView";
 import {
-  createDistributionAnalysisDocument,
-  createFitModelAnalysisDocument,
-  createFitYByXAnalysisDocument,
-  createHypothesisTestAnalysisDocument,
   type FitYByXAnalysisEditorItem,
   type HypothesisTestAnalysisEditorItem,
 } from "./analysis/adapters";
-import {
-  createAnalysisEditorPatch,
-  toAnalysisEditorItem,
-} from "./analysis/analysisEditorRegistry";
+import { toAnalysisEditorItem } from "./analysis/analysisEditorRegistry";
 import {
   DistributionDialog,
   type DistributionFieldInfo,
@@ -65,7 +56,7 @@ import {
   createAnalysisSampleDocument,
 } from "./analysis/analysisSample";
 import {
-  createWorkspaceAnalysisGraphConfigPatch,
+  buildAnalysisProjectPayload,
   createEmptyWorkspaceDocumentSelection,
   getAnalysisCreationHistoryKey,
   getRetainedActiveAnalysisIdAfterDatasetDeletion,
@@ -123,7 +114,6 @@ import {
   shouldApplyDistributionCreateMetadataLoad,
   shouldApplyDistributionEditMetadataLoad,
 } from "./workspaceDistributionMetadata";
-import { buildSaveProjectRequest } from "@/applicationCommands/projectSnapshot";
 import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 
 function formatStat(n: number): string {
@@ -139,16 +129,6 @@ function nextDistributionAnalysisName(items: readonly AnalysisDocument[]): strin
     if (match) maximum = Math.max(maximum, Number(match[1]));
   }
   return `Distribution ${maximum + 1}`;
-}
-
-function nextFitModelAnalysisName(items: readonly AnalysisDocument[]): string {
-  let maximum = 0;
-  for (const item of items) {
-    if (item.analysisKind !== "fitModel") continue;
-    const match = item.name.match(/^Fit Model (\d+)$/);
-    if (match) maximum = Math.max(maximum, Number.parseInt(match[1], 10));
-  }
-  return `Fit Model ${maximum + 1}`;
 }
 
 function nextFitYByXAnalysisName(items: readonly AnalysisDocument[]): string {
@@ -797,27 +777,26 @@ export function Workspace() {
 
   const handleCreateHypothesisTestItem = (name: string, submitted: HypothesisTestAnalysisEditorItem) => {
     if (!activeDatasetId) return;
-    const resolved = resolveProjectBasename(name || nextHypothesisTestAnalysisName(analysisItems), "analysis");
-    if (resolved.error) {
-      alert(resolved.error);
-      return;
-    }
-    if (resolved.basename === null) return;
-    const timestamp = new Date().toISOString();
-    const created = createHypothesisTestAnalysisDocument({
-      id: crypto.randomUUID(),
-      name: resolved.basename,
-      sourceDatasetId: activeDatasetId,
-      definition: submitted.definition,
-      createdAt: timestamp,
+    applicationRuntime.execute(
+      {
+        type: "analysis.create",
+        input: {
+          analysisKind: "hypothesisTest",
+          sourceDatasetId: activeDatasetId,
+          draft: {
+            name: name.trim() || undefined,
+            definition: submitted.definition,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setShowHypothesisTestDialog(false);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch((error) => {
+      alert(String(error));
     });
-    addAnalysis(created);
-    activateWorkspaceDocument("analysis", created.id);
-    setShowHypothesisTestDialog(false);
-    markDirty();
-    recordAction(t("history.newAnalysis", { defaultValue: "Created {{name}}", name: created.name }));
-    setRenamingId(created.id);
-    setRenameValue(created.name);
   };
 
   const openFitModel = (prefill?: FitModelPrefill) => {
@@ -836,69 +815,57 @@ export function Workspace() {
 
   const handleCreateFitModelItem = async (definition: FitModelCreateDefinition) => {
     if (!activeDatasetId) return;
-    const sourceDatasetId = activeDatasetId;
-    const [columns, displayProps] = await Promise.all([
-      dataService.getColumns(sourceDatasetId),
-      dataService.getColumnDisplayProps(sourceDatasetId).catch(() => []),
-    ]);
-    const displayPropsByIndex = new Map(displayProps.map((entry) => [entry.colIndex, entry]));
-    const fields = columns.map(([name, sqlType], index) => (
-      toFitModelFieldInfo(name, sqlType, displayPropsByIndex.get(index)).field
-    ));
-    const id = crypto.randomUUID();
-    const name = nextFitModelAnalysisName(analysisItems);
-    const item = createFitModelItem({
-      id,
-      name,
-      sourceDatasetId,
-      response: definition.response,
-      construct: definition.construct,
-      terms: definition.terms,
-      centeringMethod: definition.centeringMethod,
-      createdAt: new Date().toISOString(),
-      fields,
-    });
-    const source = datasets.find((dataset) => dataset.id === sourceDatasetId)?.name ?? sourceDatasetId;
-    const analysis = createFitModelAnalysisDocument({
-      item,
-      confidenceLevel: 0.95,
-      updatedAt: item.createdAt,
-    });
-    addAnalysis(analysis);
-    activateWorkspaceDocument("analysis", id);
-    setShowFitModelDialog(false);
-    setFitModelPrefill(null);
-    markDirty();
-    recordAction(t("history.newFitModel", { name, source }));
-    setRenamingId(id);
-    setRenameValue(name);
+    try {
+      const result = await applicationRuntime.execute(
+        {
+          type: "analysis.create",
+          input: {
+            analysisKind: "fitModel",
+            sourceDatasetId: activeDatasetId,
+            draft: {
+              response: definition.response,
+              construct: definition.construct,
+              terms: definition.terms,
+              centeringMethod: definition.centeringMethod,
+              confidenceLevel: 0.95,
+            },
+          },
+        },
+        { kind: "ui" },
+      );
+      setShowFitModelDialog(false);
+      setFitModelPrefill(null);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    } catch (error) {
+      alert(String(error));
+    }
   };
 
   const handleCreateFitYByXItem = (item: FitYByXAnalysisEditorItem) => {
-    const requestedName = item.name.trim();
-    const resolved = resolveProjectBasename(
-      requestedName || nextFitYByXAnalysisName(analysisItems),
-      "analysis",
-    );
-    if (resolved.error) {
-      alert(resolved.error);
-      return;
-    }
-    if (resolved.basename === null) return;
-    const created = createFitYByXAnalysisDocument({
-      item: { ...item, name: resolved.basename },
-      confidenceLevel: item.confidenceLevel,
-      updatedAt: new Date().toISOString(),
+    applicationRuntime.execute(
+      {
+        type: "analysis.create",
+        input: {
+          analysisKind: "fitYByX",
+          sourceDatasetId: item.sourceDatasetId,
+          draft: {
+            name: item.name.trim() || undefined,
+            response: item.response,
+            factor: item.factor,
+            confidenceLevel: item.confidenceLevel,
+            graph: item.graph,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setShowFitYByXDialog(false);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch((error) => {
+      alert(String(error));
     });
-    const source = datasets.find((dataset) => dataset.id === created.source.datasetId)?.name
-      ?? created.source.datasetId;
-    addAnalysis(created);
-    activateWorkspaceDocument("analysis", created.id);
-    setShowFitYByXDialog(false);
-    markDirty();
-    recordAction(t("history.newFitYByX", { name: created.name, source }));
-    setRenamingId(created.id);
-    setRenameValue(created.name);
   };
 
   const handleCreateReport = async () => {
@@ -1054,14 +1021,30 @@ export function Workspace() {
   const handleUpdateDistributionAnalysisInputs = (editing: AnalysisDocument, submitted: DistributionItem) => {
     if (readOnly) return;
     if (editing.analysisKind !== "distribution") return;
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      submitted,
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "distribution",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            responses: submitted.responses,
+            weight: submitted.weight,
+            frequency: submitted.frequency,
+            by: submitted.by,
+            nestedSubgroup: submitted.nestedSubgroup,
+            analysis: submitted.analysis,
+            graphs: submitted.graphs,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleManageDistributionProperties = useCallback((request: DistributionManagePropertiesRequest) => {
@@ -1085,14 +1068,27 @@ export function Workspace() {
     submitted: FitYByXAnalysisEditorItem,
   ) => {
     if (readOnly) return;
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      submitted,
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "fitYByX",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            response: submitted.response,
+            factor: submitted.factor,
+            confidenceLevel: submitted.confidenceLevel,
+            graph: submitted.graph,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleUpdateFitModelAnalysisInputs = (
@@ -1100,15 +1096,28 @@ export function Workspace() {
     submitted: FitModelCreateDefinition,
   ) => {
     if (readOnly) return;
-    const editorItem = toAnalysisEditorItem(editing);
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      { ...editorItem, ...submitted },
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "fitModel",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            response: submitted.response,
+            construct: submitted.construct,
+            terms: submitted.terms,
+            centeringMethod: submitted.centeringMethod,
+            confidenceLevel: editing.definition.confidenceLevel,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleUpdateHypothesisTestAnalysisInputs = (
@@ -1116,40 +1125,55 @@ export function Workspace() {
     submitted: HypothesisTestAnalysisEditorItem,
   ) => {
     if (readOnly) return;
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      submitted,
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "hypothesisTest",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            definition: submitted.definition,
+            presentation: submitted.presentation,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleCreateDistributionItem = (item: DistributionItem) => {
     if (readOnly) return;
-    const resolved = resolveProjectBasename(
-      item.name.trim() || nextDistributionAnalysisName(analysisItems),
-      "analysis",
-    );
-    if (resolved.error) {
-      alert(resolved.error);
-      return;
-    }
-    if (resolved.basename === null) return;
-    const created = createDistributionAnalysisDocument(
-      { ...item, name: resolved.basename },
-      new Date().toISOString(),
-    );
-    const source = datasets.find((dataset) => dataset.id === created.source.datasetId)?.name
-      ?? created.source.datasetId;
-    addAnalysis(created);
-    activateWorkspaceDocument("analysis", created.id);
-    setShowDistributionDialog(false);
-    markDirty();
-    recordAction(t(getAnalysisCreationHistoryKey("generic"), { name: created.name, source }));
-    setRenamingId(created.id);
-    setRenameValue(created.name);
+    applicationRuntime.execute(
+      {
+        type: "analysis.create",
+        input: {
+          analysisKind: "distribution",
+          sourceDatasetId: item.sourceDatasetId,
+          draft: {
+            name: item.name.trim() || undefined,
+            responses: item.responses,
+            weight: item.weight,
+            frequency: item.frequency,
+            by: item.by,
+            nestedSubgroup: item.nestedSubgroup,
+            analysis: item.analysis,
+            graphs: item.graphs,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setShowDistributionDialog(false);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleRenameSubmit = async (id: string) => {
@@ -1411,6 +1435,18 @@ export function Workspace() {
   const handleSave = async () => {
     if (saving) return;
     await flushPendingReportHistory();
+    const snapshots = useHistoryStore.getState().snapshots;
+    const datasetFilters = useDatasetFilterStore.getState().toProjectPayload();
+    const gbItems = useGraphBuilderStore.getState().items;
+    const logicalFolders = useWorkflowStore.getState().logicalFolders;
+    const folderPayload = {
+      folders,
+      tableFolders,
+      graphFolders,
+      reportFolders,
+      tabulateFolders,
+      ...buildAnalysisProjectPayload({ analyses: analysisItems, analysisFolders }),
+    };
     try {
       if (!project?.filePath) {
         const filePath = await save({
@@ -1419,9 +1455,56 @@ export function Workspace() {
           filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
         });
         if (!filePath) return; // User cancelled
-        await saveProject(buildSaveProjectRequest(filePath as string));
+        await saveProject({
+          filePath: filePath as string,
+          history: [],
+          snapshots,
+          datasetFilters,
+          graphBuilders: gbItems,
+          fitYByX: [],
+          tabulates,
+          distributions: [],
+          analyses: folderPayload.analyses,
+          folders: folderPayload.folders,
+          tableFolders: folderPayload.tableFolders,
+          graphFolders: folderPayload.graphFolders,
+          fitYByXFolders: {},
+          reportFolders: folderPayload.reportFolders,
+          tabulateFolders: folderPayload.tabulateFolders,
+          reports: reportItems,
+          distributionFolders: folderPayload.distributionFolders,
+          analysisFolders: folderPayload.analysisFolders,
+          workflows,
+          logicalFolders,
+          workflowRuns,
+          tableTransforms,
+          tableTransformBindings,
+        });
       } else {
-        await saveProject(buildSaveProjectRequest());
+        await saveProject({
+          history: [],
+          snapshots,
+          datasetFilters,
+          graphBuilders: gbItems,
+          fitYByX: [],
+          tabulates,
+          distributions: [],
+          analyses: folderPayload.analyses,
+          folders: folderPayload.folders,
+          tableFolders: folderPayload.tableFolders,
+          graphFolders: folderPayload.graphFolders,
+          fitYByXFolders: {},
+          reportFolders: folderPayload.reportFolders,
+          tabulateFolders: folderPayload.tabulateFolders,
+          reports: reportItems,
+          distributionFolders: folderPayload.distributionFolders,
+          analysisFolders: folderPayload.analysisFolders,
+          workflows,
+          logicalFolders,
+          workflowRuns,
+          tableTransforms,
+          tableTransformBindings,
+        });
       }
       showToast(t("common.saved"), 1500);
     } catch (error) {
@@ -2575,19 +2658,77 @@ export function Workspace() {
                   onEditInputs={() => void handleEditAnalysisInputs(item.id)}
                   onGraphConfigChange={readOnly ? undefined : (role, graph) => {
                     const current = useAnalysisStore.getState().items.find((entry) => entry.id === item.id) ?? item;
-                    const graphUpdate = createWorkspaceAnalysisGraphConfigPatch(
-                      current,
-                      role,
-                      graph,
-                      new Date().toISOString(),
-                    );
-                    updateAnalysis(item.id, graphUpdate.patch);
-                    markDirty();
+                    if (current.analysisKind === "distribution") {
+                      void applicationRuntime.execute(
+                        {
+                          type: "analysis.update",
+                          input: {
+                            analysisId: current.id,
+                            analysisKind: "distribution",
+                            expectedConfigRevision: current.configRevision,
+                            draft: {
+                              responses: current.definition.responses,
+                              weight: current.definition.weight,
+                              frequency: current.definition.frequency,
+                              by: current.definition.by,
+                              nestedSubgroup: current.definition.nestedSubgroup,
+                              analysis: current.definition.analysis,
+                              graphs: { ...current.definition.graphs, [role]: graph },
+                            },
+                          },
+                        },
+                        { kind: "ui" },
+                      ).catch((error) => {
+                        alert(String(error));
+                      });
+                      return;
+                    }
+                    if (current.analysisKind === "fitYByX") {
+                      void applicationRuntime.execute(
+                        {
+                          type: "analysis.update",
+                          input: {
+                            analysisId: current.id,
+                            analysisKind: "fitYByX",
+                            expectedConfigRevision: current.configRevision,
+                            draft: {
+                              response: current.definition.response,
+                              factor: current.definition.factor,
+                              confidenceLevel: current.definition.confidenceLevel,
+                              graph,
+                            },
+                          },
+                        },
+                        { kind: "ui" },
+                      ).catch((error) => {
+                        alert(String(error));
+                      });
+                    }
                   }}
                   onDefinitionChange={readOnly ? undefined : (patch) => {
-                    updateAnalysis(item.id, patch);
-                    markDirty();
-                    recordAction(t("history.updateAnalysisInputs", { name: item.name }));
+                    if (item.analysisKind !== "fitModel" || patch.definition?.kind !== "fitModel") {
+                      return;
+                    }
+                    void applicationRuntime.execute(
+                      {
+                        type: "analysis.update",
+                        input: {
+                          analysisId: item.id,
+                          analysisKind: "fitModel",
+                          expectedConfigRevision: item.configRevision,
+                          draft: {
+                            response: patch.definition.response,
+                            construct: patch.definition.construct,
+                            terms: patch.definition.terms,
+                            centeringMethod: patch.definition.centeringMethod,
+                            confidenceLevel: patch.definition.confidenceLevel,
+                          },
+                        },
+                      },
+                      { kind: "ui" },
+                    ).catch((error) => {
+                      alert(String(error));
+                    });
                   }}
                   onDatasetChanged={async () => {
                     markDirty();

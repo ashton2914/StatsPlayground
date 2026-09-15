@@ -88,6 +88,8 @@ interface AnalysisExecutionSnapshot {
   fence: AnalysisExecutionFence | null;
 }
 
+export interface AnalysisExecutionResult extends AnalysisExecutionSnapshot {}
+
 interface ActiveAnalysisRequest {
   token: number;
   analysisKind: AnalysisDocument["analysisKind"];
@@ -411,6 +413,68 @@ export function createAnalysisExecutionController(
 
 export interface UseAnalysisExecutionRuntime extends Partial<AnalysisExecutionControllerDependencies> {}
 
+export async function resolveAnalysisExecutionDependencies(
+  item: AnalysisDocument,
+  dependencies?: UseAnalysisExecutionRuntime,
+): Promise<AnalysisExecutionDependencies> {
+  if (item.analysisKind === "distribution") {
+    return analysisExecutors.distribution.resolveDependencies({
+      compute: dependencies?.compute,
+      getDatasetGeneration: dependencies?.getDatasetGeneration,
+    });
+  }
+  if (item.analysisKind === "fitYByX") {
+    return analysisExecutors.fitYByX.resolveDependencies({
+      computeFitYByX: dependencies?.computeFitYByX,
+      getDatasetGeneration: dependencies?.getDatasetGeneration,
+    });
+  }
+  if (item.analysisKind === "fitModel") {
+    return analysisExecutors.fitModel.resolveDependencies({
+      runFitModel: dependencies?.runFitModel,
+      getDatasetGeneration: dependencies?.getDatasetGeneration,
+    });
+  }
+  return analysisExecutors.hypothesisTest.resolveDependencies({
+    runHypothesisTest: dependencies?.runHypothesisTest,
+    getDatasetGeneration: dependencies?.getDatasetGeneration,
+  });
+}
+
+export async function executeAnalysisWithFence(
+  item: AnalysisDocument,
+  dataset: DatasetMeta,
+  dependencies?: UseAnalysisExecutionRuntime,
+): Promise<AnalysisExecutionResult> {
+  const resolved = await resolveAnalysisExecutionDependencies(item, dependencies);
+  let snapshot: AnalysisExecutionSnapshot = {
+    state: ANALYSIS_EXECUTION_IDLE_STATE,
+    fence: null,
+  };
+
+  const controller = createAnalysisExecutionController({
+    ...resolved,
+    getCurrentAnalysis: dependencies?.getCurrentAnalysis,
+    getCurrentDataset: dependencies?.getCurrentDataset,
+    onStateChange: (state, fence) => {
+      snapshot = { state, fence };
+    },
+  });
+
+  try {
+    await controller.load(item, dataset);
+  } finally {
+    controller.dispose();
+  }
+
+  const currentAnalysis = dependencies?.getCurrentAnalysis?.() ?? item;
+  const currentDataset = dependencies?.getCurrentDataset?.() ?? dataset;
+  return {
+    ...snapshot,
+    state: maskAnalysisExecutionState(snapshot, currentAnalysis, currentDataset),
+  };
+}
+
 export function useAnalysisExecution(
   item: AnalysisDocument | null | undefined,
   dataset: DatasetMeta | null | undefined,
@@ -441,16 +505,13 @@ export function useAnalysisExecution(
 
     void (async () => {
       try {
-        const resolved = item.analysisKind === "distribution"
-          ? await analysisExecutors.distribution.resolveDependencies({ compute, getDatasetGeneration })
-          : item.analysisKind === "fitYByX"
-            ? await analysisExecutors.fitYByX.resolveDependencies({ computeFitYByX, getDatasetGeneration })
-            : item.analysisKind === "fitModel"
-              ? await analysisExecutors.fitModel.resolveDependencies({ runFitModel, getDatasetGeneration })
-              : await analysisExecutors.hypothesisTest.resolveDependencies({
-                runHypothesisTest,
-                getDatasetGeneration,
-              });
+        const resolved = await resolveAnalysisExecutionDependencies(item, {
+          compute,
+          computeFitYByX,
+          runFitModel,
+          runHypothesisTest,
+          getDatasetGeneration,
+        });
         if (!mounted) return;
 
         controller = createAnalysisExecutionController({
