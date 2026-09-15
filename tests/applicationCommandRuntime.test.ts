@@ -182,6 +182,54 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
 }
 
 {
+  let revision = 5;
+  const runtime = createApplicationCommandRuntime<TestRegistry>({
+    initialRevision: 2,
+    revision: {
+      get: () => revision,
+      set: (value) => {
+        revision = value;
+      },
+    },
+  });
+  runtime.register("test.read", async () => ({ changed: false, data: { ok: true }, warnings: [] }), {
+    mode: "read",
+  });
+  runtime.register("test.mutate", async () => ({ changed: true, data: { id: "m" }, warnings: [] }), {
+    mode: "mutation",
+  });
+
+  const firstRead = await runtime.execute({ type: "test.read", input: {} }, { kind: "ui" });
+  assert.equal(firstRead.projectRevision, 5);
+
+  const changed = await runtime.execute(
+    { type: "test.mutate", input: {}, control: { expectedProjectRevision: 5 } },
+    { kind: "ui" },
+  );
+  assert.equal(changed.projectRevision, 6);
+  assert.equal(revision, 6);
+
+  revision = 0;
+  const resetRead = await runtime.execute({ type: "test.read", input: {} }, { kind: "ui" });
+  assert.equal(resetRead.projectRevision, 0);
+
+  await assert.rejects(
+    runtime.execute(
+      { type: "test.mutate", input: {}, control: { expectedProjectRevision: 6 } },
+      { kind: "ui" },
+    ),
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "revision_conflict",
+  );
+
+  const afterResetChange = await runtime.execute(
+    { type: "test.mutate", input: {}, control: { expectedProjectRevision: 0 } },
+    { kind: "ui" },
+  );
+  assert.equal(afterResetChange.projectRevision, 1);
+  assert.equal(revision, 1);
+}
+
+{
   let callCount = 0;
   const denyAllPolicy: CommandPolicy = {
     canExecute() {

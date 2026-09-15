@@ -55,6 +55,8 @@ interface ProjectStore {
   setDirty: (dirty: boolean) => void;
   /** 重置命令修订号（用于打开/关闭生命周期）。 */
   resetRevision: () => void;
+  /** 设置命令修订号（由命令运行时同步）。 */
+  setRevision: (revision: number) => void;
 }
 
 export function createProjectStore(
@@ -200,6 +202,10 @@ export function createProjectStore(
 
     resetRevision: () => {
       set({ projectRevision: 0 });
+    },
+
+    setRevision: (revision) => {
+      set({ projectRevision: revision });
     },
   }));
 }

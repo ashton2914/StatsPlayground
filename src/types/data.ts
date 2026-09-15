@@ -139,6 +139,21 @@ export interface CreateManagedTableRequest {
   rows: Array<Array<string | number | boolean | null>>;
 }
 
+export interface ManagedTableCreateColumn {
+  colIndex: number;
+  colName: string;
+  colType: string;
+  width?: number;
+  format?: ColumnFormatInfo;
+  extras?: Record<string, unknown>;
+}
+
+export interface ManagedTableCreateResult {
+  dataset: DatasetMeta;
+  generation: number;
+  columns: ManagedTableCreateColumn[];
+}
+
 export interface CreateTableFromRowsRequest {
   name: string;
   columnNames: string[];

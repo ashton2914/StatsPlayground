@@ -1,8 +1,9 @@
 use crate::error::AppError;
 use crate::models::table::{
     ColumnDisplayProps, ColumnDisplayPropsWithoutIndex, CreateManagedTableRequest,
-    CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult, TableQueryResult,
-    TableWindowRequest, TableWindowResult,
+    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateColumn,
+    ManagedTableCreateResult, SqlQueryResult, TableQueryResult, TableWindowRequest,
+    TableWindowResult,
 };
 use crate::services::spprj_archive::{
     normalize_unsafe_portable_basename, validate_portable_basename,
@@ -369,6 +370,55 @@ mod tests {
         assert_eq!(
             display[1].extras.as_ref().expect("extras")["valueOrder"],
             serde_json::json!({ "values": ["EV", "DV"] })
+        );
+    }
+
+    #[test]
+    fn create_managed_table_outcome_returns_canonical_columns_and_display() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let request = CreateManagedTableRequest {
+            name: "Managed Canonical".to_string(),
+            columns: vec![CreateTableColumn {
+                name: "length".to_string(),
+                column_type: "double".to_string(),
+                display: Some(ColumnDisplayPropsWithoutIndex {
+                    width: Some(144.0),
+                    format: Some(ColumnFormatInfo {
+                        kind: "Currency".to_string(),
+                        decimals: Some(3),
+                        currency: Some("USD".to_string()),
+                    }),
+                    extras: Some(std::collections::BTreeMap::from([(
+                        "unit".to_string(),
+                        serde_json::json!({ "symbol": "mm" }),
+                    )])),
+                }),
+            }],
+            rows: vec![vec![serde_json::json!(1.234)]],
+        };
+
+        let outcome = service
+            .create_managed_table_outcome(&request)
+            .expect("managed outcome created");
+
+        assert_eq!(outcome.dataset.name, "Managed Canonical");
+        assert_eq!(outcome.dataset.source_type, "manual");
+        assert_eq!(outcome.generation, outcome.dataset.generation);
+        assert_eq!(outcome.columns.len(), 1);
+        assert_eq!(outcome.columns[0].col_name, "length");
+        assert_eq!(outcome.columns[0].col_type, "DOUBLE");
+        assert_eq!(outcome.columns[0].width, Some(144.0));
+        assert_eq!(
+            outcome.columns[0]
+                .format
+                .as_ref()
+                .map(|value| value.kind.as_str()),
+            Some("currency")
+        );
+        assert_eq!(
+            outcome.columns[0].extras.as_ref().expect("extras")["unit"],
+            serde_json::json!({ "symbol": "mm" })
         );
     }
 
@@ -825,6 +875,13 @@ impl<'a> DataService<'a> {
         &self,
         request: &CreateManagedTableRequest,
     ) -> Result<DatasetMeta, AppError> {
+        Ok(self.create_managed_table_outcome(request)?.dataset)
+    }
+
+    pub fn create_managed_table_outcome(
+        &self,
+        request: &CreateManagedTableRequest,
+    ) -> Result<ManagedTableCreateResult, AppError> {
         if request.columns.is_empty() {
             if !request.rows.is_empty() {
                 return Err(AppError::InvalidParam(
@@ -859,6 +916,7 @@ impl<'a> DataService<'a> {
 
         let mut display_props = Vec::new();
         let mut canonical_column_types = Vec::with_capacity(request.columns.len());
+        let mut canonical_columns = Vec::with_capacity(request.columns.len());
         for (col_index, column) in request.columns.iter().enumerate() {
             if column.name.trim().is_empty() {
                 return Err(AppError::InvalidParam(format!(
@@ -877,22 +935,36 @@ impl<'a> DataService<'a> {
                     column.column_type
                 )));
             }
-            canonical_column_types.push(canonical_type);
+            canonical_column_types.push(canonical_type.clone());
 
-            if let Some(display) = &column.display {
-                Self::validate_display_without_index(display)?;
-                let format = display.format.as_ref().map(|value| {
+            let normalized_format = column.display.as_ref().and_then(|display| {
+                display.format.as_ref().map(|value| {
                     let mut normalized = value.clone();
                     normalized.kind = normalized.kind.trim().to_ascii_lowercase();
                     normalized
-                });
+                })
+            });
+            let normalized_extras = column.display.as_ref().and_then(|display| display.extras.clone());
+            let width = column.display.as_ref().and_then(|display| display.width);
+
+            if let Some(display) = &column.display {
+                Self::validate_display_without_index(display)?;
                 display_props.push(ColumnDisplayProps {
                     col_index,
-                    width: display.width,
-                    format,
-                    extras: display.extras.clone(),
+                    width,
+                    format: normalized_format.clone(),
+                    extras: normalized_extras.clone(),
                 });
             }
+
+            canonical_columns.push(ManagedTableCreateColumn {
+                col_index,
+                col_name: column.name.clone(),
+                col_type: canonical_type,
+                width,
+                format: normalized_format,
+                extras: normalized_extras,
+            });
         }
 
         let id = uuid::Uuid::new_v4().to_string();
@@ -916,7 +988,11 @@ impl<'a> DataService<'a> {
             display_guard.insert(id.clone(), display_props);
         }
 
-        Ok(created)
+        Ok(ManagedTableCreateResult {
+            generation: created.generation,
+            dataset: created,
+            columns: canonical_columns,
+        })
     }
 
     pub fn add_row(&self, dataset_id: &str) -> Result<i64, AppError> {

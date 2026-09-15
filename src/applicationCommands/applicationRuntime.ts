@@ -4,6 +4,7 @@ import {
 } from "@/applicationCommands/projectCommands";
 import { createApplicationCommandRuntime } from "@/applicationCommands/runtime";
 import { createTableCommandHandlers, type TableCommandDependencies } from "@/applicationCommands/tableCommands";
+import { useProjectStore } from "@/stores/useProjectStore";
 import type {
   ApplicationCommandRegistry,
 } from "@/applicationCommands/types";
@@ -12,6 +13,10 @@ import type { CommandPolicy } from "@/applicationCommands/policy";
 export interface ApplicationRuntimeDependencies {
   initialRevision?: number;
   policy?: CommandPolicy;
+  revision?: {
+    get: () => number;
+    set: (revision: number) => void;
+  };
   project?: ProjectCommandDependencies;
   table?: Omit<TableCommandDependencies, "projectHandlers" | "projectDependencies">;
 }
@@ -22,6 +27,7 @@ export function createApplicationRuntime(
   const runtime = createApplicationCommandRuntime<ApplicationCommandRegistry>({
     initialRevision: dependencies.initialRevision,
     policy: dependencies.policy,
+    revision: dependencies.revision,
   });
 
   const projectHandlers = createProjectCommandHandlers(dependencies.project);
@@ -42,11 +48,14 @@ export function createApplicationRuntime(
 
   runtime.register(
     "table.create",
-    async (input, context) => ({
-      changed: true,
-      data: await tableHandlers.createTable(input, { beginCommit: () => context.beginCommit() }),
-      warnings: [],
-    }),
+    async (input, context) => {
+      const outcome = await tableHandlers.createTable(input, { beginCommit: () => context.beginCommit() });
+      return {
+        changed: true,
+        data: outcome.result,
+        warnings: outcome.warnings,
+      };
+    },
     { mode: "mutation", risk: "low" },
   );
 
@@ -93,4 +102,11 @@ export function createApplicationRuntime(
   return runtime;
 }
 
-export const applicationRuntime = createApplicationRuntime();
+const projectRevisionAdapter = {
+  get: () => useProjectStore.getState().projectRevision,
+  set: (revision: number) => useProjectStore.getState().setRevision(revision),
+};
+
+export const applicationRuntime = createApplicationRuntime({
+  revision: projectRevisionAdapter,
+});

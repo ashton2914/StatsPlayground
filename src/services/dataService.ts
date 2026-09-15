@@ -5,6 +5,7 @@ import type {
   CellPosition,
   CellUpdate,
   CreateManagedTableRequest,
+  ManagedTableCreateResult,
   DatasetMeta,
   CreateTableFromRowsRequest,
   SqlQueryResult,
@@ -79,7 +80,7 @@ export const dataService = {
 
   /** 原子创建数据表并持久化完整列显示属性 */
   createManagedTable: (request: CreateManagedTableRequest) =>
-    invoke<DatasetMeta>("create_managed_table", { request }),
+    invoke<ManagedTableCreateResult>("create_managed_table", { request }),
 
   /** 添加空行 */
   addRow: (datasetId: string) => invoke<number>("add_row", { datasetId }),

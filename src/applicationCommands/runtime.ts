@@ -60,6 +60,11 @@ interface RegisteredCommand {
   metadata: CommandPolicyMetadata;
 }
 
+interface RuntimeRevisionAdapter {
+  get: () => number;
+  set: (revision: number) => void;
+}
+
 export interface ApplicationCommandRuntime<TRegistry extends CommandRegistryShape> {
   register<TType extends Extract<keyof TRegistry, string>>(
     type: TType,
@@ -111,9 +116,27 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
   private readonly policy: CommandPolicy;
 
-  constructor(input?: { initialRevision?: number; policy?: CommandPolicy }) {
+  private readonly revisionAdapter?: RuntimeRevisionAdapter;
+
+  constructor(input?: { initialRevision?: number; policy?: CommandPolicy; revision?: RuntimeRevisionAdapter }) {
     this.projectRevision = input?.initialRevision ?? 0;
     this.policy = input?.policy ?? allowAllCommandPolicy;
+    this.revisionAdapter = input?.revision;
+    if (this.revisionAdapter) {
+      this.projectRevision = this.revisionAdapter.get();
+    }
+  }
+
+  private getProjectRevision(): number {
+    if (this.revisionAdapter) {
+      return this.revisionAdapter.get();
+    }
+    return this.projectRevision;
+  }
+
+  private setProjectRevision(nextRevision: number): void {
+    this.projectRevision = nextRevision;
+    this.revisionAdapter?.set(nextRevision);
   }
 
   register<TType extends Extract<keyof TRegistry, string>>(
@@ -353,10 +376,11 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
       if (request.mode === "mutation") {
         const expectedRevision = request.control.expectedProjectRevision;
-        if (expectedRevision != null && expectedRevision !== this.projectRevision) {
+        const currentRevision = this.getProjectRevision();
+        if (expectedRevision != null && expectedRevision !== currentRevision) {
           throw new CommandExecutionError("revision_conflict", "Project revision does not match expected revision", false, {
             expected: expectedRevision,
-            actual: this.projectRevision,
+            actual: currentRevision,
           });
         }
       }
@@ -381,14 +405,14 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       }
 
       if (request.mode === "mutation" && handlerResult.changed) {
-        this.projectRevision += 1;
+        this.setProjectRevision(this.getProjectRevision() + 1);
       }
 
       const result: CommandResult<TRegistry[TType]["data"]> = {
         requestId: request.requestId,
         command: command.type,
         changed: handlerResult.changed,
-        projectRevision: this.projectRevision,
+        projectRevision: this.getProjectRevision(),
         data: handlerResult.data as TRegistry[TType]["data"],
         warnings: handlerResult.warnings ?? [],
       };
@@ -425,6 +449,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 export function createApplicationCommandRuntime<TRegistry extends CommandRegistryShape>(input?: {
   initialRevision?: number;
   policy?: CommandPolicy;
+  revision?: RuntimeRevisionAdapter;
 }): ApplicationCommandRuntime<TRegistry> {
   return new Runtime<TRegistry>(input);
 }

@@ -76,6 +76,28 @@ pub struct CreateManagedTableRequest {
     pub rows: Vec<Vec<serde_json::Value>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTableCreateColumn {
+    pub col_index: usize,
+    pub col_name: String,
+    pub col_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<ColumnFormatInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTableCreateResult {
+    pub dataset: DatasetMeta,
+    pub generation: u64,
+    pub columns: Vec<ManagedTableCreateColumn>,
+}
+
 /// Column metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

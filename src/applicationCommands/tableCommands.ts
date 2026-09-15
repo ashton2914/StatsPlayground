@@ -4,6 +4,7 @@ import {
   type ProjectCommandDependencies,
 } from "@/applicationCommands/projectCommands";
 import type {
+  CommandWarning,
   TableCreateInput,
   TableCreateResult,
   TableDescribeInput,
@@ -12,6 +13,7 @@ import type {
   TableListItem,
   TableListResult,
 } from "@/applicationCommands/types";
+import i18n from "@/i18n";
 import { dataService } from "@/services/dataService";
 import { useDataStore } from "@/stores/useDataStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
@@ -30,6 +32,9 @@ export interface TableCommandDependencies {
   projectDependencies?: ProjectCommandDependencies;
 }
 
+const MIN_TABLE_PREVIEW_LIMIT = 1;
+const MAX_TABLE_PREVIEW_LIMIT = 200;
+
 export function createTableCommandHandlers(
   dependencies: Partial<TableCommandDependencies> = {},
 ) {
@@ -43,14 +48,16 @@ export function createTableCommandHandlers(
       useWorkspaceSelectionStore.getState().load(selection);
       useDataStore.getState().setActiveDataset(selection.activeDatasetId);
     },
-    historyMessage: (name) => `Created table ${name}`,
+    historyMessage: (name) => i18n.t("history.newTable", { name }),
     ...dependencies,
   };
 
   const projectHandlers = resolvedDependencies.projectHandlers
     ?? createProjectCommandHandlers(resolvedDependencies.projectDependencies);
 
-  function toTableListItem(dataset: Awaited<ReturnType<typeof dataService.createManagedTable>>): TableListItem {
+  function toTableListItem(
+    dataset: Awaited<ReturnType<typeof dataService.createManagedTable>>["dataset"],
+  ): TableListItem {
     return {
       id: dataset.id,
       name: dataset.name,
@@ -68,19 +75,10 @@ export function createTableCommandHandlers(
     created: Awaited<ReturnType<typeof dataService.createManagedTable>>,
     input: TableCreateInput,
   ): TableCreateResult {
-    const columns = input.request.columns.map((column, colIndex) => ({
-      colIndex,
-      colName: column.name,
-      colType: column.columnType,
-      width: column.display?.width,
-      format: column.display?.format,
-      extras: column.display?.extras,
-    }));
-
     const result: TableCreateResult = {
-      dataset: toTableListItem(created),
+      dataset: toTableListItem(created.dataset),
       generation: created.generation,
-      columns,
+      columns: created.columns,
     };
 
     if (input.preview) {
@@ -104,7 +102,7 @@ export function createTableCommandHandlers(
   async function createTable(
     input: TableCreateInput,
     controls?: { beginCommit?: () => void },
-  ): Promise<TableCreateResult> {
+  ): Promise<{ result: TableCreateResult; warnings: CommandWarning[] }> {
     if (input.request.columns.length !== 0 && input.request.rows.length > 0) {
       for (const row of input.request.rows) {
         if (row.length !== input.request.columns.length) {
@@ -113,14 +111,36 @@ export function createTableCommandHandlers(
       }
     }
 
+    if (input.preview) {
+      if (!Number.isInteger(input.preview.limit)
+        || input.preview.limit < MIN_TABLE_PREVIEW_LIMIT
+        || input.preview.limit > MAX_TABLE_PREVIEW_LIMIT) {
+        throw new CommandExecutionError(
+          "invalid_input",
+          `preview.limit must be between ${MIN_TABLE_PREVIEW_LIMIT} and ${MAX_TABLE_PREVIEW_LIMIT}`,
+        );
+      }
+      if (input.preview.offset != null && (!Number.isInteger(input.preview.offset) || input.preview.offset < 0)) {
+        throw new CommandExecutionError("invalid_input", "preview.offset must be a non-negative integer");
+      }
+    }
+
     controls?.beginCommit?.();
     const created = await resolvedDependencies.createManagedTable(input.request);
-    await resolvedDependencies.refreshDatasets();
+    const warnings: CommandWarning[] = [];
+    try {
+      await resolvedDependencies.refreshDatasets();
+    } catch {
+      warnings.push({
+        code: "table_create_refresh_failed",
+        message: "Table created, but dataset refresh failed",
+      });
+    }
 
     resolvedDependencies.markDirty();
-    resolvedDependencies.activateDataset(created.id);
-    resolvedDependencies.recordAction(resolvedDependencies.historyMessage(created.name));
-    return buildCreateResult(created, input);
+    resolvedDependencies.activateDataset(created.dataset.id);
+    resolvedDependencies.recordAction(resolvedDependencies.historyMessage(created.dataset.name));
+    return { result: buildCreateResult(created, input), warnings };
   }
 
   return {
@@ -131,7 +151,7 @@ export function createTableCommandHandlers(
 }
 
 export function createProjectTable(input: TableCreateInput): Promise<TableCreateResult> {
-  return createTableCommandHandlers().createTable(input);
+  return createTableCommandHandlers().createTable(input).then((value) => value.result);
 }
 
 export function listProjectTables(input: TableListInput): Promise<TableListResult> {
