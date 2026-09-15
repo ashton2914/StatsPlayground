@@ -273,6 +273,34 @@ mod tests {
         assert_directory_entries(&export_root.join("nested"), &[]);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn authorized_export_staging_dir_has_protected_current_user_windows_acl() {
+        let temp = TempDir::new().expect("temp dir");
+        let staging_dir = create_authorized_export_staging_dir(temp.path())
+            .expect("create private staging dir");
+
+        let protection = inspect_windows_staging_dir_acl(staging_dir.path())
+            .expect("inspect staging ACL");
+
+        assert!(
+            protection.owner_is_current_user,
+            "staging owner must be the current process user"
+        );
+        assert!(
+            protection.dacl_is_protected,
+            "staging DACL must block inherited ACEs"
+        );
+        assert!(
+            protection.current_user_has_full_control,
+            "current user must retain full control"
+        );
+        assert!(
+            protection.only_current_user_allows_access,
+            "no other explicit allow ACE may grant access"
+        );
+    }
+
     #[test]
     fn skip_only_sqlite_import_does_not_trigger_legacy_import_all() {
         let path = std::env::temp_dir().join(format!(
@@ -1046,9 +1074,296 @@ fn set_private_staging_permissions(path: &Path) -> Result<(), AppError> {
         .map_err(|error| AppError::FileIO(error.to_string()))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn set_private_staging_permissions(path: &Path) -> Result<(), AppError> {
+    windows_acl::set_private_current_user_directory_acl(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn set_private_staging_permissions(_path: &Path) -> Result<(), AppError> {
-    Ok(())
+    Err(AppError::FileIO(
+        "private export staging permissions are not implemented on this platform".to_string(),
+    ))
+}
+
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+struct WindowsStagingDirAclInspection {
+    owner_is_current_user: bool,
+    dacl_is_protected: bool,
+    current_user_has_full_control: bool,
+    only_current_user_allows_access: bool,
+}
+
+#[cfg(windows)]
+fn inspect_windows_staging_dir_acl(
+    path: &Path,
+) -> Result<WindowsStagingDirAclInspection, AppError> {
+    windows_acl::inspect_private_current_user_directory_acl(path)
+}
+
+#[cfg(windows)]
+mod windows_acl {
+    use super::{AppError, Path};
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::mem::MaybeUninit;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, HLOCAL};
+    use windows_sys::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+        NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        GetTokenInformation, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION,
+        DACL_SECURITY_INFORMATION, FILE_ALL_ACCESS, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Memory::{LocalAlloc, LocalFree, LMEM_FIXED};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    pub(super) fn set_private_current_user_directory_acl(path: &Path) -> Result<(), AppError> {
+        let current_user = CurrentUserSid::new()?;
+        let path_wide = wide_path(path);
+        let mut trustee = TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: current_user.sid as *mut _,
+        };
+        let mut explicit_access = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_ALL_ACCESS,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            Trustee: trustee,
+        };
+        let mut dacl: *mut ACL = null_mut();
+        let acl_status = unsafe { SetEntriesInAclW(1, &mut explicit_access, null_mut(), &mut dacl) };
+        if acl_status != ERROR_SUCCESS {
+            return Err(last_acl_error("build private staging DACL", acl_status));
+        }
+        let dacl = LocalAcl(dacl);
+
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                path_wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                dacl.0,
+                null_mut(),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(last_acl_error("apply private staging DACL", status));
+        }
+
+        let inspection = inspect_private_current_user_directory_acl(path)?;
+        if inspection.owner_is_current_user
+            && inspection.dacl_is_protected
+            && inspection.current_user_has_full_control
+            && inspection.only_current_user_allows_access
+        {
+            Ok(())
+        } else {
+            Err(AppError::FileIO(
+                "private export staging ACL verification failed".to_string(),
+            ))
+        }
+    }
+
+    pub(super) fn inspect_private_current_user_directory_acl(
+        path: &Path,
+    ) -> Result<super::WindowsStagingDirAclInspection, AppError> {
+        let current_user = CurrentUserSid::new()?;
+        let path_wide = wide_path(path);
+        let mut owner: PSID = null_mut();
+        let mut dacl: *mut ACL = null_mut();
+        let mut security_descriptor = null_mut();
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                path_wide.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut security_descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(last_acl_error("read private staging ACL", status));
+        }
+        let security_descriptor = LocalSecurityDescriptor(security_descriptor);
+        let owner_is_current_user = !owner.is_null() && unsafe { EqualSid(owner, current_user.sid) } != 0;
+        let dacl_is_protected = security_descriptor.is_dacl_protected()?;
+        let (current_user_has_full_control, only_current_user_allows_access) =
+            inspect_allow_aces(dacl, current_user.sid)?;
+
+        Ok(super::WindowsStagingDirAclInspection {
+            owner_is_current_user,
+            dacl_is_protected,
+            current_user_has_full_control,
+            only_current_user_allows_access,
+        })
+    }
+
+    fn inspect_allow_aces(dacl: *mut ACL, current_user_sid: PSID) -> Result<(bool, bool), AppError> {
+        if dacl.is_null() {
+            return Ok((false, false));
+        }
+
+        let mut info = MaybeUninit::<ACL_SIZE_INFORMATION>::uninit();
+        let ok = unsafe {
+            GetAclInformation(
+                dacl,
+                info.as_mut_ptr() as *mut _,
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        };
+        if ok == 0 {
+            return Err(last_io_error("read staging DACL information"));
+        }
+        let info = unsafe { info.assume_init() };
+        let mut current_user_has_full_control = false;
+
+        for index in 0..info.AceCount {
+            let mut ace = null_mut();
+            let ok = unsafe { GetAce(dacl, index, &mut ace) };
+            if ok == 0 {
+                return Err(last_io_error("read staging DACL ACE"));
+            }
+            let header = unsafe { *(ace as *const windows_sys::Win32::Security::ACE_HEADER) };
+            if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
+                continue;
+            }
+
+            let allowed = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+            let sid = unsafe { &allowed.SidStart as *const u32 as PSID };
+            let is_current_user = unsafe { EqualSid(sid, current_user_sid) } != 0;
+            if !is_current_user {
+                return Ok((current_user_has_full_control, false));
+            }
+            if allowed.Mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS {
+                current_user_has_full_control = true;
+            }
+        }
+
+        Ok((current_user_has_full_control, true))
+    }
+
+    struct CurrentUserSid {
+        sid: PSID,
+        buffer: HLOCAL,
+    }
+
+    impl CurrentUserSid {
+        fn new() -> Result<Self, AppError> {
+            let mut token: HANDLE = 0;
+            let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+            if opened == 0 {
+                return Err(last_io_error("open current process token"));
+            }
+            let token = TokenHandle(token);
+
+            let mut needed = 0u32;
+            unsafe {
+                GetTokenInformation(token.0, TOKEN_USER, null_mut(), 0, &mut needed);
+            }
+            if needed == 0 {
+                return Err(last_io_error("size current user token"));
+            }
+            let buffer_handle = unsafe { LocalAlloc(LMEM_FIXED, needed as usize) };
+            if buffer_handle == 0 {
+                return Err(last_io_error("allocate current user token buffer"));
+            }
+            let buffer = buffer_handle as *mut std::ffi::c_void;
+            let ok = unsafe { GetTokenInformation(token.0, TOKEN_USER, buffer, needed, &mut needed) };
+            if ok == 0 {
+                unsafe { LocalFree(buffer_handle) };
+                return Err(last_io_error("read current user token"));
+            }
+            let token_user = unsafe { &*(buffer as *const TOKEN_USER) };
+            Ok(Self {
+                sid: token_user.User.Sid,
+                buffer: buffer_handle,
+            })
+        }
+    }
+
+    impl Drop for CurrentUserSid {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.buffer);
+            }
+        }
+    }
+
+    struct TokenHandle(HANDLE);
+
+    impl Drop for TokenHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    struct LocalAcl(*mut ACL);
+
+    impl Drop for LocalAcl {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0 as isize);
+            }
+        }
+    }
+
+    struct LocalSecurityDescriptor(*mut std::ffi::c_void);
+
+    impl LocalSecurityDescriptor {
+        fn is_dacl_protected(&self) -> Result<bool, AppError> {
+            let mut control = 0u16;
+            let mut revision = 0u32;
+            let ok = unsafe { GetSecurityDescriptorControl(self.0, &mut control, &mut revision) };
+            if ok == 0 {
+                return Err(last_io_error("read staging security descriptor control"));
+            }
+            Ok(control & SE_DACL_PROTECTED != 0)
+        }
+    }
+
+    impl Drop for LocalSecurityDescriptor {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0 as isize);
+            }
+        }
+    }
+
+    fn wide_path(path: &Path) -> Vec<u16> {
+        OsStr::new(path)
+            .encode_wide()
+            .chain(once(0))
+            .collect::<Vec<_>>()
+    }
+
+    fn last_acl_error(context: &str, status: u32) -> AppError {
+        AppError::FileIO(format!("{context}: Windows error {status}"))
+    }
+
+    fn last_io_error(context: &str) -> AppError {
+        AppError::FileIO(format!("{context}: {}", std::io::Error::last_os_error()))
+    }
 }
 
 #[cfg(windows)]
