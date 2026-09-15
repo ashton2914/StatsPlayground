@@ -9,6 +9,10 @@ import {
   type TableTransformCommandDependencies,
 } from "@/applicationCommands/tableTransformCommands";
 import { createSqlCommandHandlers, type SqlCommandDependencies } from "@/applicationCommands/sqlCommands";
+import {
+  createTabulateCommandHandlers,
+  type TabulateCommandDependencies,
+} from "@/applicationCommands/tabulateCommands";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type {
   ApplicationCommandRegistry,
@@ -26,6 +30,7 @@ export interface ApplicationRuntimeDependencies {
   table?: Omit<TableCommandDependencies, "projectHandlers" | "projectDependencies">;
   tableTransform?: Omit<TableTransformCommandDependencies, "projectHandlers" | "projectDependencies">;
   sql?: Omit<SqlCommandDependencies, "projectHandlers" | "projectDependencies">;
+  tabulate?: Partial<TabulateCommandDependencies>;
 }
 
 export function createApplicationRuntime(
@@ -49,6 +54,10 @@ export function createApplicationRuntime(
   const sqlHandlers = createSqlCommandHandlers({
     ...dependencies.sql,
     projectHandlers,
+  });
+  const tabulateHandlers = createTabulateCommandHandlers({
+    createTable: (input, controls) => tableHandlers.createTable(input, controls),
+    ...dependencies.tabulate,
   });
 
   runtime.register(
@@ -116,6 +125,45 @@ export function createApplicationRuntime(
       return {
         changed: true,
         data: outcome.result,
+        warnings: outcome.warnings,
+      };
+    },
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "tabulate.create",
+    async (input, context) => ({
+      changed: true,
+      data: await tabulateHandlers.create(input, { beginCommit: () => context.beginCommit() }),
+      warnings: [],
+    }),
+    { mode: "mutation", risk: "low" },
+  );
+
+  runtime.register(
+    "tabulate.run",
+    async (input, context) => {
+      const outcome = await tabulateHandlers.run(input, { signal: context.signal });
+      return {
+        changed: false,
+        data: outcome.data,
+        warnings: outcome.warnings,
+      };
+    },
+    { mode: "read", risk: "low" },
+  );
+
+  runtime.register(
+    "tabulate.exportTable",
+    async (input, context) => {
+      const outcome = await tabulateHandlers.exportTable(input, {
+        signal: context.signal,
+        beginCommit: () => context.beginCommit(),
+      });
+      return {
+        changed: true,
+        data: outcome.data,
         warnings: outcome.warnings,
       };
     },

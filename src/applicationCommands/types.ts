@@ -137,6 +137,41 @@ export interface SqlCreateTableResult {
   outputTable: TableDescribeResult | null;
 }
 
+export interface TabulateCreateInput {
+  sourceDatasetId: string;
+}
+
+export interface TabulateCreateResult {
+  item: import("@/types/tabulate").TabulateItem;
+}
+
+export interface TabulateRunInput {
+  tabulateId: string;
+  request: import("@/types/tabulate").TabulateRequest;
+}
+
+export interface TabulateRunResult {
+  tabulateId: string;
+  requestFingerprint: string;
+  sourceGeneration: number;
+  completedAt: string;
+  result: import("@/types/tabulate").TabulateResult;
+  cacheValid: boolean;
+}
+
+export interface TabulateExportTableInput {
+  tabulateId: string;
+  request: import("@/types/tabulate").TabulateRequest;
+  tableName: string;
+}
+
+export interface TabulateExportTableResult {
+  outputTable: TableDescribeResult | null;
+  reran: boolean;
+  requestFingerprint: string;
+  sourceGeneration: number;
+}
+
 export type ProjectDocumentKind = "tableTransform" | "graph" | "analysis" | "tabulate" | "report";
 
 export interface ProjectDocumentListInput {
@@ -229,6 +264,9 @@ export type ApplicationCommandRegistry = {
   "tableTransform.create": { input: TableTransformCreateInput; data: TableTransformCommandData };
   "tableTransform.run": { input: TableTransformRunInput; data: TableTransformCommandData };
   "sql.createTable": { input: SqlCreateTableInput; data: SqlCreateTableResult };
+  "tabulate.create": { input: TabulateCreateInput; data: TabulateCreateResult };
+  "tabulate.run": { input: TabulateRunInput; data: TabulateRunResult };
+  "tabulate.exportTable": { input: TabulateExportTableInput; data: TabulateExportTableResult };
   "table.list": { input: TableListInput; data: TableListResult };
   "table.describe": { input: TableDescribeInput; data: TableDescribeResult };
   "document.list": { input: ProjectDocumentListInput; data: ProjectDocumentListResult };

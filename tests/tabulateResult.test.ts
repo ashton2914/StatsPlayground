@@ -132,9 +132,9 @@ assert.match(
   /onDrop=\{\(event\) => \{\s*event\.stopPropagation\(\);\s*const payload = readDragPayload/,
 );
 assert.match(tabulateResultTableSource, /style=\{\{ left: rowLabelIndex \* ROW_LABEL_WIDTH \}\}/);
-assert.match(tabulateViewSource, /onTableCreated/);
-assert.match(tabulateViewSource, /buildTabulateExportRequest/);
-assert.match(tabulateViewSource, /createTableFromRows/);
+assert.match(tabulateViewSource, /applicationRuntime\.execute\(/);
+assert.match(tabulateViewSource, /type: "tabulate\.run"/);
+assert.match(tabulateViewSource, /type: "tabulate\.exportTable"/);
 assert.match(tabulateViewSource, /resolveProjectBasenameForKind\(/);
 assert.match(tabulateViewSource, /invalidName\.wrongExtension/);
 assert.match(tabulateViewSource, /invalidName\.reserved/);
@@ -226,9 +226,50 @@ assert.deepEqual(
 );
 assert.equal("deleteByDataset" in useTabulateStore.getState(), false);
 
+useTabulateStore.getState().setLatestResult("tab-2", {
+  requestFingerprint: "fp-1",
+  sourceGeneration: 3,
+  completedAt: "2026-09-15T00:00:00.000Z",
+  result: {
+    rowMembers: [["Region"]],
+    columnMembers: [["Channel"]],
+    statistics: [],
+    cells: [],
+    rowTotals: [],
+    columnTotals: [],
+    grandTotals: [],
+    cellCount: 0,
+    limit: 10000,
+  },
+});
+assert.equal(useTabulateStore.getState().getLatestResult("tab-2")?.requestFingerprint, "fp-1");
+
+useTabulateStore.getState().updateItem("tab-2", { rowFields: ["Build"] });
+assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null);
+
+useTabulateStore.getState().setLatestResult("tab-2", {
+  requestFingerprint: "fp-2",
+  sourceGeneration: 4,
+  completedAt: "2026-09-15T00:00:00.000Z",
+  result: {
+    rowMembers: [["Region"]],
+    columnMembers: [["Channel"]],
+    statistics: [],
+    cells: [],
+    rowTotals: [],
+    columnTotals: [],
+    grandTotals: [],
+    cellCount: 0,
+    limit: 10000,
+  },
+});
+useTabulateStore.getState().deleteItem("tab-2");
+assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null);
+
 useTabulateStore.getState().reset();
 assert.deepEqual(useTabulateStore.getState().items, []);
 assert.equal(useTabulateStore.getState().counter, 0);
+assert.deepEqual(useTabulateStore.getState().latestResultsById, {});
 
 console.log("tabulateResult helpers OK");
 

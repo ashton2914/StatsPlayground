@@ -339,7 +339,6 @@ export function Workspace() {
   const deleteAnalysis = useAnalysisStore((s) => s.removeAnalysis);
   const loadAnalyses = useAnalysisStore((s) => s.loadAnalyses);
   const resetAnalyses = useAnalysisStore((s) => s.reset);
-  const addTabulate = useTabulateStore((s) => s.addItem);
   const renameTabulate = useTabulateStore((s) => s.renameItem);
   const deleteTabulate = useTabulateStore((s) => s.deleteItem);
   const resetTabulates = useTabulateStore((s) => s.reset);
@@ -809,30 +808,18 @@ export function Workspace() {
     if (!activeDatasetId) {
       return;
     }
-    const ds = datasets.find((d) => d.id === activeDatasetId);
-    if (!ds) return;
-    const id = crypto.randomUUID();
-    const item: TabulateItem = {
-      id,
-      name: allocateProjectBasename(
-        useTabulateStore.getState().nextName(),
-        ".spf",
-        analysisDocumentNames,
-      ),
-      sourceDatasetId: activeDatasetId,
-      rowFields: [],
-      columnFields: [],
-      statistics: [],
-      includeRowTotals: true,
-      includeColumnTotals: true,
-      createdAt: new Date().toISOString(),
-    };
-    addTabulate(item);
-    activateWorkspaceDocument("tabulate", id);
-    markDirty();
-    recordAction(t("history.newTabulate", { name: item.name, source: ds.name }));
-    setRenamingId(id);
-    setRenameValue(item.name);
+    applicationRuntime.execute(
+      {
+        type: "tabulate.create",
+        input: { sourceDatasetId: activeDatasetId },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch(() => {
+      alert(t("alert.failedToCreateTabulate", { defaultValue: "Failed to create tabulate." }));
+    });
   };
 
   const handleCreateFitYByX = () => {
@@ -2676,12 +2663,6 @@ export function Workspace() {
                   item={item}
                   dataset={ds}
                   existingDatasetNames={datasets.map((entry) => entry.name)}
-                  onTableCreated={async (dataset) => {
-                    await refreshDatasets();
-                    markDirty();
-                    activateWorkspaceDocument("dataset", dataset.id);
-                    recordAction(t("history.tabulateTableCreated", { name: dataset.name }));
-                  }}
                 />
               );
             })()
