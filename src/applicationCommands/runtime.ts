@@ -49,6 +49,8 @@ interface RuntimeRequest<TData> {
   controller: AbortController;
   committed: boolean;
   settled: boolean;
+  cancellationSignal: Promise<void>;
+  signalCancellation(): void;
   resolve(value: CommandResult<TData>): void;
   reject(error: unknown): void;
 }
@@ -163,6 +165,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     });
 
     const policyDecision = this.resolvePolicyDecision(command.type, actor, registered.metadata, request);
+    policyDecision.catch(() => undefined);
 
     if (context?.signal) {
       if (context.signal.aborted) {
@@ -208,6 +211,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     }
 
     request.controller.abort();
+    request.signalCancellation();
     if (request.status === "queued" || request.status === "awaiting-confirmation") {
       request.status = "cancelled";
       this.rejectRequest(request, new CommandExecutionError("cancelled", "Command cancelled"));
@@ -261,10 +265,14 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
   }): RuntimeRequest<TData> & { promise: Promise<CommandResult<TData>> } {
     let resolvePromise: ((value: CommandResult<TData>) => void) | null = null;
     let rejectPromise: ((reason?: unknown) => void) | null = null;
+    let resolveCancellation: (() => void) | null = null;
 
     const promise = new Promise<CommandResult<TData>>((resolve, reject) => {
       resolvePromise = resolve;
       rejectPromise = reject;
+    });
+    const cancellationSignal = new Promise<void>((resolve) => {
+      resolveCancellation = resolve;
     });
 
     const request: RuntimeRequest<TData> & { promise: Promise<CommandResult<TData>> } = {
@@ -277,6 +285,10 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       controller: new AbortController(),
       committed: false,
       settled: false,
+      cancellationSignal,
+      signalCancellation() {
+        resolveCancellation?.();
+      },
       resolve(value) {
         if (request.settled) return;
         request.settled = true;
@@ -308,7 +320,25 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     }
 
     try {
-      const decision = await policyDecision;
+      const policyOutcome = await Promise.race([
+        policyDecision.then(
+          (decision) => ({ kind: "policy" as const, decision }),
+          (error) => ({ kind: "policy_error" as const, error }),
+        ),
+        request.cancellationSignal.then(() => ({ kind: "cancelled" as const })),
+      ]);
+
+      if (policyOutcome.kind === "cancelled") {
+        throw new CommandExecutionError("cancelled", "Command cancelled");
+      }
+
+      if (policyOutcome.kind === "policy_error") {
+        throw new CommandExecutionError("execution_failed", "Policy evaluation failed", false, {
+          cause: policyOutcome.error instanceof Error ? policyOutcome.error.message : String(policyOutcome.error),
+        });
+      }
+
+      const decision = policyOutcome.decision;
       if (request.settled) {
         return;
       }

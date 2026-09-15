@@ -274,6 +274,82 @@ function mutate(control?: ApplicationCommand<TestRegistry, "test.mutate">["contr
 }
 
 {
+  let firstPolicyReject: ((error: unknown) => void) | null = null;
+  let policyCalls = 0;
+  const splitPolicy: CommandPolicy = {
+    canExecute() {
+      policyCalls += 1;
+      if (policyCalls === 1) {
+        return new Promise((_, reject) => {
+          firstPolicyReject = reject;
+        });
+      }
+      return { allowed: true };
+    },
+  };
+
+  const runtime = createApplicationCommandRuntime<TestRegistry>({
+    initialRevision: 0,
+    policy: splitPolicy,
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+
+  try {
+    runtime.register(
+      "test.mutate",
+      async () => ({ changed: true, data: { id: "first" }, warnings: [] }),
+      { mode: "mutation" },
+    );
+    runtime.register(
+      "test.other",
+      async () => ({ changed: true, data: { marker: "other" }, warnings: [] }),
+      { mode: "mutation" },
+    );
+
+    const first = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" });
+    const firstOutcome = first.then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
+    const firstSnapshot = runtime.snapshot().find((entry) => entry.command === "test.mutate");
+    assert.equal(firstSnapshot?.status, "awaiting-confirmation");
+
+    // Let the queued operation enter runRequest and block on policy awaiting.
+    await Promise.resolve();
+
+    const cancelled = runtime.cancel(firstSnapshot!.requestId);
+    assert.equal(cancelled, true);
+
+    const second = runtime.execute({ type: "test.other", input: {} }, { kind: "ui" });
+    const secondResult = await Promise.race([
+      second,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("second command timed out after cancelling unresolved policy")), 75);
+      }),
+    ]);
+
+    assert.equal(secondResult.command, "test.other");
+    assert.equal(secondResult.projectRevision, 1);
+    const cancelledOutcome = await firstOutcome;
+    assert.equal(cancelledOutcome.ok, false);
+    assert.ok(cancelledOutcome.error instanceof CommandExecutionError);
+    assert.equal(cancelledOutcome.error.code, "cancelled");
+
+    firstPolicyReject?.(new Error("late policy rejection"));
+    await new Promise<void>((resolve) => {
+      setTimeout(() => resolve(), 0);
+    });
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
+}
+
+{
   const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
   await assert.rejects(
     runtime.execute({ type: "test.missing" as keyof TestRegistry, input: {} as Record<string, never> }, { kind: "ui" }),
