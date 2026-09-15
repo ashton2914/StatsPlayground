@@ -2,10 +2,10 @@ mod commands;
 pub mod connectors;
 mod engine;
 mod error;
-mod mcp;
+pub mod mcp;
 mod models;
 mod services;
-mod state;
+pub mod state;
 
 #[cfg(any(test, feature = "perf-harness"))]
 #[doc(hidden)]
@@ -28,6 +28,10 @@ pub fn run() {
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
         })
         .invoke_handler(tauri::generate_handler![
+            commands::mcp_commands::start_mcp_server,
+            commands::mcp_commands::stop_mcp_server,
+            commands::mcp_commands::get_mcp_server_status,
+            commands::mcp_commands::list_mcp_audit_entries,
             commands::mcp_commands::register_application_command_dispatcher,
             commands::mcp_commands::complete_application_command,
             commands::mcp_commands::unregister_application_command_dispatcher,

@@ -1,8 +1,31 @@
 use tauri::State;
 
 use crate::error::AppError;
-use crate::models::mcp::{McpBrokerCompletion, McpBrokerUpdate};
+use crate::models::mcp::{McpAuditEntry, McpBrokerCompletion, McpBrokerUpdate, McpServerStatus};
 use crate::state::AppState;
+
+#[tauri::command(async)]
+pub async fn start_mcp_server(state: State<'_, AppState>) -> Result<McpServerStatus, AppError> {
+    state
+        .mcp_server
+        .start(state.mcp_command_broker.clone())
+        .await
+}
+
+#[tauri::command(async)]
+pub async fn stop_mcp_server(state: State<'_, AppState>) -> Result<(), AppError> {
+    state.mcp_server.stop().await
+}
+
+#[tauri::command]
+pub fn get_mcp_server_status(state: State<'_, AppState>) -> Result<McpServerStatus, AppError> {
+    state.mcp_server.status()
+}
+
+#[tauri::command]
+pub fn list_mcp_audit_entries(state: State<'_, AppState>) -> Result<Vec<McpAuditEntry>, AppError> {
+    state.mcp_server.audit_entries()
+}
 
 #[tauri::command]
 pub fn register_application_command_dispatcher(state: State<'_, AppState>) -> Result<(), AppError> {

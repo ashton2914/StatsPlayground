@@ -4,6 +4,7 @@ use std::sync::{Mutex, RwLock};
 use crate::engine::duckdb_engine::DuckDbEngine;
 use crate::error::AppError;
 use crate::mcp::broker::McpCommandBroker;
+use crate::mcp::server::McpServerRuntime;
 use crate::models::project::ProjectInfo;
 use crate::models::table::ColumnDisplayProps;
 use crate::services::path_authorization_service::PathAuthorizationService;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub save_coordinator: SaveCoordinator,
     pub workflow_run_journal: Mutex<HashMap<String, WorkflowRunJournalEntry>>,
     pub mcp_command_broker: McpCommandBroker,
+    pub mcp_server: McpServerRuntime,
 }
 
 impl AppState {
@@ -39,6 +41,7 @@ impl AppState {
             save_coordinator: SaveCoordinator::new(),
             workflow_run_journal: Mutex::new(HashMap::new()),
             mcp_command_broker: McpCommandBroker::new(),
+            mcp_server: McpServerRuntime::new(),
         })
     }
 

@@ -3,6 +3,30 @@ use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct McpServerStatus {
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    pub active_connections: usize,
+    pub queued_requests: usize,
+    pub running_requests: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpAuditEntry {
+    pub request_id: String,
+    pub timestamp: String,
+    pub tool: String,
+    pub status: String,
+    pub duration_ms: Option<u64>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct McpCommandBrokerConfig {
     pub max_pending: usize,
     pub max_concurrent: usize,

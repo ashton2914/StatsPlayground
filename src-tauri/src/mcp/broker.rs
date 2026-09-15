@@ -221,6 +221,50 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         Ok(())
     }
 
+    pub fn cancel_non_committing_requests(&self, message: &str) -> Result<(), AppError> {
+        let mut pending = self
+            .inner
+            .pending
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let request_ids: Vec<String> = pending
+            .iter()
+            .filter(|(_, entry)| !entry.committing)
+            .map(|(request_id, _)| request_id.clone())
+            .collect();
+        for request_id in request_ids {
+            if let Some(mut entry) = pending.remove(&request_id) {
+                if let Some(sender) = entry.completion.take() {
+                    let _ = sender.send(ApplicationCommandResponse::Error(McpCommandError {
+                        code: "cancelled".to_string(),
+                        message: message.to_string(),
+                        retryable: true,
+                        details: None,
+                    }));
+                }
+                self.inner
+                    .emitter
+                    .emit_application_command_cancel(request_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn queue_status(&self) -> Result<(usize, usize), AppError> {
+        let pending = self
+            .inner
+            .pending
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let queued = pending.values().filter(|entry| !entry.committing).count();
+        let running = self
+            .inner
+            .config
+            .max_concurrent
+            .saturating_sub(self.inner.semaphore.available_permits());
+        Ok((queued, running))
+    }
+
     pub async fn dispatch(
         &self,
         command: ApplicationCommandEnvelope,
@@ -1220,6 +1264,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_shutdown_cancels_non_committing_requests_and_reports_queue_status() {
+        let (broker, emitter) = broker(2, 1);
+        broker.register_dispatcher().expect("register dispatcher");
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+
+        let pending = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("shutdown"),
+                        Duration::from_secs(5),
+                        progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let (queued, running) = broker.queue_status().expect("queue status");
+        assert_eq!(queued, 1);
+        assert_eq!(running, 1);
+
+        broker
+            .cancel_non_committing_requests("MCP server stopped")
+            .expect("cancel pending requests");
+        let request_id = emitter.requests()[0].request_id.clone();
+        assert_eq!(emitter.cancellation_requests(), vec![request_id]);
+        let (queued, running) = broker.queue_status().expect("queue status after cancel");
+        assert_eq!(queued, 0);
+        assert_eq!(running, 1);
+        assert!(matches!(
+            pending.await.expect("pending dispatch"),
+            Err(crate::error::AppError::Cancelled(message)) if message.contains("stopped")
+        ));
+        let (queued, running) = broker.queue_status().expect("queue status after task");
+        assert_eq!(queued, 0);
+        assert_eq!(running, 0);
+        assert!(matches!(
+            broker.dispatch(
+                test_command("still-ready"),
+                Duration::from_millis(5),
+                mpsc::unbounded_channel().0,
+                McpCancellationToken::new(),
+            ).await,
+            Err(crate::error::AppError::Busy(message)) if message.contains("timeout")
+        ));
+    }
+
+    #[tokio::test]
     async fn unregister_and_post_commit_outcomes_are_discoverable_without_false_rollback() {
         let (broker, emitter) = broker(2, 2);
         broker.register_dispatcher().expect("register dispatcher");
@@ -1282,12 +1378,9 @@ mod tests {
             }),
             Ok(true)
         ));
-        assert_eq!(
-            broker
-                .forward_cancellation(&commit_request_id)
-                .expect("forward post-commit cancellation"),
-            true
-        );
+        assert!(broker
+            .forward_cancellation(&commit_request_id)
+            .expect("forward post-commit cancellation"));
         assert!(emitter.cancellation_requests().contains(&commit_request_id));
         assert!(matches!(
             broker.complete_application_command(McpBrokerCompletion {
@@ -1307,13 +1400,10 @@ mod tests {
             .expect("committed result");
         assert_eq!(committed.request_id, commit_request_id);
         assert_eq!(committed.data, json!({ "committed": true }));
-        assert_eq!(
-            broker
-                .committed_outcome(&commit_request_id)
-                .expect("outcome lookup")
-                .is_some(),
-            true
-        );
+        assert!(broker
+            .committed_outcome(&commit_request_id)
+            .expect("outcome lookup")
+            .is_some());
     }
 
     #[tokio::test]
@@ -1447,12 +1537,9 @@ mod tests {
                     percent: None,
                 })
                 .expect("record committing");
-            assert_eq!(
-                broker
-                    .mark_timeout_elapsed(&request_id)
-                    .expect("mark timeout"),
-                true
-            );
+            assert!(broker
+                .mark_timeout_elapsed(&request_id)
+                .expect("mark timeout"));
             broker
                 .complete_application_command(McpBrokerCompletion {
                     request_id: request_id.clone(),
