@@ -217,3 +217,34 @@ Complete for the remaining Minor from `task-6-re-review-1.md`: the graph regress
 ### Commit
 
 - Commit message: `test(application): remove graph runtime casts`
+
+## Fix Round 3
+
+### Status
+
+Complete for the remaining Minor in `tests/applicationCommandGraph.test.ts`: the file now has zero literal `as any` casts and zero `runtime as` casts.
+
+### Fixes
+
+- Removed 4 casts total from `tests/applicationCommandGraph.test.ts`.
+- Locations removed:
+   - stale-revision no-op block around the `createApplicationRuntime(...)` fixture and `runtime.execute(...)` call
+   - stale-revision conflict block around the `createApplicationRuntime(...)` fixture and `runtime.execute(...)` call
+- Re-typed both remaining runtime dependency fixtures with `satisfies ApplicationRuntimeDependencies` and invoked `runtime.execute(...)` directly.
+
+### Zero-Count Evidence
+
+- Whole-file search/read of `tests/applicationCommandGraph.test.ts` now yields zero matches for literal `as any`.
+- Whole-file search/read of `tests/applicationCommandGraph.test.ts` now yields zero matches for literal `runtime as`.
+
+### Validation
+
+- `get_errors` for `tests/applicationCommandGraph.test.ts`: no errors found
+- Focused Graph test: `application command graph lifecycle OK`
+- Focused Report test: `application command report lifecycle OK`
+- Focused WorkspaceReport test: `Workspace report integration contract passed`
+- Production build: success (`tsc -b && vite build`)
+
+### Commit Note
+
+- `test(application): remove graph runtime casts`
