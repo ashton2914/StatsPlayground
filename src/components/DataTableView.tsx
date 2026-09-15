@@ -244,7 +244,7 @@ const TableRow = React.memo(function TableRow({
     );
   }
   return (
-    <tr className={isRowSelected ? "sp-row-selected" : ""}>
+    <tr className={`sp-data-row${isRowSelected ? " sp-row-selected" : ""}`}>
       <td
         className={`sp-row-hdr${isRowActive ? " sp-row-active" : ""}${isRowSelected ? " sp-row-selected-hdr" : ""}`}
         data-row-hdr={ri}
@@ -4162,7 +4162,10 @@ export function DataTableView({
       onPaste={handlePaste}
       tabIndex={0}
       ref={containerRef}
-      style={{ ["--sp-zoom" as string]: String(zoom) } as React.CSSProperties}
+      style={{
+        ["--sp-zoom" as string]: String(zoom),
+        ["--sp-row-height" as string]: `${ROW_HEIGHT}px`,
+      } as React.CSSProperties}
     >
 
       {/* Table-local filter and column property controls. */}
