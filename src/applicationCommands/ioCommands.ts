@@ -4,6 +4,7 @@ import type {
   TableExportCsvInput,
   TableExportCsvResult,
 } from "@/applicationCommands/types";
+import { CommandExecutionError, type CommandExecutionContext } from "@/applicationCommands/runtime";
 import { ioService } from "@/services/ioService";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 
@@ -52,11 +53,31 @@ export function createIoCommandHandlers(
     };
   }
 
-  async function exportTableCsv(input: TableExportCsvInput): Promise<TableExportCsvResult> {
+  async function exportTableCsv(
+    input: TableExportCsvInput,
+    context: Pick<CommandExecutionContext, "requestId" | "trusted">,
+  ): Promise<TableExportCsvResult> {
     const inspection = await dependencies.inspectCsvTarget(input);
+    const targetStatus = inspection.targetExists ? "overwriteExisting" : "createNew";
+    const confirmationGranted = context.trusted.policy.confirmationGranted;
+    const policyTargetStatus = context.trusted.policy.trustedData?.targetStatus;
+
+    if (targetStatus === "overwriteExisting" && !confirmationGranted) {
+      throw new CommandExecutionError(
+        "confirmation_required",
+        "CSV export target requires confirmation",
+        true,
+        {
+          requestId: context.requestId,
+          policyTargetStatus: typeof policyTargetStatus === "string" ? policyTargetStatus : undefined,
+          targetStatus,
+        },
+      );
+    }
+
     await dependencies.exportCsv(input);
     return {
-      targetStatus: inspection.targetExists ? "overwriteExisting" : "createNew",
+      targetStatus,
     };
   }
 

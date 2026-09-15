@@ -117,6 +117,10 @@ import {
   shouldApplyDistributionEditMetadataLoad,
 } from "./workspaceDistributionMetadata";
 import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
+import {
+  createWorkspaceCommandHandlers,
+  waitForWorkspaceCommandConfirmation,
+} from "./workspaceCommandHandlers";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -1433,28 +1437,24 @@ export function Workspace() {
   };
 
   const handleSave = async () => {
-    if (saving) return;
     try {
-      let filePath = project?.filePath;
-      if (!project?.filePath) {
-        const selectedFilePath = await save({
-          title: t("welcome.saveProjectDialog"),
-          defaultPath: "Untitled Project.spprj",
-          filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
-        });
-        if (!selectedFilePath) return;
-        filePath = selectedFilePath as string;
-      }
-
-      await applicationRuntime.execute(
-        {
-          type: "project.save",
-          input: { filePath },
-          control: { expectedProjectRevision: useProjectStore.getState().projectRevision },
+      await createWorkspaceCommandHandlers({
+        t,
+        getProjectFilePath: () => project?.filePath,
+        getProjectRevision: () => useProjectStore.getState().projectRevision,
+        isSaving: () => saving,
+        isReadOnly: () => readOnly,
+        requestSaveProjectPath: async () => {
+          const selectedFilePath = await save({
+            title: t("welcome.saveProjectDialog"),
+            defaultPath: "Untitled Project.spprj",
+            filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
+          });
+          return typeof selectedFilePath === "string" ? selectedFilePath : null;
         },
-        { kind: "ui" },
-      );
-      showToast(t("common.saved"), 1500);
+        executeCommand: applicationRuntime.execute.bind(applicationRuntime),
+        showToast,
+      }).saveProject();
     } catch (error) {
       alert(`${t("menu.save")}: ${String(error)}`);
     }
@@ -1826,33 +1826,20 @@ export function Workspace() {
 
     if (plan.format === "csv") {
       if (plan.mode === "single-file") {
-        const separatorIndex = Math.max(outputPath.lastIndexOf("/"), outputPath.lastIndexOf("\\"));
-        const rootPath = separatorIndex >= 0 ? outputPath.slice(0, separatorIndex) : ".";
-        const relativePath = separatorIndex >= 0 ? outputPath.slice(separatorIndex + 1) : outputPath;
-        const authorization = await ioService.authorizeCsvExportRoot(rootPath);
-
-        try {
-          const exportCommand = applicationRuntime.execute(
-            {
-              type: "table.exportCsv",
-              input: {
-                datasetId: plan.datasetIds[0]!,
-                rootId: authorization.rootId,
-                relativePath,
-              },
-            },
-            { kind: "ui" },
-          );
-          const requestId = await waitForCommandConfirmation(exportCommand.requestId, exportCommand);
-          if (requestId) {
-            const allowOverwrite = window.confirm(t("common.confirmOverwrite", { defaultValue: "Overwrite the existing file?" }));
-            mcpManagementService.confirmCommandRequest(requestId, allowOverwrite);
-          }
-          await exportCommand;
-        } finally {
-          await ioService.revokeCsvExportRoot(authorization.rootId);
-        }
-        return true;
+        return createWorkspaceCommandHandlers({
+          t,
+          getProjectFilePath: () => project?.filePath,
+          getProjectRevision: () => useProjectStore.getState().projectRevision,
+          isSaving: () => saving,
+          isReadOnly: () => readOnly,
+          executeCommand: applicationRuntime.execute.bind(applicationRuntime),
+          authorizeCsvExportRoot: ioService.authorizeCsvExportRoot,
+          revokeCsvExportRoot: ioService.revokeCsvExportRoot,
+          listCommandRequests: mcpManagementService.listCommandRequests,
+          confirmCommandRequest: mcpManagementService.confirmCommandRequest,
+          confirmOverwrite: () => window.confirm(t("common.confirmOverwrite", { defaultValue: "Overwrite the existing file?" })),
+          waitForCommandConfirmation,
+        }).exportCsv(plan, outputPath);
       }
       await ioService.exportCsvZipSubset(outputPath, plan.datasetIds, plan.archivePaths);
       return true;
@@ -1873,50 +1860,27 @@ export function Workspace() {
   };
 
   const waitForCommandConfirmation = async (requestId: string, commandPromise: Promise<unknown>) => {
-    let settled = false;
-    commandPromise.finally(() => {
-      settled = true;
-    }).catch(() => undefined);
-
-    while (!settled) {
-      const pendingRequest = mcpManagementService.listCommandRequests()
-        .find((request) => request.requestId === requestId && request.status === "awaiting-confirmation");
-      if (pendingRequest) {
-        return pendingRequest.requestId;
-      }
-      await new Promise<void>((resolve) => {
+    return waitForWorkspaceCommandConfirmation(requestId, commandPromise, {
+      listCommandRequests: mcpManagementService.listCommandRequests,
+      waitForAnimationFrame: () => new Promise<void>((resolve) => {
         window.requestAnimationFrame(() => resolve());
-      });
-    }
-
-    return null;
+      }),
+    });
   };
 
   const handleCreateSnapshot = async () => {
-    if (readOnly) return;
-    setBusyMessage(t("workspace.creatingSnapshot"));
-    const unlisten = await listen<{
-      datasetIndex: number;
-      datasetTotal: number;
-      datasetName: string;
-    }>("snapshot-progress", (event) => {
-      const { datasetIndex, datasetTotal, datasetName } = event.payload;
-      if (datasetTotal > 0 && datasetIndex < datasetTotal) {
-        setBusyMessage(`${t("workspace.creatingSnapshot")} ${t("workspace.importProgressTable", { i: datasetIndex + 1, total: datasetTotal, name: datasetName })}`);
-      }
-    });
-
     try {
-      await applicationRuntime.execute(
-        {
-          type: "snapshot.create",
-          input: {},
-        },
-        { kind: "ui" },
-      );
+      await createWorkspaceCommandHandlers({
+        t,
+        getProjectFilePath: () => project?.filePath,
+        getProjectRevision: () => useProjectStore.getState().projectRevision,
+        isSaving: () => saving,
+        isReadOnly: () => readOnly,
+        executeCommand: applicationRuntime.execute.bind(applicationRuntime),
+        listen,
+        setBusyMessage,
+      }).createSnapshot();
     } finally {
-      unlisten();
-      setBusyMessage(null);
     }
   };
 

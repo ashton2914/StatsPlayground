@@ -83,9 +83,9 @@ export function createApplicationRuntime(
   const runtime = createApplicationCommandRuntime<ApplicationCommandRegistry>({
     initialRevision: dependencies.initialRevision,
     policy: dependencies.policy ?? createDefaultCommandPolicy({
-      shouldConfirmCsvExport: async (input) => {
+      inspectCsvExportTarget: async (input) => {
         const result = await ioHandlers.inspectTableExportCsvTarget(input);
-        return result.targetStatus === "overwriteExisting";
+        return result.targetStatus;
       },
     }),
     revision: dependencies.revision,
@@ -332,9 +332,9 @@ export function createApplicationRuntime(
 
   runtime.register(
     "table.exportCsv",
-    async (input) => ({
+    async (input, context) => ({
       changed: false,
-      data: await ioHandlers.exportTableCsv(input),
+      data: await ioHandlers.exportTableCsv(input, context),
       warnings: [],
     }),
     { mode: "read", risk: "high" },

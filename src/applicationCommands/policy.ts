@@ -19,6 +19,7 @@ export interface CommandPolicyDecision {
   allowed: boolean;
   reason?: string;
   requireConfirmation?: boolean;
+  trustedData?: Record<string, unknown>;
 }
 
 export interface CommandPolicy {
@@ -32,11 +33,11 @@ export const allowAllCommandPolicy: CommandPolicy = {
 };
 
 export function createDefaultCommandPolicy(input?: {
-  shouldConfirmCsvExport?: (input: {
+  inspectCsvExportTarget?: (input: {
     datasetId: string;
     rootId: string;
     relativePath: string;
-  }) => boolean | Promise<boolean>;
+  }) => "createNew" | "overwriteExisting" | Promise<"createNew" | "overwriteExisting">;
 }): CommandPolicy {
   return {
     canExecute(policyInput) {
@@ -57,24 +58,26 @@ export function createDefaultCommandPolicy(input?: {
         return { allowed: true };
       }
 
-      const decision = input?.shouldConfirmCsvExport?.({
+      const decision = input?.inspectCsvExportTarget?.({
         datasetId: exportInput.datasetId,
         rootId: exportInput.rootId,
         relativePath: exportInput.relativePath,
       });
 
       if (decision instanceof Promise) {
-        return decision.then((requireConfirmation) => ({
+        return decision.then((targetStatus) => ({
           allowed: true,
-          requireConfirmation,
-          reason: requireConfirmation ? "CSV export target already exists" : undefined,
+          requireConfirmation: targetStatus === "overwriteExisting",
+          reason: targetStatus === "overwriteExisting" ? "CSV export target already exists" : undefined,
+          trustedData: { targetStatus },
         }));
       }
 
       return {
         allowed: true,
-        requireConfirmation: Boolean(decision),
-        reason: decision ? "CSV export target already exists" : undefined,
+        requireConfirmation: decision === "overwriteExisting",
+        reason: decision === "overwriteExisting" ? "CSV export target already exists" : undefined,
+        trustedData: decision ? { targetStatus: decision } : undefined,
       };
     },
   };

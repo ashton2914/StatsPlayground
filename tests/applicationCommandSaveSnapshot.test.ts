@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { createApplicationRuntime } from "@/applicationCommands/applicationRuntime";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
+import { waitForWorkspaceCommandConfirmation } from "@/components/workspaceCommandHandlers";
 
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 const NOW = "2026-09-15T18:00:00.000Z";
@@ -40,12 +41,19 @@ assertSourceIncludes(applicationRuntimeSource, '"table.exportCsv"', "Application
 assertSourceIncludes(policySource, "requireConfirmation", "Command policy must classify commands that require confirmation");
 assertSourceIncludes(policySource, "requestId", "Confirmation policy must be keyed by runtime requestId rather than command input");
 
+function assertSourceIncludesAny(source: string, needles: string[], message: string): void {
+  assert.equal(needles.some((needle) => source.includes(needle)), true, message);
+}
+
 const handleSaveSource = sourceBetween(
   workspaceSource,
   "const handleSave = async () => {",
   "handleSaveRef.current = handleSave;",
 );
-assertSourceIncludes(handleSaveSource, 'type: "project.save"', "Workspace save must execute the shared project.save command");
+assertSourceIncludesAny(handleSaveSource, [
+  'type: "project.save"',
+  '}).saveProject();',
+], "Workspace save must stay wired to the shared project.save command path");
 assertSourceExcludes(handleSaveSource, "await applicationRuntime.flushPendingEffects();", "Workspace save must stop compensating for shared runtime effect draining");
 assertSourceExcludes(handleSaveSource, "buildSaveProjectRequest(", "Workspace save must stop building caller-supplied save payloads");
 assertSourceExcludes(handleSaveSource, "request:", "Workspace save must stop passing a caller-built request into project.save");
@@ -55,7 +63,10 @@ const handleExportTablesSource = sourceBetween(
   "const handleExportTables = async (plan: TableExportPlan) => {",
   "  // ---- Folder mutation helpers wired to the side-panel UI ----------------",
 );
-assertSourceIncludes(handleExportTablesSource, 'type: "table.exportCsv"', "Single-file CSV export must execute the shared table.exportCsv command");
+assertSourceIncludesAny(handleExportTablesSource, [
+  'type: "table.exportCsv"',
+  '}).exportCsv(plan, outputPath);',
+], "Single-file CSV export must execute the shared table.exportCsv command path");
 assertSourceExcludes(handleExportTablesSource, "await ioService.exportCsv(", "Workspace CSV export must stop calling ioService.exportCsv directly");
 
 const handleCreateSnapshotSource = sourceBetween(
@@ -63,7 +74,10 @@ const handleCreateSnapshotSource = sourceBetween(
   "const handleCreateSnapshot = async () => {",
   "const handleSnapshotContextMenu =",
 );
-assertSourceIncludes(handleCreateSnapshotSource, 'type: "snapshot.create"', "Workspace snapshot creation must execute the shared snapshot.create command");
+assertSourceIncludesAny(handleCreateSnapshotSource, [
+  'type: "snapshot.create"',
+  '}).createSnapshot();',
+], "Workspace snapshot creation must execute the shared snapshot.create command path");
 assertSourceExcludes(handleCreateSnapshotSource, "await createSnapshot()", "Workspace snapshot creation must stop bypassing the shared command layer");
 
 function baseProjectDependencies(filePath: string | null) {
@@ -262,6 +276,42 @@ async function waitForInspectionResolver(
 }
 
 {
+  let inspectionCount = 0;
+  let exportCalls = 0;
+  const runtime = createApplicationRuntime({
+    io: {
+      inspectCsvTarget: async () => {
+        inspectionCount += 1;
+        return { targetExists: inspectionCount >= 2 };
+      },
+      exportCsv: async () => {
+        exportCalls += 1;
+      },
+    },
+  } as never);
+
+  await assert.rejects(
+    (runtime as never as {
+      execute: (command: unknown, actor: { kind: "ui" }) => Promise<unknown>;
+    }).execute(
+      {
+        type: "table.exportCsv",
+        input: {
+          datasetId: "table-1",
+          rootId: "root-1",
+          relativePath: "exports/table-1.csv",
+        },
+        control: { expectedProjectRevision: 0 },
+      },
+      { kind: "ui" },
+    ),
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "confirmation_required",
+  );
+
+  assert.equal(exportCalls, 0, "CSV export must not overwrite after a false->true target race without request-bound confirmation");
+}
+
+{
   const waitForCommandConfirmationSource = sourceBetween(
     workspaceSource,
     "const waitForCommandConfirmation = async (",
@@ -271,10 +321,12 @@ async function waitForInspectionResolver(
     .replace(": string, commandPromise: Promise<unknown>", ", commandPromise")
     .replace("new Promise<void>", "new Promise");
   const waitForCommandConfirmation = new Function(
+    "waitForWorkspaceCommandConfirmation",
     "mcpManagementService",
     "window",
     `${executableWaitForCommandConfirmationSource}\nreturn waitForCommandConfirmation;`,
   )(
+    waitForWorkspaceCommandConfirmation,
     {
       listCommandRequests: () => [
         { requestId: "cmd-other", command: "table.exportCsv", status: "awaiting-confirmation" },

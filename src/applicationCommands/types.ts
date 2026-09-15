@@ -436,11 +436,22 @@ export interface CommandProgress {
   percent?: number;
 }
 
+export interface TrustedCommandExecutionContext {
+  requestId: string;
+  policy: {
+    requireConfirmation: boolean;
+    confirmationGranted: boolean;
+    reason?: string;
+    trustedData?: Record<string, unknown>;
+  };
+}
+
 export interface CommandExecutionContext {
   requestId: string;
   signal: AbortSignal;
   reportProgress(progress: CommandProgress): void;
   beginCommit(): void;
+  trusted: TrustedCommandExecutionContext;
 }
 
 export type ApplicationCommandRegistry = {

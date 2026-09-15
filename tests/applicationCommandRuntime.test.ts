@@ -336,6 +336,60 @@ async function waitForRequestStatus(
 }
 
 {
+  let resolvePolicy: ((decision: {
+    allowed: boolean;
+    reason?: string;
+    requireConfirmation?: boolean;
+    trustedData?: Record<string, unknown>;
+  }) => void) | null = null;
+  let trustedExecution: unknown = null;
+  const asyncPolicy: CommandPolicy = {
+    canExecute() {
+      return new Promise((resolve) => {
+        resolvePolicy = resolve;
+      });
+    },
+  };
+  const runtime = createApplicationCommandRuntime<TestRegistry>({
+    initialRevision: 0,
+    policy: asyncPolicy,
+  });
+  runtime.register(
+    "test.mutate",
+    async (_input, context) => {
+      trustedExecution = (context as typeof context & { trusted?: unknown }).trusted ?? null;
+      return { changed: true, data: { id: "confirmed" }, warnings: [] };
+    },
+    { mode: "mutation", risk: "high" },
+  );
+
+  const pending = runtime.execute({ type: "test.mutate", input: {} }, { kind: "ui" }) as Promise<{
+    requestId: string;
+  }> & { requestId?: string };
+  const requestId = pending.requestId ?? "";
+  resolvePolicy?.({
+    allowed: true,
+    requireConfirmation: true,
+    reason: "need-confirmation",
+    trustedData: { targetStatus: "overwriteExisting" },
+  });
+
+  await waitForRequestStatus(runtime, requestId, "awaiting-confirmation");
+  assert.equal(runtime.confirm(requestId, true), true);
+  await pending;
+
+  assert.deepEqual(trustedExecution, {
+    requestId,
+    policy: {
+      confirmationGranted: true,
+      requireConfirmation: true,
+      reason: "need-confirmation",
+      trustedData: { targetStatus: "overwriteExisting" },
+    },
+  });
+}
+
+{
   let resolvePolicy: ((decision: { allowed: boolean; reason?: string }) => void) | null = null;
   const asyncPolicy: CommandPolicy = {
     canExecute() {

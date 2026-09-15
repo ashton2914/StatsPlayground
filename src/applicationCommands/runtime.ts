@@ -400,6 +400,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     }
 
     try {
+      let confirmationGranted = false;
       const policyOutcome = await Promise.race([
         policyDecision.then(
           (decision) => ({ kind: "policy" as const, decision }),
@@ -438,6 +439,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
         if (!confirmationOutcome.allow) {
           throw new CommandExecutionError("user_denied", decision.reason ?? "Command denied by policy");
         }
+        confirmationGranted = true;
       }
 
       if (request.status === "awaiting-confirmation") {
@@ -466,6 +468,15 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
         beginCommit: () => {
           request.committed = true;
           request.status = "committing";
+        },
+        trusted: {
+          requestId: request.requestId,
+          policy: {
+            requireConfirmation: Boolean(decision.requireConfirmation),
+            confirmationGranted,
+            reason: decision.reason,
+            trustedData: decision.trustedData,
+          },
         },
       };
 

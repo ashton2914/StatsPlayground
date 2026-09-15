@@ -119,23 +119,7 @@ impl PathAuthorizationService {
             }
         }
 
-        let existing_ancestor = nearest_existing_ancestor(&target).ok_or_else(|| {
-            AppError::InvalidParam("relative output path has no existing authorized parent".to_string())
-        })?;
-        let canonical_ancestor = fs::canonicalize(&existing_ancestor)?;
-        if !canonical_ancestor.starts_with(&root.canonical_path) {
-            return Err(AppError::InvalidParam(
-                "relative output path escapes the authorized root".to_string(),
-            ));
-        }
-
-        if target.exists() && target.is_dir() {
-            return Err(AppError::InvalidParam(
-                "output path must reference a file, not a directory".to_string(),
-            ));
-        }
-
-        let target_exists = relative_target_exists(&target)?;
+        let target_exists = validate_resolved_output_path(root, &relative.components().collect::<Vec<_>>(), &target)?;
 
         Ok(ResolvedOutputPath {
             path: target,
@@ -167,9 +151,119 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn relative_target_exists(path: &Path) -> Result<bool, AppError> {
-    match fs::metadata(path) {
-        Ok(metadata) => Ok(metadata.is_file()),
+fn validate_resolved_output_path(
+    root: &AuthorizedRoot,
+    components: &[Component<'_>],
+    target: &Path,
+) -> Result<bool, AppError> {
+    let mut current = root.resolved_path.clone();
+    let mut encountered_missing = false;
+
+    for (index, component) in components.iter().enumerate() {
+        let segment = match component {
+            Component::Normal(segment) => segment,
+            Component::CurDir => continue,
+            _ => continue,
+        };
+        current.push(segment);
+        let is_final = index + 1 == components.len();
+
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    let canonical = fs::canonicalize(&current).map_err(|_| {
+                        AppError::InvalidParam(
+                            "relative output path contains an unresolved symlink".to_string(),
+                        )
+                    })?;
+                    if !canonical.starts_with(&root.canonical_path) {
+                        return Err(AppError::InvalidParam(
+                            "relative output path escapes the authorized root".to_string(),
+                        ));
+                    }
+                    if !is_final && !canonical.is_dir() {
+                        return Err(AppError::InvalidParam(
+                            "relative output path has no existing authorized parent".to_string(),
+                        ));
+                    }
+                    if is_final {
+                        if canonical.is_dir() {
+                            return Err(AppError::InvalidParam(
+                                "output path must reference a file, not a directory".to_string(),
+                            ));
+                        }
+                        return Ok(true);
+                    }
+                    continue;
+                }
+
+                if encountered_missing {
+                    return Err(AppError::InvalidParam(
+                        "relative output path has no existing authorized parent".to_string(),
+                    ));
+                }
+
+                if !is_final && !metadata.is_dir() {
+                    return Err(AppError::InvalidParam(
+                        "relative output path has no existing authorized parent".to_string(),
+                    ));
+                }
+
+                if is_final {
+                    if metadata.is_dir() {
+                        return Err(AppError::InvalidParam(
+                            "output path must reference a file, not a directory".to_string(),
+                        ));
+                    }
+                    return Ok(metadata.is_file());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                encountered_missing = true;
+            }
+            Err(error) => return Err(AppError::FileIO(error.to_string())),
+        }
+    }
+
+    let existing_ancestor = nearest_existing_ancestor(target).ok_or_else(|| {
+        AppError::InvalidParam("relative output path has no existing authorized parent".to_string())
+    })?;
+    let canonical_ancestor = fs::canonicalize(&existing_ancestor).map_err(|_| {
+        AppError::InvalidParam("relative output path has no existing authorized parent".to_string())
+    })?;
+    if !canonical_ancestor.starts_with(&root.canonical_path) {
+        return Err(AppError::InvalidParam(
+            "relative output path escapes the authorized root".to_string(),
+        ));
+    }
+
+    match fs::symlink_metadata(target) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                let canonical = fs::canonicalize(target).map_err(|_| {
+                    AppError::InvalidParam(
+                        "relative output path contains an unresolved symlink".to_string(),
+                    )
+                })?;
+                if !canonical.starts_with(&root.canonical_path) {
+                    return Err(AppError::InvalidParam(
+                        "relative output path escapes the authorized root".to_string(),
+                    ));
+                }
+                if canonical.is_dir() {
+                    return Err(AppError::InvalidParam(
+                        "output path must reference a file, not a directory".to_string(),
+                    ));
+                }
+                Ok(true)
+            } else if metadata.is_dir() {
+                Err(AppError::InvalidParam(
+                    "output path must reference a file, not a directory".to_string(),
+                ))
+            } else {
+                Ok(metadata.is_file())
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(AppError::FileIO(error.to_string())),
     }
@@ -245,6 +339,52 @@ mod tests {
         let error = service
             .resolve_output(&grant.root_id, "nested/outside/leak.csv")
             .expect_err("symlink escape must be rejected");
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_output_rejects_dangling_symlink_leaf() {
+        let temp = TempDir::new().expect("temp dir");
+        std::fs::create_dir_all(temp.path().join("nested")).expect("nested dir");
+        symlink(
+            temp.path().join("missing").join("outside.csv"),
+            temp.path().join("nested").join("export.csv"),
+        )
+        .expect("dangling symlink leaf");
+
+        let mut service = service();
+        let grant = service
+            .authorize_output_root(temp.path())
+            .expect("authorize root");
+
+        let error = service
+            .resolve_output(&grant.root_id, "nested/export.csv")
+            .expect_err("dangling symlink leaf must be rejected");
+
+        assert!(matches!(error, AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_output_rejects_dangling_symlink_ancestor_chain() {
+        let temp = TempDir::new().expect("temp dir");
+        std::fs::create_dir_all(temp.path().join("nested")).expect("nested dir");
+        symlink(
+            temp.path().join("missing-parent"),
+            temp.path().join("nested").join("pending"),
+        )
+        .expect("dangling symlink ancestor");
+
+        let mut service = service();
+        let grant = service
+            .authorize_output_root(temp.path())
+            .expect("authorize root");
+
+        let error = service
+            .resolve_output(&grant.root_id, "nested/pending/export.csv")
+            .expect_err("dangling symlink ancestor must be rejected");
 
         assert!(matches!(error, AppError::InvalidParam(_)));
     }
