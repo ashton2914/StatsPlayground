@@ -4809,11 +4809,6 @@ fn validate_hypothesis_test_analysis_definition(
             "{context} pairedOrBlocked long analysis requires roles.subject"
         )));
     }
-    if study_design == Some("independent") && has_subject {
-        return Err(AppError::FileIO(format!(
-            "{context} independent analysis must not define roles.subject"
-        )));
-    }
 
     let selection_mode = definition.get("selectionMode").and_then(Value::as_str);
     if !matches!(selection_mode, Some("automatic" | "guided" | "manual")) {
@@ -7447,6 +7442,50 @@ mod tests {
     }
 
     #[test]
+    fn independent_hypothesis_test_with_subject_round_trips_through_project_archive() {
+        let path = temp_project_path("independent-hypothesis-subject");
+        let mut analysis = hypothesis_test_analysis_doc("hypothesis-1", "Strength by Site");
+        analysis["definition"]["roles"]["subject"] = json!({
+            "name": "Part",
+            "type": "id"
+        });
+
+        let bundle = super::build_bundle_with_workflows(
+            "Project".to_string(),
+            "4.0.0".to_string(),
+            "2026-09-15T00:00:00.000Z".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![analysis.clone()],
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("independent hypothesis test with optional subject should build");
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded.analyses, vec![analysis]);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn fit_y_by_x_analysis_save_writes_span_without_legacy_spf() {
         let path = temp_project_path("fit-y-by-x-analysis-only");
         let analysis = fit_y_by_x_analysis_doc("fit-1", "Strength by Site");
@@ -7713,6 +7752,14 @@ mod tests {
 
         let hypothesis_test = hypothesis_test_analysis_doc("hypothesis-1", "Strength by Site");
         assert!(validate_analysis_value(&hypothesis_test, "analysis validation").is_ok());
+
+        let mut invalid_hypothesis_subject = hypothesis_test.clone();
+        invalid_hypothesis_subject["definition"]["roles"]["subject"] =
+            json!({ "name": "Part" });
+        assert!(matches!(
+            validate_analysis_value(&invalid_hypothesis_subject, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("subject")
+        ));
 
         let mut invalid_hypothesis_response = hypothesis_test.clone();
         invalid_hypothesis_response["definition"]["roles"]["response"]["type"] = json!("nominal");
