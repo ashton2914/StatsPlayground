@@ -445,27 +445,30 @@ export function Workspace() {
     recordHistory(desc);
   }, [recordHistory]);
 
-  const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
+  const applyWorkspaceDocumentSelection = useCallback(async (selection: WorkspaceDocumentSelection) => {
     const currentActiveReportId = useWorkspaceSelectionStore.getState().selection.activeReportId;
     if (currentActiveReportId && currentActiveReportId !== selection.activeReportId) {
-      applicationRuntime.flushPendingEffects();
+      await applicationRuntime.flushPendingEffects();
     }
     loadWorkspaceSelection(selection);
     setActiveDataset(selection.activeDatasetId);
   }, [loadWorkspaceSelection, setActiveDataset]);
 
-  const activateWorkspaceDocument = useCallback((kind: WorkspaceDocumentKind, id: string) => {
-    applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
+  const activateWorkspaceDocument = useCallback(async (kind: WorkspaceDocumentKind, id: string) => {
+    await applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
   }, [applyWorkspaceDocumentSelection]);
 
-  const clearWorkspaceDocumentSelection = useCallback(() => {
-    applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
+  const clearWorkspaceDocumentSelection = useCallback(async () => {
+    await applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
   }, [applyWorkspaceDocumentSelection]);
 
   const flushPendingReportHistory = useCallback(async () => {
-    await reportUpdateQueueRef.current.catch(() => undefined);
-    applicationRuntime.flushPendingEffects();
+    await applicationRuntime.flushPendingEffects();
   }, []);
+
+  useEffect(() => applicationRuntime.registerPendingEffectsDrain(async () => {
+    await reportUpdateQueueRef.current.catch(() => undefined);
+  }), []);
 
   const handleReportMarkdownChange = useCallback((id: string, markdown: string) => {
     if (readOnly) {
@@ -495,8 +498,9 @@ export function Workspace() {
   }, [readOnly]);
 
   useEffect(() => () => {
-    void flushPendingReportHistory();
-  }, [flushPendingReportHistory]);
+    // Fallback only: controlled save/open/close/selection paths await this boundary explicitly.
+    void applicationRuntime.shutdown();
+  }, []);
 
   useEffect(() => {
     if (!editingAnalysisId) return;
@@ -1279,7 +1283,7 @@ export function Workspace() {
     const item = useReportStore.getState().items.find((entry) => entry.id === id);
     await flushPendingReportHistory();
     deleteReport(id);
-    if (activeReportId === id) clearWorkspaceDocumentSelection();
+    if (activeReportId === id) await clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteReport", { name: item.name }));
   };
@@ -1312,7 +1316,7 @@ export function Workspace() {
     removeDatasetFilters(id);
     // 联动删除引用此数据表的图表
     deleteGraphBuildersByDataset(id);
-    applyWorkspaceDocumentSelection(selectionAfterDelete);
+    await applyWorkspaceDocumentSelection(selectionAfterDelete);
     await refreshDatasets();
     markDirty();
     recordAction(t("history.deleteTable", { name }));
@@ -1572,7 +1576,7 @@ export function Workspace() {
 
   const handleCloseProject = async () => {
     await flushPendingReportHistory();
-    clearWorkspaceDocumentSelection();
+    await clearWorkspaceDocumentSelection();
     setDirty(false);
     resetRevision();
     resetHistory();
@@ -1597,7 +1601,7 @@ export function Workspace() {
     });
     if (selected) {
       await flushPendingReportHistory();
-      clearWorkspaceDocumentSelection();
+      await clearWorkspaceDocumentSelection();
       setDirty(false);
       resetRevision();
       resetHistory();
@@ -1635,7 +1639,7 @@ export function Workspace() {
           fitModels: result.fitModels ?? [],
           fitModelFolders: result.fitModelFolders ?? {},
         });
-        clearWorkspaceDocumentSelection();
+        await clearWorkspaceDocumentSelection();
         resetHistory();
         resetGraphBuilders();
         resetReports();

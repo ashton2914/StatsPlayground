@@ -108,3 +108,72 @@ Commit SHA: recorded after commit creation.
 
 - The `.spgh` import flow still uses the existing direct store add path rather than a shared command because imported graph payloads are materially different from `graph.create`; this preserves current behavior but leaves import outside the new command surface.
 - Vite build warnings about chunk size and mixed dynamic/static imports remain unchanged and were not part of this task.
+
+## Fix Round 1
+
+### Status
+
+Complete for the Task 6 review findings in `task-6-review.md`: 3 Important findings addressed and the Minor coverage gap strengthened.
+
+### RED Evidence
+
+1. Graph canonical no-op regression:
+   - Added a focused `graph.update` test proving a definition that differs only by storage-canonicalized `groupThemeSlots` must be a no-op.
+   - Initial RED failure: `AssertionError [ERR_ASSERTION]: true !== false` at `tests/applicationCommandGraph.test.ts:338`, showing the command reported `changed: true` for a persisted no-op.
+2. Awaitable report drain boundary:
+   - Added a behavioral `workspaceReport.test.ts` case that registers a queued report write with the runtime, calls the drain boundary, then proves the markdown update and coalesced edit history are both complete before the drain resolves.
+   - Initial RED failure: `TypeError: runtime.registerPendingEffectsDrain is not a function` at `tests/workspaceReport.test.ts:232`, showing the awaitable boundary did not exist.
+3. Graph dirty ownership leakage:
+   - Strengthened focused view tests to assert field-binding and graph-update paths in `GraphBuilderView` do not call direct `markDirty()`, while dataset-filter paths still do.
+
+### Fixes
+
+1. Shared Graph canonicalization:
+   - Exported `normalizeStoredGraphBuilderItem` from `useGraphBuilderStore.ts`.
+   - Switched `graphCommands.ts` and the graph command harness to use the exact persisted-storage canonicalizer for create/update/no-op comparison.
+2. Awaitable runtime drain lifecycle:
+   - Extended `applicationRuntime` with `registerPendingEffectsDrain()`, async `flushPendingEffects()`, and async `shutdown()`.
+   - Registered the Workspace report-update queue with the runtime drain boundary.
+   - Made report selection/save/open/close boundaries await `applicationRuntime.flushPendingEffects()` before mutating selection or tearing down state.
+   - Kept unmount cleanup as fallback only via `void applicationRuntime.shutdown()`.
+3. Graph command ownership cleanup:
+   - Removed direct `markDirty()` calls from command-backed GraphBuilderView update paths for reconciled theme slots, slot binding, and sampling changes.
+   - Preserved direct dirty behavior only where dataset filters are mutated.
+
+### Exact Validation Outputs
+
+1. `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/applicationCommandGraph.test.ts`
+   - `application command graph lifecycle OK`
+2. `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/applicationCommandReport.test.ts`
+   - `application command report lifecycle OK`
+3. `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/graphBuilderMode.test.ts`
+   - `graphBuilderMode migration tests passed`
+4. `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/reportParser.test.ts`
+   - `report-parser contract passed`
+5. `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/workspaceReport.test.ts`
+   - `Workspace report integration contract passed`
+6. `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/axisBinding.test.ts`
+   - `axis binding helper checks passed`
+7. `npx tsx --tsconfig /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tsconfig.app.json /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer/tests/datasetFilterViews.test.ts`
+   - `dataset Filter view ownership passed`
+8. `npm run build --prefix /Users/ashton/git/ashton2914/StatsPlayground.worktrees/188-mcp-command-layer`
+   - `> stats-playground@0.1.0 build`
+   - `> tsc -b && vite build`
+   - `✓ built in 3.63s`
+
+### Self-Review
+
+- The Graph command now decides no-op semantics with the same canonicalization that persisted storage uses.
+- The report flush path now has one explicit awaited lifecycle boundary instead of relying on cleanup-side fire-and-forget behavior.
+- `GraphBuilderView` now leaves Graph dirty/history/project revision ownership to `graph.update`, with dataset filters remaining the only direct dirty side path.
+- The previous `workspaceReport.test.ts` source-only coverage now includes a real async drain behavior assertion.
+
+### Concerns
+
+- The report file cannot contain the exact SHA of the same commit that records this section without a second post-commit edit; the resulting fix commit SHA is therefore recorded from `HEAD` immediately after commit creation.
+- Existing Vite warnings about mixed dynamic/static imports and chunk size remain unchanged.
+
+### Commit
+
+- Commit message: `fix(documents): drain report effects and unify graph no-op semantics`
+- Commit SHA: recorded from `HEAD` immediately after commit creation.

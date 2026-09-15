@@ -489,8 +489,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       return;
     }
     updateItem(item.id, { groupThemeSlots: resolvedThemeSlots });
-    markDirty();
-  }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem, markDirty]);
+  }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem]);
 
   const setElements = useCallback(
     (
@@ -748,9 +747,8 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
       const nextItem = bindGraphBuilderField(currentItem, slot, field);
       updateItem(item.id, { modeStates: nextItem.modeStates });
-      markDirty();
     },
-    [item, updateItem, markDirty],
+    [item, updateItem],
   );
 
   /** Replace a slot's multi-mode list. Length 0 / undefined exits
@@ -1007,7 +1005,6 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const setSamplingMode = useCallback((mode: "full" | "sample") => {
     if (mode === "full") {
       updateItem(item.id, { sampling: { mode: "full" } });
-      markDirty();
       return;
     }
     updateItem(item.id, {
@@ -1017,8 +1014,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed: sampleSeed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSize, sampleSeed]);
+  }, [item.id, updateItem, sampleSize, sampleSeed]);
 
   const setSampleSize = useCallback((raw: number) => {
     const size = clampSampleSize(Number.isFinite(raw) ? raw : sampleSize);
@@ -1029,8 +1025,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed: sampleSeed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSeed, sampleSize]);
+  }, [item.id, updateItem, sampleSeed, sampleSize]);
 
   const setSampleSeed = useCallback((raw: number) => {
     const seed = Math.max(0, Math.trunc(raw) || 0);
@@ -1041,8 +1036,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSize]);
+  }, [item.id, updateItem, sampleSize]);
 
   const rowStatus = useMemo(() => {
     if (!progress) {
@@ -1557,9 +1551,8 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
                     groupThemeSlots: nextItem.groupThemeSlots,
                   });
                   if (!readOnly && nextItem.filters) {
-                    replaceDatasetFilters(dataset.id, nextItem.filters);
+                    if (replaceDatasetFilters(dataset.id, nextItem.filters)) markDirty();
                   }
-                  markDirty();
                 }}
                 onStateChange={setRuntimeState}
               />

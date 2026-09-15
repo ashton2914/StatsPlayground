@@ -3,7 +3,6 @@ import {
   createDefaultGraph2DState,
   createDefaultGraph3DState,
   createDefaultMultivariateGraphState,
-  normalizeGraphBuilderItem,
 } from "@/components/graphBuilder/graphBuilderMode";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
 import type {
@@ -13,7 +12,7 @@ import type {
 } from "@/applicationCommands/types";
 import i18n from "@/i18n";
 import { useDataStore } from "@/stores/useDataStore";
-import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
+import { normalizeStoredGraphBuilderItem, useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useWorkspaceSelectionStore } from "@/stores/useWorkspaceSelectionStore";
@@ -117,7 +116,7 @@ export function createGraphCommandHandlers(
       defaultValue: 'Edit graph "{{name}}"',
       name,
     }),
-    normalizeGraph: normalizeGraphBuilderItem,
+    normalizeGraph: normalizeStoredGraphBuilderItem,
     ...dependencies,
   };
 

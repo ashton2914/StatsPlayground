@@ -27,7 +27,7 @@ function normalizeSampling(sampling: GraphSampling | undefined): GraphSampling {
   return { mode: "sample", size, seed };
 }
 
-function normalizeItem(item: GraphBuilderItem): GraphBuilderItem {
+export function normalizeStoredGraphBuilderItem(item: GraphBuilderItem): GraphBuilderItem {
   const normalized = normalizeGraphBuilderItem(item);
   const groupThemeSlots = normalizeGroupThemeSlots(normalized.groupThemeSlots);
   return {
@@ -66,7 +66,7 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set, get) => ({
   addItem: (item) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((s) => {
-      const next = normalizeItem(item);
+      const next = normalizeStoredGraphBuilderItem(item);
       const documentRevisions = { ...s.documentRevisions };
       delete documentRevisions[next.id];
       return {
@@ -78,7 +78,7 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set, get) => ({
   replaceItem: (item) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set((s) => ({
-      items: s.items.map((it) => (it.id === item.id ? normalizeItem(item) : it)),
+      items: s.items.map((it) => (it.id === item.id ? normalizeStoredGraphBuilderItem(item) : it)),
     }));
   },
   updateItem: (id, patch) =>
@@ -137,7 +137,7 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set, get) => ({
     },
   loadFromProject: (items) =>
     set(() => {
-      const normalized = items.map(normalizeItem);
+      const normalized = items.map(normalizeStoredGraphBuilderItem);
       const maxNum = items.reduce((m, it) => {
         const match = it.name.match(/^图表(\d+)$/);
         return match ? Math.max(m, parseInt(match[1], 10)) : m;

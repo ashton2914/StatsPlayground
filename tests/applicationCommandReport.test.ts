@@ -325,7 +325,7 @@ async function createReportForActor(actor: CommandActor) {
   assert.equal(first.projectRevision, 9);
   assert.equal(second.projectRevision, 10);
   assert.equal(historyEntries.length, 0, "edit history should stay coalesced until flush");
-  runtime.flushPendingEffects();
+  await runtime.flushPendingEffects();
   assert.equal(historyEntries.length, 1, "flushed report edits should emit one history entry");
   assert.equal(historyEntries[0], "Edited report Report 1");
   assert.equal(dirtyTransitions, 1);

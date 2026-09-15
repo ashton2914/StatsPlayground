@@ -44,7 +44,9 @@ export interface ApplicationRuntimeDependencies {
 }
 
 export interface RegisteredApplicationRuntime extends ReturnType<typeof createApplicationCommandRuntime<ApplicationCommandRegistry>> {
-  flushPendingEffects(): void;
+  registerPendingEffectsDrain(drain: () => Promise<void> | void): () => void;
+  flushPendingEffects(): Promise<void>;
+  shutdown(): Promise<void>;
 }
 
 export function createApplicationRuntime(
@@ -55,6 +57,7 @@ export function createApplicationRuntime(
     policy: dependencies.policy,
     revision: dependencies.revision,
   });
+  const pendingEffectsDrains = new Set<() => Promise<void> | void>();
 
   const projectHandlers = createProjectCommandHandlers(dependencies.project);
   const tableHandlers = createTableCommandHandlers({
@@ -276,9 +279,25 @@ export function createApplicationRuntime(
     { mode: "read", risk: "low" },
   );
 
+  const drainPendingEffects = async () => {
+    for (const drain of pendingEffectsDrains) {
+      await drain();
+    }
+    await Promise.resolve(reportHandlers.flushPendingHistory());
+  };
+
   return Object.assign(runtime, {
-    flushPendingEffects() {
-      reportHandlers.flushPendingHistory();
+    registerPendingEffectsDrain(drain: () => Promise<void> | void) {
+      pendingEffectsDrains.add(drain);
+      return () => {
+        pendingEffectsDrains.delete(drain);
+      };
+    },
+    async flushPendingEffects() {
+      await drainPendingEffects();
+    },
+    async shutdown() {
+      await drainPendingEffects();
     },
   });
 }

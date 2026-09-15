@@ -8,6 +8,7 @@ import {
   createDefaultMultivariateGraphState,
   normalizeGraphBuilderItem,
 } from "@/components/graphBuilder/graphBuilderMode";
+import { normalizeStoredGraphBuilderItem } from "@/stores/useGraphBuilderStore";
 import type { DatasetMeta } from "@/types/data";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 
@@ -100,7 +101,7 @@ async function createGraphForActor(actor: CommandActor) {
         historyEntries.push(description);
       },
       historyCreateMessage: (name: string, sourceName: string) => `Created graph ${name} from ${sourceName}`,
-      normalizeGraph: normalizeGraphBuilderItem,
+      normalizeGraph: normalizeStoredGraphBuilderItem,
     },
   } as any);
 
@@ -199,7 +200,7 @@ async function createGraphForActor(actor: CommandActor) {
         historyEntries.push(description);
       },
       historyUpdateMessage: (name: string) => `Updated graph ${name}`,
-      normalizeGraph: normalizeGraphBuilderItem,
+      normalizeGraph: normalizeStoredGraphBuilderItem,
     },
   } as any);
 
@@ -258,6 +259,90 @@ async function createGraphForActor(actor: CommandActor) {
   assert.equal(graphDocumentRevisions.get("graph-1"), 2);
   assert.equal(historyEntries.length, 1);
   assert.equal(dirtyTransitions, 1);
+}
+
+{
+  const datasets = [dataset("ds-1", "Sales")];
+  const initial: GraphBuilderItem = normalizeStoredGraphBuilderItem({
+    ...baseGraph("graph-1", "Sales - Graph1", "ds-1"),
+    sampling: { mode: "full" },
+  });
+  const graphs: GraphBuilderItem[] = [initial];
+  const graphDocumentRevisions = new Map<string, number>([["graph-1", 4]]);
+  const historyEntries: string[] = [];
+  let dirty = false;
+  let replaceCalls = 0;
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 12,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task6",
+          filePath: "/Users/ashton/projects/task6.spprj",
+          createdAt: NOW,
+        },
+        dirty,
+        readOnly: false,
+        projectRevision: 12,
+      }),
+      listDatasets: () => datasets,
+      listTableTransforms: () => [],
+      listGraphs: () => graphs,
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => [],
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 1,
+    },
+    graph: {
+      listDatasets: () => datasets,
+      listGraphs: () => graphs,
+      getDocumentRevision: (graphId: string) => graphDocumentRevisions.get(graphId) ?? 0,
+      setDocumentRevision: (graphId: string, revision: number) => {
+        graphDocumentRevisions.set(graphId, revision);
+      },
+      replaceGraph: (next: GraphBuilderItem) => {
+        replaceCalls += 1;
+        const index = graphs.findIndex((item) => item.id === next.id);
+        graphs[index] = next;
+      },
+      markDirty: () => {
+        dirty = true;
+      },
+      recordAction: (description: string) => {
+        historyEntries.push(description);
+      },
+      historyUpdateMessage: (name: string) => `Updated graph ${name}`,
+      normalizeGraph: normalizeStoredGraphBuilderItem,
+    },
+  } as any);
+
+  const result = await (runtime as any).execute(
+    {
+      type: "graph.update",
+      input: {
+        graphId: "graph-1",
+        expectedDocumentRevision: 4,
+        definition: {
+          ...initial,
+          groupThemeSlots: {},
+        },
+      },
+      control: { expectedProjectRevision: 12 },
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(result.changed, false);
+  assert.equal(result.projectRevision, 12);
+  assert.equal(result.data.documentRevision, 4);
+  assert.deepEqual(result.data.item, initial);
+  assert.equal(replaceCalls, 0);
+  assert.equal(graphDocumentRevisions.get("graph-1"), 4);
+  assert.equal(historyEntries.length, 0);
+  assert.equal(dirty, false);
 }
 
 {

@@ -122,5 +122,9 @@ assert.match(tableSource, /replaceDatasetFilters\(datasetId, next\)/);
 assert.doesNotMatch(graphSource, /updateItem\(item\.id,\s*\{\s*filters:/);
 assert.match(graphSource, /useDatasetFilterStore/);
 assert.match(graphSource, /item=\{runtimeItem\}/);
+assert.match(graphSource, /if \(replaceDatasetFilters\(dataset\.id, next\)\) markDirty\(\)/);
+assert.match(graphSource, /if \(!readOnly && nextItem\.filters\) \{\s*if \(replaceDatasetFilters\(dataset\.id, nextItem\.filters\)\) markDirty\(\);\s*\}/s);
+assert.doesNotMatch(graphSource, /groupThemeSlots: resolvedThemeSlots \}\);\s*markDirty\(\)/);
+assert.doesNotMatch(graphSource, /sampling:[\s\S]{0,120}markDirty\(\)/);
 
 console.log("dataset Filter view ownership passed");
