@@ -56,6 +56,7 @@ useDistributionStore.getState().updateItem("created", {
     confidenceLevel: 0.9,
     specLimits: { height: { lsl: 1, target: 2, usl: 3 } },
     fitDistributions: ["normal"],
+    fitAll: false,
   },
 });
 assert.equal(useDistributionStore.getState().items[0]?.analysis.confidenceLevel, 0.9);

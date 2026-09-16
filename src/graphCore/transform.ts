@@ -10,6 +10,10 @@ import type { GraphSpec, GraphData, ChartElement, FieldRef, GroupStyle, MarkerSh
 import { DEFAULT_GROUP_KEY } from "./types.ts";
 import { buildAxisCommon, buildCorrelationDivergingPalette, type GraphTheme } from "./theme.ts";
 import { buildBandSeries, FIT_BAND_ID_PREFIX } from "./confidenceBand.ts";
+import {
+  distributionFitColor,
+  distributionIdFromFitSeriesId,
+} from "./distributionFitStyle.ts";
 import type {
   BoxPlotPacket,
   CorrelationMatrixPacket,
@@ -1627,6 +1631,23 @@ function findPrecomputedCurvePackets(
   );
 }
 
+function findPrecomputedPacketGroupKey(
+  packet: PrecomputedPointPacket | PrecomputedCurvePacket,
+  groupKeys: ReadonlySet<string>,
+): string | null {
+  if (packet.kind === "precomputedCurve") {
+    for (const candidate of [packet.group, packet.category]) {
+      if (candidate !== undefined && groupKeys.has(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  const pointGroups = new Set(packet.points.flatMap((point) => point.group ? [point.group] : []));
+  if (pointGroups.size !== 1) return null;
+  const [pointGroup] = pointGroups;
+  return pointGroup !== undefined && groupKeys.has(pointGroup) ? pointGroup : null;
+}
+
 function buildPrecomputedPointSeries(
   packet: PrecomputedPointPacket,
   seriesName: string,
@@ -1651,7 +1672,9 @@ function buildPrecomputedCurveSeries(
   packet: PrecomputedCurvePacket,
   seriesName: string,
   style: ResolvedGroupStyle,
+  categorical: readonly string[],
 ): Record<string, unknown> {
+  const distributionId = distributionIdFromFitSeriesId(packet.seriesId);
   return {
     id: packet.seriesId ?? packet.elementId,
     type: "line",
@@ -1662,7 +1685,9 @@ function buildPrecomputedCurveSeries(
     smooth: false,
     step: packet.interpolation === "stepEnd" ? "end" : undefined,
     lineStyle: {
-      color: style.line.color,
+      color: distributionId
+        ? distributionFitColor(distributionId, categorical)
+        : style.line.color,
       width: style.line.width,
       opacity: style.line.opacity,
     },
@@ -4767,6 +4792,7 @@ function buildSingleOption(
           points: [number, number][];
           sigmaBands: [number, number][][];
           maxWeight: number;
+          color?: string;
         };
         const byGroup = new Map<string, NormalCatInfo[]>();
         const maxByCat = new Map<string, number>();
@@ -4777,12 +4803,27 @@ function buildSingleOption(
               String(entry.category ?? "") === cat &&
               (!grouping || String(entry.group ?? DEFAULT_GROUP_KEY) === slot.key)
             );
-            const curvePacket = normalCurvePackets.find((packet) =>
+            const curvePackets = normalCurvePackets.filter((packet) =>
               String(packet.category ?? packet.sourceColumn ?? "") === cat
               && (!grouping || String(packet.group ?? DEFAULT_GROUP_KEY) === slot.key)
             );
+            if (curvePackets.length > 0) {
+              for (const packet of curvePackets) {
+                const points: [number, number][] = packet.points.map((point) => [point.x, point.y]);
+                if (points.length === 0) continue;
+                const distributionId = distributionIdFromFitSeriesId(packet.seriesId);
+                let maxWeight = 0;
+                for (const point of points) if (point[1] > maxWeight) maxWeight = point[1];
+                infos.push({
+                  cat, points, sigmaBands: [], maxWeight,
+                  color: distributionId ? distributionFitColor(distributionId, theme.categorical) : undefined,
+                });
+                maxByCat.set(cat, Math.max(maxByCat.get(cat) ?? 0, maxWeight));
+              }
+              continue;
+            }
             let values: number[] = [];
-            if (!packetEntry && !curvePacket) {
+            if (!packetEntry) {
               values = slot.rowIdxs
                 .filter((index) => String(data.rows[index]?.[xIdx] ?? "") === cat)
                 .map((index) => toNum(data.rows[index]?.[yIdx]))
@@ -4792,9 +4833,7 @@ function buildSingleOption(
             const mean = packetEntry?.mean ?? raw.mean;
             const std = packetEntry?.stddev ?? raw.std;
             const count = packetEntry?.count ?? raw.n;
-            const points: [number, number][] = curvePacket
-              ? curvePacket.points.map((point) => [point.x, point.y])
-              : normalCurve(
+            const points: [number, number][] = normalCurve(
                   mean,
                   std,
                   count,
@@ -4803,7 +4842,7 @@ function buildSingleOption(
                   packetEntry?.max ?? dataHi,
                 );
             if (points.length === 0) continue;
-            const sigmaBands = showNormalSigmaBands && !curvePacket
+            const sigmaBands = showNormalSigmaBands
               ? normalSigmaBands(mean, std, count, yWidth)
               : [];
             let maxWeight = 0;
@@ -4917,7 +4956,7 @@ function buildSingleOption(
               return {
                 type: "polyline",
                 shape: { points: shapePoints },
-                style: { stroke: strokeColor, fill: null, lineWidth: 2 },
+                style: { stroke: info.color ?? strokeColor, fill: null, lineWidth: 2 },
               };
             },
             z: 3,
@@ -5304,16 +5343,17 @@ function buildSingleOption(
                 packetSummary?.max ?? xDataHi,
               )
               : [];
-          if (curvePackets.length > 1) {
+          if (curvePackets.length > 1 || curvePackets.some((packet) => distributionIdFromFitSeriesId(packet.seriesId))) {
             for (const packet of curvePackets) {
-              const packetStyle = resolvedStyleFor(packet.seriesId ?? packet.seriesName ?? slot.key);
+              const packetStyle = resolvedStyleFor(slot.key);
               const packetSeries = buildPrecomputedCurveSeries(
                 packet,
                 packet.seriesName ?? slot.key,
                 packetStyle,
+                theme.categorical,
               );
               const lineStyle = { ...(packetSeries.lineStyle as Record<string, unknown>) };
-              delete lineStyle.color;
+              if (packet.elementId.endsWith(":normal-curves")) delete lineStyle.color;
               series.push({ ...packetSeries, lineStyle });
             }
           } else if (points.length > 0) {
@@ -5360,7 +5400,12 @@ function buildSingleOption(
         if (!elementId) continue;
         const resolvedStyle = resolvedStyleFor(DEFAULT_GROUP_KEY);
         for (const packet of findPrecomputedCurvePackets(aggregatePackets, elementId)) {
-          series.push(buildPrecomputedCurveSeries(packet, packet.seriesName ?? "", resolvedStyle));
+          series.push(buildPrecomputedCurveSeries(
+            packet,
+            packet.seriesName ?? "",
+            resolvedStyle,
+            theme.categorical,
+          ));
         }
       }
 
@@ -5865,6 +5910,7 @@ function buildSingleOption(
   }
 
   const emittedPrecomputedSeriesIds = new Set<string>();
+  const groupedPacketKeys = new Set(groupKeys);
   groupKeys.forEach((gKey) => {
     // Skip groups hidden via the legend show/hide toggle.
     if (isHidden(gKey)) return;
@@ -5885,9 +5931,16 @@ function buildSingleOption(
           const pointPackets = findPrecomputedPointPackets(aggregatePackets, elementId);
           if (pointPackets.length > 0) {
             for (const pointPacket of pointPackets) {
+              const packetGroupKey = grouping
+                ? findPrecomputedPacketGroupKey(pointPacket, groupedPacketKeys)
+                : null;
+              if (packetGroupKey !== null && packetGroupKey !== gKey) continue;
               const emittedSeriesId = pointPacket.seriesId ?? pointPacket.elementId;
               if (emittedPrecomputedSeriesIds.has(emittedSeriesId)) continue;
-              series.push(buildPrecomputedPointSeries(pointPacket, seriesName, resolvedStyle));
+              const packetStyle = packetGroupKey === null
+                ? resolvedStyle
+                : resolvedStyleFor(packetGroupKey);
+              series.push(buildPrecomputedPointSeries(pointPacket, seriesName, packetStyle));
               emittedPrecomputedSeriesIds.add(emittedSeriesId);
             }
             return;
@@ -5897,9 +5950,21 @@ function buildSingleOption(
           const curvePackets = findPrecomputedCurvePackets(aggregatePackets, elementId);
           if (curvePackets.length > 0) {
             for (const curvePacket of curvePackets) {
+              const packetGroupKey = grouping
+                ? findPrecomputedPacketGroupKey(curvePacket, groupedPacketKeys)
+                : null;
+              if (packetGroupKey !== null && packetGroupKey !== gKey) continue;
               const emittedSeriesId = curvePacket.seriesId ?? curvePacket.elementId;
               if (emittedPrecomputedSeriesIds.has(emittedSeriesId)) continue;
-              series.push(buildPrecomputedCurveSeries(curvePacket, seriesName, resolvedStyle));
+              const packetStyle = packetGroupKey === null
+                ? resolvedStyle
+                : resolvedStyleFor(packetGroupKey);
+              series.push(buildPrecomputedCurveSeries(
+                curvePacket,
+                seriesName,
+                packetStyle,
+                theme.categorical,
+              ));
               emittedPrecomputedSeriesIds.add(emittedSeriesId);
             }
             return;

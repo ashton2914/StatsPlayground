@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import i18n, { type Locale } from "../src/i18n";
 import { AnalysisView } from "../src/components/analysis/AnalysisView";
 import { createAnalysisSampleDocument } from "../src/components/analysis/analysisSample";
 import { createDefaultFitYByXGraphConfig } from "../src/components/fitYByX/fitYByXConfig";
@@ -281,6 +282,18 @@ function createMultiResponseResult(
       },
       {
         schemaVersion: "1" as const,
+        blockId: `fit-cauchy:${responseId}:${groupOffset}`,
+        kind: "continuousFit" as const,
+        titleKey: "distribution.report.continuousFit",
+        status: "available" as const,
+        reasonCode: null,
+        capabilityData: undefined,
+        distributionFitData: createCauchyFitData(median, responseId),
+        distributionFitComparisonData: undefined,
+        chartData: null,
+      },
+      {
+        schemaVersion: "1" as const,
         blockId: `fitComparison:${responseId}:${groupOffset}`,
         kind: "fitComparison" as const,
         titleKey: "distribution.report.fitComparison",
@@ -401,6 +414,26 @@ function createContinuousFitData(median: number, responseId: string): Distributi
       compatibilityStatus: "compatibilityPending",
     },
     warnings: [],
+  };
+}
+
+function createCauchyFitData(median: number, responseId: string): DistributionFitDataV1 {
+  const normal = createContinuousFitData(median, responseId);
+  return {
+    ...normal,
+    fitId: `fit-cauchy:${responseId}`,
+    distributionId: "cauchy",
+    parameterizationId: "cauchy.locationScale.v1",
+    parameters: [
+      createFitParameter("location", median, 0.95),
+      createFitParameter("scale", 4.75, 0.3),
+    ],
+    provenance: {
+      ...normal.provenance,
+      methodId: "fit.cauchy.mle.v1",
+      parameterizationId: "cauchy.locationScale.v1",
+      candidateRegistryIds: ["normal", "cauchy"],
+    },
   };
 }
 
@@ -607,6 +640,7 @@ function createMultiResponseGraphFrames(groups: DistributionGroupResult[], gener
       overviewAggregates.push({
         kind: "precomputedCurve",
         elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves,
+        seriesId: `${sourceColumn}:fit:normal`,
         sourceColumn,
         category: groupName,
         group: seriesName,
@@ -616,6 +650,21 @@ function createMultiResponseGraphFrames(groups: DistributionGroupResult[], gener
           { x: median - 15, y: 0.5 + responseIndex },
           { x: median, y: 6.5 + groupIndex },
           { x: median + 15, y: 0.75 + responseIndex },
+        ],
+      });
+      overviewAggregates.push({
+        kind: "precomputedCurve",
+        elementId: DISTRIBUTION_GRAPH_ELEMENT_IDS.overviewFittedCurves,
+        seriesId: `${sourceColumn}:fit:cauchy`,
+        sourceColumn,
+        category: groupName,
+        group: seriesName,
+        seriesName: `${seriesName} - Cauchy`,
+        interpolation: "linear",
+        points: [
+          { x: median - 15, y: 1.1 + responseIndex },
+          { x: median, y: 5.5 + groupIndex },
+          { x: median + 15, y: 1.25 + responseIndex },
         ],
       });
       boxPlotEntries.push({
@@ -715,7 +764,7 @@ function collectGraphSignatures(frame: GraphDataFrame | null | undefined): strin
       continue;
     }
     if (packet.kind === "precomputedCurve") {
-      signatures.push(`precomputedCurve:${packet.sourceColumn ?? ""}|${packet.category ?? ""}|${packet.group ?? ""}`);
+      signatures.push(`precomputedCurve:${packet.sourceColumn ?? ""}|${packet.category ?? ""}|${packet.group ?? ""}|${packet.seriesName ?? ""}`);
     }
   }
   return signatures;
@@ -723,9 +772,16 @@ function collectGraphSignatures(frame: GraphDataFrame | null | undefined): strin
 
 interface AnalysisViewHarnessProps {
   mode?: "default" | "unsupportedPresentation" | "yBound" | "multiResponse" | "multiResponseBy" | "multiResponseMissingResult" | "loading" | "error";
+  summaryConfidenceLevel?: number;
+  locale?: Locale;
 }
 
-export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessProps) {
+export function AnalysisViewHarness({ mode = "default", summaryConfidenceLevel, locale = "en" }: AnalysisViewHarnessProps) {
+  useEffect(() => {
+    const previousLanguage = i18n.language;
+    void i18n.changeLanguage(locale);
+    return () => { void i18n.changeLanguage(previousLanguage); };
+  }, [locale]);
   const [dataset] = useState(createDataset());
   const [item, setItem] = useState(() => {
     if (mode === "unsupportedPresentation") return createUnsupportedPresentationDocument();
@@ -801,7 +857,17 @@ export function AnalysisViewHarness({ mode = "default" }: AnalysisViewHarnessPro
             pendingResolverRef.current = resolve;
           });
         }
-        return currentResponseRef.current;
+        const response = structuredClone(currentResponseRef.current);
+        if (summaryConfidenceLevel !== undefined) {
+          for (const group of response.groups) {
+            for (const result of group.yResults) {
+              for (const block of result.blocks) {
+                if (block.summaryData) block.summaryData = { ...block.summaryData, confidenceLevel: summaryConfidenceLevel };
+              }
+            }
+          }
+        }
+        return response;
       },
       renderGraph: ({
         role,

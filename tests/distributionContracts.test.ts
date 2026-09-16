@@ -19,6 +19,7 @@ import {
   createDefaultDistributionContinuousFitConfig,
   validateDistributionContinuousFitConfig,
 } from "../src/components/distribution/distributionConfig.ts";
+import { DISTRIBUTION_FIT_ORDER } from "../src/graphCore/distributionFitStyle.ts";
 
 const chartKinds = [
   "histogramData",
@@ -44,6 +45,7 @@ const oneShotRequest: DistributionRequest = {
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: ["normal"],
+  fitAll: false,
 };
 assert.deepEqual(Object.keys(oneShotRequest), [
   "datasetId",
@@ -56,6 +58,7 @@ assert.deepEqual(Object.keys(oneShotRequest), [
   "confidenceLevel",
   "specLimits",
   "fitDistributions",
+  "fitAll",
 ]);
 const resultStatuses = [
   "available",
@@ -142,8 +145,8 @@ assert.deepEqual(continuousFit, {
   },
 });
 assert.deepEqual(createDefaultDistributionContinuousFitConfig(), {
-  enabledDistributionIds: [],
-  fitAll: false,
+  enabledDistributionIds: ["normal"],
+  fitAll: true,
   diagnostics: {
     goodnessOfFit: false,
     qqPlot: false,
@@ -169,13 +172,36 @@ assert.deepEqual(
     },
   ],
 );
+assert.deepEqual(createDefaultDistributionContinuousFitConfig(), {
+  enabledDistributionIds: ["normal"],
+  fitAll: true,
+  diagnostics: {
+    goodnessOfFit: false,
+    qqPlot: false,
+    cdfPlot: false,
+    ppPlot: false,
+  },
+});
+assert.deepEqual(
+  validateDistributionContinuousFitConfig({
+    enabledDistributionIds: [],
+    fitAll: false,
+    diagnostics: {
+      goodnessOfFit: false,
+      qqPlot: false,
+      cdfPlot: false,
+      ppPlot: false,
+    },
+  }),
+  [],
+);
 
 const fitCapabilities = DISTRIBUTION_FIT_CAPABILITY_REGISTRY.filter(
   (capability: DistributionFitCapabilityV1) => capability.implemented,
 );
 assert.deepEqual(
   fitCapabilities.map((capability) => capability.distributionId),
-  ["normal", "lognormal", "exponential", "gamma", "weibull"],
+  DISTRIBUTION_FIT_ORDER,
 );
 assert.equal(
   fitCapabilities.every((capability) => capability.compatibilityStatus === "compatibilityPending"),

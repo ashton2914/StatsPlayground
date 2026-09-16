@@ -450,14 +450,14 @@
     "report": {
       "title": "統計報告", "loading": "正在載入報告...", "overview": "分佈概覽", "outlierBoxPlot": "離群值箱形圖",
       "ecdf": "經驗累積分佈", "normalQuantilePlot": "常態分位數圖", "overall": "整體", "missing": "缺失",
-      "quantiles": "分位數", "probability": "機率", "label": "標籤", "value": "值", "summary": "彙總統計",
+      "quantiles": "分位數", "probability": "機率", "label": "標籤", "value": "值", "summary": "彙總統計", "summaryStatistics": "彙總統計",
       "location": "位置", "variation": "變異", "unavailableReason": "無法使用：{{reason}}",
       "processCapability": "製程能力", "continuousFit": "連續分佈配適", "fitComparison": "配適比較"
     },
     "statistics": {
       "n": "N", "nMissing": "缺失數", "mean": "平均值", "median": "中位數", "mode": "眾數",
       "noUniqueMode": "無唯一眾數", "minimum": "最小值", "maximum": "最大值", "stdDev": "標準差",
-      "stdError": "平均值標準誤", "meanCiLower": "平均值信賴下限", "meanCiUpper": "平均值信賴上限",
+      "stdError": "標準誤", "meanCiLower": "平均值 {{confidence}} 下限", "meanCiUpper": "平均值 {{confidence}} 上限",
       "range": "全距", "iqr": "四分位距", "mad": "中位絕對偏差"
     },
     "compatibility": {
@@ -466,11 +466,11 @@
     },
     "fitStandardError": "標準誤", "fitLower95": "95% 下限", "fitUpper95": "95% 上限",
     "fit": {
-      "unavailable": "配適無法使用：{{reason}}", "parameters": "參數估計", "parameter": "參數", "estimate": "估計值",
+      "continuousFit": "連續分佈配適", "fitAll": "全部配適", "unavailable": "配適無法使用：{{reason}}", "parameters": "參數估計", "parameter": "參數", "estimate": "估計值",
       "measuresAria": "度量", "measures": "度量", "measure": "度量",
       "lognormalNaturalLogNote": "參數使用反應變數的自然對數。", "convergence": "收斂",
       "comparison": "配適比較", "distribution": "分佈", "status": "狀態",
-      "distributions": { "normal": "常態", "lognormal": "對數常態", "exponential": "指數", "gamma": "伽瑪", "weibull": "韋伯" },
+      "distributions": { "normal": "常態", "cauchy": "柯西", "lognormal": "對數常態", "exponential": "指數", "gamma": "伽瑪", "weibull": "韋伯" },
       "states": { "available": "可用", "unavailable": "不可用", "failed": "失敗", "converged": "已收斂", "notConverged": "未收斂" },
       "parametersById": { "location": "位置", "scale": "尺度", "shape": "形狀", "rate": "速率", "dispersion": "離散度" },
       "metrics": { "negativeTwoLogLikelihood": "-2 對數概似", "aic": "AIC", "aicc": "AICc", "bic": "BIC" }
@@ -496,7 +496,7 @@
       "normalQuantileConfidenceOutOfRange": "常態分位數信賴水準超出範圍", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "yRequired": "至少需要一個反應變數", "columnUnknown": "欄位不可用",
       "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
-      "confidenceOutOfRange": "信賴水準超出範圍", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
+      "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
       "freqNotIntegerCompatible": "頻數必須相容整數", "nestedSubgroupTypeIncompatible": "巢狀子組必須為分類欄位", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     },
     "errors": {
@@ -505,7 +505,7 @@
       "normalQuantileConfidenceOutOfRange": "常態分位數信賴水準超出範圍", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "invalidCapabilityOverride": "能力覆寫無效", "yRequired": "至少需要一個反應變數",
       "columnUnknown": "欄位不可用", "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
-      "confidenceOutOfRange": "信賴水準超出範圍", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
+      "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
       "freqNotIntegerCompatible": "頻數必須相容整數", "nestedSubgroupTypeIncompatible": "巢狀子組必須為分類欄位", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     }
   },

@@ -140,6 +140,7 @@ const legacyDistribution = createDistributionItem({
     confidenceLevel: 0.99,
     specLimits: { DIM2: { lsl: 9, target: 10, usl: 11 } },
     fitDistributions: ["normal", "weibull"],
+    fitAll: false,
   },
   createdAt: "2026-09-06T00:00:00.000Z",
 });

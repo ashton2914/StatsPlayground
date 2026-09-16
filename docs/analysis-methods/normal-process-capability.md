@@ -1,9 +1,9 @@
 # Normal Process Capability 计算逻辑
 
-**分析入口：** Distribution → Process Capability  
-**方法 ID：** `capability.normal.individuals`  
+**分析入口：** Distribution → Process Capability
+**方法 ID：** `capability.normal.individuals`
 **默认方法版本：** `1.1.0`
-**Nested Subgroup 方法版本：** `2.0.0`  
+**Nested Subgroup 方法版本：** `2.0.0`
 **状态：** Individuals / Moving Range、Nested Subgroup 与 Count Histogram 已实现
 
 ## 1. 适用范围

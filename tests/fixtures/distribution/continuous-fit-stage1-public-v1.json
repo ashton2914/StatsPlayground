@@ -2,6 +2,21 @@
   "schemaVersion": "1",
   "cases": [
     {
+      "caseId": "cauchy.symmetric.analytic.v1",
+      "distributionId": "cauchy",
+      "methodId": "fit.cauchy.locationScale.mle.v1",
+      "parameterizationId": "cauchy.locationScale.v1",
+      "values": [-1.7320508075688772, -0.5773502691896258, 0.5773502691896258, 1.7320508075688772],
+      "frequencies": null,
+      "weights": null,
+      "expectedParameters": [
+        { "parameterId": "location", "estimate": 0.0, "standardError": 1.0, "lowerConfidence": -1.959963984540054, "upperConfidence": 1.959963984540054 },
+        { "parameterId": "scale", "estimate": 1.0, "standardError": 0.5773502691896258, "lowerConfidence": -0.1315857340761719, "upperConfidence": 2.1315857340761717 }
+      ],
+      "expectedLogLikelihood": -7.926872410540943,
+      "replicationGroup": null
+    },
+    {
       "caseId": "normal.unique.v1",
       "distributionId": "normal",
       "methodId": "fit.normal.mle.v1",

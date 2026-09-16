@@ -21,20 +21,24 @@ function isDistributionAnalysisDocument(
   return document.analysisKind === "distribution" && document.definition.kind === "distribution";
 }
 
-function hasPersistedSpecLimitOverrides(document: AnalysisDocument): document is Extract<AnalysisDocument, { analysisKind: "distribution" }> {
-  return isDistributionAnalysisDocument(document)
-    && Object.keys(document.definition.analysis.specLimits).length > 0;
-}
-
 function normalizePersistedDistributionAnalysisDocument(document: AnalysisDocument): AnalysisDocument {
-  if (!hasPersistedSpecLimitOverrides(document)) return document;
+  if (!isDistributionAnalysisDocument(document)) return document;
+  const fitAll = document.definition.analysis.fitAll ?? false;
+  const hasSpecLimitOverrides = Object.keys(document.definition.analysis.specLimits).length > 0;
+  const specLimits = hasSpecLimitOverrides
+    ? {}
+    : document.definition.analysis.specLimits;
+  if (fitAll === document.definition.analysis.fitAll && specLimits === document.definition.analysis.specLimits) {
+    return document;
+  }
   return {
     ...document,
     definition: {
       ...document.definition,
       analysis: {
         ...document.definition.analysis,
-        specLimits: {},
+        specLimits,
+        fitAll,
       },
     },
   };
@@ -46,6 +50,7 @@ function normalizeDistributionAnalysisForFrontend(
   return {
     ...structuredClone(analysis),
     specLimits: {},
+    fitAll: analysis.fitAll ?? false,
   };
 }
 

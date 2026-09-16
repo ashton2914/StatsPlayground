@@ -32,6 +32,7 @@ const analysis = createAnalysisSampleDocument({
 assert.equal(analysis.name, "DIM1 Analysis");
 assert.equal(analysis.source.datasetId, "dataset-112");
 assert.equal(analysis.definition.kind, "distribution");
+assert.equal(analysis.definition.analysis.fitAll, true);
 assert.deepEqual(
   analysis.definition.analysis.specLimits,
   {},
