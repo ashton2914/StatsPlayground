@@ -77,6 +77,9 @@
   },
   "menu": {
     "file": "檔案",
+    "ai": "AI",
+    "mcpServer": "MCP Server...",
+    "skills": "Skills...",
     "save": "儲存",
     "dataLink": "DataLink...",
     "preferences": "偏好設定",
@@ -112,6 +115,39 @@
     "about": "關於",
     "exportTables": "匯出資料表",
     "fitModel": "配適模型"
+  },
+  "ai": {
+    "mcpServer": {
+      "description": "管理供外部 AI 用戶端使用的應用程式內 MCP 端點。",
+      "start": "啟動服務",
+      "stop": "停止服務",
+      "state": "狀態",
+      "connections": "連線數",
+      "queued": "排隊中",
+      "running": "執行中",
+      "endpoint": "端點",
+      "token": "權杖",
+      "notRunning": "未執行",
+      "copyEndpoint": "複製端點",
+      "copyToken": "複製權杖",
+      "clientConfig": "用戶端設定",
+      "clientConfigHint": "請先啟動服務以產生用戶端設定。",
+      "copyConfig": "複製用戶端設定",
+      "authorizedRoots": "已授權輸出根目錄",
+      "authorizeRoot": "授權輸出根目錄",
+      "authorizeRootButton": "授權根目錄",
+      "noAuthorizedRoots": "目前工作階段沒有已授權的輸出根目錄。",
+      "confirmations": "待確認操作",
+      "noConfirmations": "目前沒有待確認操作。",
+      "activity": "工作階段活動",
+      "noActivity": "目前工作階段還沒有 MCP 活動。"
+    },
+    "skills": {
+      "openPlaceholder": "查看 Skills 佔位頁",
+      "placeholderLead": "Phase 1 暫不提供 Skills。",
+      "placeholderBody": "這個佔位頁刻意保持真實：目前 MCP 範圍內沒有 Skill 執行階段、安裝流程或啟用控制。",
+      "backToServer": "返回 MCP Server"
+    }
   },
   "alert": {
     "selectDatasetFirst": "請先選擇一個資料表作為資料來源",

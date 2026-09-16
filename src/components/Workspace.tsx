@@ -38,6 +38,7 @@ import {
 } from "./fitModel";
 import { ReportView } from "./report";
 import { AnalysisView } from "./analysis/AnalysisView";
+import { AiActivityView } from "./ai/AiActivityView";
 import {
   type FitYByXAnalysisEditorItem,
   type HypothesisTestAnalysisEditorItem,
@@ -328,7 +329,8 @@ export function Workspace() {
     tabulates,
     reports: reportItems,
   }), [analysisItems, datasets, graphBuilders, reportItems, tableTransformBindings, tableTransforms, tabulates]);
-  const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow" | "ai">("files");
+  const [activeAiSubview, setActiveAiSubview] = useState<"server" | "skills">("server");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
   const workspaceSelection = useWorkspaceSelectionStore((state) => state.selection);
   const loadWorkspaceSelection = useWorkspaceSelectionStore((state) => state.load);
@@ -2490,6 +2492,16 @@ export function Workspace() {
             <MenuDropdown label={t("menu.report")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateReport}>{t("menu.newReport")}</div>
             </MenuDropdown>
+            <MenuDropdown label={t("menu.ai", { defaultValue: "AI" })}>
+              <div className="menu-item" onClick={() => {
+                setActiveTab("ai");
+                setActiveAiSubview("server");
+              }}>{t("menu.mcpServer", { defaultValue: "MCP Server..." })}</div>
+              <div className="menu-item" onClick={() => {
+                setActiveTab("ai");
+                setActiveAiSubview("skills");
+              }}>{t("menu.skills", { defaultValue: "Skills..." })}</div>
+            </MenuDropdown>
             <MenuDropdown label={t("menu.help")}>
               <div className="menu-item" onClick={() => setHelpDialog(true)}>{t("menu.about")}</div>
             </MenuDropdown>
@@ -2543,6 +2555,14 @@ export function Workspace() {
             aria-label={t("workflow.title", { defaultValue: "Workflow" })}
           >
             <i className="fa-solid fa-diagram-project" aria-hidden="true" />
+          </button>
+          <button
+            className={`activity-btn${activeTab === "ai" ? " activity-btn-active" : ""}`}
+            onClick={() => setActiveTab("ai")}
+            title={t("menu.ai", { defaultValue: "AI" })}
+            aria-label={t("menu.ai", { defaultValue: "AI" })}
+          >
+            <i className="fa-solid fa-robot" aria-hidden="true" />
           </button>
         </div>
 
@@ -2600,6 +2620,30 @@ export function Workspace() {
               selectedId={activeWorkflowViewId}
               onSelect={setActiveWorkflowViewId}
             />
+          ) : activeTab === "ai" ? (
+            <>
+              <div className="panel-header">
+                <h3>{t("menu.ai", { defaultValue: "AI" })}</h3>
+              </div>
+              <div className="ai-nav-list">
+                <button
+                  type="button"
+                  className={`ai-nav-btn${activeAiSubview === "server" ? " ai-nav-btn-active" : ""}`}
+                  onClick={() => setActiveAiSubview("server")}
+                >
+                  <span>MCP Server</span>
+                  <i className="fa-solid fa-plug" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={`ai-nav-btn${activeAiSubview === "skills" ? " ai-nav-btn-active" : ""}`}
+                  onClick={() => setActiveAiSubview("skills")}
+                >
+                  <span>Skills</span>
+                  <i className="fa-solid fa-wand-magic-sparkles" aria-hidden="true" />
+                </button>
+              </div>
+            </>
           ) : (
             <HistoryPanel
               setBusyMessage={setBusyMessage}
@@ -2611,7 +2655,12 @@ export function Workspace() {
 
         {/* Right: Main Content */}
         <div className="main-area">
-          {activeTab === "workflow" ? (
+          {activeTab === "ai" ? (
+            <AiActivityView
+              subview={activeAiSubview}
+              onSelectSubview={setActiveAiSubview}
+            />
+          ) : activeTab === "workflow" ? (
             <WorkflowView
               lineageGraph={projectLineageGraph}
               workflow={workflows.find((workflow) => workflow.id === activeWorkflowViewId)}

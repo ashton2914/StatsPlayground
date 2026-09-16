@@ -77,6 +77,9 @@
   },
   "menu": {
     "file": "文件",
+    "ai": "AI",
+    "mcpServer": "MCP Server...",
+    "skills": "Skills...",
     "save": "保存",
     "dataLink": "DataLink...",
     "preferences": "首选项",
@@ -114,6 +117,39 @@
     "about": "关于",
     "exportTables": "导出表格",
     "fitModel": "拟合模型"
+  },
+  "ai": {
+    "mcpServer": {
+      "description": "管理供外部 AI 客户端使用的应用内 MCP 端点。",
+      "start": "启动服务",
+      "stop": "停止服务",
+      "state": "状态",
+      "connections": "连接数",
+      "queued": "排队中",
+      "running": "运行中",
+      "endpoint": "端点",
+      "token": "令牌",
+      "notRunning": "未运行",
+      "copyEndpoint": "复制端点",
+      "copyToken": "复制令牌",
+      "clientConfig": "客户端配置",
+      "clientConfigHint": "先启动服务以生成客户端配置。",
+      "copyConfig": "复制客户端配置",
+      "authorizedRoots": "已授权输出根目录",
+      "authorizeRoot": "授权输出根目录",
+      "authorizeRootButton": "授权根目录",
+      "noAuthorizedRoots": "当前会话没有已授权的输出根目录。",
+      "confirmations": "待确认操作",
+      "noConfirmations": "当前没有待确认操作。",
+      "activity": "会话活动",
+      "noActivity": "当前会话还没有 MCP 活动。"
+    },
+    "skills": {
+      "openPlaceholder": "查看 Skills 占位页",
+      "placeholderLead": "Phase 1 暂不提供 Skills。",
+      "placeholderBody": "这个占位页刻意保持真实：当前 MCP 范围内没有 Skill 运行时、安装流程或启用控制。",
+      "backToServer": "返回 MCP Server"
+    }
   },
   "alert": {
     "selectDatasetFirst": "请先选择一个数据表作为数据源",
