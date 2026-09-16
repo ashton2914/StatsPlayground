@@ -357,9 +357,18 @@
 }
 
 .gb-filter-cat-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.gb-filter-cat-row-count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .gb-filter-cats-empty {

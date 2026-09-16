@@ -23,7 +23,8 @@ use crate::models::graph_data::{
 };
 use crate::models::table::{
     CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
-    TableQueryResult, TableWindowFilterRule, TableWindowRequest, TableWindowResult,
+    TableFilterValue, TableQueryResult, TableWindowFilterRule, TableWindowRequest,
+    TableWindowResult,
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
@@ -1364,7 +1365,7 @@ impl DuckDbEngine {
         search: &str,
         limit: usize,
         generation: u64,
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<Vec<TableFilterValue>, AppError> {
         if !(1..=500).contains(&limit) {
             return Err(AppError::InvalidParam(
                 "filter value limit must be between 1 and 500".into(),
@@ -1389,20 +1390,26 @@ impl DuckDbEngine {
         let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let column = Self::quote_identifier(field);
         let sql = format!(
-            "SELECT candidates.filter_value
+            "SELECT filter_value, row_count
              FROM (
-                 SELECT DISTINCT COALESCE(CAST({column} AS VARCHAR), '') AS filter_value
+                 SELECT COALESCE(CAST({column} AS VARCHAR), '') AS filter_value, COUNT(*) AS row_count
                  FROM {table}
                  WHERE strpos(lower(COALESCE(CAST({column} AS VARCHAR), '')), lower(?)) > 0
+                 GROUP BY filter_value
              ) AS candidates
-             ORDER BY lower(candidates.filter_value), candidates.filter_value
+             ORDER BY lower(filter_value), filter_value
              LIMIT ?"
         );
         let limit = i64::try_from(limit)
             .map_err(|_| AppError::InvalidParam("filter value limit is too large".into()))?;
         let mut stmt = self.conn.prepare(&sql)?;
         let values = stmt
-            .query_map(params![search, limit], |row| row.get::<_, String>(0))?
+            .query_map(params![search, limit], |row| {
+                Ok(TableFilterValue {
+                    value: row.get(0)?,
+                    row_count: row.get(1)?,
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(values)
     }
@@ -9322,8 +9329,8 @@ mod tests {
         GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphSampling, GraphViewport,
     };
     use crate::models::table::{
-        CreateTableFromRowsRequest, TableWindowFilter, TableWindowFilterRule, TableWindowRequest,
-        TableWindowSort,
+        CreateTableFromRowsRequest, TableFilterValue, TableWindowFilter, TableWindowFilterRule,
+        TableWindowRequest, TableWindowSort,
     };
     use crate::services::archive_cell::{
         archive_cell_to_json_call_count, reset_archive_cell_to_json_call_count,
@@ -12775,14 +12782,34 @@ mod tests {
         db.conn()
             .execute_batch(
                 "INSERT INTO dataset_benchmark_id VALUES
-                    (1, 'Alpha'), (2, 'Beta'), (3, 'Alphabet'), (4, NULL);",
+                    (1, 'Alpha'), (2, 'Beta'), (3, 'Alphabet'), (4, NULL),
+                    (5, 'Alpha'), (6, '');",
             )
             .unwrap();
 
         assert_eq!(
             db.query_table_filter_values("benchmark-id", "category", "alpha", 10, 0)
                 .unwrap(),
-            vec!["Alpha".to_string(), "Alphabet".to_string()]
+            vec![
+                TableFilterValue {
+                    value: "Alpha".into(),
+                    row_count: 2,
+                },
+                TableFilterValue {
+                    value: "Alphabet".into(),
+                    row_count: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            db.query_table_filter_values("benchmark-id", "category", "", 10, 0)
+                .unwrap()
+                .into_iter()
+                .find(|option| option.value.is_empty()),
+            Some(TableFilterValue {
+                value: "".into(),
+                row_count: 2,
+            })
         );
         assert_eq!(
             db.query_table_filter_values("benchmark-id", "category", "", 2, 0)
@@ -12810,15 +12837,60 @@ mod tests {
         db.conn()
             .execute_batch(
                 "INSERT INTO dataset_stacked_id VALUES
-                    (1, 'EV1', 10.0), (2, 'DV', 20.0), (3, 'EV1', 30.0);",
+                    (1, 'EV1', 10.0), (2, 'DV', 20.0), (3, 'EV1', 20.0);",
             )
             .unwrap();
 
         assert_eq!(
+            db.query_table_filter_values("stacked-id", "Value", "", 10, 0)
+                .unwrap(),
+            vec![
+                TableFilterValue {
+                    value: "10.0".into(),
+                    row_count: 1,
+                },
+                TableFilterValue {
+                    value: "20.0".into(),
+                    row_count: 2,
+                },
+            ]
+        );
+        assert_eq!(
             db.query_table_filter_values("stacked-id", "Build", "", 10, 0)
                 .unwrap(),
-            vec!["DV".to_string(), "EV1".to_string()]
+            vec![
+                TableFilterValue {
+                    value: "DV".into(),
+                    row_count: 1,
+                },
+                TableFilterValue {
+                    value: "EV1".into(),
+                    row_count: 2,
+                },
+            ]
         );
+    }
+
+    #[test]
+    fn query_table_filter_values_rejects_stale_generation() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "benchmark-id",
+            "Benchmark",
+            &["category".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+
+        let generation = db.get_dataset_generation("benchmark-id").unwrap();
+        let error = db
+            .query_table_filter_values("benchmark-id", "category", "", 10, generation + 1)
+            .expect_err("stale generation must fail");
+
+        assert!(matches!(
+            error,
+            AppError::InvalidParam(message) if message.contains("stale dataset generation")
+        ));
     }
 
     fn seed_sales_dataset(db: &DuckDbEngine) {
