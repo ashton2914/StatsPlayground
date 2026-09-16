@@ -1,0 +1,745 @@
+{
+  "version": "artifact-parity.v1",
+  "datasetIdToken": "$TABLE_ID$",
+  "nondeterministicPolicy": {
+    "stripFields": [
+      "requestId",
+      "filePath",
+      "lineageGraph",
+      "createdAt",
+      "updatedAt",
+      "completedAt",
+      "durationMs",
+      "snapshotId"
+    ],
+    "uuidLike": "<uuid>"
+  },
+  "tableSeed": {
+    "name": "Main Table",
+    "columns": [
+      {
+        "name": "width",
+        "sqlType": "DOUBLE",
+        "display": {
+          "width": 160,
+          "format": {
+            "kind": "fixed",
+            "decimals": 3
+          },
+          "extras": {
+            "unit": { "symbol": "mm" },
+            "spec": { "lsl": 9.8, "target": 10.0, "usl": 10.2 },
+            "range": { "preferred": [9.9, 10.1] },
+            "notes": { "text": "critical" },
+            "opaque": { "nested": [1, true, "ok"] }
+          }
+        }
+      },
+      {
+        "name": "build",
+        "sqlType": "VARCHAR",
+        "display": {
+          "width": 128,
+          "format": { "kind": "asis" },
+          "extras": {
+            "valueOrder": { "values": ["EV", "DV", "PQ"] }
+          }
+        }
+      }
+    ],
+    "rows": [
+      [10.01, "EV"],
+      [9.98, "DV"]
+    ]
+  },
+  "documents": {
+    "tableTransform": {
+      "id": "transform-1",
+      "name": "Sort width",
+      "formatVersion": "1",
+      "revision": 3,
+      "inputSlots": [
+        {
+          "role": "source",
+          "schemaContract": {
+            "schemaFingerprint": "374f439fd97cf40c",
+            "columns": [
+              {
+                "name": "width",
+                "canonicalDuckdbType": "DOUBLE",
+                "required": true,
+                "requiredByOperationIds": ["table-transform"]
+              }
+            ]
+          }
+        }
+      ],
+      "operation": {
+        "kind": "sort",
+        "sortColumns": [
+          { "column": "width", "direction": "ascending" }
+        ]
+      },
+      "output": {
+        "tableDocumentId": "$TABLE_ID$",
+        "name": "Sorted width"
+      }
+    },
+    "tabulate": {
+      "id": "tabulate-1",
+      "name": "Width by Build",
+      "sourceDatasetId": "$TABLE_ID$",
+      "rowFields": ["build"],
+      "columnFields": [],
+      "statistics": [
+        { "id": "stat-mean", "field": "width", "kind": "mean" }
+      ],
+      "includeRowTotals": true,
+      "includeColumnTotals": false,
+      "createdAt": "2026-09-16T00:00:00.000Z"
+    },
+    "graph": {
+      "id": "graph-1",
+      "name": "Width Graph",
+      "sourceDatasetId": "$TABLE_ID$",
+      "mode": "2d",
+      "modeStates": {
+        "twoD": {
+          "encoding": {},
+          "multiX": [],
+          "multiY": [],
+          "elements": [{ "kind": "points", "enabled": true }],
+          "smootherLambda": 0.4
+        },
+        "threeD": {
+          "encoding": {},
+          "elements": [{ "kind": "scatter3d", "enabled": true }],
+          "smootherLambda": 0.4
+        },
+        "multivariate": {
+          "columns": [],
+          "chartType": "correlationMatrix",
+          "correlationMethod": "pearson"
+        }
+      },
+      "createdAt": "2026-09-16T00:00:00.000Z"
+    },
+    "report": {
+      "schemaVersion": 1,
+      "id": "report-1",
+      "name": "Task 12 Report",
+      "markdown": "# Artifact parity\n\nAll project artifacts are equivalent.",
+      "createdAt": "2026-09-16T00:00:00.000Z",
+      "updatedAt": "2026-09-16T00:00:00.000Z"
+    }
+  },
+  "savePayloads": {
+    "ui": {
+      "history": [
+        { "kind": "action", "label": "ui-seed" }
+      ],
+      "snapshots": [
+        { "id": "snapshot-1", "name": "seed snapshot", "datasetId": "$TABLE_ID$" }
+      ],
+      "datasetFilters": {},
+      "graphBuilders": [
+        {
+          "id": "graph-1",
+          "name": "Width Graph",
+          "sourceDatasetId": "$TABLE_ID$",
+          "mode": "2d",
+          "modeStates": {
+            "twoD": {
+              "encoding": {},
+              "multiX": [],
+              "multiY": [],
+              "elements": [{ "kind": "points", "enabled": true }],
+              "smootherLambda": 0.4
+            },
+            "threeD": {
+              "encoding": {},
+              "elements": [{ "kind": "scatter3d", "enabled": true }],
+              "smootherLambda": 0.4
+            },
+            "multivariate": {
+              "columns": [],
+              "chartType": "correlationMatrix",
+              "correlationMethod": "pearson"
+            }
+          },
+          "createdAt": "2026-09-16T00:00:00.000Z"
+        }
+      ],
+      "fitYByX": [],
+      "tabulates": [
+        {
+          "id": "tabulate-1",
+          "name": "Width by Build",
+          "sourceDatasetId": "$TABLE_ID$",
+          "rowFields": ["build"],
+          "columnFields": [],
+          "statistics": [
+            { "id": "stat-mean", "field": "width", "kind": "mean" }
+          ],
+          "includeRowTotals": true,
+          "includeColumnTotals": false,
+          "createdAt": "2026-09-16T00:00:00.000Z"
+        }
+      ],
+      "distributions": [],
+      "analyses": [],
+      "folders": ["Analysis"],
+      "tableFolders": { "$TABLE_ID$": "Analysis" },
+      "graphFolders": { "graph-1": "Analysis" },
+      "fitYByXFolders": {},
+      "tabulateFolders": { "tabulate-1": "Analysis" },
+      "reportFolders": { "report-1": "Analysis" },
+      "reports": [
+        {
+          "schemaVersion": 1,
+          "id": "report-1",
+          "name": "Task 12 Report",
+          "markdown": "# Artifact parity\n\nAll project artifacts are equivalent.",
+          "createdAt": "2026-09-16T00:00:00.000Z",
+          "updatedAt": "2026-09-16T00:00:00.000Z"
+        }
+      ],
+      "distributionFolders": {},
+      "analysisFolders": {},
+      "workflows": [],
+      "logicalFolders": [],
+      "workflowRuns": [],
+      "tableTransforms": [],
+      "tableTransformBindings": []
+    },
+    "mcp": {
+      "history": [
+        { "kind": "action", "label": "ui-seed" }
+      ],
+      "snapshots": [
+        { "id": "snapshot-1", "name": "seed snapshot", "datasetId": "$TABLE_ID$" }
+      ],
+      "datasetFilters": {},
+      "graphBuilders": [
+        {
+          "id": "graph-1",
+          "name": "Width Graph",
+          "sourceDatasetId": "$TABLE_ID$",
+          "mode": "2d",
+          "modeStates": {
+            "twoD": {
+              "encoding": {},
+              "multiX": [],
+              "multiY": [],
+              "elements": [{ "kind": "points", "enabled": true }],
+              "smootherLambda": 0.4
+            },
+            "threeD": {
+              "encoding": {},
+              "elements": [{ "kind": "scatter3d", "enabled": true }],
+              "smootherLambda": 0.4
+            },
+            "multivariate": {
+              "columns": [],
+              "chartType": "correlationMatrix",
+              "correlationMethod": "pearson"
+            }
+          },
+          "createdAt": "2026-09-16T00:00:01.000Z"
+        }
+      ],
+      "fitYByX": [],
+      "tabulates": [
+        {
+          "id": "tabulate-1",
+          "name": "Width by Build",
+          "sourceDatasetId": "$TABLE_ID$",
+          "rowFields": ["build"],
+          "columnFields": [],
+          "statistics": [
+            { "id": "stat-mean", "field": "width", "kind": "mean" }
+          ],
+          "includeRowTotals": true,
+          "includeColumnTotals": false,
+          "createdAt": "2026-09-16T00:00:01.000Z"
+        }
+      ],
+      "distributions": [],
+      "analyses": [],
+      "folders": ["Analysis"],
+      "tableFolders": { "$TABLE_ID$": "Analysis" },
+      "graphFolders": { "graph-1": "Analysis" },
+      "fitYByXFolders": {},
+      "tabulateFolders": { "tabulate-1": "Analysis" },
+      "reportFolders": { "report-1": "Analysis" },
+      "reports": [
+        {
+          "schemaVersion": 1,
+          "id": "report-1",
+          "name": "Task 12 Report",
+          "markdown": "# Artifact parity\n\nAll project artifacts are equivalent.",
+          "createdAt": "2026-09-16T00:00:01.000Z",
+          "updatedAt": "2026-09-16T00:00:01.000Z"
+        }
+      ],
+      "distributionFolders": {},
+      "analysisFolders": {},
+      "workflows": [],
+      "logicalFolders": [],
+      "workflowRuns": [],
+      "tableTransforms": [],
+      "tableTransformBindings": []
+    }
+  },
+  "projectionCases": [
+    {
+      "id": "table.create",
+      "toolName": "statsplayground.table.create",
+      "rawArguments": {
+        "request": {
+          "name": "Main Table",
+          "columns": [
+            { "name": "width", "sqlType": "DOUBLE" },
+            { "name": "build", "sqlType": "VARCHAR" }
+          ],
+          "rows": [
+            [10.01, "EV"],
+            [9.98, "DV"]
+          ]
+        },
+        "preview": { "limit": 2 },
+        "control": { "expectedProjectRevision": 21 }
+      },
+      "expectedEnvelope": {
+        "type": "table.create",
+        "input": {
+          "request": {
+            "name": "Main Table",
+            "columns": [
+              { "name": "width", "sqlType": "DOUBLE" },
+              { "name": "build", "sqlType": "VARCHAR" }
+            ],
+            "rows": [
+              [10.01, "EV"],
+              [9.98, "DV"]
+            ]
+          },
+          "preview": { "limit": 2 }
+        },
+        "control": { "expectedProjectRevision": 21 }
+      }
+    },
+    {
+      "id": "tableTransform.create",
+      "toolName": "statsplayground.table.transform.create",
+      "rawArguments": {
+        "draft": {
+          "name": "Sort width",
+          "outputName": "Sorted width",
+          "operation": { "kind": "sort", "sortColumns": [{ "column": "width", "direction": "ascending" }] },
+          "inputBindings": []
+        }
+      },
+      "expectedEnvelope": {
+        "type": "tableTransform.create",
+        "input": {
+          "draft": {
+            "name": "Sort width",
+            "outputName": "Sorted width",
+            "operation": { "kind": "sort", "sortColumns": [{ "column": "width", "direction": "ascending" }] },
+            "inputBindings": []
+          }
+        }
+      }
+    },
+    {
+      "id": "tableTransform.run",
+      "toolName": "statsplayground.table.transform.run",
+      "rawArguments": { "transformId": "transform-1" },
+      "expectedEnvelope": {
+        "type": "tableTransform.run",
+        "input": { "transformId": "transform-1" }
+      }
+    },
+    {
+      "id": "sql.createTable",
+      "toolName": "statsplayground.sql.create_table",
+      "rawArguments": {
+        "sql": "select width, build from dataset_main",
+        "name": "SQL Result"
+      },
+      "expectedEnvelope": {
+        "type": "sql.createTable",
+        "input": {
+          "sql": "select width, build from dataset_main",
+          "name": "SQL Result"
+        }
+      }
+    },
+    {
+      "id": "table.exportCsv",
+      "toolName": "statsplayground.table.export_csv",
+      "rawArguments": {
+        "datasetId": "table-main",
+        "rootId": "root-1",
+        "relativePath": "exports/main.csv"
+      },
+      "expectedEnvelope": {
+        "type": "table.exportCsv",
+        "input": {
+          "datasetId": "table-main",
+          "rootId": "root-1",
+          "relativePath": "exports/main.csv"
+        }
+      }
+    },
+    {
+      "id": "tabulate.create",
+      "toolName": "statsplayground.tabulate.create",
+      "rawArguments": { "sourceDatasetId": "table-main" },
+      "expectedEnvelope": {
+        "type": "tabulate.create",
+        "input": { "sourceDatasetId": "table-main" }
+      }
+    },
+    {
+      "id": "tabulate.run",
+      "toolName": "statsplayground.tabulate.run",
+      "rawArguments": {
+        "tabulateId": "tabulate-1",
+        "request": {
+          "datasetId": "table-main",
+          "rowFields": ["build"],
+          "columnFields": [],
+          "statistics": [{ "id": "stat-mean", "field": "width", "kind": "mean" }],
+          "includeRowTotals": true,
+          "includeColumnTotals": false,
+          "maxResultCells": 10000
+        }
+      },
+      "expectedEnvelope": {
+        "type": "tabulate.run",
+        "input": {
+          "tabulateId": "tabulate-1",
+          "request": {
+            "datasetId": "table-main",
+            "rowFields": ["build"],
+            "columnFields": [],
+            "statistics": [{ "id": "stat-mean", "field": "width", "kind": "mean" }],
+            "includeRowTotals": true,
+            "includeColumnTotals": false,
+            "maxResultCells": 10000
+          }
+        }
+      }
+    },
+    {
+      "id": "tabulate.exportTable",
+      "toolName": "statsplayground.tabulate.to_table",
+      "rawArguments": {
+        "tabulateId": "tabulate-1",
+        "tableName": "Tabulate Export",
+        "request": {
+          "datasetId": "table-main",
+          "rowFields": ["build"],
+          "columnFields": [],
+          "statistics": [{ "id": "stat-mean", "field": "width", "kind": "mean" }],
+          "includeRowTotals": true,
+          "includeColumnTotals": false,
+          "maxResultCells": 10000
+        }
+      },
+      "expectedEnvelope": {
+        "type": "tabulate.exportTable",
+        "input": {
+          "tabulateId": "tabulate-1",
+          "tableName": "Tabulate Export",
+          "request": {
+            "datasetId": "table-main",
+            "rowFields": ["build"],
+            "columnFields": [],
+            "statistics": [{ "id": "stat-mean", "field": "width", "kind": "mean" }],
+            "includeRowTotals": true,
+            "includeColumnTotals": false,
+            "maxResultCells": 10000
+          }
+        }
+      }
+    },
+    {
+      "id": "graph.create",
+      "toolName": "statsplayground.graph.create",
+      "rawArguments": { "sourceDatasetId": "table-main" },
+      "expectedEnvelope": {
+        "type": "graph.create",
+        "input": { "sourceDatasetId": "table-main" }
+      }
+    },
+    {
+      "id": "graph.update",
+      "toolName": "statsplayground.graph.update",
+      "rawArguments": {
+        "graphId": "graph-1",
+        "expectedDocumentRevision": 2,
+        "definition": {
+          "id": "graph-1",
+          "name": "Width Graph",
+          "sourceDatasetId": "table-main",
+          "mode": "2d",
+          "modeStates": {
+            "twoD": {
+              "encoding": {},
+              "multiX": [],
+              "multiY": [],
+              "elements": [{ "kind": "points", "enabled": true }],
+              "smootherLambda": 0.4
+            },
+            "threeD": {
+              "encoding": {},
+              "elements": [{ "kind": "scatter3d", "enabled": true }],
+              "smootherLambda": 0.4
+            },
+            "multivariate": {
+              "columns": [],
+              "chartType": "correlationMatrix",
+              "correlationMethod": "pearson"
+            }
+          },
+          "createdAt": "2026-09-16T00:00:00.000Z"
+        }
+      },
+      "expectedEnvelope": {
+        "type": "graph.update",
+        "input": {
+          "graphId": "graph-1",
+          "expectedDocumentRevision": 2,
+          "definition": {
+            "id": "graph-1",
+            "name": "Width Graph",
+            "sourceDatasetId": "table-main",
+            "mode": "2d",
+            "modeStates": {
+              "twoD": {
+                "encoding": {},
+                "multiX": [],
+                "multiY": [],
+                "elements": [{ "kind": "points", "enabled": true }],
+                "smootherLambda": 0.4
+              },
+              "threeD": {
+                "encoding": {},
+                "elements": [{ "kind": "scatter3d", "enabled": true }],
+                "smootherLambda": 0.4
+              },
+              "multivariate": {
+                "columns": [],
+                "chartType": "correlationMatrix",
+                "correlationMethod": "pearson"
+              }
+            },
+            "createdAt": "2026-09-16T00:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "analysis.create",
+      "toolName": "statsplayground.analysis.create",
+      "rawArguments": {
+        "analysisKind": "hypothesisTest",
+        "sourceDatasetId": "table-main",
+        "draft": {
+          "name": "Hypothesis",
+          "definition": {
+            "kind": "hypothesisTest",
+            "roles": {
+              "layout": "long",
+              "response": { "name": "width", "type": "continuous" },
+              "condition": { "name": "build", "type": "nominal" },
+              "subject": null
+            },
+            "studyDesign": "independent",
+            "selectionMode": "automatic",
+            "manualSelection": null,
+            "alternative": "twoSided",
+            "alpha": 0.05,
+            "confidenceLevel": 0.95,
+            "levelOrder": ["EV", "DV"],
+            "referenceLevel": "EV",
+            "postHoc": "automatic",
+            "selectorVersion": "1"
+          }
+        }
+      },
+      "expectedEnvelope": {
+        "type": "analysis.create",
+        "input": {
+          "analysisKind": "hypothesisTest",
+          "sourceDatasetId": "table-main",
+          "draft": {
+            "name": "Hypothesis",
+            "definition": {
+              "kind": "hypothesisTest",
+              "roles": {
+                "layout": "long",
+                "response": { "name": "width", "type": "continuous" },
+                "condition": { "name": "build", "type": "nominal" },
+                "subject": null
+              },
+              "studyDesign": "independent",
+              "selectionMode": "automatic",
+              "manualSelection": null,
+              "alternative": "twoSided",
+              "alpha": 0.05,
+              "confidenceLevel": 0.95,
+              "levelOrder": ["EV", "DV"],
+              "referenceLevel": "EV",
+              "postHoc": "automatic",
+              "selectorVersion": "1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "analysis.update",
+      "toolName": "statsplayground.analysis.update",
+      "rawArguments": {
+        "analysisId": "analysis-1",
+        "analysisKind": "hypothesisTest",
+        "expectedConfigRevision": 3,
+        "draft": {
+          "definition": {
+            "kind": "hypothesisTest",
+            "roles": {
+              "layout": "long",
+              "response": { "name": "width", "type": "continuous" },
+              "condition": { "name": "build", "type": "nominal" },
+              "subject": null
+            },
+            "studyDesign": "independent",
+            "selectionMode": "automatic",
+            "manualSelection": null,
+            "alternative": "twoSided",
+            "alpha": 0.05,
+            "confidenceLevel": 0.95,
+            "levelOrder": ["EV", "DV"],
+            "referenceLevel": "EV",
+            "postHoc": "automatic",
+            "selectorVersion": "1"
+          }
+        }
+      },
+      "expectedEnvelope": {
+        "type": "analysis.update",
+        "input": {
+          "analysisId": "analysis-1",
+          "analysisKind": "hypothesisTest",
+          "expectedConfigRevision": 3,
+          "draft": {
+            "definition": {
+              "kind": "hypothesisTest",
+              "roles": {
+                "layout": "long",
+                "response": { "name": "width", "type": "continuous" },
+                "condition": { "name": "build", "type": "nominal" },
+                "subject": null
+              },
+              "studyDesign": "independent",
+              "selectionMode": "automatic",
+              "manualSelection": null,
+              "alternative": "twoSided",
+              "alpha": 0.05,
+              "confidenceLevel": 0.95,
+              "levelOrder": ["EV", "DV"],
+              "referenceLevel": "EV",
+              "postHoc": "automatic",
+              "selectorVersion": "1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "analysis.run",
+      "toolName": "statsplayground.analysis.run",
+      "rawArguments": { "analysisId": "analysis-1" },
+      "expectedEnvelope": {
+        "type": "analysis.run",
+        "input": { "analysisId": "analysis-1" }
+      }
+    },
+    {
+      "id": "report.create",
+      "toolName": "statsplayground.report.create",
+      "rawArguments": {},
+      "expectedEnvelope": {
+        "type": "report.create",
+        "input": {}
+      }
+    },
+    {
+      "id": "report.update",
+      "toolName": "statsplayground.report.update",
+      "rawArguments": {
+        "reportId": "report-1",
+        "expectedDocumentRevision": 2,
+        "markdown": "# Updated"
+      },
+      "expectedEnvelope": {
+        "type": "report.update",
+        "input": {
+          "reportId": "report-1",
+          "expectedDocumentRevision": 2,
+          "markdown": "# Updated"
+        }
+      }
+    },
+    {
+      "id": "project.save",
+      "toolName": "statsplayground.project.save",
+      "rawArguments": {
+        "control": {
+          "expectedProjectRevision": 29
+        }
+      },
+      "expectedEnvelope": {
+        "type": "project.save",
+        "input": {},
+        "control": {
+          "expectedProjectRevision": 29
+        }
+      }
+    },
+    {
+      "id": "snapshot.create",
+      "toolName": "statsplayground.snapshot.create",
+      "rawArguments": { "name": "Task 12 Snapshot" },
+      "expectedEnvelope": {
+        "type": "snapshot.create",
+        "input": { "name": "Task 12 Snapshot" }
+      }
+    }
+  ],
+  "projectionRejections": [
+    {
+      "id": "save-reject-file-path",
+      "toolName": "statsplayground.project.save",
+      "rawArguments": {
+        "filePath": "exports/project.spprj"
+      },
+      "errorContains": "invalid tool input"
+    },
+    {
+      "id": "csv-reject-confirmation",
+      "toolName": "statsplayground.table.export_csv",
+      "rawArguments": {
+        "datasetId": "table-main",
+        "rootId": "root-1",
+        "relativePath": "exports/main.csv",
+        "overwriteConfirmed": true
+      },
+      "errorContains": "confirmation flags"
+    }
+  ]
+}

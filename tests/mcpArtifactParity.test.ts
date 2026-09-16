@@ -1,406 +1,475 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { createDistributionAnalysisDocument } from "@/components/analysis/distributionAnalysisMigration";
-import { createFitModelAnalysisDocument } from "@/components/analysis/adapters/fitModelAnalysisAdapter";
-import { createFitYByXAnalysisDocument } from "@/components/analysis/adapters/fitYByXAnalysisAdapter";
-import { createHypothesisTestAnalysisDocument } from "@/components/analysis/adapters/hypothesisTestAnalysisAdapter";
-import { createDistributionItem } from "@/components/distribution/distributionConfig";
-import { createFitModelItem } from "@/components/fitModel/fitModelConfig";
-import { createFitYByXItem } from "@/components/fitYByX/fitYByXConfig";
-import type { AnalysisDocument } from "@/types/analysis";
-import type { CreateManagedTableRequest } from "@/types/data";
-import type { HypothesisTestAnalysisDefinition } from "@/types/hypothesisTest";
-import type { ReportItem } from "@/types/report";
-import type { TabulateItem, TabulateResult } from "@/types/tabulate";
-import type { TableTransformDefinition } from "@/types/tableTransform";
+import { createApplicationRuntime } from "@/applicationCommands/applicationRuntime";
+import type {
+  ApplicationCommand,
+  ApplicationCommandRegistry,
+  CommandActor,
+  CommandResult,
+} from "@/applicationCommands/types";
 
+type Command = ApplicationCommand<ApplicationCommandRegistry>;
+
+interface FixtureNondeterministicPolicy {
+  stripFields: string[];
+  uuidLike: string;
+}
+
+interface FixtureProjectionCase {
+  id: string;
+  expectedEnvelope: {
+    type: string;
+    input: Record<string, unknown>;
+    control?: Record<string, unknown>;
+  };
+}
+
+interface ArtifactParityFixture {
+  projectionCases: FixtureProjectionCase[];
+  nondeterministicPolicy: FixtureNondeterministicPolicy;
+  savePayloads: {
+    ui: Record<string, unknown>;
+    mcp: Record<string, unknown>;
+  };
+}
+
+const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function normalizeParityValue(value: unknown, key = ""): unknown {
+function loadFixture(): ArtifactParityFixture {
+  const content = readFileSync(
+    resolve(TEST_FILE_DIR, "../contracts/mcp/artifact-parity.v1.json"),
+    "utf8",
+  );
+  return JSON.parse(content) as ArtifactParityFixture;
+}
+
+function normalizeWithPolicy(
+  value: unknown,
+  policy: FixtureNondeterministicPolicy,
+): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === "string") {
-    if (UUID_LIKE.test(value)) return "<uuid>";
+    if (UUID_LIKE.test(value)) return policy.uuidLike;
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => normalizeParityValue(entry));
+    return value.map((entry) => normalizeWithPolicy(entry, policy));
   }
   if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-      if (
-        childKey === "requestId"
-        || childKey === "createdAt"
-        || childKey === "updatedAt"
-        || childKey === "completedAt"
-        || childKey === "durationMs"
-      ) {
-        continue;
-      }
-      out[childKey] = normalizeParityValue(childValue, childKey);
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (policy.stripFields.includes(key)) continue;
+      output[key] = normalizeWithPolicy(child, policy);
     }
-    if (key === "snapshotId") return "<uuid>";
-    return out;
+    return output;
   }
   return value;
 }
 
-function hypothesisDefinition(): HypothesisTestAnalysisDefinition {
-  return {
-    kind: "hypothesisTest",
-    roles: {
-      layout: "long",
-      response: { name: "width", type: "continuous" },
-      condition: { name: "build", type: "nominal" },
-      subject: null,
-    },
-    studyDesign: "independent",
-    selectionMode: "automatic",
-    manualSelection: null,
-    alternative: "twoSided",
-    alpha: 0.05,
-    confidenceLevel: 0.95,
-    levelOrder: ["EV", "DV"],
-    referenceLevel: "EV",
-    postHoc: "automatic",
-    selectorVersion: "1",
+function findCase(fixture: ArtifactParityFixture, id: string): FixtureProjectionCase {
+  const found = fixture.projectionCases.find((entry) => entry.id === id);
+  assert.ok(found, `Missing projection case in fixture: ${id}`);
+  return found;
+}
+
+function toCommand(entry: FixtureProjectionCase): Command {
+  const command: Command = {
+    type: entry.expectedEnvelope.type as Command["type"],
+    input: entry.expectedEnvelope.input as never,
+    control: entry.expectedEnvelope.control as never,
   };
+  return command;
 }
 
-function createAllAnalysisKinds(): AnalysisDocument[] {
-  const createdAt = "2026-09-16T00:00:00.000Z";
-  const response = { name: "width", type: "continuous" as const };
-  const factor = { name: "build", type: "nominal" as const };
-  const predictor = { name: "temperature", type: "continuous" as const };
-
-  const distributionItem = createDistributionItem({
-    id: "analysis-distribution",
-    name: "Distribution",
-    sourceDatasetId: "table-main",
-    responses: [response],
-    weight: null,
-    frequency: null,
-    by: [],
-    columns: [{ name: "width", sqlType: "DOUBLE", integerCompatible: false, field: response }],
-    createdAt,
-  });
-
-  const fitYByXItem = createFitYByXItem({
-    id: "analysis-fitybyx",
-    name: "Fit Y by X",
-    sourceDatasetId: "table-main",
-    response,
-    factor,
-    createdAt,
-  });
-
-  const fitModelItem = createFitModelItem({
-    id: "analysis-fitmodel",
-    name: "Fit Model",
-    sourceDatasetId: "table-main",
-    fields: [response, predictor],
-    response,
-    terms: [{ kind: "main", columnNames: ["temperature"] }],
-    centeringMethod: "none",
-    createdAt,
-  });
-
-  return [
-    createDistributionAnalysisDocument(distributionItem, createdAt),
-    createFitYByXAnalysisDocument({ item: fitYByXItem, confidenceLevel: 0.95, updatedAt: createdAt }),
-    createFitModelAnalysisDocument({ item: fitModelItem, confidenceLevel: 0.95, updatedAt: createdAt }),
-    createHypothesisTestAnalysisDocument({
-      id: "analysis-hypothesis",
-      name: "Hypothesis Test",
-      sourceDatasetId: "table-main",
-      definition: hypothesisDefinition(),
-      createdAt,
-    }),
-  ];
-}
-
-const createTableRequest: CreateManagedTableRequest = {
-  name: "Main Table",
-  columns: [
+function createRuntimeForActor(actor: CommandActor, fixture: ArtifactParityFixture) {
+  let projectRevision = 21;
+  const analyses: Array<{ id: string }> = [];
+  const tabulates: Array<{ id: string; sourceDatasetId: string; rowFields: string[]; columnFields: string[]; statistics: Array<{ id: string; field: string; kind: string }>; includeRowTotals: boolean; includeColumnTotals: boolean; createdAt: string; name: string }> = [];
+  const reports: Array<Record<string, unknown>> = [{
+    schemaVersion: 1,
+    id: "report-1",
+    name: "Task 12 Report",
+    markdown: "# Updated",
+    createdAt: "2026-09-16T00:00:00.000Z",
+    updatedAt: "2026-09-16T00:00:00.000Z",
+  }];
+  const reportRevisions = new Map<string, number>([["report-1", 2]]);
+  const graphs: Array<Record<string, unknown>> = [
     {
-      name: "width",
-      sqlType: "DOUBLE",
-      display: {
-        width: 160,
-        format: { kind: "fixed", decimals: 3 },
-        extras: {
-          unit: { symbol: "mm" },
-          spec: { lsl: 9.8, target: 10.0, usl: 10.2 },
-          range: { preferred: [9.9, 10.1] },
-          notes: { text: "critical" },
-          opaque: { nested: [1, true, "ok"] },
+      id: "graph-1",
+      name: "Width Graph",
+      sourceDatasetId: "table-main",
+      mode: "2d",
+      modeStates: {
+        twoD: {
+          encoding: {},
+          multiX: [],
+          multiY: [],
+          elements: [{ kind: "points", enabled: true }],
+          smootherLambda: 0.4,
+        },
+        threeD: {
+          encoding: {},
+          elements: [{ kind: "scatter3d", enabled: true }],
+          smootherLambda: 0.4,
+        },
+        multivariate: {
+          columns: [],
+          chartType: "correlationMatrix",
+          correlationMethod: "pearson",
         },
       },
+      createdAt: "2026-09-16T00:00:00.000Z",
     },
-    {
-      name: "build",
-      sqlType: "VARCHAR",
-      display: {
-        width: 128,
-        format: { kind: "asis" },
-        extras: { valueOrder: { values: ["EV", "DV", "PQ"] } },
+  ];
+  const graphRevisions = new Map<string, number>([["graph-1", 2]]);
+
+  return createApplicationRuntime({
+    initialRevision: projectRevision,
+    revision: {
+      get: () => projectRevision,
+      set: (next) => {
+        projectRevision = next;
       },
     },
-  ],
-  rows: [
-    [10.01, "EV"],
-    [9.98, "DV"],
-  ],
-};
-
-const transform: TableTransformDefinition = {
-  id: "transform-1",
-  name: "Sort width",
-  formatVersion: "1",
-  revision: 3,
-  inputSlots: [],
-  operation: {
-    kind: "sort",
-    sortColumns: [{ column: "width", direction: "ascending" }],
-  },
-  output: {
-    tableDocumentId: "table-main",
-    name: "Sorted width",
-  },
-};
-
-const tabulate: TabulateItem = {
-  id: "tabulate-1",
-  name: "Width by Build",
-  sourceDatasetId: "table-main",
-  rowFields: ["build"],
-  columnFields: [],
-  statistics: [{ id: "stat-mean", field: "width", kind: "mean" }],
-  includeRowTotals: true,
-  includeColumnTotals: false,
-  createdAt: "2026-09-16T00:00:00.000Z",
-};
-
-const tabulateResult: TabulateResult = {
-  rowMembers: [["EV"], ["DV"]],
-  columnMembers: [[]],
-  statistics: tabulate.statistics,
-  cells: [10.01, 9.98],
-  rowTotals: [10.01, 9.98],
-  columnTotals: [9.995],
-  grandTotals: [9.995],
-  cellCount: 2,
-  limit: 10000,
-};
-
-const report: ReportItem = {
-  schemaVersion: 1,
-  id: "report-1",
-  name: "Task 12 Report",
-  markdown: "# Artifact parity\n\nAll project artifacts are equivalent.",
-  createdAt: "2026-09-16T00:00:00.000Z",
-  updatedAt: "2026-09-16T00:00:00.000Z",
-};
-
-const analysisDocuments = createAllAnalysisKinds();
-
-function createUiArtifacts() {
-  return {
-  commands: {
-    tableCreate: {
-      requestId: "cmd-ui-create",
-      command: "table.create",
-      data: createTableRequest,
-      projectRevision: 21,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task12",
+          filePath: "/Users/ashton/private/task12.spprj",
+          createdAt: "2026-09-16T00:00:00.000Z",
+        },
+        dirty: true,
+        readOnly: false,
+        projectRevision,
+      }),
+      listDatasets: () => [
+        {
+          id: "table-main",
+          name: "Main Table",
+          sourceType: "manual",
+          sourcePath: null,
+          rowCount: 2,
+          colCount: 2,
+          generation: 1,
+          createdAt: "2026-09-16T00:00:00.000Z",
+          updatedAt: "2026-09-16T00:00:00.000Z",
+        },
+      ],
+      listTableTransforms: () => [
+        {
+          id: "transform-1",
+          name: "Sort width",
+          formatVersion: "1",
+          revision: 3,
+          inputSlots: [],
+          operation: {
+            kind: "sort",
+            sortColumns: [{ column: "width", direction: "ascending" }],
+          },
+          output: { tableDocumentId: "table-main", name: "Sorted width" },
+        },
+      ],
+      listGraphs: () => [
+        {
+          id: "graph-1",
+          name: "Width Graph",
+          sourceDatasetId: "table-main",
+          mode: "simple",
+          modeStates: {},
+          createdAt: "2026-09-16T00:00:00.000Z",
+        },
+      ],
+      listReports: () => [
+        {
+          schemaVersion: 1,
+          id: "report-1",
+          name: "Task 12 Report",
+          markdown: "# Updated",
+          createdAt: "2026-09-16T00:00:00.000Z",
+          updatedAt: "2026-09-16T00:00:00.000Z",
+        },
+      ],
+      listAnalyses: () => analyses as never,
+      listTabulates: () => tabulates as never,
+      getColumns: async () => [["width", "DOUBLE"], ["build", "VARCHAR"]],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 1,
+      buildSaveProjectRequest: () => (actor.kind === "ui" ? fixture.savePayloads.ui : fixture.savePayloads.mcp) as never,
+      saveProjectCommand: async () => ({
+        name: "Task12",
+        createdAt: "2026-09-16T00:00:00.000Z",
+        fileName: "task12.spprj",
+        hasProjectPath: true,
+      }),
+      flushPendingHistory: async () => undefined,
     },
-    tableTransformCreate: {
-      requestId: "cmd-ui-transform",
-      command: "tableTransform.create",
-      data: { draft: transform },
-      projectRevision: 22,
+    table: {
+      createManagedTable: async (request) => ({
+        dataset: {
+          id: "table-main",
+          name: request.name,
+          sourceType: "manual",
+          sourcePath: null,
+          rowCount: request.rows.length,
+          colCount: request.columns.length,
+          generation: 1,
+          createdAt: "2026-09-16T00:00:00.000Z",
+          updatedAt: "2026-09-16T00:00:00.000Z",
+        },
+        generation: 1,
+        columns: request.columns.map((column, colIndex) => ({
+          colIndex,
+          colName: column.name,
+          colType: column.sqlType.toUpperCase(),
+          width: column.display?.width,
+          format: column.display?.format,
+          extras: column.display?.extras,
+        })),
+      }),
+      refreshDatasets: async () => undefined,
+      markDirty: () => undefined,
+      recordAction: () => undefined,
+      activateDataset: () => undefined,
+      historyMessage: () => "created",
     },
-    tabulateCreate: {
-      requestId: "cmd-ui-tabulate-create",
-      command: "tabulate.create",
-      data: { sourceDatasetId: "table-main" },
-      projectRevision: 23,
+    tableTransform: {
+      preflightCreateAndRun: async () => undefined,
+      preflightRun: async () => undefined,
+      createAndRun: async () => ({
+        definitionId: "transform-1",
+        output: { id: "table-main", name: "Main Table" },
+        runState: { outputGeneration: 1, status: "succeeded" },
+      } as never),
+      rerun: async () => ({
+        definitionId: "transform-1",
+        output: { id: "table-main", name: "Main Table" },
+        runState: { outputGeneration: 1, status: "succeeded" },
+      } as never),
+      listDefinitions: () => [{
+        id: "transform-1",
+        name: "Sort width",
+        formatVersion: "1",
+        revision: 3,
+        inputSlots: [],
+        operation: {
+          kind: "sort",
+          sortColumns: [{ column: "width", direction: "ascending" }],
+        },
+        output: { tableDocumentId: "table-main", name: "Sorted width" },
+      }],
+      listBindings: () => [{
+        definitionId: "transform-1",
+        sourceDatasetId: "table-main",
+        sourceGeneration: 1,
+      }],
+      refreshDatasets: async () => undefined,
+      markDirty: () => undefined,
+      recordAction: () => undefined,
+      activateDataset: () => undefined,
+      historyMessage: () => "transform",
     },
-    tabulateToTable: {
-      requestId: "cmd-ui-tabulate-export",
-      command: "tabulate.exportTable",
-      data: { tabulateId: tabulate.id, request: { ...tabulate, datasetId: "table-main", maxResultCells: 10000 }, tableName: "Tabulate Export" },
-      projectRevision: 24,
+    sql: {
+      preflightCreateTableFromSqlQuery: async () => undefined,
+      createTableFromSqlQuery: async () => ({
+        id: "table-main",
+        name: "SQL Result",
+        sourcePath: null,
+        sourceType: "query",
+        rowCount: 2,
+        colCount: 2,
+        generation: 1,
+        createdAt: "2026-09-16T00:00:00.000Z",
+        updatedAt: "2026-09-16T00:00:00.000Z",
+      }),
+      refreshDatasets: async () => undefined,
+      markDirty: () => undefined,
+      recordAction: () => undefined,
+      activateDataset: () => undefined,
+      historyMessage: () => "sql",
     },
-    graphCreate: {
-      requestId: "cmd-ui-graph-create",
-      command: "graph.create",
-      data: { sourceDatasetId: "table-main" },
-      projectRevision: 25,
+    graph: {
+      listGraphs: () => graphs as never,
+      listGraphNamesForAllocation: () => graphs.map((item) => String(item.name ?? "")),
+      listDatasets: () => [{
+        id: "table-main",
+        name: "Main Table",
+      }],
+      createGraphId: () => "graph-created",
+      createNowIso: () => "2026-09-16T00:00:00.000Z",
+      addGraph: (item) => {
+        graphs.push(item as unknown as Record<string, unknown>);
+      },
+      replaceGraph: (item) => {
+        const index = graphs.findIndex((entry) => entry.id === item.id);
+        if (index >= 0) {
+          graphs[index] = item as unknown as Record<string, unknown>;
+        }
+      },
+      getDocumentRevision: (graphId) => graphRevisions.get(graphId) ?? 1,
+      setDocumentRevision: (graphId, revision) => {
+        graphRevisions.set(graphId, revision);
+      },
+      activateGraph: () => undefined,
+      markDirty: () => undefined,
+      recordAction: () => undefined,
+      historyCreateMessage: () => "graph create",
+      historyUpdateMessage: () => "graph update",
+      normalizeGraph: (item) => item,
     },
-    analysisCreate: {
-      requestId: "cmd-ui-analysis-create",
-      command: "analysis.create",
-      data: { analysisKind: "distribution", sourceDatasetId: "table-main", draft: { name: "Distribution", responses: [{ name: "width", type: "continuous" }], weight: null, frequency: null, by: [] } },
-      projectRevision: 26,
+    report: {
+      listReports: () => reports as never,
+      nextReportName: () => "Task 12 Report",
+      listReportNamesForAllocation: () => reports.map((item) => String(item.name ?? "")),
+      createReportId: () => "report-created",
+      createNowIso: () => "2026-09-16T00:00:00.000Z",
+      addReport: (item) => {
+        reports.push(item as unknown as Record<string, unknown>);
+      },
+      updateMarkdown: (id, markdown, updatedAt) => {
+        const index = reports.findIndex((item) => item.id === id);
+        if (index >= 0) {
+          reports[index] = { ...reports[index], markdown, updatedAt };
+        }
+      },
+      getDocumentRevision: (reportId) => reportRevisions.get(reportId) ?? 1,
+      setDocumentRevision: (reportId, revision) => {
+        reportRevisions.set(reportId, revision);
+      },
+      activateReport: () => undefined,
+      markDirty: () => undefined,
+      recordAction: () => undefined,
+      historyCreateMessage: () => "report create",
+      historyEditMessage: () => "report edit",
+      scheduleTimer: (callback) => {
+        callback();
+        return 0;
+      },
+      cancelTimer: () => undefined,
+      flushPendingHistory: async () => undefined,
     },
-    reportCreate: {
-      requestId: "cmd-ui-report-create",
-      command: "report.create",
-      data: {},
-      projectRevision: 27,
+    tabulate: {
+      listTabulates: () => tabulates,
+      listDatasets: () => [{ id: "table-main", name: "Main Table" }],
+      listTabulateNamesForAllocation: () => [],
+      createTabulateId: () => "tabulate-1",
+      createNowIso: () => "2026-09-16T00:00:00.000Z",
+      nextTabulateBaseName: () => "Tabulate 1",
+      addTabulate: (item) => {
+        tabulates.push(item);
+      },
+      activateTabulate: () => undefined,
+      markDirty: () => undefined,
+      recordAction: () => undefined,
+      historyCreateMessage: () => "tabulate",
+      runTabulate: async () => ({
+        rowMembers: [["EV"], ["DV"]],
+        columnMembers: [[]],
+        statistics: [{ id: "stat-mean", field: "width", kind: "mean" }],
+        cells: [10.01, 9.98],
+        rowTotals: [10.01, 9.98],
+        columnTotals: [9.995],
+        grandTotals: [9.995],
+        cellCount: 2,
+        limit: 10000,
+      }),
+      getDatasetGeneration: async () => 1,
+      setLatestResult: () => undefined,
+      getLatestResult: () => null,
+      createTable: async () => ({
+        result: {
+          dataset: {
+            id: "table-main",
+            name: "Tabulate Export",
+            sourceType: "manual",
+            sourcePath: null,
+            rowCount: 2,
+            colCount: 2,
+            generation: 1,
+            createdAt: "2026-09-16T00:00:00.000Z",
+            updatedAt: "2026-09-16T00:00:00.000Z",
+          },
+          generation: 1,
+          columns: [],
+        },
+        warnings: [],
+      }),
+      buildExportRequest: () => ({
+        name: "Tabulate Export",
+        columnNames: ["build", "mean(width)"],
+        columnTypes: ["VARCHAR", "DOUBLE"],
+        rows: [["EV", 10.01], ["DV", 9.98]],
+      }),
     },
-    sqlCreateTable: {
-      requestId: "cmd-ui-sql",
-      command: "sql.createTable",
-      data: { sql: "select width, build from table_main", name: "SQL Result" },
-      projectRevision: 28,
+    io: {
+      createSnapshot: async () => ({
+        snapshotId: "11111111-1111-4111-8111-111111111111",
+        snapshotName: "Task 12 Snapshot",
+        createdAt: "2026-09-16T00:00:00.000Z",
+      }),
+      inspectCsvTarget: async () => ({ targetExists: false }),
+      exportCsv: async () => undefined,
     },
-    saveProject: {
-      requestId: "cmd-ui-save",
-      command: "project.save",
-      data: {},
-      projectRevision: 29,
-    },
-    snapshotCreate: {
-      requestId: "cmd-ui-snapshot",
-      command: "snapshot.create",
-      data: {},
-      snapshotId: "f95cf6bb-6a4e-4888-b7b8-e38557369989",
-      createdAt: "2026-09-16T09:15:00.000Z",
-      projectRevision: 30,
-    },
-    exportCsv: {
-      requestId: "cmd-ui-export",
-      command: "table.exportCsv",
-      data: { datasetId: "table-main", rootId: "root-1", relativePath: "exports/main.csv" },
-      durationMs: 20,
-      projectRevision: 30,
-    },
-  },
-  reopenedProject: {
-    tables: [{ id: "table-main", request: createTableRequest }],
-    tableTransforms: [transform],
-    tabulates: [tabulate],
-    tabulateResults: [tabulateResult],
-    reports: [report],
-    analyses: analysisDocuments,
-  },
-  };
+  });
 }
 
-function createMcpArtifacts() {
-  return {
-  commands: {
-    tableCreate: {
-      requestId: "cmd-mcp-create",
-      command: "table.create",
-      data: createTableRequest,
-      projectRevision: 21,
-    },
-    tableTransformCreate: {
-      requestId: "cmd-mcp-transform",
-      command: "tableTransform.create",
-      data: { draft: transform },
-      projectRevision: 22,
-    },
-    tabulateCreate: {
-      requestId: "cmd-mcp-tabulate-create",
-      command: "tabulate.create",
-      data: { sourceDatasetId: "table-main" },
-      projectRevision: 23,
-    },
-    tabulateToTable: {
-      requestId: "cmd-mcp-tabulate-export",
-      command: "tabulate.exportTable",
-      data: { tabulateId: tabulate.id, request: { ...tabulate, datasetId: "table-main", maxResultCells: 10000 }, tableName: "Tabulate Export" },
-      projectRevision: 24,
-    },
-    graphCreate: {
-      requestId: "cmd-mcp-graph-create",
-      command: "graph.create",
-      data: { sourceDatasetId: "table-main" },
-      projectRevision: 25,
-    },
-    analysisCreate: {
-      requestId: "cmd-mcp-analysis-create",
-      command: "analysis.create",
-      data: { analysisKind: "distribution", sourceDatasetId: "table-main", draft: { name: "Distribution", responses: [{ name: "width", type: "continuous" }], weight: null, frequency: null, by: [] } },
-      projectRevision: 26,
-    },
-    reportCreate: {
-      requestId: "cmd-mcp-report-create",
-      command: "report.create",
-      data: {},
-      projectRevision: 27,
-    },
-    sqlCreateTable: {
-      requestId: "cmd-mcp-sql",
-      command: "sql.createTable",
-      data: { sql: "select width, build from table_main", name: "SQL Result" },
-      projectRevision: 28,
-    },
-    saveProject: {
-      requestId: "cmd-mcp-save",
-      command: "project.save",
-      data: {},
-      projectRevision: 29,
-    },
-    snapshotCreate: {
-      requestId: "cmd-mcp-snapshot",
-      command: "snapshot.create",
-      data: {},
-      snapshotId: "11f8e8eb-d4ba-4698-8f5a-ac5b3fbe5d72",
-      createdAt: "2026-09-16T09:15:02.000Z",
-      projectRevision: 30,
-    },
-    exportCsv: {
-      requestId: "cmd-mcp-export",
-      command: "table.exportCsv",
-      data: { datasetId: "table-main", rootId: "root-1", relativePath: "exports/main.csv" },
-      durationMs: 33,
-      projectRevision: 30,
-    },
-  },
-  reopenedProject: {
-    tables: [{ id: "table-main", request: createTableRequest }],
-    tableTransforms: [transform],
-    tabulates: [tabulate],
-    tabulateResults: [tabulateResult],
-    reports: [report],
-    analyses: createAllAnalysisKinds(),
-  },
-  };
+async function executeForActor(
+  actor: CommandActor,
+  fixture: ArtifactParityFixture,
+  commandIds: string[],
+): Promise<Array<CommandResult<unknown>>> {
+  const runtime = createRuntimeForActor(actor, fixture);
+  const results: Array<CommandResult<unknown>> = [];
+  for (const commandId of commandIds) {
+    const command = toCommand(findCase(fixture, commandId));
+    const result = await runtime.execute(command as never, actor);
+    results.push(result);
+  }
+  return results;
 }
 
-const uiArtifacts = createUiArtifacts();
-const mcpArtifacts = createMcpArtifacts();
+const fixture = loadFixture();
+assert.equal(fixture.projectionCases.length, 17, "Shared artifact parity fixture must include all 17 Phase 1 mutation projections");
 
-assert.notEqual(uiArtifacts.commands.tableCreate.requestId, mcpArtifacts.commands.tableCreate.requestId);
-assert.notEqual(uiArtifacts.reopenedProject, mcpArtifacts.reopenedProject);
+const commandIds = [
+  "table.create",
+  "tableTransform.create",
+  "tableTransform.run",
+  "sql.createTable",
+  "tabulate.create",
+  "tabulate.run",
+  "tabulate.exportTable",
+  "graph.create",
+  "graph.update",
+  "report.create",
+  "report.update",
+  "project.save",
+  "snapshot.create",
+  "table.exportCsv",
+];
+
+const uiResults = await executeForActor({ kind: "ui" }, fixture, commandIds);
+const mcpResults = await executeForActor({ kind: "mcp", sessionId: "mcp-session", clientId: "client-1" }, fixture, commandIds);
+assert.equal(uiResults.length, mcpResults.length);
+
+for (let index = 0; index < uiResults.length; index += 1) {
+  const ui = normalizeWithPolicy(uiResults[index], fixture.nondeterministicPolicy);
+  const mcp = normalizeWithPolicy(mcpResults[index], fixture.nondeterministicPolicy);
+  assert.deepEqual(
+    ui,
+    mcp,
+    `Runtime parity mismatch at index ${index}`,
+  );
+}
 
 assert.deepEqual(
-  normalizeParityValue(uiArtifacts),
-  normalizeParityValue(mcpArtifacts),
-  "UI and MCP save/reopen artifacts must be structurally equivalent after removing only UUID/timestamp/duration nondeterminism",
+  normalizeWithPolicy(fixture.savePayloads.ui, fixture.nondeterministicPolicy),
+  normalizeWithPolicy(fixture.savePayloads.mcp, fixture.nondeterministicPolicy),
+  "Fixture UI/MCP save payloads should align after allowed nondeterministic normalization",
 );
-
-const uiColumns = uiArtifacts.reopenedProject.tables[0]?.request.columns ?? [];
-const mcpColumns = mcpArtifacts.reopenedProject.tables[0]?.request.columns ?? [];
-assert.equal(uiColumns.length, 2);
-assert.deepEqual(uiColumns, mcpColumns, "Table parity must preserve sqlType, display.width, display.format, display.extras, values, and ordering");
-assert.equal(uiColumns[0]?.sqlType, "DOUBLE");
-assert.equal(uiColumns[0]?.display?.width, 160);
-assert.deepEqual(uiColumns[0]?.display?.format, { kind: "fixed", decimals: 3 });
-assert.deepEqual(uiColumns[0]?.display?.extras?.spec, { lsl: 9.8, target: 10.0, usl: 10.2 });
-
-const kinds = new Set(uiArtifacts.reopenedProject.analyses.map((item) => item.analysisKind));
-assert.deepEqual(
-  [...kinds].sort(),
-  ["distribution", "fitModel", "fitYByX", "hypothesisTest"],
-  "Round-trip parity must cover every registered analysis kind",
-);
-
-assert.equal(uiArtifacts.reopenedProject.reports[0]?.markdown.includes("AI"), false);
-assert.equal(mcpArtifacts.reopenedProject.reports[0]?.markdown.includes("AI"), false);
 
 console.log("mcp artifact parity passed");

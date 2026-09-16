@@ -1775,29 +1775,10 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
             >());
         };
         let request_started = Instant::now();
-        let mut input = request
-            .arguments
-            .map(Value::Object)
-            .unwrap_or_else(|| json!({}));
-        if contains_trusted_confirmation(&input) {
-            return Err(McpError::invalid_params(
-                "tool arguments must not include confirmation flags",
-                None,
-            ));
-        }
-        let control = input
-            .as_object_mut()
-            .and_then(|object| object.remove("control"));
-        input = validate_tool_input(entry.command, input)?;
-        let control = match control {
-            Some(control) => Some(normalize_json::<MutationControl>(control)?),
-            None => None,
-        };
-        let envelope = ApplicationCommandEnvelope {
-            command_type: entry.command.to_string(),
-            input,
-            control,
-        };
+        let envelope = project_tool_request_to_application_command_envelope(
+            request.name.as_ref(),
+            request.arguments,
+        )?;
         let request_id = format!("mcp-{}", Uuid::new_v4());
         let _ = self.audit_log.push(McpAuditEntry {
             request_id: request_id.clone(),
@@ -1897,6 +1878,42 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
             }
         }
     }
+}
+
+pub(crate) fn project_tool_request_to_application_command_envelope(
+    tool_name: &str,
+    raw_arguments: Option<Map<String, Value>>,
+) -> Result<ApplicationCommandEnvelope, McpError> {
+    let Some(entry) = tool_catalog()
+        .into_iter()
+        .find(|entry| entry.name == tool_name)
+    else {
+        return Err(McpError::method_not_found::<
+            rmcp::model::CallToolRequestMethod,
+        >());
+    };
+
+    let mut input = Value::Object(raw_arguments.unwrap_or_default());
+    if contains_trusted_confirmation(&input) {
+        return Err(McpError::invalid_params(
+            "tool arguments must not include confirmation flags",
+            None,
+        ));
+    }
+    let control = input
+        .as_object_mut()
+        .and_then(|object| object.remove("control"));
+    input = validate_tool_input(entry.command, input)?;
+    let control = match control {
+        Some(control) => Some(normalize_json::<MutationControl>(control)?),
+        None => None,
+    };
+
+    Ok(ApplicationCommandEnvelope {
+        command_type: entry.command.to_string(),
+        input,
+        control,
+    })
 }
 
 impl<E: ApplicationCommandEventEmitter> ServerHandler for StatsPlaygroundMcpServer<E> {
@@ -2430,6 +2447,37 @@ mod tests {
         McpCommandBrokerConfig, McpCommandResult,
     };
     use rmcp::model::{CallToolRequestParams, CallToolResponse};
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    struct ProjectionFixture {
+        #[serde(rename = "projectionCases")]
+        projection_cases: Vec<ProjectionCase>,
+        #[serde(rename = "projectionRejections")]
+        projection_rejections: Vec<ProjectionRejection>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ProjectionCase {
+        id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        #[serde(rename = "rawArguments")]
+        raw_arguments: Value,
+        #[serde(rename = "expectedEnvelope")]
+        expected_envelope: ApplicationCommandEnvelope,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ProjectionRejection {
+        id: String,
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        #[serde(rename = "rawArguments")]
+        raw_arguments: Value,
+        #[serde(rename = "errorContains")]
+        error_contains: String,
+    }
 
     #[derive(Clone, Default)]
     struct RecordingEmitter {
@@ -2475,6 +2523,13 @@ mod tests {
             .register_dispatcher()
             .expect("register test dispatcher");
         (broker, emitter)
+    }
+
+    fn load_projection_fixture() -> ProjectionFixture {
+        serde_json::from_str(include_str!(
+            "../../../contracts/mcp/artifact-parity.v1.json"
+        ))
+        .expect("valid artifact parity fixture")
     }
 
     fn find_schema_property<'a>(schema: &'a Value, property: &str) -> Option<&'a Value> {
@@ -2676,6 +2731,81 @@ mod tests {
                 "createdAt"
             ])
         );
+    }
+
+    #[test]
+    fn mcp_tool_projection_builds_expected_envelope_for_table_describe() {
+        let raw_arguments = serde_json::from_value::<Map<String, Value>>(json!({
+            "datasetId": "table-1",
+            "control": { "expectedProjectRevision": 8 }
+        }))
+        .expect("raw MCP arguments object");
+        let envelope = project_tool_request_to_application_command_envelope(
+            "statsplayground.table.describe",
+            Some(raw_arguments),
+        )
+        .expect("table.describe should project into a canonical command envelope");
+
+        assert_eq!(envelope.command_type, "table.describe");
+        assert_eq!(envelope.input, json!({ "datasetId": "table-1" }));
+        assert_eq!(
+            envelope.control,
+            Some(json!({ "expectedProjectRevision": 8 }))
+        );
+    }
+
+    #[test]
+    fn fixture_raw_mutations_project_into_expected_application_command_envelopes() {
+        let fixture = load_projection_fixture();
+        assert_eq!(fixture.projection_cases.len(), 17);
+
+        for case in fixture.projection_cases {
+            let raw_arguments = match case.raw_arguments {
+                Value::Object(object) => object,
+                other => panic!(
+                    "{} rawArguments must be a JSON object, got: {other}",
+                    case.id
+                ),
+            };
+            let envelope = project_tool_request_to_application_command_envelope(
+                &case.tool_name,
+                Some(raw_arguments),
+            )
+            .unwrap_or_else(|error| panic!("{} projection failed unexpectedly: {error}", case.id));
+            assert_eq!(
+                envelope, case.expected_envelope,
+                "{} projected envelope mismatch",
+                case.id
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_rejection_cases_reject_adapter_only_and_confirmation_fields() {
+        let fixture = load_projection_fixture();
+
+        for case in fixture.projection_rejections {
+            let raw_arguments = match case.raw_arguments {
+                Value::Object(object) => object,
+                other => panic!(
+                    "{} rawArguments must be a JSON object, got: {other}",
+                    case.id
+                ),
+            };
+            let error = project_tool_request_to_application_command_envelope(
+                &case.tool_name,
+                Some(raw_arguments),
+            )
+            .expect_err("fixture rejection must fail projection");
+
+            let message = format!("{error}");
+            assert!(
+                message.contains(&case.error_contains),
+                "{} expected error containing {:?}, got {message}",
+                case.id,
+                case.error_contains
+            );
+        }
     }
 
     #[tokio::test]
