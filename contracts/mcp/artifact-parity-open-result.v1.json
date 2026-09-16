@@ -1,0 +1,1661 @@
+{
+  "version": "artifact-parity-open-result.v1",
+  "canonicalOpenProjectResult": {
+    "analyses": [
+      {
+        "analysisKind": "distribution",
+        "configRevision": 2,
+        "createdAt": "2026-09-16T00:00:00.000Z",
+        "definition": {
+          "analysis": {
+            "confidenceLevel": 0.9,
+            "fitDistributions": [
+              "normal"
+            ],
+            "specLimits": {}
+          },
+          "by": [],
+          "frequency": null,
+          "graphs": {
+            "boxPlot": {
+              "filters": [],
+              "mode": "2d",
+              "modeStates": {
+                "multivariate": {
+                  "chartType": "correlationMatrix",
+                  "columns": [],
+                  "correlationMethod": "pearson"
+                },
+                "threeD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "scatter3d"
+                    }
+                  ],
+                  "encoding": {},
+                  "smootherLambda": 0.4
+                },
+                "twoD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "points"
+                    },
+                    {
+                      "enabled": true,
+                      "kind": "fitline",
+                      "options": {
+                        "degree": 1,
+                        "fitType": "polynomial",
+                        "showFitCI": true
+                      }
+                    }
+                  ],
+                  "encoding": {
+                    "x": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    },
+                    "y": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "smootherLambda": 0.4
+                }
+              },
+              "sampling": {
+                "mode": "full"
+              }
+            },
+            "ecdf": {
+              "filters": [],
+              "mode": "2d",
+              "modeStates": {
+                "multivariate": {
+                  "chartType": "correlationMatrix",
+                  "columns": [],
+                  "correlationMethod": "pearson"
+                },
+                "threeD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "scatter3d"
+                    }
+                  ],
+                  "encoding": {},
+                  "smootherLambda": 0.4
+                },
+                "twoD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "points"
+                    },
+                    {
+                      "enabled": true,
+                      "kind": "fitline",
+                      "options": {
+                        "degree": 1,
+                        "fitType": "polynomial",
+                        "showFitCI": true
+                      }
+                    }
+                  ],
+                  "encoding": {
+                    "x": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    },
+                    "y": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "smootherLambda": 0.4
+                }
+              },
+              "sampling": {
+                "mode": "full"
+              }
+            },
+            "normalQuantile": {
+              "filters": [],
+              "mode": "2d",
+              "modeStates": {
+                "multivariate": {
+                  "chartType": "correlationMatrix",
+                  "columns": [],
+                  "correlationMethod": "pearson"
+                },
+                "threeD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "scatter3d"
+                    }
+                  ],
+                  "encoding": {},
+                  "smootherLambda": 0.4
+                },
+                "twoD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "points"
+                    },
+                    {
+                      "enabled": true,
+                      "kind": "fitline",
+                      "options": {
+                        "degree": 1,
+                        "fitType": "polynomial",
+                        "showFitCI": true
+                      }
+                    }
+                  ],
+                  "encoding": {
+                    "x": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    },
+                    "y": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "smootherLambda": 0.4
+                }
+              },
+              "sampling": {
+                "mode": "full"
+              }
+            },
+            "overview": {
+              "filters": [],
+              "mode": "2d",
+              "modeStates": {
+                "multivariate": {
+                  "chartType": "correlationMatrix",
+                  "columns": [],
+                  "correlationMethod": "pearson"
+                },
+                "threeD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "scatter3d"
+                    }
+                  ],
+                  "encoding": {},
+                  "smootherLambda": 0.4
+                },
+                "twoD": {
+                  "elements": [
+                    {
+                      "enabled": true,
+                      "kind": "points"
+                    },
+                    {
+                      "enabled": true,
+                      "kind": "fitline",
+                      "options": {
+                        "degree": 1,
+                        "fitType": "polynomial",
+                        "showFitCI": true
+                      }
+                    }
+                  ],
+                  "encoding": {
+                    "x": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    },
+                    "y": {
+                      "name": "DIM2",
+                      "type": "continuous"
+                    }
+                  },
+                  "multiX": [],
+                  "multiY": [],
+                  "smootherLambda": 0.4
+                }
+              },
+              "sampling": {
+                "mode": "full"
+              }
+            }
+          },
+          "kind": "distribution",
+          "nestedSubgroup": null,
+          "responses": [
+            {
+              "name": "width",
+              "type": "continuous"
+            }
+          ],
+          "weight": null
+        },
+        "documentType": "analysis",
+        "id": "analysis-1",
+        "name": "Distribution 1",
+        "presentation": {
+          "layout": "distribution-v1",
+          "schemaVersion": 1
+        },
+        "schemaVersion": 1,
+        "source": {
+          "datasetId": "table-main"
+        },
+        "updatedAt": "2026-09-16T00:00:00.000Z"
+      },
+      {
+        "analysisKind": "fitYByX",
+        "configRevision": 2,
+        "createdAt": "2026-09-16T00:00:00.000Z",
+        "definition": {
+          "confidenceLevel": 0.9,
+          "factor": {
+            "name": "build",
+            "type": "nominal"
+          },
+          "kind": "fitYByX",
+          "personality": "oneway",
+          "response": {
+            "name": "width",
+            "type": "continuous"
+          }
+        },
+        "documentType": "analysis",
+        "id": "analysis-2",
+        "name": "Fit Y by X 1",
+        "presentation": {
+          "graph": {
+            "filters": [],
+            "mode": "2d",
+            "modeStates": {
+              "multivariate": {
+                "chartType": "correlationMatrix",
+                "columns": [],
+                "correlationMethod": "pearson"
+              },
+              "threeD": {
+                "elements": [
+                  {
+                    "enabled": true,
+                    "kind": "scatter3d"
+                  }
+                ],
+                "encoding": {},
+                "smootherLambda": 0.4
+              },
+              "twoD": {
+                "elements": [
+                  {
+                    "enabled": true,
+                    "kind": "points"
+                  },
+                  {
+                    "enabled": true,
+                    "kind": "boxplot"
+                  }
+                ],
+                "encoding": {
+                  "x": {
+                    "name": "build",
+                    "type": "nominal"
+                  },
+                  "y": {
+                    "name": "width",
+                    "type": "continuous"
+                  }
+                },
+                "multiX": [],
+                "multiY": [],
+                "smootherLambda": 0.4
+              }
+            },
+            "sampling": {
+              "mode": "full"
+            }
+          },
+          "layout": "fit-y-by-x-v1",
+          "schemaVersion": 1
+        },
+        "schemaVersion": 1,
+        "source": {
+          "datasetId": "table-main"
+        },
+        "updatedAt": "2026-09-16T00:00:00.000Z"
+      },
+      {
+        "analysisKind": "fitModel",
+        "configRevision": 2,
+        "createdAt": "2026-09-16T00:00:00.000Z",
+        "definition": {
+          "centeringMethod": "none",
+          "confidenceLevel": 0.9,
+          "construct": {
+            "kind": "manual"
+          },
+          "kind": "fitModel",
+          "response": {
+            "name": "Strength",
+            "type": "continuous"
+          },
+          "terms": [
+            {
+              "columnNames": [
+                "width"
+              ],
+              "kind": "main"
+            }
+          ]
+        },
+        "documentType": "analysis",
+        "id": "analysis-3",
+        "name": "Fit Model 1",
+        "presentation": {
+          "layout": "fit-model-v1",
+          "schemaVersion": 1
+        },
+        "schemaVersion": 1,
+        "source": {
+          "datasetId": "table-main"
+        },
+        "updatedAt": "2026-09-16T00:00:00.000Z"
+      },
+      {
+        "analysisKind": "hypothesisTest",
+        "configRevision": 2,
+        "createdAt": "2026-09-16T00:00:00.000Z",
+        "definition": {
+          "alpha": 0.05,
+          "alternative": "twoSided",
+          "confidenceLevel": 0.9,
+          "kind": "hypothesisTest",
+          "levelOrder": [
+            "A",
+            "B"
+          ],
+          "manualSelection": {
+            "methodId": "studentTwoSampleT",
+            "reason": null
+          },
+          "postHoc": "off",
+          "referenceLevel": "A",
+          "roles": {
+            "condition": {
+              "name": "build",
+              "type": "nominal"
+            },
+            "layout": "long",
+            "response": {
+              "name": "width",
+              "type": "continuous"
+            },
+            "subject": null
+          },
+          "selectionMode": "manual",
+          "selectorVersion": "1",
+          "studyDesign": "independent"
+        },
+        "documentType": "analysis",
+        "id": "analysis-4",
+        "name": "Hypothesis Test 1",
+        "presentation": {
+          "activeResultTab": "results",
+          "collapsedSections": [],
+          "graphs": {
+            "showDiagnostics": true,
+            "showIntervals": true,
+            "showRawData": true
+          },
+          "layout": "hypothesis-test-v1",
+          "schemaVersion": 1,
+          "tableSort": null
+        },
+        "schemaVersion": 1,
+        "source": {
+          "datasetId": "table-main"
+        },
+        "updatedAt": "2026-09-16T00:00:00.000Z"
+      }
+    ],
+    "analysisFolders": {
+      "analysis-1": "Analysis",
+      "analysis-2": "Analysis",
+      "analysis-3": "Analysis",
+      "analysis-4": "Analysis"
+    },
+    "datasetFilterMigrationConflicts": [],
+    "datasetFilters": {},
+    "datasetNameMigrations": [],
+    "distributionFolders": {},
+    "distributions": [],
+    "documentNameMigrations": [],
+    "fitModelFolders": {},
+    "fitModels": [],
+    "fitYByX": [],
+    "fitYByXFolders": {},
+    "folders": [
+      "Analysis"
+    ],
+    "graphBuilders": [
+      {
+        "createdAt": "2026-09-16T00:00:00.000Z",
+        "id": "graph-1",
+        "mode": "2d",
+        "modeStates": {
+          "multivariate": {
+            "chartType": "correlationMatrix",
+            "columns": [],
+            "correlationMethod": "pearson"
+          },
+          "threeD": {
+            "elements": [
+              {
+                "enabled": true,
+                "kind": "scatter3d"
+              }
+            ],
+            "encoding": {},
+            "smootherLambda": 0.4
+          },
+          "twoD": {
+            "elements": [
+              {
+                "enabled": true,
+                "kind": "points"
+              }
+            ],
+            "encoding": {},
+            "multiX": [],
+            "multiY": [],
+            "smootherLambda": 0.4
+          }
+        },
+        "name": "Width Graph",
+        "sampling": {
+          "mode": "full"
+        },
+        "sourceDatasetId": "table-main"
+      }
+    ],
+    "graphFolders": {
+      "graph-1": "Analysis"
+    },
+    "history": [],
+    "lineageGraph": {
+      "edges": [
+        {
+          "id": "consumes-table-<uuid>-to-analysis-analysis-1",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-output"
+          },
+          "target": {
+            "nodeId": "operation-analysis-analysis-1",
+            "portId": "operation-analysis-analysis-1-input"
+          }
+        },
+        {
+          "id": "consumes-table-<uuid>-to-analysis-analysis-2",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-output"
+          },
+          "target": {
+            "nodeId": "operation-analysis-analysis-2",
+            "portId": "operation-analysis-analysis-2-input"
+          }
+        },
+        {
+          "id": "consumes-table-<uuid>-to-analysis-analysis-3",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-output"
+          },
+          "target": {
+            "nodeId": "operation-analysis-analysis-3",
+            "portId": "operation-analysis-analysis-3-input"
+          }
+        },
+        {
+          "id": "consumes-table-<uuid>-to-analysis-analysis-4",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-output"
+          },
+          "target": {
+            "nodeId": "operation-analysis-analysis-4",
+            "portId": "operation-analysis-analysis-4-input"
+          }
+        },
+        {
+          "id": "consumes-table-<uuid>-to-graph-graph-1",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-output"
+          },
+          "target": {
+            "nodeId": "operation-graph-graph-1",
+            "portId": "operation-graph-graph-1-input"
+          }
+        },
+        {
+          "id": "consumes-table-<uuid>-to-tabulate-tabulate-1",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-output"
+          },
+          "target": {
+            "nodeId": "operation-tabulate-tabulate-1",
+            "portId": "operation-tabulate-tabulate-1-input"
+          }
+        },
+        {
+          "id": "consumes-table-<uuid>-to-transform-transform-1-source",
+          "kind": "consumes",
+          "source": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-output"
+          },
+          "target": {
+            "nodeId": "operation-table-transform-transform-1",
+            "portId": "operation-table-transform-transform-1-input-source"
+          }
+        },
+        {
+          "id": "produces-analysis-analysis-1-to-analysis-analysis-1",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-analysis-analysis-1",
+            "portId": "operation-analysis-analysis-1-output"
+          },
+          "target": {
+            "nodeId": "artifact-analysis-analysis-1",
+            "portId": "artifact-analysis-analysis-1-input"
+          }
+        },
+        {
+          "id": "produces-analysis-analysis-2-to-analysis-analysis-2",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-analysis-analysis-2",
+            "portId": "operation-analysis-analysis-2-output"
+          },
+          "target": {
+            "nodeId": "artifact-analysis-analysis-2",
+            "portId": "artifact-analysis-analysis-2-input"
+          }
+        },
+        {
+          "id": "produces-analysis-analysis-3-to-analysis-analysis-3",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-analysis-analysis-3",
+            "portId": "operation-analysis-analysis-3-output"
+          },
+          "target": {
+            "nodeId": "artifact-analysis-analysis-3",
+            "portId": "artifact-analysis-analysis-3-input"
+          }
+        },
+        {
+          "id": "produces-analysis-analysis-4-to-analysis-analysis-4",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-analysis-analysis-4",
+            "portId": "operation-analysis-analysis-4-output"
+          },
+          "target": {
+            "nodeId": "artifact-analysis-analysis-4",
+            "portId": "artifact-analysis-analysis-4-input"
+          }
+        },
+        {
+          "id": "produces-graph-graph-1-to-graph-graph-1",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-graph-graph-1",
+            "portId": "operation-graph-graph-1-output"
+          },
+          "target": {
+            "nodeId": "artifact-graph-graph-1",
+            "portId": "artifact-graph-graph-1-input"
+          }
+        },
+        {
+          "id": "produces-report-report-1-to-report-report-1",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-report-report-1",
+            "portId": "operation-report-report-1-output"
+          },
+          "target": {
+            "nodeId": "artifact-report-report-1",
+            "portId": "artifact-report-report-1-input"
+          }
+        },
+        {
+          "id": "produces-tabulate-tabulate-1-to-tabulate-tabulate-1",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-tabulate-tabulate-1",
+            "portId": "operation-tabulate-tabulate-1-output"
+          },
+          "target": {
+            "nodeId": "artifact-tabulate-tabulate-1",
+            "portId": "artifact-tabulate-tabulate-1-input"
+          }
+        },
+        {
+          "id": "produces-transform-transform-1-to-table-<uuid>",
+          "kind": "produces",
+          "source": {
+            "nodeId": "operation-table-transform-transform-1",
+            "portId": "operation-table-transform-transform-1-output"
+          },
+          "target": {
+            "nodeId": "artifact-table-<uuid>",
+            "portId": "artifact-table-<uuid>-input"
+          }
+        }
+      ],
+      "graphHash": "<lineage-graph-hash>",
+      "graphVersion": 2,
+      "id": "project-lineage",
+      "name": "",
+      "nodes": [
+        {
+          "artifactKind": "analysis",
+          "documentRef": {
+            "id": "analysis-1",
+            "kind": "analysis"
+          },
+          "id": "artifact-analysis-analysis-1",
+          "inputPort": {
+            "id": "artifact-analysis-analysis-1-input",
+            "name": "input",
+            "payloadKind": "analysis"
+          },
+          "name": "Distribution 1",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-analysis-analysis-1-output",
+            "name": "output",
+            "payloadKind": "analysis"
+          }
+        },
+        {
+          "artifactKind": "analysis",
+          "documentRef": {
+            "id": "analysis-2",
+            "kind": "analysis"
+          },
+          "id": "artifact-analysis-analysis-2",
+          "inputPort": {
+            "id": "artifact-analysis-analysis-2-input",
+            "name": "input",
+            "payloadKind": "analysis"
+          },
+          "name": "Fit Y by X 1",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-analysis-analysis-2-output",
+            "name": "output",
+            "payloadKind": "analysis"
+          }
+        },
+        {
+          "artifactKind": "analysis",
+          "documentRef": {
+            "id": "analysis-3",
+            "kind": "analysis"
+          },
+          "id": "artifact-analysis-analysis-3",
+          "inputPort": {
+            "id": "artifact-analysis-analysis-3-input",
+            "name": "input",
+            "payloadKind": "analysis"
+          },
+          "name": "Fit Model 1",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-analysis-analysis-3-output",
+            "name": "output",
+            "payloadKind": "analysis"
+          }
+        },
+        {
+          "artifactKind": "analysis",
+          "documentRef": {
+            "id": "analysis-4",
+            "kind": "analysis"
+          },
+          "id": "artifact-analysis-analysis-4",
+          "inputPort": {
+            "id": "artifact-analysis-analysis-4-input",
+            "name": "input",
+            "payloadKind": "analysis"
+          },
+          "name": "Hypothesis Test 1",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-analysis-analysis-4-output",
+            "name": "output",
+            "payloadKind": "analysis"
+          }
+        },
+        {
+          "artifactKind": "graph",
+          "documentRef": {
+            "id": "graph-1",
+            "kind": "graph"
+          },
+          "id": "artifact-graph-graph-1",
+          "inputPort": {
+            "id": "artifact-graph-graph-1-input",
+            "name": "input",
+            "payloadKind": "graph"
+          },
+          "name": "Width Graph",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-graph-graph-1-output",
+            "name": "output",
+            "payloadKind": "graph"
+          }
+        },
+        {
+          "artifactKind": "report",
+          "documentRef": {
+            "id": "report-1",
+            "kind": "report"
+          },
+          "id": "artifact-report-report-1",
+          "inputPort": {
+            "id": "artifact-report-report-1-input",
+            "name": "input",
+            "payloadKind": "report"
+          },
+          "name": "Report 1",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-report-report-1-output",
+            "name": "output",
+            "payloadKind": "report"
+          }
+        },
+        {
+          "artifactKind": "table",
+          "documentRef": {
+            "id": "table-main",
+            "kind": "table"
+          },
+          "id": "artifact-table-<uuid>",
+          "inputPort": {
+            "id": "artifact-table-<uuid>-input",
+            "name": "input",
+            "payloadKind": "table"
+          },
+          "name": "Main Table",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-table-<uuid>-output",
+            "name": "output",
+            "payloadKind": "table"
+          }
+        },
+        {
+          "artifactKind": "table",
+          "documentRef": {
+            "id": "table-transform-output-1",
+            "kind": "table"
+          },
+          "id": "artifact-table-<uuid>",
+          "inputPort": {
+            "id": "artifact-table-<uuid>-input",
+            "name": "input",
+            "payloadKind": "table"
+          },
+          "name": "Main Table-2",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-table-<uuid>-output",
+            "name": "output",
+            "payloadKind": "table"
+          }
+        },
+        {
+          "artifactKind": "tabulate",
+          "documentRef": {
+            "id": "tabulate-1",
+            "kind": "tabulate"
+          },
+          "id": "artifact-tabulate-tabulate-1",
+          "inputPort": {
+            "id": "artifact-tabulate-tabulate-1-input",
+            "name": "input",
+            "payloadKind": "tabulate"
+          },
+          "name": "Width by Build",
+          "nodeType": "artifact",
+          "outputPort": {
+            "id": "artifact-tabulate-tabulate-1-output",
+            "name": "output",
+            "payloadKind": "tabulate"
+          }
+        },
+        {
+          "configuration": {
+            "analysisKind": "distribution",
+            "configRevision": 2,
+            "definition": {
+              "analysis": {
+                "confidenceLevel": 0.9,
+                "fitDistributions": [
+                  "normal"
+                ],
+                "specLimits": {}
+              },
+              "by": [],
+              "frequency": null,
+              "graphs": {
+                "boxPlot": {
+                  "filters": [],
+                  "mode": "2d",
+                  "modeStates": {
+                    "multivariate": {
+                      "chartType": "correlationMatrix",
+                      "columns": [],
+                      "correlationMethod": "pearson"
+                    },
+                    "threeD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "scatter3d"
+                        }
+                      ],
+                      "encoding": {},
+                      "smootherLambda": 0.4
+                    },
+                    "twoD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "points"
+                        },
+                        {
+                          "enabled": true,
+                          "kind": "fitline",
+                          "options": {
+                            "degree": 1,
+                            "fitType": "polynomial",
+                            "showFitCI": true
+                          }
+                        }
+                      ],
+                      "encoding": {
+                        "x": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        },
+                        "y": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        }
+                      },
+                      "multiX": [],
+                      "multiY": [],
+                      "smootherLambda": 0.4
+                    }
+                  },
+                  "sampling": {
+                    "mode": "full"
+                  }
+                },
+                "ecdf": {
+                  "filters": [],
+                  "mode": "2d",
+                  "modeStates": {
+                    "multivariate": {
+                      "chartType": "correlationMatrix",
+                      "columns": [],
+                      "correlationMethod": "pearson"
+                    },
+                    "threeD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "scatter3d"
+                        }
+                      ],
+                      "encoding": {},
+                      "smootherLambda": 0.4
+                    },
+                    "twoD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "points"
+                        },
+                        {
+                          "enabled": true,
+                          "kind": "fitline",
+                          "options": {
+                            "degree": 1,
+                            "fitType": "polynomial",
+                            "showFitCI": true
+                          }
+                        }
+                      ],
+                      "encoding": {
+                        "x": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        },
+                        "y": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        }
+                      },
+                      "multiX": [],
+                      "multiY": [],
+                      "smootherLambda": 0.4
+                    }
+                  },
+                  "sampling": {
+                    "mode": "full"
+                  }
+                },
+                "normalQuantile": {
+                  "filters": [],
+                  "mode": "2d",
+                  "modeStates": {
+                    "multivariate": {
+                      "chartType": "correlationMatrix",
+                      "columns": [],
+                      "correlationMethod": "pearson"
+                    },
+                    "threeD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "scatter3d"
+                        }
+                      ],
+                      "encoding": {},
+                      "smootherLambda": 0.4
+                    },
+                    "twoD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "points"
+                        },
+                        {
+                          "enabled": true,
+                          "kind": "fitline",
+                          "options": {
+                            "degree": 1,
+                            "fitType": "polynomial",
+                            "showFitCI": true
+                          }
+                        }
+                      ],
+                      "encoding": {
+                        "x": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        },
+                        "y": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        }
+                      },
+                      "multiX": [],
+                      "multiY": [],
+                      "smootherLambda": 0.4
+                    }
+                  },
+                  "sampling": {
+                    "mode": "full"
+                  }
+                },
+                "overview": {
+                  "filters": [],
+                  "mode": "2d",
+                  "modeStates": {
+                    "multivariate": {
+                      "chartType": "correlationMatrix",
+                      "columns": [],
+                      "correlationMethod": "pearson"
+                    },
+                    "threeD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "scatter3d"
+                        }
+                      ],
+                      "encoding": {},
+                      "smootherLambda": 0.4
+                    },
+                    "twoD": {
+                      "elements": [
+                        {
+                          "enabled": true,
+                          "kind": "points"
+                        },
+                        {
+                          "enabled": true,
+                          "kind": "fitline",
+                          "options": {
+                            "degree": 1,
+                            "fitType": "polynomial",
+                            "showFitCI": true
+                          }
+                        }
+                      ],
+                      "encoding": {
+                        "x": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        },
+                        "y": {
+                          "name": "DIM2",
+                          "type": "continuous"
+                        }
+                      },
+                      "multiX": [],
+                      "multiY": [],
+                      "smootherLambda": 0.4
+                    }
+                  },
+                  "sampling": {
+                    "mode": "full"
+                  }
+                }
+              },
+              "kind": "distribution",
+              "nestedSubgroup": null,
+              "responses": [
+                {
+                  "name": "width",
+                  "type": "continuous"
+                }
+              ],
+              "weight": null
+            },
+            "documentType": "analysis",
+            "presentation": {
+              "layout": "distribution-v1",
+              "schemaVersion": 1
+            },
+            "schemaVersion": 1,
+            "source": {
+              "datasetId": "table-main"
+            }
+          },
+          "documentRef": {
+            "id": "analysis-1",
+            "kind": "analysis"
+          },
+          "id": "operation-analysis-analysis-1",
+          "inputPorts": [
+            {
+              "id": "operation-analysis-analysis-1-input",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "kind": "analysisExecution",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-analysis-analysis-1-output",
+              "name": "result",
+              "payloadKind": "analysis"
+            }
+          ],
+          "schemaVersion": "1"
+        },
+        {
+          "configuration": {
+            "analysisKind": "fitYByX",
+            "configRevision": 2,
+            "definition": {
+              "confidenceLevel": 0.9,
+              "factor": {
+                "name": "build",
+                "type": "nominal"
+              },
+              "kind": "fitYByX",
+              "personality": "oneway",
+              "response": {
+                "name": "width",
+                "type": "continuous"
+              }
+            },
+            "documentType": "analysis",
+            "presentation": {
+              "graph": {
+                "filters": [],
+                "mode": "2d",
+                "modeStates": {
+                  "multivariate": {
+                    "chartType": "correlationMatrix",
+                    "columns": [],
+                    "correlationMethod": "pearson"
+                  },
+                  "threeD": {
+                    "elements": [
+                      {
+                        "enabled": true,
+                        "kind": "scatter3d"
+                      }
+                    ],
+                    "encoding": {},
+                    "smootherLambda": 0.4
+                  },
+                  "twoD": {
+                    "elements": [
+                      {
+                        "enabled": true,
+                        "kind": "points"
+                      },
+                      {
+                        "enabled": true,
+                        "kind": "boxplot"
+                      }
+                    ],
+                    "encoding": {
+                      "x": {
+                        "name": "build",
+                        "type": "nominal"
+                      },
+                      "y": {
+                        "name": "width",
+                        "type": "continuous"
+                      }
+                    },
+                    "multiX": [],
+                    "multiY": [],
+                    "smootherLambda": 0.4
+                  }
+                },
+                "sampling": {
+                  "mode": "full"
+                }
+              },
+              "layout": "fit-y-by-x-v1",
+              "schemaVersion": 1
+            },
+            "schemaVersion": 1,
+            "source": {
+              "datasetId": "table-main"
+            }
+          },
+          "documentRef": {
+            "id": "analysis-2",
+            "kind": "analysis"
+          },
+          "id": "operation-analysis-analysis-2",
+          "inputPorts": [
+            {
+              "id": "operation-analysis-analysis-2-input",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "kind": "analysisExecution",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-analysis-analysis-2-output",
+              "name": "result",
+              "payloadKind": "analysis"
+            }
+          ],
+          "schemaVersion": "1"
+        },
+        {
+          "configuration": {
+            "analysisKind": "fitModel",
+            "configRevision": 2,
+            "definition": {
+              "centeringMethod": "none",
+              "confidenceLevel": 0.9,
+              "construct": {
+                "kind": "manual"
+              },
+              "kind": "fitModel",
+              "response": {
+                "name": "Strength",
+                "type": "continuous"
+              },
+              "terms": [
+                {
+                  "columnNames": [
+                    "width"
+                  ],
+                  "kind": "main"
+                }
+              ]
+            },
+            "documentType": "analysis",
+            "presentation": {
+              "layout": "fit-model-v1",
+              "schemaVersion": 1
+            },
+            "schemaVersion": 1,
+            "source": {
+              "datasetId": "table-main"
+            }
+          },
+          "documentRef": {
+            "id": "analysis-3",
+            "kind": "analysis"
+          },
+          "id": "operation-analysis-analysis-3",
+          "inputPorts": [
+            {
+              "id": "operation-analysis-analysis-3-input",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "kind": "analysisExecution",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-analysis-analysis-3-output",
+              "name": "result",
+              "payloadKind": "analysis"
+            }
+          ],
+          "schemaVersion": "1"
+        },
+        {
+          "configuration": {
+            "analysisKind": "hypothesisTest",
+            "configRevision": 2,
+            "definition": {
+              "alpha": 0.05,
+              "alternative": "twoSided",
+              "confidenceLevel": 0.9,
+              "kind": "hypothesisTest",
+              "levelOrder": [
+                "A",
+                "B"
+              ],
+              "manualSelection": {
+                "methodId": "studentTwoSampleT",
+                "reason": null
+              },
+              "postHoc": "off",
+              "referenceLevel": "A",
+              "roles": {
+                "condition": {
+                  "name": "build",
+                  "type": "nominal"
+                },
+                "layout": "long",
+                "response": {
+                  "name": "width",
+                  "type": "continuous"
+                },
+                "subject": null
+              },
+              "selectionMode": "manual",
+              "selectorVersion": "1",
+              "studyDesign": "independent"
+            },
+            "documentType": "analysis",
+            "presentation": {
+              "activeResultTab": "results",
+              "collapsedSections": [],
+              "graphs": {
+                "showDiagnostics": true,
+                "showIntervals": true,
+                "showRawData": true
+              },
+              "layout": "hypothesis-test-v1",
+              "schemaVersion": 1,
+              "tableSort": null
+            },
+            "schemaVersion": 1,
+            "source": {
+              "datasetId": "table-main"
+            }
+          },
+          "documentRef": {
+            "id": "analysis-4",
+            "kind": "analysis"
+          },
+          "id": "operation-analysis-analysis-4",
+          "inputPorts": [
+            {
+              "id": "operation-analysis-analysis-4-input",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "kind": "analysisExecution",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-analysis-analysis-4-output",
+              "name": "result",
+              "payloadKind": "analysis"
+            }
+          ],
+          "schemaVersion": "1"
+        },
+        {
+          "configuration": {
+            "mode": "2d",
+            "modeStates": {
+              "multivariate": {
+                "chartType": "correlationMatrix",
+                "columns": [],
+                "correlationMethod": "pearson"
+              },
+              "threeD": {
+                "elements": [
+                  {
+                    "enabled": true,
+                    "kind": "scatter3d"
+                  }
+                ],
+                "encoding": {},
+                "smootherLambda": 0.4
+              },
+              "twoD": {
+                "elements": [
+                  {
+                    "enabled": true,
+                    "kind": "points"
+                  }
+                ],
+                "encoding": {},
+                "multiX": [],
+                "multiY": [],
+                "smootherLambda": 0.4
+              }
+            },
+            "sampling": {
+              "mode": "full"
+            },
+            "sourceDatasetId": "table-main"
+          },
+          "documentRef": {
+            "id": "graph-1",
+            "kind": "graph"
+          },
+          "id": "operation-graph-graph-1",
+          "inputPorts": [
+            {
+              "id": "operation-graph-graph-1-input",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "kind": "graphGeneration",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-graph-graph-1-output",
+              "name": "result",
+              "payloadKind": "graph"
+            }
+          ],
+          "schemaVersion": "1"
+        },
+        {
+          "configuration": {
+            "markdown": "# Updated",
+            "schemaVersion": 1
+          },
+          "documentRef": {
+            "id": "report-1",
+            "kind": "report"
+          },
+          "id": "operation-report-report-1",
+          "inputPorts": [],
+          "kind": "reportComposition",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-report-report-1-output",
+              "name": "result",
+              "payloadKind": "report"
+            }
+          ],
+          "schemaVersion": "1"
+        },
+        {
+          "configuration": {
+            "formatVersion": "1",
+            "id": "transform-1",
+            "inputSlots": [
+              {
+                "role": "source",
+                "schemaContract": {
+                  "columns": [
+                    {
+                      "canonicalDuckdbType": "DOUBLE",
+                      "name": "width",
+                      "required": true,
+                      "requiredByOperationIds": [
+                        "table-transform"
+                      ]
+                    }
+                  ],
+                  "schemaFingerprint": "374f439fd97cf40c"
+                }
+              }
+            ],
+            "name": "Sort width",
+            "operation": {
+              "kind": "sort",
+              "sortColumns": [
+                {
+                  "column": "width",
+                  "direction": "ascending"
+                }
+              ]
+            },
+            "output": {
+              "name": "Sorted width",
+              "tableDocumentId": "table-transform-output-1"
+            },
+            "revision": 3
+          },
+          "documentRef": {
+            "id": "transform-1",
+            "kind": "tableTransform"
+          },
+          "id": "operation-table-transform-transform-1",
+          "inputPorts": [
+            {
+              "id": "operation-table-transform-transform-1-input-source",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "kind": "tableTransform",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-table-transform-transform-1-output",
+              "name": "output",
+              "payloadKind": "table"
+            }
+          ],
+          "schemaVersion": "1"
+        },
+        {
+          "configuration": {
+            "columnFields": [],
+            "includeColumnTotals": false,
+            "includeRowTotals": true,
+            "rowFields": [
+              "build"
+            ],
+            "sourceDatasetId": "table-main",
+            "statistics": [
+              {
+                "field": "width",
+                "id": "stat-mean",
+                "kind": "mean"
+              }
+            ]
+          },
+          "documentRef": {
+            "id": "tabulate-1",
+            "kind": "tabulate"
+          },
+          "id": "operation-tabulate-tabulate-1",
+          "inputPorts": [
+            {
+              "id": "operation-tabulate-tabulate-1-input",
+              "name": "source",
+              "payloadKind": "table"
+            }
+          ],
+          "kind": "tabulate",
+          "nodeType": "operation",
+          "outputPorts": [
+            {
+              "id": "operation-tabulate-tabulate-1-output",
+              "name": "result",
+              "payloadKind": "tabulate"
+            }
+          ],
+          "schemaVersion": "1"
+        }
+      ]
+    },
+    "logicalFolders": [],
+    "project": {
+      "createdAt": "2026-09-16T00:00:00.000Z",
+      "filePath": "/tmp/task12-canonical-open.spprj",
+      "name": "Task12 Artifact Parity"
+    },
+    "recoveredWorkflowPackets": [],
+    "reportFolders": {
+      "report-1": "Analysis"
+    },
+    "reports": [
+      {
+        "createdAt": "2026-09-16T00:00:00.000Z",
+        "id": "report-1",
+        "markdown": "# Updated",
+        "name": "Report 1",
+        "schemaVersion": 1,
+        "updatedAt": "2026-09-16T00:00:00.000Z"
+      }
+    ],
+    "requiresMigration": false,
+    "snapshots": [],
+    "tableFolders": {
+      "table-main": "Analysis"
+    },
+    "tableTransformBindings": [
+      {
+        "definitionId": "transform-1",
+        "definitionRevision": 3,
+        "inputs": [
+          {
+            "role": "source",
+            "tableDocumentId": "table-main"
+          }
+        ],
+        "outputGeneration": 1
+      }
+    ],
+    "tableTransforms": [
+      {
+        "formatVersion": "1",
+        "id": "transform-1",
+        "inputSlots": [
+          {
+            "role": "source",
+            "schemaContract": {
+              "columns": [
+                {
+                  "canonicalDuckdbType": "DOUBLE",
+                  "name": "width",
+                  "required": true,
+                  "requiredByOperationIds": [
+                    "table-transform"
+                  ]
+                }
+              ],
+              "schemaFingerprint": "374f439fd97cf40c"
+            }
+          }
+        ],
+        "name": "Sort width",
+        "operation": {
+          "kind": "sort",
+          "sortColumns": [
+            {
+              "column": "width",
+              "direction": "ascending"
+            }
+          ]
+        },
+        "output": {
+          "name": "Sorted width",
+          "tableDocumentId": "table-transform-output-1"
+        },
+        "revision": 3
+      }
+    ],
+    "tabulateFolders": {
+      "tabulate-1": "Analysis"
+    },
+    "tabulates": [
+      {
+        "columnFields": [],
+        "createdAt": "2026-09-16T00:00:00.000Z",
+        "id": "tabulate-1",
+        "includeColumnTotals": false,
+        "includeRowTotals": true,
+        "name": "Width by Build",
+        "rowFields": [
+          "build"
+        ],
+        "sourceDatasetId": "table-main",
+        "statistics": [
+          {
+            "field": "width",
+            "id": "stat-mean",
+            "kind": "mean"
+          }
+        ]
+      }
+    ],
+    "workflowRuns": [],
+    "workflows": []
+  }
+}
