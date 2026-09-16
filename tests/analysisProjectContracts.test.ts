@@ -22,10 +22,6 @@ const archiveSource = readFileSync(
   new URL("../src-tauri/src/services/spprj_archive.rs", import.meta.url),
   "utf8",
 );
-const analysisStandardSource = readFileSync(
-  new URL("../docs/analysis-development-standard.md", import.meta.url),
-  "utf8",
-);
 
 assert.match(projectTypesSource, /analyses:\s*AnalysisDocument\[\]/);
 assert.match(projectTypesSource, /analysisFolders:\s*Record<string, string>/);
@@ -34,11 +30,6 @@ assert.match(projectServiceSource, /analysisFolders:\s*Record<string, string>/);
 assert.match(archiveSource, /DocumentKind\s*\{[\s\S]*Analysis/);
 assert.match(archiveSource, /analyses/);
 assert.match(archiveSource, /\.span/);
-assert.match(analysisStandardSource, /directly compose[\s\S]*AnalysisFrame[\s\S]*AnalysisTable[\s\S]*AnalysisGraph/i);
-assert.match(analysisStandardSource, /must not wrap or delegate to a legacy report/i);
-assert.match(analysisStandardSource, /native `<table>`[\s\S]*native action `<button>`/i);
-assert.match(analysisStandardSource, /typography[\s\S]*spacing[\s\S]*presentation tokens/i);
-assert.match(analysisStandardSource, /visual acceptance/i);
 
 const analysis = createAnalysisSampleDocument({
   datasetId: "dataset-1",

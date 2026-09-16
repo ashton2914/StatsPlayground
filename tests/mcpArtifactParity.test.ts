@@ -204,7 +204,8 @@ const report: ReportItem = {
 
 const analysisDocuments = createAllAnalysisKinds();
 
-const uiArtifacts = {
+function createUiArtifacts() {
+  return {
   commands: {
     tableCreate: {
       requestId: "cmd-ui-create",
@@ -284,34 +285,98 @@ const uiArtifacts = {
     reports: [report],
     analyses: analysisDocuments,
   },
-};
+  };
+}
 
-const mcpArtifacts = {
+function createMcpArtifacts() {
+  return {
   commands: {
-    ...uiArtifacts.commands,
-    tableCreate: { ...uiArtifacts.commands.tableCreate, requestId: "cmd-mcp-create" },
-    tableTransformCreate: { ...uiArtifacts.commands.tableTransformCreate, requestId: "cmd-mcp-transform" },
-    tabulateCreate: { ...uiArtifacts.commands.tabulateCreate, requestId: "cmd-mcp-tabulate-create" },
-    tabulateToTable: { ...uiArtifacts.commands.tabulateToTable, requestId: "cmd-mcp-tabulate-export" },
-    graphCreate: { ...uiArtifacts.commands.graphCreate, requestId: "cmd-mcp-graph-create" },
-    analysisCreate: { ...uiArtifacts.commands.analysisCreate, requestId: "cmd-mcp-analysis-create" },
-    reportCreate: { ...uiArtifacts.commands.reportCreate, requestId: "cmd-mcp-report-create" },
-    sqlCreateTable: { ...uiArtifacts.commands.sqlCreateTable, requestId: "cmd-mcp-sql" },
-    saveProject: { ...uiArtifacts.commands.saveProject, requestId: "cmd-mcp-save" },
+    tableCreate: {
+      requestId: "cmd-mcp-create",
+      command: "table.create",
+      data: createTableRequest,
+      projectRevision: 21,
+    },
+    tableTransformCreate: {
+      requestId: "cmd-mcp-transform",
+      command: "tableTransform.create",
+      data: { draft: transform },
+      projectRevision: 22,
+    },
+    tabulateCreate: {
+      requestId: "cmd-mcp-tabulate-create",
+      command: "tabulate.create",
+      data: { sourceDatasetId: "table-main" },
+      projectRevision: 23,
+    },
+    tabulateToTable: {
+      requestId: "cmd-mcp-tabulate-export",
+      command: "tabulate.exportTable",
+      data: { tabulateId: tabulate.id, request: { ...tabulate, datasetId: "table-main", maxResultCells: 10000 }, tableName: "Tabulate Export" },
+      projectRevision: 24,
+    },
+    graphCreate: {
+      requestId: "cmd-mcp-graph-create",
+      command: "graph.create",
+      data: { sourceDatasetId: "table-main" },
+      projectRevision: 25,
+    },
+    analysisCreate: {
+      requestId: "cmd-mcp-analysis-create",
+      command: "analysis.create",
+      data: { analysisKind: "distribution", sourceDatasetId: "table-main", draft: { name: "Distribution", responses: [{ name: "width", type: "continuous" }], weight: null, frequency: null, by: [] } },
+      projectRevision: 26,
+    },
+    reportCreate: {
+      requestId: "cmd-mcp-report-create",
+      command: "report.create",
+      data: {},
+      projectRevision: 27,
+    },
+    sqlCreateTable: {
+      requestId: "cmd-mcp-sql",
+      command: "sql.createTable",
+      data: { sql: "select width, build from table_main", name: "SQL Result" },
+      projectRevision: 28,
+    },
+    saveProject: {
+      requestId: "cmd-mcp-save",
+      command: "project.save",
+      data: {},
+      projectRevision: 29,
+    },
     snapshotCreate: {
-      ...uiArtifacts.commands.snapshotCreate,
       requestId: "cmd-mcp-snapshot",
+      command: "snapshot.create",
+      data: {},
       snapshotId: "11f8e8eb-d4ba-4698-8f5a-ac5b3fbe5d72",
       createdAt: "2026-09-16T09:15:02.000Z",
+      projectRevision: 30,
     },
     exportCsv: {
-      ...uiArtifacts.commands.exportCsv,
       requestId: "cmd-mcp-export",
+      command: "table.exportCsv",
+      data: { datasetId: "table-main", rootId: "root-1", relativePath: "exports/main.csv" },
       durationMs: 33,
+      projectRevision: 30,
     },
   },
-  reopenedProject: structuredClone(uiArtifacts.reopenedProject),
-};
+  reopenedProject: {
+    tables: [{ id: "table-main", request: createTableRequest }],
+    tableTransforms: [transform],
+    tabulates: [tabulate],
+    tabulateResults: [tabulateResult],
+    reports: [report],
+    analyses: createAllAnalysisKinds(),
+  },
+  };
+}
+
+const uiArtifacts = createUiArtifacts();
+const mcpArtifacts = createMcpArtifacts();
+
+assert.notEqual(uiArtifacts.commands.tableCreate.requestId, mcpArtifacts.commands.tableCreate.requestId);
+assert.notEqual(uiArtifacts.reopenedProject, mcpArtifacts.reopenedProject);
 
 assert.deepEqual(
   normalizeParityValue(uiArtifacts),

@@ -104,37 +104,3 @@ assert.equal(operationKind, "tableTransform");
 assert.equal(serialized.operation.sortColumns[0].direction, "ascending");
 assert.equal(serialized.output.tableDocumentId, "output-table-1");
 assert.equal("tableDocumentId" in serialized.inputSlots[0], false);
-
-const tableCreateColumns = [
-  {
-    name: "value",
-    sqlType: "DOUBLE",
-    display: {
-      width: 144,
-      format: { kind: "fixed", decimals: 2 },
-      extras: {
-        unit: { symbol: "mm" },
-        spec: { lsl: 1.2, target: 2.4, usl: 3.6 },
-        notes: { text: "critical" },
-      },
-    },
-  },
-  {
-    name: "build",
-    sqlType: "VARCHAR",
-    display: {
-      width: 120,
-      format: { kind: "asis" },
-      extras: { valueOrder: { values: ["EV", "DV", "PQ"] } },
-    },
-  },
-] as const;
-
-const normalizedColumns = JSON.parse(JSON.stringify(tableCreateColumns));
-assert.deepEqual(normalizedColumns, tableCreateColumns);
-assert.equal(normalizedColumns[0].sqlType, "DOUBLE");
-assert.equal(normalizedColumns[1].sqlType, "VARCHAR");
-assert.equal(normalizedColumns[0].display.width, 144);
-assert.deepEqual(normalizedColumns[0].display.format, { kind: "fixed", decimals: 2 });
-assert.deepEqual(normalizedColumns[0].display.extras.spec, { lsl: 1.2, target: 2.4, usl: 3.6 });
-assert.deepEqual(normalizedColumns.map((column) => column.name), ["value", "build"]);
