@@ -72,7 +72,7 @@ function createSampleDistributionItem(input: {
       confidenceLevel: 0.95,
       specLimits: {},
       fitDistributions: ["normal"],
-      fitAll: false,
+      fitAll: true,
     },
     createdAt: input.createdAt,
   });

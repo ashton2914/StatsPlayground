@@ -333,6 +333,14 @@
   overflow-wrap: anywhere;
 }
 
+.distribution-fit-model-select {
+  width: auto;
+  min-width: 132px;
+  max-width: min(220px, 42vw);
+  height: 26px;
+  font-size: 12px;
+}
+
 .distribution-role-zone {
   min-height: 88px;
   padding: 10px;

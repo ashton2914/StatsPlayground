@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 
 import { expect, test } from "@playwright/experimental-ct-react";
 
-import { ReportBlock } from "../../src/components/distribution/DistributionReport";
+import { DistributionResponseReport, ReportBlock } from "../../src/components/distribution/DistributionReport";
 import "../../src/components/distribution/distribution.css";
 import { distributionFitColor } from "../../src/graphCore/distributionFitStyle";
 import { getGraphTheme } from "../../src/graphCore/theme";
-import type { DistributionFitDataV1, DistributionReportBlockV1 } from "../../src/types/distribution";
+import type {
+  ContinuousDistributionIdV1,
+  DistributionFitDataV1,
+  DistributionReportBlockV1,
+  DistributionYResultV1,
+} from "../../src/types/distribution";
 
 const metric = (value: number | null, reasonCode: string | null = null) => ({
   state: value === null ? "unavailable" as const : "available" as const,
@@ -116,6 +121,77 @@ test("renders available Continuous Fit parameter estimates and JMP measures with
   await expect(component.locator(".analysis-ui-table")).toHaveCount(2);
   await expect(measures.getByRole("rowheader").first()).toHaveCSS("border-right-style", "solid");
   await expect(measures.getByRole("rowheader").first()).toHaveCSS("border-bottom-style", "solid");
+});
+
+test("consolidates all continuous fits into one model selector", async ({ mount }) => {
+  const distributionIds: ContinuousDistributionIdV1[] = [
+    "normal",
+    "cauchy",
+    "lognormal",
+    "exponential",
+    "gamma",
+    "weibull",
+  ];
+  const result: DistributionYResultV1 = {
+    yColumn: { columnId: "value", modelingType: "continuous" },
+    yName: "Value",
+    quantiles: [],
+    blocks: distributionIds.map((distributionId) => block({
+      blockId: `fit-${distributionId}`,
+      distributionFitData: {
+        ...fit,
+        fitId: `fit-${distributionId}`,
+        distributionId,
+      },
+    })),
+  };
+
+  const component = await mount(<DistributionResponseReport result={result} />);
+  const selector = component.getByRole("combobox", { name: "Continuous Fit distribution" });
+
+  await expect(selector).toHaveCount(1);
+  await expect(selector.locator("option")).toHaveCount(6);
+  await expect(component.locator('[data-analysis-surface="continuousFit"]')).toHaveCount(1);
+  await expect(component.getByRole("table", { name: "Normal Parameter Estimates" })).toBeVisible();
+
+  await selector.selectOption("cauchy");
+
+  await expect(component.getByRole("table", { name: "Cauchy Parameter Estimates" })).toBeVisible();
+  await expect(component.getByRole("table", { name: "Normal Parameter Estimates" })).toHaveCount(0);
+});
+
+test("renders the summary table title as Summary Statistics", async ({ mount }) => {
+  const result: DistributionYResultV1 = {
+    yColumn: { columnId: "value", modelingType: "continuous" },
+    yName: "Value",
+    quantiles: [],
+    blocks: [block({
+      blockId: "summary",
+      kind: "summary",
+      titleKey: "distribution.report.summary",
+      distributionFitData: undefined,
+      summaryData: {
+        n: 10,
+        nMissing: 0,
+        mean: 3,
+        stdDev: 1,
+        stdError: 0.3,
+        meanCiLower: 2.4,
+        meanCiUpper: 3.6,
+        minimum: 1,
+        maximum: 5,
+        median: 3,
+        primaryMode: null,
+        modeIsUnique: false,
+        range: 4,
+        iqr: 2,
+        mad: 1,
+      },
+    })],
+  };
+
+  const component = await mount(<DistributionResponseReport result={result} />);
+  await expect(component.getByRole("button", { name: "Summary Statistics" })).toBeVisible();
 });
 
 test("uses model-specific parameter terminology without fixed location rows", async ({ mount }) => {

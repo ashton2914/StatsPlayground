@@ -496,6 +496,7 @@
       "label": "Label",
       "value": "Value",
       "summary": "Summary Statistics",
+      "summaryStatistics": "Summary Statistics",
       "location": "Location",
       "variation": "Variation",
       "unavailableReason": "Unavailable: {{reason}}",

@@ -146,7 +146,7 @@ assert.deepEqual(continuousFit, {
 });
 assert.deepEqual(createDefaultDistributionContinuousFitConfig(), {
   enabledDistributionIds: ["normal"],
-  fitAll: false,
+  fitAll: true,
   diagnostics: {
     goodnessOfFit: false,
     qqPlot: false,
@@ -174,7 +174,7 @@ assert.deepEqual(
 );
 assert.deepEqual(createDefaultDistributionContinuousFitConfig(), {
   enabledDistributionIds: ["normal"],
-  fitAll: false,
+  fitAll: true,
   diagnostics: {
     goodnessOfFit: false,
     qqPlot: false,

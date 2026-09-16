@@ -222,7 +222,7 @@ assert.deepEqual(request, {
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: ["normal"],
-  fitAll: false,
+  fitAll: true,
 });
 
 const fitRequest = createAnalysisExecutionRequest(fitAnalysis(), 7);
@@ -326,7 +326,7 @@ assert.notEqual(
       ...analysis().definition,
       analysis: {
         ...analysis().definition.analysis,
-        fitAll: true,
+        fitAll: false,
       },
     },
   })),

@@ -1,4 +1,5 @@
 import type {
+  ContinuousDistributionIdV1,
   DistributionGroupResult,
   DistributionGroupValueV1,
   DistributionReportResponse,
@@ -17,6 +18,41 @@ export const DISTRIBUTION_GRAPH_ROLES = [
 ] as const;
 
 export type DistributionGraphRole = typeof DISTRIBUTION_GRAPH_ROLES[number];
+
+export type DistributionFitSelections = Readonly<Record<string, ContinuousDistributionIdV1>>;
+
+export function getDistributionFitSelectionKey(sourceColumn: string, seriesName: string): string {
+  return `${sourceColumn}\u0000${seriesName}`;
+}
+
+function fittedCurveDistributionId(packet: GraphAggregatePacket): ContinuousDistributionIdV1 | null {
+  if (packet.kind !== "precomputedCurve") return null;
+  const match = packet.seriesId?.match(/:fit:(normal|cauchy|lognormal|exponential|gamma|weibull)$/);
+  if (match) return match[1] as ContinuousDistributionIdV1;
+  return packet.seriesName?.endsWith(" - Normal") ? "normal" : null;
+}
+
+export function filterDistributionFitCurvePackets(
+  frame: GraphDataFrame,
+  selections: DistributionFitSelections,
+): GraphDataFrame {
+  return {
+    ...frame,
+    aggregates: frame.aggregates.filter((packet) => {
+      if (
+        packet.kind !== "precomputedCurve"
+        || packet.elementId !== "distribution.overview.fittedCurves"
+        || !packet.sourceColumn
+        || !packet.group
+      ) return true;
+      const selectedDistributionId = selections[
+        getDistributionFitSelectionKey(packet.sourceColumn, packet.group)
+      ];
+      if (!selectedDistributionId) return true;
+      return fittedCurveDistributionId(packet) === selectedDistributionId;
+    }),
+  };
+}
 
 export type DistributionExternalDataState =
   | { status: "loading"; frame: null; error: null }
@@ -299,9 +335,16 @@ function selectDistributionCurvePacket(
   responseIdentity: DistributionResponseGraphIdentity,
   seriesName: string,
   allowLegacyOverallFallback: boolean,
+  selectedDistributionId?: ContinuousDistributionIdV1,
 ): GraphAggregatePacket | null {
   if (packet.kind !== "precomputedCurve") return null;
-  if (packet.sourceColumn === responseIdentity.sourceColumn && packet.group === seriesName) return packet;
+  if (packet.sourceColumn === responseIdentity.sourceColumn && packet.group === seriesName) {
+    if (
+      selectedDistributionId
+      && !packet.seriesId?.endsWith(`:fit:${selectedDistributionId}`)
+    ) return null;
+    return packet;
+  }
   if (isLegacyOverallMatch(
     responseIdentity.seriesName,
     "Overall",
@@ -311,7 +354,10 @@ function selectDistributionCurvePacket(
     packet.group,
   )) {
     const expectedLegacySeriesName = `${responseIdentity.seriesName} - Normal`;
-    if (packet.seriesName === expectedLegacySeriesName) return packet;
+    if (
+      packet.seriesName === expectedLegacySeriesName
+      && (!selectedDistributionId || selectedDistributionId === "normal")
+    ) return packet;
   }
   return null;
 }
@@ -330,6 +376,7 @@ export function getDistributionResponseCompositeGraphFrame(
   group: DistributionGroupResult,
   options: {
     allowLegacyOverallFallback?: boolean;
+    selectedDistributionId?: ContinuousDistributionIdV1;
   } = {},
 ): GraphDataFrame {
   const groupName = getDistributionGroupName(group);
@@ -349,7 +396,13 @@ export function getDistributionResponseCompositeGraphFrame(
     );
     if (histogram) return [histogram];
 
-    const curve = selectDistributionCurvePacket(packet, responseIdentity, seriesName, allowLegacyOverallFallback);
+    const curve = selectDistributionCurvePacket(
+      packet,
+      responseIdentity,
+      seriesName,
+      allowLegacyOverallFallback,
+      options.selectedDistributionId,
+    );
     if (curve) return [curve];
 
     return [];

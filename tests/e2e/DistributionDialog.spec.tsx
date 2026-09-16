@@ -201,9 +201,11 @@ test("Continuous Fit selector disables individual fits without clearing them", a
   const cauchy = component.getByRole("checkbox", { name: "Cauchy", exact: true });
   const lognormal = component.getByRole("checkbox", { name: "Lognormal", exact: true });
 
+  await expect(fitAll).toBeChecked();
   await expect(normal).toBeChecked();
-  await expect(cauchy).toBeEnabled();
+  await expect(cauchy).toBeDisabled();
   await expect(cauchy).not.toBeChecked();
+  await fitAll.uncheck();
   await lognormal.check();
   await fitAll.check();
 
@@ -229,6 +231,7 @@ test("Continuous Fit exposes Cauchy and the other implemented fits as selectable
   );
 
   await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+  await component.getByRole("checkbox", { name: "Fit All", exact: true }).uncheck();
 
   const cauchy = component.getByRole("checkbox", { name: "Cauchy", exact: true });
   const normal = component.getByRole("checkbox", { name: "Normal", exact: true });
@@ -254,6 +257,7 @@ test("Continuous Fit requires at least one fit unless Fit All is enabled", async
   );
 
   await component.getByTestId("distribution-column-Value").getByRole("button", { name: "Y", exact: true }).click();
+  await component.getByRole("checkbox", { name: "Fit All", exact: true }).uncheck();
   await component.getByRole("checkbox", { name: "Normal", exact: true }).uncheck();
 
   await expect(component.getByRole("button", { name: "Save" })).toBeDisabled();

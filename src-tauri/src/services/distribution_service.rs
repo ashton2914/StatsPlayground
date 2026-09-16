@@ -876,6 +876,15 @@ fn build_graph_frames(
                 .blocks
                 .iter()
                 .find_map(|item| item.block.summary_data.as_ref());
+            let histogram_bin_width = y_result
+                .blocks
+                .iter()
+                .find_map(|item| match &item.block.chart_data {
+                    Some(DistributionChartDataV1::HistogramData { bins, .. }) => bins
+                        .first()
+                        .map(|bin| bin.upper - bin.lower),
+                    _ => None,
+                });
             let result_count = summary.map_or(0, |value| value.n);
             if let Some(summary) = summary {
                 source_rows = source_rows.max(summary.n.saturating_add(summary.n_missing));
@@ -1022,6 +1031,15 @@ fn build_graph_frames(
                 }
                 if let Some(fit) = &block.distribution_fit_data {
                     if let Some(curve) = &fit.fitted_curve {
+                        let count_scale = fit.effective_n
+                            * histogram_bin_width.ok_or_else(|| {
+                                AppError::Stats("distribution.graph.binWidthMissing".to_string())
+                            })?;
+                        if !count_scale.is_finite() || count_scale <= 0.0 {
+                            return Err(AppError::Stats(
+                                "distribution.graph.countScaleInvalid".to_string(),
+                            ));
+                        }
                         let fit_name = format!(
                             "{series_name} - {}",
                             distribution_id(fit.distribution_id.clone())
@@ -1042,11 +1060,20 @@ fn build_graph_frames(
                                 points: curve
                                     .points
                                     .iter()
-                                    .map(|point| PrecomputedCurvePoint {
-                                        x: point.x,
-                                        y: point.y,
+                                    .map(|point| {
+                                        let y = point.y * count_scale;
+                                        if !y.is_finite() || y < 0.0 {
+                                            return Err(AppError::Stats(
+                                                "distribution.graph.fittedCurveCountInvalid"
+                                                    .to_string(),
+                                            ));
+                                        }
+                                        Ok(PrecomputedCurvePoint {
+                                            x: point.x,
+                                            y,
+                                        })
                                     })
-                                    .collect(),
+                                    .collect::<Result<Vec<_>, AppError>>()?,
                             },
                         ));
                     }
@@ -2280,6 +2307,26 @@ mod tests {
             .map(|packet| (packet.source_column.as_deref(), packet.group.as_deref()))
             .collect::<Vec<_>>();
         assert_eq!(fitted_sources, vec![(Some("col-a"), Some("Length")), (Some("col-b"), Some("Length"))]);
+        let fitted_points = frames
+            .overview
+            .aggregates
+            .iter()
+            .filter_map(|packet| match packet {
+                GraphAggregatePacket::PrecomputedCurve(packet)
+                    if packet.element_id == DISTRIBUTION_OVERVIEW_FITTED_CURVES_ELEMENT_ID =>
+                {
+                    Some(
+                        packet
+                            .points
+                            .iter()
+                            .map(|point| point.y)
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(fitted_points, vec![vec![0.2, 0.4], vec![0.2, 0.4]]);
         let box_sources = frames
             .box_plot
             .aggregates

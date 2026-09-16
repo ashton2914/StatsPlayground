@@ -104,6 +104,8 @@ assert.deepEqual(normalizeDistributionAnalysisConfig(config).continuousFit, {
 assert.equal(config.continuousFit, undefined, "legacy normalization must not mutate the source");
 assert.deepEqual(createDefaultDistributionContinuousFitConfig().enabledDistributionIds, ["normal"]);
 assert.deepEqual(createDefaultDistributionAnalysisConfig().fitDistributions, ["normal"]);
+assert.equal(createDefaultDistributionContinuousFitConfig().fitAll, true);
+assert.equal(createDefaultDistributionAnalysisConfig().fitAll, true);
 const explicitFit = {
   enabledDistributionIds: ["cauchy" as const],
   fitAll: true,
@@ -525,7 +527,7 @@ assert.deepEqual(validateDistributionRoles({
 }, [responseField, nonIntegerFrequencyField]), { ok: false, error: "invalidFrequency" });
 
 const defaultAnalysis = createDefaultDistributionAnalysisConfig();
-assert.deepEqual(defaultAnalysis, { confidenceLevel: 0.95, specLimits: {}, fitDistributions: ["normal"], fitAll: false });
+assert.deepEqual(defaultAnalysis, { confidenceLevel: 0.95, specLimits: {}, fitDistributions: ["normal"], fitAll: true });
 
 const distributionItem = createDistributionItem({
   id: "distribution-1",

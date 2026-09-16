@@ -116,11 +116,16 @@ function distributionGraphItemId(groupIdentity: string, columnId: string) {
   return `analysis-graph:analysis-1:${encodeURIComponent(groupIdentity)}:${columnId}:distributionComposite`;
 }
 
-function expectedResponseGraphSignatures(sourceColumn: string, responseName: string, groupName: string) {
+function expectedResponseGraphSignatures(
+  sourceColumn: string,
+  responseName: string,
+  groupName: string,
+  fitName = "Normal",
+) {
   const seriesName = groupName === "Overall" ? responseName : `${responseName} | ${groupName}`;
   return [
     `histogram:${sourceColumn}|${seriesName}|`,
-    `precomputedCurve:${sourceColumn}|${groupName}|${seriesName}`,
+    `precomputedCurve:${sourceColumn}|${groupName}|${seriesName}|${seriesName} - ${fitName}`,
     `boxPlot:${sourceColumn}|${seriesName}|`,
   ].join(",");
 }
@@ -340,6 +345,24 @@ test("Distribution response tree renders one top-level frame per response when B
   await expect(component.locator(`output[data-testid='graph-sources:${fallbackGraphId}']`)).toHaveText("legacy-301A-F02");
 });
 
+test("Distribution Continuous Fit selector switches the visible report and graph curve", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="multiResponse" />);
+  const responseFrame = component.locator("[data-analysis-document] > .analysis-ui-frame").first();
+  const sourceColumn = "col-301A-F01";
+  const responseName = "301A-F01";
+
+  await ensureFrameExpanded(responseFrame, responseName);
+  const signatures = responseFrame.locator("output[data-testid^='graph-signatures:']");
+  await expect(signatures).toHaveText(expectedResponseGraphSignatures(sourceColumn, responseName, "Overall"));
+
+  const selector = responseFrame.getByRole("combobox", { name: "Continuous Fit distribution" });
+  await expect(selector.locator("option")).toHaveCount(2);
+  await selector.selectOption("cauchy");
+
+  await expect(responseFrame.getByRole("table", { name: "Cauchy Parameter Estimates" })).toBeVisible();
+  await expect(signatures).toHaveText(expectedResponseGraphSignatures(sourceColumn, responseName, "Overall", "Cauchy"));
+});
+
 for (const locale of ["en", "zh-CN", "zh-TW", "vi"] as const) {
   for (const [confidenceLevel, percent] of [[0.9, "90%"], [0.95, "95%"], [0.99, "99%"], [undefined, "95%"]] as const) {
     test(`Summary confidence labels ${locale} ${confidenceLevel ?? "legacy"}`, async ({ mount }) => {
@@ -434,7 +457,7 @@ test("Distribution response tree keeps layout bounded on desktop and narrow widt
   const responseTitles = ["301A-F01", "301A-F02", "301A-F03"];
   const requiredSurfaces = [
     { key: "overall", title: "Overall" },
-    { key: "continuousFit", title: "Continuous Fit - Normal" },
+    { key: "continuousFit", title: "Continuous Fit" },
     { key: "fitComparison", title: "Fit Comparison" },
     { key: "processCapability", title: "Process Capability" },
   ];
@@ -458,7 +481,7 @@ test("Distribution response tree keeps layout bounded on desktop and narrow widt
   const firstOverallSurface = responseSurface(overallResponses.first(), "overall");
   const firstFitSurface = responseSurface(overallResponses.first(), "continuousFit");
   await expect(firstFitSurface.locator(".distribution-fit-report-swatch")).toHaveCount(1);
-  await expect(firstFitSurface.getByRole("button", { name: "Continuous Fit - Normal" })).toBeVisible();
+  await expect(firstFitSurface.getByRole("button", { name: "Continuous Fit" })).toBeVisible();
   const firstCompactTable = firstOverallSurface.locator(".analysis-ui-table-compact").first();
   await expect(firstCompactTable).toHaveCSS("width", "520px");
   await expect.poll(async () => {

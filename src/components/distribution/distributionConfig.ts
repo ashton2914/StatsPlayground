@@ -165,7 +165,7 @@ export function createDefaultDistributionAnalysisConfig(): DistributionAnalysisC
     confidenceLevel: 0.95,
     specLimits: {},
     fitDistributions: ["normal"],
-    fitAll: false,
+    fitAll: true,
   };
 }
 
@@ -374,7 +374,7 @@ export function createDefaultDistributionVisualDiagnosticsConfig(): Distribution
 export function createDefaultDistributionContinuousFitConfig(): DistributionContinuousFitConfigV1 {
   return {
     enabledDistributionIds: ["normal"],
-    fitAll: false,
+    fitAll: true,
     diagnostics: {
       goodnessOfFit: false,
       qqPlot: false,

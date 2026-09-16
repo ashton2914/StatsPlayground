@@ -1,14 +1,17 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { AnalysisFrame, AnalysisText } from "@/components/analysis/presentation";
 import {
+  getDistributionFitSelectionKey,
+  getDistributionGroupName,
+  type DistributionFitSelections,
   type DistributionGraphRole,
 } from "@/graphCore/distributionAdapter";
 import { useDistributionStore } from "@/stores/useDistributionStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import type { DatasetMeta } from "@/types/data";
-import type { DistributionItem } from "@/types/distribution";
+import type { ContinuousDistributionIdV1, DistributionItem } from "@/types/distribution";
 
 import {
   DistributionGraphGrid as DistributionViewGraphGrid,
@@ -40,6 +43,34 @@ export function DistributionView({ item, dataset }: DistributionViewProps) {
     dataset?.generation ?? null,
     { getCurrentItem },
   );
+  const [fitSelectionState, setFitSelectionState] = useState<{
+    itemId: string;
+    overrides: Record<string, ContinuousDistributionIdV1>;
+  }>({ itemId: item.id, overrides: {} });
+  const fitSelectionOverrides = fitSelectionState.itemId === item.id
+    ? fitSelectionState.overrides
+    : {};
+  const selectedFitDistributionIds = useMemo<DistributionFitSelections>(() => {
+    if (reportState.status !== "success") return {};
+    const selections: Record<string, ContinuousDistributionIdV1> = {};
+    for (const group of reportState.result.groups) {
+      const groupName = getDistributionGroupName(group);
+      for (const result of group.yResults) {
+        const fitIds = result.blocks.flatMap((block) => (
+          block.distributionFitData ? [block.distributionFitData.distributionId] : []
+        ));
+        const firstFitId = fitIds[0];
+        if (!firstFitId) continue;
+        const seriesName = groupName === "Overall" ? result.yName : `${result.yName} | ${groupName}`;
+        const selectionKey = getDistributionFitSelectionKey(result.yColumn.columnId, seriesName);
+        const requestedFitId = fitSelectionOverrides[selectionKey];
+        selections[selectionKey] = requestedFitId && fitIds.includes(requestedFitId)
+          ? requestedFitId
+          : firstFitId;
+      }
+    }
+    return selections;
+  }, [fitSelectionOverrides, reportState]);
   const axisController = useMemo(() => createDistributionAxisRangeController({
     getItem: () => useDistributionStore.getState().items.find((candidate) => candidate.id === item.id) ?? item,
     isReadOnly: () => useProjectStore.getState().readOnly,
@@ -70,6 +101,7 @@ export function DistributionView({ item, dataset }: DistributionViewProps) {
             item={item}
             dataset={dataset}
             reportState={reportState}
+            selectedFitDistributionIds={selectedFitDistributionIds}
             onAxisRangeChange={readOnly
               ? undefined
               : (role: DistributionGraphRole, axis: "x" | "y", min: number, max: number) => {
@@ -91,7 +123,21 @@ export function DistributionView({ item, dataset }: DistributionViewProps) {
             <AnalysisText>{t("workspace.datasourceDeleted")}</AnalysisText>
           </AnalysisFrame>
         )
-        : <DistributionReportPanel reportState={reportState} />}
+        : (
+          <DistributionReportPanel
+            reportState={reportState}
+            selectedFitDistributionIds={selectedFitDistributionIds}
+            onSelectedFitDistributionIdChange={(selectionKey, distributionId) => {
+              setFitSelectionState((current) => ({
+                itemId: item.id,
+                overrides: {
+                  ...(current.itemId === item.id ? current.overrides : {}),
+                  [selectionKey]: distributionId,
+                },
+              }));
+            }}
+          />
+        )}
     </div>
   );
 }

@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 
 import {
   DISTRIBUTION_GRAPH_ROLES,
+  filterDistributionFitCurvePackets,
   getDistributionCompositeGraphFrame,
+  getDistributionFitSelectionKey,
   getDistributionGraphFrame,
   getDistributionGroupName,
   getDistributionResponseCompositeGraphFrame,
@@ -137,6 +139,19 @@ graphFrames.boxPlot.aggregates = [{
 }];
 
 const originalGraphFrames = structuredClone(graphFrames);
+
+const multiFitGraphFrames = structuredClone(graphFrames);
+multiFitGraphFrames.overview.aggregates.splice(2, 0, {
+  kind: "precomputedCurve",
+  elementId: "distribution.overview.fittedCurves",
+  seriesId: "DIM1:fit:cauchy",
+  seriesName: "DIM1 - Cauchy",
+  group: "DIM1",
+  category: "Overall",
+  sourceColumn: "DIM1",
+  interpolation: "linear",
+  points: [{ x: 0, y: 0.2 }, { x: 1, y: 0.8 }],
+});
 
 const duplicateNameGraphFrames = structuredClone(graphFrames);
 duplicateNameGraphFrames.overview.aggregates = [{
@@ -278,6 +293,33 @@ assert.deepEqual(selectedCurve && [selectedCurve.group, selectedCurve.category, 
 const missingFrame = getDistributionResponseCompositeGraphFrame({ graphFrames }, "DIM2", siteBGroup);
 assert.equal(missingFrame.aggregates.length, 0);
 
+const selectedCauchyFrame = getDistributionResponseCompositeGraphFrame(
+  { graphFrames: multiFitGraphFrames },
+  "DIM1",
+  overallGroup,
+  { selectedDistributionId: "cauchy" } as never,
+);
+assert.deepEqual(
+  selectedCauchyFrame.aggregates
+    .filter((packet) => packet.kind === "precomputedCurve")
+    .map((packet) => packet.seriesName),
+  ["DIM1 - Cauchy"],
+);
+
+const legacyViewCauchyFrame = filterDistributionFitCurvePackets(
+  multiFitGraphFrames.overview,
+  {
+    [getDistributionFitSelectionKey("DIM1", "DIM1")]: "cauchy",
+  },
+);
+assert.deepEqual(
+  legacyViewCauchyFrame.aggregates
+    .filter((packet) => packet.kind === "precomputedCurve")
+    .map((packet) => packet.seriesName),
+  ["DIM1 - Cauchy", "DIM2 | Site=A - Normal"],
+  "legacy DistributionView filtering must only change the selected response curve",
+);
+
 const legacyGraphFrames = structuredClone(graphFrames);
 legacyGraphFrames.overview.aggregates = [{
   kind: "histogram",
@@ -323,6 +365,30 @@ const legacyOverallFrame = getDistributionResponseCompositeGraphFrame(
   { allowLegacyOverallFallback: true },
 );
 assert.deepEqual(legacyOverallFrame.aggregates.map((packet) => packet.kind), ["histogram", "precomputedCurve", "boxPlot"]);
+
+const selectedLegacyNormalFrame = getDistributionResponseCompositeGraphFrame(
+  { graphFrames: legacyGraphFrames },
+  "DIM1",
+  overallGroup,
+  { allowLegacyOverallFallback: true, selectedDistributionId: "normal" },
+);
+assert.deepEqual(
+  selectedLegacyNormalFrame.aggregates.map((packet) => packet.kind),
+  ["histogram", "precomputedCurve", "boxPlot"],
+  "selected Normal must preserve a legacy curve packet without a series ID",
+);
+
+const selectedLegacyCauchyFrame = getDistributionResponseCompositeGraphFrame(
+  { graphFrames: legacyGraphFrames },
+  "DIM1",
+  overallGroup,
+  { allowLegacyOverallFallback: true, selectedDistributionId: "cauchy" },
+);
+assert.deepEqual(
+  selectedLegacyCauchyFrame.aggregates.map((packet) => packet.kind),
+  ["histogram", "boxPlot"],
+  "a legacy Normal curve must not render for another selected model",
+);
 
 const legacyNonMatchingResponseFrame = getDistributionResponseCompositeGraphFrame(
   { graphFrames: legacyGraphFrames },
