@@ -8,7 +8,7 @@ for (const scenario of ["stopped", "starting", "running", "stopping"] as const) 
     await expect(component.getByRole("heading", { name: "MCP Server" })).toBeVisible();
     await expect(component.getByTestId("mcp-server-state")).toContainText(scenario);
     if (scenario === "running") {
-      await expect(component.getByText("http://127.0.0.1:48123/mcp")).toBeVisible();
+      await expect(component.locator(".ai-value-block").filter({ hasText: "http://127.0.0.1:48123/mcp" })).toBeVisible();
       await expect(page.locator("body")).not.toContainText("secret-token-123");
     }
   });
@@ -41,9 +41,10 @@ test("manages grants, live requests, bounded audit rows, and confirmations", asy
   await expect(component.getByText("/Users/ashton/Snapshots")).toBeVisible();
 
   await expect(component.getByTestId("mcp-activity-row")).toHaveCount(8);
-  await expect(component.getByText("cmd-queued")).toBeVisible();
-  await expect(component.getByText("cmd-running")).toBeVisible();
-  await expect(component.getByText("cmd-confirm")).toBeVisible();
+  const activityRows = component.getByTestId("mcp-activity-row");
+  await expect(activityRows.filter({ hasText: "cmd-queued" })).toBeVisible();
+  await expect(activityRows.filter({ hasText: "cmd-running" })).toBeVisible();
+  await expect(activityRows.filter({ hasText: "cmd-confirm" })).toBeVisible();
 
   await component.getByRole("button", { name: "Allow cmd-confirm" }).click();
   await expect(component.getByText("cmd-confirm")).toHaveCount(0);
