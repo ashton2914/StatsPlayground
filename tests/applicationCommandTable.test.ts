@@ -36,7 +36,7 @@ async function runCreateForActor(actor: CommandActor): Promise<ParityRunResult> 
       columns: [
         {
           name: "length",
-          columnType: "double",
+          sqlType: "double",
           display: {
             width: 144,
             format: { kind: "Currency", decimals: 3, currency: "USD" },
@@ -52,7 +52,7 @@ async function runCreateForActor(actor: CommandActor): Promise<ParityRunResult> 
         },
         {
           name: "build",
-          columnType: "VARCHAR",
+          sqlType: "VARCHAR",
           display: {
             width: 220,
             format: { kind: "asis" },
@@ -120,7 +120,7 @@ async function runCreateForActor(actor: CommandActor): Promise<ParityRunResult> 
         const columns = request.columns.map((column, colIndex) => {
           const normalizedType = colIndex === 0
             ? "DOUBLE"
-            : column.columnType.toUpperCase();
+            : column.sqlType.toUpperCase();
           const normalizedFormat = column.display?.format
             ? {
                 ...column.display.format,
@@ -372,7 +372,7 @@ assert.deepEqual(ui.result.data.columns[0], {
         input: {
           request: {
             name: "Created Once",
-            columns: [{ name: "amount", columnType: "double" }],
+            columns: [{ name: "amount", sqlType: "double" }],
             rows: [[1]],
           },
         },

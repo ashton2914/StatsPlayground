@@ -2567,6 +2567,19 @@ mod tests {
             invalid.is_err(),
             "flattened catch-all input accepted unexpected fields"
         );
+
+        let normalized = normalize_json::<TableCreateToolInput>(json!({
+            "request": {
+                "name": "Example",
+                "columns": [{ "name": "value", "sqlType": "DOUBLE" }],
+                "rows": [[1.0]]
+            }
+        }))
+        .expect("canonical table input");
+        assert_eq!(normalized["request"]["columns"][0]["sqlType"], "DOUBLE");
+        assert!(normalized["request"]["columns"][0]
+            .get("columnType")
+            .is_none());
     }
 
     #[test]

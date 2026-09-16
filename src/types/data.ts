@@ -129,7 +129,7 @@ export type ColumnDisplayPropsWithoutIndex = Omit<ColumnDisplayProps, "colIndex"
 
 export interface CreateTableColumn {
   name: string;
-  columnType: string;
+  sqlType: string;
   display?: ColumnDisplayPropsWithoutIndex;
 }
 

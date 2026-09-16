@@ -112,7 +112,7 @@ function toManagedTableCreateInput(request: {
       name: request.name,
       columns: request.columnNames.map((name, index) => ({
         name,
-        columnType: request.columnTypes[index] ?? "VARCHAR",
+        sqlType: request.columnTypes[index] ?? "VARCHAR",
       })),
       rows: request.rows,
     },

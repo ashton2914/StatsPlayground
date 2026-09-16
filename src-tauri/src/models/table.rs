@@ -63,6 +63,7 @@ pub struct ColumnDisplayPropsWithoutIndex {
 #[serde(rename_all = "camelCase")]
 pub struct CreateTableColumn {
     pub name: String,
+    #[serde(rename = "sqlType")]
     pub column_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ColumnDisplayPropsWithoutIndex>,
