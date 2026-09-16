@@ -7,6 +7,7 @@ import type {
   DatasetMeta,
   CreateTableFromRowsRequest,
   SqlQueryResult,
+  TableFilterValue,
   TableQueryParams,
   TableQueryResult,
   TableWindowRequest,
@@ -49,7 +50,7 @@ export const dataService = {
     search: string,
     limit: number,
     generation: number,
-  ) => invoke<string[]>("query_table_filter_values", {
+  ) => invoke<TableFilterValue[]>("query_table_filter_values", {
     datasetId,
     field,
     search,
