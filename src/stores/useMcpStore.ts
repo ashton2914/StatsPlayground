@@ -73,9 +73,9 @@ function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function createStoppedTransientState(status: McpServerStatus = STOPPED_STATUS) {
+function createStoppedTransientState() {
   return {
-    status,
+    status: STOPPED_STATUS,
     auditEntries: [] as McpAuditEntry[],
     authorizedRoots: [] as McpAuthorizedRootGrant[],
     commandRequests: [] as McpCommandRequestSummary[],
@@ -126,7 +126,7 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
         ]);
         if (status.state === "stopped") {
           set({
-            ...createStoppedTransientState(status),
+            ...createStoppedTransientState(),
             refreshing: false,
             lastError: null,
           });

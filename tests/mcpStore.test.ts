@@ -386,7 +386,14 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
   const timer = createTimerHarness();
   const store = createMcpStore({
     service: createService({
-      getServerStatus: async () => makeStatus({ state: "stopped" }),
+      getServerStatus: async () => makeStatus({
+        state: "stopped",
+        endpoint: "http://127.0.0.1:48123/mcp",
+        token: "stale-secret",
+        activeConnections: 3,
+        queuedRequests: 2,
+        runningRequests: 1,
+      }),
       listAuditEntries: async () => [makeAuditEntry()],
       listCommandRequests: () => [makeRequest({ status: "awaiting-confirmation" })],
     }),
@@ -404,7 +411,7 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
 
   await store.getState().refresh();
 
-  assert.deepEqual(store.getState().status, makeStatus({ state: "stopped" }));
+  assert.deepEqual(store.getState().status, makeStatus());
   assert.deepEqual(store.getState().auditEntries, []);
   assert.deepEqual(store.getState().commandRequests, []);
   assert.deepEqual(store.getState().pendingConfirmations, []);

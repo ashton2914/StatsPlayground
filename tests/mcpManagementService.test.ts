@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 
-import { listMcpCommandRequestsFromRuntimeSnapshot } from "../src/services/mcpManagementService.ts";
+import {
+  canManageMcpCommandRequest,
+  listMcpCommandRequestsFromRuntimeSnapshot,
+} from "../src/services/mcpManagementService.ts";
 import type { RuntimeRequestSnapshot } from "../src/applicationCommands/runtime.ts";
 
 const snapshot: RuntimeRequestSnapshot[] = [
@@ -34,5 +37,8 @@ assert.deepEqual(listMcpCommandRequestsFromRuntimeSnapshot(snapshot), [
     percent: 55,
   },
 ]);
+assert.equal(canManageMcpCommandRequest(snapshot, "ui-1"), false);
+assert.equal(canManageMcpCommandRequest(snapshot, "mcp-1"), true);
+assert.equal(canManageMcpCommandRequest(snapshot, "missing"), false);
 
 console.log("mcp management service tests passed");

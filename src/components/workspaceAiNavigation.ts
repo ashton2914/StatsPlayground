@@ -5,6 +5,19 @@ export interface WorkspaceAiNavigationState {
   activeAiSubview: "server" | "skills";
 }
 
+interface WorkspaceAiNavigationSetters {
+  setActiveTab: (tab: WorkspaceAiNavigationTab) => void;
+  setActiveAiSubview: (subview: WorkspaceAiNavigationState["activeAiSubview"]) => void;
+}
+
+export function applyWorkspaceAiNavigation(
+  next: WorkspaceAiNavigationState,
+  setters: WorkspaceAiNavigationSetters,
+) {
+  setters.setActiveTab(next.activeTab);
+  setters.setActiveAiSubview(next.activeAiSubview);
+}
+
 export function openWorkspaceAiServer(
   state: WorkspaceAiNavigationState,
 ): WorkspaceAiNavigationState {

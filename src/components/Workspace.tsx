@@ -124,6 +124,7 @@ import {
 } from "./workspaceCommandHandlers";
 import { mountApplicationCommandBridge } from "./workspaceApplicationCommandBridge";
 import {
+  applyWorkspaceAiNavigation,
   openWorkspaceAiServer,
   openWorkspaceAiSkills,
 } from "./workspaceAiNavigation";
@@ -264,14 +265,6 @@ function MenuDropdown({ label, children, openMenu, setOpenMenu }: {
       )}
     </div>
   );
-}
-
-function applyAiNavigation(next: { activeTab: "files" | "history" | "workflow" | "ai"; activeAiSubview: "server" | "skills" }, input: {
-  setActiveTab: (tab: "files" | "history" | "workflow" | "ai") => void;
-  setActiveAiSubview: (subview: "server" | "skills") => void;
-}) {
-  input.setActiveTab(next.activeTab);
-  input.setActiveAiSubview(next.activeAiSubview);
 }
 
 export function Workspace() {
@@ -2506,13 +2499,13 @@ export function Workspace() {
             </MenuDropdown>
             <MenuDropdown label={t("menu.ai", { defaultValue: "AI" })}>
               <div className="menu-item" onClick={() => {
-                applyAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
+                applyWorkspaceAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
                   setActiveTab,
                   setActiveAiSubview,
                 });
               }}>{t("menu.mcpServer", { defaultValue: "MCP Server..." })}</div>
               <div className="menu-item" onClick={() => {
-                applyAiNavigation(openWorkspaceAiSkills({ activeTab, activeAiSubview }), {
+                applyWorkspaceAiNavigation(openWorkspaceAiSkills({ activeTab, activeAiSubview }), {
                   setActiveTab,
                   setActiveAiSubview,
                 });
@@ -2575,7 +2568,7 @@ export function Workspace() {
           <button
             className={`activity-btn${activeTab === "ai" ? " activity-btn-active" : ""}`}
             onClick={() => {
-              applyAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
+              applyWorkspaceAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
                 setActiveTab,
                 setActiveAiSubview,
               });

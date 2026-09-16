@@ -28,7 +28,7 @@ export function listMcpCommandRequestsFromRuntimeSnapshot(
     }));
 }
 
-function canManageMcpCommandRequest(
+export function canManageMcpCommandRequest(
   snapshot: RuntimeRequestSnapshot[],
   requestId: string,
 ): boolean {
