@@ -12,12 +12,13 @@ pub mod state;
 pub mod perf_harness;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState::new().expect("Failed to initialize application state");
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
@@ -145,6 +146,15 @@ pub fn run() {
             commands::table_commands::update_table,
             commands::table_commands::concatenate_tables,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            let state = app_handle.state::<AppState>();
+            if let Err(error) = tauri::async_runtime::block_on(state.mcp_server.stop()) {
+                eprintln!("failed to stop MCP server during application exit: {error}");
+            }
+        }
+    });
 }

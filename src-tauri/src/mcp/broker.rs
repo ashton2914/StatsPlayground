@@ -106,10 +106,13 @@ impl McpCancellationToken {
     }
 
     async fn cancelled(&self) {
-        if self.is_cancelled() {
-            return;
+        loop {
+            let notified = self.inner.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
         }
-        self.inner.notify.notified().await;
     }
 }
 
@@ -247,6 +250,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             .collect();
         for request_id in request_ids {
             if let Some(mut entry) = pending.remove(&request_id) {
+                entry.cancellation_token.cancel();
                 if let Some(sender) = entry.completion.take() {
                     let _ = sender.send(ApplicationCommandResponse::Error(McpCommandError {
                         code: "cancelled".to_string(),
@@ -285,6 +289,24 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         progress_sender: mpsc::UnboundedSender<ApplicationCommandProgress>,
         cancellation_token: McpCancellationToken,
     ) -> Result<McpCommandResponse, AppError> {
+        self.dispatch_with_request_id(
+            format!("mcp-{}", Uuid::new_v4()),
+            command,
+            timeout,
+            progress_sender,
+            cancellation_token,
+        )
+        .await
+    }
+
+    pub async fn dispatch_with_request_id(
+        &self,
+        request_id: String,
+        command: ApplicationCommandEnvelope,
+        timeout: Duration,
+        progress_sender: mpsc::UnboundedSender<ApplicationCommandProgress>,
+        cancellation_token: McpCancellationToken,
+    ) -> Result<McpCommandResponse, AppError> {
         if !self.inner.ready.load(Ordering::SeqCst) {
             return Err(AppError::Busy(
                 "Application command bridge is not ready".to_string(),
@@ -296,7 +318,6 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         }
         let deadline = tokio::time::Instant::now() + timeout;
 
-        let request_id = format!("mcp-{}", Uuid::new_v4());
         let (completion_tx, completion_rx) = oneshot::channel();
         self.insert_pending(
             request_id.clone(),
@@ -503,6 +524,7 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
         let commit_grace_timeout = Duration::from_millis(self.inner.config.commit_grace_timeout_ms);
         let result = loop {
             tokio::select! {
+                biased;
                 response = &mut completion_rx => break self.response_to_result(request_id.clone(), response),
                 _ = cancellation_token.cancelled(), if !cancellation_forwarded => {
                     cancellation_forwarded = true;
@@ -1298,15 +1320,34 @@ mod tests {
         while emitter.requests().is_empty() {
             tokio::task::yield_now().await;
         }
+        let (queued_progress_tx, _queued_progress_rx) = mpsc::unbounded_channel();
+        let queued_task = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("queued-shutdown"),
+                        Duration::from_secs(5),
+                        queued_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+        while pending_count(&broker) < 2 {
+            tokio::task::yield_now().await;
+        }
         let (queued, running) = broker.queue_status().expect("queue status");
-        assert_eq!(queued, 0);
+        assert_eq!(queued, 1);
         assert_eq!(running, 1);
 
         broker
             .cancel_non_committing_requests("MCP server stopped")
             .expect("cancel pending requests");
         let request_id = emitter.requests()[0].request_id.clone();
-        assert_eq!(emitter.cancellation_requests(), vec![request_id]);
+        let cancellation_requests = emitter.cancellation_requests();
+        assert_eq!(cancellation_requests.len(), 2);
+        assert!(cancellation_requests.contains(&request_id));
         let (queued, running) = broker.queue_status().expect("queue status after cancel");
         assert_eq!(queued, 0);
         assert_eq!(running, 1);
@@ -1314,6 +1355,11 @@ mod tests {
             pending.await.expect("pending dispatch"),
             Err(crate::error::AppError::Cancelled(message)) if message.contains("stopped")
         ));
+        assert!(matches!(
+            queued_task.await.expect("queued dispatch"),
+            Err(crate::error::AppError::Cancelled(message)) if message.contains("cancelled")
+        ));
+        assert_eq!(emitter.requests().len(), 1);
         let (queued, running) = broker.queue_status().expect("queue status after task");
         assert_eq!(queued, 0);
         assert_eq!(running, 0);

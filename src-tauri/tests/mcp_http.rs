@@ -385,6 +385,27 @@ async fn mcp_http_rejects_oversized_request_bodies() {
     state.mcp_server.stop().await.expect("stop");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_http_rate_limit_returns_too_many_requests() {
+    let _guard = HTTP_TEST_LOCK.lock().await;
+    let state = AppState::new().expect("state");
+    let status = state
+        .mcp_server
+        .start(state.mcp_command_broker.clone())
+        .await
+        .expect("start");
+    let endpoint = status.endpoint.as_deref().expect("endpoint");
+    let token = status.token.as_deref().expect("token");
+
+    for _ in 0..120 {
+        let status = post_raw(endpoint, token, b"{}".to_vec());
+        assert_ne!(status, 429);
+    }
+    assert_eq!(post_raw(endpoint, token, b"{}".to_vec()), 429);
+
+    state.mcp_server.stop().await.expect("stop");
+}
+
 #[test]
 fn mcp_tool_catalog_is_exact_unique_and_schema_backed() {
     let catalog = stats_playground_lib::mcp::tools::tool_catalog();

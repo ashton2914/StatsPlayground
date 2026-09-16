@@ -165,7 +165,13 @@ impl McpServerRuntime {
         if let Some(shutdown) = handle.shutdown.take() {
             let _ = shutdown.send(());
         }
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle.task).await;
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut handle.task)
+            .await
+            .is_err()
+        {
+            handle.task.abort();
+            let _ = handle.task.await;
+        }
         let audit_result = self.audit_log.clear();
         *self
             .inner

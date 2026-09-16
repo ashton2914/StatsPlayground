@@ -14,6 +14,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::mcp::broker::{ApplicationCommandEventEmitter, McpCancellationToken, McpCommandBroker};
@@ -164,10 +165,7 @@ pub type ProjectInspectToolOutput = ToolCommandResult<ProjectInspectResultData>;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProjectSaveToolInput {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_path: Option<String>,
-}
+pub struct ProjectSaveToolInput {}
 
 pub type ProjectSaveToolOutput = ToolCommandResult<ProjectSummary>;
 
@@ -244,7 +242,7 @@ pub struct ColumnDisplayPropsWithoutIndex {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateTableColumn {
     pub name: String,
-    pub column_type: String,
+    pub sql_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ColumnDisplayPropsWithoutIndex>,
 }
@@ -371,15 +369,173 @@ pub struct DocumentGetToolInput {
 pub struct ProjectDocumentGetResultData {
     pub kind: ProjectDocumentKind,
     pub id: String,
-    pub document: Value,
+    pub document: ProjectDocument,
 }
 
 pub type DocumentGetToolOutput = ToolCommandResult<ProjectDocumentGetResultData>;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ProjectDocument {
+    TableTransform(TableTransformDefinition),
+    Graph(GraphBuilderItem),
+    Analysis(AnalysisDocument),
+    Tabulate(TabulateItem),
+    Report(ReportItem),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformInputBinding {
+    pub role: String,
+    pub table_document_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SortColumn {
+    pub column: String,
+    pub direction: SortDirection,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SummaryStatistic {
+    N,
+    Mean,
+    Std,
+    Min,
+    Max,
+    Sum,
+    Median,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TableFilterLogicalOperator {
+    And,
+    Or,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TableFilterComparisonOperator {
+    Equal,
+    NotEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum TableFilterScalar {
+    String { value: String },
+    Number { value: String },
+    Boolean { value: bool },
+    Null,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TableFilterExpression {
+    Logical {
+        operator: TableFilterLogicalOperator,
+        left: Box<TableFilterExpression>,
+        right: Box<TableFilterExpression>,
+    },
+    Not {
+        expression: Box<TableFilterExpression>,
+    },
+    Comparison {
+        column: String,
+        operator: TableFilterComparisonOperator,
+        value: TableFilterScalar,
+    },
+    IsNull {
+        column: String,
+        negated: bool,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TableTransformOperation {
+    Sort {
+        sort_columns: Vec<SortColumn>,
+    },
+    Subset {
+        columns: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<TableFilterExpression>,
+    },
+    Transpose,
+    Stack {
+        stack_columns: Vec<String>,
+        id_columns: Vec<String>,
+    },
+    Split {
+        split_column: String,
+        value_column: String,
+        id_columns: Vec<String>,
+    },
+    Summary {
+        statistic_columns: Vec<String>,
+        group_columns: Vec<String>,
+        statistics: Vec<SummaryStatistic>,
+    },
+    Join {
+        join_type: JoinType,
+        left_key: String,
+        right_key: String,
+    },
+    Update {
+        match_column: String,
+        update_columns: Vec<String>,
+    },
+    Concatenate {
+        source_count: u64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformDraft {
+    pub name: String,
+    pub output_name: String,
+    pub operation: TableTransformOperation,
+    pub input_bindings: Vec<TableTransformInputBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TableTransformCreateToolInput {
-    pub draft: Value,
+    pub draft: TableTransformDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -390,10 +546,145 @@ pub struct TableTransformRunToolInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SchemaColumnRequirement {
+    pub name: String,
+    pub canonical_duckdb_type: String,
+    pub required: bool,
+    pub required_by_operation_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_extras: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SchemaContract {
+    pub schema_fingerprint: String,
+    pub columns: Vec<SchemaColumnRequirement>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformInputSlot {
+    pub role: String,
+    pub schema_contract: SchemaContract,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformOutput {
+    pub table_document_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformDefinition {
+    pub id: String,
+    pub name: String,
+    pub format_version: String,
+    pub revision: u64,
+    pub operation: TableTransformOperation,
+    pub input_slots: Vec<TableTransformInputSlot>,
+    pub output: TableTransformOutput,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformProjectBinding {
+    pub definition_id: String,
+    pub definition_revision: u64,
+    pub inputs: Vec<TableTransformInputBinding>,
+    pub output_generation: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TableTransformRunStatus {
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SchemaValidationIssue {
+    pub column_name: String,
+    pub expected_type: String,
+    pub actual_type: String,
+    pub affected_operation_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SchemaAttributeMismatch {
+    pub column_name: String,
+    pub attribute_name: String,
+    pub expected_value: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_value: Option<Value>,
+    pub affected_operation_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SchemaValidationReport {
+    pub missing_columns: Vec<SchemaValidationIssue>,
+    pub type_mismatches: Vec<SchemaValidationIssue>,
+    pub attribute_mismatches: Vec<SchemaAttributeMismatch>,
+    pub extra_columns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformRoleSchemaReport {
+    pub role: String,
+    pub report: SchemaValidationReport,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformRunState {
+    pub definition_revision: u64,
+    pub status: TableTransformRunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformBindingState {
+    pub definition_id: String,
+    pub definition_revision: u64,
+    pub inputs: Vec<TableTransformInputBinding>,
+    pub output_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<TableTransformRunState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_reports: Option<Vec<TableTransformRoleSchemaReport>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformExecutionResult {
+    pub definition_id: String,
+    pub status: TableTransformRunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<DatasetMeta>,
+    pub schema_reports: Vec<TableTransformRoleSchemaReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub binding: TableTransformProjectBinding,
+    pub run_state: TableTransformRunState,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TableTransformCommandData {
-    pub execution: Value,
-    pub definition: Option<Value>,
-    pub binding: Option<Value>,
+    pub execution: TableTransformExecutionResult,
+    pub definition: Option<TableTransformDefinition>,
+    pub binding: Option<TableTransformBindingState>,
     pub output_table: Option<TableDescribeResultData>,
     pub target_dataset_generation: Option<u64>,
 }
@@ -442,6 +733,76 @@ pub struct TableExportCsvResultData {
 pub type TableExportCsvToolOutput = ToolCommandResult<TableExportCsvResultData>;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TabulateStatisticKind {
+    Count,
+    MissingCount,
+    UniqueCount,
+    Sum,
+    Mean,
+    StandardDeviation,
+    Variance,
+    Minimum,
+    Maximum,
+    Median,
+    Range,
+    Quantile,
+    RowPercentage,
+    ColumnPercentage,
+    TotalPercentage,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateStatistic {
+    pub id: String,
+    pub field: String,
+    pub kind: TabulateStatisticKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantile: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateItem {
+    pub id: String,
+    pub name: String,
+    pub source_dataset_id: String,
+    pub row_fields: Vec<String>,
+    pub column_fields: Vec<String>,
+    pub statistics: Vec<TabulateStatistic>,
+    pub include_row_totals: bool,
+    pub include_column_totals: bool,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateRequest {
+    pub dataset_id: String,
+    pub row_fields: Vec<String>,
+    pub column_fields: Vec<String>,
+    pub statistics: Vec<TabulateStatistic>,
+    pub include_row_totals: bool,
+    pub include_column_totals: bool,
+    pub max_result_cells: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateResult {
+    pub row_members: Vec<Vec<Value>>,
+    pub column_members: Vec<Vec<Value>>,
+    pub statistics: Vec<TabulateStatistic>,
+    pub cells: Vec<Option<f64>>,
+    pub row_totals: Vec<Option<f64>>,
+    pub column_totals: Vec<Option<f64>>,
+    pub grand_totals: Vec<Option<f64>>,
+    pub cell_count: u64,
+    pub limit: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TabulateCreateToolInput {
     pub source_dataset_id: String,
@@ -450,7 +811,7 @@ pub struct TabulateCreateToolInput {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TabulateCreateResultData {
-    pub item: Value,
+    pub item: TabulateItem,
 }
 
 pub type TabulateCreateToolOutput = ToolCommandResult<TabulateCreateResultData>;
@@ -459,7 +820,7 @@ pub type TabulateCreateToolOutput = ToolCommandResult<TabulateCreateResultData>;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TabulateRunToolInput {
     pub tabulate_id: String,
-    pub request: Value,
+    pub request: TabulateRequest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -469,7 +830,7 @@ pub struct TabulateRunResultData {
     pub request_fingerprint: String,
     pub source_generation: u64,
     pub completed_at: String,
-    pub result: Value,
+    pub result: TabulateResult,
     pub cache_valid: bool,
 }
 
@@ -479,7 +840,7 @@ pub type TabulateRunToolOutput = ToolCommandResult<TabulateRunResultData>;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TabulateToTableToolInput {
     pub tabulate_id: String,
-    pub request: Value,
+    pub request: TabulateRequest,
     pub table_name: String,
 }
 
@@ -501,17 +862,256 @@ pub struct GraphCreateToolInput {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FieldMeasurementType {
+    Continuous,
+    Nominal,
+    Ordinal,
+    Datetime,
+    Id,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FieldRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_id: Option<String>,
+    pub name: String,
+    pub r#type: FieldMeasurementType,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChartElementKind {
+    Points,
+    Line,
+    Bar,
+    Heatmap,
+    CorrelationMatrix,
+    Histogram,
+    NormalCurve,
+    Boxplot,
+    Smoother,
+    Fitline,
+    Surface,
+    Contour3d,
+    Scatter3d,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CorrelationMethod {
+    Pearson,
+    Spearman,
+    Kendall,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChartElement {
+    pub kind: ChartElementKind,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<BTreeMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_method: Option<CorrelationMethod>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterLogicalOperator {
+    #[serde(rename = "AND")]
+    And,
+    #[serde(rename = "OR")]
+    Or,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GraphFilterRule {
+    Continuous {
+        field: FieldRef,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    Categorical {
+        field: FieldRef,
+        selected: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exclude: Option<bool>,
+    },
+    Date {
+        field: FieldRef,
+        start: Option<String>,
+        end: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphFilterRuleItem {
+    pub id: String,
+    pub op: FilterLogicalOperator,
+    pub rule: GraphFilterRule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ReferenceLineStyle {
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReferenceLine {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+    pub label: String,
+    pub style: ReferenceLineStyle,
+    pub color: String,
+    pub width: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AxisConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_interval: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inverse: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minor_tick_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_axis_line: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_position: Option<String>,
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Graph2dState {
+    pub encoding: BTreeMap<String, FieldRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transposed: Option<bool>,
+    pub multi_x: Vec<FieldRef>,
+    pub multi_y: Vec<FieldRef>,
+    pub elements: Vec<ChartElement>,
+    pub smoother_lambda: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_styles: Option<BTreeMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_groups: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_lines_y: Option<Vec<ReferenceLine>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_lines_x: Option<Vec<ReferenceLine>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_spec_lines_y: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_spec_lines_x: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_spec_lines: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y_axis: Option<AxisConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x_axis: Option<AxisConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Graph3dState {
+    pub encoding: BTreeMap<String, FieldRef>,
+    pub elements: Vec<ChartElement>,
+    pub smoother_lambda: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_styles: Option<BTreeMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_groups: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MultivariateGraphState {
+    pub columns: Vec<FieldRef>,
+    pub chart_type: String,
+    pub correlation_method: CorrelationMethod,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphModeStates {
+    pub two_d: Graph2dState,
+    pub three_d: Graph3dState,
+    pub multivariate: MultivariateGraphState,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GraphSampling {
+    Full,
+    Sample { size: u64, seed: u64 },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphBuilderMode {
+    #[serde(rename = "2d")]
+    TwoD,
+    #[serde(rename = "3d")]
+    ThreeD,
+    Multivariate,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphBuilderItem {
+    pub id: String,
+    pub name: String,
+    pub source_dataset_id: String,
+    pub mode: GraphBuilderMode,
+    pub mode_states: GraphModeStates,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<GraphSampling>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_theme_slots: Option<BTreeMap<String, BTreeMap<String, u64>>>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GraphUpdateToolInput {
     pub graph_id: String,
     pub expected_document_revision: u64,
-    pub definition: Value,
+    pub definition: GraphBuilderItem,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GraphCommandResultData {
-    pub item: Value,
+    pub item: GraphBuilderItem,
     pub document_revision: u64,
 }
 
@@ -520,30 +1120,338 @@ pub type GraphUpdateToolOutput = ToolCommandResult<GraphCommandResultData>;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EmbeddedGraphConfig {
+    pub mode: GraphBuilderMode,
+    pub mode_states: GraphModeStates,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<GraphSampling>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_theme_slots: Option<BTreeMap<String, BTreeMap<String, u64>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Vec<GraphFilterRuleItem>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpecLimitsOverride {
+    pub lsl: Option<f64>,
+    pub target: Option<f64>,
+    pub usl: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DistributionFitKind {
+    Normal,
+    Lognormal,
+    Exponential,
+    Gamma,
+    Weibull,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionAnalysisConfig {
+    pub confidence_level: f64,
+    pub spec_limits: BTreeMap<String, SpecLimitsOverride>,
+    pub fit_distributions: Vec<DistributionFitKind>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionGraphs {
+    pub overview: EmbeddedGraphConfig,
+    pub box_plot: EmbeddedGraphConfig,
+    pub ecdf: EmbeddedGraphConfig,
+    pub normal_quantile: EmbeddedGraphConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionAnalysisCreateDraft {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub responses: Vec<FieldRef>,
+    pub weight: Option<FieldRef>,
+    pub frequency: Option<FieldRef>,
+    pub by: Vec<FieldRef>,
+    pub nested_subgroup: Option<FieldRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<DistributionAnalysisConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphs: Option<DistributionGraphs>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionAnalysisUpdateDraft {
+    pub responses: Vec<FieldRef>,
+    pub weight: Option<FieldRef>,
+    pub frequency: Option<FieldRef>,
+    pub by: Vec<FieldRef>,
+    pub nested_subgroup: Option<FieldRef>,
+    pub analysis: DistributionAnalysisConfig,
+    pub graphs: DistributionGraphs,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitYByXAnalysisCreateDraft {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub response: FieldRef,
+    pub factor: FieldRef,
+    pub confidence_level: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<EmbeddedGraphConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitYByXAnalysisUpdateDraft {
+    pub response: FieldRef,
+    pub factor: FieldRef,
+    pub confidence_level: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<EmbeddedGraphConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FitModelConstruct {
+    Manual,
+    FullFactorial,
+    FactorialToDegree { degree: u64 },
+    ResponseSurface,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FitModelTerm {
+    Main {
+        column_names: Vec<String>,
+    },
+    Interaction {
+        column_names: Vec<String>,
+    },
+    Power {
+        column_names: Vec<String>,
+        exponent: u64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FitModelCenteringMethod {
+    None,
+    Mean,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitModelAnalysisCreateDraft {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub response: FieldRef,
+    pub construct: FitModelConstruct,
+    pub terms: Vec<FitModelTerm>,
+    pub centering_method: FitModelCenteringMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_level: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitModelAnalysisUpdateDraft {
+    pub response: FieldRef,
+    pub construct: FitModelConstruct,
+    pub terms: Vec<FitModelTerm>,
+    pub centering_method: FitModelCenteringMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_level: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "layout",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum HypothesisTestRoles {
+    Long {
+        response: FieldRef,
+        condition: FieldRef,
+        subject: Option<FieldRef>,
+    },
+    Wide {
+        measurements: Vec<FieldRef>,
+        subject: Option<FieldRef>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HypothesisTestMethodId {
+    StudentTwoSampleT,
+    WelchTwoSampleT,
+    MannWhitneyU,
+    OneWayAnova,
+    WelchAnova,
+    KruskalWallis,
+    PairedT,
+    WilcoxonSignedRank,
+    RandomizedBlockAnova,
+    Friedman,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestManualSelection {
+    pub method_id: HypothesisTestMethodId,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HypothesisTestStudyDesign {
+    Independent,
+    PairedOrBlocked,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HypothesisTestSelectionMode {
+    Automatic,
+    Guided,
+    Manual,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HypothesisTestAlternative {
+    TwoSided,
+    Less,
+    Greater,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HypothesisTestPostHoc {
+    Automatic,
+    Off,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestAnalysisDefinition {
+    pub kind: String,
+    pub roles: HypothesisTestRoles,
+    pub study_design: HypothesisTestStudyDesign,
+    pub selection_mode: HypothesisTestSelectionMode,
+    pub manual_selection: Option<HypothesisTestManualSelection>,
+    pub alternative: HypothesisTestAlternative,
+    pub alpha: f64,
+    pub confidence_level: f64,
+    pub level_order: Vec<String>,
+    pub reference_level: Option<String>,
+    pub post_hoc: HypothesisTestPostHoc,
+    pub selector_version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HypothesisTestResultTab {
+    Results,
+    Diagnostics,
+    Audit,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum HypothesisTestCollapsedSection {
+    MethodEvidence,
+    Sensitivity,
+    PostHoc,
+    Exclusions,
+    Audit,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestGraphPresentation {
+    pub show_raw_data: bool,
+    pub show_intervals: bool,
+    pub show_diagnostics: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestTableSort {
+    pub key: String,
+    pub direction: SortDirection,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestAnalysisPresentation {
+    pub schema_version: u64,
+    pub layout: String,
+    pub active_result_tab: HypothesisTestResultTab,
+    pub collapsed_sections: Vec<HypothesisTestCollapsedSection>,
+    pub graphs: HypothesisTestGraphPresentation,
+    pub table_sort: Option<HypothesisTestTableSort>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestAnalysisCreateDraft {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub definition: HypothesisTestAnalysisDefinition,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestAnalysisUpdateDraft {
+    pub definition: HypothesisTestAnalysisDefinition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<HypothesisTestAnalysisPresentation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DistributionAnalysisCreateInput {
     pub source_dataset_id: String,
-    pub draft: Value,
+    pub draft: DistributionAnalysisCreateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FitYByXAnalysisCreateInput {
     pub source_dataset_id: String,
-    pub draft: Value,
+    pub draft: FitYByXAnalysisCreateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FitModelAnalysisCreateInput {
     pub source_dataset_id: String,
-    pub draft: Value,
+    pub draft: FitModelAnalysisCreateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HypothesisTestAnalysisCreateInput {
     pub source_dataset_id: String,
-    pub draft: Value,
+    pub draft: HypothesisTestAnalysisCreateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -560,7 +1468,7 @@ pub enum AnalysisCreateToolInput {
 pub struct DistributionAnalysisUpdateInput {
     pub analysis_id: String,
     pub expected_config_revision: u64,
-    pub draft: Value,
+    pub draft: DistributionAnalysisUpdateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -568,7 +1476,7 @@ pub struct DistributionAnalysisUpdateInput {
 pub struct FitYByXAnalysisUpdateInput {
     pub analysis_id: String,
     pub expected_config_revision: u64,
-    pub draft: Value,
+    pub draft: FitYByXAnalysisUpdateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -576,7 +1484,7 @@ pub struct FitYByXAnalysisUpdateInput {
 pub struct FitModelAnalysisUpdateInput {
     pub analysis_id: String,
     pub expected_config_revision: u64,
-    pub draft: Value,
+    pub draft: FitModelAnalysisUpdateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -584,7 +1492,7 @@ pub struct FitModelAnalysisUpdateInput {
 pub struct HypothesisTestAnalysisUpdateInput {
     pub analysis_id: String,
     pub expected_config_revision: u64,
-    pub draft: Value,
+    pub draft: HypothesisTestAnalysisUpdateDraft,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -597,9 +1505,121 @@ pub enum AnalysisUpdateToolInput {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FitYByXPersonality {
+    Oneway,
+    Bivariate,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionAnalysisDefinition {
+    pub kind: String,
+    pub responses: Vec<FieldRef>,
+    pub weight: Option<FieldRef>,
+    pub frequency: Option<FieldRef>,
+    pub by: Vec<FieldRef>,
+    pub nested_subgroup: Option<FieldRef>,
+    pub analysis: DistributionAnalysisConfig,
+    pub graphs: DistributionGraphs,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitYByXAnalysisDefinition {
+    pub kind: String,
+    pub response: FieldRef,
+    pub factor: FieldRef,
+    pub personality: FitYByXPersonality,
+    pub confidence_level: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitModelLoadIssue {
+    pub code: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitModelAnalysisDefinition {
+    pub kind: String,
+    pub response: FieldRef,
+    pub construct: FitModelConstruct,
+    pub terms: Vec<FitModelTerm>,
+    pub centering_method: FitModelCenteringMethod,
+    pub confidence_level: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_issue: Option<FitModelLoadIssue>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum AnalysisDefinition {
+    Distribution(DistributionAnalysisDefinition),
+    FitYByX(FitYByXAnalysisDefinition),
+    FitModel(FitModelAnalysisDefinition),
+    HypothesisTest(HypothesisTestAnalysisDefinition),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionAnalysisPresentation {
+    pub schema_version: u64,
+    pub layout: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitYByXAnalysisPresentation {
+    pub schema_version: u64,
+    pub layout: String,
+    pub graph: EmbeddedGraphConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitModelAnalysisPresentation {
+    pub schema_version: u64,
+    pub layout: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum AnalysisPresentation {
+    Distribution(DistributionAnalysisPresentation),
+    FitYByX(FitYByXAnalysisPresentation),
+    FitModel(FitModelAnalysisPresentation),
+    HypothesisTest(HypothesisTestAnalysisPresentation),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalysisSource {
+    pub dataset_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalysisDocument {
+    pub schema_version: u64,
+    pub document_type: String,
+    pub id: String,
+    pub name: String,
+    pub analysis_kind: String,
+    pub config_revision: u64,
+    pub source: AnalysisSource,
+    pub definition: AnalysisDefinition,
+    pub presentation: AnalysisPresentation,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnalysisCommandResultData {
-    pub item: Value,
+    pub item: AnalysisDocument,
 }
 
 pub type AnalysisCreateToolOutput = ToolCommandResult<AnalysisCommandResultData>;
@@ -626,12 +1646,54 @@ pub struct DatasetMeta {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AnalysisKind {
+    Distribution,
+    FitYByX,
+    FitModel,
+    HypothesisTest,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AnalysisExecutionState {
+    Idle,
+    Loading {
+        analysis_kind: AnalysisKind,
+        analysis_id: String,
+        dataset_id: String,
+        config_revision: u64,
+        request: Option<BTreeMap<String, Value>>,
+    },
+    Success {
+        analysis_kind: AnalysisKind,
+        analysis_id: String,
+        dataset_id: String,
+        config_revision: u64,
+        request: BTreeMap<String, Value>,
+        result: BTreeMap<String, Value>,
+    },
+    Error {
+        analysis_kind: AnalysisKind,
+        analysis_id: String,
+        dataset_id: String,
+        config_revision: u64,
+        request: Option<BTreeMap<String, Value>>,
+        error: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnalysisRunResultData {
-    pub item: Value,
-    pub definition: Value,
+    pub item: AnalysisDocument,
+    pub definition: AnalysisDefinition,
     pub dataset: DatasetMeta,
-    pub state: Value,
+    pub state: AnalysisExecutionState,
 }
 
 pub type AnalysisRunToolOutput = ToolCommandResult<AnalysisRunResultData>;
@@ -650,8 +1712,19 @@ pub struct ReportUpdateToolInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportItem {
+    pub schema_version: u64,
+    pub id: String,
+    pub name: String,
+    pub markdown: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReportCommandResultData {
-    pub item: Value,
+    pub item: ReportItem,
     pub document_revision: u64,
 }
 
@@ -725,9 +1798,9 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
             input,
             control,
         };
-        let request_id_hint = format!("mcp-http-{}", request_started.elapsed().as_nanos());
+        let request_id = format!("mcp-{}", Uuid::new_v4());
         let _ = self.audit_log.push(McpAuditEntry {
-            request_id: request_id_hint.clone(),
+            request_id: request_id.clone(),
             timestamp: current_timestamp(),
             tool: entry.name.clone(),
             status: "queued".to_string(),
@@ -760,7 +1833,13 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
         });
         let result = self
             .broker
-            .dispatch(envelope, TOOL_TIMEOUT, progress_tx, token)
+            .dispatch_with_request_id(
+                request_id.clone(),
+                envelope,
+                TOOL_TIMEOUT,
+                progress_tx,
+                token,
+            )
             .await;
         if let Some(task) = cancellation_task {
             task.abort();
@@ -777,7 +1856,7 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
                 let _ = self.audit_log.push(McpAuditEntry {
                     request_id: structured["requestId"]
                         .as_str()
-                        .unwrap_or(&request_id_hint)
+                        .unwrap_or(&request_id)
                         .to_string(),
                     timestamp: current_timestamp(),
                     tool: entry.name,
@@ -794,7 +1873,7 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
                     .as_ref()
                     .and_then(|details| details.get("requestId"))
                     .and_then(Value::as_str)
-                    .unwrap_or(&request_id_hint)
+                    .unwrap_or(&request_id)
                     .to_string();
                 let structured = sanitize_value(json!({
                     "requestId": request_id,
@@ -1137,10 +2216,12 @@ fn schema_value<T: JsonSchema>() -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let mut expanded = expand_schema_refs(&schema, &definitions);
+    let mut expanded = expand_schema_refs(&schema, &definitions, &mut Vec::new());
     if let Some(object) = expanded.as_object_mut() {
-        object.remove("$defs");
         object.remove("$schema");
+        if !definitions.is_empty() {
+            object.insert("$defs".to_string(), Value::Object(definitions));
+        }
         object
             .entry("type".to_string())
             .or_insert_with(|| json!("object"));
@@ -1148,7 +2229,11 @@ fn schema_value<T: JsonSchema>() -> Value {
     expanded
 }
 
-fn expand_schema_refs(schema: &Value, definitions: &Map<String, Value>) -> Value {
+fn expand_schema_refs(
+    schema: &Value,
+    definitions: &Map<String, Value>,
+    expanding: &mut Vec<String>,
+) -> Value {
     match schema {
         Value::Object(object) => {
             let definition_name = object
@@ -1157,21 +2242,32 @@ fn expand_schema_refs(schema: &Value, definitions: &Map<String, Value>) -> Value
                 .and_then(|reference| reference.strip_prefix("#/$defs/"));
             if let Some(definition_name) = definition_name {
                 if let Some(definition) = definitions.get(definition_name) {
-                    return expand_schema_refs(definition, definitions);
+                    if expanding.iter().any(|name| name == definition_name) {
+                        return schema.clone();
+                    }
+                    expanding.push(definition_name.to_string());
+                    let expanded = expand_schema_refs(definition, definitions, expanding);
+                    expanding.pop();
+                    return expanded;
                 }
             }
             Value::Object(
                 object
                     .iter()
                     .filter(|(key, _)| key.as_str() != "$defs")
-                    .map(|(key, value)| (key.clone(), expand_schema_refs(value, definitions)))
+                    .map(|(key, value)| {
+                        (
+                            key.clone(),
+                            expand_schema_refs(value, definitions, expanding),
+                        )
+                    })
                     .collect(),
             )
         }
         Value::Array(values) => Value::Array(
             values
                 .iter()
-                .map(|value| expand_schema_refs(value, definitions))
+                .map(|value| expand_schema_refs(value, definitions, expanding))
                 .collect(),
         ),
         _ => schema.clone(),
@@ -1289,11 +2385,20 @@ fn sanitize_text(text: &str) -> String {
         || text.starts_with('/')
         || text.contains("/Users/")
         || text.contains("\\\\")
+        || is_windows_absolute_path(text)
     {
         "[redacted]".to_string()
     } else {
         text.to_string()
     }
+}
+
+fn is_windows_absolute_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 fn current_timestamp() -> String {
@@ -1380,8 +2485,9 @@ mod tests {
                 .and_then(|properties| properties.get(property))
                 .or_else(|| {
                     object
-                        .values()
-                        .find_map(|value| find_schema_property(value, property))
+                        .iter()
+                        .filter(|(key, _)| key.as_str() != "$defs")
+                        .find_map(|(_, value)| find_schema_property(value, property))
                 }),
             Value::Array(values) => values
                 .iter()
@@ -1432,7 +2538,7 @@ mod tests {
         assert_eq!(
             entry.input_schema["properties"]["request"]["properties"]["columns"]["items"]
                 ["required"],
-            json!(["name", "columnType"])
+            json!(["name", "sqlType"])
         );
         let currency_schema = find_schema_property(&entry.input_schema, "currency")
             .expect("currency display property schema");
@@ -1461,6 +2567,21 @@ mod tests {
             invalid.is_err(),
             "flattened catch-all input accepted unexpected fields"
         );
+    }
+
+    #[test]
+    fn project_save_rejects_save_as_paths() {
+        assert!(serde_json::from_value::<ProjectSaveToolInput>(json!({})).is_ok());
+        assert!(serde_json::from_value::<ProjectSaveToolInput>(json!({
+            "filePath": "exports/project.spprj"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn sanitizer_redacts_windows_absolute_paths() {
+        assert_eq!(sanitize_text(r"C:\Users\person\data.csv"), "[redacted]");
+        assert_eq!(sanitize_text("relative/data.csv"), "relative/data.csv");
     }
 
     #[test]
@@ -1510,10 +2631,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transform_and_graph_inputs_publish_concrete_domain_schemas() {
+        let catalog = tool_catalog();
+        let transform = catalog
+            .iter()
+            .find(|entry| entry.name == "statsplayground.table.transform.create")
+            .expect("table transform create entry");
+        let operation = find_schema_property(&transform.input_schema, "operation")
+            .expect("transform operation schema");
+        assert!(operation["oneOf"].as_array().is_some_and(|variants| {
+            variants
+                .iter()
+                .any(|variant| variant["properties"]["kind"]["const"] == json!("sort"))
+        }));
+
+        let graph = catalog
+            .iter()
+            .find(|entry| entry.name == "statsplayground.graph.update")
+            .expect("graph update entry");
+        let definition = find_schema_property(&graph.input_schema, "definition")
+            .expect("graph definition schema");
+        assert_eq!(
+            definition["required"],
+            json!([
+                "id",
+                "name",
+                "sourceDatasetId",
+                "mode",
+                "modeStates",
+                "createdAt"
+            ])
+        );
+    }
+
     #[tokio::test]
     async fn tool_call_projects_arguments_to_application_command_broker() {
         let (broker, emitter) = test_broker();
-        let server = StatsPlaygroundMcpServer::new(broker.clone(), McpAuditLog::default());
+        let audit_log = McpAuditLog::default();
+        let server = StatsPlaygroundMcpServer::new(broker.clone(), audit_log.clone());
         let mut arguments = Map::new();
         arguments.insert("datasetId".to_string(), json!("table-1"));
         arguments.insert(
@@ -1594,6 +2750,13 @@ mod tests {
         };
         let parsed_text: Value = serde_json::from_str(&text.text).expect("json text block");
         assert_eq!(parsed_text, structured);
+        let audit_entries = audit_log.list().expect("audit entries");
+        assert_eq!(audit_entries.len(), 2);
+        assert!(audit_entries
+            .iter()
+            .all(|entry| entry.request_id == request.request_id));
+        assert_eq!(audit_entries[0].status, "queued");
+        assert_eq!(audit_entries[1].status, "succeeded");
     }
 
     #[tokio::test]
