@@ -98,10 +98,11 @@ export function createWorkspaceCommandHandlers(input: WorkspaceCommandHandlerDep
     async saveProject(): Promise<void> {
       if (input.isSaving()) return;
 
-      let filePath = input.getProjectFilePath() ?? undefined;
-      if (!filePath) {
-        filePath = await input.requestSaveProjectPath?.() ?? undefined;
-        if (!filePath) {
+      const existingPath = input.getProjectFilePath() ?? undefined;
+      let selectedPath: string | undefined;
+      if (!existingPath) {
+        selectedPath = await input.requestSaveProjectPath?.() ?? undefined;
+        if (!selectedPath) {
           return;
         }
       }
@@ -109,7 +110,7 @@ export function createWorkspaceCommandHandlers(input: WorkspaceCommandHandlerDep
       await input.executeCommand(
         {
           type: "project.save",
-          input: { filePath },
+          input: selectedPath ? { filePath: selectedPath } : {},
           control: { expectedProjectRevision: input.getProjectRevision() },
         },
         { kind: "ui" },
