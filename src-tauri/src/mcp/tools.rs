@@ -5,12 +5,13 @@ use std::time::{Duration, Instant};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
-    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    PaginatedRequestParams, ProgressNotificationParam, ProgressToken, ProtocolVersion,
+    ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use schemars::{schema_for, JsonSchema};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
 
@@ -64,54 +65,615 @@ impl McpAuditLog {
     }
 }
 
-macro_rules! passthrough_dto {
-    ($($input:ident => $output:ident),+ $(,)?) => {
-        $(
-            #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-            #[serde(rename_all = "camelCase")]
-            pub struct $input {
-                #[serde(flatten)]
-                pub fields: BTreeMap<String, Value>,
-            }
-
-            #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-            #[serde(rename_all = "camelCase")]
-            pub struct $output {
-                pub request_id: String,
-                pub command: String,
-                pub changed: bool,
-                pub project_revision: u64,
-                pub data: Value,
-                pub warnings: Vec<Value>,
-            }
-        )+
-    };
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommandWarning {
+    pub code: String,
+    pub message: String,
 }
 
-passthrough_dto!(
-    ProjectInspectToolInput => ProjectInspectToolOutput,
-    TableListToolInput => TableListToolOutput,
-    TableDescribeToolInput => TableDescribeToolOutput,
-    DocumentListToolInput => DocumentListToolOutput,
-    DocumentGetToolInput => DocumentGetToolOutput,
-    TableCreateToolInput => TableCreateToolOutput,
-    TableTransformCreateToolInput => TableTransformCreateToolOutput,
-    TableTransformRunToolInput => TableTransformRunToolOutput,
-    SqlCreateTableToolInput => SqlCreateTableToolOutput,
-    TableExportCsvToolInput => TableExportCsvToolOutput,
-    TabulateCreateToolInput => TabulateCreateToolOutput,
-    TabulateRunToolInput => TabulateRunToolOutput,
-    TabulateToTableToolInput => TabulateToTableToolOutput,
-    GraphCreateToolInput => GraphCreateToolOutput,
-    GraphUpdateToolInput => GraphUpdateToolOutput,
-    AnalysisCreateToolInput => AnalysisCreateToolOutput,
-    AnalysisUpdateToolInput => AnalysisUpdateToolOutput,
-    AnalysisRunToolInput => AnalysisRunToolOutput,
-    ReportCreateToolInput => ReportCreateToolOutput,
-    ReportUpdateToolInput => ReportUpdateToolOutput,
-    ProjectSaveToolInput => ProjectSaveToolOutput,
-    SnapshotCreateToolInput => SnapshotCreateToolOutput,
-);
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolCommandResult<T> {
+    pub request_id: String,
+    pub command: String,
+    pub changed: bool,
+    pub project_revision: u64,
+    pub data: T,
+    pub warnings: Vec<CommandWarning>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MutationControl {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_project_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectSummary {
+    pub name: String,
+    pub created_at: String,
+    pub file_name: Option<String>,
+    pub has_project_path: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectInspectToolInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_capabilities: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectCapabilitiesTable {
+    pub list: bool,
+    pub describe: bool,
+    pub describe_preview: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectCapabilitiesDocument {
+    pub list: bool,
+    pub get: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectCapabilitiesProject {
+    pub inspect: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectCapabilities {
+    pub table: ProjectCapabilitiesTable,
+    pub document: ProjectCapabilitiesDocument,
+    pub project: ProjectCapabilitiesProject,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectCounts {
+    pub tables: u64,
+    pub table_transforms: u64,
+    pub graphs: u64,
+    pub analyses: u64,
+    pub tabulates: u64,
+    pub reports: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectInspectResultData {
+    pub project: Option<ProjectSummary>,
+    pub dirty: bool,
+    pub read_only: bool,
+    pub project_revision: u64,
+    pub counts: ProjectCounts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ProjectCapabilities>,
+}
+
+pub type ProjectInspectToolOutput = ToolCommandResult<ProjectInspectResultData>;
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectSaveToolInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+}
+
+pub type ProjectSaveToolOutput = ToolCommandResult<ProjectSummary>;
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableListToolInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableListItem {
+    pub id: String,
+    pub name: String,
+    pub source_type: String,
+    pub row_count: u64,
+    pub col_count: u64,
+    pub generation: u64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub source_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableListResultData {
+    pub items: Vec<TableListItem>,
+    pub next_cursor: Option<String>,
+}
+
+pub type TableListToolOutput = ToolCommandResult<TableListResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TablePreviewRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    pub limit: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableDescribeToolInput {
+    pub dataset_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<TablePreviewRequest>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ColumnFormatInfo {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ColumnDisplayPropsWithoutIndex {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<ColumnFormatInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateTableColumn {
+    pub name: String,
+    pub column_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<ColumnDisplayPropsWithoutIndex>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateManagedTableRequest {
+    pub name: String,
+    pub columns: Vec<CreateTableColumn>,
+    pub rows: Vec<Vec<Value>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableCreateToolInput {
+    pub request: CreateManagedTableRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<TablePreviewRequest>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableDescribeColumn {
+    pub col_index: u64,
+    pub col_name: String,
+    pub col_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<ColumnFormatInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TablePreviewCell {
+    pub col_index: u64,
+    pub value: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TablePreviewRow {
+    pub row_index: u64,
+    pub cells: Vec<TablePreviewCell>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TablePreviewResult {
+    pub offset: u64,
+    pub limit: u64,
+    pub total_rows: u64,
+    pub rows: Vec<TablePreviewRow>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableDescribeResultData {
+    pub dataset: TableListItem,
+    pub generation: u64,
+    pub columns: Vec<TableDescribeColumn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<TablePreviewResult>,
+}
+
+pub type TableDescribeToolOutput = ToolCommandResult<TableDescribeResultData>;
+pub type TableCreateToolOutput = ToolCommandResult<TableDescribeResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ProjectDocumentKind {
+    TableTransform,
+    Graph,
+    Analysis,
+    Tabulate,
+    Report,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentListToolInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ProjectDocumentKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectDocumentSummary {
+    pub kind: ProjectDocumentKind,
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dataset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectDocumentListResultData {
+    pub items: Vec<ProjectDocumentSummary>,
+    pub next_cursor: Option<String>,
+}
+
+pub type DocumentListToolOutput = ToolCommandResult<ProjectDocumentListResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentGetToolInput {
+    pub kind: ProjectDocumentKind,
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectDocumentGetResultData {
+    pub kind: ProjectDocumentKind,
+    pub id: String,
+    pub document: Value,
+}
+
+pub type DocumentGetToolOutput = ToolCommandResult<ProjectDocumentGetResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformCreateToolInput {
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformRunToolInput {
+    pub transform_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableTransformCommandData {
+    pub execution: Value,
+    pub definition: Option<Value>,
+    pub binding: Option<Value>,
+    pub output_table: Option<TableDescribeResultData>,
+    pub target_dataset_generation: Option<u64>,
+}
+
+pub type TableTransformCreateToolOutput = ToolCommandResult<TableTransformCommandData>;
+pub type TableTransformRunToolOutput = ToolCommandResult<TableTransformCommandData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlCreateTableToolInput {
+    pub sql: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlCreateTableResultData {
+    pub dataset_id: String,
+    pub dataset_name: String,
+    pub output_table: Option<TableDescribeResultData>,
+}
+
+pub type SqlCreateTableToolOutput = ToolCommandResult<SqlCreateTableResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableExportCsvToolInput {
+    pub dataset_id: String,
+    pub root_id: String,
+    pub relative_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TableExportTargetStatus {
+    CreateNew,
+    OverwriteExisting,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableExportCsvResultData {
+    pub target_status: TableExportTargetStatus,
+}
+
+pub type TableExportCsvToolOutput = ToolCommandResult<TableExportCsvResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateCreateToolInput {
+    pub source_dataset_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateCreateResultData {
+    pub item: Value,
+}
+
+pub type TabulateCreateToolOutput = ToolCommandResult<TabulateCreateResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateRunToolInput {
+    pub tabulate_id: String,
+    pub request: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateRunResultData {
+    pub tabulate_id: String,
+    pub request_fingerprint: String,
+    pub source_generation: u64,
+    pub completed_at: String,
+    pub result: Value,
+    pub cache_valid: bool,
+}
+
+pub type TabulateRunToolOutput = ToolCommandResult<TabulateRunResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateToTableToolInput {
+    pub tabulate_id: String,
+    pub request: Value,
+    pub table_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateToTableResultData {
+    pub output_table: Option<TableDescribeResultData>,
+    pub reran: bool,
+    pub request_fingerprint: String,
+    pub source_generation: u64,
+}
+
+pub type TabulateToTableToolOutput = ToolCommandResult<TabulateToTableResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphCreateToolInput {
+    pub source_dataset_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphUpdateToolInput {
+    pub graph_id: String,
+    pub expected_document_revision: u64,
+    pub definition: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphCommandResultData {
+    pub item: Value,
+    pub document_revision: u64,
+}
+
+pub type GraphCreateToolOutput = ToolCommandResult<GraphCommandResultData>;
+pub type GraphUpdateToolOutput = ToolCommandResult<GraphCommandResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionAnalysisCreateInput {
+    pub source_dataset_id: String,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitYByXAnalysisCreateInput {
+    pub source_dataset_id: String,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitModelAnalysisCreateInput {
+    pub source_dataset_id: String,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestAnalysisCreateInput {
+    pub source_dataset_id: String,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "analysisKind", rename_all = "camelCase")]
+pub enum AnalysisCreateToolInput {
+    Distribution(DistributionAnalysisCreateInput),
+    FitYByX(FitYByXAnalysisCreateInput),
+    FitModel(FitModelAnalysisCreateInput),
+    HypothesisTest(HypothesisTestAnalysisCreateInput),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DistributionAnalysisUpdateInput {
+    pub analysis_id: String,
+    pub expected_config_revision: u64,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitYByXAnalysisUpdateInput {
+    pub analysis_id: String,
+    pub expected_config_revision: u64,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FitModelAnalysisUpdateInput {
+    pub analysis_id: String,
+    pub expected_config_revision: u64,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HypothesisTestAnalysisUpdateInput {
+    pub analysis_id: String,
+    pub expected_config_revision: u64,
+    pub draft: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "analysisKind", rename_all = "camelCase")]
+pub enum AnalysisUpdateToolInput {
+    Distribution(DistributionAnalysisUpdateInput),
+    FitYByX(FitYByXAnalysisUpdateInput),
+    FitModel(FitModelAnalysisUpdateInput),
+    HypothesisTest(HypothesisTestAnalysisUpdateInput),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalysisCommandResultData {
+    pub item: Value,
+}
+
+pub type AnalysisCreateToolOutput = ToolCommandResult<AnalysisCommandResultData>;
+pub type AnalysisUpdateToolOutput = ToolCommandResult<AnalysisCommandResultData>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalysisRunToolInput {
+    pub analysis_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DatasetMeta {
+    pub id: String,
+    pub name: String,
+    pub source_path: Option<String>,
+    pub source_type: String,
+    pub row_count: u64,
+    pub col_count: u64,
+    pub generation: u64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalysisRunResultData {
+    pub item: Value,
+    pub definition: Value,
+    pub dataset: DatasetMeta,
+    pub state: Value,
+}
+
+pub type AnalysisRunToolOutput = ToolCommandResult<AnalysisRunResultData>;
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportCreateToolInput {}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportUpdateToolInput {
+    pub report_id: String,
+    pub expected_document_revision: u64,
+    pub markdown: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportCommandResultData {
+    pub item: Value,
+    pub document_revision: u64,
+}
+
+pub type ReportCreateToolOutput = ToolCommandResult<ReportCommandResultData>;
+pub type ReportUpdateToolOutput = ToolCommandResult<ReportCommandResultData>;
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnapshotCreateToolInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnapshotCreateResultData {
+    pub snapshot_id: Option<String>,
+    pub snapshot_name: Option<String>,
+    pub created_at: Option<String>,
+}
+
+pub type SnapshotCreateToolOutput = ToolCommandResult<SnapshotCreateResultData>;
 
 #[derive(Clone)]
 pub struct StatsPlaygroundMcpServer<
@@ -129,6 +691,7 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
     async fn call_catalog_tool(
         &self,
         request: CallToolRequestParams,
+        context: Option<RequestContext<RoleServer>>,
     ) -> Result<CallToolResponse, McpError> {
         let Some(entry) = tool_catalog()
             .into_iter()
@@ -152,6 +715,11 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
         let control = input
             .as_object_mut()
             .and_then(|object| object.remove("control"));
+        input = validate_tool_input(entry.command, input)?;
+        let control = match control {
+            Some(control) => Some(normalize_json::<MutationControl>(control)?),
+            None => None,
+        };
         let envelope = ApplicationCommandEnvelope {
             command_type: entry.command.to_string(),
             input,
@@ -166,22 +734,46 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
             duration_ms: None,
             error_code: None,
         });
-        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
         let token = McpCancellationToken::new();
+        let cancellation_task = context.as_ref().map(|context| {
+            let request_cancellation = context.ct.clone();
+            let token = token.clone();
+            tokio::spawn(async move {
+                request_cancellation.cancelled().await;
+                token.cancel();
+            })
+        });
+        let progress_task = context.as_ref().and_then(|context| {
+            let progress_token = context.meta.get_progress_token()?;
+            let peer = context.peer.clone();
+            Some(tokio::spawn(async move {
+                let mut sequence = 0.0;
+                while let Some(progress) = progress_rx.recv().await {
+                    sequence += 1.0;
+                    let params = progress_notification(progress_token.clone(), progress, sequence);
+                    if peer.notify_progress(params).await.is_err() {
+                        break;
+                    }
+                }
+            }))
+        });
         let result = self
             .broker
             .dispatch(envelope, TOOL_TIMEOUT, progress_tx, token)
             .await;
+        if let Some(task) = cancellation_task {
+            task.abort();
+        }
+        if let Some(task) = progress_task {
+            let _ = task.await;
+        }
         match result {
             Ok(response) => {
-                let structured = json!({
-                    "requestId": response.request_id,
-                    "command": entry.command,
-                    "changed": response.changed,
-                    "projectRevision": response.project_revision,
-                    "data": sanitize_value(response.data),
-                    "warnings": sanitize_value(json!(response.warnings)),
-                });
+                let structured = sanitize_value(
+                    serialize_tool_output(entry.command, response)
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+                );
                 let _ = self.audit_log.push(McpAuditEntry {
                     request_id: structured["requestId"]
                         .as_str()
@@ -197,8 +789,15 @@ impl<E: ApplicationCommandEventEmitter> StatsPlaygroundMcpServer<E> {
             }
             Err(error) => {
                 let command_error = command_error_from_app_error(error);
+                let request_id = command_error
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("requestId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(&request_id_hint)
+                    .to_string();
                 let structured = sanitize_value(json!({
-                    "requestId": request_id_hint,
+                    "requestId": request_id,
                     "code": command_error.code,
                     "message": command_error.message,
                     "retryable": command_error.retryable,
@@ -258,9 +857,9 @@ impl<E: ApplicationCommandEventEmitter> ServerHandler for StatsPlaygroundMcpServ
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        self.call_catalog_tool(request).await
+        self.call_catalog_tool(request, Some(context)).await
     }
 }
 
@@ -421,8 +1020,162 @@ where
     }
 }
 
+fn normalize_json<T>(value: Value) -> Result<Value, McpError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let decoded = serde_json::from_value::<T>(value)
+        .map_err(|error| McpError::invalid_params(format!("invalid tool input: {error}"), None))?;
+    serde_json::to_value(decoded)
+        .map_err(|error| McpError::invalid_params(format!("invalid tool input: {error}"), None))
+}
+
+fn validate_tool_input(command: &str, value: Value) -> Result<Value, McpError> {
+    match command {
+        "project.inspect" => normalize_json::<ProjectInspectToolInput>(value),
+        "project.save" => normalize_json::<ProjectSaveToolInput>(value),
+        "table.list" => normalize_json::<TableListToolInput>(value),
+        "table.describe" => normalize_json::<TableDescribeToolInput>(value),
+        "document.list" => normalize_json::<DocumentListToolInput>(value),
+        "document.get" => normalize_json::<DocumentGetToolInput>(value),
+        "table.create" => normalize_json::<TableCreateToolInput>(value),
+        "tableTransform.create" => normalize_json::<TableTransformCreateToolInput>(value),
+        "tableTransform.run" => normalize_json::<TableTransformRunToolInput>(value),
+        "sql.createTable" => normalize_json::<SqlCreateTableToolInput>(value),
+        "table.exportCsv" => normalize_json::<TableExportCsvToolInput>(value),
+        "tabulate.create" => normalize_json::<TabulateCreateToolInput>(value),
+        "tabulate.run" => normalize_json::<TabulateRunToolInput>(value),
+        "tabulate.exportTable" => normalize_json::<TabulateToTableToolInput>(value),
+        "graph.create" => normalize_json::<GraphCreateToolInput>(value),
+        "graph.update" => normalize_json::<GraphUpdateToolInput>(value),
+        "analysis.create" => normalize_json::<AnalysisCreateToolInput>(value),
+        "analysis.update" => normalize_json::<AnalysisUpdateToolInput>(value),
+        "analysis.run" => normalize_json::<AnalysisRunToolInput>(value),
+        "report.create" => normalize_json::<ReportCreateToolInput>(value),
+        "report.update" => normalize_json::<ReportUpdateToolInput>(value),
+        "snapshot.create" => normalize_json::<SnapshotCreateToolInput>(value),
+        _ => Ok(value),
+    }
+}
+
+fn serialize_output<T>(
+    command: &str,
+    response: crate::models::mcp::McpCommandResponse,
+) -> Result<Value, AppError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let warnings = response
+        .warnings
+        .into_iter()
+        .map(|warning| CommandWarning {
+            code: warning.code,
+            message: warning.message,
+        })
+        .collect();
+    let data = serde_json::from_value::<T>(response.data).map_err(|error| {
+        AppError::Stats(format!("invalid response payload for {command}: {error}"))
+    })?;
+    serde_json::to_value(ToolCommandResult {
+        request_id: response.request_id,
+        command: command.to_string(),
+        changed: response.changed,
+        project_revision: response.project_revision,
+        data,
+        warnings,
+    })
+    .map_err(|error| {
+        AppError::Stats(format!(
+            "failed to encode MCP response for {command}: {error}"
+        ))
+    })
+}
+
+fn serialize_tool_output(
+    command: &str,
+    response: crate::models::mcp::McpCommandResponse,
+) -> Result<Value, AppError> {
+    match command {
+        "project.inspect" => serialize_output::<ProjectInspectResultData>(command, response),
+        "project.save" => serialize_output::<ProjectSummary>(command, response),
+        "table.list" => serialize_output::<TableListResultData>(command, response),
+        "table.describe" | "table.create" => {
+            serialize_output::<TableDescribeResultData>(command, response)
+        }
+        "document.list" => serialize_output::<ProjectDocumentListResultData>(command, response),
+        "document.get" => serialize_output::<ProjectDocumentGetResultData>(command, response),
+        "tableTransform.create" | "tableTransform.run" => {
+            serialize_output::<TableTransformCommandData>(command, response)
+        }
+        "sql.createTable" => serialize_output::<SqlCreateTableResultData>(command, response),
+        "table.exportCsv" => serialize_output::<TableExportCsvResultData>(command, response),
+        "tabulate.create" => serialize_output::<TabulateCreateResultData>(command, response),
+        "tabulate.run" => serialize_output::<TabulateRunResultData>(command, response),
+        "tabulate.exportTable" => serialize_output::<TabulateToTableResultData>(command, response),
+        "graph.create" | "graph.update" => {
+            serialize_output::<GraphCommandResultData>(command, response)
+        }
+        "analysis.create" | "analysis.update" => {
+            serialize_output::<AnalysisCommandResultData>(command, response)
+        }
+        "analysis.run" => serialize_output::<AnalysisRunResultData>(command, response),
+        "report.create" | "report.update" => {
+            serialize_output::<ReportCommandResultData>(command, response)
+        }
+        "snapshot.create" => serialize_output::<SnapshotCreateResultData>(command, response),
+        other => Err(AppError::Stats(format!(
+            "unsupported MCP command output contract: {other}"
+        ))),
+    }
+}
+
 fn schema_value<T: JsonSchema>() -> Value {
-    serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| json!({ "type": "object" }))
+    let schema =
+        serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| json!({ "type": "object" }));
+    let definitions = schema
+        .get("$defs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut expanded = expand_schema_refs(&schema, &definitions);
+    if let Some(object) = expanded.as_object_mut() {
+        object.remove("$defs");
+        object.remove("$schema");
+        object
+            .entry("type".to_string())
+            .or_insert_with(|| json!("object"));
+    }
+    expanded
+}
+
+fn expand_schema_refs(schema: &Value, definitions: &Map<String, Value>) -> Value {
+    match schema {
+        Value::Object(object) => {
+            let definition_name = object
+                .get("$ref")
+                .and_then(Value::as_str)
+                .and_then(|reference| reference.strip_prefix("#/$defs/"));
+            if let Some(definition_name) = definition_name {
+                if let Some(definition) = definitions.get(definition_name) {
+                    return expand_schema_refs(definition, definitions);
+                }
+            }
+            Value::Object(
+                object
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "$defs")
+                    .map(|(key, value)| (key.clone(), expand_schema_refs(value, definitions)))
+                    .collect(),
+            )
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| expand_schema_refs(value, definitions))
+                .collect(),
+        ),
+        _ => schema.clone(),
+    }
 }
 
 fn catalog_entry_to_tool(entry: McpToolCatalogEntry) -> Tool {
@@ -547,6 +1300,20 @@ fn current_timestamp() -> String {
     format!("{:?}", std::time::SystemTime::now())
 }
 
+fn progress_notification(
+    progress_token: ProgressToken,
+    progress: crate::models::mcp::ApplicationCommandProgress,
+    sequence: f64,
+) -> ProgressNotificationParam {
+    let message = progress.message.unwrap_or(progress.stage);
+    match progress.percent {
+        Some(percent) => ProgressNotificationParam::new(progress_token, percent.clamp(0.0, 100.0))
+            .with_total(100.0)
+            .with_message(message),
+        None => ProgressNotificationParam::new(progress_token, sequence).with_message(message),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -605,6 +1372,24 @@ mod tests {
         (broker, emitter)
     }
 
+    fn find_schema_property<'a>(schema: &'a Value, property: &str) -> Option<&'a Value> {
+        match schema {
+            Value::Object(object) => object
+                .get("properties")
+                .and_then(Value::as_object)
+                .and_then(|properties| properties.get(property))
+                .or_else(|| {
+                    object
+                        .values()
+                        .find_map(|value| find_schema_property(value, property))
+                }),
+            Value::Array(values) => values
+                .iter()
+                .find_map(|value| find_schema_property(value, property)),
+            _ => None,
+        }
+    }
+
     #[test]
     fn catalog_contains_exactly_twenty_two_unique_statsplayground_tools() {
         let catalog = tool_catalog();
@@ -619,9 +1404,110 @@ mod tests {
     #[test]
     fn catalog_schemas_are_objects() {
         for entry in tool_catalog() {
-            assert_eq!(entry.input_schema["type"], "object");
-            assert_eq!(entry.output_schema["type"], "object");
+            assert_eq!(
+                entry.input_schema["type"], "object",
+                "{} input schema: {}",
+                entry.name, entry.input_schema
+            );
+            assert_eq!(
+                entry.output_schema["type"], "object",
+                "{} output schema: {}",
+                entry.name, entry.output_schema
+            );
         }
+    }
+
+    #[test]
+    fn table_create_schema_is_typed_and_rejects_unknown_top_level_fields() {
+        let entry = tool_catalog()
+            .into_iter()
+            .find(|entry| entry.name == "statsplayground.table.create")
+            .expect("table.create entry");
+
+        assert_eq!(entry.input_schema["required"], json!(["request"]));
+        assert_eq!(
+            entry.input_schema["properties"]["request"]["required"],
+            json!(["name", "columns", "rows"])
+        );
+        assert_eq!(
+            entry.input_schema["properties"]["request"]["properties"]["columns"]["items"]
+                ["required"],
+            json!(["name", "columnType"])
+        );
+        let currency_schema = find_schema_property(&entry.input_schema, "currency")
+            .expect("currency display property schema");
+        assert!(
+            currency_schema["type"] == json!("string")
+                || currency_schema["type"]
+                    .as_array()
+                    .is_some_and(|types| types.contains(&json!("string")))
+                || currency_schema["anyOf"]
+                    .as_array()
+                    .is_some_and(|variants| variants
+                        .iter()
+                        .any(|variant| variant["type"] == "string")),
+            "currency schema: {currency_schema}"
+        );
+
+        let invalid = serde_json::from_value::<TableCreateToolInput>(json!({
+            "request": {
+                "name": "Example",
+                "columns": [],
+                "rows": []
+            },
+            "unexpected": true
+        }));
+        assert!(
+            invalid.is_err(),
+            "flattened catch-all input accepted unexpected fields"
+        );
+    }
+
+    #[test]
+    fn analysis_create_schema_is_discriminated_by_kind() {
+        let entry = tool_catalog()
+            .into_iter()
+            .find(|entry| entry.name == "statsplayground.analysis.create")
+            .expect("analysis.create entry");
+
+        let variants = entry.input_schema["oneOf"]
+            .as_array()
+            .expect("analysis create oneOf variants");
+        assert_eq!(variants.len(), 4);
+        assert!(variants.iter().any(|variant| {
+            variant["properties"]["analysisKind"]["const"] == json!("distribution")
+                && variant["required"]
+                    .as_array()
+                    .is_some_and(|required| required.contains(&json!("draft")))
+        }));
+
+        let invalid = serde_json::from_value::<AnalysisCreateToolInput>(json!({
+            "analysisKind": "distribution",
+            "sourceDatasetId": "dataset-1"
+        }));
+        assert!(
+            invalid.is_err(),
+            "analysis.create accepted a missing draft payload"
+        );
+    }
+
+    #[test]
+    fn table_describe_output_schema_is_family_specific() {
+        let entry = tool_catalog()
+            .into_iter()
+            .find(|entry| entry.name == "statsplayground.table.describe")
+            .expect("table.describe entry");
+
+        assert_eq!(
+            entry.output_schema["properties"]["data"]["required"],
+            json!(["dataset", "generation", "columns"])
+        );
+        let cells_schema = find_schema_property(&entry.output_schema, "cells")
+            .expect("table preview cells schema");
+        assert_eq!(
+            cells_schema["items"]["required"],
+            json!(["colIndex", "value"])
+        );
     }
 
     #[tokio::test]
@@ -629,8 +1515,11 @@ mod tests {
         let (broker, emitter) = test_broker();
         let server = StatsPlaygroundMcpServer::new(broker.clone(), McpAuditLog::default());
         let mut arguments = Map::new();
-        arguments.insert("tableId".to_string(), json!("table-1"));
-        arguments.insert("control".to_string(), json!({ "requestReason": "test" }));
+        arguments.insert("datasetId".to_string(), json!("table-1"));
+        arguments.insert(
+            "control".to_string(),
+            json!({ "expectedProjectRevision": 8 }),
+        );
         let pending = tokio::spawn({
             let server = server.clone();
             async move {
@@ -638,20 +1527,25 @@ mod tests {
                     .call_catalog_tool(
                         CallToolRequestParams::new("statsplayground.table.describe")
                             .with_arguments(arguments),
+                        None,
                     )
                     .await
             }
         });
 
-        while emitter.requests().is_empty() {
-            tokio::task::yield_now().await;
-        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while emitter.requests().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("tool request dispatch");
         let request = emitter.requests()[0].clone();
         assert_eq!(request.command.command_type, "table.describe");
-        assert_eq!(request.command.input, json!({ "tableId": "table-1" }));
+        assert_eq!(request.command.input, json!({ "datasetId": "table-1" }));
         assert_eq!(
             request.command.control,
-            Some(json!({ "requestReason": "test" }))
+            Some(json!({ "expectedProjectRevision": 8 }))
         );
 
         broker
@@ -660,12 +1554,30 @@ mod tests {
                 response: ApplicationCommandResponse::Success(McpCommandResult {
                     changed: false,
                     project_revision: 9,
-                    data: json!({ "columns": 3 }),
+                    data: json!({
+                        "dataset": {
+                            "id": "table-1",
+                            "name": "Example",
+                            "sourceType": "managed",
+                            "rowCount": 0,
+                            "colCount": 0,
+                            "generation": 1,
+                            "createdAt": "2026-09-16T00:00:00Z",
+                            "updatedAt": "2026-09-16T00:00:00Z",
+                            "sourceName": null
+                        },
+                        "generation": 1,
+                        "columns": []
+                    }),
                     warnings: vec![],
                 }),
             })
             .expect("complete application command");
-        let response = pending.await.expect("tool task").expect("tool response");
+        let response = tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("tool response completion")
+            .expect("tool task")
+            .expect("tool response");
         let CallToolResponse::Complete(response) = response else {
             panic!("expected complete tool response");
         };
@@ -673,7 +1585,15 @@ mod tests {
             .structured_content
             .expect("structured tool response");
         assert_eq!(structured["command"], "table.describe");
-        assert_eq!(structured["data"], json!({ "columns": 3 }));
+        assert_eq!(structured["data"]["dataset"]["id"], "table-1");
+        assert_eq!(structured["data"]["columns"], json!([]));
+        assert_eq!(response.is_error, Some(false));
+        assert_eq!(response.content.len(), 1);
+        let Some(text) = response.content[0].as_text() else {
+            panic!("expected text content block");
+        };
+        let parsed_text: Value = serde_json::from_str(&text.text).expect("json text block");
+        assert_eq!(parsed_text, structured);
     }
 
     #[tokio::test]
@@ -687,10 +1607,33 @@ mod tests {
             .call_catalog_tool(
                 CallToolRequestParams::new("statsplayground.table.export_csv")
                     .with_arguments(arguments),
+                None,
             )
             .await;
 
         assert!(result.is_err());
         assert!(emitter.requests().is_empty());
+    }
+
+    #[test]
+    fn structured_error_response_has_equivalent_json_text_block() {
+        let structured = json!({
+            "requestId": "mcp-123",
+            "code": "execution_failed",
+            "message": "Application command failed",
+            "retryable": false,
+            "details": { "kind": "test" }
+        });
+
+        let result = CallToolResult::structured_error(structured.clone());
+
+        assert_eq!(result.structured_content, Some(structured.clone()));
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.content.len(), 1);
+        let Some(text) = result.content[0].as_text() else {
+            panic!("expected text content block");
+        };
+        let parsed_text: Value = serde_json::from_str(&text.text).expect("json text block");
+        assert_eq!(parsed_text, structured);
     }
 }

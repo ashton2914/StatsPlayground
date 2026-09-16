@@ -206,18 +206,31 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             .pending
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
-        for entry in pending.values_mut() {
-            entry.cancellation_token.cancel();
-            if let Some(sender) = entry.completion.take() {
-                let _ = sender.send(ApplicationCommandResponse::Error(McpCommandError {
-                    code: "cancelled".to_string(),
-                    message: "Application command dispatcher unregistered".to_string(),
-                    retryable: true,
-                    details: None,
-                }));
+        let request_ids: Vec<String> = pending.keys().cloned().collect();
+        for request_id in request_ids {
+            let should_remove = if let Some(entry) = pending.get_mut(&request_id) {
+                if entry.committing {
+                    entry.retain_committed_outcome = true;
+                    false
+                } else {
+                    entry.cancellation_token.cancel();
+                    if let Some(sender) = entry.completion.take() {
+                        let _ = sender.send(ApplicationCommandResponse::Error(McpCommandError {
+                            code: "cancelled".to_string(),
+                            message: "Application command dispatcher unregistered".to_string(),
+                            retryable: true,
+                            details: None,
+                        }));
+                    }
+                    true
+                }
+            } else {
+                false
+            };
+            if should_remove {
+                pending.remove(&request_id);
             }
         }
-        pending.clear();
         Ok(())
     }
 
@@ -256,12 +269,12 @@ impl<E: ApplicationCommandEventEmitter> McpCommandBroker<E> {
             .pending
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
-        let queued = pending.values().filter(|entry| !entry.committing).count();
         let running = self
             .inner
             .config
             .max_concurrent
             .saturating_sub(self.inner.semaphore.available_permits());
+        let queued = pending.len().saturating_sub(running);
         Ok((queued, running))
     }
 
@@ -1286,7 +1299,7 @@ mod tests {
             tokio::task::yield_now().await;
         }
         let (queued, running) = broker.queue_status().expect("queue status");
-        assert_eq!(queued, 1);
+        assert_eq!(queued, 0);
         assert_eq!(running, 1);
 
         broker
@@ -1312,6 +1325,161 @@ mod tests {
                 McpCancellationToken::new(),
             ).await,
             Err(crate::error::AppError::Busy(message)) if message.contains("timeout")
+        ));
+    }
+
+    #[tokio::test]
+    async fn queue_status_distinguishes_running_from_queued_entries() {
+        let (broker, emitter) = broker(4, 1);
+        broker.register_dispatcher().expect("register dispatcher");
+
+        let (first_progress_tx, _first_progress_rx) = mpsc::unbounded_channel();
+        let first = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("running"),
+                        Duration::from_secs(5),
+                        first_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+
+        let (queued_requests, running_requests) = broker.queue_status().expect("queue status");
+        assert_eq!(queued_requests, 0);
+        assert_eq!(running_requests, 1);
+
+        let (second_progress_tx, _second_progress_rx) = mpsc::unbounded_channel();
+        let second = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("queued"),
+                        Duration::from_secs(5),
+                        second_progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+
+        while pending_count(&broker) < 2 {
+            tokio::task::yield_now().await;
+        }
+
+        let (queued_requests, running_requests) = broker.queue_status().expect("queue status");
+        assert_eq!(queued_requests, 1);
+        assert_eq!(running_requests, 1);
+
+        let requests = emitter.requests();
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: requests[0].request_id.clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 1,
+                    data: json!({ "slot": 1 }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete first request");
+
+        while emitter.requests().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let requests = emitter.requests();
+        broker
+            .complete_application_command(McpBrokerCompletion {
+                request_id: requests[1].request_id.clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: false,
+                    project_revision: 1,
+                    data: json!({ "slot": 2 }),
+                    warnings: vec![],
+                }),
+            })
+            .expect("complete second request");
+
+        first.await.expect("first join").expect("first success");
+        second.await.expect("second join").expect("second success");
+    }
+
+    #[tokio::test]
+    async fn unregister_dispatcher_preserves_committing_entries_and_late_outcomes() {
+        let (broker, emitter) = broker_with_config(McpCommandBrokerConfig {
+            max_pending: 2,
+            max_concurrent: 1,
+            max_committed_outcomes: 2,
+            commit_grace_timeout_ms: 50,
+        });
+        broker.register_dispatcher().expect("register dispatcher");
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+
+        let pending = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .dispatch(
+                        test_command("commit-preserved"),
+                        Duration::from_secs(5),
+                        progress_tx,
+                        McpCancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+
+        while emitter.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let request = emitter.requests()[0].clone();
+
+        assert!(matches!(
+            broker.record_progress(ApplicationCommandProgress {
+                request_id: request.request_id.clone(),
+                status: ApplicationCommandStatus::Committing,
+                stage: "commit".to_string(),
+                message: Some("committing".to_string()),
+                percent: Some(1.0),
+            }),
+            Ok(true)
+        ));
+
+        broker
+            .unregister_dispatcher()
+            .expect("unregister dispatcher");
+
+        assert!(matches!(
+            broker.complete_application_command(McpBrokerCompletion {
+                request_id: request.request_id.clone(),
+                response: ApplicationCommandResponse::Success(McpCommandResult {
+                    changed: true,
+                    project_revision: 7,
+                    data: json!({ "preserved": true }),
+                    warnings: vec![],
+                }),
+            }),
+            Ok(true)
+        ));
+
+        let result = pending
+            .await
+            .expect("join committing dispatch")
+            .expect("dispatch result");
+        assert_eq!(result.request_id, request.request_id);
+        assert_eq!(result.project_revision, 7);
+        assert_eq!(result.data, json!({ "preserved": true }));
+        assert!(matches!(
+            broker.cancellation_requested(&request.request_id),
+            Ok(false)
         ));
     }
 

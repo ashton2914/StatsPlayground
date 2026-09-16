@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -36,11 +36,23 @@ impl BearerToken {
 #[derive(Clone)]
 pub struct McpHttpSecurityState {
     token: BearerToken,
+    active: Arc<AtomicBool>,
 }
 
 impl McpHttpSecurityState {
     pub fn new(token: BearerToken) -> Self {
-        Self { token }
+        Self {
+            token,
+            active: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn revoke(&self) {
+        self.active.store(false, Ordering::SeqCst);
+    }
+
+    fn authorizes(&self, candidate: &str) -> bool {
+        self.active.load(Ordering::SeqCst) && self.token.matches(candidate)
     }
 }
 
@@ -58,7 +70,7 @@ pub async fn require_bearer(
     let Some(candidate) = value.strip_prefix("Bearer ") else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if !state.token.matches(candidate) {
+    if !state.authorizes(candidate) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     next.run(request).await
@@ -148,9 +160,21 @@ mod tests {
     fn bearer_token_accepts_only_exact_current_token() {
         let token = BearerToken::generate();
         let exposed = token.expose_for_management();
-        assert!(token.matches(&exposed));
-        assert!(!token.matches("wrong"));
-        assert!(!token.matches(&format!("{exposed}x")));
+        let state = McpHttpSecurityState::new(token);
+        assert!(state.authorizes(&exposed));
+        assert!(!state.authorizes("wrong"));
+        assert!(!state.authorizes(&format!("{exposed}x")));
+    }
+
+    #[test]
+    fn revoking_security_state_immediately_rejects_current_token() {
+        let token = BearerToken::generate();
+        let exposed = token.expose_for_management();
+        let state = McpHttpSecurityState::new(token);
+
+        assert!(state.authorizes(&exposed));
+        state.revoke();
+        assert!(!state.authorizes(&exposed));
     }
 
     #[test]

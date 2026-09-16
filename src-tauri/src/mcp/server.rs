@@ -20,18 +20,21 @@ use crate::models::mcp::{McpAuditEntry, McpServerStatus};
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
 pub struct McpServerRuntime {
-    inner: Mutex<McpServerInner>,
+    inner: Mutex<McpServerState>,
     audit_log: McpAuditLog,
 }
 
-#[derive(Default)]
-struct McpServerInner {
-    handle: Option<McpServerHandle>,
+enum McpServerState {
+    Stopped,
+    Starting,
+    Running(McpServerHandle),
+    Stopping,
 }
 
 struct McpServerHandle {
     endpoint: String,
     token: BearerToken,
+    security: McpHttpSecurityState,
     broker: McpCommandBroker,
     limits: McpHttpLimitsState,
     shutdown: Option<oneshot::Sender<()>>,
@@ -41,27 +44,44 @@ struct McpServerHandle {
 impl McpServerRuntime {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(McpServerInner::default()),
+            inner: Mutex::new(McpServerState::Stopped),
             audit_log: McpAuditLog::default(),
         }
     }
 
     pub async fn start(&self, broker: McpCommandBroker) -> Result<McpServerStatus, AppError> {
-        if self
-            .inner
-            .lock()
-            .map_err(|error| AppError::Database(error.to_string()))?
-            .handle
-            .is_some()
         {
-            return self.status();
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            match &*state {
+                McpServerState::Stopped => *state = McpServerState::Starting,
+                McpServerState::Running(handle) => return running_status(handle),
+                McpServerState::Starting => {
+                    return Err(AppError::Busy("MCP server is starting".to_string()));
+                }
+                McpServerState::Stopping => {
+                    return Err(AppError::Busy("MCP server is stopping".to_string()));
+                }
+            }
         }
 
         let token = BearerToken::generate();
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(AppError::from)?;
-        let address = listener.local_addr().map_err(AppError::from)?;
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) => {
+                self.finish_failed_start()?;
+                return Err(AppError::from(error));
+            }
+        };
+        let address = match listener.local_addr() {
+            Ok(address) => address,
+            Err(error) => {
+                self.finish_failed_start()?;
+                return Err(AppError::from(error));
+            }
+        };
         let endpoint = endpoint_for(address);
         let security_state = McpHttpSecurityState::new(token.clone());
         let limits_state = McpHttpLimitsState::default();
@@ -89,7 +109,7 @@ impl McpServerRuntime {
                 limits_state.clone(),
                 enforce_http_limits,
             ))
-            .layer(from_fn_with_state(security_state, require_bearer));
+            .layer(from_fn_with_state(security_state.clone(), require_bearer));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, router)
@@ -104,9 +124,10 @@ impl McpServerRuntime {
                 .inner
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
-            inner.handle = Some(McpServerHandle {
+            *inner = McpServerState::Running(McpServerHandle {
                 endpoint,
                 token,
+                security: security_state,
                 broker,
                 limits: limits_state,
                 shutdown: Some(shutdown_tx),
@@ -118,54 +139,67 @@ impl McpServerRuntime {
     }
 
     pub async fn stop(&self) -> Result<(), AppError> {
-        let handle = {
-            let mut inner = self
+        let mut handle = {
+            let mut state = self
                 .inner
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
-            inner.handle.take()
-        };
-        if let Some(mut handle) = handle {
-            handle
-                .broker
-                .cancel_non_committing_requests("MCP server stopped")?;
-            if let Some(shutdown) = handle.shutdown.take() {
-                let _ = shutdown.send(());
+            match std::mem::replace(&mut *state, McpServerState::Stopping) {
+                McpServerState::Running(handle) => handle,
+                McpServerState::Stopped => {
+                    *state = McpServerState::Stopped;
+                    self.audit_log.clear()?;
+                    return Ok(());
+                }
+                McpServerState::Starting => {
+                    *state = McpServerState::Starting;
+                    return Err(AppError::Busy("MCP server is starting".to_string()));
+                }
+                McpServerState::Stopping => return Ok(()),
             }
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle.task).await;
+        };
+        handle.security.revoke();
+        let cancel_result = handle
+            .broker
+            .cancel_non_committing_requests("MCP server stopped");
+        if let Some(shutdown) = handle.shutdown.take() {
+            let _ = shutdown.send(());
         }
-        self.audit_log.clear()?;
-        Ok(())
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle.task).await;
+        let audit_result = self.audit_log.clear();
+        *self
+            .inner
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))? = McpServerState::Stopped;
+        cancel_result.and(audit_result)
     }
 
     pub fn status(&self) -> Result<McpServerStatus, AppError> {
-        let inner = self
+        let state = self
             .inner
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
-        let Some(handle) = &inner.handle else {
-            return Ok(McpServerStatus {
-                state: "stopped".to_string(),
-                endpoint: None,
-                token: None,
-                active_connections: 0,
-                queued_requests: 0,
-                running_requests: 0,
-            });
-        };
-        let (queued_requests, running_requests) = handle.broker.queue_status()?;
-        Ok(McpServerStatus {
-            state: "running".to_string(),
-            endpoint: Some(handle.endpoint.clone()),
-            token: Some(handle.token.expose_for_management()),
-            active_connections: handle.limits.active_requests(),
-            queued_requests,
-            running_requests,
-        })
+        match &*state {
+            McpServerState::Stopped => Ok(inactive_status("stopped")),
+            McpServerState::Starting => Ok(inactive_status("starting")),
+            McpServerState::Running(handle) => running_status(handle),
+            McpServerState::Stopping => Ok(inactive_status("stopping")),
+        }
     }
 
     pub fn audit_entries(&self) -> Result<Vec<McpAuditEntry>, AppError> {
         self.audit_log.list()
+    }
+
+    fn finish_failed_start(&self) -> Result<(), AppError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        if matches!(*state, McpServerState::Starting) {
+            *state = McpServerState::Stopped;
+        }
+        Ok(())
     }
 }
 
@@ -177,6 +211,29 @@ impl Default for McpServerRuntime {
 
 fn endpoint_for(address: SocketAddr) -> String {
     format!("http://127.0.0.1:{}/mcp", address.port())
+}
+
+fn inactive_status(state: &str) -> McpServerStatus {
+    McpServerStatus {
+        state: state.to_string(),
+        endpoint: None,
+        token: None,
+        active_connections: 0,
+        queued_requests: 0,
+        running_requests: 0,
+    }
+}
+
+fn running_status(handle: &McpServerHandle) -> Result<McpServerStatus, AppError> {
+    let (queued_requests, running_requests) = handle.broker.queue_status()?;
+    Ok(McpServerStatus {
+        state: "running".to_string(),
+        endpoint: Some(handle.endpoint.clone()),
+        token: Some(handle.token.expose_for_management()),
+        active_connections: handle.limits.active_requests(),
+        queued_requests,
+        running_requests,
+    })
 }
 
 #[cfg(test)]

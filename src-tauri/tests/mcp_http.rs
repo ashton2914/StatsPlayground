@@ -226,6 +226,16 @@ async fn mcp_server_starts_default_off_rotates_token_and_serves_initialize() {
             "clientInfo": { "name": "task-10-test", "version": "0.0.0" }
         }
     });
+    let (unauthorized_status, _) = post_json(first_endpoint, None, None, None, initialize.clone());
+    assert_eq!(unauthorized_status, 401);
+    let (invalid_origin_status, _) = post_json(
+        first_endpoint,
+        Some(first_token),
+        Some("https://attacker.example"),
+        None,
+        initialize.clone(),
+    );
+    assert_eq!(invalid_origin_status, 403);
     let (ok_status, ok_body) = post_json(first_endpoint, Some(first_token), None, None, initialize);
     assert_eq!(ok_status, 200);
     assert_eq!(ok_body["jsonrpc"], "2.0");
@@ -250,6 +260,23 @@ async fn mcp_server_starts_default_off_rotates_token_and_serves_initialize() {
     let second_token = second.token.as_deref().expect("second token");
     assert_ne!(second_token, first_token);
     state.mcp_server.stop().await.expect("final stop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_starts_never_publish_multiple_servers() {
+    let _guard = HTTP_TEST_LOCK.lock().await;
+    let state = AppState::new().expect("state");
+    let (left, right) = tokio::join!(
+        state.mcp_server.start(state.mcp_command_broker.clone()),
+        state.mcp_server.start(state.mcp_command_broker.clone()),
+    );
+    let endpoints: std::collections::BTreeSet<_> = [left, right]
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter_map(|status| status.endpoint)
+        .collect();
+    assert_eq!(endpoints.len(), 1);
+    state.mcp_server.stop().await.expect("stop");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -291,6 +318,53 @@ async fn mcp_http_lists_exact_tool_catalog() {
         .expect("tools array");
     assert_eq!(tools.len(), 22);
     assert_eq!(tools[0]["name"], "statsplayground.project.inspect");
+    state.mcp_server.stop().await.expect("stop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_http_tools_call_returns_standard_tool_response() {
+    let _guard = HTTP_TEST_LOCK.lock().await;
+    let state = AppState::new().expect("state");
+    let status = state
+        .mcp_server
+        .start(state.mcp_command_broker.clone())
+        .await
+        .expect("start");
+    let endpoint = status.endpoint.as_deref().expect("endpoint");
+    let token = status.token.as_deref().expect("token");
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": { "name": "task-10-test", "version": "0.0.0" }
+        }
+    });
+    let (initialize_status, _, session_id) =
+        post_json_with_session(endpoint, Some(token), None, None, None, initialize);
+    assert_eq!(initialize_status, 200);
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "statsplayground.project.inspect",
+            "arguments": {}
+        }
+    });
+    let (call_status, call_body, _) = post_json_with_session(
+        endpoint,
+        Some(token),
+        None,
+        None,
+        session_id.as_deref(),
+        call,
+    );
+    assert_eq!(call_status, 200, "{call_body:?}");
+    assert!(call_body["result"]["content"].is_array(), "{call_body:?}");
+    assert_eq!(call_body["result"]["isError"], true, "{call_body:?}");
     state.mcp_server.stop().await.expect("stop");
 }
 
