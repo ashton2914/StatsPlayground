@@ -1094,6 +1094,10 @@
     "copyDataChanged": "复制期间表格已发生变化，请重新复制。",
     "pasteOverwriteConfirm": "粘贴区域存在已有数据，是否覆盖？",
     "pasteTypeIncompatible": "列 {{letter}}（{{name}}）的类型为 {{existing}}，与粘贴数据的类型 {{detected}} 不兼容",
+    "tableSummary": "表格摘要",
+    "totalRows": "总行数",
+    "totalColumns": "总列数",
+    "displayedRows": "显示行数",
     "dimensionsFiltered": "{{shown}} / {{total}} 行 × {{cols}} 列",
     "dimensions": "{{rows}} 行 × {{cols}} 列"
   },

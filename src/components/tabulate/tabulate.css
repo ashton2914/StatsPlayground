@@ -1,9 +1,22 @@
 .sp-tabulate-view {
-  display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(320px, 360px) minmax(480px, 1fr);
   height: 100%;
   min-height: 0;
   background: var(--bg-main);
+}
+
+.sp-tabulate-view--desktop {
+  display: grid;
+  grid-template-columns:
+    minmax(240px, var(--tabulate-fields-width, 300px))
+    14px
+    minmax(320px, var(--tabulate-configuration-width, 360px))
+    14px
+    minmax(320px, 1fr);
+}
+
+.sp-tabulate-view--narrow {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(320px, 360px) minmax(480px, 1fr);
 }
 
 .sp-tabulate-fields-column,
@@ -19,6 +32,20 @@
 
 .sp-tabulate-results-column {
   border-right: none;
+}
+
+.sp-tabulate-view--desktop .sp-tabulate-results-column {
+  min-width: 320px;
+}
+
+.sp-tabulate-splitter-track {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  color: var(--border-strong, var(--border-main));
+  background: var(--bg-panel);
 }
 
 .sp-tabulate-panel,

@@ -1079,6 +1079,10 @@
     "copyDataChanged": "複製期間表格已發生變更，請重新複製。",
     "pasteOverwriteConfirm": "貼上區域已有資料，是否覆寫？",
     "pasteTypeIncompatible": "欄 {{letter}}（{{name}}）的類型為 {{existing}}，與貼上資料的類型 {{detected}} 不相容",
+    "tableSummary": "資料表摘要",
+    "totalRows": "總列數",
+    "totalColumns": "總欄數",
+    "displayedRows": "顯示列數",
     "dimensionsFiltered": "{{shown}} / {{total}} 列 × {{cols}} 欄",
     "dimensions": "{{rows}} 列 × {{cols}} 欄"
   },

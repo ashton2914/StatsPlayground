@@ -1085,6 +1085,10 @@
     "copyDataChanged": "Bảng đã thay đổi trong khi sao chép. Vui lòng sao chép lại.",
     "pasteOverwriteConfirm": "Dữ liệu hiện tại sẽ bị ghi đè. Tiếp tục?",
     "pasteTypeIncompatible": "Cột {{letter}} (\"{{name}}\") có kiểu {{existing}}, không tương thích với kiểu dán {{detected}}",
+    "tableSummary": "Tóm tắt bảng",
+    "totalRows": "Tổng số hàng",
+    "totalColumns": "Tổng số cột",
+    "displayedRows": "Số hàng hiển thị",
     "dimensionsFiltered": "{{shown}} / {{total}} hàng × {{cols}} cột",
     "dimensions": "{{rows}} hàng × {{cols}} cột"
   },

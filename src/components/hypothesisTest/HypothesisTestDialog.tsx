@@ -40,12 +40,18 @@ const METHOD_NAMES: Record<HypothesisTestMethodId, string> = {
 };
 
 function defaultDefinition(fields: FieldRef[]): HypothesisTestAnalysisDefinition | null {
+  const continuousFields = fields.filter((field) => field.type === "continuous");
   const response = fields.find((field) => field.type === "continuous");
   const condition = fields.find((field) => field.type === "nominal" || field.type === "ordinal");
-  if (!response || !condition) return null;
+  const roles: HypothesisTestRoles | null = response && condition
+    ? { layout: "long", response, condition, subject: null }
+    : continuousFields.length >= 2
+      ? { layout: "wide", measurements: continuousFields.slice(0, 2), subject: null }
+      : null;
+  if (!roles) return null;
   return {
     kind: "hypothesisTest",
-    roles: { layout: "long", response, condition, subject: null },
+    roles,
     studyDesign: "independent",
     selectionMode: "automatic",
     manualSelection: null,
@@ -256,7 +262,7 @@ export function HypothesisTestDialog({
               </label>
               {validation && !validation.ok ? <p className="sp-hypothesis-error" role="alert">{validation.code}</p> : null}
             </>
-          ) : !loading ? <p role="alert">A continuous response and categorical condition are required.</p> : null}
+          ) : !loading ? <p role="alert">A continuous response with a categorical condition, or at least two continuous measurements, is required.</p> : null}
         </div>
         <div className="sp-dialog-actions">
           <button type="button" onClick={onCancel}>{t("common.cancel", { defaultValue: "Cancel" })}</button>

@@ -177,36 +177,29 @@
   overflow: auto;
 }
 
-/* Vertical splitter between gb-body columns. Mirror sp-cols-panel-splitter
-   so all draggable dividers across the workspace look identical. */
-.gb-splitter {
+/* Shared splitter track wrappers keep the PanelSplitter hit target centered
+   without reintroducing Graph Builder-specific drag handlers. */
+.gb-splitter-track {
   flex: 0 0 auto;
-  width: 4px;
-  cursor: col-resize;
-  background: var(--border-main);
-  transition: background 0.1s;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  color: var(--border-main);
 }
 
-.gb-splitter:hover,
-.gb-splitter:active {
-  background: var(--fg-accent);
+.gb-splitter-track:hover,
+.gb-splitter-track:focus-within {
+  color: var(--fg-accent);
 }
 
-/* Horizontal splitter (used inside the left rail to resize TABLE columns
-   vs LAYERS). Same look as .gb-splitter but rotated for row-resize. */
-.gb-splitter-h {
-  flex: 0 0 auto;
-  height: 4px;
-  cursor: row-resize;
-  background: var(--border-main);
-  transition: background 0.1s;
+.gb-splitter-track-vertical {
+  width: 14px;
+}
+
+.gb-splitter-track-horizontal {
+  height: 14px;
   position: relative;
   z-index: 1;
-}
-
-.gb-splitter-h:hover,
-.gb-splitter-h:active {
-  background: var(--fg-accent);
 }
 
 /* 左栏 */

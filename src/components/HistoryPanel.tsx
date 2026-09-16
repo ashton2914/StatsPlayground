@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback, type MutableRefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { useHistoryStore } from "@/stores/useHistoryStore";
+import { PanelSplitter } from "@/components/layout";
+import { useLayoutPreferencesStore } from "@/stores/useLayoutPreferencesStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useLocaleStore } from "@/stores/useLocaleStore";
 import { bcp47For } from "@/i18n";
@@ -14,6 +16,15 @@ export interface SnapshotMenuData {
   id: string;
   x: number;
   y: number;
+}
+
+const HISTORY_STACK_PANEL_ID = "history.stack" as const;
+const HISTORY_STACK_DEFAULT_PERCENT = 60;
+const HISTORY_STACK_MIN_PERCENT = 15;
+const HISTORY_STACK_MAX_PERCENT = 85;
+
+function clampHistoryStackPercent(value: number) {
+  return Math.min(HISTORY_STACK_MAX_PERCENT, Math.max(HISTORY_STACK_MIN_PERCENT, value));
 }
 
 export function HistoryPanel({
@@ -36,6 +47,9 @@ export function HistoryPanel({
     createSnapshot,
     jumpTo,
   } = useHistoryStore();
+  const persistedHistoryPct = useLayoutPreferencesStore((state) => state.sizes[HISTORY_STACK_PANEL_ID]);
+  const setPanelSize = useLayoutPreferencesStore((state) => state.setPanelSize);
+  const resetPanelSize = useLayoutPreferencesStore((state) => state.resetPanelSize);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -46,10 +60,9 @@ export function HistoryPanel({
     return `${basename}${snapshotExtension}`;
   }, [snapshotExtension]);
 
-  // Draggable divider state (percentage of history section)
-  const [historyPct, setHistoryPct] = useState(60);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef(false);
+  const [historyPct, setHistoryPct] = useState(
+    () => clampHistoryStackPercent(persistedHistoryPct ?? HISTORY_STACK_DEFAULT_PERCENT),
+  );
 
   useEffect(() => {
     if (renamingId && renameRef.current) {
@@ -70,35 +83,20 @@ export function HistoryPanel({
     return () => { snapRenameRef.current = null; };
   }, [snapshots, snapRenameRef]);
 
-  // Divider drag handler
-  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    draggingRef.current = true;
-    const startY = e.clientY;
-    const startPct = historyPct;
-    const panel = panelRef.current;
-    if (!panel) return;
-    const panelH = panel.clientHeight;
+  const handleHistoryPctChange = useCallback((nextPercent: number) => {
+    setHistoryPct(clampHistoryStackPercent(nextPercent));
+  }, []);
 
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!draggingRef.current) return;
-      const delta = ev.clientY - startY;
-      const deltaPct = (delta / panelH) * 100;
-      const newPct = Math.max(15, Math.min(85, startPct + deltaPct));
-      setHistoryPct(newPct);
-    };
-    const onMouseUp = () => {
-      draggingRef.current = false;
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [historyPct]);
+  const handleHistoryPctCommit = useCallback((nextPercent: number) => {
+    const preferredPercent = clampHistoryStackPercent(nextPercent);
+    setHistoryPct(preferredPercent);
+    setPanelSize(HISTORY_STACK_PANEL_ID, preferredPercent);
+  }, [setPanelSize]);
+
+  const handleHistoryPctReset = useCallback(() => {
+    setHistoryPct(HISTORY_STACK_DEFAULT_PERCENT);
+    resetPanelSize(HISTORY_STACK_PANEL_ID);
+  }, [resetPanelSize]);
 
   const handleRenameSubmit = (id: string) => {
     if (readOnly) {
@@ -188,7 +186,7 @@ export function HistoryPanel({
   };
 
   return (
-    <div className="history-panel" ref={panelRef}>
+    <div className="history-panel">
       {/* History section */}
       <div className="history-section" style={{ flex: `0 0 ${historyPct}%` }}>
         <div className="history-section-header">
@@ -231,8 +229,18 @@ export function HistoryPanel({
         </div>
       </div>
 
-      {/* Draggable divider */}
-      <div className="history-divider" onMouseDown={handleDividerMouseDown} />
+      <PanelSplitter
+        orientation="horizontal"
+        value={historyPct}
+        min={HISTORY_STACK_MIN_PERCENT}
+        max={HISTORY_STACK_MAX_PERCENT}
+        defaultValue={HISTORY_STACK_DEFAULT_PERCENT}
+        unit="%"
+        label={t("history.resizeStack", { defaultValue: "Resize history and snapshots panel" })}
+        onChange={handleHistoryPctChange}
+        onCommit={handleHistoryPctCommit}
+        onReset={handleHistoryPctReset}
+      />
 
       {/* Snapshot section */}
       <div className="snapshot-section" style={{ flex: `0 0 ${100 - historyPct}%` }}>

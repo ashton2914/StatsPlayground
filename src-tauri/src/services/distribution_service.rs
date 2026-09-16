@@ -136,6 +136,8 @@ impl<'a> DistributionService<'a> {
                     .map(|value| DistributionYResult {
                         y_column: value.y_column,
                         y_name: value.y_name,
+                        source_rows: value.source_rows,
+                        processed_rows: value.processed_rows,
                         quantiles: value.quantiles,
                         blocks: value.blocks.into_iter().map(wrap_report_block).collect(),
                     })
@@ -249,6 +251,42 @@ impl<'a> DistributionService<'a> {
                 .unwrap_or_default();
             for (group_index, group) in groups.iter().enumerate() {
                 let prefix = format!("{}-{group_index}", y.column_id);
+                if group.observations.is_empty() {
+                    let blocks = vec![DistributionReportBlockV1 {
+                        schema_version: "1".to_string(),
+                        block_id: format!("{prefix}-summary"),
+                        kind: "summary".to_string(),
+                        title_key: "distribution.report.summary".to_string(),
+                        status: "unavailable".to_string(),
+                        summary_data: None,
+                        capability_data: None,
+                        distribution_fit_data: None,
+                        distribution_fit_comparison_data: None,
+                        chart_data: None,
+                    }];
+                    report_blocks.extend(blocks.iter().cloned());
+                    let y_result = DistributionYResultV1 {
+                        y_column: y.clone(),
+                        y_name: y_name.clone(),
+                        source_rows: group.source_rows,
+                        processed_rows: 0,
+                        quantiles: Vec::new(),
+                        blocks,
+                    };
+                    if let Some(existing) = group_results
+                        .iter_mut()
+                        .find(|result| result.group_key == group.key)
+                    {
+                        existing.y_results.push(y_result);
+                    } else {
+                        group_results.push(DistributionGroupResultV1 {
+                            group_key: group.key.clone(),
+                            group_names: group_names.clone(),
+                            y_results: vec![y_result],
+                        });
+                    }
+                    continue;
+                }
                 let summary = continuous_summary(group, request.confidence_level)?;
                 let quantiles = [
                     0.0, 0.005, 0.025, 0.10, 0.25, 0.50, 0.75, 0.90, 0.975, 0.995, 1.0,
@@ -745,6 +783,8 @@ impl<'a> DistributionService<'a> {
                 let y_result = DistributionYResultV1 {
                     y_column: y.clone(),
                     y_name: y_name.clone(),
+                    source_rows: group.source_rows,
+                    processed_rows: summary.n,
                     quantiles,
                     blocks,
                 };
@@ -837,7 +877,13 @@ impl<'a> DistributionService<'a> {
 }
 
 fn wrap_report_block(block: DistributionReportBlockV1) -> DistributionReportBlock {
-    let reason_code = match &block.distribution_fit_data {
+    let reason_code = if block.kind == "summary"
+        && block.status == "unavailable"
+        && block.summary_data.is_none()
+    {
+        Some("distribution.summary.noObservations".to_string())
+    } else {
+        match &block.distribution_fit_data {
         Some(payload) => payload.reason_code.clone(),
         None => match &block.chart_data {
             Some(DistributionChartDataV1::NormalQuantileData { payload, .. }) => {
@@ -845,11 +891,12 @@ fn wrap_report_block(block: DistributionReportBlockV1) -> DistributionReportBloc
             }
             _ => None,
         },
-    }
-    .or_else(|| {
-        (block.status != "available")
-            .then(|| format!("distribution.{}.{}", block.kind, block.status))
-    });
+        }
+        .or_else(|| {
+            (block.status != "available")
+                .then(|| format!("distribution.{}.{}", block.kind, block.status))
+        })
+    };
     DistributionReportBlock { block, reason_code }
 }
 
@@ -869,6 +916,8 @@ fn build_graph_frames(
     for group in groups {
         let group_name = graph_group_name(&group.group_names, &group.group_key);
         for y_result in &group.y_results {
+            source_rows = source_rows.max(y_result.source_rows);
+            processed_rows = processed_rows.max(y_result.processed_rows);
             let series_name = graph_series_name(&y_result.y_name, &group_name);
             let source_column = y_result.y_column.column_id.clone();
             let series_key = graph_series_key(&source_column, &group.group_key)?;
@@ -886,10 +935,6 @@ fn build_graph_frames(
                     _ => None,
                 });
             let result_count = summary.map_or(0, |value| value.n);
-            if let Some(summary) = summary {
-                source_rows = source_rows.max(summary.n.saturating_add(summary.n_missing));
-                processed_rows = processed_rows.max(summary.n);
-            }
             for item in &y_result.blocks {
                 let block = &item.block;
                 match &block.chart_data {
@@ -2208,6 +2253,8 @@ mod tests {
                         modeling_type: DistributionModelingTypeV1::Continuous,
                     },
                     y_name: "Length".to_string(),
+                    source_rows: 1,
+                    processed_rows: 1,
                     quantiles: Vec::new(),
                     blocks: vec![
                         graph_test_block(
@@ -2498,6 +2545,124 @@ mod tests {
             }
         }
         assert_lifecycle_free(&serialized);
+    }
+
+    #[test]
+    fn one_shot_report_marks_an_all_missing_response_unavailable() {
+        let state = AppState::new().expect("test state");
+        let data = DataService::new(&state);
+        let dataset = data
+            .create_table("Missing Distribution", &["value".into()], &["DOUBLE".into()])
+            .expect("create dataset");
+        data.add_row(&dataset.id).expect("add first missing row");
+        data.add_row(&dataset.id).expect("add second missing row");
+        let generation = state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_generation(&dataset.id)
+            .expect("dataset generation");
+        let request = DistributionRequest {
+            dataset_id: dataset.id,
+            generation,
+            response_columns: vec!["value".to_string()],
+            weight_column: None,
+            freq_column: None,
+            by_columns: Vec::new(),
+            nested_subgroup_column: None,
+            confidence_level: 0.95,
+            spec_limits: HashMap::new(),
+            fit_distributions: vec![ContinuousDistributionIdV1::Normal],
+        };
+
+        let response = DistributionService::new(&state)
+            .compute_distribution_report(&request)
+            .expect("all-missing response remains a report result");
+
+        assert_eq!(response.groups.len(), 1);
+        assert_eq!(response.groups[0].y_results.len(), 1);
+        let summary = response.groups[0].y_results[0]
+            .blocks
+            .iter()
+            .find(|block| block.block.kind == "summary")
+            .expect("unavailable summary block");
+        assert_eq!(summary.block.status, "unavailable");
+        assert_eq!(
+            summary.reason_code.as_deref(),
+            Some("distribution.summary.noObservations")
+        );
+        assert_eq!(response.groups[0].y_results[0].source_rows, 2);
+        assert_eq!(response.groups[0].y_results[0].processed_rows, 0);
+        assert_eq!(response.graph_frames.overview.source_rows, 2);
+        assert_eq!(response.graph_frames.overview.processed_rows, 0);
+    }
+
+    #[test]
+    fn one_shot_report_keeps_valid_groups_when_one_by_group_is_all_missing() {
+        let state = AppState::new().expect("test state");
+        let data = DataService::new(&state);
+        let dataset = data
+            .create_table(
+                "Partially Missing Groups",
+                &["value".into(), "region".into()],
+                &["DOUBLE".into(), "VARCHAR".into()],
+            )
+            .expect("create dataset");
+        let east_row = data.add_row(&dataset.id).expect("add East row");
+        data.update_cell(&dataset.id, east_row, "value", "10")
+            .expect("set East value");
+        data.update_cell(&dataset.id, east_row, "region", "East")
+            .expect("set East region");
+        let west_row = data.add_row(&dataset.id).expect("add West row");
+        data.update_cell(&dataset.id, west_row, "region", "West")
+            .expect("set West region");
+        let generation = state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_generation(&dataset.id)
+            .expect("dataset generation");
+        let request = DistributionRequest {
+            dataset_id: dataset.id,
+            generation,
+            response_columns: vec!["value".to_string()],
+            weight_column: None,
+            freq_column: None,
+            by_columns: vec!["region".to_string()],
+            nested_subgroup_column: None,
+            confidence_level: 0.95,
+            spec_limits: HashMap::new(),
+            fit_distributions: Vec::new(),
+        };
+
+        let response = DistributionService::new(&state)
+            .compute_distribution_report(&request)
+            .expect("empty By group remains local");
+
+        assert_eq!(response.groups.len(), 3, "Overall plus East and West");
+        let west = response
+            .groups
+            .iter()
+            .find(|group| {
+                matches!(
+                    group.group_key.as_slice(),
+                    [crate::models::distribution::DistributionGroupValueV1::Text { value }]
+                        if value == "West"
+                )
+            })
+            .expect("West group");
+        let west_summary = west.y_results[0]
+            .blocks
+            .iter()
+            .find(|block| block.block.kind == "summary")
+            .expect("West summary block");
+        assert_eq!(west_summary.block.status, "unavailable");
+        assert_eq!(
+            west_summary.reason_code.as_deref(),
+            Some("distribution.summary.noObservations")
+        );
+        assert_eq!(response.graph_frames.overview.source_rows, 2);
+        assert_eq!(response.graph_frames.overview.processed_rows, 1);
     }
 
     #[test]

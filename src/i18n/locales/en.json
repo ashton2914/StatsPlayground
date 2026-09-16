@@ -1228,6 +1228,10 @@
     "copyDataChanged": "The table changed while copying. Please copy again.",
     "pasteOverwriteConfirm": "Existing data will be overwritten. Continue?",
     "pasteTypeIncompatible": "Column {{letter}} (\"{{name}}\") has type {{existing}}, incompatible with pasted type {{detected}}",
+    "tableSummary": "Table summary",
+    "totalRows": "Total rows",
+    "totalColumns": "Total columns",
+    "displayedRows": "Displayed rows",
     "dimensionsFiltered": "{{shown}} / {{total}} rows × {{cols}} cols",
     "dimensions": "{{rows}} rows × {{cols}} cols"
   },
