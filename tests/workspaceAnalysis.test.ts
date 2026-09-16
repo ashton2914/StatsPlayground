@@ -30,6 +30,7 @@ function assertSourceIncludes(source: string, needle: string, message: string): 
 }
 
 const workspaceSource = readSource("../src/components/Workspace.tsx");
+const projectCommandsSource = readSource("../src/applicationCommands/projectCommands.ts");
 
 assertSourceIncludes(workspaceSource, "useAnalysisStore", "Workspace must consume the analysis store");
 assertSourceIncludes(workspaceSource, "AnalysisView", "Workspace must render the Analysis main-pane view");
@@ -39,12 +40,13 @@ assertSourceIncludes(workspaceSource, "loadAnalyses", "Project open must load sa
 assertSourceIncludes(workspaceSource, "resetAnalyses", "Project close/open reset must clear the Analysis store");
 assertSourceIncludes(workspaceSource, "analysisFolders", "Project save/open payloads must include Analysis folder assignments");
 assertSourceIncludes(workspaceSource, "setAnalysisFolder", "Workspace must move Analysis documents through the folder store");
-assertSourceIncludes(workspaceSource, "buildAnalysisProjectPayload", "Workspace must delegate analysis save payload shaping to the lifecycle helper");
+assertSourceIncludes(workspaceSource, ".saveProject()", "Workspace must delegate project saves to the shared application command layer");
+assertSourceIncludes(projectCommandsSource, "buildAnalysisProjectPayload", "Project commands must delegate analysis save payload shaping to the lifecycle helper");
 assertSourceIncludes(workspaceSource, "hydrateAnalysisProjectPayload", "Workspace must delegate analysis open hydration to the lifecycle helper");
-assertSourceIncludes(workspaceSource, "analyses: folderPayload.analyses", "Project save payload must include analyses");
-assertSourceIncludes(workspaceSource, "distributions: []", "Project save must not persist migrated legacy Distribution documents");
+assertSourceIncludes(projectCommandsSource, "analyses: analysisProjectPayload.analyses", "Project save payload must include analyses");
+assertSourceIncludes(projectCommandsSource, "distributions: []", "Project save must not persist migrated legacy Distribution documents");
 assert.equal(workspaceSource.includes("useDistributionStore"), false, "Workspace must not import or hydrate the legacy Distribution store");
-assertSourceIncludes(workspaceSource, "distributionFolders: {}", "Migrated Distribution folder assignments must leave the legacy folder map empty");
+assertSourceIncludes(projectCommandsSource, "distributionFolders: analysisProjectPayload.distributionFolders", "Migrated Distribution folder assignments must leave the legacy folder map empty");
 assertSourceIncludes(workspaceSource, "shouldMarkAnalysisMigrationDirty(analysisProjectPayload.migratedCount)", "Project open must apply the tested migration dirty-state decision");
 assertSourceIncludes(workspaceSource, 'kind === "analysis"', "Drag payload and context menu unions must include Analysis items");
 assertSourceIncludes(workspaceSource, "analysesByParent", "Tree grouping must include Analysis documents by folder");
