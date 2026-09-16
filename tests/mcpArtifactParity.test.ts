@@ -21,6 +21,7 @@ import {
 import {
   hydrateAnalysisProjectPayload,
 } from "@/components/analysis/analysisWorkspaceLifecycle";
+import type { SaveProjectRequest } from "@/services/projectService";
 import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
@@ -55,7 +56,8 @@ type CommandType = Extract<keyof ApplicationCommandRegistry, string>;
 type Command<TType extends CommandType = CommandType> = ApplicationCommand<ApplicationCommandRegistry, TType>;
 
 interface FixtureNondeterministicPolicy {
-  stripFields: string[];
+  stripPaths: string[];
+  uuidLikePaths: string[];
   uuidLike: string;
 }
 
@@ -114,6 +116,22 @@ interface OperationCounters {
   analysisRun: Record<AnalysisKind, number>;
 }
 
+interface SaveBuilderTableDependenciesCapture {
+  getColumns: Array<{ datasetId: string; columns: Array<[string, string]> }>;
+  getColumnDisplayProps: Array<{ datasetId: string; display: ColumnDisplayProps[] }>;
+  queryTableWindow: Array<{
+    request: TableWindowRequest;
+    result: {
+      columns: string[];
+      columnTypes: string[];
+      rows: unknown[][];
+      totalRows: number;
+      start: number;
+      generation: number;
+    };
+  }>;
+}
+
 const TEST_FILE_DIR = dirname(fileURLToPath(import.meta.url));
 const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const NOW = "2026-09-16T00:00:00.000Z";
@@ -143,20 +161,45 @@ function loadCanonicalOpenResultFixture(): OpenProjectResult {
   return fixture.canonicalOpenProjectResult;
 }
 
-function normalizeWithPolicy(value: unknown, policy: FixtureNondeterministicPolicy): unknown {
+function jsonPath(path: Array<string | number>, wildcardArrayIndexes: boolean): string {
+  let out = "$";
+  for (const segment of path) {
+    if (typeof segment === "number") {
+      out += wildcardArrayIndexes ? "[*]" : `[${segment}]`;
+      continue;
+    }
+    out += `.${segment}`;
+  }
+  return out;
+}
+
+function matchesPathRule(path: Array<string | number>, rules: readonly string[]): boolean {
+  const exact = jsonPath(path, false);
+  const wildcard = jsonPath(path, true);
+  return rules.some((rule) => rule === exact || rule === wildcard);
+}
+
+function normalizeWithPolicy(
+  value: unknown,
+  policy: FixtureNondeterministicPolicy,
+  path: Array<string | number> = [],
+): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === "string") {
-    if (UUID_LIKE.test(value)) return policy.uuidLike;
+    if (UUID_LIKE.test(value) && matchesPathRule(path, policy.uuidLikePaths)) {
+      return policy.uuidLike;
+    }
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => normalizeWithPolicy(entry, policy));
+    return value.map((entry, index) => normalizeWithPolicy(entry, policy, [...path, index]));
   }
   if (typeof value === "object") {
     const output: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (policy.stripFields.includes(key)) continue;
-      output[key] = normalizeWithPolicy(child, policy);
+      const childPath = [...path, key];
+      if (matchesPathRule(childPath, policy.stripPaths)) continue;
+      output[key] = normalizeWithPolicy(child, policy, childPath);
     }
     return output;
   }
@@ -165,6 +208,68 @@ function normalizeWithPolicy(value: unknown, policy: FixtureNondeterministicPoli
 
 function toJsonSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function seedColumns(seed: CreateManagedTableRequest): Array<[string, string]> {
+  return seed.columns.map((column) => [column.name, column.sqlType.toUpperCase()]);
+}
+
+function seedDisplay(seed: CreateManagedTableRequest): ColumnDisplayProps[] {
+  return seed.columns.map((column, colIndex) => ({
+    colIndex,
+    width: column.display?.width,
+    format: column.display?.format,
+    extras: column.display?.extras,
+  }));
+}
+
+function assertSaveBuilderPreservedTableSeed(
+  capture: SaveBuilderTableDependenciesCapture,
+  fixtureSeed: CreateManagedTableRequest,
+  actorLabel: string,
+): void {
+  const expectedColumns = seedColumns(fixtureSeed);
+  const expectedDisplay = seedDisplay(fixtureSeed);
+
+  const columnsCall = capture.getColumns.find((entry) => entry.datasetId === "table-main");
+  assert.ok(columnsCall, `${actorLabel} save builder must call getColumns for table-main`);
+  assert.deepEqual(
+    columnsCall.columns,
+    expectedColumns,
+    `${actorLabel} save builder must preserve seeded column order and sqlType`,
+  );
+
+  const displayCall = capture.getColumnDisplayProps.find((entry) => entry.datasetId === "table-main");
+  assert.ok(displayCall, `${actorLabel} save builder must call getColumnDisplayProps for table-main`);
+  assert.deepEqual(
+    displayCall.display,
+    expectedDisplay,
+    `${actorLabel} save builder must preserve seeded display width/format/extras`,
+  );
+
+  const tableWindows = capture.queryTableWindow.filter((entry) => entry.request.datasetId === "table-main");
+  for (const windowCall of tableWindows) {
+    assert.deepEqual(
+      windowCall.result.columns,
+      fixtureSeed.columns.map((column) => column.name),
+      `${actorLabel} table snapshot columns must preserve order`,
+    );
+    assert.deepEqual(
+      windowCall.result.columnTypes,
+      expectedColumns.map(([, type]) => type),
+      `${actorLabel} table snapshot must preserve column sqlType`,
+    );
+    assert.deepEqual(
+      windowCall.result.rows,
+      fixtureSeed.rows.slice(windowCall.request.start, windowCall.request.start + windowCall.request.count),
+      `${actorLabel} table snapshot rows must match the seeded table slice`,
+    );
+    assert.equal(
+      windowCall.result.totalRows,
+      fixtureSeed.rows.length,
+      `${actorLabel} table snapshot totalRows must match seeded table`,
+    );
+  }
 }
 
 function findCase(fixture: ArtifactParityFixture, id: string): FixtureProjectionCase {
@@ -247,6 +352,11 @@ function createScenarioRuntime(actor: CommandActor, fixture: ArtifactParityFixtu
   let analysisCounter = 0;
   const counters = newCounters();
   const datasets = new Map<string, DatasetRecord>();
+  const saveBuilderCapture: SaveBuilderTableDependenciesCapture = {
+    getColumns: [],
+    getColumnDisplayProps: [],
+    queryTableWindow: [],
+  };
 
   const syncDatasets = () => {
     useDataStore.setState({
@@ -317,13 +427,21 @@ function createScenarioRuntime(actor: CommandActor, fixture: ArtifactParityFixtu
       listReports: () => useReportStore.getState().items,
       listAnalyses: () => useAnalysisStore.getState().items,
       listTabulates: () => useTabulateStore.getState().items,
-      getColumns: async (datasetId: string) => datasets.get(datasetId)?.columns ?? [],
-      getColumnDisplayProps: async (datasetId: string) => datasets.get(datasetId)?.display ?? [],
+      getColumns: async (datasetId: string) => {
+        const columns = datasets.get(datasetId)?.columns ?? [];
+        saveBuilderCapture.getColumns.push({ datasetId, columns: toJsonSafe(columns) });
+        return columns;
+      },
+      getColumnDisplayProps: async (datasetId: string) => {
+        const display = datasets.get(datasetId)?.display ?? [];
+        saveBuilderCapture.getColumnDisplayProps.push({ datasetId, display: toJsonSafe(display) });
+        return display;
+      },
       getDatasetGeneration: async (datasetId: string) => datasets.get(datasetId)?.meta.generation ?? 0,
       queryTableWindow: async (request: TableWindowRequest) => {
         const record = datasets.get(request.datasetId);
         const rows = record ? record.rows.slice(request.start, request.start + request.count) : [];
-        return {
+        const result = {
           columns: record?.columns.map(([name]) => name) ?? [],
           columnTypes: record?.columns.map(([, type]) => type) ?? [],
           rows,
@@ -331,6 +449,11 @@ function createScenarioRuntime(actor: CommandActor, fixture: ArtifactParityFixtu
           start: request.start,
           generation: record?.meta.generation ?? 0,
         };
+        saveBuilderCapture.queryTableWindow.push({
+          request: toJsonSafe(request),
+          result: toJsonSafe(result),
+        });
+        return result;
       },
       buildSaveProjectRequest: (filePath?: string) => {
         buildSaveCalls += 1;
@@ -612,6 +735,7 @@ function createScenarioRuntime(actor: CommandActor, fixture: ArtifactParityFixtu
     counters,
     capturedSaveRequest: () => capturedSaveRequest,
     buildSaveCalls: () => buildSaveCalls,
+    saveBuilderCapture: () => toJsonSafe(saveBuilderCapture),
   };
 }
 
@@ -713,7 +837,12 @@ async function runAnalysisLifecycle(
   });
 }
 
-async function runUiScenario(fixture: ArtifactParityFixture): Promise<{ saveRequest: Record<string, unknown>; buildSaveCalls: number; counters: OperationCounters }> {
+async function runUiScenario(fixture: ArtifactParityFixture): Promise<{
+  saveRequest: Record<string, unknown>;
+  buildSaveCalls: number;
+  counters: OperationCounters;
+  saveBuilderCapture: SaveBuilderTableDependenciesCapture;
+}> {
   resetStores();
   const actor: CommandActor = { kind: "ui" };
   const scenario = createScenarioRuntime(actor, fixture);
@@ -775,10 +904,16 @@ async function runUiScenario(fixture: ArtifactParityFixture): Promise<{ saveRequ
     saveRequest,
     buildSaveCalls: scenario.buildSaveCalls(),
     counters: scenario.counters,
+    saveBuilderCapture: scenario.saveBuilderCapture(),
   };
 }
 
-async function runMcpScenario(fixture: ArtifactParityFixture): Promise<{ saveRequest: Record<string, unknown>; buildSaveCalls: number; counters: OperationCounters }> {
+async function runMcpScenario(fixture: ArtifactParityFixture): Promise<{
+  saveRequest: Record<string, unknown>;
+  buildSaveCalls: number;
+  counters: OperationCounters;
+  saveBuilderCapture: SaveBuilderTableDependenciesCapture;
+}> {
   resetStores();
   const actor: CommandActor = { kind: "mcp", sessionId: "mcp-session", clientId: "client-1" };
   const scenario = createScenarioRuntime(actor, fixture);
@@ -839,6 +974,7 @@ async function runMcpScenario(fixture: ArtifactParityFixture): Promise<{ saveReq
     saveRequest,
     buildSaveCalls: scenario.buildSaveCalls(),
     counters: scenario.counters,
+    saveBuilderCapture: scenario.saveBuilderCapture(),
   };
 }
 
@@ -940,11 +1076,8 @@ async function verifyReopenRuntimeExecution(
   await scenario.runtime.execute(fixtureEnvelopeToCommand(fixture, "snapshot.create", "snapshot.create"), actor);
   await scenario.runtime.execute(fixtureEnvelopeToCommand(fixture, "table.exportCsv", "table.exportCsv"), actor);
 
-  const normalizedHydrated = normalizeWithPolicy(
-    productionBuildSaveProjectRequest("/Users/ashton/private/task12.spprj") as unknown as Record<string, unknown>,
-    fixture.nondeterministicPolicy,
-  );
-  const hydratedPayload = productionBuildSaveProjectRequest("/Users/ashton/private/task12.spprj") as unknown as Record<string, unknown>;
+  const hydratedPayload: SaveProjectRequest = productionBuildSaveProjectRequest("/Users/ashton/private/task12.spprj");
+  const normalizedHydrated = normalizeWithPolicy(hydratedPayload, fixture.nondeterministicPolicy);
   assert.equal(((hydratedPayload.analyses as unknown[]) ?? []).length, 4);
   assert.equal(((hydratedPayload.tableTransforms as unknown[]) ?? []).length, 1);
   assert.equal(((hydratedPayload.tableTransformBindings as unknown[]) ?? []).length, 1);
@@ -975,6 +1108,9 @@ assert.equal(fixture.projectionCases.length, 17, "Shared artifact parity fixture
 const ui = await runUiScenario(fixture);
 const mcp = await runMcpScenario(fixture);
 
+assertSaveBuilderPreservedTableSeed(ui.saveBuilderCapture, fixture.tableSeed, "UI");
+assertSaveBuilderPreservedTableSeed(mcp.saveBuilderCapture, fixture.tableSeed, "MCP");
+
 assert.ok(ui.buildSaveCalls > 0, "UI scenario must call production buildSaveProjectRequest");
 assert.ok(mcp.buildSaveCalls > 0, "MCP scenario must call production buildSaveProjectRequest");
 
@@ -983,6 +1119,34 @@ const normalizedMcp = toJsonSafe(normalizeWithPolicy(mcp.saveRequest, fixture.no
 const normalizedCanonical = toJsonSafe(normalizeWithPolicy(fixture.canonicalSavePayload, fixture.nondeterministicPolicy));
 assert.deepEqual(normalizedUi, normalizedCanonical, "UI scenario must match canonical save payload");
 assert.deepEqual(normalizedMcp, normalizedCanonical, "MCP scenario must match canonical save payload");
+
+const normalizedOpen = toJsonSafe(normalizeWithPolicy(canonicalOpenProjectResult, fixture.nondeterministicPolicy));
+const changedBusinessCreatedAt = toJsonSafe(canonicalOpenProjectResult);
+assert.ok(changedBusinessCreatedAt.project, "Open result fixture must include project");
+changedBusinessCreatedAt.project.createdAt = "2031-01-01T00:00:00.000Z";
+assert.notDeepEqual(
+  toJsonSafe(normalizeWithPolicy(changedBusinessCreatedAt, fixture.nondeterministicPolicy)),
+  normalizedOpen,
+  "Business createdAt must remain comparison-significant",
+);
+
+const changedNestedFilePath = toJsonSafe(canonicalOpenProjectResult);
+assert.ok(changedNestedFilePath.project, "Open result fixture must include project");
+changedNestedFilePath.project.filePath = "/Users/ashton/private/altered.spprj";
+assert.notDeepEqual(
+  toJsonSafe(normalizeWithPolicy(changedNestedFilePath, fixture.nondeterministicPolicy)),
+  normalizedOpen,
+  "Nested project.filePath must remain comparison-significant",
+);
+
+const changedLineageGraph = toJsonSafe(canonicalOpenProjectResult);
+assert.ok(changedLineageGraph.lineageGraph, "Open result fixture must include lineageGraph");
+changedLineageGraph.lineageGraph.graphHash = `${changedLineageGraph.lineageGraph.graphHash}-changed`;
+assert.notDeepEqual(
+  toJsonSafe(normalizeWithPolicy(changedLineageGraph, fixture.nondeterministicPolicy)),
+  normalizedOpen,
+  "Lineage graph mutations must remain comparison-significant",
+);
 
 const uiAnalyses = (ui.saveRequest.analyses as unknown[]) ?? [];
 const uiTransforms = (ui.saveRequest.tableTransforms as unknown[]) ?? [];

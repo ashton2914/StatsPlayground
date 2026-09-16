@@ -3,14 +3,14 @@
   "datasetIdToken": "$TABLE_ID$",
   "nondeterministicPolicy": {
     "stripFields": [
-      "requestId",
-      "filePath",
-      "lineageGraph",
-      "createdAt",
-      "updatedAt",
-      "completedAt",
-      "durationMs",
-      "snapshotId"
+      "requestId"
+    ],
+    "stripPaths": [
+      "$.workflowRuns[*].completedAt",
+      "$.workflowRuns[*].durationMs"
+    ],
+    "uuidLikePaths": [
+      "$.snapshots[*].id"
     ],
     "uuidLike": "<uuid>"
   },
@@ -21,7 +21,7 @@
         "name": "width",
         "sqlType": "DOUBLE",
         "display": {
-          "width": 160,
+          "width": 160.0,
           "format": {
             "kind": "fixed",
             "decimals": 3
@@ -58,7 +58,7 @@
         "name": "build",
         "sqlType": "VARCHAR",
         "display": {
-          "width": 128,
+          "width": 128.0,
           "format": {
             "kind": "asis"
           },
@@ -197,11 +197,59 @@
           "columns": [
             {
               "name": "width",
-              "sqlType": "DOUBLE"
+              "sqlType": "DOUBLE",
+              "display": {
+                "width": 160.0,
+                "format": {
+                  "kind": "fixed",
+                  "decimals": 3
+                },
+                "extras": {
+                  "unit": {
+                    "symbol": "mm"
+                  },
+                  "spec": {
+                    "lsl": 9.8,
+                    "target": 10,
+                    "usl": 10.2
+                  },
+                  "range": {
+                    "preferred": [
+                      9.9,
+                      10.1
+                    ]
+                  },
+                  "notes": {
+                    "text": "critical"
+                  },
+                  "opaque": {
+                    "nested": [
+                      1,
+                      true,
+                      "ok"
+                    ]
+                  }
+                }
+              }
             },
             {
               "name": "build",
-              "sqlType": "VARCHAR"
+              "sqlType": "VARCHAR",
+              "display": {
+                "width": 128.0,
+                "format": {
+                  "kind": "asis"
+                },
+                "extras": {
+                  "valueOrder": {
+                    "values": [
+                      "EV",
+                      "DV",
+                      "PQ"
+                    ]
+                  }
+                }
+              }
             }
           ],
           "rows": [
@@ -230,11 +278,59 @@
             "columns": [
               {
                 "name": "width",
-                "sqlType": "DOUBLE"
+                "sqlType": "DOUBLE",
+                "display": {
+                  "width": 160.0,
+                  "format": {
+                    "kind": "fixed",
+                    "decimals": 3
+                  },
+                  "extras": {
+                    "unit": {
+                      "symbol": "mm"
+                    },
+                    "spec": {
+                      "lsl": 9.8,
+                      "target": 10,
+                      "usl": 10.2
+                    },
+                    "range": {
+                      "preferred": [
+                        9.9,
+                        10.1
+                      ]
+                    },
+                    "notes": {
+                      "text": "critical"
+                    },
+                    "opaque": {
+                      "nested": [
+                        1,
+                        true,
+                        "ok"
+                      ]
+                    }
+                  }
+                }
               },
               {
                 "name": "build",
-                "sqlType": "VARCHAR"
+                "sqlType": "VARCHAR",
+                "display": {
+                  "width": 128.0,
+                  "format": {
+                    "kind": "asis"
+                  },
+                  "extras": {
+                    "valueOrder": {
+                      "values": [
+                        "EV",
+                        "DV",
+                        "PQ"
+                      ]
+                    }
+                  }
+                }
               }
             ],
             "rows": [
@@ -783,6 +879,30 @@
       "errorContains": "invalid tool input"
     },
     {
+      "id": "csv-reject-top-level-confirmed",
+      "toolName": "statsplayground.table.export_csv",
+      "rawArguments": {
+        "datasetId": "table-main",
+        "rootId": "root-1",
+        "relativePath": "exports/main.csv",
+        "confirmed": true
+      },
+      "errorContains": "confirmation flags"
+    },
+    {
+      "id": "csv-reject-nested-confirmed",
+      "toolName": "statsplayground.table.export_csv",
+      "rawArguments": {
+        "datasetId": "table-main",
+        "rootId": "root-1",
+        "relativePath": "exports/main.csv",
+        "control": {
+          "confirmed": true
+        }
+      },
+      "errorContains": "confirmation flags"
+    },
+    {
       "id": "csv-reject-confirmation",
       "toolName": "statsplayground.table.export_csv",
       "rawArguments": {
@@ -790,6 +910,19 @@
         "rootId": "root-1",
         "relativePath": "exports/main.csv",
         "overwriteConfirmed": true
+      },
+      "errorContains": "confirmation flags"
+    },
+    {
+      "id": "csv-reject-nested-overwrite-confirmed",
+      "toolName": "statsplayground.table.export_csv",
+      "rawArguments": {
+        "datasetId": "table-main",
+        "rootId": "root-1",
+        "relativePath": "exports/main.csv",
+        "control": {
+          "overwriteConfirmed": true
+        }
       },
       "errorContains": "confirmation flags"
     }
