@@ -36,10 +36,25 @@ type RequestStatus = CommandLifecycleStatus;
 
 const RECENT_TERMINAL_REQUEST_LIMIT = 32;
 
-interface RuntimeRequestSnapshot {
+interface RuntimeRequestActorSnapshot {
+  kind: "ui";
+}
+
+interface RuntimeMcpActorSnapshot {
+  kind: "mcp";
+  clientId?: string;
+}
+
+export type RuntimeRequestActor = RuntimeRequestActorSnapshot | RuntimeMcpActorSnapshot;
+
+export interface RuntimeRequestSnapshot {
   requestId: string;
   command: string;
   status: RequestStatus;
+  actor: RuntimeRequestActor;
+  stage: string;
+  message: string | null;
+  percent: number | null;
 }
 
 interface RuntimeRequest<TData> {
@@ -47,6 +62,9 @@ interface RuntimeRequest<TData> {
   command: string;
   status: RequestStatus;
   actor: CommandActor;
+  stage: string;
+  message: string | null;
+  percent: number | null;
   control: { expectedProjectRevision?: number; idempotencyKey?: string };
   mode: CommandMode;
   controller: AbortController;
@@ -91,7 +109,7 @@ export interface ApplicationCommandRuntime<TRegistry extends CommandRegistryShap
   ): PendingCommandResult<TRegistry[TType]["data"]>;
   confirm(requestId: string, allow: boolean): boolean;
   cancel(requestId: string): boolean;
-  snapshot(): Array<{ requestId: string; command: string; status: RequestStatus }>;
+  snapshot(): RuntimeRequestSnapshot[];
 }
 
 export class CommandExecutionError extends Error {
@@ -304,11 +322,15 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
     return true;
   }
 
-  snapshot(): Array<{ requestId: string; command: string; status: RequestStatus }> {
+  snapshot(): RuntimeRequestSnapshot[] {
     return [...this.terminalRequests.values(), ...this.requests.values()].map((request) => ({
       requestId: request.requestId,
       command: request.command,
       status: request.status,
+      actor: snapshotActor(request.actor),
+      stage: request.stage,
+      message: request.message,
+      percent: request.percent,
     }));
   }
 
@@ -372,6 +394,9 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       command: input.command,
       status: "queued",
       actor: input.actor,
+      stage: "queue",
+      message: null,
+      percent: null,
       control: input.control,
       mode: input.mode,
       controller: new AbortController(),
@@ -450,6 +475,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
       if (decision.requireConfirmation) {
         request.status = "awaiting-confirmation";
+        request.stage = "confirmation";
         const confirmationOutcome = await Promise.race([
           request.confirmationSignal.then((allow) => ({ kind: "confirmation" as const, allow })),
           request.cancellationSignal.then(() => ({ kind: "cancelled" as const })),
@@ -465,8 +491,12 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
 
       if (request.status === "awaiting-confirmation") {
         request.status = "queued";
+        request.stage = "queue";
       }
       request.status = "running";
+      request.stage = request.stage === "queue" || request.stage === "confirmation"
+        ? "running"
+        : request.stage;
 
       if (request.mode === "mutation") {
         const expectedRevision = request.control.expectedProjectRevision;
@@ -487,6 +517,9 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
             return;
           }
           request.status = "running";
+          request.stage = progress.stage;
+          request.message = progress.message ?? null;
+          request.percent = progress.percent ?? null;
           observer?.onProgress?.(progress);
         },
         beginCommit: () => {
@@ -495,6 +528,7 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
           }
           request.committed = true;
           request.status = "committing";
+          request.stage = "commit";
           observer?.onStatusChange?.({
             requestId: request.requestId,
             status: "committing",
@@ -572,6 +606,10 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       requestId: request.requestId,
       command: request.command,
       status: request.status,
+      actor: snapshotActor(request.actor),
+      stage: request.stage,
+      message: request.message,
+      percent: request.percent,
     });
     while (this.terminalRequestOrder.length > RECENT_TERMINAL_REQUEST_LIMIT) {
       const evicted = this.terminalRequestOrder.shift();
@@ -580,6 +618,16 @@ class Runtime<TRegistry extends CommandRegistryShape> implements ApplicationComm
       }
     }
   }
+}
+
+function snapshotActor(actor: CommandActor | RuntimeRequestActor): RuntimeRequestActor {
+  if (actor.kind === "mcp") {
+    return {
+      kind: "mcp",
+      clientId: actor.clientId,
+    };
+  }
+  return { kind: "ui" };
 }
 
 export function createApplicationCommandRuntime<TRegistry extends CommandRegistryShape>(input?: {

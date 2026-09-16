@@ -748,6 +748,59 @@ async function waitForRequestStatus(
 {
   const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
   runtime.register(
+    "test.slow",
+    async (_input, context) => {
+      context.reportProgress({ stage: "queue", message: "Queued for execution", percent: 5 });
+      context.reportProgress({ stage: "running", message: "Executing", percent: 40 });
+      context.beginCommit();
+      return { changed: true, data: { id: "done" }, warnings: [] };
+    },
+    { mode: "mutation" },
+  );
+
+  const pending = runtime.execute({ type: "test.slow", input: {} }, MCP_ACTOR);
+  const result = await pending;
+  const snapshot = runtime.snapshot().find((entry) => entry.requestId === result.requestId);
+
+  assert.deepEqual(snapshot, {
+    requestId: result.requestId,
+    command: "test.slow",
+    status: "succeeded",
+    actor: { kind: "mcp", clientId: undefined },
+    stage: "commit",
+    message: "Executing",
+    percent: 40,
+  });
+}
+
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  runtime.register(
+    "test.read",
+    async (_input, context) => {
+      context.reportProgress({ stage: "running", message: "UI only", percent: 25 });
+      return { changed: false, data: { ok: true }, warnings: [] };
+    },
+    { mode: "read" },
+  );
+
+  const result = await runtime.execute({ type: "test.read", input: {} }, { kind: "ui" });
+  const snapshot = runtime.snapshot().find((entry) => entry.requestId === result.requestId);
+
+  assert.deepEqual(snapshot, {
+    requestId: result.requestId,
+    command: "test.read",
+    status: "succeeded",
+    actor: { kind: "ui" },
+    stage: "running",
+    message: "UI only",
+    percent: 25,
+  });
+}
+
+{
+  const runtime = createApplicationCommandRuntime<TestRegistry>({ initialRevision: 0 });
+  runtime.register(
     "test.mutate",
     async () => ({ changed: true, data: { id: "ok" }, warnings: [] }),
     { mode: "mutation" },

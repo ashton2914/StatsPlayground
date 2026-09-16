@@ -13,6 +13,21 @@ interface ActivityRow {
   meta: string;
 }
 
+function formatLiveRequestMeta(request: {
+  stage: string;
+  message?: string | null;
+  percent?: number | null;
+}): string {
+  const parts = [request.stage];
+  if (request.message) {
+    parts.push(request.message);
+  }
+  if (typeof request.percent === "number") {
+    parts.push(`${request.percent}%`);
+  }
+  return parts.join(" • ");
+}
+
 function maskToken(token: string | null): string {
   if (!token) return "Not available";
   return "•".repeat(Math.max(8, Math.min(token.length, 16)));
@@ -67,13 +82,16 @@ export function McpServerPanel({
 
   const activityRows = useMemo<ActivityRow[]>(() => {
     const liveRows = commandRequests
-      .filter((request) => request.status === "queued" || request.status === "running" || request.status === "awaiting-confirmation")
+      .filter((request) => request.status === "queued"
+        || request.status === "running"
+        || request.status === "awaiting-confirmation"
+        || request.status === "committing")
       .map((request) => ({
         key: `live:${request.requestId}`,
         requestId: request.requestId,
         label: request.command,
         status: request.status,
-        meta: request.requestId,
+        meta: formatLiveRequestMeta(request),
       }));
     const auditRows = [...auditEntries]
       .reverse()

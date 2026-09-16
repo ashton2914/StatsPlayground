@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/experimental-ct-react";
 
 import { McpManagementHarness } from "./McpManagementHarness";
 
-for (const scenario of ["stopped", "starting", "running", "stopping"] as const) {
+function registerLifecycleStateTest(
+  scenario: "stopped" | "starting" | "running" | "stopping",
+) {
   test(`renders MCP server lifecycle state: ${scenario}`, async ({ mount, page }) => {
     const component = await mount(<McpManagementHarness scenario={scenario} initialSubview="server" />);
     await expect(component.getByRole("heading", { name: "MCP Server" })).toBeVisible();
@@ -13,6 +15,11 @@ for (const scenario of ["stopped", "starting", "running", "stopping"] as const) 
     }
   });
 }
+
+registerLifecycleStateTest("stopped");
+registerLifecycleStateTest("starting");
+registerLifecycleStateTest("running");
+registerLifecycleStateTest("stopping");
 
 test("copies endpoint, token, and client config only on explicit actions", async ({ mount }) => {
   const component = await mount(<McpManagementHarness scenario="running" initialSubview="server" />);
@@ -45,9 +52,14 @@ test("manages grants, live requests, bounded audit rows, and confirmations", asy
   await expect(activityRows.filter({ hasText: "cmd-queued" })).toBeVisible();
   await expect(activityRows.filter({ hasText: "cmd-running" })).toBeVisible();
   await expect(activityRows.filter({ hasText: "cmd-confirm" })).toBeVisible();
+  await expect(activityRows.filter({ hasText: "cmd-commit" })).toBeVisible();
+  await expect(activityRows.filter({ hasText: "Queued for export" })).toBeVisible();
+  await expect(activityRows.filter({ hasText: "64%" })).toBeVisible();
+  await expect(activityRows.filter({ hasText: "Committing snapshot" })).toBeVisible();
 
   await component.getByRole("button", { name: "Allow cmd-confirm" }).click();
   await expect(component.getByText("cmd-confirm")).toHaveCount(0);
+  await expect(component.getByText("ui-only-confirm")).toHaveCount(0);
 
   await component.getByRole("button", { name: "Remove root /Users/ashton/Exports" }).click();
   await expect(component.getByText("/Users/ashton/Exports")).toHaveCount(0);

@@ -42,4 +42,7 @@ export interface McpCommandRequestSummary {
     | "succeeded"
     | "failed"
     | "cancelled";
+  stage: string;
+  message?: string | null;
+  percent?: number | null;
 }

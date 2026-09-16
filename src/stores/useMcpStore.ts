@@ -73,6 +73,16 @@ function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function createStoppedTransientState(status: McpServerStatus = STOPPED_STATUS) {
+  return {
+    status,
+    auditEntries: [] as McpAuditEntry[],
+    authorizedRoots: [] as McpAuthorizedRootGrant[],
+    commandRequests: [] as McpCommandRequestSummary[],
+    pendingConfirmations: [] as McpCommandRequestSummary[],
+  };
+}
+
 export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
   const service = input.service ?? mcpManagementService;
   const setIntervalImpl = input.setInterval ?? ((callback, ms) => setInterval(callback, ms));
@@ -114,6 +124,14 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
           service.listAuditEntries(),
           Promise.resolve(service.listCommandRequests()),
         ]);
+        if (status.state === "stopped") {
+          set({
+            ...createStoppedTransientState(status),
+            refreshing: false,
+            lastError: null,
+          });
+          return;
+        }
         set({
           status,
           auditEntries,
@@ -170,12 +188,8 @@ export function createMcpStore(input: Partial<McpStoreDependencies> = {}) {
       }));
       try {
         await service.stopServer();
-        set((state) => ({
-          status: STOPPED_STATUS,
-          auditEntries: [],
-          commandRequests: [],
-          pendingConfirmations: [],
-          authorizedRoots: state.authorizedRoots,
+        set(() => ({
+          ...createStoppedTransientState(),
           lastError: null,
         }));
       } catch (error) {

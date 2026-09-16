@@ -123,6 +123,10 @@ import {
   waitForWorkspaceCommandConfirmation,
 } from "./workspaceCommandHandlers";
 import { mountApplicationCommandBridge } from "./workspaceApplicationCommandBridge";
+import {
+  openWorkspaceAiServer,
+  openWorkspaceAiSkills,
+} from "./workspaceAiNavigation";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -260,6 +264,14 @@ function MenuDropdown({ label, children, openMenu, setOpenMenu }: {
       )}
     </div>
   );
+}
+
+function applyAiNavigation(next: { activeTab: "files" | "history" | "workflow" | "ai"; activeAiSubview: "server" | "skills" }, input: {
+  setActiveTab: (tab: "files" | "history" | "workflow" | "ai") => void;
+  setActiveAiSubview: (subview: "server" | "skills") => void;
+}) {
+  input.setActiveTab(next.activeTab);
+  input.setActiveAiSubview(next.activeAiSubview);
 }
 
 export function Workspace() {
@@ -2494,12 +2506,16 @@ export function Workspace() {
             </MenuDropdown>
             <MenuDropdown label={t("menu.ai", { defaultValue: "AI" })}>
               <div className="menu-item" onClick={() => {
-                setActiveTab("ai");
-                setActiveAiSubview("server");
+                applyAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
+                  setActiveTab,
+                  setActiveAiSubview,
+                });
               }}>{t("menu.mcpServer", { defaultValue: "MCP Server..." })}</div>
               <div className="menu-item" onClick={() => {
-                setActiveTab("ai");
-                setActiveAiSubview("skills");
+                applyAiNavigation(openWorkspaceAiSkills({ activeTab, activeAiSubview }), {
+                  setActiveTab,
+                  setActiveAiSubview,
+                });
               }}>{t("menu.skills", { defaultValue: "Skills..." })}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.help")}>
@@ -2558,7 +2574,12 @@ export function Workspace() {
           </button>
           <button
             className={`activity-btn${activeTab === "ai" ? " activity-btn-active" : ""}`}
-            onClick={() => setActiveTab("ai")}
+            onClick={() => {
+              applyAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
+                setActiveTab,
+                setActiveAiSubview,
+              });
+            }}
             title={t("menu.ai", { defaultValue: "AI" })}
             aria-label={t("menu.ai", { defaultValue: "AI" })}
           >

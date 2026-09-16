@@ -45,9 +45,38 @@ function makeAuditEntries(): McpAuditEntry[] {
 
 function makeRequests(): McpCommandRequestSummary[] {
   return [
-    { requestId: "cmd-queued", command: "table.exportCsv", status: "queued" },
-    { requestId: "cmd-running", command: "snapshot.create", status: "running" },
-    { requestId: "cmd-confirm", command: "table.exportCsv", status: "awaiting-confirmation" },
+    {
+      requestId: "cmd-queued",
+      command: "table.exportCsv",
+      status: "queued",
+      stage: "queue",
+      message: "Queued for export",
+      percent: 0,
+    },
+    {
+      requestId: "cmd-running",
+      command: "snapshot.create",
+      status: "running",
+      stage: "running",
+      message: "Exporting rows",
+      percent: 64,
+    },
+    {
+      requestId: "cmd-confirm",
+      command: "table.exportCsv",
+      status: "awaiting-confirmation",
+      stage: "confirmation",
+      message: "Confirm overwrite",
+      percent: null,
+    },
+    {
+      requestId: "cmd-commit",
+      command: "snapshot.create",
+      status: "committing",
+      stage: "commit",
+      message: "Committing snapshot",
+      percent: null,
+    },
   ];
 }
 
@@ -109,8 +138,28 @@ export function McpManagementHarness({
     created.setState({
       status: makeStatus(scenario),
       auditEntries: makeAuditEntries(),
-      commandRequests: makeRequests(),
-      pendingConfirmations: makeRequests().filter((request) => request.status === "awaiting-confirmation"),
+      commandRequests: [
+        ...makeRequests(),
+        {
+          requestId: "ui-only-confirm",
+          command: "table.exportCsv",
+          status: "awaiting-confirmation",
+          stage: "confirmation",
+          message: "UI request should be hidden",
+          percent: null,
+        },
+      ],
+      pendingConfirmations: [
+        {
+          requestId: "ui-only-confirm",
+          command: "table.exportCsv",
+          status: "awaiting-confirmation",
+          stage: "confirmation",
+          message: "UI request should be hidden",
+          percent: null,
+        },
+        ...makeRequests().filter((request) => request.status === "awaiting-confirmation"),
+      ],
       authorizedRoots: [{ rootId: "root-1", displayName: "/Users/ashton/Exports" }],
     });
     return created;

@@ -40,6 +40,9 @@ function makeRequest(overrides: Partial<McpCommandRequestSummary> = {}): McpComm
     requestId: "cmd-1",
     command: "table.exportCsv",
     status: "queued",
+    stage: "queue",
+    message: null,
+    percent: null,
     ...overrides,
   };
 }
@@ -246,6 +249,7 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
     auditEntries: [makeAuditEntry()],
     commandRequests: [makeRequest({ status: "awaiting-confirmation" })],
     pendingConfirmations: [makeRequest({ status: "awaiting-confirmation" })],
+    authorizedRoots: [{ rootId: "root-1", displayName: "Exports" }],
   });
 
   await store.getState().stopServer();
@@ -254,6 +258,7 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
   assert.deepEqual(store.getState().auditEntries, []);
   assert.deepEqual(store.getState().commandRequests, []);
   assert.deepEqual(store.getState().pendingConfirmations, []);
+  assert.deepEqual(store.getState().authorizedRoots, []);
 }
 
 {
@@ -297,6 +302,11 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
   ];
   const store = createMcpStore({
     service: createService({
+      getServerStatus: async () => makeStatus({
+        state: "running",
+        endpoint: "http://127.0.0.1:48123/mcp",
+        token: "token-confirm",
+      }),
       listCommandRequests: () => pending,
       confirmCommandRequest: (requestId: string, allow: boolean) => {
         confirmations.push({ requestId, allow });
@@ -338,7 +348,12 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
       listAuditEntries: async () => [makeAuditEntry({ status: statusCallCount === 1 ? "queued" : "running" })],
       listCommandRequests: () => {
         requestCallCount += 1;
-        return [makeRequest({ status: requestCallCount === 1 ? "queued" : "running" })];
+        return [makeRequest({
+          status: requestCallCount === 1 ? "queued" : "running",
+          stage: requestCallCount === 1 ? "queue" : "running",
+          message: requestCallCount === 1 ? "Queued for export" : "Exporting rows",
+          percent: requestCallCount === 1 ? 0 : 42,
+        })];
       },
     }),
     setInterval: timer.setInterval,
@@ -351,14 +366,88 @@ function createService(overrides: Partial<McpManagementServiceLike> = {}): McpMa
   assert.equal(timer.count(), 1);
   assert.equal(store.getState().status.queuedRequests, 1);
   assert.deepEqual(store.getState().commandRequests.map((entry) => entry.status), ["queued"]);
+  assert.deepEqual(store.getState().commandRequests.map((entry) => entry.stage), ["queue"]);
+  assert.deepEqual(store.getState().commandRequests.map((entry) => entry.message), ["Queued for export"]);
+  assert.deepEqual(store.getState().commandRequests.map((entry) => entry.percent), [0]);
 
   timer.tickAll();
   await flushMicrotasks();
   assert.equal(store.getState().status.runningRequests, 1);
   assert.deepEqual(store.getState().commandRequests.map((entry) => entry.status), ["running"]);
+  assert.deepEqual(store.getState().commandRequests.map((entry) => entry.stage), ["running"]);
+  assert.deepEqual(store.getState().commandRequests.map((entry) => entry.message), ["Exporting rows"]);
+  assert.deepEqual(store.getState().commandRequests.map((entry) => entry.percent), [42]);
 
   store.getState().setViewVisible(false);
   assert.equal(timer.count(), 0);
+}
+
+{
+  const timer = createTimerHarness();
+  const store = createMcpStore({
+    service: createService({
+      getServerStatus: async () => makeStatus({ state: "stopped" }),
+      listAuditEntries: async () => [makeAuditEntry()],
+      listCommandRequests: () => [makeRequest({ status: "awaiting-confirmation" })],
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+
+  store.setState({
+    status: makeStatus({ state: "running", token: "secret" }),
+    auditEntries: [makeAuditEntry()],
+    commandRequests: [makeRequest({ status: "awaiting-confirmation" })],
+    pendingConfirmations: [makeRequest({ status: "awaiting-confirmation" })],
+    authorizedRoots: [{ rootId: "root-1", displayName: "/Users/ashton/Exports" }],
+  });
+
+  await store.getState().refresh();
+
+  assert.deepEqual(store.getState().status, makeStatus({ state: "stopped" }));
+  assert.deepEqual(store.getState().auditEntries, []);
+  assert.deepEqual(store.getState().commandRequests, []);
+  assert.deepEqual(store.getState().pendingConfirmations, []);
+  assert.deepEqual(store.getState().authorizedRoots, []);
+}
+
+{
+  const timer = createTimerHarness();
+  const uiOnly = makeRequest({
+    requestId: "ui-1",
+    status: "awaiting-confirmation",
+    stage: "confirmation",
+    message: "Overwrite existing file?",
+    percent: null,
+  });
+  const mcpVisible = makeRequest({
+    requestId: "mcp-1",
+    status: "running",
+    stage: "running",
+    message: "Exporting rows",
+    percent: 64,
+  });
+  const store = createMcpStore({
+    service: createService({
+      getServerStatus: async () => makeStatus({
+        state: "running",
+        endpoint: "http://127.0.0.1:48123/mcp",
+        token: "token-filtered",
+      }),
+      listCommandRequests: () => [mcpVisible],
+    }),
+    setInterval: timer.setInterval,
+    clearInterval: timer.clearInterval,
+  });
+
+  store.setState({
+    commandRequests: [uiOnly],
+    pendingConfirmations: [uiOnly],
+  });
+  await store.getState().refresh();
+
+  assert.deepEqual(store.getState().commandRequests, [mcpVisible]);
+  assert.deepEqual(store.getState().pendingConfirmations, []);
 }
 
 console.log("mcp store behavior tests passed");
