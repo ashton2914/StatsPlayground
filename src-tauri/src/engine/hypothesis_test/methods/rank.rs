@@ -32,15 +32,24 @@ pub fn mann_whitney_u(
     right: &[f64],
     alternative: HypothesisTestAlternative,
 ) -> Result<RankTestResult, AppError> {
-    if left.is_empty() || right.is_empty() || left.iter().chain(right).any(|value| !value.is_finite()) {
-        return Err(AppError::Stats("Mann-Whitney U requires non-empty finite groups".into()));
+    if left.is_empty()
+        || right.is_empty()
+        || left.iter().chain(right).any(|value| !value.is_finite())
+    {
+        return Err(AppError::Stats(
+            "Mann-Whitney U requires non-empty finite groups".into(),
+        ));
     }
-    let mut values = left.iter().map(|value| (*value, 0_usize))
+    let mut values = left
+        .iter()
+        .map(|value| (*value, 0_usize))
         .chain(right.iter().map(|value| (*value, 1_usize)))
         .collect::<Vec<_>>();
     values.sort_by(|left, right| left.0.total_cmp(&right.0));
     let (ranks, tie_sizes) = average_ranks(&values.iter().map(|item| item.0).collect::<Vec<_>>());
-    let rank_sum_left = values.iter().zip(&ranks)
+    let rank_sum_left = values
+        .iter()
+        .zip(&ranks)
         .filter(|((_, group), _)| *group == 0)
         .map(|(_, rank)| rank)
         .sum::<f64>();
@@ -66,10 +75,18 @@ pub fn mann_whitney_u(
         RankWarning::ExactUnavailableWithTies
     };
     let total = n1 + n2;
-    let tie_sum = tie_sizes.iter().map(|size| size.pow(3) - size).sum::<usize>() as f64;
-    let variance = (n1 * n2) as f64 / 12.0
-        * ((total + 1) as f64 - tie_sum / (total * (total - 1)) as f64);
-    let p_value = normal_p_value(statistic, (n1 * n2) as f64 / 2.0, variance.sqrt(), alternative)?;
+    let tie_sum = tie_sizes
+        .iter()
+        .map(|size| size.pow(3) - size)
+        .sum::<usize>() as f64;
+    let variance =
+        (n1 * n2) as f64 / 12.0 * ((total + 1) as f64 - tie_sum / (total * (total - 1)) as f64);
+    let p_value = normal_p_value(
+        statistic,
+        (n1 * n2) as f64 / 2.0,
+        variance.sqrt(),
+        alternative,
+    )?;
     Ok(RankTestResult {
         statistic,
         p_value,
@@ -88,22 +105,34 @@ pub fn wilcoxon_signed_rank(
         return Err(AppError::Stats("signed-rank requires finite pairs".into()));
     }
     let zero_differences = pairs.iter().filter(|pair| pair[0] == pair[1]).count();
-    let differences = pairs.iter().map(|pair| pair[0] - pair[1])
+    let differences = pairs
+        .iter()
+        .map(|pair| pair[0] - pair[1])
         .filter(|difference| *difference != 0.0)
         .collect::<Vec<_>>();
     if differences.is_empty() {
-        return Err(AppError::Stats("signed-rank requires at least one non-zero difference".into()));
+        return Err(AppError::Stats(
+            "signed-rank requires at least one non-zero difference".into(),
+        ));
     }
-    let absolute = differences.iter().map(|value| value.abs()).collect::<Vec<_>>();
+    let absolute = differences
+        .iter()
+        .map(|value| value.abs())
+        .collect::<Vec<_>>();
     let mut order = (0..absolute.len()).collect::<Vec<_>>();
     order.sort_by(|left, right| absolute[*left].total_cmp(&absolute[*right]));
-    let sorted = order.iter().map(|index| absolute[*index]).collect::<Vec<_>>();
+    let sorted = order
+        .iter()
+        .map(|index| absolute[*index])
+        .collect::<Vec<_>>();
     let (sorted_ranks, tie_sizes) = average_ranks(&sorted);
     let mut ranks = vec![0.0; differences.len()];
     for (position, index) in order.into_iter().enumerate() {
         ranks[index] = sorted_ranks[position];
     }
-    let statistic = differences.iter().zip(&ranks)
+    let statistic = differences
+        .iter()
+        .zip(&ranks)
         .filter(|(difference, _)| **difference > 0.0)
         .map(|(_, rank)| rank)
         .sum::<f64>();
@@ -186,7 +215,14 @@ fn enumerate_rank_sums(
         return;
     }
     for rank in next_rank..=total + 1 - remaining {
-        enumerate_rank_sums(rank + 1, total, remaining - 1, rank_sum + rank, offset, counts);
+        enumerate_rank_sums(
+            rank + 1,
+            total,
+            remaining - 1,
+            rank_sum + rank,
+            offset,
+            counts,
+        );
     }
 }
 
@@ -206,11 +242,7 @@ fn exact_signed_rank_p(
     exact_tail_p(&counts, observed, alternative)
 }
 
-fn exact_tail_p(
-    counts: &[u64],
-    observed: usize,
-    alternative: HypothesisTestAlternative,
-) -> f64 {
+fn exact_tail_p(counts: &[u64], observed: usize, alternative: HypothesisTestAlternative) -> f64 {
     let total = counts.iter().sum::<u64>() as f64;
     let lower = counts[..=observed].iter().sum::<u64>() as f64 / total;
     let upper = counts[observed..].iter().sum::<u64>() as f64 / total;
@@ -254,7 +286,8 @@ mod tests {
             &[1.0, 2.0],
             &[3.0, 4.0],
             HypothesisTestAlternative::TwoSided,
-        ).expect("Mann-Whitney U");
+        )
+        .expect("Mann-Whitney U");
         assert_eq!(result.statistic, 0.0);
         assert!((result.p_value - 1.0 / 3.0).abs() < 1e-12);
         assert_eq!(result.effect_size, -1.0);
@@ -267,7 +300,8 @@ mod tests {
         let result = wilcoxon_signed_rank(
             &[[2.0, 1.0], [4.0, 2.0], [6.0, 3.0]],
             HypothesisTestAlternative::TwoSided,
-        ).expect("signed-rank");
+        )
+        .expect("signed-rank");
         assert_eq!(result.statistic, 6.0);
         assert_eq!(result.zero_differences, 0);
         assert!((result.p_value - 0.25).abs() < 1e-12);
@@ -280,10 +314,14 @@ mod tests {
         let result = wilcoxon_signed_rank(
             &[[2.0, 1.0], [4.0, 2.0], [6.0, 3.0], [5.0, 5.0]],
             HypothesisTestAlternative::TwoSided,
-        ).expect("signed-rank with zero");
+        )
+        .expect("signed-rank with zero");
         assert_eq!(result.zero_differences, 1);
         assert_eq!(result.inference_path, InferencePath::Asymptotic);
-        assert_eq!(result.warnings, vec![RankWarning::ExactUnavailableWithZeros]);
+        assert_eq!(
+            result.warnings,
+            vec![RankWarning::ExactUnavailableWithZeros]
+        );
     }
 
     #[test]
@@ -292,7 +330,8 @@ mod tests {
             &[1.0, 2.0, 2.0],
             &[2.0, 3.0, 4.0],
             HypothesisTestAlternative::TwoSided,
-        ).expect("tied Mann-Whitney U");
+        )
+        .expect("tied Mann-Whitney U");
         assert_eq!(result.inference_path, InferencePath::Asymptotic);
         assert_eq!(result.warnings, vec![RankWarning::ExactUnavailableWithTies]);
         assert!(result.p_value > 0.0 && result.p_value <= 1.0);

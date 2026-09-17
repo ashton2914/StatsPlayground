@@ -1333,6 +1333,18 @@ impl DuckDbEngine {
         })
     }
 
+    pub fn preflight_create_table_from_sql_query(
+        &self,
+        sql: &str,
+        name: &str,
+    ) -> Result<(), AppError> {
+        let sql = self.validate_query_against_visible_tables(sql)?;
+        let snapshot = self.build_isolated_snapshot_connection()?;
+        let _ = self.collect_sql_query_schema(&snapshot, &sql)?;
+        self.validate_dataset_name(name, None)?;
+        Ok(())
+    }
+
     pub fn locate_table_row(
         &self,
         dataset_id: &str,
@@ -3435,6 +3447,13 @@ impl DuckDbEngine {
             .into_iter()
             .next()
             .ok_or_else(|| AppError::InvalidParam("column type produced no schema".into()))
+    }
+
+    pub fn canonicalize_column_type_for_create(
+        &self,
+        column_type: &str,
+    ) -> Result<String, AppError> {
+        self.canonicalize_column_type(column_type)
     }
 
     fn collect_sql_query_schema(

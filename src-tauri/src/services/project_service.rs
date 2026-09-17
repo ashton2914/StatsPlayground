@@ -1990,10 +1990,26 @@ mod tests {
         }
 
         let mut extras = BTreeMap::new();
-        extras.insert("unit".to_string(), serde_json::json!("USD"));
+        extras.insert("unit".to_string(), serde_json::json!({ "symbol": "USD" }));
+        extras.insert(
+            "spec".to_string(),
+            serde_json::json!({ "lsl": 1000.0, "target": 1250.0, "usl": 1500.0 }),
+        );
+        extras.insert(
+            "range".to_string(),
+            serde_json::json!({ "min": 1000.0, "max": 1600.0 }),
+        );
         extras.insert(
             "notes".to_string(),
-            serde_json::json!({"precision": "cents"}),
+            serde_json::json!({"precision": "cents", "owner": "qa"}),
+        );
+        extras.insert(
+            "valueOrder".to_string(),
+            serde_json::json!({ "values": ["EV", "DV", "PQ"] }),
+        );
+        extras.insert(
+            "opaqueNested".to_string(),
+            serde_json::json!({"nested": {"a": [1, true, "x"], "b": {"c": 2}}}),
         );
         state.column_display.lock().unwrap().insert(
             "preserve-id".to_string(),
@@ -2177,12 +2193,35 @@ mod tests {
         assert_eq!(restored_props[0].col_index, 2);
         assert_eq!(restored_props[0].width, Some(180.0));
         assert_eq!(restored_props[0].format.as_ref().unwrap().kind, "currency");
+        let restored_extras = restored_props[0]
+            .extras
+            .as_ref()
+            .expect("restored extras for preserve-id col 2");
         assert_eq!(
-            restored_props[0]
-                .extras
-                .as_ref()
-                .and_then(|extras| extras.get("unit")),
-            Some(&serde_json::json!("USD"))
+            restored_extras,
+            &BTreeMap::from([
+                ("unit".to_string(), serde_json::json!({ "symbol": "USD" })),
+                (
+                    "spec".to_string(),
+                    serde_json::json!({ "lsl": 1000.0, "target": 1250.0, "usl": 1500.0 }),
+                ),
+                (
+                    "range".to_string(),
+                    serde_json::json!({ "min": 1000.0, "max": 1600.0 }),
+                ),
+                (
+                    "notes".to_string(),
+                    serde_json::json!({"precision": "cents", "owner": "qa"}),
+                ),
+                (
+                    "valueOrder".to_string(),
+                    serde_json::json!({ "values": ["EV", "DV", "PQ"] }),
+                ),
+                (
+                    "opaqueNested".to_string(),
+                    serde_json::json!({"nested": {"a": [1, true, "x"], "b": {"c": 2}}}),
+                ),
+            ])
         );
 
         let db = reopened_state.db.lock().unwrap();
@@ -2958,15 +2997,15 @@ mod tests {
         graphs[0].body.insert(
             "filters".to_string(),
             serde_json::json!([{
-                    "id": "rule-1",
-                    "op": "AND",
-                    "rule": {
-                        "kind": "continuous",
-                        "field": { "name": "Length", "type": "continuous" },
-                        "min": 1.0,
-                        "max": 5.0
-                    }
-                }]),
+                "id": "rule-1",
+                "op": "AND",
+                "rule": {
+                    "kind": "continuous",
+                    "field": { "name": "Length", "type": "continuous" },
+                    "min": 1.0,
+                    "max": 5.0
+                }
+            }]),
         );
         graphs[1]
             .body
@@ -2999,11 +3038,8 @@ mod tests {
             "sp_legacy_filter_conflict_{}.spprj",
             uuid::Uuid::new_v4()
         ));
-        spprj_archive::write_legacy_project_archive_for_test(
-            &bundle,
-            file_path.to_str().unwrap(),
-        )
-        .unwrap();
+        spprj_archive::write_legacy_project_archive_for_test(&bundle, file_path.to_str().unwrap())
+            .unwrap();
 
         let result = ProjectService::new(&state)
             .open_project(file_path.to_str().unwrap(), None)

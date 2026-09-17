@@ -16,6 +16,7 @@ async function selectTimeSeriesLayer(component, page) {
 }
 
 async function expectNoAdditionalStreamAfter(component, action) {
+  await expect.poll(async () => JSON.parse(await component.getByTestId("time-series-request-json").textContent() ?? "null")?.viewport?.width).toBe(1180);
   const before = await requestCount(component);
   await action();
   await expect.poll(() => requestCount(component)).toBe(before);

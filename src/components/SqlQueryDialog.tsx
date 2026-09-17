@@ -14,7 +14,7 @@ interface SqlQueryDialogProps {
   datasets: DatasetMeta[];
   tableFolders: Record<string, string>;
   onClose: () => void;
-  onCreated: (dataset: DatasetMeta) => Promise<void> | void;
+  onCreateTable: (input: { sql: string; name: string }) => Promise<void> | void;
 }
 
 const PAGE_SIZE = 200;
@@ -75,7 +75,7 @@ function renderCell(value: unknown): string {
   }
 }
 
-export function SqlQueryDialog({ datasets, tableFolders, onClose, onCreated }: SqlQueryDialogProps) {
+export function SqlQueryDialog({ datasets, tableFolders, onClose, onCreateTable }: SqlQueryDialogProps) {
   const { t } = useTranslation();
   const readOnly = useProjectStore((s) => s.readOnly);
   const [sql, setSql] = useState("");
@@ -238,9 +238,8 @@ export function SqlQueryDialog({ datasets, tableFolders, onClose, onCreated }: S
     setCreating(true);
     setError(null);
     try {
-      const meta = await dataService.createTableFromSqlQuery(successfulSql, resolved.basename);
+      await onCreateTable({ sql: successfulSql, name: resolved.basename });
       if (requestId !== requestIdRef.current) return;
-      await onCreated(meta);
       onClose();
     } catch (error_) {
       if (requestId !== requestIdRef.current) return;

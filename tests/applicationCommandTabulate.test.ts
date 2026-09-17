@@ -1,0 +1,607 @@
+import assert from "node:assert/strict";
+
+import { createApplicationRuntime } from "@/applicationCommands/applicationRuntime";
+import { fingerprintTabulateRequest } from "@/applicationCommands/tabulateCommands";
+import { CommandExecutionError } from "@/applicationCommands/runtime";
+import type { DatasetMeta } from "@/types/data";
+import type { TabulateItem, TabulateRequest, TabulateResult } from "@/types/tabulate";
+
+function deferred<T>() {
+  let resolve: ((value: T | PromiseLike<T>) => void) | null = null;
+  let reject: ((reason?: unknown) => void) | null = null;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return {
+    promise,
+    resolve: (value: T) => resolve?.(value),
+    reject: (reason?: unknown) => reject?.(reason),
+  };
+}
+
+function dataset(id: string, name: string, generation: number): DatasetMeta {
+  return {
+    id,
+    name,
+    sourcePath: null,
+    sourceType: "manual",
+    rowCount: 4,
+    colCount: 2,
+    generation,
+    createdAt: "2026-09-15T00:00:00.000Z",
+    updatedAt: "2026-09-15T00:00:00.000Z",
+  };
+}
+
+function tabulateItem(id: string, sourceDatasetId: string): TabulateItem {
+  return {
+    id,
+    name: "Tabulate 1",
+    sourceDatasetId,
+    rowFields: ["region"],
+    columnFields: ["channel"],
+    statistics: [{ id: "s-1", field: "value", kind: "mean" }],
+    includeRowTotals: true,
+    includeColumnTotals: true,
+    createdAt: "2026-09-15T00:00:00.000Z",
+  };
+}
+
+function tabulateResult(value: number): TabulateResult {
+  return {
+    rowMembers: [["North"]],
+    columnMembers: [["Online"]],
+    statistics: [{ id: "s-1", field: "value", kind: "mean" }],
+    cells: [value],
+    rowTotals: [value],
+    columnTotals: [value],
+    grandTotals: [value],
+    cellCount: 1,
+    limit: 10000,
+  };
+}
+
+const request: TabulateRequest = {
+  datasetId: "ds-1",
+  rowFields: ["region"],
+  columnFields: ["channel"],
+  statistics: [{ id: "s-1", field: "value", kind: "mean" }],
+  includeRowTotals: true,
+  includeColumnTotals: true,
+  maxResultCells: 10000,
+};
+
+{
+  const requestA: TabulateRequest = {
+    ...request,
+    statistics: [{ id: "s-1", field: "value", kind: "mean" }],
+  };
+  const requestB: TabulateRequest = {
+    ...request,
+    statistics: [{ id: "s-2", field: "value", kind: "mean" }],
+  };
+
+  assert.notEqual(
+    fingerprintTabulateRequest(requestA),
+    fingerprintTabulateRequest(requestB),
+    "fingerprint must include statistic.id to avoid collisions across distinct requests",
+  );
+}
+
+{
+  const datasets = [dataset("ds-1", "Sales", 3)];
+  const tabulates = [tabulateItem("tab-1", "ds-1")];
+  const cache = new Map<string, {
+    requestFingerprint: string;
+    sourceGeneration: number;
+    result: TabulateResult;
+    completedAt: string;
+  }>();
+  let runCalls = 0;
+  let setLatestResultCalls = 0;
+  const postRunGenerationGate = deferred<number>();
+  const postRunGenerationReached = deferred<void>();
+  let generationReads = 0;
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 9,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task5",
+          filePath: "/Users/ashton/projects/task5.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: 9,
+      }),
+      listDatasets: () => datasets,
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => tabulates,
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 3,
+    },
+    tabulate: {
+      listTabulates: () => tabulates,
+      listDatasets: () => datasets,
+      listTabulateNamesForAllocation: () => tabulates.map((item) => item.name),
+      createTabulateId: () => "tab-x",
+      createNowIso: () => "2026-09-15T00:00:00.000Z",
+      nextTabulateBaseName: () => "Tabulate 2",
+      addTabulate: () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateTabulate: () => {},
+      runTabulate: async () => {
+        runCalls += 1;
+        return tabulateResult(7);
+      },
+      getDatasetGeneration: async () => {
+        generationReads += 1;
+        if (generationReads === 1) {
+          return 3;
+        }
+        postRunGenerationReached.resolve(undefined);
+        return postRunGenerationGate.promise;
+      },
+      setLatestResult: (tabulateId, latest) => {
+        setLatestResultCalls += 1;
+        cache.set(tabulateId, latest);
+      },
+      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
+    },
+  });
+
+  const controller = new AbortController();
+  const running = runtime.execute(
+    {
+      type: "tabulate.run",
+      input: {
+        tabulateId: "tab-1",
+        request,
+      },
+    },
+    { kind: "ui" },
+    { signal: controller.signal },
+  );
+
+  await postRunGenerationReached.promise;
+  controller.abort();
+  postRunGenerationGate.resolve(3);
+
+  await assert.rejects(
+    running,
+    (error: unknown) => error instanceof CommandExecutionError && error.code === "cancelled",
+  );
+
+  assert.equal(runCalls, 1);
+  assert.equal(setLatestResultCalls, 0, "cancellation after run must not mutate latest runtime cache");
+  assert.equal(cache.size, 0, "cancellation after run must leave latest runtime cache unchanged");
+}
+
+{
+  const datasets = [dataset("ds-1", "Sales", 8)];
+  const tabulates = [tabulateItem("tab-1", "ds-1")];
+  const cache = new Map<string, {
+    requestFingerprint: string;
+    sourceGeneration: number;
+    result: TabulateResult;
+    completedAt: string;
+  }>();
+  let runCalls = 0;
+  let createTableCalls = 0;
+  let beginCommitCalls = 0;
+  let buildExportRequestCalls = 0;
+  const generations = [8, 8, 9];
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 30,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task5",
+          filePath: "/Users/ashton/projects/task5.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: 30,
+      }),
+      listDatasets: () => datasets,
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => tabulates,
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => datasets[0]?.generation ?? 1,
+    },
+    tabulate: {
+      listTabulates: () => tabulates,
+      listDatasets: () => datasets,
+      listTabulateNamesForAllocation: () => tabulates.map((item) => item.name),
+      createTabulateId: () => "tab-x",
+      createNowIso: () => "2026-09-15T00:00:00.000Z",
+      nextTabulateBaseName: () => "Tabulate 2",
+      addTabulate: () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateTabulate: () => {},
+      runTabulate: async () => {
+        runCalls += 1;
+        return tabulateResult(99);
+      },
+      getDatasetGeneration: async () => generations.shift() ?? 9,
+      setLatestResult: (tabulateId, latest) => {
+        cache.set(tabulateId, latest);
+      },
+      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
+      createTable: async (_input, controls) => {
+        createTableCalls += 1;
+        controls?.beginCommit?.();
+        beginCommitCalls += 1;
+        throw new Error("createTable should not be called when rerun result is stale");
+      },
+      buildExportRequest: () => {
+        buildExportRequestCalls += 1;
+        throw new Error("buildExportRequest should not be called when rerun result is stale");
+      },
+    },
+  });
+
+  await assert.rejects(
+    runtime.execute(
+      {
+        type: "tabulate.exportTable",
+        input: {
+          tabulateId: "tab-1",
+          request,
+          tableName: "Tabulate Export",
+        },
+        control: { expectedProjectRevision: 30 },
+      },
+      { kind: "ui" },
+    ),
+    (error: unknown) => {
+      if (!(error instanceof CommandExecutionError)) {
+        return false;
+      }
+      assert.equal(error.code, "execution_failed");
+      assert.equal(error.retryable, true);
+      assert.match(error.message, /source table changed during tabulate rerun/i);
+      return true;
+    },
+  );
+
+  assert.equal(runCalls, 1, "stale or missing cache must trigger rerun before export");
+  assert.equal(buildExportRequestCalls, 0, "stale rerun rejection must occur before export request build");
+  assert.equal(createTableCalls, 0, "stale rerun result must reject before table.create");
+  assert.equal(beginCommitCalls, 0, "stale rerun result must reject before beginCommit");
+  assert.equal(cache.get("tab-1")?.sourceGeneration, 8);
+
+  const postRejectInspect = await runtime.execute(
+    {
+      type: "project.inspect",
+      input: {},
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(postRejectInspect.projectRevision, 30, "stale rerun rejection must not advance runtime revision");
+  assert.equal(postRejectInspect.data.projectRevision, 30, "project state revision must remain unchanged after rejection");
+}
+
+{
+  const datasets = [dataset("ds-1", "Sales", 2)];
+  const tabulates: TabulateItem[] = [];
+  let dirty = false;
+  let dirtyTransitions = 0;
+  const history: string[] = [];
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 10,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task5",
+          filePath: "/Users/ashton/projects/task5.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty,
+        readOnly: false,
+        projectRevision: 10,
+      }),
+      listDatasets: () => datasets,
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => tabulates,
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => 2,
+    },
+    tabulate: {
+      listTabulates: () => tabulates,
+      listDatasets: () => datasets,
+      listTabulateNamesForAllocation: () => tabulates.map((item) => item.name),
+      createTabulateId: () => "tab-1",
+      createNowIso: () => "2026-09-15T00:00:00.000Z",
+      nextTabulateBaseName: () => "Tabulate 1",
+      addTabulate: (item) => {
+        tabulates.push(item);
+      },
+      markDirty: () => {
+        if (!dirty) dirtyTransitions += 1;
+        dirty = true;
+      },
+      recordAction: (entry) => {
+        history.push(entry);
+      },
+      activateTabulate: () => {},
+      runTabulate: async () => tabulateResult(1),
+      getDatasetGeneration: async () => 2,
+      setLatestResult: () => {},
+      getLatestResult: () => null,
+    },
+  });
+
+  const created = await runtime.execute(
+    {
+      type: "tabulate.create",
+      input: { sourceDatasetId: "ds-1" },
+      control: { expectedProjectRevision: 10 },
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(created.changed, true);
+  assert.equal(created.projectRevision, 11);
+  assert.equal(tabulates.length, 1);
+  assert.equal(tabulates[0]?.name, "Tabulate 1");
+  assert.deepEqual(tabulates[0]?.rowFields, []);
+  assert.deepEqual(tabulates[0]?.columnFields, []);
+  assert.deepEqual(tabulates[0]?.statistics, []);
+  assert.equal(tabulates[0]?.includeRowTotals, true);
+  assert.equal(tabulates[0]?.includeColumnTotals, true);
+  assert.equal(dirtyTransitions, 1);
+  assert.equal(history.length, 1);
+}
+
+{
+  const datasets = [dataset("ds-1", "Sales", 3)];
+  const tabulates = [tabulateItem("tab-1", "ds-1")];
+  const cache = new Map<string, {
+    requestFingerprint: string;
+    sourceGeneration: number;
+    result: TabulateResult;
+    completedAt: string;
+  }>();
+  let runCalls = 0;
+  const generationReadings = [3, 3, 4, 5];
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 7,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task5",
+          filePath: "/Users/ashton/projects/task5.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty: false,
+        readOnly: false,
+        projectRevision: 7,
+      }),
+      listDatasets: () => datasets,
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => tabulates,
+      getColumns: async () => [],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async () => datasets[0]?.generation ?? 1,
+    },
+    tabulate: {
+      listTabulates: () => tabulates,
+      listDatasets: () => datasets,
+      listTabulateNamesForAllocation: () => tabulates.map((item) => item.name),
+      createTabulateId: () => "tab-x",
+      createNowIso: () => "2026-09-15T00:00:00.000Z",
+      nextTabulateBaseName: () => "Tabulate 2",
+      addTabulate: () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateTabulate: () => {},
+      runTabulate: async () => {
+        runCalls += 1;
+        return tabulateResult(runCalls);
+      },
+      getDatasetGeneration: async () => generationReadings.shift() ?? 5,
+      setLatestResult: (tabulateId, latest) => {
+        cache.set(tabulateId, latest);
+      },
+      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
+    },
+  });
+
+  const firstRun = await runtime.execute(
+    {
+      type: "tabulate.run",
+      input: {
+        tabulateId: "tab-1",
+        request,
+      },
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(firstRun.changed, false);
+  assert.equal(firstRun.projectRevision, 7);
+  assert.equal(runCalls, 1);
+  assert.equal(cache.get("tab-1")?.sourceGeneration, 3);
+
+  await runtime.execute(
+    {
+      type: "tabulate.run",
+      input: {
+        tabulateId: "tab-1",
+        request,
+      },
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(runCalls, 2);
+  assert.equal(cache.get("tab-1")?.sourceGeneration, 4, "cache must keep request start generation so source changes are stale");
+}
+
+{
+  const datasets = [dataset("ds-1", "Sales", 8)];
+  const tabulates = [tabulateItem("tab-1", "ds-1")];
+  const cache = new Map<string, {
+    requestFingerprint: string;
+    sourceGeneration: number;
+    result: TabulateResult;
+    completedAt: string;
+  }>();
+  let runCalls = 0;
+  let refreshCalls = 0;
+  let dirtyTransitions = 0;
+  let dirty = false;
+  let activateDatasetCalls = 0;
+  const history: string[] = [];
+
+  const runtime = createApplicationRuntime({
+    initialRevision: 20,
+    project: {
+      getProjectState: () => ({
+        project: {
+          name: "Task5",
+          filePath: "/Users/ashton/projects/task5.spprj",
+          createdAt: "2026-09-15T00:00:00.000Z",
+        },
+        dirty,
+        readOnly: false,
+        projectRevision: 20,
+      }),
+      listDatasets: () => datasets,
+      listTableTransforms: () => [],
+      listGraphs: () => [],
+      listReports: () => [],
+      listAnalyses: () => [],
+      listTabulates: () => tabulates,
+      getColumns: async (datasetId) => datasetId === "tbl-export"
+        ? [["region", "VARCHAR"], ["Online - Mean - value", "DOUBLE"]]
+        : [["region", "VARCHAR"], ["channel", "VARCHAR"], ["value", "DOUBLE"]],
+      getColumnDisplayProps: async () => [],
+      getDatasetGeneration: async (datasetId) => datasetId === "tbl-export" ? 1 : datasets[0]?.generation ?? 1,
+    },
+    table: {
+      createManagedTable: async (managedRequest) => {
+        assert.deepEqual(managedRequest.rows, [["North", 42]]);
+        assert.equal(managedRequest.columns[0]?.name, "region");
+        assert.equal(managedRequest.columns[0]?.columnType, "VARCHAR");
+        assert.equal(managedRequest.columns[1]?.name.includes("Mean - value"), true);
+        assert.equal(managedRequest.columns[1]?.columnType, "DOUBLE");
+        return {
+          dataset: dataset("tbl-export", managedRequest.name, 1),
+          generation: 1,
+          columns: managedRequest.columns.map((column, index) => ({
+            colIndex: index,
+            colName: column.name,
+            colType: column.columnType.toUpperCase(),
+            width: column.display?.width,
+            format: column.display?.format,
+            extras: column.display?.extras,
+          })),
+        };
+      },
+      refreshDatasets: async () => {
+        refreshCalls += 1;
+      },
+      markDirty: () => {
+        if (!dirty) dirtyTransitions += 1;
+        dirty = true;
+      },
+      recordAction: (entry) => {
+        history.push(entry);
+      },
+      activateDataset: () => {
+        activateDatasetCalls += 1;
+      },
+      historyMessage: (name) => `Created table ${name}`,
+    },
+    tabulate: {
+      listTabulates: () => tabulates,
+      listDatasets: () => datasets,
+      listTabulateNamesForAllocation: () => tabulates.map((item) => item.name),
+      createTabulateId: () => "tab-x",
+      createNowIso: () => "2026-09-15T00:00:00.000Z",
+      nextTabulateBaseName: () => "Tabulate 2",
+      addTabulate: () => {},
+      markDirty: () => {},
+      recordAction: () => {},
+      activateTabulate: () => {},
+      runTabulate: async () => {
+        runCalls += 1;
+        return {
+          rowMembers: [["North"]],
+          columnMembers: [["Online"]],
+          statistics: [{ id: "s-1", field: "value", kind: "mean" }],
+          cells: [42],
+          rowTotals: [42],
+          columnTotals: [42],
+          grandTotals: [42],
+          cellCount: 1,
+          limit: 10000,
+        } satisfies TabulateResult;
+      },
+      getDatasetGeneration: async () => datasets[0]?.generation ?? 1,
+      setLatestResult: (tabulateId, latest) => {
+        cache.set(tabulateId, latest);
+      },
+      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
+    },
+  });
+
+  const staleFingerprint = JSON.stringify({ ...request, rowFields: ["region", "store"] });
+  cache.set("tab-1", {
+    requestFingerprint: staleFingerprint,
+    sourceGeneration: 8,
+    result: tabulateResult(11),
+    completedAt: "2026-09-15T00:00:00.000Z",
+  });
+
+  const exported = await runtime.execute(
+    {
+      type: "tabulate.exportTable",
+      input: {
+        tabulateId: "tab-1",
+        request,
+        tableName: "Tabulate Export",
+      },
+      control: { expectedProjectRevision: 20 },
+    },
+    { kind: "ui" },
+  );
+
+  assert.equal(exported.changed, true);
+  assert.equal(exported.projectRevision, 21);
+  assert.equal(runCalls, 1, "stale or missing cache must trigger a canonical rerun before export");
+  assert.equal(refreshCalls, 1, "export must use the canonical table post-create coordinator once");
+  assert.equal(dirtyTransitions, 1, "export should dirty the project exactly once via table.create path");
+  assert.equal(activateDatasetCalls, 1, "export should activate the created table once");
+  assert.equal(history.length, 1, "export should record one table-create history entry");
+  assert.equal(exported.data.outputTable?.dataset.id, "tbl-export");
+}
+
+console.log("application command tabulate lifecycle OK");

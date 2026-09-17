@@ -500,8 +500,7 @@ pub fn remap_report_document_references(
         ));
     }
     let (remapped_markdown, remapped_dependencies) = remap_report_markdown(&markdown, stable_ids)?;
-    let validation_result_hash =
-        canonical_json_hash(&Value::String(remapped_markdown.clone()))?;
+    let validation_result_hash = canonical_json_hash(&Value::String(remapped_markdown.clone()))?;
     Ok(WorkflowDocumentCommit::Report {
         id,
         name,

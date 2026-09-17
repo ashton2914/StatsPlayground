@@ -681,7 +681,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_report_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!("Archive report entry {} missing id", entry.file))
         })?;
@@ -700,6 +699,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_report_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.fit_y_by_x_files {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -743,7 +743,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_legacy_distribution_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!(
                 "Archive distribution entry {} missing id",
@@ -765,6 +764,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_legacy_distribution_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.analyses {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -779,7 +779,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_analysis_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!("Archive analysis entry {} missing id", entry.file))
         })?;
@@ -798,6 +797,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_analysis_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.tabulate_files {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -1215,12 +1215,6 @@ fn read_indexed_values<R: Read + Seek>(
             .ok_or_else(|| AppError::FileIO(format!("Missing indexed entry: {}", entry.file)))?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| AppError::FileIO(format!("Invalid indexed file {}: {}", entry.file, e)))?;
-        match expected_kind {
-            DocumentKind::Report => validate_report_value(&value, &entry.file)?,
-            DocumentKind::Distribution => validate_legacy_distribution_value(&value, &entry.file)?,
-            DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
-            _ => {}
-        }
         let body_id = value
             .get("id")
             .and_then(Value::as_str)
@@ -1239,6 +1233,12 @@ fn read_indexed_values<R: Read + Seek>(
                     entry.file, entry.name, body_name
                 )));
             }
+        }
+        match expected_kind {
+            DocumentKind::Report => validate_report_value(&value, &entry.file)?,
+            DocumentKind::Distribution => validate_legacy_distribution_value(&value, &entry.file)?,
+            DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
+            _ => {}
         }
         out.push(value);
     }

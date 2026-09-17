@@ -1,20 +1,29 @@
-use crate::engine::hypothesis_test::normalize::{CompleteBlocks, IndependentGroups};
 use crate::engine::hypothesis_test::methods::rank::{average_ranks, wilcoxon_signed_rank};
-use crate::engine::hypothesis_test::post_hoc::{compact_letters, holm_adjust, PostHocComparison, PostHocResult};
+use crate::engine::hypothesis_test::normalize::{CompleteBlocks, IndependentGroups};
+use crate::engine::hypothesis_test::post_hoc::{
+    compact_letters, holm_adjust, PostHocComparison, PostHocResult,
+};
 use crate::error::AppError;
 use crate::models::hypothesis_test::HypothesisTestAlternative;
 use statrs::distribution::{ContinuousCDF, Normal};
 
 pub fn dunn_holm(groups: &IndependentGroups, alpha: f64) -> Result<PostHocResult, AppError> {
     if groups.groups.len() < 3 || groups.groups.iter().any(|group| group.values.is_empty()) {
-        return Err(AppError::Stats("Dunn post-hoc requires at least three non-empty groups".into()));
+        return Err(AppError::Stats(
+            "Dunn post-hoc requires at least three non-empty groups".into(),
+        ));
     }
     if !alpha.is_finite() || !(0.0..1.0).contains(&alpha) {
         return Err(AppError::InvalidParam("alpha must be inside (0, 1)".into()));
     }
-    let mut pooled = groups.groups.iter().enumerate().flat_map(|(group_index, group)| {
-        group.values.iter().map(move |value| (*value, group_index))
-    }).collect::<Vec<_>>();
+    let mut pooled = groups
+        .groups
+        .iter()
+        .enumerate()
+        .flat_map(|(group_index, group)| {
+            group.values.iter().map(move |value| (*value, group_index))
+        })
+        .collect::<Vec<_>>();
     pooled.sort_by(|left, right| left.0.total_cmp(&right.0));
     let (ranks, ties) = average_ranks(&pooled.iter().map(|item| item.0).collect::<Vec<_>>());
     let mut rank_sums = vec![0.0; groups.groups.len()];
@@ -23,10 +32,12 @@ pub fn dunn_holm(groups: &IndependentGroups, alpha: f64) -> Result<PostHocResult
     }
     let count = pooled.len();
     let tie_sum = ties.iter().map(|size| size.pow(3) - size).sum::<usize>() as f64;
-    let rank_variance = count as f64 * (count + 1) as f64 / 12.0
-        - tie_sum / (12.0 * (count - 1) as f64);
+    let rank_variance =
+        count as f64 * (count + 1) as f64 / 12.0 - tie_sum / (12.0 * (count - 1) as f64);
     if rank_variance <= 0.0 {
-        return Err(AppError::Stats("Dunn rank variance is not estimable".into()));
+        return Err(AppError::Stats(
+            "Dunn rank variance is not estimable".into(),
+        ));
     }
     let normal = Normal::new(0.0, 1.0).map_err(|error| AppError::Stats(error.to_string()))?;
     let mut comparisons = Vec::new();
@@ -51,23 +62,39 @@ pub fn dunn_holm(groups: &IndependentGroups, alpha: f64) -> Result<PostHocResult
             });
         }
     }
-    let adjusted = holm_adjust(&comparisons.iter().map(|item| item.raw_p_value).collect::<Vec<_>>())?;
+    let adjusted = holm_adjust(
+        &comparisons
+            .iter()
+            .map(|item| item.raw_p_value)
+            .collect::<Vec<_>>(),
+    )?;
     for (comparison, adjusted_p_value) in comparisons.iter_mut().zip(adjusted) {
         comparison.adjusted_p_value = adjusted_p_value;
     }
-    let conditions = groups.groups.iter().map(|group| group.condition.clone()).collect::<Vec<_>>();
+    let conditions = groups
+        .groups
+        .iter()
+        .map(|group| group.condition.clone())
+        .collect::<Vec<_>>();
     let compact_letters = compact_letters(&conditions, &comparisons, alpha)?;
-    Ok(PostHocResult { family: "dunnHolm".into(), comparisons, compact_letters })
+    Ok(PostHocResult {
+        family: "dunnHolm".into(),
+        comparisons,
+        compact_letters,
+    })
 }
 
-pub fn paired_wilcoxon_holm(
-    study: &CompleteBlocks,
-    alpha: f64,
-) -> Result<PostHocResult, AppError> {
-    if study.conditions.len() < 3 || study.blocks.is_empty()
-        || study.blocks.iter().any(|block| block.len() != study.conditions.len())
+pub fn paired_wilcoxon_holm(study: &CompleteBlocks, alpha: f64) -> Result<PostHocResult, AppError> {
+    if study.conditions.len() < 3
+        || study.blocks.is_empty()
+        || study
+            .blocks
+            .iter()
+            .any(|block| block.len() != study.conditions.len())
     {
-        return Err(AppError::Stats("paired post-hoc requires a complete matrix with three conditions".into()));
+        return Err(AppError::Stats(
+            "paired post-hoc requires a complete matrix with three conditions".into(),
+        ));
     }
     if !alpha.is_finite() || !(0.0..1.0).contains(&alpha) {
         return Err(AppError::InvalidParam("alpha must be inside (0, 1)".into()));
@@ -75,10 +102,16 @@ pub fn paired_wilcoxon_holm(
     let mut comparisons = Vec::new();
     for left in 0..study.conditions.len() - 1 {
         for right in left + 1..study.conditions.len() {
-            let pairs = study.blocks.iter().map(|block| [block[left], block[right]])
+            let pairs = study
+                .blocks
+                .iter()
+                .map(|block| [block[left], block[right]])
                 .collect::<Vec<_>>();
             let result = wilcoxon_signed_rank(&pairs, HypothesisTestAlternative::TwoSided)?;
-            let differences = pairs.iter().map(|pair| pair[0] - pair[1]).collect::<Vec<_>>();
+            let differences = pairs
+                .iter()
+                .map(|pair| pair[0] - pair[1])
+                .collect::<Vec<_>>();
             comparisons.push(PostHocComparison {
                 left: study.conditions[left].clone(),
                 right: study.conditions[right].clone(),
@@ -93,7 +126,12 @@ pub fn paired_wilcoxon_holm(
             });
         }
     }
-    let adjusted = holm_adjust(&comparisons.iter().map(|item| item.raw_p_value).collect::<Vec<_>>())?;
+    let adjusted = holm_adjust(
+        &comparisons
+            .iter()
+            .map(|item| item.raw_p_value)
+            .collect::<Vec<_>>(),
+    )?;
     for (comparison, adjusted_p_value) in comparisons.iter_mut().zip(adjusted) {
         comparison.adjusted_p_value = adjusted_p_value;
     }
@@ -128,11 +166,22 @@ mod tests {
 
     #[test]
     fn dunn_uses_joint_tied_ranks_and_one_holm_family() {
-        let groups = IndependentGroups { groups: vec![
-            ConditionValues { condition: "A".into(), values: vec![1.0, 2.0, 2.0] },
-            ConditionValues { condition: "B".into(), values: vec![2.0, 3.0, 4.0] },
-            ConditionValues { condition: "C".into(), values: vec![7.0, 8.0, 9.0] },
-        ] };
+        let groups = IndependentGroups {
+            groups: vec![
+                ConditionValues {
+                    condition: "A".into(),
+                    values: vec![1.0, 2.0, 2.0],
+                },
+                ConditionValues {
+                    condition: "B".into(),
+                    values: vec![2.0, 3.0, 4.0],
+                },
+                ConditionValues {
+                    condition: "C".into(),
+                    values: vec![7.0, 8.0, 9.0],
+                },
+            ],
+        };
         let result = dunn_holm(&groups, 0.05).expect("Dunn-Holm");
         assert_eq!(result.family, "dunnHolm");
         assert_eq!(result.comparisons.len(), 3);

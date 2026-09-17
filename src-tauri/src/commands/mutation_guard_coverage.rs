@@ -38,6 +38,34 @@ mod tests {
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
             (
+                "commands::mcp_commands::start_mcp_server",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::stop_mcp_server",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::get_mcp_server_status",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::mcp_commands::list_mcp_audit_entries",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::mcp_commands::register_application_command_dispatcher",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::complete_application_command",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::unregister_application_command_dispatcher",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::data_link_commands::test_server_connection",
                 CommandClass::ReadOnly,
             ),
@@ -142,7 +170,15 @@ mod tests {
                 CommandClass::Mutation,
             ),
             (
+                "commands::data_commands::preflight_create_table_from_sql_query",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::data_commands::create_table_from_rows",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::create_managed_table",
                 CommandClass::Mutation,
             ),
             (
@@ -279,8 +315,27 @@ mod tests {
                 "commands::hypothesis_test_commands::run_hypothesis_test",
                 CommandClass::ReadOnly,
             ),
-            ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),
+            (
+                "commands::tabulate_commands::tabulate",
+                CommandClass::ReadOnly,
+            ),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
+            (
+                "commands::io_commands::authorize_csv_export_root",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::io_commands::revoke_csv_export_root",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::io_commands::inspect_authorized_csv_target",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::io_commands::export_csv_authorized",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::io_commands::import_sqlite",
                 CommandClass::Mutation,
@@ -357,15 +412,29 @@ mod tests {
                 "commands::project_commands::export_tables_sptb_zip",
                 CommandClass::ReadOnly,
             ),
-            ("commands::project_commands::import_table", CommandClass::Mutation),
-            ("commands::project_commands::import_graph", CommandClass::ReadOnly),
+            (
+                "commands::project_commands::import_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::import_graph",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::project_commands::create_table_transform",
                 CommandClass::Mutation,
             ),
             (
+                "commands::project_commands::preflight_create_table_transform",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::project_commands::run_table_transform",
                 CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::preflight_run_table_transform",
+                CommandClass::ReadOnly,
             ),
             (
                 "commands::project_commands::rebind_table_transform",
@@ -379,13 +448,22 @@ mod tests {
                 "commands::project_commands::import_table_transform",
                 CommandClass::Mutation,
             ),
-            ("commands::table_commands::get_columns", CommandClass::ReadOnly),
+            (
+                "commands::table_commands::get_columns",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::table_commands::get_column_descriptors",
                 CommandClass::ReadOnly,
             ),
-            ("commands::table_commands::sort_table", CommandClass::Mutation),
-            ("commands::table_commands::subset_table", CommandClass::Mutation),
+            (
+                "commands::table_commands::sort_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::table_commands::subset_table",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::table_commands::transpose_table",
                 CommandClass::Mutation,
@@ -417,12 +495,13 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 49] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 50] {
         [
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
             ("data_commands.rs", "create_table_from_sql_query"),
             ("data_commands.rs", "create_table_from_rows"),
+            ("data_commands.rs", "create_managed_table"),
             ("data_commands.rs", "create_table"),
             ("data_commands.rs", "add_row"),
             ("data_commands.rs", "add_rows"),

@@ -23,11 +23,14 @@ pub fn build_plot_data(
                     .groups
                     .iter()
                     .flat_map(|group| {
-                        group.values.iter().map(|value| HypothesisTestPlotObservation {
-                            condition: group.condition.clone(),
-                            value: *value,
-                            subject: None,
-                        })
+                        group
+                            .values
+                            .iter()
+                            .map(|value| HypothesisTestPlotObservation {
+                                condition: group.condition.clone(),
+                                value: *value,
+                                subject: None,
+                            })
                     })
                     .collect::<Vec<_>>();
                 let diagnostic_values = groups
@@ -52,13 +55,15 @@ pub fn build_plot_data(
                     .iter()
                     .zip(&paired.pairs)
                     .flat_map(|(subject, pair)| {
-                        paired.conditions.iter().zip(pair).map(|(condition, value)| {
-                            HypothesisTestPlotObservation {
+                        paired
+                            .conditions
+                            .iter()
+                            .zip(pair)
+                            .map(|(condition, value)| HypothesisTestPlotObservation {
                                 condition: condition.clone(),
                                 value: *value,
                                 subject: Some(subject.clone()),
-                            }
-                        })
+                            })
                     })
                     .collect::<Vec<_>>();
                 let diagnostic_values = paired
@@ -80,20 +85,34 @@ pub fn build_plot_data(
                     .iter()
                     .zip(&blocks.blocks)
                     .flat_map(|(subject, values)| {
-                        blocks.conditions.iter().zip(values).map(|(condition, value)| {
-                            HypothesisTestPlotObservation {
+                        blocks
+                            .conditions
+                            .iter()
+                            .zip(values)
+                            .map(|(condition, value)| HypothesisTestPlotObservation {
                                 condition: condition.clone(),
                                 value: *value,
                                 subject: Some(subject.clone()),
-                            }
-                        })
+                            })
                     })
                     .collect::<Vec<_>>();
                 let grand_mean = mean(&blocks.blocks.iter().flatten().copied().collect::<Vec<_>>());
                 let condition_means = (0..blocks.conditions.len())
-                    .map(|index| mean(&blocks.blocks.iter().map(|block| block[index]).collect::<Vec<_>>()))
+                    .map(|index| {
+                        mean(
+                            &blocks
+                                .blocks
+                                .iter()
+                                .map(|block| block[index])
+                                .collect::<Vec<_>>(),
+                        )
+                    })
                     .collect::<Vec<_>>();
-                let block_means = blocks.blocks.iter().map(|block| mean(block)).collect::<Vec<_>>();
+                let block_means = blocks
+                    .blocks
+                    .iter()
+                    .map(|block| mean(block))
+                    .collect::<Vec<_>>();
                 let diagnostic_values = blocks
                     .blocks
                     .iter()
@@ -101,9 +120,12 @@ pub fn build_plot_data(
                     .flat_map(|(block_index, block)| {
                         let condition_means = &condition_means;
                         let block_mean = block_means[block_index];
-                        block.iter().enumerate().map(move |(condition_index, value)| {
-                            value - condition_means[condition_index] - block_mean + grand_mean
-                        })
+                        block
+                            .iter()
+                            .enumerate()
+                            .map(move |(condition_index, value)| {
+                                value - condition_means[condition_index] - block_mean + grand_mean
+                            })
                     })
                     .collect::<Vec<_>>();
                 (
@@ -119,9 +141,7 @@ pub fn build_plot_data(
     ensure_finite(&observations, &diagnostic_values)?;
     let summaries = conditions
         .iter()
-        .map(|condition| {
-            summarize_condition(condition, &observations, confidence_level)
-        })
+        .map(|condition| summarize_condition(condition, &observations, confidence_level))
         .collect::<Result<Vec<_>, _>>()?;
     let qq_points = qq_points(&diagnostic_values)?;
 
@@ -147,7 +167,9 @@ fn summarize_condition(
         .map(|observation| observation.value)
         .collect::<Vec<_>>();
     if values.is_empty() {
-        return Err(AppError::Stats(format!("condition {condition} has no retained observations")));
+        return Err(AppError::Stats(format!(
+            "condition {condition} has no retained observations"
+        )));
     }
     values.sort_by(f64::total_cmp);
     let average = mean(&values);
@@ -160,8 +182,12 @@ fn summarize_condition(
         })
         .unwrap_or_else(|| {
             (
-                HypothesisTestValue::Unavailable { reason: "insufficientObservations".into() },
-                HypothesisTestValue::Unavailable { reason: "insufficientObservations".into() },
+                HypothesisTestValue::Unavailable {
+                    reason: "insufficientObservations".into(),
+                },
+                HypothesisTestValue::Unavailable {
+                    reason: "insufficientObservations".into(),
+                },
             )
         });
     Ok(HypothesisTestPlotSummary {
@@ -208,9 +234,14 @@ fn qq_points(values: &[f64]) -> Result<Vec<HypothesisTestQqPoint>, AppError> {
         .map(|(index, observed)| {
             let theoretical = normal.inverse_cdf((index as f64 + 0.5) / count);
             if theoretical.is_finite() && observed.is_finite() {
-                Ok(HypothesisTestQqPoint { theoretical, observed })
+                Ok(HypothesisTestQqPoint {
+                    theoretical,
+                    observed,
+                })
             } else {
-                Err(AppError::Stats("non-finite hypothesis plot coordinate".into()))
+                Err(AppError::Stats(
+                    "non-finite hypothesis plot coordinate".into(),
+                ))
             }
         })
         .collect()
@@ -225,7 +256,9 @@ fn ensure_finite(
     {
         Ok(())
     } else {
-        Err(AppError::Stats("non-finite hypothesis plot coordinate".into()))
+        Err(AppError::Stats(
+            "non-finite hypothesis plot coordinate".into(),
+        ))
     }
 }
 

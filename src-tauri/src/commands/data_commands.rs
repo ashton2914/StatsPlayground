@@ -2,8 +2,9 @@ use tauri::State;
 
 use crate::error::AppError;
 use crate::models::table::{
-    CellPosition, CellUpdate, ColumnDisplayProps, CreateTableFromRowsRequest, DatasetMeta,
-    TableFilterValue, TableQueryResult, TableWindowRequest, TableWindowResult,
+    CellPosition, CellUpdate, ColumnDisplayProps, CreateManagedTableRequest,
+    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateResult, TableFilterValue,
+    TableQueryResult, TableWindowRequest, TableWindowResult,
 };
 use crate::services::data_service::DataService;
 use crate::state::AppState;
@@ -130,6 +131,16 @@ pub fn create_table_from_sql_query(
 }
 
 #[tauri::command]
+pub fn preflight_create_table_from_sql_query(
+    state: State<'_, AppState>,
+    sql: String,
+    name: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.preflight_create_table_from_sql_query(&sql, &name)
+}
+
+#[tauri::command]
 pub fn create_table(
     state: State<'_, AppState>,
     name: String,
@@ -149,6 +160,16 @@ pub fn create_table_from_rows(
     let _permit = acquire_mutation_permit(state.inner())?;
     let service = DataService::new(&state);
     service.create_table_from_rows(&request)
+}
+
+#[tauri::command]
+pub fn create_managed_table(
+    state: State<'_, AppState>,
+    request: CreateManagedTableRequest,
+) -> Result<ManagedTableCreateResult, AppError> {
+    let _permit = acquire_mutation_permit(state.inner())?;
+    let service = DataService::new(&state);
+    service.create_managed_table_outcome(&request)
 }
 
 #[tauri::command]

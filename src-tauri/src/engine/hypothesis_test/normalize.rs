@@ -103,14 +103,20 @@ pub fn normalize_hypothesis_test_rows(
             normalize_long_independent(rows, level_order)
         }
         (
-            HypothesisTestRows::Wide { conditions, rows, .. },
+            HypothesisTestRows::Wide {
+                conditions, rows, ..
+            },
             HypothesisTestStudyDesign::Independent,
         ) => normalize_wide_independent(conditions, rows, level_order),
         (HypothesisTestRows::Long(rows), HypothesisTestStudyDesign::PairedOrBlocked) => {
             normalize_long_blocked(rows, level_order)
         }
         (
-            HypothesisTestRows::Wide { conditions, explicit_subject, rows },
+            HypothesisTestRows::Wide {
+                conditions,
+                explicit_subject,
+                rows,
+            },
             HypothesisTestStudyDesign::PairedOrBlocked,
         ) => normalize_wide_blocked(conditions, explicit_subject, rows, level_order),
     }
@@ -125,7 +131,11 @@ fn normalize_long_independent(
     let mut exclusions = Vec::new();
     for row in rows {
         let Some(condition) = row.condition.filter(|value| !value.is_empty()) else {
-            exclusions.push(exclusion(row.identity, ExclusionReason::MissingCondition, None));
+            exclusions.push(exclusion(
+                row.identity,
+                ExclusionReason::MissingCondition,
+                None,
+            ));
             continue;
         };
         if !values.contains_key(&condition) {
@@ -141,7 +151,11 @@ fn normalize_long_independent(
         };
         values.entry(condition).or_default().push(response);
     }
-    finish_independent(values, ordered_conditions(level_order, &observed), exclusions)
+    finish_independent(
+        values,
+        ordered_conditions(level_order, &observed),
+        exclusions,
+    )
 }
 
 fn normalize_wide_independent(
@@ -192,9 +206,11 @@ fn finish_independent(
     let study = match groups.len() {
         2 => NormalizedStudy::IndependentTwo(IndependentGroups { groups }),
         count if count >= 3 => NormalizedStudy::IndependentMulti(IndependentGroups { groups }),
-        _ => return Err(AppError::InvalidParam(
-            "independent hypothesis test requires at least two non-empty conditions".into(),
-        )),
+        _ => {
+            return Err(AppError::InvalidParam(
+                "independent hypothesis test requires at least two non-empty conditions".into(),
+            ))
+        }
     };
     Ok(NormalizedHypothesisTest { study, exclusions })
 }
@@ -209,12 +225,21 @@ fn normalize_long_blocked(
     let mut exclusions = Vec::new();
     for row in rows {
         let Some(condition) = row.condition.filter(|value| !value.is_empty()) else {
-            exclusions.push(exclusion(row.identity, ExclusionReason::MissingCondition, None));
+            exclusions.push(exclusion(
+                row.identity,
+                ExclusionReason::MissingCondition,
+                None,
+            ));
             continue;
         };
-        let subject = row.subject.filter(|value| !value.is_empty()).ok_or_else(|| {
-            AppError::InvalidParam("paired or blocked long data requires a subject for every row".into())
-        })?;
+        let subject = row
+            .subject
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::InvalidParam(
+                    "paired or blocked long data requires a subject for every row".into(),
+                )
+            })?;
         if !observed_conditions.contains(&condition) {
             observed_conditions.push(condition.clone());
         }
@@ -245,10 +270,15 @@ fn normalize_wide_blocked(
     let mut subject_order = Vec::new();
     let mut cells = HashMap::new();
     for row in rows {
-        let subject = match (explicit_subject, row.subject.filter(|value| !value.is_empty())) {
-            (true, None) => return Err(AppError::InvalidParam(
-                "explicit wide subject must be non-missing".into(),
-            )),
+        let subject = match (
+            explicit_subject,
+            row.subject.filter(|value| !value.is_empty()),
+        ) {
+            (true, None) => {
+                return Err(AppError::InvalidParam(
+                    "explicit wide subject must be non-missing".into(),
+                ))
+            }
             (_, Some(subject)) => subject,
             (false, None) => row.identity,
         };
@@ -260,9 +290,15 @@ fn normalize_wide_blocked(
         subject_order.push(subject.clone());
         cells.insert(
             subject,
-            ordered.iter().map(|condition| {
-                (condition.clone(), finite(row.measurements[offsets[condition]]))
-            }).collect(),
+            ordered
+                .iter()
+                .map(|condition| {
+                    (
+                        condition.clone(),
+                        finite(row.measurements[offsets[condition]]),
+                    )
+                })
+                .collect(),
         );
     }
     finish_blocks(ordered, subject_order, cells, Vec::new())
@@ -288,7 +324,8 @@ fn finish_blocks(
     let mut blocks = Vec::new();
     for subject in subject_order {
         let subject_cells = &cells[&subject];
-        let values = conditions.iter()
+        let values = conditions
+            .iter()
             .map(|condition| subject_cells.get(condition).copied().flatten())
             .collect::<Option<Vec<_>>>();
         if let Some(values) = values {
@@ -302,7 +339,10 @@ fn finish_blocks(
         NormalizedStudy::PairedTwo(PairedDifferences {
             conditions: [conditions[0].clone(), conditions[1].clone()],
             subjects: retained_subjects,
-            pairs: blocks.into_iter().map(|values| [values[0], values[1]]).collect(),
+            pairs: blocks
+                .into_iter()
+                .map(|values| [values[0], values[1]])
+                .collect(),
         })
     } else {
         NormalizedStudy::CompleteBlock(CompleteBlocks {
@@ -316,13 +356,19 @@ fn finish_blocks(
 
 fn ordered_conditions(persisted: &[String], observed: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
-    persisted.iter().chain(observed).filter_map(|condition| {
-        seen.insert(condition.clone()).then_some(condition.clone())
-    }).collect()
+    persisted
+        .iter()
+        .chain(observed)
+        .filter_map(|condition| seen.insert(condition.clone()).then_some(condition.clone()))
+        .collect()
 }
 
 fn condition_offsets(conditions: &[String]) -> HashMap<String, usize> {
-    conditions.iter().enumerate().map(|(index, condition)| (condition.clone(), index)).collect()
+    conditions
+        .iter()
+        .enumerate()
+        .map(|(index, condition)| (condition.clone(), index))
+        .collect()
 }
 
 fn validate_wide_shape(
@@ -339,7 +385,10 @@ fn validate_wide_shape(
             "wide hypothesis test measurement columns must be unique".into(),
         ));
     }
-    if rows.iter().any(|row| row.measurements.len() != conditions.len()) {
+    if rows
+        .iter()
+        .any(|row| row.measurements.len() != conditions.len())
+    {
         return Err(AppError::Stats(
             "wide hypothesis test row width did not match measurement columns".into(),
         ));
@@ -356,7 +405,11 @@ fn exclusion(
     reason: ExclusionReason,
     condition: Option<String>,
 ) -> NormalizationExclusion {
-    NormalizationExclusion { identity, reason, condition }
+    NormalizationExclusion {
+        identity,
+        reason,
+        condition,
+    }
 }
 
 #[cfg(test)]
@@ -387,12 +440,14 @@ mod tests {
             long,
             HypothesisTestStudyDesign::Independent,
             &["A".into(), "B".into()],
-        ).expect("long normalization");
+        )
+        .expect("long normalization");
         let wide = normalize_hypothesis_test_rows(
             wide,
             HypothesisTestStudyDesign::Independent,
             &["A".into(), "B".into()],
-        ).expect("wide normalization");
+        )
+        .expect("wide normalization");
 
         assert_eq!(long.study, wide.study);
         assert_eq!(long.study.retained_observations(), 5);
@@ -422,12 +477,14 @@ mod tests {
             long,
             HypothesisTestStudyDesign::PairedOrBlocked,
             &["Before".into(), "After".into()],
-        ).expect("long normalization");
+        )
+        .expect("long normalization");
         let wide = normalize_hypothesis_test_rows(
             wide,
             HypothesisTestStudyDesign::PairedOrBlocked,
             &["Before".into(), "After".into()],
-        ).expect("wide normalization");
+        )
+        .expect("wide normalization");
 
         assert_eq!(long.study, wide.study);
         assert_eq!(long.study.retained_observations(), 4);
@@ -448,14 +505,18 @@ mod tests {
             },
             HypothesisTestStudyDesign::PairedOrBlocked,
             &[],
-        ).expect("complete block normalization");
+        )
+        .expect("complete block normalization");
 
         assert_eq!(normalized.study.retained_observations(), 3);
-        assert_eq!(normalized.exclusions, vec![NormalizationExclusion {
-            identity: "2".into(),
-            reason: ExclusionReason::IncompleteBlock,
-            condition: None,
-        }]);
+        assert_eq!(
+            normalized.exclusions,
+            vec![NormalizationExclusion {
+                identity: "2".into(),
+                reason: ExclusionReason::IncompleteBlock,
+                condition: None,
+            }]
+        );
     }
 
     #[test]
@@ -469,7 +530,9 @@ mod tests {
             &[],
         );
 
-        assert!(matches!(result, Err(AppError::InvalidParam(message)) if message.contains("duplicate subject-condition")));
+        assert!(
+            matches!(result, Err(AppError::InvalidParam(message)) if message.contains("duplicate subject-condition"))
+        );
     }
 
     #[test]
@@ -483,7 +546,9 @@ mod tests {
             HypothesisTestStudyDesign::PairedOrBlocked,
             &[],
         );
-        assert!(matches!(missing, Err(AppError::InvalidParam(message)) if message.contains("non-missing")));
+        assert!(
+            matches!(missing, Err(AppError::InvalidParam(message)) if message.contains("non-missing"))
+        );
 
         let duplicate = normalize_hypothesis_test_rows(
             HypothesisTestRows::Wide {
@@ -497,7 +562,9 @@ mod tests {
             HypothesisTestStudyDesign::PairedOrBlocked,
             &[],
         );
-        assert!(matches!(duplicate, Err(AppError::InvalidParam(message)) if message.contains("unique")));
+        assert!(
+            matches!(duplicate, Err(AppError::InvalidParam(message)) if message.contains("unique"))
+        );
     }
 
     fn long_row(

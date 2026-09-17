@@ -130,6 +130,35 @@ export interface ColumnDisplayProps {
   extras?: Record<string, unknown>;
 }
 
+export type ColumnDisplayPropsWithoutIndex = Omit<ColumnDisplayProps, "colIndex">;
+
+export interface CreateTableColumn {
+  name: string;
+  sqlType: string;
+  display?: ColumnDisplayPropsWithoutIndex;
+}
+
+export interface CreateManagedTableRequest {
+  name: string;
+  columns: CreateTableColumn[];
+  rows: Array<Array<string | number | boolean | null>>;
+}
+
+export interface ManagedTableCreateColumn {
+  colIndex: number;
+  colName: string;
+  colType: string;
+  width?: number;
+  format?: ColumnFormatInfo;
+  extras?: Record<string, unknown>;
+}
+
+export interface ManagedTableCreateResult {
+  dataset: DatasetMeta;
+  generation: number;
+  columns: ManagedTableCreateColumn[];
+}
+
 export interface CreateTableFromRowsRequest {
   name: string;
   columnNames: string[];

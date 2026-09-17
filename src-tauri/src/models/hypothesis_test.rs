@@ -313,7 +313,8 @@ mod tests {
                 "selectorVersion": "1"
             },
             "requestFingerprint": "fingerprint"
-        })).expect("request should deserialize");
+        }))
+        .expect("request should deserialize");
         assert_eq!(request.analysis_kind, "hypothesisTest");
 
         let value = serde_json::to_value(HypothesisTestResponse {
@@ -357,10 +358,14 @@ mod tests {
                 correction_codes: vec![],
                 executed_at: "2026-09-08T00:00:00Z".into(),
             },
-        }).expect("response should serialize");
+        })
+        .expect("response should serialize");
 
         assert_eq!(value["analysisKind"], "hypothesisTest");
-        assert_eq!(value["selectionDecision"]["recommendedMethod"], "welchTwoSampleT");
+        assert_eq!(
+            value["selectionDecision"]["recommendedMethod"],
+            "welchTwoSampleT"
+        );
         assert_eq!(value["primaryResult"]["methodId"], "welchTwoSampleT");
         assert_eq!(value["methodAudit"]["selectorVersion"], "1");
     }
