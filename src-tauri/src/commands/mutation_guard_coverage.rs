@@ -38,6 +38,18 @@ mod tests {
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
             (
+                "commands::calculated_column_commands::validate_calculated_column",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::calculated_column_commands::upsert_calculated_column",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::calculated_column_commands::convert_calculated_column_to_values",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::data_link_commands::test_server_connection",
                 CommandClass::ReadOnly,
             ),
@@ -279,7 +291,10 @@ mod tests {
                 "commands::hypothesis_test_commands::run_hypothesis_test",
                 CommandClass::ReadOnly,
             ),
-            ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),
+            (
+                "commands::tabulate_commands::tabulate",
+                CommandClass::ReadOnly,
+            ),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
             (
                 "commands::io_commands::import_sqlite",
@@ -357,8 +372,14 @@ mod tests {
                 "commands::project_commands::export_tables_sptb_zip",
                 CommandClass::ReadOnly,
             ),
-            ("commands::project_commands::import_table", CommandClass::Mutation),
-            ("commands::project_commands::import_graph", CommandClass::ReadOnly),
+            (
+                "commands::project_commands::import_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::import_graph",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::project_commands::create_table_transform",
                 CommandClass::Mutation,
@@ -379,13 +400,22 @@ mod tests {
                 "commands::project_commands::import_table_transform",
                 CommandClass::Mutation,
             ),
-            ("commands::table_commands::get_columns", CommandClass::ReadOnly),
+            (
+                "commands::table_commands::get_columns",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::table_commands::get_column_descriptors",
                 CommandClass::ReadOnly,
             ),
-            ("commands::table_commands::sort_table", CommandClass::Mutation),
-            ("commands::table_commands::subset_table", CommandClass::Mutation),
+            (
+                "commands::table_commands::sort_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::table_commands::subset_table",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::table_commands::transpose_table",
                 CommandClass::Mutation,
@@ -417,8 +447,13 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 49] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 51] {
         [
+            ("calculated_column_commands.rs", "upsert_calculated_column"),
+            (
+                "calculated_column_commands.rs",
+                "convert_calculated_column_to_values",
+            ),
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
             ("data_commands.rs", "create_table_from_sql_query"),
@@ -612,6 +647,7 @@ mod tests {
 
     #[test]
     fn mutating_commands_in_guarded_families_require_permit_acquisition() {
+        let calculated_column_source = include_str!("calculated_column_commands.rs");
         let data_source = include_str!("data_commands.rs");
         let table_source = include_str!("table_commands.rs");
         let io_source = include_str!("io_commands.rs");
@@ -628,6 +664,7 @@ mod tests {
 
         for (file_name, function_name) in functions_requiring_mutation_permit() {
             let source = match file_name {
+                "calculated_column_commands.rs" => calculated_column_source,
                 "data_commands.rs" => data_source,
                 "table_commands.rs" => table_source,
                 "io_commands.rs" => io_source,

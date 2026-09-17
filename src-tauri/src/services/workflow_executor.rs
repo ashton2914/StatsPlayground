@@ -1415,6 +1415,7 @@ mod tests {
                 width: None,
                 format: None,
                 extras: None,
+                ..Default::default()
             })
             .collect();
         WorkflowTableStep {
@@ -1467,6 +1468,7 @@ mod tests {
                         width: None,
                         format: None,
                         extras: None,
+                        ..Default::default()
                     })
                     .collect();
                 ((*role).to_string(), columns)

@@ -23,6 +23,9 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
+            commands::calculated_column_commands::validate_calculated_column,
+            commands::calculated_column_commands::upsert_calculated_column,
+            commands::calculated_column_commands::convert_calculated_column_to_values,
             commands::data_link_commands::test_postgres_connection,
             commands::data_link_commands::test_server_connection,
             commands::data_link_commands::list_server_source_objects,

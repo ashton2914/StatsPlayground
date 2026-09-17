@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnDisplayProps,
   ColumnDescriptor,
+  CalculatedColumnMutationResult,
+  CalculatedColumnValidation,
   CellPosition,
   CellUpdate,
   DatasetMeta,
@@ -11,6 +13,8 @@ import type {
   TableQueryResult,
   TableWindowRequest,
   TableWindowResult,
+  UpsertCalculatedColumnRequest,
+  ValidateCalculatedColumnRequest,
 } from "@/types/data";
 
 export const dataService = {
@@ -256,6 +260,19 @@ export const dataService = {
   /** 获取带稳定 ID 的列描述符 */
   getColumnDescriptors: (datasetId: string) =>
     invoke<ColumnDescriptor[]>("get_column_descriptors", { datasetId }),
+
+  validateCalculatedColumn: (request: ValidateCalculatedColumnRequest) =>
+    invoke<CalculatedColumnValidation>("validate_calculated_column", { request }),
+
+  upsertCalculatedColumn: (request: UpsertCalculatedColumnRequest) =>
+    invoke<CalculatedColumnMutationResult>("upsert_calculated_column", { request }),
+
+  convertCalculatedColumnToValues: (datasetId: string, columnId: string, expectedGeneration: number) =>
+    invoke<CalculatedColumnMutationResult>("convert_calculated_column_to_values", {
+      datasetId,
+      columnId,
+      expectedGeneration,
+    }),
 
   /** 排序 */
   sortTable: (sourceId: string, sortCols: string[], sortOrders: string[], newName: string) =>

@@ -1,3 +1,4 @@
+pub mod calculated_column;
 pub mod data_link;
 pub mod distribution;
 pub mod fit_model;

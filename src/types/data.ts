@@ -24,6 +24,143 @@ export interface ColumnDescriptor {
   columnId: string;
   name: string;
   sqlType: string;
+  calculated?: CalculatedColumnDescriptor;
+}
+
+export type CalculatedNumberV1 = number;
+
+export type CalculatedUnaryOperatorV1 = "plus" | "minus" | "not";
+
+export type CalculatedBinaryOperatorV1 = "add" | "subtract" | "multiply" | "divide";
+
+export type CalculatedComparisonOperatorV1 =
+  | "eq"
+  | "notEq"
+  | "lt"
+  | "lte"
+  | "gt"
+  | "gte";
+
+export type CalculatedLogicalOperatorV1 = "and" | "or";
+
+export type CalculatedFunctionV1 = "abs" | "coalesce" | "if" | "max" | "min" | "round";
+
+export type CalculatedExpressionV1 =
+  | { kind: "columnRef"; columnId: string }
+  | { kind: "numberLiteral"; value: CalculatedNumberV1 }
+  | { kind: "booleanLiteral"; value: boolean }
+  | { kind: "nullLiteral" }
+  | { kind: "unary"; operator: CalculatedUnaryOperatorV1; operand: CalculatedExpressionV1 }
+  | {
+      kind: "binary";
+      operator: CalculatedBinaryOperatorV1;
+      left: CalculatedExpressionV1;
+      right: CalculatedExpressionV1;
+    }
+  | {
+      kind: "comparison";
+      operator: CalculatedComparisonOperatorV1;
+      left: CalculatedExpressionV1;
+      right: CalculatedExpressionV1;
+    }
+  | {
+      kind: "logical";
+      operator: CalculatedLogicalOperatorV1;
+      left: CalculatedExpressionV1;
+      right: CalculatedExpressionV1;
+    }
+  | {
+      kind: "function";
+      function: CalculatedFunctionV1;
+      arguments: CalculatedExpressionV1[];
+    };
+
+export type CalculatedOutputTypeV1 =
+  | "boolean"
+  | "continuous"
+  | "integer"
+  | "null"
+  | "text"
+  | "unknown";
+
+export type CalculatedColumnStatus =
+  | "draft"
+  | "ready"
+  | "disabled"
+  | "broken"
+  | "unsupported";
+
+export type CalculatedDiagnosticLevel = "error" | "warning";
+
+export interface CalculatedColumnDiagnostic {
+  level: CalculatedDiagnosticLevel;
+  code: string;
+  message: string;
+  relatedColumnIds?: string[];
+}
+
+export interface CalculatedColumnWarningCount {
+  total: number;
+  expression: number;
+  dependencyGraph: number;
+  validation: number;
+}
+
+export interface CalculatedColumnDefinitionV1 {
+  formulaId: string;
+  schemaVersion: string;
+  outputColumnId: string;
+  expression: CalculatedExpressionV1;
+  dependencyColumnIds: string[];
+  inferredOutputType: CalculatedOutputTypeV1;
+  fingerprint: string;
+}
+
+export interface CalculatedColumnDescriptor {
+  formulaId: string;
+  schemaVersion: string;
+  outputColumnId: string;
+  displayFormulaText: string;
+  status: CalculatedColumnStatus;
+  dependencyColumnIds: string[];
+  inferredOutputType: CalculatedOutputTypeV1;
+  fingerprint: string;
+}
+
+export interface ValidateCalculatedColumnRequest {
+  datasetId: string;
+  outputName: string;
+  formulaText: string;
+  atIndex: number | null;
+  outputColumnId: string | null;
+  formulaId: string | null;
+  expectedGeneration: number | null;
+}
+
+export interface UpsertCalculatedColumnRequest {
+  datasetId: string;
+  outputName: string;
+  formulaText: string;
+  atIndex: number | null;
+  outputColumnId: string | null;
+  formulaId: string | null;
+  expectedGeneration: number | null;
+}
+
+export interface CalculatedColumnValidation {
+  status: CalculatedColumnStatus;
+  diagnostics?: CalculatedColumnDiagnostic[];
+  warningCount: CalculatedColumnWarningCount;
+  definition: CalculatedColumnDefinitionV1;
+}
+
+export interface CalculatedColumnMutationResult {
+  columnId: string;
+  datasetGeneration: number;
+  changeSetId: string;
+  calculated?: CalculatedColumnDescriptor;
+  diagnostics?: CalculatedColumnDiagnostic[];
+  warningCount: CalculatedColumnWarningCount;
 }
 
 /** 表查询参数 */

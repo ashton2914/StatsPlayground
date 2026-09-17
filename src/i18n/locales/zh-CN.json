@@ -261,6 +261,9 @@
     "insertRow": "插入行",
     "addColumn": "添加列",
     "addColumnNamed": "添加列 \"{{name}}\"",
+    "createCalculatedColumn": "创建计算列",
+    "editCalculatedColumn": "编辑计算列",
+    "convertCalculatedColumnToValues": "将计算列转换为值",
     "addColumnsBatch": "批量添加列",
     "reorderColumn": "调整列顺序",
     "deleteColumn": "删除列",
@@ -1083,6 +1086,121 @@
     "ctxDeleteCol": "删除列 \"{{name}}\"",
     "ctxColProps": "列属性",
     "ctxColPropsBatch": "列属性（{{n}} 列）",
+    "calculatedColumn": {
+      "defaultName": "计算列{{n}}",
+      "subtitle": "使用现有列和支持的逐行函数来定义公式。",
+      "readOnly": "计算列 \"{{name}}\" 必须通过“计算列”来编辑。",
+      "staleValidation": "由于数据表已变化，当前验证已过期。请重新验证后再应用。",
+      "confirmConvert": "要将计算列 \"{{name}}\" 转换为值吗？",
+      "outputType": "输出类型：{{type}}",
+      "warningCount": "警告：{{count}}",
+      "warningLabels": {
+        "expression": "表达式：{{count}}",
+        "dependencyGraph": "依赖图：{{count}}",
+        "validation": "验证：{{count}}"
+      },
+      "zeroMatch": "没有匹配的列或函数。",
+      "badgeLabel": "计算列",
+      "actions": {
+        "create": "计算列",
+        "edit": "编辑公式",
+        "revalidate": "重新验证",
+        "convert": "转换为值",
+        "convertExisting": "计算公式"
+      },
+      "fields": {
+        "outputName": "输出列名",
+        "formula": "公式",
+        "search": "插入列或函数",
+        "dependencies": "依赖列",
+        "downstream": "下游列",
+        "diagnostics": "诊断"
+      },
+      "status": {
+        "pending": "等待验证",
+        "draft": "草稿",
+        "ready": "就绪",
+        "disabled": "已禁用",
+        "broken": "已损坏",
+        "unsupported": "不支持"
+      },
+      "tooltip": {
+        "status": "状态：{{status}}",
+        "outputType": "输出类型：{{type}}",
+        "formula": "公式：{{formula}}",
+        "dependencies": "依赖：{{names}}"
+      },
+      "functions": {
+        "abs": { "detail": "数值绝对值" },
+        "coalesce": { "detail": "返回第一个非空值" },
+        "if": { "detail": "条件分支" },
+        "max": { "detail": "逐行最大值" },
+        "min": { "detail": "逐行最小值" },
+        "round": { "detail": "数值四舍五入" }
+      },
+      "diagnostics": {
+        "validationFailed": {
+          "label": "验证失败",
+          "message": "验证失败。请检查公式后重试。",
+          "withContext": "验证失败：{{context}}"
+        },
+        "missing_dependency": {
+          "label": "缺少依赖",
+          "message": "{{output}} 依赖缺失的列 {{dependency}}。"
+        },
+        "unsupported_function": {
+          "label": "函数不受支持",
+          "message": "计算列暂不支持函数 {{functionName}}。"
+        },
+        "missingFormulaId": {
+          "label": "缺少公式 ID",
+          "message": "计算列元数据缺少公式 ID。",
+          "withContext": "计算列元数据缺少公式 ID。{{context}}"
+        },
+        "missingOutputColumnId": {
+          "label": "缺少输出列 ID",
+          "message": "计算列元数据缺少输出列 ID。",
+          "withContext": "计算列元数据缺少输出列 ID。{{context}}"
+        },
+        "missingColumnIdMapEntry": {
+          "label": "缺少列 ID 映射",
+          "message": "重新映射的依赖缺少目标列 ID。",
+          "withContext": "重新映射的依赖缺少目标列 ID。{{context}}"
+        },
+        "duplicateOutputColumnId": {
+          "label": "输出列 ID 重复",
+          "message": "两个计算列解析到了同一个输出列 ID。",
+          "withContext": "两个计算列解析到了同一个输出列 ID。{{context}}"
+        },
+        "dependencyMismatch": {
+          "label": "依赖不匹配",
+          "message": "存储的依赖 ID 与公式表达式不一致。",
+          "withContext": "存储的依赖 ID 与公式表达式不一致。{{context}}"
+        },
+        "fingerprintMismatch": {
+          "label": "指纹不匹配",
+          "message": "存储的计算列指纹与规范定义不一致。",
+          "withContext": "存储的计算列指纹与规范定义不一致。{{context}}"
+        },
+        "cyclicDependency": {
+          "label": "循环依赖",
+          "message": "计算列形成了循环依赖：{{columns}}。"
+        },
+        "missingDependencyColumns": {
+          "label": "依赖列缺失",
+          "message": "一个或多个依赖列不可用：{{columns}}。"
+        },
+        "formula_dependency_in_use": {
+          "label": "依赖仍在使用",
+          "message": "无法删除 \"{{name}}\"，因为依赖路径 {{path}} 仍在使用它。"
+        },
+        "unknown": {
+          "label": "诊断信息",
+          "message": "计算列返回了一条诊断信息。",
+          "withContext": "计算列返回了一条诊断信息：{{context}}"
+        }
+      }
+    },
     "validInteger": "\"{{value}}\" 不是有效的整数",
     "validNumber": "\"{{value}}\" 不是有效的数字",
     "validBoolean": "\"{{value}}\" 不是有效的布尔值（可输入 true/false/1/0）",

@@ -8,6 +8,23 @@ use crate::services::spprj_archive::{
 };
 use crate::state::AppState;
 
+fn reject_calculated_column_writes<'a>(
+    db: &crate::engine::duckdb_engine::DuckDbEngine,
+    dataset_id: &str,
+    column_names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), AppError> {
+    let calculated_names = db.calculated_column_names(dataset_id)?;
+    if let Some(column_name) = column_names
+        .into_iter()
+        .find(|column_name| calculated_names.contains(*column_name))
+    {
+        return Err(AppError::InvalidParam(format!(
+            "calculated output column is read-only until convert to values: {column_name}"
+        )));
+    }
+    Ok(())
+}
+
 fn allocate_case_insensitive_dataset_name<I, S>(requested: &str, existing: I) -> String
 where
     I: IntoIterator<Item = S>,
@@ -444,6 +461,7 @@ impl<'a> DataService<'a> {
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        reject_calculated_column_writes(&db, dataset_id, [column_name])?;
         db.update_cell(dataset_id, row_id, column_name, value)
     }
 
@@ -457,6 +475,11 @@ impl<'a> DataService<'a> {
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        reject_calculated_column_writes(
+            &db,
+            dataset_id,
+            cells.iter().map(|cell| cell.column_name.as_str()),
+        )?;
         db.clear_cells(dataset_id, cells)
     }
 
@@ -471,6 +494,11 @@ impl<'a> DataService<'a> {
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        reject_calculated_column_writes(
+            &db,
+            dataset_id,
+            updates.iter().map(|update| update.column_name.as_str()),
+        )?;
         db.update_cells_if_generation(dataset_id, updates, expected_generation)
     }
 
@@ -860,16 +888,7 @@ impl<'a> DataService<'a> {
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        db.get_distribution_columns(dataset_id).map(|columns| {
-            columns
-                .into_iter()
-                .map(|column| crate::models::table::ColumnDescriptor {
-                    column_id: column.column_id,
-                    name: column.name,
-                    sql_type: column.sql_type,
-                })
-                .collect()
-        })
+        db.get_table_column_descriptors(dataset_id)
     }
 
     pub fn sort_table(

@@ -1,4 +1,10 @@
+use crate::engine::duckdb_engine::{ArchiveColumnPlan, DuckDbEngine, UserColumnDescriptor};
 use crate::error::AppError;
+use crate::models::calculated_column::{
+    definition_fingerprint, remap_definition, ArchivedCalculatedColumn,
+    ArchivedCalculatedColumnState, CalculatedColumnDefinitionV1, CalculatedColumnStatus,
+    CalculatedOutputTypeV1,
+};
 use crate::models::project::{DatasetNameMigration, DocumentNameMigration, ProjectInfo};
 use crate::models::save::{
     SaveProgressCallback, SaveProjectRequest, SaveSnapshot, SaveWriteResult,
@@ -7,8 +13,12 @@ use crate::models::table::{ColumnDisplayProps, ColumnFormatInfo};
 use crate::services::archive_cell::{
     archive_cell_to_json, archive_export_expression, is_archive_scalar_type,
 };
+use crate::services::calculated_column_expression::{
+    compile_formula_sql, FormulaSqlColumn, TypedCalculatedExpression, TypedCalculatedOutput,
+};
 use crate::services::spprj_archive::{
-    self, DatasetFilters, GraphDoc, ProjectBundle, TableColumn, TableColumnFormat, TableDoc,
+    self, project_archive_table_columns, DatasetFilters, GraphDoc, ProjectBundle, TableColumn,
+    TableDoc,
 };
 use crate::services::streaming_project_writer::StreamingProjectWriter;
 use crate::services::table_transform_domain::TableTransformDefinition;
@@ -594,47 +604,19 @@ impl<'a> ProjectService<'a> {
 
         let meta = db.get_dataset_meta(dataset_id)?;
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
-
-        let mut col_stmt = db.conn().prepare(
-            "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
-        )?;
-        let base_columns: Vec<(String, String)> = col_stmt
-            .query_map(duckdb::params![dataset_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let ds_display = display.get(dataset_id);
-        let columns: Vec<TableColumn> = base_columns
-            .iter()
-            .enumerate()
-            .map(|(i, (name, col_type))| {
-                let dp = ds_display.and_then(|v| v.iter().find(|p| p.col_index == i));
-                TableColumn {
-                    name: name.clone(),
-                    col_type: col_type.clone(),
-                    width: dp.and_then(|p| p.width),
-                    format: dp
-                        .and_then(|p| p.format.as_ref())
-                        .map(|f| TableColumnFormat {
-                            kind: f.kind.clone(),
-                            decimals: f.decimals,
-                            currency: f.currency.clone(),
-                        }),
-                    extras: dp.and_then(|p| p.extras.clone()),
-                }
-            })
-            .collect();
-
-        let col_names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+        let archive_columns = db.get_archive_column_plans(dataset_id)?;
+        let columns = project_archive_table_columns(
+            &archive_columns,
+            display.get(dataset_id).map(Vec::as_slice),
+        );
 
         // SELECT _row_id + every visible column. _row_id stays at index 0 in
         // the saved row arrays so restore can write it back verbatim.
         let select_cols = std::iter::once("\"_row_id\"".to_string())
             .chain(
-                columns
+                archive_columns
                     .iter()
-                    .map(|column| archive_export_expression(&column.name, &column.col_type)),
+                    .map(|column| archive_export_expression(&column.name, &column.sql_type)),
             )
             .collect::<Vec<_>>()
             .join(", ");
@@ -643,7 +625,7 @@ impl<'a> ProjectService<'a> {
             select_cols, table_name
         );
         let mut stmt = db.conn().prepare(&query)?;
-        let total_cols = 1 + col_names.len();
+        let total_cols = 1 + archive_columns.len();
 
         let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
         let mut result_rows = stmt.query([])?;
@@ -662,7 +644,7 @@ impl<'a> ProjectService<'a> {
             id: dataset_id.to_string(),
             name: meta.name,
             source_type: meta.source_type,
-            version: "2".to_string(),
+            version: "3".to_string(),
             columns,
             rows,
         })
@@ -680,12 +662,32 @@ impl<'a> ProjectService<'a> {
         doc: &TableDoc,
         progress_cb: Option<&dyn Fn(usize, usize)>,
     ) -> Result<String, AppError> {
-        if doc.version != "1" && doc.version != "2" {
+        if doc.version != "1" && doc.version != "2" && !table_doc_is_v3(&doc.version) {
             return Err(AppError::InvalidParam(format!(
                 "unsupported table document version: {}",
                 doc.version
             )));
         }
+        let v3_validation = if table_doc_is_v3(&doc.version) {
+            Some(
+                spprj_archive::validate_table_doc_structure(doc).map_err(|error| match error {
+                    AppError::FileIO(message)
+                        if message.contains("calculated column graph invalid") =>
+                    {
+                        formula_archive_inconsistent(message)
+                    }
+                    other => other,
+                })?,
+            )
+        } else {
+            None
+        };
+        let v3_archive_columns = v3_validation
+            .as_ref()
+            .map(|validation| {
+                table_doc_to_archive_column_plans(doc, Some(&validation.calculated_columns_by_id))
+            })
+            .transpose()?;
 
         let expected_row_width = doc.columns.len() + 1;
         if doc.rows.iter().any(|row| row.len() != expected_row_width) {
@@ -737,10 +739,10 @@ impl<'a> ProjectService<'a> {
                             let column_type = index
                                 .checked_sub(1)
                                 .map(|column_index| canonical_columns[column_index].1.as_str());
-                            let decode_v2_tag = index > 0
-                                && doc.version == "2"
+                            let decode_archive_tag = index > 0
+                                && doc.version != "1"
                                 && !is_archive_scalar_type(&canonical_columns[index - 1].1);
-                            json_to_duckdb_param(value, decode_v2_tag, column_type)
+                            json_to_duckdb_param(value, decode_archive_tag, column_type)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     appender.append_row(appender_params_from_iter(values))?;
@@ -764,6 +766,19 @@ impl<'a> ProjectService<'a> {
                 "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
                 duckdb::params![row_count, doc.id],
             )?;
+            if let Some(validation) = &v3_validation {
+                validate_restored_ready_calculated_columns(
+                    &db,
+                    doc,
+                    &validation.calculated_columns_by_id,
+                )?;
+            }
+            if let Some(v3_archive_columns) = &v3_archive_columns {
+                db.replace_archive_column_ids(&doc.id, v3_archive_columns)?;
+                db.replace_archived_calculated_columns(&doc.id, v3_archive_columns)?;
+            } else {
+                db.replace_archived_calculated_columns(&doc.id, &[])?;
+            }
             Ok(())
         })();
 
@@ -869,9 +884,8 @@ impl<'a> ProjectService<'a> {
     /// (defaults to project root).
     pub fn import_table(&self, file_path: &str) -> Result<String, AppError> {
         let mut doc = spprj_archive::read_table_file(file_path)?;
-        // Re-issue id to avoid collision with existing datasets in the project.
-        let new_id = uuid::Uuid::new_v4().to_string();
-        doc.id = new_id.clone();
+        doc = remap_imported_table_doc(&doc)?;
+        let new_id = doc.id.clone();
         self.restore_table_doc(&doc)?;
         Ok(new_id)
     }
@@ -924,6 +938,126 @@ impl<'a> ProjectService<'a> {
 
 fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn table_doc_is_v3(version: &str) -> bool {
+    version.split('.').next() == Some("3")
+}
+
+fn table_doc_to_archive_column_plans(
+    doc: &TableDoc,
+    validated_calculated_columns_by_id: Option<
+        &std::collections::HashMap<String, ArchivedCalculatedColumn>,
+    >,
+) -> Result<Vec<ArchiveColumnPlan>, AppError> {
+    doc.columns
+        .iter()
+        .map(|column| {
+            let column_id = column.column_id.clone().ok_or_else(|| {
+                AppError::InvalidParam("V3 table columns must include a column id".into())
+            })?;
+            let calculated = validated_calculated_columns_by_id
+                .and_then(|calculated_columns_by_id| {
+                    calculated_columns_by_id.get(&column_id).cloned()
+                })
+                .or_else(|| column.calculated.clone());
+            Ok(ArchiveColumnPlan {
+                column_id,
+                name: column.name.clone(),
+                sql_type: column.col_type.clone(),
+                calculated,
+            })
+        })
+        .collect()
+}
+
+fn remap_imported_table_doc(doc: &TableDoc) -> Result<TableDoc, AppError> {
+    let new_dataset_id = uuid::Uuid::new_v4().to_string();
+    if !table_doc_is_v3(&doc.version) {
+        let mut remapped = doc.clone();
+        remapped.id = new_dataset_id;
+        return Ok(remapped);
+    }
+
+    let validation = spprj_archive::validate_table_doc_structure(doc)?;
+
+    let column_id_map = doc
+        .columns
+        .iter()
+        .map(|column| {
+            let source_column_id = column.column_id.as_ref().ok_or_else(|| {
+                AppError::InvalidParam("V3 table columns must include a column id".into())
+            })?;
+            Ok((source_column_id.clone(), uuid::Uuid::new_v4().to_string()))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>, AppError>>()?;
+
+    let columns = doc
+        .columns
+        .iter()
+        .map(|column| {
+            let source_column_id = column.column_id.as_ref().ok_or_else(|| {
+                AppError::InvalidParam("V3 table columns must include a column id".into())
+            })?;
+            let target_column_id = column_id_map.get(source_column_id).ok_or_else(|| {
+                AppError::InvalidParam(format!(
+                    "missing remap target for column id {source_column_id}"
+                ))
+            })?;
+            let calculated = match validation.calculated_columns_by_id.get(source_column_id) {
+                Some(ArchivedCalculatedColumn::Ready { definition, .. }) => {
+                    if definition.schema_version != "1" {
+                        return Err(AppError::InvalidParam(format!(
+                            "ready calculated column uses unsupported schema {}",
+                            definition.schema_version
+                        )));
+                    }
+                    Some(ArchivedCalculatedColumn::Ready {
+                        definition: remap_definition(
+                            definition,
+                            uuid::Uuid::new_v4().to_string(),
+                            target_column_id.clone(),
+                            &column_id_map,
+                        )
+                        .map_err(|diagnostic| {
+                            AppError::InvalidParam(format!(
+                                "failed to remap imported calculated column: {}: {}",
+                                diagnostic.code, diagnostic.message
+                            ))
+                        })?,
+                        state: ArchivedCalculatedColumnState::default(),
+                    })
+                }
+                Some(ArchivedCalculatedColumn::Preserved { definition }) => {
+                    return Err(AppError::InvalidParam(format!(
+                        "cannot safely remap preserved calculated column schema {} during import",
+                        definition.schema_version
+                    )));
+                }
+                None => None,
+            };
+            Ok(TableColumn {
+                column_id: Some(target_column_id.clone()),
+                name: column.name.clone(),
+                col_type: column.col_type.clone(),
+                width: column.width,
+                format: column.format.clone(),
+                extras: column.extras.clone(),
+                calculated,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    let remapped = TableDoc {
+        id: new_dataset_id,
+        name: doc.name.clone(),
+        source_type: doc.source_type.clone(),
+        version: doc.version.clone(),
+        columns,
+        rows: doc.rows.clone(),
+    };
+    spprj_archive::validate_table_doc_structure(&remapped)?;
+    Ok(remapped)
 }
 
 fn json_to_duckdb_param(
@@ -1252,6 +1386,215 @@ fn set_object_name(value: &mut serde_json::Value, new_name: &str) {
     }
 }
 
+fn formula_archive_inconsistent(message: impl Into<String>) -> AppError {
+    AppError::InvalidParam(format!("formula_archive_inconsistent:{}", message.into()))
+}
+
+fn validate_restored_ready_calculated_columns(
+    db: &DuckDbEngine,
+    doc: &TableDoc,
+    calculated_columns_by_id: &std::collections::HashMap<String, ArchivedCalculatedColumn>,
+) -> Result<(), AppError> {
+    let ready_definitions_by_output = calculated_columns_by_id
+        .values()
+        .filter_map(
+            |calculated| match (calculated.ready_definition(), calculated.ready_state()) {
+                (Some(definition), Some(state))
+                    if state.status == CalculatedColumnStatus::Ready =>
+                {
+                    Some(definition)
+                }
+                _ => None,
+            },
+        )
+        .map(|definition| (definition.output_column_id.clone(), definition.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if ready_definitions_by_output.is_empty() {
+        return Ok(());
+    }
+
+    let ordered_output_ids = topological_calculated_outputs(&ready_definitions_by_output);
+    let table_name =
+        DuckDbEngine::quote_identifier(&format!("dataset_{}", doc.id.replace('-', "_")));
+    let current_columns = db.get_user_column_descriptors(&doc.id)?;
+    if current_columns.len() != doc.columns.len() {
+        return Err(formula_archive_inconsistent(format!(
+            "restored schema column count mismatch for dataset {}",
+            doc.id
+        )));
+    }
+    let columns_by_archive_id =
+        doc.columns
+            .iter()
+            .zip(current_columns.iter())
+            .map(|(archived_column, restored_column)| {
+                let column_id = archived_column.column_id.clone().ok_or_else(|| {
+                    formula_archive_inconsistent("validated V3 column id is missing")
+                })?;
+                Ok((column_id, restored_column))
+            })
+            .collect::<Result<std::collections::HashMap<_, _>, AppError>>()?;
+    let sql_columns = doc
+        .columns
+        .iter()
+        .zip(current_columns.iter())
+        .map(|(archived_column, restored_column)| {
+            Ok(FormulaSqlColumn {
+                column_id: archived_column.column_id.clone().ok_or_else(|| {
+                    formula_archive_inconsistent("validated V3 column id is missing")
+                })?,
+                sql_type: restored_column.sql_type.clone(),
+                physical_name: restored_column.name.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    for output_column_id in ordered_output_ids {
+        let definition = ready_definitions_by_output
+            .get(&output_column_id)
+            .ok_or_else(|| {
+                formula_archive_inconsistent(format!(
+                    "missing ready definition for output column {output_column_id}"
+                ))
+            })?;
+        let output_column = columns_by_archive_id
+            .get(&output_column_id)
+            .ok_or_else(|| {
+                formula_archive_inconsistent(format!(
+                    "definition {} output column {} is missing from the restored schema",
+                    definition.formula_id, output_column_id
+                ))
+            })?;
+        validate_restored_calculated_column_type(output_column, definition)?;
+
+        let typed_expression = typed_expression_from_definition(definition)?;
+        let compiled = compile_formula_sql(&typed_expression, &sql_columns).map_err(|error| {
+            formula_archive_inconsistent(format!(
+                "definition {} could not compile during restore: {:?}",
+                definition.formula_id, error
+            ))
+        })?;
+        let output_identifier = DuckDbEngine::quote_identifier(&output_column.name);
+        let mismatch_count: i64 = db.conn().query_row(
+            &format!(
+                "SELECT COUNT(*) FROM {table_name} WHERE {output_identifier} IS DISTINCT FROM {}",
+                compiled.value_sql
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        if mismatch_count > 0 {
+            return Err(formula_archive_inconsistent(format!(
+                "definition {} materialized values differ from the archived formula for {} row(s)",
+                definition.formula_id, mismatch_count
+            )));
+        }
+
+        db.conn().execute(
+            &format!(
+                "UPDATE {table_name} SET {output_identifier} = {}",
+                compiled.value_sql
+            ),
+            [],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_restored_calculated_column_type(
+    output_column: &UserColumnDescriptor,
+    definition: &CalculatedColumnDefinitionV1,
+) -> Result<(), AppError> {
+    let expected_sql_type =
+        sql_type_for_output(&definition.inferred_output_type).ok_or_else(|| {
+            formula_archive_inconsistent(format!(
+                "definition {} uses unsupported output type {} during restore",
+                definition.formula_id,
+                definition.inferred_output_type.as_str()
+            ))
+        })?;
+    if output_column
+        .sql_type
+        .eq_ignore_ascii_case(expected_sql_type)
+    {
+        return Ok(());
+    }
+
+    Err(formula_archive_inconsistent(format!(
+        "definition {} output type mismatch: expected {}, found {}",
+        definition.formula_id, expected_sql_type, output_column.sql_type
+    )))
+}
+
+fn typed_expression_from_definition(
+    definition: &CalculatedColumnDefinitionV1,
+) -> Result<TypedCalculatedExpression, AppError> {
+    let output_type = match definition.inferred_output_type {
+        CalculatedOutputTypeV1::Boolean => TypedCalculatedOutput::Boolean,
+        CalculatedOutputTypeV1::Continuous => TypedCalculatedOutput::Double,
+        CalculatedOutputTypeV1::Integer => TypedCalculatedOutput::BigInt,
+        CalculatedOutputTypeV1::Null => TypedCalculatedOutput::Null,
+        CalculatedOutputTypeV1::Text | CalculatedOutputTypeV1::Unknown => {
+            return Err(formula_archive_inconsistent(format!(
+                "definition {} uses unsupported output type {} during restore",
+                definition.formula_id,
+                definition.inferred_output_type.as_str()
+            )));
+        }
+    };
+    if definition.fingerprint != definition_fingerprint(definition) {
+        return Err(formula_archive_inconsistent(format!(
+            "definition {} fingerprint does not match its canonical form",
+            definition.formula_id
+        )));
+    }
+
+    Ok(TypedCalculatedExpression {
+        expression: definition.expression.clone(),
+        output_type,
+    })
+}
+
+fn sql_type_for_output(output_type: &CalculatedOutputTypeV1) -> Option<&'static str> {
+    match output_type {
+        CalculatedOutputTypeV1::Boolean => Some("BOOLEAN"),
+        CalculatedOutputTypeV1::Integer => Some("BIGINT"),
+        CalculatedOutputTypeV1::Continuous | CalculatedOutputTypeV1::Null => Some("DOUBLE"),
+        CalculatedOutputTypeV1::Text | CalculatedOutputTypeV1::Unknown => None,
+    }
+}
+
+fn topological_calculated_outputs(
+    definitions_by_output: &std::collections::BTreeMap<String, CalculatedColumnDefinitionV1>,
+) -> Vec<String> {
+    fn visit(
+        output_id: &str,
+        definitions_by_output: &std::collections::BTreeMap<String, CalculatedColumnDefinitionV1>,
+        seen: &mut std::collections::HashSet<String>,
+        ordered: &mut Vec<String>,
+    ) {
+        if !seen.insert(output_id.to_string()) {
+            return;
+        }
+        if let Some(definition) = definitions_by_output.get(output_id) {
+            for dependency_column_id in &definition.dependency_column_ids {
+                if definitions_by_output.contains_key(dependency_column_id) {
+                    visit(dependency_column_id, definitions_by_output, seen, ordered);
+                }
+            }
+        }
+        ordered.push(output_id.to_string());
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut ordered = Vec::new();
+    for output_id in definitions_by_output.keys() {
+        visit(output_id, definitions_by_output, &mut seen, &mut ordered);
+    }
+    ordered
+}
+
 fn normalize_visible_document_names(bundle: &mut ProjectBundle) -> Vec<DocumentNameMigration> {
     let mut migrations = Vec::new();
 
@@ -1360,6 +1703,11 @@ fn normalize_duplicate_dataset_names(docs: &mut [TableDoc]) -> Vec<DatasetNameMi
 mod tests {
     use super::{folder_from_entry_path, normalize_duplicate_dataset_names, ProjectService};
     use crate::error::AppError;
+    use crate::models::calculated_column::{
+        definition_fingerprint, expression_dependency_ids, ArchivedCalculatedColumn,
+        ArchivedCalculatedColumnState, CalculatedBinaryOperatorV1, CalculatedColumnDefinitionV1,
+        CalculatedExpressionV1, CalculatedNumber, CalculatedOutputTypeV1,
+    };
     use crate::models::project::ProjectInfo;
     use crate::models::save::SaveProjectRequest;
     use crate::models::table::CreateTableFromRowsRequest;
@@ -1478,6 +1826,357 @@ mod tests {
             .id
     }
 
+    fn calculated_ready(
+        formula_id: &str,
+        output_column_id: &str,
+        expression: CalculatedExpressionV1,
+    ) -> ArchivedCalculatedColumn {
+        let mut definition = CalculatedColumnDefinitionV1 {
+            formula_id: formula_id.to_string(),
+            schema_version: "1".to_string(),
+            output_column_id: output_column_id.to_string(),
+            dependency_column_ids: expression_dependency_ids(&expression),
+            expression,
+            inferred_output_type: CalculatedOutputTypeV1::Continuous,
+            fingerprint: String::new(),
+        };
+        definition.fingerprint = definition_fingerprint(&definition);
+        ArchivedCalculatedColumn::Ready {
+            definition,
+            state: ArchivedCalculatedColumnState::default(),
+        }
+    }
+
+    fn collected_column_refs(expression: &CalculatedExpressionV1, refs: &mut Vec<String>) {
+        match expression {
+            CalculatedExpressionV1::ColumnRef { column_id } => refs.push(column_id.clone()),
+            CalculatedExpressionV1::Unary { operand, .. } => {
+                collected_column_refs(operand, refs);
+            }
+            CalculatedExpressionV1::Binary { left, right, .. }
+            | CalculatedExpressionV1::Comparison { left, right, .. }
+            | CalculatedExpressionV1::Logical { left, right, .. } => {
+                collected_column_refs(left, refs);
+                collected_column_refs(right, refs);
+            }
+            CalculatedExpressionV1::Function { arguments, .. } => {
+                for argument in arguments {
+                    collected_column_refs(argument, refs);
+                }
+            }
+            CalculatedExpressionV1::NumberLiteral { .. }
+            | CalculatedExpressionV1::BooleanLiteral { .. }
+            | CalculatedExpressionV1::NullLiteral => {}
+        }
+    }
+
+    fn expression_column_refs(expression: &CalculatedExpressionV1) -> Vec<String> {
+        let mut refs = Vec::new();
+        collected_column_refs(expression, &mut refs);
+        refs
+    }
+
+    fn assert_dataset_restore_rolled_back(
+        state: &AppState,
+        dataset_id: &str,
+        physical_table_name: &str,
+    ) {
+        let db = state.db.lock().unwrap();
+        assert!(db
+            .list_datasets()
+            .unwrap()
+            .iter()
+            .all(|dataset| dataset.id != dataset_id));
+        assert!(db
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM {}",
+                    super::quote_identifier(physical_table_name)
+                ),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .is_err());
+    }
+
+    fn sample_v3_import_doc() -> TableDoc {
+        let base_a = "11111111-1111-1111-1111-111111111111";
+        let base_b = "22222222-2222-2222-2222-222222222222";
+        let calc_sum = "33333333-3333-3333-3333-333333333333";
+        let calc_plus_one = "44444444-4444-4444-4444-444444444444";
+        let sum_expression = CalculatedExpressionV1::Binary {
+            operator: CalculatedBinaryOperatorV1::Add,
+            left: Box::new(CalculatedExpressionV1::ColumnRef {
+                column_id: base_a.to_string(),
+            }),
+            right: Box::new(CalculatedExpressionV1::ColumnRef {
+                column_id: base_b.to_string(),
+            }),
+        };
+        let plus_one_expression = CalculatedExpressionV1::Binary {
+            operator: CalculatedBinaryOperatorV1::Add,
+            left: Box::new(CalculatedExpressionV1::ColumnRef {
+                column_id: calc_sum.to_string(),
+            }),
+            right: Box::new(CalculatedExpressionV1::NumberLiteral {
+                value: CalculatedNumber::from(1),
+            }),
+        };
+
+        TableDoc {
+            id: "source-v3-dataset".to_string(),
+            name: "Imported V3".to_string(),
+            source_type: "manual".to_string(),
+            version: "3".to_string(),
+            columns: vec![
+                TableColumn {
+                    column_id: Some(base_a.to_string()),
+                    name: "base_a".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(base_b.to_string()),
+                    name: "base_b".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(calc_sum.to_string()),
+                    name: "sum".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(calculated_ready(
+                        "55555555-5555-5555-5555-555555555555",
+                        calc_sum,
+                        sum_expression,
+                    )),
+                },
+                TableColumn {
+                    column_id: Some(calc_plus_one.to_string()),
+                    name: "sum_plus_one".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(calculated_ready(
+                        "66666666-6666-6666-6666-666666666666",
+                        calc_plus_one,
+                        plus_one_expression,
+                    )),
+                },
+            ],
+            rows: vec![vec![
+                serde_json::json!(1),
+                serde_json::json!(2.0),
+                serde_json::json!(3.0),
+                serde_json::json!(5.0),
+                serde_json::json!(6.0),
+            ]],
+        }
+    }
+
+    fn sample_v3_preserved_doc() -> TableDoc {
+        let base_a = "77777777-7777-7777-7777-777777777777";
+        let calc_future = "88888888-8888-8888-8888-888888888888";
+        let preserved = serde_json::from_value(serde_json::json!({
+            "kind": "ready",
+            "definition": {
+                "formulaId": "99999999-9999-9999-9999-999999999999",
+                "schemaVersion": "99",
+                "outputColumnId": calc_future,
+                "expression": {
+                    "kind": "futureAst",
+                    "columnRefs": [base_a]
+                },
+                "dependencyColumnIds": ["not-validated-by-v1"],
+                "inferredOutputType": "continuous",
+                "fingerprint": "future-fingerprint",
+                "unsupportedState": {
+                    "status": "broken",
+                    "reason": "schema unavailable"
+                }
+            }
+        }))
+        .expect("preserved fixture should deserialize");
+
+        TableDoc {
+            id: "preserved-v3-dataset".to_string(),
+            name: "Preserved V3".to_string(),
+            source_type: "manual".to_string(),
+            version: "3".to_string(),
+            columns: vec![
+                TableColumn {
+                    column_id: Some(base_a.to_string()),
+                    name: "base_a".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(calc_future.to_string()),
+                    name: "future_calc".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(preserved),
+                },
+            ],
+            rows: vec![vec![
+                serde_json::json!(1),
+                serde_json::json!(2.0),
+                serde_json::json!(9.0),
+            ]],
+        }
+    }
+
+    fn sample_v3_missing_dependency_doc() -> TableDoc {
+        let present_base = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let missing_dependency = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let output_column_id = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let expression = CalculatedExpressionV1::Binary {
+            operator: CalculatedBinaryOperatorV1::Add,
+            left: Box::new(CalculatedExpressionV1::ColumnRef {
+                column_id: present_base.to_string(),
+            }),
+            right: Box::new(CalculatedExpressionV1::ColumnRef {
+                column_id: missing_dependency.to_string(),
+            }),
+        };
+
+        TableDoc {
+            id: "missing-dependency-v3-dataset".to_string(),
+            name: "Missing Dependency".to_string(),
+            source_type: "manual".to_string(),
+            version: "3".to_string(),
+            columns: vec![
+                TableColumn {
+                    column_id: Some(present_base.to_string()),
+                    name: "base_a".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(output_column_id.to_string()),
+                    name: "derived_sum".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(calculated_ready(
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                        output_column_id,
+                        expression,
+                    )),
+                },
+            ],
+            rows: vec![vec![
+                serde_json::json!(1),
+                serde_json::json!(2.0),
+                serde_json::json!(9.0),
+            ]],
+        }
+    }
+
+    fn sample_v3_duplicate_formula_id_doc() -> TableDoc {
+        let base_a = "11111111-1111-1111-1111-111111111111";
+        let base_b = "22222222-2222-2222-2222-222222222222";
+        let calc_sum = "33333333-3333-3333-3333-333333333333";
+        let calc_plus_one = "44444444-4444-4444-4444-444444444444";
+        let duplicate_formula_id = "55555555-5555-5555-5555-555555555555";
+
+        TableDoc {
+            id: "duplicate-formula-id-dataset".to_string(),
+            name: "Duplicate Formula IDs".to_string(),
+            source_type: "manual".to_string(),
+            version: "3".to_string(),
+            columns: vec![
+                TableColumn {
+                    column_id: Some(base_a.to_string()),
+                    name: "base_a".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(base_b.to_string()),
+                    name: "base_b".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(calc_sum.to_string()),
+                    name: "sum".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(calculated_ready(
+                        duplicate_formula_id,
+                        calc_sum,
+                        CalculatedExpressionV1::Binary {
+                            operator: CalculatedBinaryOperatorV1::Add,
+                            left: Box::new(CalculatedExpressionV1::ColumnRef {
+                                column_id: base_a.to_string(),
+                            }),
+                            right: Box::new(CalculatedExpressionV1::ColumnRef {
+                                column_id: base_b.to_string(),
+                            }),
+                        },
+                    )),
+                },
+                TableColumn {
+                    column_id: Some(calc_plus_one.to_string()),
+                    name: "sum_plus_one".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(calculated_ready(
+                        duplicate_formula_id,
+                        calc_plus_one,
+                        CalculatedExpressionV1::Binary {
+                            operator: CalculatedBinaryOperatorV1::Add,
+                            left: Box::new(CalculatedExpressionV1::ColumnRef {
+                                column_id: calc_sum.to_string(),
+                            }),
+                            right: Box::new(CalculatedExpressionV1::NumberLiteral {
+                                value: CalculatedNumber::from(1),
+                            }),
+                        },
+                    )),
+                },
+            ],
+            rows: vec![vec![
+                serde_json::json!(1),
+                serde_json::json!(2.0),
+                serde_json::json!(3.0),
+                serde_json::json!(5.0),
+                serde_json::json!(6.0),
+            ]],
+        }
+    }
+
     #[test]
     fn imported_table_transform_gets_fresh_project_identity() {
         let state = AppState::new().expect("create state");
@@ -1524,6 +2223,515 @@ mod tests {
     }
 
     #[test]
+    fn compose_and_restore_v3_preserve_exact_column_ids() {
+        let source_state = AppState::new().unwrap();
+        let source_service = ProjectService::new(&source_state);
+        let source_doc = sample_v3_import_doc();
+        source_service.restore_table_doc(&source_doc).unwrap();
+
+        let expected = source_service.compose_table_doc(&source_doc.id).unwrap();
+        let doc = source_service.compose_table_doc(&source_doc.id).unwrap();
+        assert_eq!(doc.version, "3");
+        assert!(doc.columns.iter().all(|column| {
+            column
+                .column_id
+                .as_deref()
+                .is_some_and(|column_id| !column_id.is_empty())
+        }));
+        let expected_formula_ids = expected
+            .columns
+            .iter()
+            .filter_map(|column| column.calculated.as_ref())
+            .map(|calculated| calculated.formula_id().to_string())
+            .collect::<Vec<_>>();
+
+        let target_state = AppState::new().unwrap();
+        let target_service = ProjectService::new(&target_state);
+        target_service.restore_table_doc(&doc).unwrap();
+        let actual = target_service.compose_table_doc(&source_doc.id).unwrap();
+        let actual_formula_ids = actual
+            .columns
+            .iter()
+            .filter_map(|column| column.calculated.as_ref())
+            .map(|calculated| calculated.formula_id().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual.rows, expected.rows);
+        assert_eq!(actual.columns.len(), expected.columns.len());
+        assert_eq!(
+            actual
+                .columns
+                .iter()
+                .map(|column| column.column_id.clone())
+                .collect::<Vec<_>>(),
+            expected
+                .columns
+                .iter()
+                .map(|column| column.column_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(actual_formula_ids, expected_formula_ids);
+    }
+
+    #[test]
+    fn import_v3_rejects_malformed_column_id_without_creating_dataset() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let path = std::env::temp_dir().join(format!(
+            "stats-playground-import-v3-invalid-{}.sptb",
+            uuid::Uuid::new_v4()
+        ));
+        let mut source_doc = sample_v3_import_doc();
+        source_doc.columns[0].column_id = Some("not-a-uuid".to_string());
+        if let Some(ArchivedCalculatedColumn::Ready { definition, .. }) =
+            source_doc.columns[2].calculated.as_mut()
+        {
+            definition.expression = CalculatedExpressionV1::Binary {
+                operator: CalculatedBinaryOperatorV1::Add,
+                left: Box::new(CalculatedExpressionV1::ColumnRef {
+                    column_id: "not-a-uuid".to_string(),
+                }),
+                right: Box::new(CalculatedExpressionV1::ColumnRef {
+                    column_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                }),
+            };
+            definition.dependency_column_ids = expression_dependency_ids(&definition.expression);
+            definition.fingerprint = definition_fingerprint(definition);
+        }
+        std::fs::write(&path, serde_json::to_vec(&source_doc).unwrap()).unwrap();
+
+        let before = state.db.lock().unwrap().list_datasets().unwrap();
+        let error = service.import_table(path.to_str().unwrap()).unwrap_err();
+        let after = state.db.lock().unwrap().list_datasets().unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert!(matches!(
+            error,
+            AppError::FileIO(message) | AppError::InvalidParam(message)
+                if message.contains("columnId") && message.contains("UUID")
+        ));
+        assert_eq!(
+            before
+                .iter()
+                .map(|dataset| dataset.id.as_str())
+                .collect::<Vec<_>>(),
+            after
+                .iter()
+                .map(|dataset| dataset.id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn import_v3_reissues_column_and_formula_ids_and_rewrites_refs() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let path = std::env::temp_dir().join(format!(
+            "stats-playground-import-v3-{}.sptb",
+            uuid::Uuid::new_v4()
+        ));
+        let source_doc = sample_v3_import_doc();
+        spprj_archive::write_table_file(&source_doc, path.to_str().unwrap()).unwrap();
+
+        let imported_id = service.import_table(path.to_str().unwrap()).unwrap();
+        let imported_doc = service.compose_table_doc(&imported_id).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(imported_doc.version, "3");
+        assert_ne!(imported_id, source_doc.id);
+
+        let source_column_ids = source_doc
+            .columns
+            .iter()
+            .map(|column| column.column_id.clone().unwrap())
+            .collect::<BTreeSet<_>>();
+        let imported_column_ids = imported_doc
+            .columns
+            .iter()
+            .map(|column| column.column_id.clone().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert!(source_column_ids.is_disjoint(&imported_column_ids));
+
+        let source_formula_ids = source_doc
+            .columns
+            .iter()
+            .filter_map(|column| match column.calculated.as_ref() {
+                Some(ArchivedCalculatedColumn::Ready { definition, .. }) => {
+                    Some(definition.formula_id.clone())
+                }
+                Some(ArchivedCalculatedColumn::Preserved { .. }) => None,
+                None => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let imported_definitions = imported_doc
+            .columns
+            .iter()
+            .filter_map(|column| match column.calculated.as_ref() {
+                Some(ArchivedCalculatedColumn::Ready { definition, .. }) => {
+                    Some(definition.clone())
+                }
+                Some(ArchivedCalculatedColumn::Preserved { .. }) => None,
+                None => None,
+            })
+            .collect::<Vec<_>>();
+        let imported_formula_ids = imported_definitions
+            .iter()
+            .map(|definition| definition.formula_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(imported_definitions.len(), 2);
+        assert!(source_formula_ids.is_disjoint(&imported_formula_ids));
+
+        let imported_column_ids_by_name = imported_doc
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.column_id.clone().unwrap()))
+            .collect::<HashMap<_, _>>();
+        let sum_definition = imported_doc
+            .columns
+            .iter()
+            .find(|column| column.name == "sum")
+            .and_then(|column| column.calculated.as_ref())
+            .map(|calculated| match calculated {
+                ArchivedCalculatedColumn::Ready { definition, .. } => definition.clone(),
+                ArchivedCalculatedColumn::Preserved { .. } => {
+                    panic!("expected supported calculated definition")
+                }
+            })
+            .unwrap();
+        let sum_plus_one_definition = imported_doc
+            .columns
+            .iter()
+            .find(|column| column.name == "sum_plus_one")
+            .and_then(|column| column.calculated.as_ref())
+            .map(|calculated| match calculated {
+                ArchivedCalculatedColumn::Ready { definition, .. } => definition.clone(),
+                ArchivedCalculatedColumn::Preserved { .. } => {
+                    panic!("expected supported calculated definition")
+                }
+            })
+            .unwrap();
+
+        assert_eq!(
+            sum_definition.output_column_id,
+            imported_column_ids_by_name["sum"]
+        );
+        assert_eq!(
+            sum_definition.dependency_column_ids,
+            vec![
+                imported_column_ids_by_name["base_a"].clone(),
+                imported_column_ids_by_name["base_b"].clone(),
+            ]
+        );
+        assert_eq!(
+            expression_column_refs(&sum_definition.expression),
+            vec![
+                imported_column_ids_by_name["base_a"].clone(),
+                imported_column_ids_by_name["base_b"].clone(),
+            ]
+        );
+        assert_eq!(
+            sum_plus_one_definition.output_column_id,
+            imported_column_ids_by_name["sum_plus_one"]
+        );
+        assert_eq!(
+            sum_plus_one_definition.dependency_column_ids,
+            vec![imported_column_ids_by_name["sum"].clone()]
+        );
+        assert_eq!(
+            expression_column_refs(&sum_plus_one_definition.expression),
+            vec![imported_column_ids_by_name["sum"].clone()]
+        );
+        assert_eq!(
+            sum_definition.fingerprint,
+            definition_fingerprint(&sum_definition)
+        );
+        assert_eq!(
+            sum_plus_one_definition.fingerprint,
+            definition_fingerprint(&sum_plus_one_definition)
+        );
+    }
+
+    #[test]
+    fn legacy_v2_restore_mints_ids_and_resaves_as_v3() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let doc = TableDoc {
+            id: "legacy-v2-dataset".to_string(),
+            name: "Legacy V2".to_string(),
+            source_type: "manual".to_string(),
+            version: "2".to_string(),
+            columns: vec![
+                TableColumn {
+                    column_id: None,
+                    name: "a".to_string(),
+                    col_type: "DOUBLE".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: None,
+                    name: "b".to_string(),
+                    col_type: "VARCHAR".to_string(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+            ],
+            rows: vec![vec![
+                serde_json::json!(1),
+                serde_json::json!(2.0),
+                serde_json::json!("x"),
+            ]],
+        };
+
+        service.restore_table_doc(&doc).unwrap();
+        let composed = service.compose_table_doc("legacy-v2-dataset").unwrap();
+
+        assert_eq!(composed.version, "3");
+        assert_eq!(composed.rows, doc.rows);
+        assert_eq!(composed.columns.len(), 2);
+        assert!(composed.columns.iter().all(|column| {
+            column
+                .column_id
+                .as_deref()
+                .is_some_and(|column_id| !column_id.is_empty())
+        }));
+        assert!(composed
+            .columns
+            .iter()
+            .all(|column| column.calculated.is_none()));
+    }
+
+    #[test]
+    fn compose_restore_and_resave_preserve_unknown_schema_calculated_metadata_and_rows() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let doc = sample_v3_preserved_doc();
+        let original_calculated_json = serde_json::to_value(
+            doc.columns[1]
+                .calculated
+                .as_ref()
+                .expect("preserved calculated metadata"),
+        )
+        .unwrap();
+
+        service.restore_table_doc(&doc).unwrap();
+
+        let composed = service.compose_table_doc(&doc.id).unwrap();
+        assert_eq!(composed.version, "3");
+        assert_eq!(composed.rows, doc.rows);
+        assert_eq!(
+            serde_json::to_value(
+                composed.columns[1]
+                    .calculated
+                    .as_ref()
+                    .expect("preserved calculated metadata after restore"),
+            )
+            .unwrap(),
+            original_calculated_json
+        );
+
+        let ArchivedCalculatedColumn::Preserved { definition } = composed.columns[1]
+            .calculated
+            .as_ref()
+            .expect("preserved calculated metadata after compose")
+        else {
+            panic!("expected preserved calculated metadata after compose");
+        };
+        assert_eq!(
+            definition.output_column_id,
+            "88888888-8888-8888-8888-888888888888"
+        );
+        assert_eq!(definition.schema_version, "99");
+    }
+
+    #[test]
+    fn restore_v3_missing_dependency_retains_materialized_values_and_marks_formula_broken() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let doc = sample_v3_missing_dependency_doc();
+
+        service.restore_table_doc(&doc).unwrap();
+
+        let composed = service.compose_table_doc(&doc.id).unwrap();
+        assert_eq!(composed.rows, doc.rows);
+        let calculated =
+            serde_json::to_value(composed.columns[1].calculated.as_ref().expect(
+                "missing-dependency formula should stay associated with its output column",
+            ))
+            .unwrap();
+
+        assert_eq!(
+            calculated["definition"]["formulaId"],
+            serde_json::json!("dddddddd-dddd-dddd-dddd-dddddddddddd")
+        );
+        assert_eq!(
+            calculated["definition"]["outputColumnId"],
+            serde_json::json!("cccccccc-cccc-cccc-cccc-cccccccccccc")
+        );
+        assert_eq!(calculated["status"], serde_json::json!("broken"));
+        assert_eq!(
+            calculated["diagnostics"][0]["code"],
+            serde_json::json!("missingDependencyColumns")
+        );
+        assert_eq!(
+            calculated["diagnostics"][0]["relatedColumnIds"],
+            serde_json::json!(["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"])
+        );
+    }
+
+    #[test]
+    fn restore_v3_rejects_ready_formula_fingerprint_mismatch_transactionally() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let mut doc = sample_v3_import_doc();
+        if let Some(ArchivedCalculatedColumn::Ready { definition, .. }) =
+            doc.columns[2].calculated.as_mut()
+        {
+            definition.fingerprint = "stale-fingerprint".to_string();
+        }
+
+        let error = service.restore_table_doc(&doc).unwrap_err();
+        let debug = format!("{error:?}");
+
+        assert!(
+            matches!(
+                error,
+                AppError::InvalidParam(message)
+                    if message.contains("formula_archive_inconsistent")
+                        && message.contains("fingerprint")
+            ),
+            "unexpected error: {debug}"
+        );
+        assert_dataset_restore_rolled_back(&state, &doc.id, "dataset_source_v3_dataset");
+    }
+
+    #[test]
+    fn restore_v3_rejects_ready_formula_output_type_mismatch_transactionally() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let mut doc = sample_v3_import_doc();
+        doc.columns[2].col_type = "VARCHAR".to_string();
+
+        let error = service.restore_table_doc(&doc).unwrap_err();
+        let debug = format!("{error:?}");
+
+        assert!(
+            matches!(
+                error,
+                AppError::InvalidParam(message)
+                    if message.contains("formula_archive_inconsistent")
+                        && message.contains("type")
+            ),
+            "unexpected error: {debug}"
+        );
+        assert_dataset_restore_rolled_back(&state, &doc.id, "dataset_source_v3_dataset");
+    }
+
+    #[test]
+    fn restore_v3_rejects_ready_formula_materialized_value_mismatch_transactionally() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let mut doc = sample_v3_import_doc();
+        doc.rows[0][3] = serde_json::json!(999.0);
+
+        let error = service.restore_table_doc(&doc).unwrap_err();
+        let debug = format!("{error:?}");
+
+        assert!(
+            matches!(
+                error,
+                AppError::InvalidParam(message)
+                    if message.contains("formula_archive_inconsistent")
+                        && message.contains("materialized")
+            ),
+            "unexpected error: {debug}"
+        );
+        assert_dataset_restore_rolled_back(&state, &doc.id, "dataset_source_v3_dataset");
+    }
+
+    #[test]
+    fn import_v3_preserved_unknown_schema_fails_transactionally_without_rebinding() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let path = std::env::temp_dir().join(format!(
+            "stats-playground-import-v3-preserved-{}.sptb",
+            uuid::Uuid::new_v4()
+        ));
+        let source_doc = sample_v3_preserved_doc();
+        spprj_archive::write_table_file(&source_doc, path.to_str().unwrap()).unwrap();
+
+        let before = state.db.lock().unwrap().list_datasets().unwrap();
+        let error = service.import_table(path.to_str().unwrap()).unwrap_err();
+        let after = state.db.lock().unwrap().list_datasets().unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert!(matches!(
+            error,
+            AppError::InvalidParam(message)
+                if message.contains("cannot safely remap preserved calculated column")
+        ));
+        assert_eq!(before.len(), after.len());
+        assert_eq!(
+            before
+                .iter()
+                .map(|dataset| dataset.id.as_str())
+                .collect::<Vec<_>>(),
+            after
+                .iter()
+                .map(|dataset| dataset.id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn restore_v3_rejects_duplicate_formula_ids_without_writing_dataset_state() {
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        let doc = sample_v3_duplicate_formula_id_doc();
+
+        let error = service.restore_table_doc(&doc).unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::FileIO(message) if message.contains("formulaId must be unique")
+        ));
+
+        let db = state.db.lock().unwrap();
+        assert!(db.get_dataset_meta(&doc.id).is_err());
+        let column_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = $1",
+                duckdb::params![&doc.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let calculated_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _meta_calculated_columns WHERE dataset_id = $1",
+                duckdb::params![&doc.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let table_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = $1",
+                duckdb::params!["dataset_duplicate_formula_id_dataset"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(column_count, 0);
+        assert_eq!(calculated_count, 0);
+        assert_eq!(table_count, 0);
+    }
+
     fn export_tables_sptb_zip_preserves_nested_paths_and_deserializes_entries() {
         let state = AppState::new().expect("create state");
         let data = DataService::new(&state);
@@ -1798,6 +3006,7 @@ mod tests {
                 width: None,
                 format: None,
                 extras: None,
+                ..Default::default()
             }],
             rows: (1..=row_count)
                 .map(|value| vec![serde_json::json!(value), serde_json::json!(value * 10)])
@@ -1864,6 +3073,7 @@ mod tests {
                     width: None,
                     format: None,
                     extras: None,
+                    ..Default::default()
                 }],
                 rows,
             };
@@ -1918,6 +3128,7 @@ mod tests {
                 width: None,
                 format: None,
                 extras: None,
+                ..Default::default()
             }],
             rows: vec![vec![
                 serde_json::json!(1),
@@ -1950,6 +3161,7 @@ mod tests {
             width: None,
             format: None,
             extras: None,
+            ..Default::default()
         });
         doc.rows.push(vec![serde_json::json!(1)]);
 
@@ -1964,7 +3176,7 @@ mod tests {
         let state = AppState::new().unwrap();
         let service = ProjectService::new(&state);
         let mut doc = table_doc("future-id", "Future");
-        doc.version = "3".into();
+        doc.version = "4".into();
 
         assert!(matches!(
             service.restore_table_doc(&doc),
@@ -2896,6 +4108,7 @@ mod tests {
             width: None,
             format: None,
             extras: None,
+            ..Default::default()
         });
         malformed.rows.push(vec![serde_json::json!(1)]);
         let folders = HashMap::new();
@@ -2958,15 +4171,15 @@ mod tests {
         graphs[0].body.insert(
             "filters".to_string(),
             serde_json::json!([{
-                    "id": "rule-1",
-                    "op": "AND",
-                    "rule": {
-                        "kind": "continuous",
-                        "field": { "name": "Length", "type": "continuous" },
-                        "min": 1.0,
-                        "max": 5.0
-                    }
-                }]),
+                "id": "rule-1",
+                "op": "AND",
+                "rule": {
+                    "kind": "continuous",
+                    "field": { "name": "Length", "type": "continuous" },
+                    "min": 1.0,
+                    "max": 5.0
+                }
+            }]),
         );
         graphs[1]
             .body
@@ -2999,11 +4212,8 @@ mod tests {
             "sp_legacy_filter_conflict_{}.spprj",
             uuid::Uuid::new_v4()
         ));
-        spprj_archive::write_legacy_project_archive_for_test(
-            &bundle,
-            file_path.to_str().unwrap(),
-        )
-        .unwrap();
+        spprj_archive::write_legacy_project_archive_for_test(&bundle, file_path.to_str().unwrap())
+            .unwrap();
 
         let result = ProjectService::new(&state)
             .open_project(file_path.to_str().unwrap(), None)
