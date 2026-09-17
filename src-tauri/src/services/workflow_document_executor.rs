@@ -810,6 +810,7 @@ mod tests {
                     confidence_level: 0.95,
                     spec_limits: HashMap::new(),
                     fit_distributions: vec![DistributionFitKind::Normal],
+                    fit_all: false,
                 }),
                 &frozen,
             )

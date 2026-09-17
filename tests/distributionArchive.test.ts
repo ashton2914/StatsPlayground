@@ -35,7 +35,8 @@ const distribution = createDistributionItem({
   analysis: {
     confidenceLevel: 0.95,
     specLimits: { Revenue: { lsl: 10, target: 15, usl: 20 } },
-    fitDistributions: ["normal", "weibull"],
+    fitDistributions: ["cauchy"],
+    fitAll: true,
   },
   createdAt: "2026-09-02T00:00:00.000Z",
 });
@@ -114,6 +115,12 @@ assert.deepEqual(reopened.distributions, [distribution]);
 assert.deepEqual(reopened.distributionFolders, {
   "dist-001": "Analyses/Revenue",
 });
+assert.deepEqual(reopened.distributions[0]?.analysis, {
+  confidenceLevel: 0.95,
+  specLimits: { Revenue: { lsl: 10, target: 15, usl: 20 } },
+  fitDistributions: ["cauchy"],
+  fitAll: true,
+});
 
 const { useDistributionStore } = await import("../src/stores/useDistributionStore.ts");
 const { useFolderStore } = await import("../src/stores/useFolderStore.ts");
@@ -122,6 +129,12 @@ useFolderStore.getState().loadFromProject(reopened);
 assert.deepEqual(useDistributionStore.getState().items, [distribution]);
 assert.deepEqual(useFolderStore.getState().distributionFolders, {
   "dist-001": "Analyses/Revenue",
+});
+assert.deepEqual(useDistributionStore.getState().items[0]?.analysis, {
+  confidenceLevel: 0.95,
+  specLimits: { Revenue: { lsl: 10, target: 15, usl: 20 } },
+  fitDistributions: ["cauchy"],
+  fitAll: true,
 });
 
 useDistributionStore.getState().reset();

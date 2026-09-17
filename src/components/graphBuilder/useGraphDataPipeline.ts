@@ -1,7 +1,10 @@
 import { SCATTER_RENDER_BUDGET } from "../../graphCore/scatterBudget.ts";
+import { DEFAULT_TIME_SERIES_OPTIONS } from "../../graphCore/types.ts";
+import type { GraphColumnDescriptor } from "./graphColumnIdentity.ts";
 import { resolveEffectiveGraphSampling } from "./graphSamplingPolicy.ts";
+import { normalizeTimeSeriesTextDateFormat, validateTimeSeriesX } from "./timeSeriesContract.ts";
 import { MAX_MULTIVARIATE_COLUMNS } from "./updateMultivariateColumns.ts";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   decodeGraphPayload,
   type GraphAggregatePacket,
@@ -15,6 +18,7 @@ import {
   type GraphFieldBinding,
   type GraphSampling,
   type GraphElementRequest,
+  type GraphTimeSeriesRequest,
   type GraphViewport,
 } from "../../types/graphData.ts";
 import type { GraphBuilderItem, GraphRuntimeItem } from "../../types/graphBuilder.ts";
@@ -325,6 +329,9 @@ function hasCoherentCompletion(
   pending: PendingGraphState,
   completion: GraphDataCompletion,
 ): boolean {
+  if (completion.timeSeriesDisposition?.status === "invalidTimeSeriesX") {
+    return false;
+  }
   const { chunksSent, rawPointDisposition } = completion;
   if (!rawPointDisposition) return false;
   if (chunksSent === 0) {
@@ -472,6 +479,12 @@ export function reduceGraphStream(state: GraphStreamState, message: GraphStreamM
       if (state.pendingHeader) {
         return failPending(state, "graph terminal marker arrived with a pending header");
       }
+      if (completion.timeSeriesDisposition?.status === "invalidTimeSeriesX") {
+        return failPending(
+          state,
+          `invalid time series X values: ${completion.timeSeriesDisposition.invalidXRows.toLocaleString()} invalid X values`,
+        );
+      }
       if (!hasCoherentCompletion(state.pending, completion)) {
         return failPending(state, "graph terminal marker has inconsistent chunksSent");
       }
@@ -508,6 +521,7 @@ export function reduceGraphStream(state: GraphStreamState, message: GraphStreamM
         rawChunks,
         aggregates: state.pending.aggregates,
         rawPointDisposition: completion.rawPointDisposition,
+        timeSeriesDisposition: completion.timeSeriesDisposition,
       };
 
       return {
@@ -568,6 +582,34 @@ function normalizeCorrelationMethod(value: unknown): CorrelationMethod {
   return "pearson";
 }
 
+function normalizeTimeSeriesRequest(value: unknown): GraphTimeSeriesRequest {
+  const source = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const xInterpretationSource = source.xInterpretation;
+  const xInterpretation = xInterpretationSource && typeof xInterpretationSource === "object"
+    ? xInterpretationSource as Record<string, unknown>
+    : {};
+  const kind = xInterpretation.kind === "textDate"
+    || xInterpretation.kind === "sequence"
+    || xInterpretation.kind === "nativeTemporal"
+    ? xInterpretation.kind
+    : DEFAULT_TIME_SERIES_OPTIONS.xInterpretation.kind;
+  const textDateFormat = normalizeTimeSeriesTextDateFormat(xInterpretation.format);
+
+  return {
+    xInterpretation: kind === "textDate" && textDateFormat
+      ? { kind, format: textDateFormat }
+      : kind === "sequence"
+        ? { kind: "sequence" }
+        : { kind: "nativeTemporal" },
+    order: source.order === "sourceRow" ? "sourceRow" : "timeAscending",
+    missingValues: source.missingValues === "connect" ? "connect" : "break",
+    markerMode: source.markerMode === "show" || source.markerMode === "hide" ? source.markerMode : "auto",
+    connection: source.connection === "step" ? "step" : "line",
+  };
+}
+
 export function deriveElements(item: GraphBuilderItem): GraphElementRequest[] {
   if (item.mode === "multivariate") {
     return [{
@@ -596,6 +638,13 @@ export function deriveElements(item: GraphBuilderItem): GraphElementRequest[] {
         return {
           ...requestElement,
           correlationMethod: normalizeCorrelationMethod(element.options?.correlationMethod),
+        };
+      }
+
+      if (element.kind === "timeSeries") {
+        return {
+          ...requestElement,
+          timeSeries: normalizeTimeSeriesRequest(element.options),
         };
       }
 
@@ -664,6 +713,40 @@ export function canExecuteGraphRequest(
   return (hasX && hasY) || multiXCount >= 1 || multiYCount >= 1;
 }
 
+function findColumnDescriptor(
+  field: { columnId?: string; name: string },
+  columnDescriptors: readonly GraphColumnDescriptor[],
+): GraphColumnDescriptor | undefined {
+  return columnDescriptors.find((column) =>
+    (field.columnId && column.columnId === field.columnId) || column.name === field.name,
+  );
+}
+
+function canExecuteTimeSeriesX(
+  item: GraphRuntimeItem,
+  elements: readonly GraphElementRequest[],
+  columnDescriptors: readonly GraphColumnDescriptor[] | undefined,
+): boolean {
+  if (item.mode !== "2d" || columnDescriptors === undefined) {
+    return true;
+  }
+  const timeSeriesElement = elements.find((element) => element.kind === "timeSeries");
+  if (!timeSeriesElement) {
+    return true;
+  }
+  const xField = item.modeStates.twoD.encoding.x;
+  if (!xField) {
+    return true;
+  }
+  const descriptor = findColumnDescriptor(xField, columnDescriptors);
+  if (!descriptor) {
+    return false;
+  }
+  const xInterpretation = timeSeriesElement.timeSeries?.xInterpretation
+    ?? DEFAULT_TIME_SERIES_OPTIONS.xInterpretation;
+  return validateTimeSeriesX(xField, descriptor.sqlType, xInterpretation).valid;
+}
+
 interface GraphRequestPlan {
   fields: GraphFieldBinding[];
   filters: TableWindowFilter[];
@@ -672,16 +755,23 @@ interface GraphRequestPlan {
   executable: boolean;
 }
 
-function deriveGraphRequestPlan(item: GraphRuntimeItem): GraphRequestPlan {
+function deriveGraphRequestPlan(
+  item: GraphRuntimeItem,
+  columnDescriptors?: readonly GraphColumnDescriptor[],
+): GraphRequestPlan {
   const parts = deriveGraphRequestParts(item);
   return {
     ...parts,
-    executable: canExecuteGraphRequest(item, parts.fields, parts.elements),
+    executable: canExecuteGraphRequest(item, parts.fields, parts.elements)
+      && canExecuteTimeSeriesX(item, parts.elements, columnDescriptors),
   };
 }
 
-export function deriveGraphRequestIdentity(item: GraphRuntimeItem): string {
-  return JSON.stringify(deriveGraphRequestPlan(item));
+export function deriveGraphRequestIdentity(
+  item: GraphRuntimeItem,
+  columnDescriptors?: readonly GraphColumnDescriptor[],
+): string {
+  return JSON.stringify(deriveGraphRequestPlan(item, columnDescriptors));
 }
 
 function hasEnabledElementKinds(elements: readonly GraphElementRequest[]): Set<string> {
@@ -915,20 +1005,40 @@ export function useGraphDataPipeline(
   dataset: DatasetMeta,
   viewport: GraphViewport,
   enabled = true,
+  columnDescriptors?: readonly GraphColumnDescriptor[],
+  resolveLatestItem?: () => GraphRuntimeItem | null,
 ): GraphDataPipelineResult {
   const [state, setState] = useState<GraphStreamState>(() => createInitialGraphStreamState());
   const [debouncedViewport, setDebouncedViewport] = useState<GraphViewport>(viewport);
+  const resolveLatestItemRef = useRef(resolveLatestItem);
+  const columnDescriptorsRef = useRef(columnDescriptors);
+
+  useLayoutEffect(() => {
+    resolveLatestItemRef.current = resolveLatestItem;
+    columnDescriptorsRef.current = columnDescriptors;
+  }, [resolveLatestItem, columnDescriptors]);
+
+  const requestIdentity = deriveGraphRequestIdentity(item, columnDescriptors);
+  const isLatestRequestIdentity = useCallback((identity: string): boolean => {
+    const latestItem = resolveLatestItemRef.current?.();
+    if (!latestItem) {
+      return true;
+    }
+    return deriveGraphRequestIdentity(latestItem, columnDescriptorsRef.current) === identity;
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      if (!isLatestRequestIdentity(requestIdentity)) {
+        return;
+      }
       setDebouncedViewport(viewport);
     }, VIEWPORT_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timer);
     };
-  }, [viewport.height, viewport.width]);
+  }, [isLatestRequestIdentity, requestIdentity, viewport.height, viewport.width]);
 
-  const requestIdentity = deriveGraphRequestIdentity(item);
   const requestPlan = useMemo(
     () => JSON.parse(requestIdentity) as GraphRequestPlan,
     [requestIdentity],
@@ -977,6 +1087,10 @@ export function useGraphDataPipeline(
 
         const generation = await dataService.getDatasetGeneration(dataset.id);
         if (disposed) {
+          return;
+        }
+
+        if (!isLatestRequestIdentity(requestIdentity)) {
           return;
         }
 
@@ -1046,7 +1160,7 @@ export function useGraphDataPipeline(
       disposed = true;
       cancellationCoordinator.cancelActive();
     };
-  }, [dataset.id, enabled, requestSkeleton]);
+  }, [dataset.id, enabled, isLatestRequestIdentity, requestIdentity, requestSkeleton]);
 
   return {
     frame: state.committed,

@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use crate::models::table::{
-    CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult, TableQueryResult, TableWindowRequest,
-    TableWindowResult,
+    CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult, TableFilterValue, TableQueryResult,
+    TableWindowRequest, TableWindowResult,
 };
 use crate::services::spprj_archive::{
     normalize_unsafe_portable_basename, validate_portable_basename,
@@ -338,7 +338,7 @@ impl<'a> DataService<'a> {
         search: &str,
         limit: usize,
         generation: u64,
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<Vec<TableFilterValue>, AppError> {
         let db = self
             .state
             .db

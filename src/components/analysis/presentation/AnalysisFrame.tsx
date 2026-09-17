@@ -5,6 +5,7 @@ interface AnalysisFrameProps extends Omit<ComponentPropsWithoutRef<"section">, "
   children: ReactNode;
   defaultExpanded?: boolean;
   contentPadding?: "none" | "compact" | "standard";
+  headerActions?: ReactNode;
 }
 
 export function AnalysisFrame({
@@ -12,6 +13,7 @@ export function AnalysisFrame({
   children,
   defaultExpanded = true,
   contentPadding = "standard",
+  headerActions,
   className,
   ...sectionProps
 }: AnalysisFrameProps) {
@@ -30,6 +32,7 @@ export function AnalysisFrame({
         <span aria-hidden="true" className="analysis-ui-disclosure">{expanded ? "▾" : "▸"}</span>
         <span>{title}</span>
       </button>
+      {headerActions && <div className="analysis-ui-frame-actions">{headerActions}</div>}
       {expanded && (
         <div className={`analysis-ui-frame-body analysis-ui-frame-body-${contentPadding}`} id={bodyId}>
           {children}

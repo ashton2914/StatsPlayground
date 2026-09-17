@@ -10,7 +10,9 @@ use crate::error::AppError;
 use crate::models::graph_data::{GraphAggregatePacket, GraphChunkHeader, GraphDataCompletion};
 use crate::models::graph_data::{
     GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphRawPointDisposition,
-    GraphSampling, GraphViewport,
+    GraphSampling, GraphTimeSeriesConnection, GraphTimeSeriesDisposition,
+    GraphTimeSeriesMarkerMode, GraphTimeSeriesMissingValues, GraphTimeSeriesOrder, GraphViewport,
+    TimeSeriesXInterpretation,
 };
 use crate::models::save::SaveProjectRequest;
 use crate::services::calculated_column_service::{
@@ -36,6 +38,7 @@ enum Operation {
     Paste,
     Restore,
     Graph,
+    TimeSeriesGraph,
     Save,
     Datalink,
     Calculated,
@@ -66,7 +69,11 @@ struct PerformanceReport {
     decode_ms: Option<DesktopOnlyMetric>,
     draw_ms: Option<DesktopOnlyMetric>,
     processed_rows: Option<u64>,
+    source_rows: Option<u64>,
+    chunks: Option<u32>,
     transferred_bytes: Option<u64>,
+    projection_passes: Option<u32>,
+    invalid_x_count: Option<u64>,
     archive_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_retained_batch_bytes: Option<u64>,
@@ -426,6 +433,7 @@ where
                     "paste" => Operation::Paste,
                     "restore" => Operation::Restore,
                     "graph" => Operation::Graph,
+                    "time-series-graph" | "time_series_graph" => Operation::TimeSeriesGraph,
                     "save" => Operation::Save,
                     "datalink" => Operation::Datalink,
                     "calculated" => Operation::Calculated,
@@ -462,6 +470,58 @@ fn build_graph_request(dataset_id: &str, generation: u64) -> GraphDataRequest {
             kind: "points".to_string(),
             summary_stat: "none".to_string(),
             correlation_method: None,
+            time_series: None,
+        }],
+        sampling: GraphSampling::Full,
+        raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+        viewport: GraphViewport {
+            width: 1200,
+            height: 700,
+        },
+    }
+}
+
+fn build_time_series_graph_request(
+    dataset_id: &str,
+    generation: u64,
+    series_count: usize,
+) -> GraphDataRequest {
+    let mut fields = vec![
+        GraphFieldBinding {
+            role: "x".to_string(),
+            column: "captured_at".to_string(),
+        },
+        GraphFieldBinding {
+            role: "y".to_string(),
+            column: "reading_1".to_string(),
+        },
+    ];
+    if series_count > 1 {
+        for index in 0..series_count {
+            fields.push(GraphFieldBinding {
+                role: format!("multiY{index}"),
+                column: format!("reading_{}", index + 1),
+            });
+        }
+    }
+
+    GraphDataRequest {
+        request_id: format!("request-{dataset_id}"),
+        dataset_id: dataset_id.to_string(),
+        generation,
+        fields,
+        filters: Vec::new(),
+        elements: vec![GraphElementRequest {
+            kind: "timeSeries".to_string(),
+            summary_stat: "none".to_string(),
+            correlation_method: None,
+            time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                x_interpretation: TimeSeriesXInterpretation::NativeTemporal,
+                order: GraphTimeSeriesOrder::TimeAscending,
+                missing_values: GraphTimeSeriesMissingValues::Break,
+                marker_mode: GraphTimeSeriesMarkerMode::Auto,
+                connection: GraphTimeSeriesConnection::Line,
+            }),
         }],
         sampling: GraphSampling::Full,
         raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -515,6 +575,75 @@ fn seed_graph_benchmark_dataset(
     }
 
     Ok(())
+}
+
+fn seed_time_series_benchmark_dataset(
+    state: &AppState,
+    dataset_id: &str,
+    rows: usize,
+    series_count: usize,
+) -> Result<(), AppError> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let mut column_names = vec!["captured_at".to_string()];
+    let mut column_types = vec!["DATE".to_string()];
+    for index in 0..series_count {
+        column_names.push(format!("reading_{}", index + 1));
+        column_types.push("DOUBLE".to_string());
+    }
+    db.create_empty_table(
+        dataset_id,
+        "Performance Time Series Baseline",
+        &column_names,
+        &column_types,
+    )?;
+
+    if rows > 0 {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let upper_bound = i64::try_from(rows)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| AppError::InvalidParam("benchmark row count is too large".into()))?;
+        let reading_columns = (0..series_count)
+            .map(|index| format!("reading_{}", index + 1))
+            .collect::<Vec<_>>();
+        let reading_exprs = (0..series_count)
+            .map(|index| {
+                format!(
+                    "CASE WHEN i % 100 = 0 THEN NULL ELSE CAST(i AS DOUBLE) * {}.0 END",
+                    index + 1
+                )
+            })
+            .collect::<Vec<_>>();
+        let insert_sql = format!(
+            "INSERT INTO \"{table_name}\" (_row_id, captured_at, {})
+             SELECT i,
+                DATE '2026-01-01' + CAST(((i - 1) / 2) AS INTEGER),
+                {}
+             FROM range(1, CAST(? AS BIGINT)) AS generated(i)",
+            reading_columns.join(", "),
+            reading_exprs.join(", ")
+        );
+        db.conn().execute(&insert_sql, params![upper_bound])?;
+        db.conn().execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![rows as i64, dataset_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn invalid_time_series_x_count(disposition: &Option<GraphTimeSeriesDisposition>) -> u64 {
+    match disposition {
+        Some(GraphTimeSeriesDisposition::Included { invalid_x_rows, .. })
+        | Some(GraphTimeSeriesDisposition::InvalidTimeSeriesX { invalid_x_rows, .. }) => {
+            *invalid_x_rows
+        }
+        None => 0,
+    }
 }
 
 #[cfg(test)]
@@ -661,7 +790,107 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
         draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
         processed_rows: Some(completion.processed_rows),
+        source_rows: Some(completion.source_rows),
+        chunks: Some(capture.chunks),
         transferred_bytes: Some(transferred_bytes),
+        projection_passes: Some(capture.projection_passes),
+        invalid_x_count: Some(invalid_time_series_x_count(
+            &completion.time_series_disposition,
+        )),
+        archive_bytes: 0,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        process_memory: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: None,
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
+    })
+}
+
+fn execute_time_series_graph(
+    options: Options,
+    total_started: Instant,
+) -> Result<PerformanceReport, AppError> {
+    let series_count = options.columns.clamp(1, 4);
+    if options.rows % series_count != 0 {
+        return Err(AppError::InvalidParam(format!(
+            "time series benchmark rows must divide evenly across {series_count} series"
+        )));
+    }
+    let physical_rows = options.rows / series_count;
+    let setup_started = Instant::now();
+    let state = AppState::new()?;
+    let dataset_id = "performance-time-series-baseline";
+    seed_time_series_benchmark_dataset(&state, dataset_id, physical_rows, series_count)?;
+    let generation = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.get_dataset_generation(dataset_id)?
+    };
+    let request = build_time_series_graph_request(dataset_id, generation, series_count);
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let expected_rows = u64::try_from(options.rows)
+        .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?;
+    let service = GraphDataService::new(&state);
+    let capture = service.collect_benchmark_result(&request)?;
+    let completion = capture.completion;
+    let operation_ms = capture.operation_ms;
+
+    if completion.source_rows != expected_rows {
+        return Err(AppError::InvalidParam(format!(
+            "time series source_rows mismatch: expected {expected_rows}, got {}",
+            completion.source_rows
+        )));
+    }
+    if completion.processed_rows != expected_rows {
+        return Err(AppError::InvalidParam(format!(
+            "time series processed_rows mismatch: expected {expected_rows}, got {}",
+            completion.processed_rows
+        )));
+    }
+    if capture.projection_passes != 1 {
+        return Err(AppError::InvalidParam(format!(
+            "time series projection pass mismatch: expected 1, got {}",
+            capture.projection_passes
+        )));
+    }
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: series_count,
+        operation: options.operation,
+        setup_ms,
+        operation_ms,
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows: usize::try_from(completion.processed_rows).map_err(|_| {
+            AppError::InvalidParam("time series processed row count does not fit usize".to_string())
+        })?,
+        selected_columns: capture.selected_columns,
+        query_ms: Some(capture.query_ms),
+        encode_ms: Some(capture.encode_ms),
+        decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
+        draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
+        processed_rows: Some(completion.processed_rows),
+        source_rows: Some(completion.source_rows),
+        chunks: Some(capture.chunks),
+        transferred_bytes: Some(capture.transferred_bytes),
+        projection_passes: Some(capture.projection_passes),
+        invalid_x_count: Some(invalid_time_series_x_count(
+            &completion.time_series_disposition,
+        )),
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -696,6 +925,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     let total_started = Instant::now();
     if options.operation == Operation::Graph {
         return execute_graph(options, total_started);
+    }
+    if options.operation == Operation::TimeSeriesGraph {
+        return execute_time_series_graph(options, total_started);
     }
 
     let setup_started = Instant::now();
@@ -746,6 +978,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
             (snapshot.rows.len(), 0)
         }
         Operation::Graph => unreachable!("graph operation is handled by execute_graph"),
+        Operation::TimeSeriesGraph => {
+            unreachable!("time series graph operation is handled by execute_time_series_graph")
+        }
         Operation::Save => unreachable!("save is handled before this branch"),
         Operation::Datalink => unreachable!("datalink is handled before this branch"),
         Operation::Calculated => unreachable!("calculated is handled before this branch"),
@@ -766,7 +1001,11 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -859,7 +1098,11 @@ fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
             u64::try_from(options.rows)
                 .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?,
         ),
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -1234,7 +1477,11 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -1373,7 +1620,11 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes,
         max_retained_batch_bytes: Some(save_perf_metrics.max_retained_batch_bytes as u64),
         max_encoded_batch_bytes: Some(save_perf_metrics.max_encoded_batch_bytes as u64),
@@ -1591,6 +1842,13 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_parses_time_series_graph_operation() {
+        let options = parse_args(["--operation", "time-series-graph"].map(String::from)).unwrap();
+
+        assert_eq!(options.operation, Operation::TimeSeriesGraph);
+    }
+
+    #[test]
     fn performance_cli_executes_each_operation() {
         for operation in [
             Operation::Query,
@@ -1748,6 +2006,28 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_reports_time_series_temporal_transfer_metrics() {
+        let report = execute(Options {
+            rows: 300_000,
+            columns: 4,
+            operation: Operation::TimeSeriesGraph,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+        })
+        .unwrap();
+
+        assert_eq!(report.result_rows, 300_000);
+        assert_eq!(report.processed_rows, Some(300_000));
+        assert_eq!(report.source_rows, Some(300_000));
+        assert_eq!(report.invalid_x_count, Some(0));
+        assert_eq!(report.projection_passes, Some(1));
+        assert!(report.chunks.is_some_and(|chunks| chunks > 0));
+        assert!(report.transferred_bytes.is_some_and(|bytes| bytes > 0));
+        assert!(report.query_ms.is_some());
+        assert!(report.encode_ms.is_some());
+    }
+
+    #[test]
     fn performance_cli_graph_projection_timings_are_single_pass_partition() {
         let state = AppState::new().expect("state");
         let dataset_id = "perf-single-pass";
@@ -1819,6 +2099,7 @@ mod tests {
                 wrap_codes: None,
                 role_vectors: Default::default(),
                 x_encoding: GraphAxisEncoding::Categorical,
+                temporal_metadata: None,
                 final_chunk: true,
             },
             payload: vec![1, 2, 3, 4, 5],
@@ -1859,6 +2140,7 @@ mod tests {
                 valid_rows: 1,
                 budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
             },
+            time_series_disposition: None,
         };
 
         let actual = measure_transferred_bytes(

@@ -166,6 +166,56 @@ assert.deepEqual(
   ["height"],
 );
 
+const timeSeriesItem: GraphBuilderItem = normalizeGraphBuilderItem({
+  ...interactiveItem,
+  modeStates: {
+    ...interactiveItem.modeStates,
+    twoD: {
+      ...interactiveItem.modeStates.twoD,
+      encoding: {
+        x: { name: "captured", type: "datetime" },
+        y: { name: "height", type: "continuous" },
+      },
+      elements: [{ kind: "timeSeries", enabled: true, options: {
+        xInterpretation: { kind: "textDate", format: "usDate" },
+        order: "timeAscending",
+        missingValues: "break",
+        connection: "line",
+        markerMode: "auto",
+      } }],
+    },
+  },
+  sampling: { mode: "sample", size: 10, seed: 1 },
+});
+const timeSeriesModel = buildGraphRuntimeModel(timeSeriesItem, {
+  ...metadata,
+  columns: [
+    ...metadata.columns,
+    { colIndex: 3, colName: "captured", colType: "DATE", role: "nominal" as const, missingCount: 0 },
+  ],
+});
+assert.deepEqual(timeSeriesModel.spec.encoding.x, { name: "captured", type: "datetime" });
+assert.deepEqual(timeSeriesModel.spec.elements, [{ kind: "timeSeries", enabled: true, options: {
+  xInterpretation: { kind: "textDate", format: "usDate" },
+  order: "timeAscending",
+  missingValues: "break",
+  connection: "line",
+  markerMode: "auto",
+} }]);
+const timeSeriesRequestParts = deriveGraphRequestParts(timeSeriesItem);
+assert.deepEqual(timeSeriesRequestParts.sampling, { mode: "full" });
+assert.deepEqual(timeSeriesRequestParts.elements, [{
+  kind: "timeSeries",
+  summaryStat: "none",
+  timeSeries: {
+    xInterpretation: { kind: "textDate", format: "usDate" },
+    order: "timeAscending",
+    missingValues: "break",
+    connection: "line",
+    markerMode: "auto",
+  },
+}]);
+
 const colorOnlyItem: GraphBuilderItem = {
   ...interactiveItem,
   modeStates: {
@@ -313,5 +363,56 @@ assert.equal(
   true,
   "Fit Y by X Analysis must render through the shared Analysis graph host",
 );
+
+{
+  const en = JSON.parse(readFileSync(resolve(process.cwd(), "src/i18n/locales/en.json"), "utf8"));
+  const zhCn = JSON.parse(readFileSync(resolve(process.cwd(), "src/i18n/locales/zh-CN.json"), "utf8"));
+  const zhTw = JSON.parse(readFileSync(resolve(process.cwd(), "src/i18n/locales/zh-TW.json"), "utf8"));
+  const vi = JSON.parse(readFileSync(resolve(process.cwd(), "src/i18n/locales/vi.json"), "utf8"));
+  const keyPaths = [
+    "graph.type.timeSeries",
+    "graph.timeSeries.xInterpretation.label",
+    "graph.timeSeries.xInterpretation.nativeTemporal",
+    "graph.timeSeries.xInterpretation.textDate",
+    "graph.timeSeries.xInterpretation.sequence",
+    "graph.timeSeries.format.label",
+    "graph.timeSeries.format.isoDate",
+    "graph.timeSeries.format.isoDateTime",
+    "graph.timeSeries.format.usDate",
+    "graph.timeSeries.format.usDateTime",
+    "graph.timeSeries.format.dayFirstDate",
+    "graph.timeSeries.format.dayFirstDateTime",
+    "graph.timeSeries.order.label",
+    "graph.timeSeries.order.timeAscending",
+    "graph.timeSeries.order.sourceRow",
+    "graph.timeSeries.missingValues.label",
+    "graph.timeSeries.missingValues.break",
+    "graph.timeSeries.missingValues.connect",
+    "graph.timeSeries.connection.label",
+    "graph.timeSeries.connection.line",
+    "graph.timeSeries.connection.step",
+    "graph.timeSeries.markerMode.label",
+    "graph.timeSeries.markerMode.auto",
+    "graph.timeSeries.markerMode.show",
+    "graph.timeSeries.markerMode.hide",
+    "graph.timeSeries.status.fullResolution",
+    "graph.timeSeries.status.includedCount",
+    "graph.timeSeries.error.textDateRequired",
+    "graph.timeSeries.error.sequenceRequired",
+    "graph.timeSeries.error.nativeTemporalRequired",
+    "graph.timeSeries.error.standaloneTime",
+    "graph.timeSeries.error.invalidXRows",
+  ];
+  const readPath = (root: Record<string, unknown>, path: string): unknown => path.split(".").reduce<unknown>((current, segment) => {
+    if (!current || typeof current !== "object") return undefined;
+    return (current as Record<string, unknown>)[segment];
+  }, root);
+  for (const keyPath of keyPaths) {
+    assert.equal(typeof readPath(en, keyPath), "string", `en must define ${keyPath}`);
+    assert.equal(typeof readPath(zhCn, keyPath), "string", `zh-CN must define ${keyPath}`);
+    assert.equal(typeof readPath(zhTw, keyPath), "string", `zh-TW must define ${keyPath}`);
+    assert.equal(typeof readPath(vi, keyPath), "string", `vi must define ${keyPath}`);
+  }
+}
 
 console.log("graphRuntime contract tests passed");

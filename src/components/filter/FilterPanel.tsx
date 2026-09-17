@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { FieldRef, GraphData, FieldType } from "@/graphCore";
+import type { TableFilterValue } from "@/types/data";
 import type {
   FilterCategoricalRule,
   FilterContinuousRule,
@@ -44,7 +45,7 @@ interface FilterPanelProps {
   onClose: () => void;
   width: number;
   categoricalMode?: "include" | "exclude";
-  getCategoricalValues?: (field: string, search: string) => Promise<string[]>;
+  getCategoricalValues?: (field: string, search: string) => Promise<TableFilterValue[]>;
 }
 
 /** Map a column FieldType to the filter rule kind we render for it. */
@@ -211,7 +212,7 @@ interface FilterCardProps {
   index: number;
   item: FilterRuleItem;
   data: GraphData | null;
-  getCategoricalValues?: (field: string, search: string) => Promise<string[]>;
+  getCategoricalValues?: (field: string, search: string) => Promise<TableFilterValue[]>;
   onChange: (patch: Partial<FilterRuleItem>) => void;
   onRemove: () => void;
 }
@@ -459,7 +460,7 @@ function CategoricalEditor({
 }: {
   rule: FilterCategoricalRule;
   data: GraphData | null;
-  getCategoricalValues?: (field: string, search: string) => Promise<string[]>;
+  getCategoricalValues?: (field: string, search: string) => Promise<TableFilterValue[]>;
   onChange: (next: FilterCategoricalRule) => void;
 }) {
   const { t } = useTranslation();
@@ -476,7 +477,7 @@ function CategoricalEditor({
     () => distinctColumnValues(data, rule.field.name),
     [data, rule.field.name],
   );
-  const [remoteValues, setRemoteValues] = useState<string[]>([]);
+  const [remoteValues, setRemoteValues] = useState<TableFilterValue[]>([]);
   useEffect(() => {
     if (!getCategoricalValues) return;
     let cancelled = false;
@@ -494,13 +495,21 @@ function CategoricalEditor({
       window.clearTimeout(timer);
     };
   }, [getCategoricalValues, query, rule.field.name]);
-  const all = getCategoricalValues ? remoteValues : localValues;
+  const all = useMemo(
+    () => (getCategoricalValues ? remoteValues.map(({ value }) => value) : localValues),
+    [getCategoricalValues, localValues, remoteValues],
+  );
+  const rowCounts = useMemo(
+    () => new Map(remoteValues.map(({ value, rowCount }) => [value, rowCount])),
+    [remoteValues],
+  );
 
   const storedSet = useMemo(() => new Set(rule.selected), [rule.selected]);
+  const currentValueSet = useMemo(() => new Set(all), [all]);
   const selectedSet = useMemo(
     () => rule.exclude
       ? new Set(all.filter((value) => !storedSet.has(value)))
-      : storedSet,
+      : new Set(all.filter((value) => storedSet.has(value))),
     [all, rule.exclude, storedSet],
   );
 
@@ -519,7 +528,9 @@ function CategoricalEditor({
       excluded.push(...all.filter((value) => !next.has(value)));
       onChange({ ...rule, selected: excluded });
     } else {
-      onChange({ ...rule, selected: all.filter((x) => next.has(x)) });
+      const currentSelected = all.filter((value) => next.has(value));
+      const preservedHidden = rule.selected.filter((value) => !currentValueSet.has(value));
+      onChange({ ...rule, selected: [...currentSelected, ...preservedHidden] });
     }
   };
 
@@ -583,11 +594,22 @@ function CategoricalEditor({
   };
 
   const selectAll = () => {
-    onChange({ ...rule, selected: rule.exclude ? [] : all.slice() });
+    onChange({
+      ...rule,
+      selected: rule.exclude
+        ? []
+        : [...all, ...rule.selected.filter((value) => !currentValueSet.has(value))],
+    });
     setAnchorIdx(null);
   };
   const clearAll = () => {
-    onChange({ ...rule, selected: [], exclude: false });
+    onChange({
+      ...rule,
+      selected: rule.exclude
+        ? []
+        : rule.selected.filter((value) => !currentValueSet.has(value)),
+      exclude: false,
+    });
     setAnchorIdx(null);
   };
 
@@ -645,6 +667,11 @@ function CategoricalEditor({
               <span className="gb-filter-cat-label" title={v}>
                 {v === "" ? <em>(blank)</em> : v}
               </span>
+              {rowCounts.has(v) && (
+                <span className="gb-filter-cat-row-count">
+                  {rowCounts.get(v)!.toLocaleString()}
+                </span>
+              )}
             </div>
           ))
         )}

@@ -453,14 +453,14 @@
     "report": {
       "title": "統計報告", "loading": "正在載入報告...", "overview": "分佈概覽", "outlierBoxPlot": "離群值箱形圖",
       "ecdf": "經驗累積分佈", "normalQuantilePlot": "常態分位數圖", "overall": "整體", "missing": "缺失",
-      "quantiles": "分位數", "probability": "機率", "label": "標籤", "value": "值", "summary": "彙總統計",
+      "quantiles": "分位數", "probability": "機率", "label": "標籤", "value": "值", "summary": "彙總統計", "summaryStatistics": "彙總統計",
       "location": "位置", "variation": "變異", "unavailableReason": "無法使用：{{reason}}",
       "processCapability": "製程能力", "continuousFit": "連續分佈配適", "fitComparison": "配適比較"
     },
     "statistics": {
       "n": "N", "nMissing": "缺失數", "mean": "平均值", "median": "中位數", "mode": "眾數",
       "noUniqueMode": "無唯一眾數", "minimum": "最小值", "maximum": "最大值", "stdDev": "標準差",
-      "stdError": "平均值標準誤", "meanCiLower": "平均值信賴下限", "meanCiUpper": "平均值信賴上限",
+      "stdError": "標準誤", "meanCiLower": "平均值 {{confidence}} 下限", "meanCiUpper": "平均值 {{confidence}} 上限",
       "range": "全距", "iqr": "四分位距", "mad": "中位絕對偏差"
     },
     "compatibility": {
@@ -469,11 +469,11 @@
     },
     "fitStandardError": "標準誤", "fitLower95": "95% 下限", "fitUpper95": "95% 上限",
     "fit": {
-      "unavailable": "配適無法使用：{{reason}}", "parameters": "參數估計", "parameter": "參數", "estimate": "估計值",
+      "continuousFit": "連續分佈配適", "fitAll": "全部配適", "unavailable": "配適無法使用：{{reason}}", "parameters": "參數估計", "parameter": "參數", "estimate": "估計值",
       "measuresAria": "度量", "measures": "度量", "measure": "度量",
       "lognormalNaturalLogNote": "參數使用反應變數的自然對數。", "convergence": "收斂",
       "comparison": "配適比較", "distribution": "分佈", "status": "狀態",
-      "distributions": { "normal": "常態", "lognormal": "對數常態", "exponential": "指數", "gamma": "伽瑪", "weibull": "韋伯" },
+      "distributions": { "normal": "常態", "cauchy": "柯西", "lognormal": "對數常態", "exponential": "指數", "gamma": "伽瑪", "weibull": "韋伯" },
       "states": { "available": "可用", "unavailable": "不可用", "failed": "失敗", "converged": "已收斂", "notConverged": "未收斂" },
       "parametersById": { "location": "位置", "scale": "尺度", "shape": "形狀", "rate": "速率", "dispersion": "離散度" },
       "metrics": { "negativeTwoLogLikelihood": "-2 對數概似", "aic": "AIC", "aicc": "AICc", "bic": "BIC" }
@@ -499,7 +499,7 @@
       "normalQuantileConfidenceOutOfRange": "常態分位數信賴水準超出範圍", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "yRequired": "至少需要一個反應變數", "columnUnknown": "欄位不可用",
       "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
-      "confidenceOutOfRange": "信賴水準超出範圍", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
+      "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
       "freqNotIntegerCompatible": "頻數必須相容整數", "nestedSubgroupTypeIncompatible": "巢狀子組必須為分類欄位", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     },
     "errors": {
@@ -508,7 +508,7 @@
       "normalQuantileConfidenceOutOfRange": "常態分位數信賴水準超出範圍", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "invalidCapabilityOverride": "能力覆寫無效", "yRequired": "至少需要一個反應變數",
       "columnUnknown": "欄位不可用", "roleDuplicate": "同一欄位不能占用多個角色", "yTypeIncompatible": "反應變數必須為連續型",
-      "confidenceOutOfRange": "信賴水準超出範圍", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
+      "confidenceOutOfRange": "信賴水準超出範圍", "fitSelectionRequired": "請至少選擇一個連續配適", "roleConflict": "欄位角色衝突", "weightTypeIncompatible": "權重必須為數值型",
       "freqNotIntegerCompatible": "頻數必須相容整數", "nestedSubgroupTypeIncompatible": "巢狀子組必須為分類欄位", "duplicateCapability": "能力重複", "duplicateCapabilityOverride": "能力覆寫重複"
     }
   },
@@ -1197,6 +1197,10 @@
     "copyDataChanged": "複製期間表格已發生變更，請重新複製。",
     "pasteOverwriteConfirm": "貼上區域已有資料，是否覆寫？",
     "pasteTypeIncompatible": "欄 {{letter}}（{{name}}）的類型為 {{existing}}，與貼上資料的類型 {{detected}} 不相容",
+    "tableSummary": "資料表摘要",
+    "totalRows": "總列數",
+    "totalColumns": "總欄數",
+    "displayedRows": "顯示列數",
     "dimensionsFiltered": "{{shown}} / {{total}} 列 × {{cols}} 欄",
     "dimensions": "{{rows}} 列 × {{cols}} 欄"
   },
@@ -1213,7 +1217,8 @@
       "fitline": "擬合線",
       "scatter3d": "散佈",
       "surface": "曲面",
-      "contour3d": "等高線"
+      "contour3d": "等高線",
+      "timeSeries": "時間序列"
     },
     "frequency": "頻次",
     "mode": {
@@ -1378,6 +1383,55 @@
         "insufficientData": "樣本不足",
         "zeroVariance": "零變異",
         "unknown": "未知"
+      }
+    },
+    "timeSeries": {
+      "xInterpretation": {
+        "label": "X 軸解釋",
+        "nativeTemporal": "原生 DATE/TIMESTAMP",
+        "textDate": "文字日期",
+        "sequence": "序列 / 經過值"
+      },
+      "format": {
+        "label": "文字格式",
+        "isoDate": "ISO 日期 (YYYY-MM-DD)",
+        "isoDateTime": "ISO 日期時間",
+        "usDate": "美式日期 (M/D/YYYY)",
+        "usDateTime": "美式日期時間",
+        "dayFirstDate": "日優先日期 (D/M/YYYY)",
+        "dayFirstDateTime": "日優先日期時間"
+      },
+      "order": {
+        "label": "順序",
+        "timeAscending": "時間遞增",
+        "sourceRow": "來源列順序"
+      },
+      "missingValues": {
+        "label": "缺失值",
+        "break": "中斷折線",
+        "connect": "跨過連接"
+      },
+      "connection": {
+        "label": "連接",
+        "line": "直線",
+        "step": "階梯"
+      },
+      "markerMode": {
+        "label": "標記",
+        "auto": "自動",
+        "show": "顯示",
+        "hide": "隱藏"
+      },
+      "status": {
+        "fullResolution": "全解析度",
+        "includedCount": "已包含 {{count}} 列"
+      },
+      "error": {
+        "textDateRequired": "請為 {{field}} 選擇一種支援的文字日期格式。",
+        "sequenceRequired": "數值型時間序列 X 欄 {{field}} 需要選擇序列 / 經過值。",
+        "nativeTemporalRequired": "時間型時間序列 X 欄 {{field}} 需要選擇原生 DATE/TIMESTAMP。",
+        "standaloneTime": "單獨的 TIME 欄不能定義時間序列順序。請選擇 DATE/TIMESTAMP 欄或明確文字日期格式。",
+        "invalidXRows": "{{count}} 個無效 X 值"
       }
     },
     "removeSlot": "移除",

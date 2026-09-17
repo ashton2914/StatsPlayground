@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
+import { DISTRIBUTION_FIT_CAPABILITY_REGISTRY } from "../src/components/distribution/distributionConfig";
+import { DISTRIBUTION_FIT_ORDER } from "../src/graphCore/distributionFitStyle";
+import type { ContinuousDistributionIdV1 } from "../src/types/distribution";
+
 const seeds = JSON.parse(readFileSync(
   new URL("./fixtures/distribution/seeds.json", import.meta.url),
   "utf8",
@@ -25,4 +29,19 @@ for (const entry of seeds) {
   assert.equal(entry.status, "synthetic");
 }
 assert.ok(seeds.length > 0);
+const expectedMethodIds: Record<ContinuousDistributionIdV1, string> = {
+  normal: "fit.normal.mle.v1",
+  cauchy: "fit.cauchy.locationScale.mle.v1",
+  lognormal: "fit.lognormal.mle.v1",
+  weibull: "fit.weibull.shapeScale.mle.v1",
+  exponential: "fit.exponential.location0.mle.v1",
+  gamma: "fit.gamma.shapeScale.mle.v1",
+};
+assert.deepEqual(
+  DISTRIBUTION_FIT_CAPABILITY_REGISTRY
+    .filter((capability) => capability.implemented)
+    .map((capability) => `${capability.distributionId}:${capability.methodId}`),
+  DISTRIBUTION_FIT_ORDER.map((distributionId) =>
+    `${distributionId}:${expectedMethodIds[distributionId]}`),
+);
 console.log("distribution golden fixtures OK");

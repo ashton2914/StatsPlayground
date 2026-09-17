@@ -21,6 +21,7 @@ pub mod table_mutation_coordinator;
 pub mod table_transform_domain;
 pub mod table_transform_service;
 pub mod tabulate_service;
+pub mod time_series;
 pub mod workflow_document_executor;
 pub mod workflow_domain;
 pub mod workflow_executor;

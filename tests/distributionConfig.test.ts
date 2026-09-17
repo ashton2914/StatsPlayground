@@ -3,12 +3,16 @@ import assert from "node:assert/strict";
 import {
   canAssignDistributionRole,
   createDefaultDistributionAnalysisConfig,
+  createDefaultDistributionContinuousFitConfig,
+  normalizeDistributionAnalysisConfig,
+  validateDistributionContinuousFitConfig,
   createDistributionItem,
   createDefaultDistributionVisualDiagnosticsConfig,
   createCapabilityOverrideRegistry,
   findResponsesMissingCapabilitySpecs,
   hasDistributionCapabilitySpec,
   isDistributionMenuEnabled,
+  validateDistributionAnalysisConfig,
   validateDistributionRoles,
   validateDistributionVisualDiagnosticsConfig,
   validateDistributionConfig,
@@ -92,8 +96,47 @@ const config: DistributionAnalysisConfigV1 = {
 };
 
 const defaultVisualDiagnostics = createDefaultDistributionVisualDiagnosticsConfig();
+assert.deepEqual(normalizeDistributionAnalysisConfig(config).continuousFit, {
+  enabledDistributionIds: [],
+  fitAll: false,
+  diagnostics: { goodnessOfFit: false, qqPlot: false, cdfPlot: false, ppPlot: false },
+}, "omitted legacy V1 continuousFit must match Rust disabled serde default");
+assert.equal(config.continuousFit, undefined, "legacy normalization must not mutate the source");
+assert.deepEqual(createDefaultDistributionContinuousFitConfig().enabledDistributionIds, ["normal"]);
+assert.deepEqual(createDefaultDistributionAnalysisConfig().fitDistributions, ["normal"]);
+assert.equal(createDefaultDistributionContinuousFitConfig().fitAll, true);
+assert.equal(createDefaultDistributionAnalysisConfig().fitAll, true);
+const explicitFit = {
+  enabledDistributionIds: ["cauchy" as const],
+  fitAll: true,
+  diagnostics: { goodnessOfFit: false, qqPlot: false, cdfPlot: false, ppPlot: false },
+};
+assert.deepEqual(normalizeDistributionAnalysisConfig({ ...config, continuousFit: explicitFit }).continuousFit, explicitFit);
 assert.equal(defaultVisualDiagnostics.histogram.method, "jmpAuto");
 assert.equal(config.reportPreferences?.["col-y"]?.normalQuantilePlot, false);
+assert.equal(validateDistributionAnalysisConfig(createDefaultDistributionAnalysisConfig()), null);
+assert.equal(validateDistributionAnalysisConfig({
+  confidenceLevel: 0.95,
+  specLimits: {},
+  fitDistributions: [],
+  fitAll: true,
+}), null);
+assert.equal(validateDistributionAnalysisConfig({
+  confidenceLevel: 0.95,
+  specLimits: {},
+  fitDistributions: [],
+  fitAll: false,
+}), "fitSelectionRequired");
+assert.deepEqual(validateDistributionContinuousFitConfig({
+  enabledDistributionIds: [],
+  fitAll: false,
+  diagnostics: {
+    goodnessOfFit: false,
+    qqPlot: false,
+    cdfPlot: false,
+    ppPlot: false,
+  },
+}), []);
 assert.equal(
   validateDistributionVisualDiagnosticsConfig({
     histogram: {
@@ -164,6 +207,44 @@ assert.equal(
     columns,
   )[0]?.code,
   "distribution.config.freqNotIntegerCompatible",
+);
+assert.deepEqual(
+  validateDistributionConfig(
+    {
+      ...config,
+      continuousFit: {
+        enabledDistributionIds: [],
+        fitAll: false,
+        diagnostics: {
+          goodnessOfFit: false,
+          qqPlot: false,
+          cdfPlot: false,
+          ppPlot: false,
+        },
+      },
+    },
+    columns,
+  ),
+  [],
+);
+assert.deepEqual(
+  validateDistributionConfig(
+    {
+      ...config,
+      continuousFit: {
+        enabledDistributionIds: [],
+        fitAll: true,
+        diagnostics: {
+          goodnessOfFit: false,
+          qqPlot: false,
+          cdfPlot: false,
+          ppPlot: false,
+        },
+      },
+    },
+    columns,
+  ),
+  [],
 );
 
 const unknownOverride: CapabilityOverrideEnvelopeV1 = {
@@ -446,7 +527,7 @@ assert.deepEqual(validateDistributionRoles({
 }, [responseField, nonIntegerFrequencyField]), { ok: false, error: "invalidFrequency" });
 
 const defaultAnalysis = createDefaultDistributionAnalysisConfig();
-assert.deepEqual(defaultAnalysis, { confidenceLevel: 0.95, specLimits: {}, fitDistributions: ["normal"] });
+assert.deepEqual(defaultAnalysis, { confidenceLevel: 0.95, specLimits: {}, fitDistributions: ["normal"], fitAll: true });
 
 const distributionItem = createDistributionItem({
   id: "distribution-1",

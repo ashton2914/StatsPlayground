@@ -14,6 +14,7 @@ import type {
 import { EXTRA_DEFS, EXTRA_KINDS, type ExtraKind, summarizeExtraKinds, extraKindLabel, extraFieldLabel } from "@/types/columnExtras";
 import { CalculatedColumnDialog } from "./CalculatedColumnDialog";
 import { ManageExtrasDialog } from "./ManageExtrasDialog";
+import { TableShapeSummary } from "./TableShapeSummary";
 import { useDataStore } from "@/stores/useDataStore";
 import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
 import { useProjectStore } from "@/stores/useProjectStore";
@@ -906,6 +907,7 @@ export function DataTableView({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [columnDescriptors, setColumnDescriptors] = useState<ColumnDescriptor[]>([]);
   const [loadedDataLoadToken, setLoadedDataLoadToken] = useState<string | null>(null);
+  const [loadedFilterGeneration, setLoadedFilterGeneration] = useState(0);
   const [loadedDisplayPropsLoadToken, setLoadedDisplayPropsLoadToken] = useState<string | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
@@ -977,15 +979,13 @@ export function DataTableView({
   // Excel-like formula bar state lives inside <FormulaBar /> now.
 
   const { refreshDatasets, setStatusInfo } = useDataStore();
-  const datasetRowCount = useDataStore(
-    (state) => state.datasets.find((item) => item.id === datasetId)?.rowCount ?? 0,
+  const activeDatasetMeta = useDataStore(
+    (state) => state.datasets.find((item) => item.id === datasetId),
   );
-  const datasetGeneration = useDataStore(
-    (state) => state.datasets.find((item) => item.id === datasetId)?.generation ?? 0,
-  );
-  const datasetUpdatedAt = useDataStore(
-    (state) => state.datasets.find((item) => item.id === datasetId)?.updatedAt ?? "",
-  );
+  const datasetRowCount = activeDatasetMeta?.rowCount ?? 0;
+  const datasetColCount = activeDatasetMeta?.colCount ?? 0;
+  const datasetGeneration = activeDatasetMeta?.generation ?? 0;
+  const datasetUpdatedAt = activeDatasetMeta?.updatedAt ?? "";
   const datasetRevision = useMemo<DatasetRevision>(() => ({
     datasetId,
     generation: datasetGeneration,
@@ -1060,9 +1060,9 @@ export function DataTableView({
       field,
       search,
       500,
-      generationRef.current,
+      loadedFilterGeneration,
     ),
-    [datasetId],
+    [datasetId, loadedFilterGeneration],
   );
   const colWidthsRef = useRef<number[]>([]);
   const currentDatasetIdRef = useRef<string | null>(datasetId);
@@ -1147,6 +1147,7 @@ export function DataTableView({
         pageSize: result.rows.length,
       };
       generationRef.current = result.generation;
+      setLoadedFilterGeneration(result.generation);
       windowStartRef.current = result.start;
       setWindowStart(result.start);
       setData(nextData);
@@ -1811,12 +1812,14 @@ export function DataTableView({
     setStatusInfo({
       cellLabel: activeCell ? `${colLetter(activeCell.col)}${activeCell.row + 1}` : "",
       selectionLabel: selLabel,
-      dimensions: tableFilters.length > 0
-        ? t("dataTable.dimensionsFiltered", { shown: data.totalRows, total: data.totalRows, cols: visibleColCount })
-        : t("dataTable.dimensions", { rows: data.totalRows, cols: visibleColCount }),
+      dimensions: activeDatasetMeta
+        ? tableFilters.length > 0
+          ? t("dataTable.dimensionsFiltered", { shown: data.totalRows, total: datasetRowCount, cols: datasetColCount })
+          : t("dataTable.dimensions", { rows: datasetRowCount, cols: datasetColCount })
+        : "",
       selectionStats,
     });
-  }, [activeCell, selection, selectedRows, selectedCols, data, displayRows, displayRowAt, cols, visibleColCount, setStatusInfo, tableFilters, t, windowStart]);
+  }, [activeCell, activeDatasetMeta, selection, selectedRows, selectedCols, data, datasetColCount, datasetRowCount, displayRows, displayRowAt, cols, setStatusInfo, tableFilters, t, windowStart]);
 
   // Precompute active row/col ranges for className computation.
   // Row/col headers light up for:
@@ -4693,6 +4696,14 @@ export function DataTableView({
               onItemContextMenu={stableColsPanelCtxMenu}
               onReorder={stableColsPanelReorder}
             />
+            {activeDatasetMeta && (
+              <TableShapeSummary
+                totalRows={datasetRowCount}
+                totalColumns={datasetColCount}
+                displayedRows={data.totalRows}
+                filtered={tableFilters.length > 0}
+              />
+            )}
           </div>
           {/* Splitter: drag to resize the columns panel width. */}
           <PanelSplitter

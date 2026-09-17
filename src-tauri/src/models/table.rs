@@ -73,6 +73,13 @@ pub struct TableQueryResult {
     pub page_size: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TableFilterValue {
+    pub value: String,
+    pub row_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableWindowSort {

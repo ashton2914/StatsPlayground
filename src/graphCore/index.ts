@@ -17,6 +17,9 @@ export {
   type GroupStyle,
   type GroupStyleMap,
   type MarkerShape,
+  type TimeSeriesTextDateFormat,
+  type TimeSeriesXInterpretation,
+  type TimeSeriesOptions,
   type RefLineY,
   type RefLineX,
   type RefLineStyle,
@@ -24,4 +27,5 @@ export {
   type YAxisConfig,
   type GridLineStyle,
   type AutoSpec,
+  DEFAULT_TIME_SERIES_OPTIONS,
 } from "./types";

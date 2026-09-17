@@ -464,14 +464,14 @@
       "title": "统计报告", "loading": "正在加载报告...", "overview": "分布概览",
       "outlierBoxPlot": "异常值箱线图", "ecdf": "经验累积分布", "normalQuantilePlot": "正态分位数图",
       "overall": "整体", "missing": "缺失", "quantiles": "分位数", "probability": "概率",
-      "label": "标签", "value": "值", "summary": "汇总统计", "location": "位置",
+      "label": "标签", "value": "值", "summary": "汇总统计", "summaryStatistics": "汇总统计", "location": "位置",
       "variation": "变异", "unavailableReason": "不可用: {{reason}}", "processCapability": "过程能力",
       "continuousFit": "连续分布拟合", "fitComparison": "拟合比较"
     },
     "statistics": {
       "n": "N", "nMissing": "缺失数", "mean": "均值", "median": "中位数", "mode": "众数",
       "noUniqueMode": "无唯一众数", "minimum": "最小值", "maximum": "最大值", "stdDev": "标准差",
-      "stdError": "均值标准误", "meanCiLower": "均值置信下限", "meanCiUpper": "均值置信上限",
+      "stdError": "标准误", "meanCiLower": "均值 {{confidence}} 下限", "meanCiUpper": "均值 {{confidence}} 上限",
       "range": "极差", "iqr": "四分位距", "mad": "中位绝对偏差"
     },
     "compatibility": {
@@ -480,11 +480,11 @@
     },
     "fitStandardError": "标准误", "fitLower95": "95% 下限", "fitUpper95": "95% 上限",
     "fit": {
-      "unavailable": "拟合不可用: {{reason}}", "parameters": "参数估计", "parameter": "参数", "estimate": "估计值",
+      "continuousFit": "连续分布拟合", "fitAll": "全部拟合", "unavailable": "拟合不可用: {{reason}}", "parameters": "参数估计", "parameter": "参数", "estimate": "估计值",
       "measuresAria": "度量", "measures": "度量", "measure": "度量",
       "lognormalNaturalLogNote": "参数使用响应变量的自然对数。", "convergence": "收敛",
       "comparison": "拟合比较", "distribution": "分布", "status": "状态",
-      "distributions": { "normal": "正态", "lognormal": "对数正态", "exponential": "指数", "gamma": "伽马", "weibull": "威布尔" },
+      "distributions": { "normal": "正态", "cauchy": "柯西", "lognormal": "对数正态", "exponential": "指数", "gamma": "伽马", "weibull": "威布尔" },
       "states": { "available": "可用", "unavailable": "不可用", "failed": "失败", "converged": "已收敛", "notConverged": "未收敛" },
       "parametersById": { "location": "位置", "scale": "尺度", "shape": "形状", "rate": "速率", "dispersion": "离散度" },
       "metrics": { "negativeTwoLogLikelihood": "-2 对数似然", "aic": "AIC", "aicc": "AICc", "bic": "BIC" }
@@ -510,7 +510,7 @@
       "normalQuantileConfidenceOutOfRange": "正态分位数置信水平超出范围", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "yRequired": "至少需要一个响应变量", "columnUnknown": "列不可用",
       "roleDuplicate": "同一列不能占用多个角色", "yTypeIncompatible": "响应变量必须为连续型",
-      "confidenceOutOfRange": "置信水平超出范围", "roleConflict": "列角色冲突", "weightTypeIncompatible": "权重必须为数值型",
+      "confidenceOutOfRange": "置信水平超出范围", "fitSelectionRequired": "请至少选择一个连续拟合", "roleConflict": "列角色冲突", "weightTypeIncompatible": "权重必须为数值型",
       "freqNotIntegerCompatible": "频数必须兼容整数", "nestedSubgroupTypeIncompatible": "嵌套子组必须为分类列", "duplicateCapability": "能力重复", "duplicateCapabilityOverride": "能力覆盖重复"
     },
     "errors": {
@@ -519,7 +519,7 @@
       "normalQuantileConfidenceOutOfRange": "正态分位数置信水平超出范围", "unknownCapability": "未知能力",
       "unknownCapabilityVersion": "未知能力版本", "invalidCapabilityOverride": "能力覆盖无效",
       "yRequired": "至少需要一个响应变量", "columnUnknown": "列不可用", "roleDuplicate": "同一列不能占用多个角色",
-      "yTypeIncompatible": "响应变量必须为连续型", "confidenceOutOfRange": "置信水平超出范围", "roleConflict": "列角色冲突",
+      "yTypeIncompatible": "响应变量必须为连续型", "confidenceOutOfRange": "置信水平超出范围", "fitSelectionRequired": "请至少选择一个连续拟合", "roleConflict": "列角色冲突",
       "weightTypeIncompatible": "权重必须为数值型", "freqNotIntegerCompatible": "频数必须兼容整数", "nestedSubgroupTypeIncompatible": "嵌套子组必须为分类列",
       "duplicateCapability": "能力重复", "duplicateCapabilityOverride": "能力覆盖重复"
     }
@@ -1212,6 +1212,10 @@
     "copyDataChanged": "复制期间表格已发生变化，请重新复制。",
     "pasteOverwriteConfirm": "粘贴区域存在已有数据，是否覆盖？",
     "pasteTypeIncompatible": "列 {{letter}}（{{name}}）的类型为 {{existing}}，与粘贴数据的类型 {{detected}} 不兼容",
+    "tableSummary": "表格摘要",
+    "totalRows": "总行数",
+    "totalColumns": "总列数",
+    "displayedRows": "显示行数",
     "dimensionsFiltered": "{{shown}} / {{total}} 行 × {{cols}} 列",
     "dimensions": "{{rows}} 行 × {{cols}} 列"
   },
@@ -1228,7 +1232,8 @@
       "fitline": "拟合线",
       "scatter3d": "散点",
       "surface": "曲面",
-      "contour3d": "等高线"
+      "contour3d": "等高线",
+      "timeSeries": "时间序列"
     },
     "frequency": "频次",
     "mode": {
@@ -1393,6 +1398,55 @@
         "insufficientData": "样本不足",
         "zeroVariance": "零方差",
         "unknown": "未知"
+      }
+    },
+    "timeSeries": {
+      "xInterpretation": {
+        "label": "X 轴解释",
+        "nativeTemporal": "原生 DATE/TIMESTAMP",
+        "textDate": "文本日期",
+        "sequence": "序列 / 经过值"
+      },
+      "format": {
+        "label": "文本格式",
+        "isoDate": "ISO 日期 (YYYY-MM-DD)",
+        "isoDateTime": "ISO 日期时间",
+        "usDate": "美式日期 (M/D/YYYY)",
+        "usDateTime": "美式日期时间",
+        "dayFirstDate": "日优先日期 (D/M/YYYY)",
+        "dayFirstDateTime": "日优先日期时间"
+      },
+      "order": {
+        "label": "顺序",
+        "timeAscending": "时间升序",
+        "sourceRow": "源行顺序"
+      },
+      "missingValues": {
+        "label": "缺失值",
+        "break": "断开折线",
+        "connect": "跨过连接"
+      },
+      "connection": {
+        "label": "连接",
+        "line": "直线",
+        "step": "阶梯"
+      },
+      "markerMode": {
+        "label": "标记",
+        "auto": "自动",
+        "show": "显示",
+        "hide": "隐藏"
+      },
+      "status": {
+        "fullResolution": "全分辨率",
+        "includedCount": "已包含 {{count}} 行"
+      },
+      "error": {
+        "textDateRequired": "请为 {{field}} 选择一种受支持的文本日期格式。",
+        "sequenceRequired": "数值型时间序列 X 列 {{field}} 需要选择序列 / 经过值。",
+        "nativeTemporalRequired": "时间型时间序列 X 列 {{field}} 需要选择原生 DATE/TIMESTAMP。",
+        "standaloneTime": "单独的 TIME 列不能定义时间序列顺序。请选择 DATE/TIMESTAMP 列或显式文本日期格式。",
+        "invalidXRows": "{{count}} 个无效 X 值"
       }
     },
     "removeSlot": "移除",

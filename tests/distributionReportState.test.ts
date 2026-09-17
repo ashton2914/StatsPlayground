@@ -38,6 +38,7 @@ const analysis: DistributionAnalysisConfig = {
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: [],
+  fitAll: false,
 };
 
 const legacyAnalysis: DistributionAnalysisConfig = {
@@ -97,6 +98,7 @@ assert.deepEqual(request, {
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: [],
+  fitAll: false,
 });
 assert.deepEqual(createDistributionRequest(item({ analysis: legacyAnalysis }), 7).specLimits, {});
 
@@ -109,6 +111,7 @@ const requestAffectingMutations: Partial<DistributionItem>[] = [
   { by: [{ name: "batch", type: "ordinal" }] },
   { analysis: { ...analysis, confidenceLevel: 0.9 } },
   { analysis: { ...analysis, fitDistributions: ["normal"] } },
+  { analysis: { ...analysis, fitAll: true } },
 ];
 for (const mutation of requestAffectingMutations) {
   assert.notEqual(distributionRequestFingerprint(item(mutation)), baseFingerprint);

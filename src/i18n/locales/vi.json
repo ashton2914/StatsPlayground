@@ -455,15 +455,15 @@
       "outlierBoxPlot": "Biểu đồ hộp ngoại lệ", "ecdf": "Hàm phân phối tích lũy thực nghiệm",
       "normalQuantilePlot": "Biểu đồ phân vị chuẩn", "overall": "Tổng thể", "missing": "Thiếu",
       "quantiles": "Phân vị", "probability": "Xác suất", "label": "Nhãn", "value": "Giá trị",
-      "summary": "Thống kê tóm tắt", "location": "Vị trí", "variation": "Biến thiên",
+      "summary": "Thống kê tóm tắt", "summaryStatistics": "Thống kê tóm tắt", "location": "Vị trí", "variation": "Biến thiên",
       "unavailableReason": "Không khả dụng: {{reason}}", "processCapability": "Năng lực quá trình",
       "continuousFit": "Khớp phân phối liên tục", "fitComparison": "So sánh độ khớp"
     },
     "statistics": {
       "n": "N", "nMissing": "Số thiếu", "mean": "Trung bình", "median": "Trung vị", "mode": "Mốt",
       "noUniqueMode": "Không có mốt duy nhất", "minimum": "Nhỏ nhất", "maximum": "Lớn nhất", "stdDev": "Độ lệch chuẩn",
-      "stdError": "Sai số chuẩn trung bình", "meanCiLower": "Cận tin cậy dưới của trung bình",
-      "meanCiUpper": "Cận tin cậy trên của trung bình", "range": "Khoảng biến thiên", "iqr": "Khoảng tứ phân vị",
+      "stdError": "Sai số chuẩn", "meanCiLower": "Cận dưới {{confidence}} của trung bình",
+      "meanCiUpper": "Cận trên {{confidence}} của trung bình", "range": "Khoảng biến thiên", "iqr": "Khoảng tứ phân vị",
       "mad": "Độ lệch tuyệt đối trung vị"
     },
     "compatibility": {
@@ -472,11 +472,11 @@
     },
     "fitStandardError": "Sai số chuẩn", "fitLower95": "Cận dưới 95%", "fitUpper95": "Cận trên 95%",
     "fit": {
-      "unavailable": "Độ khớp không khả dụng: {{reason}}", "parameters": "Ước lượng tham số", "parameter": "Tham số",
+      "continuousFit": "Khớp phân phối liên tục", "fitAll": "Khớp tất cả", "unavailable": "Độ khớp không khả dụng: {{reason}}", "parameters": "Ước lượng tham số", "parameter": "Tham số",
       "estimate": "Ước lượng", "measuresAria": "thước đo", "measures": "Thước đo", "measure": "Thước đo",
       "lognormalNaturalLogNote": "Các tham số sử dụng logarit tự nhiên của biến đáp ứng.", "convergence": "Hội tụ",
       "comparison": "So sánh độ khớp", "distribution": "Phân phối", "status": "Trạng thái",
-      "distributions": { "normal": "Chuẩn", "lognormal": "Log-chuẩn", "exponential": "Mũ", "gamma": "Gamma", "weibull": "Weibull" },
+      "distributions": { "normal": "Chuẩn", "cauchy": "Cauchy", "lognormal": "Log-chuẩn", "exponential": "Mũ", "gamma": "Gamma", "weibull": "Weibull" },
       "states": { "available": "Khả dụng", "unavailable": "Không khả dụng", "failed": "Thất bại", "converged": "Đã hội tụ", "notConverged": "Chưa hội tụ" },
       "parametersById": { "location": "Vị trí", "scale": "Tỷ lệ", "shape": "Hình dạng", "rate": "Tốc độ", "dispersion": "Độ phân tán" },
       "metrics": { "negativeTwoLogLikelihood": "-2 Log Likelihood", "aic": "AIC", "aicc": "AICc", "bic": "BIC" }
@@ -504,7 +504,7 @@
       "normalQuantileConfidenceOutOfRange": "Mức tin cậy phân vị chuẩn ngoài phạm vi", "unknownCapability": "Năng lực không xác định",
       "unknownCapabilityVersion": "Phiên bản năng lực không xác định", "yRequired": "Cần ít nhất một biến đáp ứng", "columnUnknown": "Cột không khả dụng",
       "roleDuplicate": "Một cột không thể có nhiều vai trò", "yTypeIncompatible": "Biến đáp ứng phải liên tục",
-      "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "roleConflict": "Vai trò cột xung đột", "weightTypeIncompatible": "Trọng số phải là số",
+      "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "fitSelectionRequired": "Hãy chọn ít nhất một độ khớp liên tục", "roleConflict": "Vai trò cột xung đột", "weightTypeIncompatible": "Trọng số phải là số",
       "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên", "nestedSubgroupTypeIncompatible": "Nhóm con lồng nhau phải là cột phân loại", "duplicateCapability": "Năng lực bị trùng", "duplicateCapabilityOverride": "Ghi đè năng lực bị trùng"
     },
     "errors": {
@@ -513,7 +513,7 @@
       "normalQuantileConfidenceOutOfRange": "Mức tin cậy phân vị chuẩn ngoài phạm vi", "unknownCapability": "Năng lực không xác định",
       "unknownCapabilityVersion": "Phiên bản năng lực không xác định", "invalidCapabilityOverride": "Ghi đè năng lực không hợp lệ",
       "yRequired": "Cần ít nhất một biến đáp ứng", "columnUnknown": "Cột không khả dụng", "roleDuplicate": "Một cột không thể có nhiều vai trò",
-      "yTypeIncompatible": "Biến đáp ứng phải liên tục", "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "roleConflict": "Vai trò cột xung đột",
+      "yTypeIncompatible": "Biến đáp ứng phải liên tục", "confidenceOutOfRange": "Mức tin cậy ngoài phạm vi", "fitSelectionRequired": "Hãy chọn ít nhất một độ khớp liên tục", "roleConflict": "Vai trò cột xung đột",
       "weightTypeIncompatible": "Trọng số phải là số", "freqNotIntegerCompatible": "Tần số phải tương thích số nguyên", "nestedSubgroupTypeIncompatible": "Nhóm con lồng nhau phải là cột phân loại",
       "duplicateCapability": "Năng lực bị trùng", "duplicateCapabilityOverride": "Ghi đè năng lực bị trùng"
     }
@@ -1203,6 +1203,10 @@
     "copyDataChanged": "Bảng đã thay đổi trong khi sao chép. Vui lòng sao chép lại.",
     "pasteOverwriteConfirm": "Dữ liệu hiện tại sẽ bị ghi đè. Tiếp tục?",
     "pasteTypeIncompatible": "Cột {{letter}} (\"{{name}}\") có kiểu {{existing}}, không tương thích với kiểu dán {{detected}}",
+    "tableSummary": "Tóm tắt bảng",
+    "totalRows": "Tổng số hàng",
+    "totalColumns": "Tổng số cột",
+    "displayedRows": "Số hàng hiển thị",
     "dimensionsFiltered": "{{shown}} / {{total}} hàng × {{cols}} cột",
     "dimensions": "{{rows}} hàng × {{cols}} cột"
   },
@@ -1219,7 +1223,8 @@
       "fitline": "Đường khớp",
       "scatter3d": "Điểm",
       "surface": "Bề mặt",
-      "contour3d": "Đường đồng mức"
+      "contour3d": "Đường đồng mức",
+      "timeSeries": "Chuỗi thời gian"
     },
     "frequency": "Tần suất",
     "mode": {
@@ -1384,6 +1389,55 @@
         "insufficientData": "Không đủ dữ liệu",
         "zeroVariance": "Phương sai bằng 0",
         "unknown": "Không xác định"
+      }
+    },
+    "timeSeries": {
+      "xInterpretation": {
+        "label": "Cách hiểu trục X",
+        "nativeTemporal": "DATE/TIMESTAMP gốc",
+        "textDate": "Ngày dạng văn bản",
+        "sequence": "Chuỗi / giá trị đã trôi qua"
+      },
+      "format": {
+        "label": "Định dạng văn bản",
+        "isoDate": "Ngày ISO (YYYY-MM-DD)",
+        "isoDateTime": "Ngày giờ ISO",
+        "usDate": "Ngày kiểu Mỹ (M/D/YYYY)",
+        "usDateTime": "Ngày giờ kiểu Mỹ",
+        "dayFirstDate": "Ngày trước tháng (D/M/YYYY)",
+        "dayFirstDateTime": "Ngày giờ ngày trước tháng"
+      },
+      "order": {
+        "label": "Thứ tự",
+        "timeAscending": "Thời gian tăng dần",
+        "sourceRow": "Thứ tự hàng nguồn"
+      },
+      "missingValues": {
+        "label": "Giá trị thiếu",
+        "break": "Ngắt đường",
+        "connect": "Nối xuyên qua"
+      },
+      "connection": {
+        "label": "Kết nối",
+        "line": "Đường",
+        "step": "Bậc"
+      },
+      "markerMode": {
+        "label": "Điểm đánh dấu",
+        "auto": "Tự động",
+        "show": "Hiện",
+        "hide": "Ẩn"
+      },
+      "status": {
+        "fullResolution": "Độ phân giải đầy đủ",
+        "includedCount": "Đã bao gồm {{count}}"
+      },
+      "error": {
+        "textDateRequired": "Chọn một định dạng ngày văn bản được hỗ trợ cho {{field}}.",
+        "sequenceRequired": "Chọn Chuỗi / giá trị đã trôi qua cho cột X chuỗi thời gian dạng số {{field}}.",
+        "nativeTemporalRequired": "Chọn DATE/TIMESTAMP gốc cho cột X chuỗi thời gian dạng thời gian {{field}}.",
+        "standaloneTime": "Cột TIME độc lập không thể xác định thứ tự chuỗi thời gian. Chọn cột DATE/TIMESTAMP hoặc định dạng ngày văn bản rõ ràng.",
+        "invalidXRows": "{{count}} giá trị X không hợp lệ"
       }
     },
     "removeSlot": "Xóa",

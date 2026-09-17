@@ -35,6 +35,7 @@ assert.deepEqual(analysis.definition.analysis, {
   confidenceLevel: 0.95,
   specLimits: {},
   fitDistributions: ["normal"],
+  fitAll: true,
 });
 assert.deepEqual(
   analysis.definition.graphs.overview.modeStates.twoD.elements,

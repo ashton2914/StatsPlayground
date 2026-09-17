@@ -10,7 +10,7 @@ import * as echarts from "echarts";
 import type { GraphSpec, GraphData } from "./types";
 import { withoutGraphAnimation } from "./animation";
 import { getGraphTheme } from "./theme";
-import { buildGraph, type ScatterPointPick } from "./transform";
+import { buildGraph, pickBySeriesDataIndex, type ScatterPointPick } from "./transform";
 import { withInterleavedGraphLayers } from "./layers";
 import { Chart3D } from "./Chart3D";
 import { build3DPanels } from "./threeD";
@@ -240,6 +240,7 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
   const panelRef = useRef<HTMLDivElement | null>(null);
   const chartHostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
+  const optionRef = useRef(option);
   // Keep the latest callbacks in refs so the Zrender dblclick handler
   // (which we register exactly once on mount) always sees the freshest
   // closure without forcing a re-bind on every prop change.
@@ -259,6 +260,9 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
   useEffect(() => {
     onPointClickRef.current = onPointClick;
   }, [onPointClick]);
+  useEffect(() => {
+    optionRef.current = option;
+  }, [option]);
   const brushModeRef = useRef(brushMode);
   const onBrushSelectRef = useRef(onBrushSelect);
   useEffect(() => { brushModeRef.current = brushMode; }, [brushMode]);
@@ -403,6 +407,15 @@ function GraphPanel({ title, option, minHeight, onYAxisDblClick, onXAxisDblClick
       const cb = onPointClickRef.current;
       if (!cb) return;
       if (params?.componentType !== "series") return;
+      const dataIndex = Number(params?.dataIndex);
+      const seriesId = typeof params?.seriesId === "string" ? params.seriesId : "";
+      if (seriesId && Number.isInteger(dataIndex)) {
+        const pick = pickBySeriesDataIndex(optionRef.current, seriesId, dataIndex);
+        if (pick) {
+          cb(pick);
+          return;
+        }
+      }
       if (params?.seriesType !== "scatter") return;
       const item = params?.data as { __pick?: ScatterPointPick } | unknown;
       if (!item || typeof item !== "object") return;

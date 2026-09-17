@@ -1,4 +1,5 @@
 import type { ChartElement, ElementKind } from "@/graphCore";
+import { DEFAULT_TIME_SERIES_OPTIONS } from "@/components/graphBuilder/timeSeriesContract";
 
 export interface GraphLayerDef {
   kind: ElementKind;
@@ -11,6 +12,7 @@ export const GRAPH_LAYER_DEFS: GraphLayerDef[] = [
   { kind: "points", icon: "●" },
   { kind: "bar", icon: "▮" },
   { kind: "line", icon: "╱" },
+  { kind: "timeSeries", icon: "⏱" },
   { kind: "smoother", icon: "∿" },
   { kind: "fitline", icon: "ƒ" },
   { kind: "boxplot", icon: "⊟" },
@@ -24,6 +26,7 @@ export const GRAPH_LAYER_DEFS: GraphLayerDef[] = [
 export const LAYER_DIM: Record<ElementKind, LayerDim> = {
   points: "2d",
   line: "2d",
+  timeSeries: "2d",
   bar: "2d",
   heatmap: "2d",
   correlationMatrix: "multivariate",
@@ -47,6 +50,10 @@ export function defaultLayerOptions(
 ): Record<string, unknown> | undefined {
   if (kind === "smoother") return { algo: "spline" };
   if (kind === "fitline") return { fitType: "polynomial", degree: 1 };
+  if (kind === "timeSeries") return {
+    ...DEFAULT_TIME_SERIES_OPTIONS,
+    xInterpretation: { ...DEFAULT_TIME_SERIES_OPTIONS.xInterpretation },
+  };
   if (kind === "surface") return { stat: "mean", smoothness: 0 };
   if (kind === "contour3d") return { stat: "mean", smoothness: 0, levels: 10 };
   if (kind === "normalCurve") return { showSigmaBands: false };

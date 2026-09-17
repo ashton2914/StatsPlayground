@@ -1137,6 +1137,37 @@
   padding: 2px 0;
 }
 
+.sp-table-shape-summary {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border-main);
+  background: var(--bg-panel);
+  padding: 4px 0 6px;
+}
+
+.sp-table-shape-title {
+  padding: 2px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+}
+
+.sp-table-shape-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.sp-table-shape-label {
+  color: var(--fg-secondary);
+}
+
+.sp-table-shape-value {
+  color: var(--fg-primary);
+  font-variant-numeric: tabular-nums;
+}
+
 .sp-cols-panel-item {
   display: flex;
   align-items: center;

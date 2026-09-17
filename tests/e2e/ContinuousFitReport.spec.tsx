@@ -1,8 +1,17 @@
+import assert from "node:assert/strict";
+
 import { expect, test } from "@playwright/experimental-ct-react";
 
-import { ReportBlock } from "../../src/components/distribution/DistributionReport";
+import { DistributionResponseReport, ReportBlock } from "../../src/components/distribution/DistributionReport";
 import "../../src/components/distribution/distribution.css";
-import type { DistributionFitDataV1, DistributionReportBlockV1 } from "../../src/types/distribution";
+import { distributionFitColor } from "../../src/graphCore/distributionFitStyle";
+import { getGraphTheme } from "../../src/graphCore/theme";
+import type {
+  ContinuousDistributionIdV1,
+  DistributionFitDataV1,
+  DistributionReportBlockV1,
+  DistributionYResultV1,
+} from "../../src/types/distribution";
 
 const metric = (value: number | null, reasonCode: string | null = null) => ({
   state: value === null ? "unavailable" as const : "available" as const,
@@ -75,14 +84,27 @@ const block = (patch: Partial<DistributionReportBlockV1>): DistributionReportBlo
   ...patch,
 });
 
+function cssRgb(hex: string): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  assert(match, `expected six-digit hex color, received ${hex}`);
+  return `rgb(${parseInt(match[1].slice(0, 2), 16)}, ${parseInt(match[1].slice(2, 4), 16)}, ${parseInt(match[1].slice(4, 6), 16)})`;
+}
+
 test("renders available Continuous Fit parameter estimates and JMP measures with complete grid lines", async ({ mount }) => {
   const component = await mount(<ReportBlock block={block({ distributionFitData: fit })} />);
   await expect(component.getByRole("button", { name: "Continuous Fit - Normal" })).toBeVisible();
+  const swatch = component.locator(".distribution-fit-report-swatch");
+  await expect(swatch).toHaveCount(1);
+  await expect(swatch).toHaveAttribute("aria-hidden", "true");
+  await expect(swatch).toHaveCSS(
+    "background-color",
+    cssRgb(distributionFitColor("normal", getGraphTheme().categorical)),
+  );
   await expect(component.getByRole("table", { name: "Normal Parameter Estimates" })).toBeVisible();
   const measures = component.getByRole("table", { name: "Normal measures" });
   await expect(measures).toBeVisible();
-  await expect(component.getByText("Compatibility pending")).toBeVisible();
-  await expect(component.getByText(/Convergence: Converged/)).toBeVisible();
+  await expect(component.getByText("Compatibility pending")).toHaveCount(0);
+  await expect(component.getByText(/Convergence: Converged/)).toHaveCount(0);
   await expect(component.getByRole("columnheader", { name: "Estimate" })).toBeVisible();
   await expect(component.getByRole("columnheader", { name: "Std Error" })).toBeVisible();
   await expect(component.getByRole("columnheader", { name: "Lower 95%" })).toBeVisible();
@@ -101,12 +123,96 @@ test("renders available Continuous Fit parameter estimates and JMP measures with
   await expect(measures.getByRole("rowheader").first()).toHaveCSS("border-bottom-style", "solid");
 });
 
+test("consolidates all continuous fits into one model selector", async ({ mount }) => {
+  const distributionIds: ContinuousDistributionIdV1[] = [
+    "normal",
+    "cauchy",
+    "lognormal",
+    "exponential",
+    "gamma",
+    "weibull",
+  ];
+  const result: DistributionYResultV1 = {
+    yColumn: { columnId: "value", modelingType: "continuous" },
+    yName: "Value",
+    quantiles: [],
+    blocks: distributionIds.map((distributionId) => block({
+      blockId: `fit-${distributionId}`,
+      distributionFitData: {
+        ...fit,
+        fitId: `fit-${distributionId}`,
+        distributionId,
+      },
+    })),
+  };
+
+  const component = await mount(<DistributionResponseReport result={result} />);
+  const selector = component.getByRole("combobox", { name: "Continuous Fit distribution" });
+
+  await expect(selector).toHaveCount(1);
+  await expect(selector.locator("option")).toHaveCount(6);
+  await expect(component.locator('[data-analysis-surface="continuousFit"]')).toHaveCount(1);
+  await expect(component.getByRole("table", { name: "Normal Parameter Estimates" })).toBeVisible();
+
+  await selector.selectOption("cauchy");
+
+  await expect(component.getByRole("table", { name: "Cauchy Parameter Estimates" })).toBeVisible();
+  await expect(component.getByRole("table", { name: "Normal Parameter Estimates" })).toHaveCount(0);
+});
+
+test("renders the summary table title as Summary Statistics", async ({ mount }) => {
+  const result: DistributionYResultV1 = {
+    yColumn: { columnId: "value", modelingType: "continuous" },
+    yName: "Value",
+    quantiles: [],
+    blocks: [block({
+      blockId: "summary",
+      kind: "summary",
+      titleKey: "distribution.report.summary",
+      distributionFitData: undefined,
+      summaryData: {
+        n: 10,
+        nMissing: 0,
+        mean: 3,
+        stdDev: 1,
+        stdError: 0.3,
+        meanCiLower: 2.4,
+        meanCiUpper: 3.6,
+        minimum: 1,
+        maximum: 5,
+        median: 3,
+        primaryMode: null,
+        modeIsUnique: false,
+        range: 4,
+        iqr: 2,
+        mad: 1,
+      },
+    })],
+  };
+
+  const component = await mount(<DistributionResponseReport result={result} />);
+  await expect(component.getByRole("button", { name: "Summary Statistics" })).toBeVisible();
+});
+
 test("uses model-specific parameter terminology without fixed location rows", async ({ mount }) => {
   const cases: Array<{
     data: DistributionFitDataV1;
     expectedRows: string[];
     note?: string;
   }> = [
+    {
+      data: {
+        ...fit,
+        fitId: "fit-cauchy",
+        distributionId: "cauchy",
+        parameterizationId: "cauchy.locationScale.v1",
+        parameters: [
+          parameter("location", 1),
+          parameter("scale", 2),
+        ],
+      },
+      expectedRows: ["Location", "Scale"],
+    },
     {
       data: {
         ...fit,
@@ -234,8 +340,10 @@ test("localizes convergence reasons and preserves unknown reason codes", async (
       reasonCode: "distribution.fit.optimizerFailed.v1",
     },
   };
+  // If the overall fit `status` is `available`, convergence internals
+  // are not surfaced in the UI per spec. Ensure no Convergence text.
   const known = await mount(<ReportBlock block={block({ distributionFitData: convergenceFailure })} />);
-  await expect(known.getByText(/Convergence: Failed \(Optimization failed\)/)).toBeVisible();
+  await expect(known.getByText(/Convergence: Failed \(Optimization failed\)/)).toHaveCount(0);
   await known.unmount();
 
   const unknownFailure: DistributionFitDataV1 = {

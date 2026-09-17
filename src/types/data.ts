@@ -223,6 +223,11 @@ export interface TableWindowResult {
   generation: number;
 }
 
+export interface TableFilterValue {
+  value: string;
+  rowCount: number;
+}
+
 export interface CellPosition {
   rowId: number;
   columnName: string;
