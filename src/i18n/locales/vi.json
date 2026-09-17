@@ -260,6 +260,9 @@
     "insertRow": "Chèn hàng",
     "addColumn": "Thêm cột",
     "addColumnNamed": "Thêm cột \"{{name}}\"",
+    "createCalculatedColumn": "Tạo cột tính toán",
+    "editCalculatedColumn": "Chỉnh sửa cột tính toán",
+    "convertCalculatedColumnToValues": "Chuyển cột tính toán thành giá trị",
     "addColumnsBatch": "Thêm cột hàng loạt",
     "reorderColumn": "Sắp xếp lại cột",
     "deleteColumn": "Xóa cột",
@@ -1075,6 +1078,121 @@
     "ctxDeleteCol": "Xóa cột \"{{name}}\"",
     "ctxColProps": "Thuộc tính cột",
     "ctxColPropsBatch": "Thuộc tính cột ({{n}} cột)",
+    "calculatedColumn": {
+      "defaultName": "CotTinhToan{{n}}",
+      "subtitle": "Định nghĩa công thức bằng các cột hiện có và các hàm theo từng hàng được hỗ trợ.",
+      "readOnly": "Cột tính toán \"{{name}}\" phải được chỉnh sửa qua Calculated Column.",
+      "staleValidation": "Xác thực đã cũ vì bảng đã thay đổi. Hãy xác thực lại trước khi áp dụng.",
+      "confirmConvert": "Chuyển cột tính toán \"{{name}}\" thành giá trị?",
+      "outputType": "Kiểu đầu ra: {{type}}",
+      "warningCount": "Cảnh báo: {{count}}",
+      "warningLabels": {
+        "expression": "Biểu thức: {{count}}",
+        "dependencyGraph": "Đồ thị phụ thuộc: {{count}}",
+        "validation": "Xác thực: {{count}}"
+      },
+      "zeroMatch": "Không có cột hoặc hàm nào khớp.",
+      "badgeLabel": "Cột tính toán",
+      "actions": {
+        "create": "Calculated Column",
+        "edit": "Sửa công thức",
+        "revalidate": "Xác thực lại",
+        "convert": "Chuyển thành giá trị",
+        "convertExisting": "Công thức tính toán"
+      },
+      "fields": {
+        "outputName": "Tên cột đầu ra",
+        "formula": "Công thức",
+        "search": "Chèn cột hoặc hàm",
+        "dependencies": "Phụ thuộc",
+        "downstream": "Cột phụ thuộc",
+        "diagnostics": "Chẩn đoán"
+      },
+      "status": {
+        "pending": "Chờ xác thực",
+        "draft": "Bản nháp",
+        "ready": "Sẵn sàng",
+        "disabled": "Đã tắt",
+        "broken": "Hỏng",
+        "unsupported": "Không hỗ trợ"
+      },
+      "tooltip": {
+        "status": "Trạng thái: {{status}}",
+        "outputType": "Kiểu đầu ra: {{type}}",
+        "formula": "Công thức: {{formula}}",
+        "dependencies": "Phụ thuộc: {{names}}"
+      },
+      "functions": {
+        "abs": { "detail": "Giá trị tuyệt đối số học" },
+        "coalesce": { "detail": "Giá trị khác rỗng đầu tiên" },
+        "if": { "detail": "Nhánh điều kiện" },
+        "max": { "detail": "Giá trị lớn nhất theo hàng" },
+        "min": { "detail": "Giá trị nhỏ nhất theo hàng" },
+        "round": { "detail": "Làm tròn giá trị số" }
+      },
+      "diagnostics": {
+        "validationFailed": {
+          "label": "Xác thực thất bại",
+          "message": "Xác thực thất bại. Hãy kiểm tra công thức rồi thử lại.",
+          "withContext": "Xác thực thất bại: {{context}}"
+        },
+        "missing_dependency": {
+          "label": "Thiếu phụ thuộc",
+          "message": "{{output}} phụ thuộc vào cột bị thiếu {{dependency}}."
+        },
+        "unsupported_function": {
+          "label": "Hàm không được hỗ trợ",
+          "message": "Hàm {{functionName}} chưa được hỗ trợ trong cột tính toán."
+        },
+        "missingFormulaId": {
+          "label": "Thiếu ID công thức",
+          "message": "Metadata của cột tính toán thiếu ID công thức.",
+          "withContext": "Metadata của cột tính toán thiếu ID công thức. {{context}}"
+        },
+        "missingOutputColumnId": {
+          "label": "Thiếu ID cột đầu ra",
+          "message": "Metadata của cột tính toán thiếu ID cột đầu ra.",
+          "withContext": "Metadata của cột tính toán thiếu ID cột đầu ra. {{context}}"
+        },
+        "missingColumnIdMapEntry": {
+          "label": "Thiếu ánh xạ ID cột",
+          "message": "Một phụ thuộc đã đổi ánh xạ nhưng thiếu ID cột đích.",
+          "withContext": "Một phụ thuộc đã đổi ánh xạ nhưng thiếu ID cột đích. {{context}}"
+        },
+        "duplicateOutputColumnId": {
+          "label": "Trùng ID cột đầu ra",
+          "message": "Hai cột tính toán cùng phân giải tới một ID cột đầu ra.",
+          "withContext": "Hai cột tính toán cùng phân giải tới một ID cột đầu ra. {{context}}"
+        },
+        "dependencyMismatch": {
+          "label": "Phụ thuộc không khớp",
+          "message": "Các ID phụ thuộc đã lưu không khớp với biểu thức công thức.",
+          "withContext": "Các ID phụ thuộc đã lưu không khớp với biểu thức công thức. {{context}}"
+        },
+        "fingerprintMismatch": {
+          "label": "Dấu vân tay không khớp",
+          "message": "Dấu vân tay của cột tính toán đã lưu không khớp với định nghĩa chuẩn.",
+          "withContext": "Dấu vân tay của cột tính toán đã lưu không khớp với định nghĩa chuẩn. {{context}}"
+        },
+        "cyclicDependency": {
+          "label": "Phụ thuộc vòng",
+          "message": "Các cột tính toán tạo thành vòng phụ thuộc: {{columns}}."
+        },
+        "missingDependencyColumns": {
+          "label": "Thiếu cột phụ thuộc",
+          "message": "Một hoặc nhiều cột phụ thuộc không khả dụng: {{columns}}."
+        },
+        "formula_dependency_in_use": {
+          "label": "Phụ thuộc đang được dùng",
+          "message": "Không thể xóa \"{{name}}\" vì đường phụ thuộc {{path}} vẫn còn dùng nó."
+        },
+        "unknown": {
+          "label": "Chẩn đoán",
+          "message": "Cột tính toán đã trả về một chẩn đoán.",
+          "withContext": "Cột tính toán đã trả về một chẩn đoán: {{context}}"
+        }
+      }
+    },
     "validInteger": "\"{{value}}\" không phải số nguyên hợp lệ",
     "validNumber": "\"{{value}}\" không phải số hợp lệ",
     "validBoolean": "\"{{value}}\" không phải boolean hợp lệ (dùng true/false/1/0)",

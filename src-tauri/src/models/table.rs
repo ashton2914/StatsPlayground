@@ -31,12 +31,14 @@ pub struct ColumnDefinition {
     pub column_type: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnDescriptor {
     pub column_id: String,
     pub name: String,
     pub sql_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calculated: Option<crate::models::calculated_column::CalculatedColumnDescriptor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

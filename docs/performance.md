@@ -11,6 +11,7 @@ cargo run --release --example performance_baseline --features perf-harness -- --
 cargo run --release --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation graph
 cargo run --release --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation save
 cargo run --release --example performance_baseline --features perf-harness -- --rows 1000000 --columns 20 --operation datalink
+cargo run --release --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation calculated --chain-depth 5 --runs 5
 ```
 
 The last stdout line is machine-readable JSON:
@@ -46,10 +47,28 @@ Fields:
   diagnostic rather than a hard cap or OS process-memory measurement.
 - `saveStageMs`: elapsed milliseconds attributed to planning, query/fetch,
   batch encoding, ZIP writes/finish, file sync, validation, and replacement.
-- `processMemory`: Windows-only sampled process working-set baseline, peak, and
-  delta during `save`; it is omitted on other platforms. This is the
-  acceptance measurement for additional process memory on the recorded Windows
-  machine.
+- `processMemory`: sampled process working-set baseline, peak, and delta during
+  memory-qualified operations. Windows uses `GetProcessMemoryInfo`; macOS uses
+  dependency-free `proc_pidinfo(PROC_PIDTASKINFO)` resident size. Unsupported
+  platforms omit this field and cannot pass a memory-required qualification.
+- `chainDepth`: number of calculated columns in the dependency chain for
+  `calculated`.
+- `runsMs`: elapsed milliseconds for each timed calculated source-column
+  mutation and recalculation run.
+- `medianMs`: median of `runsMs`; this is the qualification wall-time value for
+  `calculated`.
+- `processMemoryMethod`: process memory source used for the sampled working-set
+  measurement.
+- `physicalInputBytes`: estimated source table bytes for `calculated`, using 8
+  bytes per physical cell.
+- `calculatedResultBytes`: estimated calculated-result bytes, using 8 bytes per
+  calculated cell.
+- `memoryBudgetBytes`: maximum allowed working-set growth for `calculated`,
+  computed as 2x (`physicalInputBytes` + `calculatedResultBytes`).
+- `qualificationPassed` / `qualificationFailure`: pass/fail decision for
+  thresholded benchmark operations. `calculated` fails when `medianMs` exceeds
+  2000 ms, process memory is unavailable, or working-set delta exceeds the
+  memory budget.
 
 The current `paste` baseline deliberately includes construction of the nested
 string payload consumed by `paste_at_position`. This represents part of the
@@ -88,6 +107,39 @@ Both runs imported the requested row count successfully. The working-set delta
 includes the final dataset retained by the in-memory DuckDB engine, SQLite and
 DuckDB page caches, and bounded ingestion buffers. It therefore measures total
 process growth during import, not transient ingestion-buffer memory alone.
+
+## Calculated Columns Baseline
+
+Date: 2026-09-16
+
+Command:
+
+```bash
+cargo run --release --manifest-path src-tauri/Cargo.toml --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation calculated --chain-depth 5 --runs 5
+```
+
+Profile and workload:
+
+- Rust `release` profile (`performance_baseline` example, `perf-harness` feature)
+- Deterministic managed table seed: 300,000 rows x 20 columns
+- Five-column linear calculated dependency chain
+- One warm-up source-column mutation followed by five timed source-column
+  mutations through the production table mutation coordinator
+- Per-run process resident-size sampling via macOS
+  `proc_pidinfo(PROC_PIDTASKINFO)`
+
+Recorded JSON:
+
+```json
+{"rows":300000,"columns":20,"operation":"calculated","setupMs":598,"operationMs":108,"totalMs":1140,"resultRows":300000,"selectedColumns":5,"queryMs":null,"encodeMs":null,"decodeMs":null,"drawMs":null,"processedRows":300000,"transferredBytes":null,"archiveBytes":0,"processMemory":{"baselineWorkingSetBytes":473710592,"peakWorkingSetBytes":528564224,"deltaWorkingSetBytes":54853632},"chainDepth":5,"runsMs":[108,103,108,109,110],"medianMs":108,"processMemoryMethod":"proc_pidinfo PROC_PIDTASKINFO resident_size","physicalInputBytes":48000000,"calculatedResultBytes":12000000,"memoryBudgetBytes":120000000,"memoryGrowthBudgetMultiplier":2,"qualificationPassed":true,"machine":{"os":"macos 27.0","arch":"aarch64","cpu":"Apple M3 Pro","physicalMemoryBytes":38654705664,"appVersion":"0.1.0","duckdbVersion":"v1.5.5"}}
+```
+
+Acceptance decision:
+
+- Wall-time gate passed: median 108 ms, below the 2000 ms threshold.
+- Memory gate passed: peak per-run working-set delta 54,853,632 bytes, below the
+  120,000,000 byte budget.
+- All five runs completed against 300,000 rows and a five-level dependency chain.
 
 ## Save Current Baseline (Task 1)
 

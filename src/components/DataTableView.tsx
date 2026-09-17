@@ -2,8 +2,17 @@ import React, { useEffect, useLayoutEffect, useState, useRef, useCallback, useMe
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { dataService } from "@/services/dataService";
-import type { TableQueryResult, ColumnDisplayProps } from "@/types/data";
+import type {
+  CalculatedColumnDescriptor,
+  CalculatedColumnMutationResult,
+  CalculatedOutputTypeV1,
+  ColumnDescriptor,
+  ColumnDisplayProps,
+  TableQueryResult,
+  UpsertCalculatedColumnRequest,
+} from "@/types/data";
 import { EXTRA_DEFS, EXTRA_KINDS, type ExtraKind, summarizeExtraKinds, extraKindLabel, extraFieldLabel } from "@/types/columnExtras";
+import { CalculatedColumnDialog } from "./CalculatedColumnDialog";
 import { ManageExtrasDialog } from "./ManageExtrasDialog";
 import { TableShapeSummary } from "./TableShapeSummary";
 import { useDataStore } from "@/stores/useDataStore";
@@ -39,6 +48,119 @@ interface DataTableViewProps {
 const COLUMN_TYPE_VALUES = ["VARCHAR", "INTEGER", "BIGINT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"] as const;
 const typeLabel = (t: TFunction, v: string): string => t(`dataTable.type.${v}`, { defaultValue: v });
 const typeLabelOf = (t: TFunction) => (v: string): string => typeLabel(t, v);
+
+const calculatedOutputTypeToSqlType = (outputType: CalculatedOutputTypeV1): string => {
+  switch (outputType) {
+    case "boolean":
+      return "BOOLEAN";
+    case "continuous":
+      return "DOUBLE";
+    case "integer":
+      return "INTEGER";
+    case "text":
+      return "VARCHAR";
+    case "null":
+      return "NULL";
+    case "unknown":
+    default:
+      return "UNKNOWN";
+  }
+};
+
+const calculatedStatusIconClass = (status: CalculatedColumnDescriptor["status"]): string => {
+  switch (status) {
+    case "ready":
+      return "fa-circle-check";
+    case "draft":
+      return "fa-file-pen";
+    case "disabled":
+      return "fa-ban";
+    case "broken":
+      return "fa-triangle-exclamation";
+    case "unsupported":
+    default:
+      return "fa-circle-question";
+  }
+};
+
+function collectDownstreamCalculatedNames(
+  descriptors: ColumnDescriptor[],
+  rootColumnId: string | null,
+): string[] {
+  if (!rootColumnId) return [];
+  const namesById = new Map(descriptors.map((descriptor) => [descriptor.columnId, descriptor.name]));
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const visit = (columnId: string) => {
+    for (const descriptor of descriptors) {
+      const calculated = descriptor.calculated;
+      if (!calculated || seen.has(descriptor.columnId)) continue;
+      if (!calculated.dependencyColumnIds.includes(columnId)) continue;
+      seen.add(descriptor.columnId);
+      ordered.push(namesById.get(descriptor.columnId) ?? descriptor.name);
+      visit(descriptor.columnId);
+    }
+  };
+  visit(rootColumnId);
+  return ordered;
+}
+
+function formatCalculatedDescriptorTitle(
+  t: TFunction,
+  calculated: CalculatedColumnDescriptor,
+  descriptors: ColumnDescriptor[],
+): string {
+  const namesById = new Map(descriptors.map((descriptor) => [descriptor.columnId, descriptor.name]));
+  const dependencies = calculated.dependencyColumnIds
+    .map((columnId) => namesById.get(columnId) ?? columnId)
+    .join(", ");
+  const lines = [
+    t("dataTable.calculatedColumn.tooltip.status", {
+      status: t(`dataTable.calculatedColumn.status.${calculated.status}`, { defaultValue: calculated.status }),
+    }),
+    t("dataTable.calculatedColumn.tooltip.outputType", {
+      type: calculatedOutputTypeToSqlType(calculated.inferredOutputType),
+    }),
+    t("dataTable.calculatedColumn.tooltip.formula", {
+      formula: calculated.displayFormulaText || t("common.empty"),
+    }),
+  ];
+  if (dependencies) {
+    lines.push(t("dataTable.calculatedColumn.tooltip.dependencies", { names: dependencies }));
+  }
+  return lines.join("\n");
+}
+
+interface CalculatedDialogState {
+  mode: "create" | "edit" | "convertExisting";
+  outputName: string;
+  formulaText: string;
+  atIndex: number | null;
+  outputColumnId: string | null;
+  formulaId: string | null;
+}
+
+function formatCalculatedDependencyDeleteError(t: TFunction, error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const structured = message.match(/^formula_dependency_in_use\|([^|]+)\|(.+)$/);
+  if (structured) {
+    const [, name, rawPath] = structured;
+    return t("dataTable.calculatedColumn.diagnostics.formula_dependency_in_use.message", {
+      name,
+      path: rawPath.split(">").join(" -> "),
+      defaultValue: message,
+    });
+  }
+  const legacy = message.match(/cannot delete a column referenced by a calculated dependency:\s*(.+)$/i);
+  if (legacy) {
+    return t("dataTable.calculatedColumn.diagnostics.formula_dependency_in_use.message", {
+      name: legacy[1],
+      path: legacy[1],
+      defaultValue: message,
+    });
+  }
+  return null;
+}
 
 // Excel-style column letter (A, B, C, ... Z, AA, AB, ...)
 const colLetter = (i: number): string => {
@@ -525,6 +647,8 @@ const ExtrasEditor = React.memo(function ExtrasEditor({ extras, onChange, getCol
 interface ColsPanelListProps {
   cols: string[];
   colTypes: string[];
+  calculated: ReadonlyArray<CalculatedColumnDescriptor | undefined>;
+  calculatedTitles: ReadonlyArray<string | undefined>;
   selectedCols: ReadonlySet<number>;
   /** Per-column extras map (length matches cols); null means no extras. */
   colExtras: ReadonlyArray<Record<string, unknown> | null>;
@@ -535,7 +659,7 @@ interface ColsPanelListProps {
 }
 
 const ColsPanelList = React.memo(function ColsPanelList({
-  cols, colTypes, selectedCols, colExtras, onItemClick, onItemContextMenu, onReorder,
+  cols, colTypes, calculated, calculatedTitles, selectedCols, colExtras, onItemClick, onItemContextMenu, onReorder,
 }: ColsPanelListProps) {
   const { t } = useTranslation();
   const labelOf = typeLabelOf(t);
@@ -547,6 +671,8 @@ const ColsPanelList = React.memo(function ColsPanelList({
       {cols.map((name, ci) => {
         const tLabel = labelOf(colTypes[ci]);
         const isSel = selectedCols.has(ci);
+        const calculatedDescriptor = calculated[ci];
+        const calculatedTitle = calculatedTitles[ci];
         const extras = colExtras[ci];
         const extraSummary = extras ? summarizeExtraKinds(extras, t) : "";
         const extraCount = extras ? Object.keys(extras).length : 0;
@@ -556,6 +682,7 @@ const ColsPanelList = React.memo(function ColsPanelList({
           <div
             key={ci}
             className={`sp-cols-panel-item${isSel ? " sp-cols-panel-item-selected" : ""}${isDragging ? " sp-cols-panel-item-dragging" : ""}${isDropTarget ? " sp-cols-panel-item-dropbelow" : ""}`}
+            data-calculated={calculatedDescriptor?.status}
             onClick={(e) => onItemClick(ci, e)}
             onContextMenu={(e) => onItemContextMenu(e, ci)}
             onDragOver={(e) => {
@@ -570,10 +697,15 @@ const ColsPanelList = React.memo(function ColsPanelList({
               setDragIdx(null);
               setOverIdx(null);
             }}
-            title={`${colLetter(ci)}  ${name}  (${tLabel})${extraSummary ? "\n" + t("dataTable.colsPanelExtraTooltip", { summary: extraSummary }) : ""}`}
+            title={`${colLetter(ci)}  ${name}  (${tLabel})${calculatedTitle ? "\n" + calculatedTitle : ""}${extraSummary ? "\n" + t("dataTable.colsPanelExtraTooltip", { summary: extraSummary }) : ""}`}
           >
             <span className="sp-cols-panel-item-type">{tLabel}</span>
             <span className="sp-cols-panel-item-name">{name || t("dataTable.colsPanelItemFallback", { letter: colLetter(ci) })}</span>
+            {calculatedDescriptor && (
+              <span className={`sp-cols-panel-item-calc is-${calculatedDescriptor.status}`} title={calculatedTitle}>
+                <i className={`fa-solid ${calculatedStatusIconClass(calculatedDescriptor.status)}`} aria-hidden="true" />
+              </span>
+            )}
             {extraCount > 0 && (
               <span className="sp-cols-panel-item-extras" title={t("dataTable.colsPanelExtraTooltip", { summary: extraSummary })}>
                 📎{extraCount}
@@ -741,6 +873,7 @@ export function DataTableView({
   const [colMenu, setColMenu] = useState<{ colIdx: number; x: number; y: number } | null>(null);
   const [rowMenu, setRowMenu] = useState<{ rowIdx: number; x: number; y: number } | null>(null);
   const [showAddCol, setShowAddCol] = useState(false);
+  const [calculatedDialog, setCalculatedDialog] = useState<CalculatedDialogState | null>(null);
   const [newColName, setNewColName] = useState("");
   const [newColType, setNewColType] = useState("VARCHAR");
   const [renameCol, setRenameCol] = useState<{ colIdx: number; oldName: string; oldType: string } | null>(null);
@@ -772,6 +905,7 @@ export function DataTableView({
   colExtrasRef.current = colExtras;
   const [selection, setSelection] = useState<CellRange | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [columnDescriptors, setColumnDescriptors] = useState<ColumnDescriptor[]>([]);
   const [loadedDataLoadToken, setLoadedDataLoadToken] = useState<string | null>(null);
   const [loadedFilterGeneration, setLoadedFilterGeneration] = useState(0);
   const [loadedDisplayPropsLoadToken, setLoadedDisplayPropsLoadToken] = useState<string | null>(null);
@@ -1019,6 +1153,14 @@ export function DataTableView({
       setData(nextData);
       dataRef.current = nextData;
       setLoadedDataLoadToken(loadToken);
+      try {
+        const descriptors = await dataService.getColumnDescriptors(requestedDatasetId);
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        setColumnDescriptors(descriptors);
+      } catch {
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        setColumnDescriptors([]);
+      }
       // Load saved display props
       try {
         const props = await dataService.getColumnDisplayProps(requestedDatasetId);
@@ -1059,6 +1201,7 @@ export function DataTableView({
       setLoadedDisplayPropsLoadToken(null);
       setWindowStart(0);
       windowStartRef.current = 0;
+      setColumnDescriptors([]);
       setData(null);
       dataRef.current = null;
     }
@@ -1111,6 +1254,7 @@ export function DataTableView({
     setShowInsertMultiCols(false);
     setRenameCol(null);
     setShowAddCol(false);
+    setCalculatedDialog(null);
     setShowTableFilters(false);
   }, [datasetId, load]);
 
@@ -1281,6 +1425,126 @@ export function DataTableView({
   const rowIdIdx = data ? data.columns.indexOf("_row_id") : -1;
   const cols = useMemo(() => data ? data.columns.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
   const colTypes = useMemo(() => data ? data.columnTypes.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
+  const visibleDescriptors = useMemo(() => {
+    const byName = new Map(columnDescriptors.map((descriptor) => [descriptor.name, descriptor]));
+    return cols.map((name, index) => byName.get(name) ?? {
+      columnId: `visible-${index}`,
+      name,
+      sqlType: colTypes[index] ?? "VARCHAR",
+    });
+  }, [colTypes, cols, columnDescriptors]);
+  const calculatedTitles = useMemo(
+    () => visibleDescriptors.map((descriptor) => descriptor.calculated ? formatCalculatedDescriptorTitle(t, descriptor.calculated, visibleDescriptors) : undefined),
+    [t, visibleDescriptors],
+  );
+  const getDescriptorAt = useCallback((colIdx: number) => visibleDescriptors[colIdx] ?? null, [visibleDescriptors]);
+  const getCalculatedAt = useCallback((colIdx: number) => getDescriptorAt(colIdx)?.calculated ?? null, [getDescriptorAt]);
+  const showCalculatedReadOnlyError = useCallback((colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    setErrorMsg(t("dataTable.calculatedColumn.readOnly", {
+      defaultValue: "Calculated columns must be edited through Calculated Column.",
+      name: descriptor?.name ?? colLetter(colIdx),
+    }));
+  }, [getDescriptorAt, t]);
+  const containsCalculatedColumn = useCallback((indices: Iterable<number>) => {
+    for (const index of indices) {
+      if (getCalculatedAt(index)) return true;
+    }
+    return false;
+  }, [getCalculatedAt]);
+  const openCreateCalculatedColumn = useCallback((atIndex: number | null = null) => {
+    const existingNames = new Set(cols);
+    let suffix = 1;
+    let outputName = t("dataTable.calculatedColumn.defaultName", { defaultValue: "Calculated", n: suffix });
+    while (existingNames.has(outputName)) {
+      suffix += 1;
+      outputName = t("dataTable.calculatedColumn.defaultName", { defaultValue: "Calculated", n: suffix });
+    }
+    setCalculatedDialog({
+      mode: "create",
+      outputName,
+      formulaText: "",
+      atIndex,
+      outputColumnId: null,
+      formulaId: null,
+    });
+    setColMenu(null);
+    setCornerMenu(null);
+  }, [cols, t]);
+  const openConvertExistingColumn = useCallback((colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    if (!descriptor || descriptor.calculated) return;
+    setCalculatedDialog({
+      mode: "convertExisting",
+      outputName: descriptor.name,
+      formulaText: "",
+      atIndex: colIdx,
+      outputColumnId: descriptor.columnId,
+      formulaId: null,
+    });
+    setColMenu(null);
+  }, [getDescriptorAt]);
+  const openEditCalculatedColumn = useCallback((colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    const calculated = descriptor?.calculated;
+    if (!descriptor || !calculated) return;
+    setCalculatedDialog({
+      mode: "edit",
+      outputName: descriptor.name,
+      formulaText: calculated.displayFormulaText,
+      atIndex: colIdx,
+      outputColumnId: descriptor.columnId,
+      formulaId: calculated.formulaId,
+    });
+    setColMenu(null);
+  }, [getDescriptorAt]);
+  const handleCalculatedDialogApplied = useCallback(async (
+    result: CalculatedColumnMutationResult,
+    request: UpsertCalculatedColumnRequest,
+  ) => {
+    recordTable(
+      request.formulaId
+        ? t("history.editCalculatedColumn", { defaultValue: "Edit calculated column" })
+        : t("history.createCalculatedColumn", { defaultValue: "Create calculated column" }),
+      { kind: "changeSet", datasetId, changeSetId: result.changeSetId },
+    );
+    setCalculatedDialog(null);
+    await load();
+    await refreshAndMarkDirty();
+  }, [datasetId, load, recordTable, refreshAndMarkDirty, t]);
+  const handleConvertCalculatedToValues = useCallback(async (colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    const calculated = descriptor?.calculated;
+    if (!descriptor || !calculated) return;
+    const confirmed = window.confirm(t("dataTable.calculatedColumn.confirmConvert", {
+      name: descriptor.name,
+      defaultValue: `Convert calculated column "${descriptor.name}" to values?`,
+    }));
+    if (!confirmed) {
+      setColMenu(null);
+      return;
+    }
+    if (!tryBeginTableMutation()) return;
+    try {
+      const result = await dataService.convertCalculatedColumnToValues(
+        datasetId,
+        descriptor.columnId,
+        generationRef.current,
+      );
+      recordTable(t("history.convertCalculatedColumnToValues", { defaultValue: "Convert calculated column to values" }), {
+        kind: "changeSet",
+        datasetId,
+        changeSetId: result.changeSetId,
+      });
+      setColMenu(null);
+      await load();
+      await refreshAndMarkDirty();
+    } catch (error) {
+      setErrorMsg(String(error));
+    } finally {
+      endTableMutation();
+    }
+  }, [datasetId, endTableMutation, getDescriptorAt, load, recordTable, refreshAndMarkDirty, t, tryBeginTableMutation]);
 
   // All rows stripped of _row_id (used by filter popover for unique values)
   const allRows = useMemo(() =>
@@ -2127,7 +2391,7 @@ export function DataTableView({
       await load();
       await refreshAndMarkDirty();
     } catch (error) {
-      setErrorMsg(String(error));
+      setErrorMsg(formatCalculatedDependencyDeleteError(t, error) ?? String(error));
     } finally {
       endTableMutation();
     }
@@ -2154,7 +2418,7 @@ export function DataTableView({
       await load();
       await refreshAndMarkDirty();
     } catch (error) {
-      setErrorMsg(String(error));
+      setErrorMsg(formatCalculatedDependencyDeleteError(t, error) ?? String(error));
     } finally {
       endTableMutation();
     }
@@ -2223,30 +2487,23 @@ export function DataTableView({
     if (readOnly) return;
     if (pendingAction) return;
     if (!batchColProps) return;
-    // Apply column widths — user-entered value is visual; store as base.
+    const changedColumnNames = Array.from(batchColProps.checkedCols)
+      .filter((columnIndex) => colTypes[columnIndex] !== batchColType)
+      .map((columnIndex) => cols[columnIndex]);
+    const hasSchemaChanges = changedColumnNames.length > 0;
+    if (hasSchemaChanges && !tryBeginTableMutation()) return;
+    // Prepare column widths — user-entered value is visual; store as base.
     const visualW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(batchColWidth) || DEFAULT_COL_WIDTH));
     const newW = Math.max(BASE_DEFAULT_COL_WIDTH, Math.round(visualW / zoom));
     const newWidths = [...colWidths];
     for (const ci of batchColProps.checkedCols) {
       newWidths[ci] = newW;
     }
-    setColWidths(newWidths);
-    colWidthsRef.current = newWidths;
-    // Apply column formats
+    // Prepare column formats
     const newFormats = [...colFormats];
     for (const ci of batchColProps.checkedCols) {
       newFormats[ci] = { ...batchColFormat };
     }
-    setColFormats(newFormats);
-    colFormatsRef.current = newFormats;
-    // Sync display props to backend
-    syncDisplayProps(newWidths, newFormats);
-    markDirty();
-    const changedColumnNames = Array.from(batchColProps.checkedCols)
-      .filter((columnIndex) => colTypes[columnIndex] !== batchColType)
-      .map((columnIndex) => cols[columnIndex]);
-    const hasSchemaChanges = changedColumnNames.length > 0;
-    if (hasSchemaChanges && !tryBeginTableMutation()) return;
     try {
       if (hasSchemaChanges) {
         const generation = await dataService.getDatasetGeneration(datasetId);
@@ -2264,6 +2521,12 @@ export function DataTableView({
       } else {
         recordAction(t("history.modifyColumnProps"));
       }
+      setColWidths(newWidths);
+      colWidthsRef.current = newWidths;
+      setColFormats(newFormats);
+      colFormatsRef.current = newFormats;
+      syncDisplayProps(newWidths, newFormats);
+      markDirty();
       await load();
       await refreshAndMarkDirty();
       setBatchColProps(null);
@@ -2387,6 +2650,10 @@ export function DataTableView({
 
   const handleCellDoubleClick = (row: number, col: number, value: unknown) => {
     if (readOnly) return;
+    if (getCalculatedAt(col)) {
+      showCalculatedReadOnlyError(col);
+      return;
+    }
     setActiveCell({ row, col });
     setEditCell({ row, col });
     setEditValue(value == null ? "" : String(value));
@@ -2430,6 +2697,11 @@ export function DataTableView({
     if (!editCell) return;
     if (pendingAction) return;
     const { row: editRow, col: editCol } = editCell;
+    if (getCalculatedAt(editCol)) {
+      setEditCell(null);
+      showCalculatedReadOnlyError(editCol);
+      return;
+    }
     const colType = colTypes[editCol];
     const err = validateCellValue(editValue, colType);
     if (err) {
@@ -2529,6 +2801,10 @@ export function DataTableView({
     if (readOnly) return false;
     if (!activeCell) return;
     const { row: editRow, col: editCol } = activeCell;
+    if (getCalculatedAt(editCol)) {
+      showCalculatedReadOnlyError(editCol);
+      return false;
+    }
     const colType = colTypes[editCol];
     const err = validateCellValue(value, colType);
     if (err) {
@@ -2583,6 +2859,11 @@ export function DataTableView({
   // ---- Clear cells (Delete key) ----
   const clearCells = async (cells: { row: number; col: number }[]) => {
     if (readOnly) return;
+    if (containsCalculatedColumn(cells.map((cell) => cell.col))) {
+      const firstCalculated = cells.find((cell) => getCalculatedAt(cell.col));
+      if (firstCalculated) showCalculatedReadOnlyError(firstCalculated.col);
+      return;
+    }
     if (cells.some(({ row, col }) => !displayRowAt(row) || col < 0 || col >= cols.length)) {
       setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
         defaultValue: "This operation requires rows outside the loaded window.",
@@ -2840,6 +3121,13 @@ export function DataTableView({
     }
     const numPasteCols = dataRows.reduce((max, r) => Math.max(max, r.length), 0);
     const numPasteRows = dataRows.length;
+    for (let c = 0; c < numPasteCols; c++) {
+      const targetCol = startCol + c;
+      if (targetCol < cols.length && getCalculatedAt(targetCol)) {
+        showCalculatedReadOnlyError(targetCol);
+        return;
+      }
+    }
 
     // Detect types for each column from data rows
     const detectedTypes: string[] = [];
@@ -3134,6 +3422,11 @@ export function DataTableView({
           cellsToCut.push(activeCell);
         }
         if (cellsToCut.length > 0) {
+          if (containsCalculatedColumn(cellsToCut.map((cell) => cell.col))) {
+            const firstCalculated = cellsToCut.find((cell) => getCalculatedAt(cell.col));
+            if (firstCalculated) showCalculatedReadOnlyError(firstCalculated.col);
+            return;
+          }
           void copyThenClear(
             () => handleCopy(),
             () => clearCells(cellsToCut),
@@ -3281,6 +3574,10 @@ export function DataTableView({
         // Printable character: start editing with that key (replace mode)
         if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
+          if (getCalculatedAt(col)) {
+            showCalculatedReadOnlyError(col);
+            return;
+          }
           setActiveCell({ row, col });
           setEditCell({ row, col });
           setEditValue(e.key);
@@ -4178,7 +4475,6 @@ export function DataTableView({
         <button
           className={`sp-tb-btn${showTableFilters ? " sp-tb-btn-active" : ""}`}
           onClick={() => setShowTableFilters((v) => !v)}
-          disabled={readOnly}
           title={t("graph.filter.toggleTitle", { defaultValue: "Show/Hide local data filter" })}
         >
           {t("graph.filter.toolbarBtn", { defaultValue: "Filter" })}
@@ -4189,11 +4485,35 @@ export function DataTableView({
         <div className="sp-tb-sep" />
         <button
           className="sp-tb-btn"
+          onClick={() => openCreateCalculatedColumn(null)}
+          disabled={readOnly || Boolean(pendingAction)}
+        >
+          {t("dataTable.calculatedColumn.actions.create", { defaultValue: "Calculated Column" })}
+        </button>
+        <button
+          className="sp-tb-btn"
           onClick={openManageExtras}
         >
           {t("menu.manageExtras")}
         </button>
       </div>
+
+      {calculatedDialog && (
+        <CalculatedColumnDialog
+          datasetId={datasetId}
+          mode={calculatedDialog.mode}
+          generation={generationRef.current}
+          descriptors={visibleDescriptors}
+          initialOutputName={calculatedDialog.outputName}
+          initialFormulaText={calculatedDialog.formulaText}
+          initialAtIndex={calculatedDialog.atIndex}
+          initialOutputColumnId={calculatedDialog.outputColumnId}
+          initialFormulaId={calculatedDialog.formulaId}
+          downstreamNames={collectDownstreamCalculatedNames(visibleDescriptors, calculatedDialog.outputColumnId)}
+          onClose={() => setCalculatedDialog(null)}
+          onApplied={handleCalculatedDialogApplied}
+        />
+      )}
 
       {/* Add column inline form */}
       {showAddCol && (
@@ -4368,6 +4688,8 @@ export function DataTableView({
             <ColsPanelList
               cols={cols}
               colTypes={colTypes}
+              calculated={visibleDescriptors.map((descriptor) => descriptor.calculated)}
+              calculatedTitles={calculatedTitles}
               selectedCols={selectedCols}
               colExtras={colExtras}
               onItemClick={stableColsPanelClick}
@@ -4438,6 +4760,7 @@ export function DataTableView({
               {/* Select-all corner */}
               <th
                 className={`sp-corner${cornerSelected ? " sp-corner-active" : ""}`}
+                scope="col"
                 onClick={handleCornerClick}
                 onContextMenu={handleCornerContextMenu}
                 style={{ cursor: "pointer" }}
@@ -4448,20 +4771,29 @@ export function DataTableView({
               {/* Column headers — event delegation via data-col-hdr (only visible cols) */}
               {visibleColIdxs.map((ci) => {
                 const col = cols[ci];
+                const calculated = getCalculatedAt(ci);
                 return (
                   <th
                     key={ci}
+                    scope="col"
                     data-col-hdr={ci}
+                    data-calculated={calculated?.status}
                     className={`sp-col-hdr${activeColRange.has(ci) ? " sp-col-active" : ""}${selectedCols.has(ci) ? " sp-col-selected" : ""}`}
                     onClick={(e) => handleColSelect(ci, e)}
                     onMouseDown={(e) => handleColHeaderMouseDown(ci, e)}
                     onDoubleClick={() => handleStartRenameCol(ci)}
                     onContextMenu={(e) => handleColContextMenu(e, ci)}
+                    title={calculated ? formatCalculatedDescriptorTitle(t, calculated, visibleDescriptors) : undefined}
                   >
                     <div className="sp-col-hdr-content">
                       <span className="sp-col-letter">{colLetter(ci)}</span>
                       <span className="sp-col-name">{col}</span>
                       <span className="sp-col-type">{labelOf(colTypes[ci])}</span>
+                      {calculated && (
+                        <span className={`sp-col-calc-badge is-${calculated.status}`} aria-label={t("dataTable.calculatedColumn.badgeLabel", { defaultValue: "Calculated column" })}>
+                          <i className={`fa-solid ${calculatedStatusIconClass(calculated.status)}`} aria-hidden="true" />
+                        </span>
+                      )}
                     </div>
                     {/* Resize handle */}
                     <div
@@ -4477,7 +4809,7 @@ export function DataTableView({
                 <th className="sp-col-spacer-hdr" aria-hidden="true" style={{ background: "var(--bg-header)", borderBottom: "2px solid var(--border-header-bottom)" }} />
               )}
               {/* "+" column at end */}
-              <th className="sp-add-col-hdr" onClick={handleAddColumnQuick} title={t("dataTable.addColTitle")}>
+              <th scope="col" className="sp-add-col-hdr" onClick={handleAddColumnQuick} title={t("dataTable.addColTitle")}>
                 +
               </th>
             </tr>
@@ -4659,6 +4991,9 @@ export function DataTableView({
               <div className="sp-ctx-item" onClick={() => handleInsertColumnAfter(colMenu.colIdx)}>
                 {t("dataTable.ctxInsertCol")}
               </div>
+              <div className="sp-ctx-item" onClick={() => openCreateCalculatedColumn(colMenu.colIdx + 1)}>
+                {t("dataTable.calculatedColumn.actions.create", { defaultValue: "Calculated Column" })}
+              </div>
               <div className="sp-ctx-item" onClick={() => { setInsertColAnchor(colMenu.colIdx); setShowInsertMultiCols(true); setColMenu(null); }}>
                 {t("dataTable.ctxInsertMultiCols")}
               </div>
@@ -4675,6 +5010,20 @@ export function DataTableView({
               <div className="sp-ctx-item" onClick={() => handleStartRenameCol(colMenu.colIdx)}>
                 {t("dataTable.ctxColProps")}
               </div>
+              {getCalculatedAt(colMenu.colIdx) ? (
+                <>
+                  <div className="sp-ctx-item" onClick={() => openEditCalculatedColumn(colMenu.colIdx)}>
+                    {t("dataTable.calculatedColumn.actions.edit", { defaultValue: "Edit Formula" })}
+                  </div>
+                  <div className="sp-ctx-item" onClick={() => handleConvertCalculatedToValues(colMenu.colIdx)}>
+                    {t("dataTable.calculatedColumn.actions.convert", { defaultValue: "Convert to Values" })}
+                  </div>
+                </>
+              ) : (
+                <div className="sp-ctx-item" onClick={() => openConvertExistingColumn(colMenu.colIdx)}>
+                  {t("dataTable.calculatedColumn.actions.convertExisting", { defaultValue: "Calculated Formula" })}
+                </div>
+              )}
               <div className="sp-ctx-item" onClick={() => handleInsertColumnAfter(colMenu.colIdx)}>
                 {t("dataTable.ctxInsertCol")}
               </div>
@@ -4733,6 +5082,9 @@ export function DataTableView({
           <div className="sp-ctx-sep" />
           <div className="sp-ctx-item" onClick={() => { handleAddColumnQuick(); setCornerMenu(null); }}>
             {t("dataTable.ctxInsertCol")}
+          </div>
+          <div className="sp-ctx-item" onClick={() => openCreateCalculatedColumn(null)}>
+            {t("dataTable.calculatedColumn.actions.create", { defaultValue: "Calculated Column" })}
           </div>
           <div className="sp-ctx-item" onClick={() => { setInsertColAnchor(null); setShowInsertMultiCols(true); setCornerMenu(null); }}>
             {t("dataTable.ctxInsertMultiCols")}

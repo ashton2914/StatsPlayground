@@ -302,6 +302,9 @@
     "insertRow": "Insert row",
     "addColumn": "Add column",
     "addColumnNamed": "Add column \"{{name}}\"",
+    "createCalculatedColumn": "Create calculated column",
+    "editCalculatedColumn": "Edit calculated column",
+    "convertCalculatedColumnToValues": "Convert calculated column to values",
     "addColumnsBatch": "Add columns in batch",
     "reorderColumn": "Reorder columns",
     "deleteColumn": "Delete column",
@@ -1254,6 +1257,121 @@
     "ctxDeleteCol": "Delete column \"{{name}}\"",
     "ctxColProps": "Column properties",
     "ctxColPropsBatch": "Column properties ({{n}} columns)",
+    "calculatedColumn": {
+      "defaultName": "Calculated{{n}}",
+      "subtitle": "Define a formula using existing columns and supported row-wise functions.",
+      "readOnly": "Calculated column \"{{name}}\" must be edited through Calculated Column.",
+      "staleValidation": "Validation is stale because the table changed. Revalidate before applying.",
+      "confirmConvert": "Convert calculated column \"{{name}}\" to values?",
+      "outputType": "Output type: {{type}}",
+      "warningCount": "Warnings: {{count}}",
+      "warningLabels": {
+        "expression": "Expression: {{count}}",
+        "dependencyGraph": "Dependency graph: {{count}}",
+        "validation": "Validation: {{count}}"
+      },
+      "zeroMatch": "No matching columns or functions.",
+      "badgeLabel": "Calculated column",
+      "actions": {
+        "create": "Calculated Column",
+        "edit": "Edit Formula",
+        "revalidate": "Revalidate",
+        "convert": "Convert to Values",
+        "convertExisting": "Calculated Formula"
+      },
+      "fields": {
+        "outputName": "Output name",
+        "formula": "Formula",
+        "search": "Insert column or function",
+        "dependencies": "Dependencies",
+        "downstream": "Dependent columns",
+        "diagnostics": "Diagnostics"
+      },
+      "status": {
+        "pending": "Pending validation",
+        "draft": "Draft",
+        "ready": "Ready",
+        "disabled": "Disabled",
+        "broken": "Broken",
+        "unsupported": "Unsupported"
+      },
+      "tooltip": {
+        "status": "Status: {{status}}",
+        "outputType": "Output type: {{type}}",
+        "formula": "Formula: {{formula}}",
+        "dependencies": "Dependencies: {{names}}"
+      },
+      "functions": {
+        "abs": { "detail": "Numeric absolute value" },
+        "coalesce": { "detail": "First non-null value" },
+        "if": { "detail": "Conditional branch" },
+        "max": { "detail": "Row-wise maximum" },
+        "min": { "detail": "Row-wise minimum" },
+        "round": { "detail": "Round numeric value" }
+      },
+      "diagnostics": {
+        "validationFailed": {
+          "label": "Validation failed",
+          "message": "Validation failed. Review the formula and try again.",
+          "withContext": "Validation failed: {{context}}"
+        },
+        "missing_dependency": {
+          "label": "Missing dependency",
+          "message": "{{output}} depends on missing column {{dependency}}."
+        },
+        "unsupported_function": {
+          "label": "Unsupported function",
+          "message": "Function {{functionName}} is not supported in calculated columns."
+        },
+        "missingFormulaId": {
+          "label": "Missing formula ID",
+          "message": "Calculated column metadata is missing a formula ID.",
+          "withContext": "Calculated column metadata is missing a formula ID. {{context}}"
+        },
+        "missingOutputColumnId": {
+          "label": "Missing output column ID",
+          "message": "Calculated column metadata is missing an output column ID.",
+          "withContext": "Calculated column metadata is missing an output column ID. {{context}}"
+        },
+        "missingColumnIdMapEntry": {
+          "label": "Missing column ID mapping",
+          "message": "A remapped dependency is missing a column ID target.",
+          "withContext": "A remapped dependency is missing a column ID target. {{context}}"
+        },
+        "duplicateOutputColumnId": {
+          "label": "Duplicate output column ID",
+          "message": "Two calculated columns resolved to the same output column ID.",
+          "withContext": "Two calculated columns resolved to the same output column ID. {{context}}"
+        },
+        "dependencyMismatch": {
+          "label": "Dependency mismatch",
+          "message": "Stored dependency IDs do not match the formula expression.",
+          "withContext": "Stored dependency IDs do not match the formula expression. {{context}}"
+        },
+        "fingerprintMismatch": {
+          "label": "Fingerprint mismatch",
+          "message": "Stored calculated-column fingerprint does not match the canonical definition.",
+          "withContext": "Stored calculated-column fingerprint does not match the canonical definition. {{context}}"
+        },
+        "cyclicDependency": {
+          "label": "Cyclic dependency",
+          "message": "Calculated columns form a dependency cycle: {{columns}}."
+        },
+        "missingDependencyColumns": {
+          "label": "Missing dependency columns",
+          "message": "One or more dependency columns are unavailable: {{columns}}."
+        },
+        "formula_dependency_in_use": {
+          "label": "Dependency in use",
+          "message": "Cannot delete \"{{name}}\" because the dependency path {{path}} still uses it."
+        },
+        "unknown": {
+          "label": "Diagnostic",
+          "message": "The calculated column reported a diagnostic.",
+          "withContext": "The calculated column reported a diagnostic: {{context}}"
+        }
+      }
+    },
     "validInteger": "\"{{value}}\" is not a valid integer",
     "validNumber": "\"{{value}}\" is not a valid number",
     "validBoolean": "\"{{value}}\" is not a valid boolean (use true/false/1/0)",

@@ -1,3 +1,4 @@
+pub mod calculated_column_commands;
 pub mod data_commands;
 pub mod data_link_commands;
 pub mod distribution_commands;

@@ -38,6 +38,18 @@ mod tests {
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
             (
+                "commands::calculated_column_commands::validate_calculated_column",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::calculated_column_commands::upsert_calculated_column",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::calculated_column_commands::convert_calculated_column_to_values",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::mcp_commands::start_mcp_server",
                 CommandClass::Mutation,
             ),
@@ -495,8 +507,13 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 50] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 52] {
         [
+            ("calculated_column_commands.rs", "upsert_calculated_column"),
+            (
+                "calculated_column_commands.rs",
+                "convert_calculated_column_to_values",
+            ),
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
             ("data_commands.rs", "create_table_from_sql_query"),
@@ -691,6 +708,7 @@ mod tests {
 
     #[test]
     fn mutating_commands_in_guarded_families_require_permit_acquisition() {
+        let calculated_column_source = include_str!("calculated_column_commands.rs");
         let data_source = include_str!("data_commands.rs");
         let table_source = include_str!("table_commands.rs");
         let io_source = include_str!("io_commands.rs");
@@ -707,6 +725,7 @@ mod tests {
 
         for (file_name, function_name) in functions_requiring_mutation_permit() {
             let source = match file_name {
+                "calculated_column_commands.rs" => calculated_column_source,
                 "data_commands.rs" => data_source,
                 "table_commands.rs" => table_source,
                 "io_commands.rs" => io_source,

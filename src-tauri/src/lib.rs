@@ -34,6 +34,9 @@ pub fn run() {
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))
         })
         .invoke_handler(tauri::generate_handler![
+            commands::calculated_column_commands::validate_calculated_column,
+            commands::calculated_column_commands::upsert_calculated_column,
+            commands::calculated_column_commands::convert_calculated_column_to_values,
             commands::mcp_commands::start_mcp_server,
             commands::mcp_commands::stop_mcp_server,
             commands::mcp_commands::get_mcp_server_status,

@@ -336,6 +336,7 @@ impl<'a> TableTransformService<'a> {
                         width: None,
                         format: None,
                         extras: None,
+                        ..Default::default()
                     })
                     .collect();
                 Ok((input.role.clone(), columns))
@@ -392,6 +393,7 @@ impl<'a> TableTransformService<'a> {
                         width: None,
                         format: None,
                         extras: None,
+                        ..Default::default()
                     })
                     .collect::<Vec<_>>();
                 Ok(TableTransformRoleSchemaReport {
@@ -801,6 +803,7 @@ mod tests {
                 width: None,
                 format: None,
                 extras: None,
+                ..Default::default()
             })
             .collect();
         let operation = TableTransformOperation::Sort {
@@ -868,6 +871,7 @@ mod tests {
                         width: None,
                         format: None,
                         extras: None,
+                        ..Default::default()
                     })
                     .collect();
                 ((*role).to_string(), columns)

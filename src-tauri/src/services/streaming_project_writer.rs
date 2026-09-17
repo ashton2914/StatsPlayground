@@ -16,13 +16,13 @@ use crate::services::archive_cell::{
 };
 use crate::services::save_coordinator::SaveGuard;
 use crate::services::spprj_archive::{
-    self, GraphDoc, ProjectManifest, TableColumn, TableColumnFormat, TableDoc,
+    self, project_archive_table_columns, GraphDoc, ProjectManifest, TableColumn, TableDoc,
 };
 use crate::services::workflow_domain;
 use crate::state::AppState;
 
 const STREAM_VERSION: &str = "4.0.0";
-const TABLE_DOC_VERSION: &str = "2";
+const TABLE_DOC_VERSION: &str = "3";
 const TARGET_BATCH_BYTES: usize = 6 * 1024 * 1024;
 const HARD_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const MIN_TARGET_BATCH_BYTES: usize = 4 * 1024 * 1024;
@@ -579,7 +579,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             let column_write_modes = plan
                 .columns
                 .iter()
-                .map(|(_, _, column_type)| archive_cell_write_mode(column_type))
+                .map(|column| archive_cell_write_mode(&column.sql_type))
                 .collect::<Vec<_>>();
 
             let columns = table_columns_from_plan(&dataset.id, &plan, &snapshot.column_display);
@@ -950,27 +950,10 @@ fn table_columns_from_plan(
     plan: &ArchiveKeysetReadPlan,
     column_display: &HashMap<String, Vec<ColumnDisplayProps>>,
 ) -> Vec<TableColumn> {
-    let display = column_display.get(dataset_id);
-    plan.columns
-        .iter()
-        .enumerate()
-        .map(|(index, (_, name, column_type))| {
-            let props = display.and_then(|items| items.iter().find(|item| item.col_index == index));
-            TableColumn {
-                name: name.clone(),
-                col_type: column_type.clone(),
-                width: props.and_then(|item| item.width),
-                format: props.and_then(|item| {
-                    item.format.as_ref().map(|format| TableColumnFormat {
-                        kind: format.kind.clone(),
-                        decimals: format.decimals,
-                        currency: format.currency.clone(),
-                    })
-                }),
-                extras: props.and_then(|item| item.extras.clone()),
-            }
-        })
-        .collect()
+    project_archive_table_columns(
+        &plan.columns,
+        column_display.get(dataset_id).map(Vec::as_slice),
+    )
 }
 
 fn write_table_header<W: Write>(
@@ -1218,6 +1201,7 @@ mod tests {
     use crate::error::AppError;
     use crate::models::project::ProjectInfo;
     use crate::models::save::{SavePhase, SaveProgress, SaveProjectRequest, SaveSnapshot};
+    use crate::services::project_service::ProjectService;
     use crate::services::spprj_archive;
     use crate::services::workflow_domain;
     use crate::state::AppState;
@@ -1445,6 +1429,36 @@ mod tests {
                 table_transform_bindings: vec![],
             },
         }
+    }
+
+    #[test]
+    fn streaming_and_composed_table_docs_have_equal_v3_columns() {
+        let state = AppState::new().unwrap();
+        let dataset = seed_benchmark_dataset(&state, 3);
+        let destination = temp_path("v3-columns");
+        let snapshot = save_snapshot(&destination, vec![dataset.clone()]);
+        let expected_doc = ProjectService::new(&state)
+            .compose_table_doc(&dataset.id)
+            .unwrap();
+
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        writer.write(&snapshot, &destination, None).unwrap();
+
+        let reopened = spprj_archive::read_project_file(destination.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&destination);
+        let archived_doc = reopened
+            .tables
+            .into_iter()
+            .find(|doc| doc.id == dataset.id)
+            .unwrap();
+
+        assert_eq!(expected_doc.version, "3");
+        assert_eq!(archived_doc.version, "3");
+        assert_eq!(
+            serde_json::to_value(&archived_doc.columns).unwrap(),
+            serde_json::to_value(&expected_doc.columns).unwrap()
+        );
     }
 
     fn save_snapshot_with_named_docs_and_nested_folders(

@@ -296,6 +296,9 @@
     "insertRow": "插入列",
     "addColumn": "新增欄",
     "addColumnNamed": "新增欄 \"{{name}}\"",
+    "createCalculatedColumn": "建立計算欄",
+    "editCalculatedColumn": "編輯計算欄",
+    "convertCalculatedColumnToValues": "將計算欄轉成值",
     "addColumnsBatch": "批次新增欄",
     "reorderColumn": "調整欄順序",
     "deleteColumn": "刪除欄",
@@ -1105,6 +1108,121 @@
     "ctxDeleteCol": "刪除欄 \"{{name}}\"",
     "ctxColProps": "欄屬性",
     "ctxColPropsBatch": "欄屬性（{{n}} 欄）",
+    "calculatedColumn": {
+      "defaultName": "計算欄{{n}}",
+      "subtitle": "使用現有欄位與支援的逐列函式來定義公式。",
+      "readOnly": "計算欄 \"{{name}}\" 必須透過「計算欄」編輯。",
+      "staleValidation": "由於資料表已變更，目前驗證已過期。請重新驗證後再套用。",
+      "confirmConvert": "要將計算欄 \"{{name}}\" 轉成值嗎？",
+      "outputType": "輸出型別：{{type}}",
+      "warningCount": "警告：{{count}}",
+      "warningLabels": {
+        "expression": "運算式：{{count}}",
+        "dependencyGraph": "依賴圖：{{count}}",
+        "validation": "驗證：{{count}}"
+      },
+      "zeroMatch": "找不到相符的欄位或函式。",
+      "badgeLabel": "計算欄",
+      "actions": {
+        "create": "計算欄",
+        "edit": "編輯公式",
+        "revalidate": "重新驗證",
+        "convert": "轉成值",
+        "convertExisting": "計算公式"
+      },
+      "fields": {
+        "outputName": "輸出欄名",
+        "formula": "公式",
+        "search": "插入欄位或函式",
+        "dependencies": "依賴欄位",
+        "downstream": "下游欄位",
+        "diagnostics": "診斷"
+      },
+      "status": {
+        "pending": "等待驗證",
+        "draft": "草稿",
+        "ready": "就緒",
+        "disabled": "已停用",
+        "broken": "已損壞",
+        "unsupported": "不支援"
+      },
+      "tooltip": {
+        "status": "狀態：{{status}}",
+        "outputType": "輸出型別：{{type}}",
+        "formula": "公式：{{formula}}",
+        "dependencies": "依賴：{{names}}"
+      },
+      "functions": {
+        "abs": { "detail": "數值絕對值" },
+        "coalesce": { "detail": "回傳第一個非空值" },
+        "if": { "detail": "條件分支" },
+        "max": { "detail": "逐列最大值" },
+        "min": { "detail": "逐列最小值" },
+        "round": { "detail": "數值四捨五入" }
+      },
+      "diagnostics": {
+        "validationFailed": {
+          "label": "驗證失敗",
+          "message": "驗證失敗。請檢查公式後再試一次。",
+          "withContext": "驗證失敗：{{context}}"
+        },
+        "missing_dependency": {
+          "label": "缺少依賴",
+          "message": "{{output}} 依賴缺失的欄位 {{dependency}}。"
+        },
+        "unsupported_function": {
+          "label": "函式不受支援",
+          "message": "計算欄暫不支援函式 {{functionName}}。"
+        },
+        "missingFormulaId": {
+          "label": "缺少公式 ID",
+          "message": "計算欄中繼資料缺少公式 ID。",
+          "withContext": "計算欄中繼資料缺少公式 ID。{{context}}"
+        },
+        "missingOutputColumnId": {
+          "label": "缺少輸出欄 ID",
+          "message": "計算欄中繼資料缺少輸出欄 ID。",
+          "withContext": "計算欄中繼資料缺少輸出欄 ID。{{context}}"
+        },
+        "missingColumnIdMapEntry": {
+          "label": "缺少欄位 ID 映射",
+          "message": "重新映射的依賴缺少目標欄位 ID。",
+          "withContext": "重新映射的依賴缺少目標欄位 ID。{{context}}"
+        },
+        "duplicateOutputColumnId": {
+          "label": "輸出欄 ID 重複",
+          "message": "兩個計算欄解析到了同一個輸出欄 ID。",
+          "withContext": "兩個計算欄解析到了同一個輸出欄 ID。{{context}}"
+        },
+        "dependencyMismatch": {
+          "label": "依賴不一致",
+          "message": "儲存的依賴 ID 與公式運算式不一致。",
+          "withContext": "儲存的依賴 ID 與公式運算式不一致。{{context}}"
+        },
+        "fingerprintMismatch": {
+          "label": "指紋不一致",
+          "message": "儲存的計算欄指紋與標準定義不一致。",
+          "withContext": "儲存的計算欄指紋與標準定義不一致。{{context}}"
+        },
+        "cyclicDependency": {
+          "label": "循環依賴",
+          "message": "計算欄形成了循環依賴：{{columns}}。"
+        },
+        "missingDependencyColumns": {
+          "label": "依賴欄位缺失",
+          "message": "一個或多個依賴欄位不可用：{{columns}}。"
+        },
+        "formula_dependency_in_use": {
+          "label": "依賴仍在使用",
+          "message": "無法刪除 \"{{name}}\"，因為依賴路徑 {{path}} 仍在使用它。"
+        },
+        "unknown": {
+          "label": "診斷資訊",
+          "message": "計算欄回傳了一則診斷資訊。",
+          "withContext": "計算欄回傳了一則診斷資訊：{{context}}"
+        }
+      }
+    },
     "validInteger": "\"{{value}}\" 不是有效的整數",
     "validNumber": "\"{{value}}\" 不是有效的數字",
     "validBoolean": "\"{{value}}\" 不是有效的布林值（可輸入 true/false/1/0）",
