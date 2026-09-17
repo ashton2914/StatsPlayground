@@ -12,8 +12,10 @@ use crate::error::AppError;
 use crate::models::graph_data::{
     GraphAggregatePacket, GraphAxisEncoding, GraphChunkHeader, GraphDataCompletion,
     GraphDataRequest, GraphPayloadType, GraphRawPointDisposition, GraphRawPointOmissionReason,
+    GraphTemporalAxisMetadata, GraphTimeSeriesDisposition, GraphTimeSeriesRequest,
     GraphTypedSliceDescriptor, GRAPH_SCATTER_RENDER_BUDGET, GRAPH_VIRTUAL_SOURCE_COLUMN,
 };
+use crate::services::time_series::{temporal_axis_metadata, validate_time_series_x};
 use crate::state::AppState;
 
 const INITIAL_PAYLOAD_BUDGET_BYTES: usize = 4 * 1024 * 1024;
@@ -224,6 +226,7 @@ pub(crate) struct GraphBenchmarkResult {
     pub encode_ms: u128,
     pub transferred_bytes: u64,
     pub projection_passes: u32,
+    pub chunks: u32,
 }
 
 #[derive(Default)]
@@ -385,6 +388,7 @@ impl<'a> GraphDataService<'a> {
         let operation_ms = started.elapsed().as_millis();
         let encode_ms = metrics.encode_ms;
         let query_ms = operation_ms.saturating_sub(encode_ms);
+        let chunks = completion.chunks_sent;
 
         Ok(GraphBenchmarkResult {
             completion,
@@ -395,6 +399,7 @@ impl<'a> GraphDataService<'a> {
             encode_ms,
             transferred_bytes: transferred,
             projection_passes: metrics.projection_passes,
+            chunks,
         })
     }
 
@@ -475,6 +480,17 @@ impl<'a> GraphDataService<'a> {
                 )));
             }
         }
+        let time_series_active = time_series_request(request).is_some();
+        if time_series_active
+            && !matches!(
+                request.sampling,
+                crate::models::graph_data::GraphSampling::Full
+            )
+        {
+            return Err(AppError::InvalidParam(
+                "time series graph requests require full sampling mode".to_string(),
+            ));
+        }
         let buffer_raw_points = request.elements.iter().any(|element| {
             element.kind.eq_ignore_ascii_case("points")
                 && element.summary_stat.eq_ignore_ascii_case("none")
@@ -496,6 +512,7 @@ impl<'a> GraphDataService<'a> {
                     valid_rows: 0,
                     budget: request.raw_point_budget,
                 },
+                time_series_disposition: None,
             };
             sink.send_terminal(&completion)
                 .map_err(Self::map_sink_error_to_app_error)?;
@@ -512,6 +529,8 @@ impl<'a> GraphDataService<'a> {
                 .db
                 .lock()
                 .map_err(|error| AppError::Database(error.to_string()))?;
+            let column_types = db.get_user_columns(&request.dataset_id)?;
+            let temporal_metadata = time_series_temporal_metadata(request, &column_types)?;
 
             let (aggregate_packets, aggregates_cancelled) = db
                 .collect_graph_aggregate_packets_with_cancel(request, || {
@@ -557,6 +576,7 @@ impl<'a> GraphDataService<'a> {
                         valid_rows: 0,
                         budget: request.raw_point_budget,
                     },
+                    time_series_disposition: None,
                 };
 
                 let encode_started = if observed {
@@ -582,6 +602,7 @@ impl<'a> GraphDataService<'a> {
             let mut cancelled = false;
             let mut projection_callbacks: u32 = 0;
             let mut valid_rows: u64 = 0;
+            let mut invalid_time_series_x_rows: u64 = 0;
             let mut raw_points_omitted = false;
             let buffered_chunks: RefCell<Vec<GraphDataChunk>> = RefCell::new(Vec::new());
 
@@ -598,7 +619,8 @@ impl<'a> GraphDataService<'a> {
                             "graph projection callback invoked multiple times".to_string(),
                         ));
                     }
-                    let resolved = ProjectionMetadata::new(request, include_row_id, stats)?;
+                    let resolved =
+                        ProjectionMetadata::new(request, include_row_id, stats, temporal_metadata)?;
                     *accumulator.borrow_mut() = Some(ChunkAccumulator::new(&resolved));
                     *metadata.borrow_mut() = Some(resolved);
                     Ok(())
@@ -624,7 +646,24 @@ impl<'a> GraphDataService<'a> {
                         AppError::Database("graph chunk accumulator not initialized".to_string())
                     })?;
 
-                    let renderable = is_renderable_xy(metadata, &values)?;
+                    let valid_time_series_x = if time_series_active {
+                        is_valid_x(metadata, &values)?
+                    } else {
+                        true
+                    };
+                    if time_series_active && !valid_time_series_x {
+                        invalid_time_series_x_rows =
+                            invalid_time_series_x_rows.checked_add(1).ok_or_else(|| {
+                                AppError::InvalidParam(
+                                    "time series invalid x row count overflow".into(),
+                                )
+                            })?;
+                    }
+                    let renderable = if time_series_active {
+                        valid_time_series_x
+                    } else {
+                        is_renderable_xy(metadata, &values)?
+                    };
                     if renderable {
                         valid_rows = valid_rows.checked_add(1).ok_or_else(|| {
                             AppError::InvalidParam("graph valid row count overflow".into())
@@ -645,6 +684,9 @@ impl<'a> GraphDataService<'a> {
                     if raw_points_omitted {
                         return Ok(true);
                     }
+                    if time_series_active && !renderable {
+                        return Ok(true);
+                    }
                     if buffer_raw_points && !renderable {
                         return Ok(true);
                     }
@@ -661,7 +703,7 @@ impl<'a> GraphDataService<'a> {
                             processed_rows,
                             false,
                         )?;
-                        if buffer_raw_points {
+                        if buffer_raw_points || time_series_active {
                             buffered_chunks.borrow_mut().push(chunk);
                         } else {
                             if let Err(error) = self.send_chunk(sink, chunk) {
@@ -690,7 +732,11 @@ impl<'a> GraphDataService<'a> {
             }
 
             source_rows = stats.source_rows;
-            if !cancelled && !raw_points_omitted && (!buffer_raw_points || valid_rows > 0) {
+            if !cancelled
+                && !raw_points_omitted
+                && (!time_series_active || invalid_time_series_x_rows == 0)
+                && (!buffer_raw_points || valid_rows > 0)
+            {
                 let metadata_ref = metadata.borrow();
                 let metadata = metadata_ref.as_ref().ok_or_else(|| {
                     AppError::Database("graph projection metadata not initialized".to_string())
@@ -714,7 +760,7 @@ impl<'a> GraphDataService<'a> {
                 } else {
                     None
                 };
-                if buffer_raw_points {
+                if buffer_raw_points || time_series_active {
                     buffered_chunks.borrow_mut().push(chunk);
                     for chunk in buffered_chunks.borrow_mut().drain(..) {
                         self.send_chunk(sink, chunk)?;
@@ -774,6 +820,21 @@ impl<'a> GraphDataService<'a> {
                         budget: request.raw_point_budget,
                     }
                 },
+                time_series_disposition: if time_series_active {
+                    if invalid_time_series_x_rows > 0 {
+                        Some(GraphTimeSeriesDisposition::InvalidTimeSeriesX {
+                            included_rows: valid_rows,
+                            invalid_x_rows: invalid_time_series_x_rows,
+                        })
+                    } else {
+                        Some(GraphTimeSeriesDisposition::Included {
+                            included_rows: valid_rows,
+                            invalid_x_rows: 0,
+                        })
+                    }
+                } else {
+                    None
+                },
             };
 
             let encode_started = if observed {
@@ -816,6 +877,7 @@ impl<'a> GraphDataService<'a> {
                 valid_rows: 0,
                 budget: request.raw_point_budget,
             },
+            time_series_disposition: None,
         };
         sink.send_terminal(&completion)
             .map_err(Self::map_sink_error_to_app_error)?;
@@ -939,15 +1001,52 @@ fn request_is_aggregate_only(
     })
 }
 
-fn is_renderable_xy(metadata: &ProjectionMetadata, values: &[Value]) -> Result<bool, AppError> {
+fn time_series_request(request: &GraphDataRequest) -> Option<&GraphTimeSeriesRequest> {
+    request
+        .elements
+        .iter()
+        .find(|element| element.kind.eq_ignore_ascii_case("timeSeries"))
+        .and_then(|element| element.time_series.as_ref())
+}
+
+fn time_series_temporal_metadata(
+    request: &GraphDataRequest,
+    column_types: &[(String, String)],
+) -> Result<Option<GraphTemporalAxisMetadata>, AppError> {
+    let Some(time_series) = time_series_request(request) else {
+        return Ok(None);
+    };
+    let x_column = request
+        .fields
+        .iter()
+        .find(|field| field.role.eq_ignore_ascii_case("x"))
+        .map(|field| field.column.trim())
+        .filter(|column| !column.is_empty())
+        .ok_or_else(|| {
+            AppError::InvalidParam("graph request is missing role x for time series".into())
+        })?;
+    let sql_type = column_types
+        .iter()
+        .find(|(name, _)| name == x_column)
+        .map(|(_, column_type)| column_type.as_str())
+        .ok_or_else(|| AppError::InvalidParam(format!("unknown graph column: {x_column}")))?;
+    let validated = validate_time_series_x(sql_type, &time_series.x_interpretation)?;
+    Ok(temporal_axis_metadata(validated))
+}
+
+fn is_valid_x(metadata: &ProjectionMetadata, values: &[Value]) -> Result<bool, AppError> {
     let x = values
         .get(metadata.x_index)
         .ok_or_else(|| AppError::Database("x value missing from graph projection".to_string()))?;
-    let x_valid = match metadata.x_payload_type {
+    Ok(match metadata.x_payload_type {
         GraphPayloadType::F64 => value_to_f64(x).is_some(),
         GraphPayloadType::U32 => value_to_category(x).is_some(),
         _ => false,
-    };
+    })
+}
+
+fn is_renderable_xy(metadata: &ProjectionMetadata, values: &[Value]) -> Result<bool, AppError> {
+    let x_valid = is_valid_x(metadata, values)?;
     let y = values
         .get(metadata.y_index)
         .ok_or_else(|| AppError::Database("y value missing from graph projection".to_string()))?;
@@ -969,6 +1068,7 @@ struct ProjectionMetadata {
     size_index: Option<usize>,
     x_payload_type: GraphPayloadType,
     x_encoding: GraphAxisEncoding,
+    temporal_metadata: Option<GraphTemporalAxisMetadata>,
 }
 
 impl ProjectionMetadata {
@@ -976,6 +1076,7 @@ impl ProjectionMetadata {
         request: &GraphDataRequest,
         include_row_id: bool,
         stats: &GraphProjectionStats,
+        temporal_metadata: Option<GraphTemporalAxisMetadata>,
     ) -> Result<Self, AppError> {
         let mut role_columns: HashMap<String, String> = HashMap::new();
         for field in &request.fields {
@@ -1098,7 +1199,9 @@ impl ProjectionMetadata {
             .projected_column_types
             .get(x_index)
             .ok_or_else(|| AppError::InvalidParam("x column type missing".to_string()))?;
-        let (x_payload_type, x_encoding) = if is_numeric_type(x_type) {
+        let (x_payload_type, x_encoding) = if temporal_metadata.is_some() {
+            (GraphPayloadType::F64, GraphAxisEncoding::Temporal)
+        } else if is_numeric_type(x_type) {
             (GraphPayloadType::F64, GraphAxisEncoding::Numeric)
         } else {
             (GraphPayloadType::U32, GraphAxisEncoding::Categorical)
@@ -1125,6 +1228,7 @@ impl ProjectionMetadata {
             size_index,
             x_payload_type,
             x_encoding,
+            temporal_metadata,
         })
     }
 
@@ -1725,6 +1829,7 @@ impl ChunkAccumulator {
             wrap_codes,
             role_vectors,
             x_encoding: metadata.x_encoding.clone(),
+            temporal_metadata: metadata.temporal_metadata,
             final_chunk,
         };
         header
@@ -1918,7 +2023,11 @@ mod tests {
     use duckdb::params;
 
     use crate::models::graph_data::{
-        GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphSampling, GraphViewport,
+        GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphSampling,
+        GraphTemporalAxisKind, GraphTemporalAxisUnit, GraphTemporalDisplayZone,
+        GraphTimeSeriesConnection, GraphTimeSeriesMarkerMode, GraphTimeSeriesMissingValues,
+        GraphTimeSeriesOrder, GraphTimeSeriesRequest, GraphViewport, TimeSeriesTextDateFormat,
+        TimeSeriesXInterpretation,
     };
     use crate::models::table::{TableWindowFilter, TableWindowFilterRule};
     use crate::state::AppState;
@@ -1987,26 +2096,31 @@ mod tests {
                         kind: "points".to_string(),
                         summary_stat: "none".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                     GraphElementRequest {
                         kind: "histogram".to_string(),
                         summary_stat: "none".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                     GraphElementRequest {
                         kind: "heatmap".to_string(),
                         summary_stat: "none".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                     GraphElementRequest {
                         kind: "boxplot".to_string(),
                         summary_stat: "none".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                     GraphElementRequest {
                         kind: "summary".to_string(),
                         summary_stat: "mean".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                 ],
                 sampling: GraphSampling::Full,
@@ -2077,16 +2191,19 @@ mod tests {
                     kind: "histogram".to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: None,
+                    time_series: None,
                 },
                 GraphElementRequest {
                     kind: "boxplot".to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: None,
+                    time_series: None,
                 },
                 GraphElementRequest {
                     kind: "points".to_string(),
                     summary_stat: "mean".to_string(),
                     correlation_method: None,
+                    time_series: None,
                 },
             ];
             request.fields = vec![
@@ -2158,16 +2275,19 @@ mod tests {
                         kind: "histogram".to_string(),
                         summary_stat: "none".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                     GraphElementRequest {
                         kind: "boxplot".to_string(),
                         summary_stat: "none".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                     GraphElementRequest {
                         kind: "summary".to_string(),
                         summary_stat: "median".to_string(),
                         correlation_method: None,
+                        time_series: None,
                     },
                 ],
                 sampling: GraphSampling::Full,
@@ -2197,11 +2317,13 @@ mod tests {
                     kind: "points".to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: None,
+                    time_series: None,
                 },
                 GraphElementRequest {
                     kind: "boxplot".to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: None,
+                    time_series: None,
                 },
             ];
             request
@@ -2298,6 +2420,7 @@ mod tests {
                     kind: "correlationMatrix".to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: method,
+                    time_series: None,
                 }],
                 sampling: GraphSampling::Full,
                 raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
@@ -2454,6 +2577,7 @@ mod tests {
                     kind: "correlationMatrix".to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: Some(CorrelationMethod::Pearson),
+                    time_series: None,
                 }],
                 sampling: GraphSampling::Full,
                 raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
@@ -2519,6 +2643,7 @@ mod tests {
                 kind: "heatmap".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             });
 
             let packets = service
@@ -2604,6 +2729,7 @@ mod tests {
                     kind: "heatmap".to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: None,
+                    time_series: None,
                 }],
                 sampling: GraphSampling::Full,
                 raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
@@ -2729,6 +2855,7 @@ mod tests {
                 kind: "summary".to_string(),
                 summary_stat: "median".to_string(),
                 correlation_method: None,
+                time_series: None,
             }];
 
             let packets = service
@@ -3325,6 +3452,7 @@ mod tests {
                 kind: "boxplot".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             }];
 
             let packets = service
@@ -3396,6 +3524,7 @@ mod tests {
                 kind: "boxplot".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             }];
 
             let packets = service
@@ -3593,6 +3722,7 @@ mod tests {
                 kind: "points".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             }];
 
             let first = service.collect_for_test(&request).expect("first sample");
@@ -3654,6 +3784,7 @@ mod tests {
                 kind: "points".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             }];
 
             let first = service.collect_for_test(&request).expect("first sample");
@@ -3691,6 +3822,7 @@ mod tests {
                 kind: "points".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
@@ -3698,6 +3830,87 @@ mod tests {
                 width: 1200,
                 height: 700,
             },
+        }
+    }
+
+    fn time_series_options(x_interpretation: TimeSeriesXInterpretation) -> GraphTimeSeriesRequest {
+        GraphTimeSeriesRequest {
+            x_interpretation,
+            order: GraphTimeSeriesOrder::TimeAscending,
+            missing_values: GraphTimeSeriesMissingValues::Break,
+            marker_mode: GraphTimeSeriesMarkerMode::Auto,
+            connection: GraphTimeSeriesConnection::Line,
+        }
+    }
+
+    fn build_time_series_request(
+        dataset_id: &str,
+        generation: u64,
+        x_column: &str,
+        x_interpretation: TimeSeriesXInterpretation,
+    ) -> GraphDataRequest {
+        GraphDataRequest {
+            request_id: format!("request-{dataset_id}-time-series"),
+            dataset_id: dataset_id.to_string(),
+            generation,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "x".to_string(),
+                    column: x_column.to_string(),
+                },
+                GraphFieldBinding {
+                    role: "y".to_string(),
+                    column: "value".to_string(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "timeSeries".to_string(),
+                summary_stat: "none".to_string(),
+                correlation_method: None,
+                time_series: Some(time_series_options(x_interpretation)),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1200,
+                height: 700,
+            },
+        }
+    }
+
+    fn seed_time_series_dataset(state: &AppState, dataset_id: &str, rows: usize) {
+        let db = state.db.lock().expect("db lock");
+        db.create_empty_table(
+            dataset_id,
+            &format!("Time Series {dataset_id}"),
+            &["captured_at".into(), "value".into()],
+            &["TIMESTAMP".into(), "DOUBLE".into()],
+        )
+        .expect("create time series table");
+
+        if rows > 0 {
+            let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+            let upper_bound = i64::try_from(rows)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .expect("rows upper bound");
+            let insert_sql = format!(
+                "INSERT INTO \"{table_name}\" (_row_id, captured_at, value)
+                 SELECT i,
+                    TIMESTAMP '2024-01-01 00:00:00' + (i % 997) * INTERVAL 1 MILLISECOND,
+                    CASE WHEN i = 42 THEN NULL ELSE CAST(i AS DOUBLE) END
+                 FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+            );
+            db.conn()
+                .execute(&insert_sql, params![upper_bound])
+                .expect("bulk insert time series rows");
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                    params![rows as i64, dataset_id],
+                )
+                .expect("update time series row count");
         }
     }
 
@@ -3792,6 +4005,277 @@ mod tests {
     }
 
     #[test]
+    fn time_series_full_resolution_streams_10001_temporal_rows_with_order_and_metadata() {
+        let state = AppState::new().expect("state");
+        let dataset_id = "time-series-full-resolution-10001";
+        seed_time_series_dataset(&state, dataset_id, GRAPH_SCATTER_RENDER_BUDGET + 1);
+
+        let service = GraphDataService::new(&state);
+        let request = build_time_series_request(
+            dataset_id,
+            0,
+            "captured_at",
+            TimeSeriesXInterpretation::NativeTemporal,
+        );
+        let (chunks, completion) = service.collect_for_harness(&request).expect("result");
+
+        let total_rows = chunks
+            .iter()
+            .map(|chunk| chunk.header.row_count)
+            .sum::<usize>();
+        assert_eq!(total_rows, GRAPH_SCATTER_RENDER_BUDGET + 1);
+        assert_eq!(
+            completion.processed_rows,
+            (GRAPH_SCATTER_RENDER_BUDGET + 1) as u64
+        );
+        assert_eq!(completion.chunks_sent as usize, chunks.len());
+        assert!(matches!(
+            completion.time_series_disposition,
+            Some(crate::models::graph_data::GraphTimeSeriesDisposition::Included {
+                included_rows,
+                invalid_x_rows: 0,
+            }) if included_rows == (GRAPH_SCATTER_RENDER_BUDGET + 1) as u64
+        ));
+
+        let first = chunks.first().expect("first chunk");
+        assert_eq!(first.header.x_encoding, GraphAxisEncoding::Temporal);
+        assert!(matches!(
+            first.header.x_values.payload_type,
+            GraphPayloadType::F64
+        ));
+        assert_eq!(
+            first.header.temporal_metadata,
+            Some(crate::models::graph_data::GraphTemporalAxisMetadata {
+                unit: crate::models::graph_data::GraphTemporalAxisUnit::EpochMilliseconds,
+                kind: crate::models::graph_data::GraphTemporalAxisKind::Timestamp,
+                display_zone: crate::models::graph_data::GraphTemporalDisplayZone::Utc,
+            })
+        );
+        assert!(!first.header.dictionaries.contains_key("x"));
+
+        let mut previous: Option<(f64, i64)> = None;
+        let mut saw_duplicate_tie_break = false;
+        let mut missing_y_rows = 0usize;
+        for chunk in &chunks {
+            let x_values = extract_f64_slice(chunk, &chunk.header.x_values);
+            let row_ids = extract_i64_slice(chunk, &chunk.header.row_ids);
+            let y_validity = extract_u8_slice(
+                chunk,
+                chunk
+                    .header
+                    .validity_ranges
+                    .get("y")
+                    .expect("y validity descriptor"),
+            );
+            assert_eq!(x_values.len(), chunk.header.row_count);
+            assert_eq!(row_ids.len(), chunk.header.row_count);
+            for (index, (x_value, row_id)) in x_values.into_iter().zip(row_ids).enumerate() {
+                if (y_validity[index >> 3] & (1 << (index & 7))) == 0 {
+                    missing_y_rows = missing_y_rows.saturating_add(1);
+                }
+                if let Some((previous_x, previous_row_id)) = previous {
+                    assert!(
+                        previous_x < x_value || (previous_x == x_value && previous_row_id < row_id),
+                        "time series rows must be ordered by x then row id"
+                    );
+                    saw_duplicate_tie_break |= previous_x == x_value && previous_row_id < row_id;
+                }
+                previous = Some((x_value, row_id));
+            }
+        }
+        assert!(
+            saw_duplicate_tie_break,
+            "fixture should exercise duplicate timestamp tie-break"
+        );
+        assert_eq!(
+            missing_y_rows, 1,
+            "time series must preserve missing Y sentinels"
+        );
+    }
+
+    #[test]
+    fn time_series_full_resolution_invalid_us_date_reports_exact_count_without_commit_chunks() {
+        let state = AppState::new().expect("state");
+        let dataset_id = "time-series-invalid-us-date";
+        let db = state.db.lock().expect("db lock");
+        db.create_empty_table(
+            dataset_id,
+            "Invalid US Date",
+            &["captured_text".into(), "value".into()],
+            &["VARCHAR".into(), "DOUBLE".into()],
+        )
+        .expect("create invalid date table");
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_time_series_invalid_us_date\" (_row_id, captured_text, value)
+                 VALUES (1, '01/01/2024', 10.0),
+                        (2, '2024-01-02', 20.0),
+                        (3, NULL, 30.0),
+                        (4, '01/04/2024', NULL)",
+                [],
+            )
+            .expect("insert invalid date rows");
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 4 WHERE id = $1",
+                params![dataset_id],
+            )
+            .expect("update invalid date row count");
+        drop(db);
+
+        let service = GraphDataService::new(&state);
+        let request = build_time_series_request(
+            dataset_id,
+            0,
+            "captured_text",
+            TimeSeriesXInterpretation::TextDate {
+                format: TimeSeriesTextDateFormat::UsDate,
+            },
+        );
+        let (chunks, completion) = service.collect_for_harness(&request).expect("result");
+
+        assert!(
+            chunks.is_empty(),
+            "invalid time series X must not emit commit-ready chunks"
+        );
+        assert_eq!(completion.processed_rows, 4);
+        assert_eq!(completion.chunks_sent, 0);
+        assert!(matches!(
+            completion.time_series_disposition,
+            Some(
+                crate::models::graph_data::GraphTimeSeriesDisposition::InvalidTimeSeriesX {
+                    included_rows: 2,
+                    invalid_x_rows: 2,
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn time_series_full_resolution_text_date_headers_map_date_only_and_datetime_formats() {
+        let state = AppState::new().expect("state");
+        let dataset_id = "time-series-text-date-metadata";
+        let db = state.db.lock().expect("db lock");
+        db.create_empty_table(
+            dataset_id,
+            "Text Date Metadata",
+            &[
+                "captured_date".into(),
+                "captured_datetime".into(),
+                "value".into(),
+            ],
+            &["VARCHAR".into(), "VARCHAR".into(), "DOUBLE".into()],
+        )
+        .expect("create text date table");
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_time_series_text_date_metadata\" (_row_id, captured_date, captured_datetime, value)
+                 VALUES (1, '01/01/2024', '01/01/2024 13:45:10', 10.0),
+                        (2, '01/02/2024', '01/02/2024 08:15:20', 20.0)",
+                [],
+            )
+            .expect("insert text date rows");
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 2 WHERE id = $1",
+                params![dataset_id],
+            )
+            .expect("update text date row count");
+        drop(db);
+
+        let service = GraphDataService::new(&state);
+        let date_request = build_time_series_request(
+            dataset_id,
+            0,
+            "captured_date",
+            TimeSeriesXInterpretation::TextDate {
+                format: TimeSeriesTextDateFormat::UsDate,
+            },
+        );
+        let (date_chunks, _) = service
+            .collect_for_harness(&date_request)
+            .expect("date result");
+        assert!(matches!(
+            date_chunks
+                .first()
+                .and_then(|chunk| chunk.header.temporal_metadata),
+            Some(crate::models::graph_data::GraphTemporalAxisMetadata {
+                unit: GraphTemporalAxisUnit::EpochMilliseconds,
+                kind: GraphTemporalAxisKind::Date,
+                display_zone: GraphTemporalDisplayZone::Utc,
+            })
+        ));
+
+        let datetime_request = build_time_series_request(
+            dataset_id,
+            0,
+            "captured_datetime",
+            TimeSeriesXInterpretation::TextDate {
+                format: TimeSeriesTextDateFormat::UsDateTime,
+            },
+        );
+        let (datetime_chunks, _) = service
+            .collect_for_harness(&datetime_request)
+            .expect("datetime result");
+        assert!(matches!(
+            datetime_chunks
+                .first()
+                .and_then(|chunk| chunk.header.temporal_metadata),
+            Some(crate::models::graph_data::GraphTemporalAxisMetadata {
+                unit: GraphTemporalAxisUnit::EpochMilliseconds,
+                kind: GraphTemporalAxisKind::Timestamp,
+                display_zone: GraphTemporalDisplayZone::Utc,
+            })
+        ));
+    }
+
+    #[test]
+    fn time_series_full_resolution_sequence_headers_use_numeric_encoding_without_temporal_metadata()
+    {
+        let state = AppState::new().expect("state");
+        let dataset_id = "time-series-sequence-metadata";
+        let db = state.db.lock().expect("db lock");
+        db.create_empty_table(
+            dataset_id,
+            "Sequence Metadata",
+            &["sequence".into(), "value".into()],
+            &["BIGINT".into(), "DOUBLE".into()],
+        )
+        .expect("create sequence table");
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_time_series_sequence_metadata\" (_row_id, sequence, value)
+                 VALUES (1, 100, 10.0), (2, 101, 20.0)",
+                [],
+            )
+            .expect("insert sequence rows");
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 2 WHERE id = $1",
+                params![dataset_id],
+            )
+            .expect("update sequence row count");
+        drop(db);
+
+        let service = GraphDataService::new(&state);
+        let request = build_time_series_request(
+            dataset_id,
+            0,
+            "sequence",
+            TimeSeriesXInterpretation::Sequence,
+        );
+        let (chunks, _) = service.collect_for_harness(&request).expect("result");
+        let first = chunks.first().expect("first chunk");
+
+        assert_eq!(first.header.x_encoding, GraphAxisEncoding::Numeric);
+        assert!(matches!(
+            first.header.x_values.payload_type,
+            GraphPayloadType::F64
+        ));
+        assert_eq!(first.header.temporal_metadata, None);
+    }
+
+    #[test]
     fn full_points_above_budget_omit_raw_chunks_but_keep_exact_aggregates() {
         let state = AppState::new().expect("state");
         let row_count = GRAPH_SCATTER_RENDER_BUDGET + 1;
@@ -3803,6 +4287,7 @@ mod tests {
             kind: "histogram".to_string(),
             summary_stat: "none".to_string(),
             correlation_method: None,
+            time_series: None,
         });
         let mut sink = CollectingChunkSink::default();
         let completion = service
@@ -3947,6 +4432,7 @@ mod tests {
             kind: "line".to_string(),
             summary_stat: "none".to_string(),
             correlation_method: None,
+            time_series: None,
         }];
         let chunks = service.collect_for_test(&request).expect("chunks");
 
@@ -3970,6 +4456,7 @@ mod tests {
             kind: "line".to_string(),
             summary_stat: "none".to_string(),
             correlation_method: None,
+            time_series: None,
         }];
 
         let chunks = service.collect_for_test(&request).expect("chunks");
@@ -4190,6 +4677,7 @@ mod tests {
                 kind: "points".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
@@ -4427,6 +4915,7 @@ mod tests {
             kind: "line".to_string(),
             summary_stat: "none".to_string(),
             correlation_method: None,
+            time_series: None,
         }];
         let mut sink = BoundedSink::default();
 
@@ -4463,6 +4952,7 @@ mod tests {
             kind: "normalCurve".to_string(),
             summary_stat: "none".to_string(),
             correlation_method: None,
+            time_series: None,
         }];
         let mut sink = RecordingSink::default();
 
@@ -4540,6 +5030,7 @@ mod tests {
                     kind: kind.to_string(),
                     summary_stat: "none".to_string(),
                     correlation_method: None,
+                    time_series: None,
                 })
                 .collect(),
             sampling: GraphSampling::Full,
@@ -4642,11 +5133,13 @@ mod tests {
                 kind: "line".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             },
             GraphElementRequest {
                 kind: "histogram".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: None,
+                time_series: None,
             },
         ];
         let mut sink = OrderingSink::default();
@@ -4735,6 +5228,7 @@ mod tests {
                 kind: "correlationMatrix".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: Some(crate::models::graph_data::CorrelationMethod::Spearman),
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,
@@ -4824,6 +5318,7 @@ mod tests {
                 kind: "correlationMatrix".to_string(),
                 summary_stat: "none".to_string(),
                 correlation_method: Some(crate::models::graph_data::CorrelationMethod::Spearman),
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: GRAPH_SCATTER_RENDER_BUDGET,

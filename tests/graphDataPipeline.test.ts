@@ -123,6 +123,57 @@ export function makeGraphRows(count: number): Array<[number, string, number]> {
 assert.equal(makeGraphRows(10).length, 10);
 
 {
+  const pipelinePath = resolve(TEST_FILE_DIR, "../src/components/graphBuilder/useGraphDataPipeline.ts");
+  const pipelineAst = parseTs("useGraphDataPipeline.ts", readFileSync(pipelinePath, "utf8"));
+  const hook = pipelineAst.statements.find((statement) => (
+    ts.isFunctionDeclaration(statement) && statement.name?.text === "useGraphDataPipeline"
+  ));
+  assert.ok(hook && ts.isFunctionDeclaration(hook) && hook.body);
+
+  for (const [refName, inputName] of [
+    ["resolveLatestItemRef", "resolveLatestItem"],
+    ["columnDescriptorsRef", "columnDescriptors"],
+  ]) {
+    const writes: ts.BinaryExpression[] = [];
+    walk(hook.body, (node) => {
+      if (ts.isBinaryExpression(node)
+        && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && ts.isPropertyAccessExpression(node.left)
+        && ts.isIdentifier(node.left.expression)
+        && node.left.expression.text === refName
+        && node.left.name.text === "current") {
+        writes.push(node);
+      }
+    });
+    assert.equal(writes.length, 1, `${refName} must have one committed-input refresh`);
+    const write = writes[0];
+    const statement = write.parent;
+    const body = statement.parent;
+    const callback = body.parent;
+    const effect = callback.parent;
+    assert.ok(
+      ts.isExpressionStatement(statement)
+        && ts.isBlock(body)
+        && ts.isArrowFunction(callback)
+        && ts.isCallExpression(effect)
+        && ts.isIdentifier(effect.expression)
+        && effect.expression.text === "useLayoutEffect"
+        && effect.arguments[0] === callback
+        && effect.parent.parent === hook.body,
+      `${refName}.current must refresh in useLayoutEffect, never during render or after paint`,
+    );
+    assert.ok(ts.isIdentifier(write.right) && write.right.text === inputName);
+    const dependencies = effect.arguments[1];
+    assert.ok(
+      dependencies === undefined
+        || (ts.isArrayLiteralExpression(dependencies)
+          && dependencies.elements.some((element) => ts.isIdentifier(element) && element.text === inputName)),
+      `${refName} must refresh when its committed owner input changes`,
+    );
+  }
+}
+
+{
   const graphSource = readFileSync(resolve(TEST_FILE_DIR, "../src/graphCore/Graph.tsx"), "utf8");
   assert.equal(graphSource.includes("toScatterPick("), false, "Graph.tsx must not call undefined toScatterPick");
 }
@@ -968,6 +1019,76 @@ assert.throws(
     /validity/i,
   );
 
+const temporalHeader: GraphChunkHeader = {
+  requestId: "req-temporal-header",
+  generation: 7,
+  chunkIndex: 0,
+  rowOffset: 0,
+  rowCount: 2,
+  sourceRows: 2,
+  processedRows: 2,
+  dictionaries: {},
+  validityRanges: {
+    x: { type: "u8", offset: 56, byteLength: 1 },
+    y: { type: "u8", offset: 64, byteLength: 1 },
+  },
+  xValues: { type: "f64", offset: 0, byteLength: 16 },
+  yValues: { type: "f64", offset: 16, byteLength: 16 },
+  rowIds: { type: "i64", offset: 32, byteLength: 16 },
+  xEncoding: "temporal",
+  temporalMetadata: { unit: "epochMilliseconds", kind: "timestamp", displayZone: "utc" },
+  finalChunk: true,
+};
+
+assert.throws(
+  () => decodeGraphPayload({ ...temporalHeader, xValues: { type: "u32", offset: 48, byteLength: 8 } }, payload),
+  /temporal.*f64/i,
+);
+assert.throws(
+  () => decodeGraphPayload({ ...temporalHeader, temporalMetadata: undefined }, payload),
+  /temporal.*metadata/i,
+);
+assert.throws(
+  () => decodeGraphPayload({
+    ...temporalHeader,
+    temporalMetadata: { unit: "epochMilliseconds", kind: "datetime", displayZone: "utc" } as GraphChunkHeader["temporalMetadata"],
+  }, payload),
+  /temporal.*metadata/i,
+);
+assert.throws(
+  () => decodeGraphPayload({ ...temporalHeader, xEncoding: "numeric" }, payload),
+  /temporal.*metadata/i,
+);
+
+{
+  let sawHeader = false;
+  let transportError: string | null = null;
+  const request = makeRequest("req-temporal-ingress", 77);
+  const transport = createGraphStreamTransport(request, {
+    onHeader: () => {
+      sawHeader = true;
+    },
+    onPayload: () => {},
+    onAggregate: () => {},
+    onComplete: () => {},
+    onError: (message) => {
+      transportError = message;
+    },
+  });
+
+  transport.onChannelMessage({
+    messageType: "header",
+    ...temporalHeader,
+    requestId: request.requestId,
+    generation: request.generation,
+    temporalMetadata: undefined,
+  });
+  transport.onChannelMessage(payload);
+
+  assert.equal(sawHeader, false);
+  assert.match(transportError ?? "", /temporal.*metadata/i);
+}
+
 function makeRequest(requestId: string, generation: number): GraphDataRequest {
   return {
     requestId,
@@ -1034,6 +1155,33 @@ function makeCompletion(requestId: string, generation: number, cancelled = false
     chunksSent: 2,
     cancelled,
     rawPointDisposition: { status: "included", validRows: 4, budget: 8_000 },
+  };
+}
+
+function makeTimeSeriesRequest(requestId: string, generation: number): GraphDataRequest {
+  return {
+    requestId,
+    datasetId: "dataset-1",
+    generation,
+    fields: [
+      { role: "x", column: "captured_at" },
+      { role: "y", column: "value" },
+    ],
+    filters: [],
+    elements: [{
+      kind: "timeSeries",
+      summaryStat: "none",
+      timeSeries: {
+        xInterpretation: { kind: "nativeTemporal" },
+        order: "timeAscending",
+        missingValues: "break",
+        markerMode: "auto",
+        connection: "line",
+      },
+    }],
+    sampling: { mode: "full" },
+    rawPointBudget: 8_000,
+    viewport: { width: 1280, height: 720 },
   };
 }
 
@@ -1672,6 +1820,51 @@ function makeProgressedChunk(
   assert.equal(committed.committed?.rawChunks.length, 2);
   assert.equal(committed.committed?.aggregates.length, 1);
   assert.equal(committed.error, null);
+}
+
+{
+  const initial = createInitialGraphStreamState(makeCommittedFrame());
+  const request = makeTimeSeriesRequest("req-invalid-time-series-x", 81);
+  const afterChunks = run(
+    initial,
+    { type: "start", request },
+    {
+      type: "header",
+      header: {
+        ...makeHeader("req-invalid-time-series-x", 81, 0, true),
+        dictionaries: {},
+        xValues: { type: "f64", offset: 0, byteLength: 16 },
+        sizeValues: undefined,
+        xEncoding: "temporal",
+        temporalMetadata: { unit: "epochMilliseconds", kind: "timestamp", displayZone: "utc" },
+      },
+    },
+    { type: "payload", payload: makePayload(0) },
+  );
+
+  assert.equal(afterChunks.pending?.chunks.length, 1);
+  assert.equal(afterChunks.committed?.requestId, "old-request");
+
+  const failed = reduceGraphStream(afterChunks, {
+    type: "complete",
+    completion: {
+      requestId: request.requestId,
+      datasetId: request.datasetId,
+      generation: request.generation,
+      sourceRows: 3,
+      processedRows: 3,
+      chunksSent: 0,
+      cancelled: false,
+      rawPointDisposition: { status: "included", validRows: 2, budget: 8_000 },
+      timeSeriesDisposition: { status: "invalidTimeSeriesX", includedRows: 2, invalidXRows: 1 },
+    },
+  });
+
+  assert.equal(failed.pending, null);
+  assert.equal(failed.pendingHeader, null);
+  assert.equal(failed.committed?.requestId, "old-request");
+  assert.equal(failed.status, "error");
+  assert.match(failed.error ?? "", /invalid.*time series.*x.*1/i);
 }
 
 {
@@ -2391,6 +2584,38 @@ function makeProgressedChunk(
     { kind: "correlationMatrix", summaryStat: "none", correlationMethod: "pearson" },
   ];
   assert.deepEqual(deriveElements(invalidMethodItem), invalidCorrelationElementsExpected);
+
+  const malformedTextDateItem = makeCanonicalGraphBuilderItem({
+    mode: "2d",
+    modeStates: {
+      ...defaultModeStates(),
+      twoD: {
+        ...defaultModeStates().twoD,
+        elements: [{
+          kind: "timeSeries",
+          enabled: true,
+          options: {
+            xInterpretation: { kind: "textDate", format: "notAllowed" },
+            order: "sourceRow",
+            missingValues: "connect",
+            markerMode: "show",
+            connection: "step",
+          },
+        }],
+      },
+    },
+  });
+  assert.deepEqual(deriveElements(malformedTextDateItem), [{
+    kind: "timeSeries",
+    summaryStat: "none",
+    timeSeries: {
+      xInterpretation: { kind: "nativeTemporal" },
+      order: "sourceRow",
+      missingValues: "connect",
+      markerMode: "show",
+      connection: "step",
+    },
+  }]);
 
   const mixedCorrelationItem = makeCanonicalGraphBuilderItem({
     mode: "2d",

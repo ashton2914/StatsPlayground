@@ -32,6 +32,64 @@ pub enum CorrelationMethod {
     Kendall,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TimeSeriesTextDateFormat {
+    IsoDate,
+    IsoDateTime,
+    UsDate,
+    UsDateTime,
+    DayFirstDate,
+    DayFirstDateTime,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TimeSeriesXInterpretation {
+    NativeTemporal,
+    TextDate { format: TimeSeriesTextDateFormat },
+    Sequence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphTimeSeriesOrder {
+    TimeAscending,
+    SourceRow,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphTimeSeriesMissingValues {
+    Break,
+    Connect,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphTimeSeriesMarkerMode {
+    Auto,
+    Show,
+    Hide,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphTimeSeriesConnection {
+    Line,
+    Step,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphTimeSeriesRequest {
+    pub x_interpretation: TimeSeriesXInterpretation,
+    pub order: GraphTimeSeriesOrder,
+    pub missing_values: GraphTimeSeriesMissingValues,
+    pub marker_mode: GraphTimeSeriesMarkerMode,
+    pub connection: GraphTimeSeriesConnection,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphElementRequest {
@@ -39,6 +97,8 @@ pub struct GraphElementRequest {
     pub summary_stat: String,
     #[serde(default)]
     pub correlation_method: Option<CorrelationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_series: Option<GraphTimeSeriesRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +173,35 @@ impl GraphTypedSliceDescriptor {
 pub enum GraphAxisEncoding {
     Numeric,
     Categorical,
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphTemporalAxisUnit {
+    EpochMilliseconds,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphTemporalAxisKind {
+    Date,
+    Timestamp,
+    TimestampTz,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphTemporalDisplayZone {
+    Utc,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphTemporalAxisMetadata {
+    pub unit: GraphTemporalAxisUnit,
+    pub kind: GraphTemporalAxisKind,
+    pub display_zone: GraphTemporalDisplayZone,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +230,8 @@ pub struct GraphChunkHeader {
     pub wrap_codes: Option<GraphTypedSliceDescriptor>,
     pub role_vectors: BTreeMap<String, GraphTypedSliceDescriptor>,
     pub x_encoding: GraphAxisEncoding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal_metadata: Option<GraphTemporalAxisMetadata>,
     pub final_chunk: bool,
 }
 
@@ -288,6 +379,23 @@ pub enum GraphRawPointDisposition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GraphTimeSeriesDisposition {
+    Included {
+        included_rows: u64,
+        invalid_x_rows: u64,
+    },
+    InvalidTimeSeriesX {
+        included_rows: u64,
+        invalid_x_rows: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphDataCompletion {
     pub request_id: String,
@@ -298,6 +406,8 @@ pub struct GraphDataCompletion {
     pub chunks_sent: u32,
     pub cancelled: bool,
     pub raw_point_disposition: GraphRawPointDisposition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_series_disposition: Option<GraphTimeSeriesDisposition>,
 }
 
 #[cfg(test)]
@@ -315,7 +425,17 @@ mod tests {
                 { "role": "y", "column": "cost" }
             ],
             "filters": [],
-            "elements": [{ "kind": "points", "summaryStat": "none" }],
+            "elements": [{
+                "kind": "timeSeries",
+                "summaryStat": "none",
+                "timeSeries": {
+                    "xInterpretation": { "kind": "textDate", "format": "usDate" },
+                    "order": "timeAscending",
+                    "missingValues": "break",
+                    "markerMode": "auto",
+                    "connection": "line"
+                }
+            }],
             "sampling": { "mode": "full" },
             "rawPointBudget": 8000,
             "viewport": { "width": 1200, "height": 700 }
@@ -324,6 +444,18 @@ mod tests {
 
         assert_eq!(request.request_id, "req-1");
         assert!(matches!(request.sampling, GraphSampling::Full));
+        assert!(matches!(
+            request.elements[0].time_series,
+            Some(GraphTimeSeriesRequest {
+                x_interpretation: TimeSeriesXInterpretation::TextDate {
+                    format: TimeSeriesTextDateFormat::UsDate,
+                },
+                order: GraphTimeSeriesOrder::TimeAscending,
+                missing_values: GraphTimeSeriesMissingValues::Break,
+                marker_mode: GraphTimeSeriesMarkerMode::Auto,
+                connection: GraphTimeSeriesConnection::Line,
+            })
+        ));
         assert_eq!(
             serde_json::to_value(&request).unwrap()["rawPointBudget"],
             8000
@@ -404,6 +536,7 @@ mod tests {
             wrap_codes: None,
             role_vectors: std::collections::BTreeMap::new(),
             x_encoding: GraphAxisEncoding::Categorical,
+            temporal_metadata: None,
             final_chunk: true,
         };
 

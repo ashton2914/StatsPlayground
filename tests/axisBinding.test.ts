@@ -164,6 +164,44 @@ assert.deepStrictEqual(withTwoDY.modeStates.twoD.multiY, []);
 assert.deepStrictEqual(withTwoDY.modeStates.twoD.yAxis, { inverse: true });
 assert.strictEqual(withTwoDY.modeStates.threeD, twoDItem.modeStates.threeD);
 
+const timeSeriesItem: GraphBuilderItem = {
+  ...twoDItem,
+  id: "graph-time-series-x-binding",
+  modeStates: {
+    ...twoDItem.modeStates,
+    twoD: {
+      ...twoDItem.modeStates.twoD,
+      encoding: { y: continuous("Reading") },
+      multiX: [continuous("legacy-x")],
+      elements: [{
+        kind: "timeSeries",
+        enabled: true,
+        options: {
+          xInterpretation: { kind: "textDate", format: "usDate" },
+          order: "sourceRow",
+          missingValues: "connect",
+          connection: "step",
+          markerMode: "show",
+        },
+      }],
+      xAxis: { min: 1, max: 9, showMajorGrid: true },
+    },
+  },
+};
+const boundTimeSeriesX = bindGraphBuilderField!(timeSeriesItem, "x", { name: "Screenshot Date", type: "nominal" });
+assert.deepStrictEqual(
+  boundTimeSeriesX.modeStates.twoD.encoding.x,
+  { name: "Screenshot Date", type: "nominal" },
+  "lower-level Time Series X binding must use the same store binding helper as drag/drop",
+);
+assert.deepStrictEqual(boundTimeSeriesX.modeStates.twoD.multiX, []);
+assert.deepStrictEqual(boundTimeSeriesX.modeStates.twoD.xAxis, { showMajorGrid: true });
+assert.deepStrictEqual(
+  boundTimeSeriesX.modeStates.twoD.elements,
+  timeSeriesItem.modeStates.twoD.elements,
+  "binding Time Series X must preserve Time Series layer options",
+);
+
 const graphBuilderSource = readFileSync(
   new URL("../src/components/graphBuilder/GraphBuilderView.tsx", import.meta.url),
   "utf8",
