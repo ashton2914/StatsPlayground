@@ -8,6 +8,7 @@ export default defineConfig({
   fullyParallel: false,
   use: {
     ...devices["Desktop Chrome"],
+    ctPort: Number(process.env.PLAYWRIGHT_CT_PORT ?? 3100),
     channel: process.env.PLAYWRIGHT_CHANNEL,
     launchOptions: process.env.PLAYWRIGHT_EXECUTABLE_PATH
       ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }

@@ -11,10 +11,16 @@ use crate::models::graph_data::{
     GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphRawPointDisposition,
     GraphSampling, GraphViewport,
 };
+use crate::models::graph_new_data::{
+    GraphNewBuildRequest, GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+    GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+};
 use crate::models::save::SaveProjectRequest;
 #[cfg(test)]
 use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
+use crate::services::graph_new_lod::GraphCamera;
+use crate::services::graph_new_service::GraphNewService;
 use crate::services::project_service::{seed_save_project, ProjectService};
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
@@ -36,6 +42,7 @@ struct Options {
     rows: usize,
     columns: usize,
     operation: Operation,
+    graph_new_rows: Option<Vec<usize>>,
 }
 
 #[derive(Serialize)]
@@ -66,6 +73,115 @@ struct PerformanceReport {
     save_stage_ms: Option<SaveStageReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     process_memory: Option<ProcessMemoryReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_new: Option<GraphNewPerformanceReport>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphNewPerformanceReport {
+    machine_memory_metric: &'static str,
+    projection_query_count: u64,
+    interaction_query_count: u64,
+    interaction_query_count_metric: &'static str,
+    runs: Vec<GraphNewPerformanceRun>,
+}
+
+/// Static expectation derived from the headless selector's in-memory tile traversal.
+/// No query counter instruments selection; this placeholder is not a measurement.
+const GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_PLACEHOLDER: u64 = 0;
+const GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC: &str =
+    "unmeasured_static_placeholder_from_headless_selector";
+
+#[cfg(test)]
+#[test]
+fn graph_new_cache_harness_preserves_metrics_and_measures_production_reopens() {
+    let report = execute_graph_new_runs(&[128]).expect("production matrix fixture");
+    let graph = report.graph_new.expect("graph report");
+    let run = &graph.runs[0];
+    assert_eq!(run.post_build_select_query_count_metric, GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC);
+    let cache = run.cache_warm.as_ref().expect("warm measurements");
+    assert_eq!(cache.cold.source_projection_query_count, 1);
+    assert_eq!(cache.cpu_warm.source_projection_query_count, 0);
+    assert_eq!(cache.persistent_warm.source_projection_query_count, 0);
+    assert_eq!(cache.settled_camera.source_projection_query_count, 0);
+    assert!(cache.cpu_warm.cpu_cache_hit);
+    assert!(cache.persistent_warm.persistent_cache_hit);
+    assert_eq!(cache.persistent_warm.render_generation_check_count, 4);
+    assert!(cache.cpu_warm.gpu_cache.as_ref().expect("GPU accounting").allocated_bytes > 0);
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphNewPerformanceRun {
+    rows: usize,
+    processed_rows: u64,
+    excluded_non_finite_rows: u64,
+    scan_complete_ms: u128,
+    overview_ready_ms: u128,
+    pyramid_complete_ms: u128,
+    spool_bytes: u64,
+    accounted_memory_bytes: u64,
+    process_rss_bytes: Option<u64>,
+    tile_count: u64,
+    tile_bytes: u64,
+    levels: usize,
+    post_build_select_query_count: u64,
+    post_build_select_query_count_metric: &'static str,
+    cancellation_observed: bool,
+    cache_warm: Option<GraphNewCacheRun>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphNewCacheRun {
+    metric: &'static str,
+    cold_render_ms: f64,
+    cpu_warm_ms: f64,
+    persistent_warm_ms: f64,
+    settled_camera_ms: f64,
+    cold: crate::models::graph_new::GraphNewRenderCompletion,
+    cpu_warm: crate::models::graph_new::GraphNewRenderCompletion,
+    persistent_warm: crate::models::graph_new::GraphNewRenderCompletion,
+    settled_camera: crate::models::graph_new::GraphNewRenderCompletion,
+}
+
+fn measure_graph_new_cache(state: &AppState, build: &GraphNewBuildRequest) -> Result<GraphNewCacheRun, AppError> {
+    use crate::models::graph_new::{GraphNewCameraDomain, GraphNewRenderRequest};
+    let service = GraphNewService::new(state);
+    let mut request = GraphNewRenderRequest {
+        request_id: "cache-cold".into(), session_id: "cache-first".into(), dataset_id: build.dataset_id.clone(),
+        dataset_generation: build.dataset_generation, x_column_id: build.x_column_id.clone(), y_column_id: build.y_column_id.clone(),
+        width: 1920, height: 1080, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None,
+    };
+    let render = |request: &GraphNewRenderRequest| {
+        let started = Instant::now();
+        let completion = service.render_with(request, crate::services::graph_new_renderer::GraphNewRenderer::render,
+            &mut |header, rgba| {
+                if rgba.len() as u64 != header.byte_length { return Err(AppError::Stats("graph_new_render_failed".into())); }
+                Ok(())
+            })?;
+        Ok::<_, AppError>((started.elapsed().as_secs_f64() * 1000.0, completion))
+    };
+    let (cold_render_ms, cold) = render(&request)?;
+    state.graph_new.close_session(&request.session_id, 1)?;
+    request.session_id = "cache-second".into(); request.request_id = "cache-cpu-warm".into(); request.renderer_generation = 2;
+    let (cpu_warm_ms, cpu_warm) = render(&request)?;
+    state.graph_new.close_session(&request.session_id, 2)?;
+    state.graph_new.release_idle_cache()?;
+    request.session_id = "cache-third".into(); request.request_id = "cache-disk-warm".into(); request.renderer_generation = 3;
+    let (persistent_warm_ms, persistent_warm) = render(&request)?;
+    let domain = persistent_warm.camera_domain;
+    request.renderer_generation = 4; request.camera_generation = 1; request.request_id = "cache-settled-camera".into();
+    request.camera_domain = Some(GraphNewCameraDomain {
+        x_min: domain.x_min + (domain.x_max - domain.x_min) * 0.25,
+        x_max: domain.x_min + (domain.x_max - domain.x_min) * 0.75,
+        y_min: domain.y_min + (domain.y_max - domain.y_min) * 0.25,
+        y_max: domain.y_min + (domain.y_max - domain.y_min) * 0.75,
+    });
+    let (settled_camera_ms, settled_camera) = render(&request)?;
+    Ok(GraphNewCacheRun { metric: "production_backend_render_binary_payload_discarded_no_webview_presentation",
+        cold_render_ms, cpu_warm_ms, persistent_warm_ms, settled_camera_ms, cold, cpu_warm, persistent_warm, settled_camera })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -267,6 +383,7 @@ where
         rows: 100_000,
         columns: 20,
         operation: Operation::Query,
+        graph_new_rows: None,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -291,10 +408,242 @@ where
                     }
                 };
             }
+            "--graph-new-rows" => {
+                let value = args.next().ok_or_else(|| {
+                    AppError::InvalidParam("missing value for --graph-new-rows".into())
+                })?;
+                let parsed = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| {
+                        part.parse::<usize>().map_err(|_| {
+                            AppError::InvalidParam(format!("invalid graph-new row count: {part}"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if parsed.is_empty() {
+                    return Err(AppError::InvalidParam(
+                        "--graph-new-rows must list at least one row count".into(),
+                    ));
+                }
+                options.graph_new_rows = Some(parsed);
+            }
             _ => return Err(AppError::InvalidParam(format!("unknown argument: {flag}"))),
         }
     }
     Ok(options)
+}
+
+fn seed_graph_new_benchmark_dataset(
+    state: &AppState,
+    dataset_id: &str,
+    rows: usize,
+) -> Result<(), AppError> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    db.create_empty_table(
+        dataset_id,
+        "Graph New Benchmark",
+        &["x_value".into(), "y_value".into()],
+        &["DOUBLE".into(), "DOUBLE".into()],
+    )?;
+
+    if rows > 0 {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let upper_bound = i64::try_from(rows)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| AppError::InvalidParam("benchmark row count is too large".into()))?;
+        db.conn().execute(
+            &format!(
+                "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value)
+                 SELECT i,
+                    CASE
+                        WHEN i % 20 = 0 THEN 0.5
+                        WHEN i % 5 = 0 THEN CAST(i % 2048 AS DOUBLE) / 2048.0
+                        ELSE CAST(i % 100000 AS DOUBLE) / 100000.0
+                    END,
+                    CASE
+                        WHEN i % 20 = 0 THEN 0.5
+                        WHEN i % 5 = 0 THEN CAST((i / 2048) % 2048 AS DOUBLE) / 2048.0
+                        ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
+                    END
+                 FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+            ),
+            params![upper_bound],
+        )?;
+        db.conn().execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![rows as i64, dataset_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn graph_new_column_ids(
+    state: &AppState,
+    dataset_id: &str,
+) -> Result<(u64, String, String), AppError> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let generation = db.get_dataset_generation(dataset_id)?;
+    let mut statement = db
+        .conn()
+        .prepare("SELECT column_id FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index")?;
+    let columns = statement
+        .query_map(params![dataset_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((generation, columns[0].clone(), columns[1].clone()))
+}
+
+fn graph_new_cancellation_observed<T>(outcome: Result<T, AppError>) -> Result<bool, AppError> {
+    match outcome {
+        Ok(_) => Ok(false),
+        Err(AppError::Cancelled(_)) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError> {
+    let total_started = Instant::now();
+    let mut runs = Vec::with_capacity(rows.len());
+    for &row_count in rows {
+        let cache_directory = tempfile::tempdir()?;
+        let state = AppState::new()?;
+        state.set_graph_cache_directory(&cache_directory.path().canonicalize()?)?;
+        let dataset_id = format!("graph-new-{row_count}");
+        seed_graph_new_benchmark_dataset(&state, &dataset_id, row_count)?;
+        let (generation, x_column_id, y_column_id) = graph_new_column_ids(&state, &dataset_id)?;
+        let service = GraphNewService::new(&state);
+        let request = GraphNewBuildRequest {
+            request_id: format!("graph-new-request-{row_count}"),
+            dataset_id: dataset_id.clone(),
+            dataset_generation: generation,
+            x_column_id,
+            y_column_id,
+            max_tile_points: 4_096,
+            levels: 8,
+            batch_rows: 16_384,
+            overdraw_factor: GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+            construction_memory_limit_bytes: GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+        };
+        let mut scan_complete_ms = 0u128;
+        let build_started = Instant::now();
+        let (result, process_memory) = measure_peak_working_set_during(|| {
+            service.build(&request, &mut |progress| {
+                if progress.stage == crate::models::graph_new_data::GraphNewBuildStage::Scan
+                    && progress.processed_rows == row_count as u64
+                {
+                    scan_complete_ms = build_started.elapsed().as_millis();
+                }
+            })
+        });
+        let result = result?;
+        let tile_count = result
+            .summary
+            .levels
+            .iter()
+            .map(|level| level.tile_count)
+            .sum::<u64>();
+        let tile_bytes = result
+            .summary
+            .levels
+            .iter()
+            .map(|level| level.tile_bytes)
+            .sum::<u64>();
+        let _overview_selection = result.pyramid.select(&GraphCamera {
+            x_min: result.pyramid.domain.x_min,
+            x_max: result.pyramid.domain.x_max,
+            y_min: result.pyramid.domain.y_min,
+            y_max: result.pyramid.domain.y_max,
+            viewport_width: 1920,
+            viewport_height: 1080,
+            device_pixel_ratio: 1.0,
+        })?;
+        let _deep_selection = result.pyramid.select(&GraphCamera {
+            x_min: 0.45,
+            x_max: 0.55,
+            y_min: 0.45,
+            y_max: 0.55,
+            viewport_width: 1920,
+            viewport_height: 1080,
+            device_pixel_ratio: 1.0,
+        })?;
+        let cancel_requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_flag = std::sync::Arc::clone(&cancel_requested);
+        let cancellation_observed = graph_new_cancellation_observed(service.build_with_cancel(
+            &request,
+            &mut |progress| {
+                if progress.stage == crate::models::graph_new_data::GraphNewBuildStage::Scan
+                    && progress.processed_rows > 0
+                {
+                    cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+            &|| !cancel_requested.load(std::sync::atomic::Ordering::Relaxed),
+        ))?;
+        let mut run = GraphNewPerformanceRun {
+            rows: row_count,
+            processed_rows: result.summary.processed_rows,
+            excluded_non_finite_rows: result.summary.excluded_non_finite_rows,
+            scan_complete_ms,
+            overview_ready_ms: result.summary.overview_ready_ms,
+            pyramid_complete_ms: result.summary.pyramid_complete_ms,
+            spool_bytes: result.summary.spool_bytes,
+            accounted_memory_bytes: result.summary.accounted_memory_bytes,
+            process_rss_bytes: process_memory
+                .as_ref()
+                .map(|memory| memory.peak_working_set_bytes),
+            tile_count,
+            tile_bytes,
+            levels: result.summary.levels.len(),
+            post_build_select_query_count: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_PLACEHOLDER,
+            post_build_select_query_count_metric: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC,
+            cancellation_observed,
+            cache_warm: None,
+        };
+        drop(_overview_selection);
+        drop(_deep_selection);
+        drop(result);
+        run.cache_warm = Some(measure_graph_new_cache(&state, &request)?);
+        runs.push(run);
+    }
+
+    Ok(PerformanceReport {
+        rows: rows.last().copied().unwrap_or_default(),
+        columns: 2,
+        operation: Operation::Graph,
+        setup_ms: 0,
+        operation_ms: total_started.elapsed().as_millis(),
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows: rows.last().copied().unwrap_or_default(),
+        selected_columns: 0,
+        query_ms: None,
+        encode_ms: None,
+        decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
+        draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
+        processed_rows: Some(runs.last().map(|run| run.processed_rows).unwrap_or(0)),
+        transferred_bytes: None,
+        archive_bytes: 0,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        process_memory: None,
+        graph_new: Some(GraphNewPerformanceReport {
+            machine_memory_metric: "process RSS is OS working-set bytes when available, otherwise null (including macOS); accountedMemoryBytes is graph-owned in-memory tile accounting only",
+            projection_query_count: 1,
+            interaction_query_count: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_PLACEHOLDER,
+            interaction_query_count_metric: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC,
+            runs,
+        }),
+    })
 }
 
 fn build_graph_request(dataset_id: &str, generation: u64) -> GraphDataRequest {
@@ -523,10 +872,14 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         process_memory: None,
+        graph_new: None,
     })
 }
 
 fn execute(options: Options) -> Result<PerformanceReport, AppError> {
+    if let Some(graph_new_rows) = &options.graph_new_rows {
+        return execute_graph_new_runs(graph_new_rows);
+    }
     if options.operation == Operation::Save {
         return execute_save(options);
     }
@@ -613,6 +966,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         process_memory: None,
+        graph_new: None,
     })
 }
 
@@ -702,6 +1056,7 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         max_combined_batch_bytes: None,
         save_stage_ms: None,
         process_memory,
+        graph_new: None,
     })
 }
 
@@ -839,6 +1194,7 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
             replacement: save_perf_metrics.replacement_ms,
         }),
         process_memory,
+        graph_new: None,
     })
 }
 
@@ -898,6 +1254,7 @@ mod tests {
         assert_eq!(options.rows, 100_000);
         assert_eq!(options.columns, 20);
         assert_eq!(options.operation, Operation::Query);
+        assert_eq!(options.graph_new_rows, None);
     }
 
     #[test]
@@ -922,6 +1279,17 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_parses_graph_new_rows() {
+        let options =
+            parse_args(["--graph-new-rows", "100000,1000000,10000000"].map(String::from)).unwrap();
+
+        assert_eq!(
+            options.graph_new_rows,
+            Some(vec![100_000, 1_000_000, 10_000_000])
+        );
+    }
+
+    #[test]
     fn performance_cli_executes_each_operation() {
         for operation in [
             Operation::Query,
@@ -935,6 +1303,7 @@ mod tests {
                 rows: 25,
                 columns: 4,
                 operation,
+                graph_new_rows: None,
             })
             .unwrap();
 
@@ -946,6 +1315,7 @@ mod tests {
                 report.selected_columns,
                 if operation == Operation::Graph { 3 } else { 0 }
             );
+            assert!(report.graph_new.is_none());
 
             let json = serde_json::to_value(&report).unwrap();
             assert!(json.get("setupMs").is_some());
@@ -981,6 +1351,7 @@ mod tests {
             rows: 10_000,
             columns: 20,
             operation: Operation::Graph,
+            graph_new_rows: None,
         })
         .unwrap();
 
@@ -995,6 +1366,7 @@ mod tests {
             rows: 10,
             columns: 20,
             operation: Operation::Graph,
+            graph_new_rows: None,
         })
         .unwrap();
 
@@ -1176,6 +1548,7 @@ mod tests {
             rows: 10,
             columns: 1,
             operation: Operation::Graph,
+            graph_new_rows: None,
         });
 
         match result {
@@ -1189,6 +1562,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn graph_new_cancellation_requires_cancelled_and_propagates_other_errors() {
+        assert!(!graph_new_cancellation_observed(Ok(())).expect("successful build"));
+        assert!(
+            graph_new_cancellation_observed::<()>(Err(AppError::Cancelled("requested".into())))
+                .expect("cancelled build")
+        );
+        for error in [
+            AppError::Database("database failure".into()),
+            AppError::FileIO("disk failure".into()),
+            AppError::Stats("stats failure".into()),
+            AppError::InvalidParam("invalid request".into()),
+            AppError::Busy("busy".into()),
+            AppError::ReadOnly("read-only".into()),
+        ] {
+            let expected_variant = std::mem::discriminant(&error);
+            let expected_message = error.to_string();
+            let actual = graph_new_cancellation_observed::<()>(Err(error))
+                .expect_err("unrelated errors must propagate");
+            assert_eq!(std::mem::discriminant(&actual), expected_variant);
+            assert_eq!(actual.to_string(), expected_message);
+        }
+    }
+
+    #[test]
+    fn performance_cli_executes_graph_new_matrix() {
+        let report = execute(Options {
+            rows: 1,
+            columns: 1,
+            operation: Operation::Query,
+            graph_new_rows: Some(vec![100, 1_000]),
+        })
+        .unwrap();
+
+        assert_eq!(report.operation, Operation::Graph);
+        assert_eq!(report.columns, 2);
+        assert_eq!(report.result_rows, 1_000);
+        let graph_new = report.graph_new.expect("graph_new report");
+        assert_eq!(graph_new.projection_query_count, 1);
+        assert_eq!(graph_new.interaction_query_count, 0);
+        assert_eq!(graph_new.runs.len(), 2);
+        assert_eq!(graph_new.runs[0].rows, 100);
+        assert_eq!(graph_new.runs[1].rows, 1_000);
+        assert_eq!(graph_new.runs[0].processed_rows, 100);
+        assert_eq!(graph_new.runs[1].processed_rows, 1_000);
+        let json = serde_json::to_value(&graph_new).expect("graph-new JSON");
+        assert_eq!(
+            json["interactionQueryCountMetric"],
+            "unmeasured_static_placeholder_from_headless_selector"
+        );
+        for (index, run) in graph_new.runs.iter().enumerate() {
+            assert_eq!(run.post_build_select_query_count, 0);
+            assert_eq!(
+                json["runs"][index]["postBuildSelectQueryCountMetric"],
+                "unmeasured_static_placeholder_from_headless_selector"
+            );
+            assert!(run.cancellation_observed);
+            #[cfg(not(windows))]
+            {
+                assert_eq!(run.process_rss_bytes, None);
+                assert!(json["runs"][index]["processRssBytes"].is_null());
+            }
+        }
+    }
+
+    #[test]
     fn performance_cli_rejects_legacy_save_current_alias() {
         let error = parse_args(
             [
@@ -1212,6 +1651,7 @@ mod tests {
             rows: 300_000,
             columns: 20,
             operation: Operation::Save,
+            graph_new_rows: None,
         })
         .unwrap();
 

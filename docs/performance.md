@@ -1,5 +1,139 @@
 # Performance Baselines
 
+## Graph Builder-new Camera And Cache (2026-09-17)
+
+The user confirmed native point plotting, then prioritized pan/zoom and caches
+over hover/table selection. Pointer pan, pointer-anchored wheel zoom, reset,
+resize/DPR camera retention and a 75 ms settled debounce are implemented.
+Gestures locally reproject the plot raster; preview uses bounded cropping,
+frozen/faded axes and hatched uncovered areas, not the planned overscan.
+
+Completed keys survive close/reopen in CPU LRU, with a pinned active graph and
+8 MiB decoded-tile LRU per pyramid. CPU reservations are capped at 768 MiB
+across coordinators, leaving 256 MiB for the singleton GPU renderer. Identical
+scenes reuse geometry; changed-camera geometry still uploads. These are
+retained-cache budgets, not overall process RSS or construction limits.
+
+Derived disk files use app-cache lifetime namespaces, streaming checksums,
+format/key validation and a 1 GiB per-coordinator backing budget. Identity is
+scoped to AppState lifetime and database-reset epoch, not application restarts.
+Optional persistence failure falls back to memory-only caching. Missing files
+release bookkeeping; rejected replacement files are not deleted.
+
+The release `performance_baseline --graph-new-rows 100000,1000000,10000000`
+workload now emits measured `cacheWarm` samples via the production renderer
+at 1920 x 1080, DPR 1. Payloads are validated and discarded, so times exclude
+WebView presentation. Existing static selector placeholders remain labelled.
+
+| Rows | CPU reopen | Disk-only reopen | Settled camera | Full pyramid |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 3.10 ms | 93.19 ms | 2.43 ms | 1,547 ms |
+| 1,000,000 | 3.45 ms | 331.84 ms | 2.26 ms | 2,174 ms |
+| 10,000,000 | 6.73 ms | 2,875.49 ms | 5.06 ms | 7,921 ms |
+
+All warm/camera samples performed zero source projections and four generation
+checks; zero projections does not imply zero metadata SQL after settling.
+No render request is sent during active dragging. Whole-matrix max RSS was
+553,713,664 bytes; maximum sampled GPU allocation was 16,754,752 bytes and
+graph CPU reservation 21,501,536 bytes. Raw evidence is in
+`test-results/task8-release-matrix.json` and `task8-release-resources.log`.
+These single samples are not P95 qualification. Mock-frame CT measured
+7.7 ms local preview and 76.9 ms settled request dispatch, not native latency.
+
+Final checks after review repairs: 88 Rust tests, 21 component tests, five TS
+scripts, frontend/backend builds and scoped whitespace checks passed. Builds
+retain warnings. Independent review cleared cache accounting, startup fallback
+and resize retention fixes. A new isolated native dev instance was launched
+without terminating the user's original window; gesture acceptance is pending.
+
+Task 8 remains partly complete: disk reopen misses 300 ms at 1M/10M and first
+interactive overview still waits for the full pyramid, exceeding three seconds
+at 10M. Uniform-only GPU camera updates, overscan, crash-orphan cleanup,
+filesystem rename-race hardening, Windows validation and native P95 remain
+unfinished. Hover/click linkage is deferred. No broad cache cleanup runs.
+
+## Graph Builder-new Full-Source LOD (2026-09-17)
+
+Task 5 headless release matrix completed on macOS. This measures source
+projection and disk-backed LOD construction, not WebView rendering or an
+improvement relative to ECharts. This historical measurement predates the
+renderer integration and camera/cache results above.
+
+```bash
+cargo build --release --manifest-path src-tauri/Cargo.toml --features perf-harness --example performance_baseline
+/usr/bin/time -l src-tauri/target/release/examples/performance_baseline --graph-new-rows 100000,1000000,10000000
+```
+
+Configuration: eight levels, 4,096 maximum points per tile, 16,384-row scan
+batches, and a 512 MiB construction-accounting limit. Each build uses one
+source projection of row identity and the two numeric columns. Every run
+processed all requested rows, excluded zero non-finite rows, and observed
+`AppError::Cancelled` in its separate cancellation probe.
+
+| Source rows | Scan complete | Overview / full pyramid | Tiles | Tile bytes | Spool bytes | Accounted peak bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 35 ms | 1,510 ms | 21,525 | 5,078,192 | 5,600,000 | 13,858,240 |
+| 1,000,000 | 95 ms | 2,068 ms | 21,845 | 29,051,004 | 56,000,000 | 14,469,992 |
+| 10,000,000 | 786 ms | 7,541 ms | 21,845 | 268,440,112 | 560,000,000 | 18,818,880 |
+
+The complete benchmark process took 13.97 s wall time, excluding compilation.
+macOS `/usr/bin/time -l` measured **503,037,952 bytes maximum resident set size**
+and 481,690,608 bytes peak memory footprint across the whole matrix. This
+includes DuckDB, generated source data, selections, and cancellation probes;
+it is neither a per-build memory delta nor graph-owned memory alone. The
+per-run JSON `processRssBytes` remains `null` on macOS. `accountedMemoryBytes`
+is a construction-buffer/index estimate with capacity and overlap checks,
+not an OS measurement or a hard cap on all process allocations.
+
+Limitations: overview availability currently coincides with full pyramid
+completion; no early overview is delivered yet. Both interaction query-count
+fields report zero with metric
+`unmeasured_static_placeholder_from_headless_selector`; these are explicitly
+unmeasured placeholders, not live UI query telemetry. Disk spool and tile
+storage grow with input size even though in-memory construction is bounded.
+This single deterministic workload is not a P95 or cross-platform qualification.
+
+Recovery validation: 50 `graph_new_` Rust tests passed, including observed
+RED/GREEN regressions for scan-capacity budgeting and asymmetric cross-zero
+tile bounds. Release compilation passed with warnings, including currently
+unwired graph-new APIs; this is not a warning-free Clippy result. The original
+crash cause was not diagnosed and is not attributed to these fixes.
+
+## Graph Builder-new 4K Transport Gate (2026-09-17)
+
+Status: **Strict gate FAIL - accepted exception; Task 4 authorized**
+
+Command:
+
+```bash
+npm run benchmark:graph-new-transport
+```
+
+The release benchmark used a Tauri channel with raw RGBA8 payloads and an
+explicit one-frame pull contract. Rust enforces exactly one frame per probe;
+the WebView requests the next frame only after the current frame is coherent
+and presented. No Base64, data URL, JSON pixel array, or unbounded frame queue
+is accepted. The machine-readable report is written to
+`test-results/graph-new-transport/report.json`.
+
+| Output | Readback-to-present P95 | Compositor FPS P95 | Frame-time P95 | Longest avoidable task | Queue depth | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1920 x 1080 | 31.30 ms | 55.56 FPS | 18 ms | 2 ms | 1 | Diagnostic pass |
+| 3840 x 2160 | 30.51 ms | 50.00 FPS | 20 ms | 1 ms | 1 | **FAIL** |
+
+The 4K run presented all 30 requested frames, used three bounded resident frame
+buffers at peak (99,532,800 bytes), and reported zero dropped, stale, or torn
+frames. Its binary transfer and presentation latency passed the 100 ms budget.
+It failed only the compositor budgets: at least 55 FPS and at most 18 ms P95.
+
+Architecture decision checkpoint: choose **reduced resolution/cadence**, using
+the reduced-cadence branch while retaining 3840 x 2160 coherent output. On
+2026-09-17, the measured shortfall was explicitly accepted as sufficient for
+the current milestone: 50.00 FPS and 20 ms remain a strict-gate failure, but
+transport optimization is deferred and Task 4 is authorized. This exception
+does not revise the benchmark thresholds or claim a strict pass. The
+WebView-side WebGPU and Plan C native-composition options remain unauthorized.
+
 StatsPlayground performance work uses deterministic DuckDB-generated data so
 measurements do not include CSV parsing, network access, or fixture file I/O.
 Run baselines from `src-tauri` with a release build:

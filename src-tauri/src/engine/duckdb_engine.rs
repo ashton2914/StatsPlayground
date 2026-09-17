@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 use std::mem;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
 use duckdb::{appender_params_from_iter, params, params_from_iter, Config, Connection};
+use tempfile::TempDir;
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
 use crate::engine::correlation::{correlate, CorrelationFailure, StatisticalMethod};
@@ -33,6 +35,8 @@ use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprint
 /// DuckDB engine wrapper
 pub struct DuckDbEngine {
     conn: Connection,
+    shared_db_path: PathBuf,
+    _shared_db_dir: TempDir,
 }
 
 pub(crate) struct DatasetReplacement {
@@ -151,6 +155,10 @@ impl DuckDbEngine {
     /// Get a reference to the underlying connection
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    pub fn open_secondary_connection(&self) -> Result<Connection, AppError> {
+        Connection::open(&self.shared_db_path).map_err(AppError::from)
     }
 
     fn bump_dataset_generation(&self, dataset_id: &str) -> Result<(), AppError> {
@@ -321,7 +329,9 @@ impl DuckDbEngine {
 
     /// Create a new in-memory DuckDB engine and initialize metadata tables
     pub fn new_in_memory() -> Result<Self, AppError> {
-        let conn = Connection::open_in_memory()?;
+        let shared_db_dir = tempfile::tempdir()?;
+        let shared_db_path = shared_db_dir.path().join("stats_playground.duckdb");
+        let conn = Connection::open(&shared_db_path)?;
 
         conn.execute_batch(
             "
@@ -379,7 +389,11 @@ impl DuckDbEngine {
             [],
         )?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            shared_db_path,
+            _shared_db_dir: shared_db_dir,
+        })
     }
 
     pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {

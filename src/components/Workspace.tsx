@@ -30,6 +30,7 @@ import { TableOpsDialog } from "./TableOpsDialog";
 import { TableExportDialog, type TableExportPlan } from "./tableExport";
 import { TableTransformView } from "./tableTransform/TableTransformView";
 import { GraphBuilderView } from "./graphBuilder";
+import { GraphBuilderNewView } from "./graphBuilderNew/GraphBuilderNewView";
 import { FitYByXRoleDialog } from "./fitYByX";
 import { HypothesisTestDialog } from "./hypothesisTest";
 import {
@@ -81,6 +82,7 @@ import "./graphBuilder/graphBuilder.css";
 import "./fitYByX/fitYByX.css";
 import "./fitModel/fitModel.css";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
+import { useGraphBuilderNewStore } from "@/stores/useGraphBuilderNewStore";
 import { useReportStore } from "@/stores/useReportStore";
 import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
@@ -311,6 +313,9 @@ export function Workspace() {
   const loadWorkflowsFromProject = useWorkflowStore((s) => s.loadFromProject);
   const addWorkflow = useWorkflowStore((s) => s.addWorkflow);
   const resetWorkflows = useWorkflowStore((s) => s.reset);
+  const graphBuilderNewSessions = useGraphBuilderNewStore((s) => s.sessions);
+  const openGraphBuilderNew = useGraphBuilderNewStore((s) => s.open);
+  const closeGraphBuilderNew = useGraphBuilderNewStore((s) => s.close);
   const addGraphBuilder = useGraphBuilderStore((s) => s.addItem);
   const renameGraphBuilder = useGraphBuilderStore((s) => s.renameItem);
   const migrateLegacyGraphColumnName = useGraphBuilderStore((s) => s.migrateLegacyColumnName);
@@ -353,6 +358,7 @@ export function Workspace() {
   const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
   /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
+  const [activeGraphBuilderNewId, setActiveGraphBuilderNewId] = useState<string | null>(null);
   const [activeGraphBuilderId, setActiveGraphBuilderId] = useState<string | null>(null);
   const [activeTableTransformId, setActiveTableTransformId] = useState<string | null>(null);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
@@ -452,13 +458,17 @@ export function Workspace() {
   }, [recordHistory]);
 
   const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
+    setActiveGraphBuilderNewId((activeId) => {
+      if (activeId) closeGraphBuilderNew(activeId);
+      return null;
+    });
     setActiveDataset(selection.activeDatasetId);
     setActiveTableTransformId(selection.activeTableTransformId);
     setActiveGraphBuilderId(selection.activeGraphBuilderId);
     setActiveReportId(selection.activeReportId);
     setActiveAnalysisId(selection.activeAnalysisId);
     setActiveTabulateId(selection.activeTabulateId);
-  }, [setActiveDataset]);
+  }, [closeGraphBuilderNew, setActiveDataset]);
 
   const activateWorkspaceDocument = useCallback((kind: WorkspaceDocumentKind, id: string) => {
     applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
@@ -792,6 +802,16 @@ export function Workspace() {
     recordAction(t("history.newGraph", { name, source: ds.name }));
     setRenamingId(id);
     setRenameValue(name);
+  };
+
+  const handleCreateGraphBuilderNew = () => {
+    if (!activeDatasetId) {
+      alert(t("alert.selectDatasetFirst"));
+      return;
+    }
+    const dataset = datasets.find((candidate) => candidate.id === activeDatasetId);
+    if (!dataset) return;
+    setActiveGraphBuilderNewId(openGraphBuilderNew(dataset.id, dataset.generation));
   };
 
   const handleCreateTabulate = () => {
@@ -2488,6 +2508,20 @@ export function Workspace() {
             </MenuDropdown>
             <MenuDropdown label={t("menu.graph")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateGraphBuilder}>{t("menu.newGraph")}</div>
+              <div
+                className={`menu-item${activeDatasetId ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId ? handleCreateGraphBuilderNew : undefined}
+                onKeyDown={activeDatasetId ? (event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    handleCreateGraphBuilderNew();
+                  }
+                } : undefined}
+                role="menuitem"
+                tabIndex={activeDatasetId ? 0 : -1}
+              >
+                Graph Builder-new
+              </div>
               <div className="menu-sep" />
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleImportGraphSpgh}>{t("menu.importSpgh")}</div>
             </MenuDropdown>
@@ -2680,6 +2714,21 @@ export function Workspace() {
                 return handleRunWorkflow(workflow, bindings);
               }}
             />
+          ) : activeGraphBuilderNewId ? (
+            (() => {
+              const session = graphBuilderNewSessions.find((candidate) => candidate.id === activeGraphBuilderNewId);
+              const dataset = datasets.find((candidate) => candidate.id === session?.datasetId);
+              return (
+                <GraphBuilderNewView
+                  sessionId={activeGraphBuilderNewId}
+                  dataset={dataset}
+                  onClose={() => {
+                    closeGraphBuilderNew(activeGraphBuilderNewId);
+                    setActiveGraphBuilderNewId(null);
+                  }}
+                />
+              );
+            })()
           ) : activeAnalysisId ? (
             (() => {
               const item = analysisItems.find((entry) => entry.id === activeAnalysisId);

@@ -11,6 +11,17 @@ mod state;
 pub mod perf_harness;
 
 use state::AppState;
+use tauri::Manager;
+
+fn initialize_graph_new_cache<E>(
+    state: &AppState,
+    directory: Result<std::path::PathBuf, E>,
+) -> Result<(), &'static str> {
+    let directory = directory.map_err(|_| "path_unavailable")?;
+    state
+        .set_graph_cache_directory(&directory)
+        .map_err(|_| "initialization_failed")
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,6 +33,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .manage(app_state)
+        .setup(|app| {
+            if let Err(reason) = initialize_graph_new_cache(
+                &app.state::<AppState>(), app.path().app_cache_dir(),
+            ) {
+                eprintln!("{}", serde_json::json!({
+                    "event": "graph_new_cache_disabled", "mode": "memory_only", "reason": reason,
+                }));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::data_link_commands::test_postgres_connection,
             commands::data_link_commands::test_server_connection,
@@ -48,6 +69,10 @@ pub fn run() {
             commands::distribution_commands::compute_distribution_report,
             commands::graph_data_commands::stream_graph_data,
             commands::graph_data_commands::cancel_graph_data,
+            commands::graph_new_commands::probe_graph_new_transport,
+            commands::graph_new_commands::render_graph_new,
+            commands::graph_new_commands::cancel_graph_new,
+            commands::graph_new_commands::close_graph_new,
             commands::data_commands::execute_sql_query,
             commands::data_commands::create_table_from_sql_query,
             commands::data_commands::create_table,

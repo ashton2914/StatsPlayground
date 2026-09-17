@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:portable": "node scripts/buildPortable.mjs",
+    "benchmark:graph-new-transport": "node scripts/runGraphNewTransportBudget.mjs",
     "benchmark:scatter": "node scripts/runScatterBudget.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
