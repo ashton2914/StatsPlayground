@@ -5,6 +5,7 @@ import { normalizeGraphBuilderItem } from "../src/components/graphBuilder/graphB
 import i18n from "../src/i18n";
 import { dataService } from "../src/services/dataService";
 import { graphDataService } from "../src/services/graphDataService";
+import { useDataStore } from "../src/stores/useDataStore";
 import { useDatasetFilterStore } from "../src/stores/useDatasetFilterStore";
 import { useGraphBuilderStore } from "../src/stores/useGraphBuilderStore";
 import { useProjectStore } from "../src/stores/useProjectStore";
@@ -114,6 +115,7 @@ export function TimeSeriesGraphHarness({ invalidXRows = 0 }: { invalidXRows?: nu
 
   useEffect(() => {
     const previousLanguage = i18n.resolvedLanguage ?? i18n.language;
+    const previousDataState = useDataStore.getState();
     const previousGraphState = useGraphBuilderStore.getState();
     const previousFilterState = useDatasetFilterStore.getState();
     const previousProjectState = useProjectStore.getState();
@@ -123,6 +125,11 @@ export function TimeSeriesGraphHarness({ invalidXRows = 0 }: { invalidXRows?: nu
     const previousStream = graphDataService.stream;
     let active = true;
 
+    useDataStore.setState({
+      ...previousDataState,
+      datasets: [DATASET],
+      activeDatasetId: DATASET.id,
+    });
     useGraphBuilderStore.setState({ ...previousGraphState, items: [makeItem()], counter: 0 });
     useDatasetFilterStore.setState({ ...previousFilterState, byDataset: {} });
     useProjectStore.setState({ ...previousProjectState, readOnly: false, dirty: false, saving: false, saveError: null });
@@ -160,6 +167,7 @@ export function TimeSeriesGraphHarness({ invalidXRows = 0 }: { invalidXRows?: nu
       dataService.getColumnDisplayProps = previousGetDisplayProps;
       dataService.getDatasetGeneration = previousGetGeneration;
       graphDataService.stream = previousStream;
+      useDataStore.setState(previousDataState, true);
       useGraphBuilderStore.setState(previousGraphState, true);
       useDatasetFilterStore.setState(previousFilterState, true);
       useProjectStore.setState(previousProjectState, true);
