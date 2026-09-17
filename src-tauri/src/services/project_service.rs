@@ -2997,15 +2997,15 @@ mod tests {
         graphs[0].body.insert(
             "filters".to_string(),
             serde_json::json!([{
-                    "id": "rule-1",
-                    "op": "AND",
-                    "rule": {
-                        "kind": "continuous",
-                        "field": { "name": "Length", "type": "continuous" },
-                        "min": 1.0,
-                        "max": 5.0
-                    }
-                }]),
+                "id": "rule-1",
+                "op": "AND",
+                "rule": {
+                    "kind": "continuous",
+                    "field": { "name": "Length", "type": "continuous" },
+                    "min": 1.0,
+                    "max": 5.0
+                }
+            }]),
         );
         graphs[1]
             .body
@@ -3038,11 +3038,8 @@ mod tests {
             "sp_legacy_filter_conflict_{}.spprj",
             uuid::Uuid::new_v4()
         ));
-        spprj_archive::write_legacy_project_archive_for_test(
-            &bundle,
-            file_path.to_str().unwrap(),
-        )
-        .unwrap();
+        spprj_archive::write_legacy_project_archive_for_test(&bundle, file_path.to_str().unwrap())
+            .unwrap();
 
         let result = ProjectService::new(&state)
             .open_project(file_path.to_str().unwrap(), None)

@@ -8,19 +8,34 @@ use crate::models::data_link::{
 pub struct DataLinkService;
 
 impl DataLinkService {
-    pub fn test_server_connection(definition: ConnectionDefinition, credentials: ConnectionCredentials) -> Result<(), DataLinkError> {
+    pub fn test_server_connection(
+        definition: ConnectionDefinition,
+        credentials: ConnectionCredentials,
+    ) -> Result<(), DataLinkError> {
         ServerConnector::new(definition, credentials)?.test_connection()
     }
 
-    pub fn list_server_objects(definition: ConnectionDefinition, credentials: ConnectionCredentials) -> Result<Vec<SourceObjectRef>, DataLinkError> {
+    pub fn list_server_objects(
+        definition: ConnectionDefinition,
+        credentials: ConnectionCredentials,
+    ) -> Result<Vec<SourceObjectRef>, DataLinkError> {
         ServerConnector::new(definition, credentials)?.list_objects()
     }
 
-    pub fn get_server_schema(definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef) -> Result<Vec<SourceColumn>, DataLinkError> {
+    pub fn get_server_schema(
+        definition: ConnectionDefinition,
+        credentials: ConnectionCredentials,
+        object: SourceObjectRef,
+    ) -> Result<Vec<SourceColumn>, DataLinkError> {
         ServerConnector::new(definition, credentials)?.schema(&object)
     }
 
-    pub fn preview_server_object(definition: ConnectionDefinition, credentials: ConnectionCredentials, object: SourceObjectRef, limit: usize) -> Result<PreviewResult, DataLinkError> {
+    pub fn preview_server_object(
+        definition: ConnectionDefinition,
+        credentials: ConnectionCredentials,
+        object: SourceObjectRef,
+        limit: usize,
+    ) -> Result<PreviewResult, DataLinkError> {
         ServerConnector::new(definition, credentials)?.preview(&object, limit)
     }
 

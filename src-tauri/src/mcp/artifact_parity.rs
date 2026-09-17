@@ -157,6 +157,25 @@ fn normalize_open_result_nondeterminism(value: &mut Value, uuid_placeholder: &st
     }
 }
 
+fn normalize_lineage_collection_order(value: &mut Value) {
+    let Some(lineage_graph) = value
+        .as_object_mut()
+        .and_then(|open_result| open_result.get_mut("lineageGraph"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+
+    for collection_name in ["nodes", "edges"] {
+        if let Some(collection) = lineage_graph
+            .get_mut(collection_name)
+            .and_then(Value::as_array_mut)
+        {
+            collection.sort_by_cached_key(Value::to_string);
+        }
+    }
+}
+
 fn seed_dataset(state: &AppState, table_seed: &CreateManagedTableRequest) -> String {
     let result = DataService::new(state)
         .create_managed_table_outcome(table_seed)
@@ -301,6 +320,7 @@ fn normalize_open_result_for_contract(
         replace_string_token(&mut value, output_id, CANONICAL_TRANSFORM_OUTPUT_DATASET_ID);
     }
     normalize_open_result_nondeterminism(&mut value, uuid_placeholder);
+    normalize_lineage_collection_order(&mut value);
     value
 }
 
@@ -342,10 +362,57 @@ fn value_field_as_str<'a>(value: &'a Value, key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("expected string field '{key}'"))
 }
 
+fn first_json_difference<'a>(
+    actual: &'a Value,
+    expected: &'a Value,
+    path: &str,
+) -> Option<(String, &'a Value, &'a Value)> {
+    match (actual, expected) {
+        (Value::Array(actual_items), Value::Array(expected_items)) => {
+            if actual_items.len() != expected_items.len() {
+                return Some((format!("{path}.length"), actual, expected));
+            }
+            actual_items
+                .iter()
+                .zip(expected_items)
+                .enumerate()
+                .find_map(|(index, (actual_item, expected_item))| {
+                    first_json_difference(actual_item, expected_item, &format!("{path}[{index}]"))
+                })
+        }
+        (Value::Object(actual_map), Value::Object(expected_map)) => {
+            let mut keys = actual_map
+                .keys()
+                .chain(expected_map.keys())
+                .collect::<Vec<_>>();
+            keys.sort();
+            keys.dedup();
+            for key in keys {
+                match (actual_map.get(key), expected_map.get(key)) {
+                    (Some(actual_child), Some(expected_child)) => {
+                        if let Some(difference) = first_json_difference(
+                            actual_child,
+                            expected_child,
+                            &format!("{path}.{key}"),
+                        ) {
+                            return Some(difference);
+                        }
+                    }
+                    _ => return Some((format!("{path}.{key}"), actual, expected)),
+                }
+            }
+            None
+        }
+        _ if actual == expected => None,
+        _ => Some((path.to_string(), actual, expected)),
+    }
+}
+
 #[test]
 fn archive_round_trip_from_canonical_payload_preserves_business_state() {
     let fixture = load_fixture();
-    let canonical_open_fixture = load_canonical_open_result_fixture();
+    let mut canonical_open_fixture = load_canonical_open_result_fixture();
+    normalize_lineage_collection_order(&mut canonical_open_fixture.canonical_open_project_result);
     let archive_path = build_archive_path("canonical");
 
     let reopened = save_then_reopen(
@@ -379,6 +446,15 @@ fn archive_round_trip_from_canonical_payload_preserves_business_state() {
         reopened.transform_output_dataset_id.as_deref(),
         &fixture.nondeterministic_policy.uuid_like,
     );
+    if let Some((path, actual, expected)) = first_json_difference(
+        &normalized_open_result,
+        &canonical_open_fixture.canonical_open_project_result,
+        "$",
+    ) {
+        panic!(
+            "Round-trip reopen result differs from canonical open contract at {path}: actual={actual:?}, expected={expected:?}"
+        );
+    }
     assert_eq!(
         normalized_open_result, canonical_open_fixture.canonical_open_project_result,
         "Round-trip reopen result must match canonical open contract"

@@ -78,7 +78,7 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
   });
 
   const dispose = await bridge.start();
-  await bridge.start();
+  const duplicateDispose = await bridge.start();
   assert.deepEqual(invocations.filter((entry) => entry.command === "register_application_command_dispatcher"), [
     { command: "register_application_command_dispatcher", args: undefined },
   ]);
@@ -139,6 +139,8 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
   });
 
   await dispose.dispose();
+  assert.equal(unlistenCalls.length, 0);
+  await duplicateDispose.dispose();
   assert.deepEqual(unlistenCalls.sort(), ["application-command-cancel", "application-command-request"]);
   assert.deepEqual(invocations.at(-1), { command: "unregister_application_command_dispatcher", args: undefined });
 }
@@ -483,8 +485,15 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
 
   const first = await bridge.start();
   const duplicate = await bridge.start();
-  assert.equal(first, duplicate);
-  await Promise.all([first.dispose(), duplicate.dispose()]);
+  assert.notEqual(first, duplicate, "each shell mount must receive an independent bridge lease");
+  await first.dispose();
+  assert.equal(
+    invocations.some((entry) => entry.command === "unregister_application_command_dispatcher"),
+    false,
+    "disposing one active lease must keep the shared dispatcher registered",
+  );
+  assert.equal(unlistenCalls.length, 0, "disposing one active lease must keep shared listeners active");
+  await duplicate.dispose();
   const second = await bridge.start();
   assert.notEqual(second, first);
   listenerSets[1]["application-command-request"]?.({
@@ -512,6 +521,138 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
     "application-command-request:1",
   ]);
   assert.equal(invocations.some((entry) => JSON.stringify(entry.args ?? {}).includes("rust-request-restarted")), true);
+}
+
+{
+  const invocations: string[] = [];
+  let finishUnregister: (() => void) | undefined;
+  const unregisterPending = new Promise<void>((resolve) => {
+    finishUnregister = resolve;
+  });
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => withRequestId(new Promise<never>(() => undefined), "unused") as never,
+    },
+    listen: async () => () => undefined,
+    invoke: async (command) => {
+      invocations.push(command);
+      if (command === "unregister_application_command_dispatcher") {
+        await unregisterPending;
+      }
+      return undefined as never;
+    },
+  });
+
+  const first = await bridge.start();
+  const cleanup = first.dispose();
+  const remount = bridge.start();
+  await Promise.resolve();
+  assert.equal(
+    invocations.filter((command) => command === "register_application_command_dispatcher").length,
+    1,
+    "remount must wait for the previous unregister before registering again",
+  );
+  finishUnregister?.();
+  await cleanup;
+  const second = await remount;
+  assert.equal(invocations.filter((command) => command === "register_application_command_dispatcher").length, 2);
+  await second.dispose();
+}
+
+{
+  const requestListeners: Listener[] = [];
+  const invocations: Array<{ command: string; args?: unknown }> = [];
+  const oldExecution = deferred<CommandResult<{ source: "old" }>>();
+  const newExecution = deferred<CommandResult<{ source: "new" }>>();
+  let executionCount = 0;
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => {
+        executionCount += 1;
+        return withRequestId(
+          executionCount === 1 ? oldExecution.promise : newExecution.promise,
+          `runtime-reused-${executionCount}`,
+        ) as never;
+      },
+    },
+    listen: async (eventName, listener) => {
+      if (eventName === "application-command-request") {
+        requestListeners.push(listener as Listener);
+      }
+      return () => undefined;
+    },
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      return undefined as never;
+    },
+  });
+
+  const first = await bridge.start();
+  requestListeners[0]({ payload: { requestId: "reused-request", command: { type: "project.inspect", input: {} } } });
+  await first.dispose();
+  const second = await bridge.start();
+  requestListeners[1]({ payload: { requestId: "reused-request", command: { type: "project.inspect", input: {} } } });
+  oldExecution.resolve({
+    requestId: "runtime-reused-1",
+    command: "project.inspect",
+    changed: false,
+    projectRevision: 1,
+    data: { source: "old" },
+    warnings: [],
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  newExecution.resolve({
+    requestId: "runtime-reused-2",
+    command: "project.inspect",
+    changed: false,
+    projectRevision: 2,
+    data: { source: "new" },
+    warnings: [],
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const completions = invocations.filter((entry) => (
+    entry.command === "complete_application_command"
+    && (entry.args as { update?: { kind?: string } } | undefined)?.update?.kind === "complete"
+  ));
+  assert.equal(completions.length, 1);
+  assert.deepEqual(
+    (completions[0].args as { update: { response: { data: unknown } } }).update.response.data,
+    { source: "new" },
+  );
+  await second.dispose();
+}
+
+{
+  const unlistenCalls: string[] = [];
+  let unregisterAttempts = 0;
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => withRequestId(new Promise<never>(() => undefined), "unused") as never,
+    },
+    listen: async (eventName) => () => {
+      unlistenCalls.push(eventName);
+    },
+    invoke: async (command) => {
+      if (command === "unregister_application_command_dispatcher") {
+        unregisterAttempts += 1;
+        if (unregisterAttempts === 1) {
+          throw new Error("temporary unregister failure");
+        }
+      }
+      return undefined as never;
+    },
+  });
+
+  const first = await bridge.start();
+  await assert.rejects(first.dispose(), /temporary unregister failure/);
+  assert.deepEqual(unlistenCalls, [], "failed unregister must not remove active event listeners");
+  const retry = await bridge.start();
+  await retry.dispose();
+  assert.equal(unregisterAttempts, 2);
+  assert.deepEqual(unlistenCalls.sort(), ["application-command-cancel", "application-command-request"]);
 }
 
 {
@@ -608,6 +749,35 @@ function withRequestId<T>(promise: Promise<T>, requestId: string): Promise<T> & 
     cause: "bridge start failed",
   });
   assert.equal(unregisterCount, 1, "workspace bridge lifecycle must mount one shell bridge and dispose once");
+}
+
+{
+  const { mountApplicationCommandBridge } = await import("@/components/workspaceApplicationCommandBridge");
+  const listenGate = deferred<void>();
+  let unregisterCount = 0;
+  const bridge = createApplicationCommandBridge({
+    runtime: {
+      execute: () => withRequestId(new Promise<never>(() => undefined), "unused") as never,
+    },
+    listen: async () => {
+      await listenGate.promise;
+      return () => undefined;
+    },
+    invoke: async (command) => {
+      if (command === "unregister_application_command_dispatcher") {
+        unregisterCount += 1;
+      }
+      return undefined as never;
+    },
+  });
+  const first = mountApplicationCommandBridge({ start: () => bridge.start() });
+  const firstCleanup = first.dispose();
+  const second = mountApplicationCommandBridge({ start: () => bridge.start() });
+  listenGate.resolve();
+  await Promise.all([first.ready, firstCleanup, second.ready]);
+  assert.equal(unregisterCount, 0, "StrictMode cleanup must not unregister the remounted shell bridge");
+  await second.dispose();
+  assert.equal(unregisterCount, 1);
 }
 
 void ({} satisfies ApplicationCommandRegistry);

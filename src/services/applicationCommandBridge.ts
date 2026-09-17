@@ -51,6 +51,8 @@ export function createApplicationCommandBridge(
   dependencies: ApplicationCommandBridgeDependencies,
 ): ApplicationCommandBridgeHandle {
   let started: Promise<ApplicationCommandBridgeDisposer> | null = null;
+  let stopping: Promise<void> | null = null;
+  let leaseCount = 0;
   let requestUnlisten: UnlistenFn | null = null;
   let cancelUnlisten: UnlistenFn | null = null;
   let disposed = false;
@@ -60,14 +62,14 @@ export function createApplicationCommandBridge(
     await dependencies.invoke("complete_application_command", { update });
   };
 
-  const emitProgress = (requestId: string, progress: {
+  const emitProgress = (requestId: string, expected: TrackedController, progress: {
     status: string;
     stage: string;
     message?: string;
     percent?: number;
   }): void => {
     const tracked = controllers.get(requestId);
-    if (!tracked || tracked.cancelled) return;
+    if (tracked !== expected || tracked.cancelled) return;
     const update: Record<string, unknown> = {
       kind: "progress",
       requestId,
@@ -89,10 +91,11 @@ export function createApplicationCommandBridge(
   const runCommand = (payload: ApplicationCommandRequestPayload): void => {
     if (disposed) return;
     const controller = new AbortController();
-    controllers.set(payload.requestId, { controller, cancelled: false, committing: false });
+    const trackedController: TrackedController = { controller, cancelled: false, committing: false };
+    controllers.set(payload.requestId, trackedController);
 
     const onProgress = (progress: CommandProgress) => {
-      emitProgress(payload.requestId, {
+      emitProgress(payload.requestId, trackedController, {
         status: "running",
         stage: progress.stage,
         message: progress.message,
@@ -102,11 +105,11 @@ export function createApplicationCommandBridge(
 
     const onStatusChange = (status: CommandStatusChange) => {
       const tracked = controllers.get(payload.requestId);
-      if (!tracked || tracked.cancelled) return;
+      if (tracked !== trackedController || tracked.cancelled) return;
       if (status.status === "committing") {
         tracked.committing = true;
       }
-      emitProgress(payload.requestId, {
+      emitProgress(payload.requestId, trackedController, {
         status: status.status,
         stage: status.stage,
         message: status.message,
@@ -122,7 +125,9 @@ export function createApplicationCommandBridge(
         { signal: controller.signal, onProgress, onStatusChange },
       );
     } catch (error) {
-      controllers.delete(payload.requestId);
+      if (controllers.get(payload.requestId) === trackedController) {
+        controllers.delete(payload.requestId);
+      }
       void complete({
         kind: "complete",
         requestId: payload.requestId,
@@ -134,7 +139,7 @@ export function createApplicationCommandBridge(
     commandPromise.then(
       (result) => {
         const tracked = controllers.get(payload.requestId);
-        if (!tracked || tracked.cancelled) return undefined;
+        if (tracked !== trackedController || tracked.cancelled) return undefined;
         return complete({
           kind: "complete",
           requestId: payload.requestId,
@@ -143,7 +148,7 @@ export function createApplicationCommandBridge(
       },
       (error) => {
         const tracked = controllers.get(payload.requestId);
-        if (!tracked || tracked.cancelled) return undefined;
+        if (tracked !== trackedController || tracked.cancelled) return undefined;
         return complete({
           kind: "complete",
           requestId: payload.requestId,
@@ -151,57 +156,97 @@ export function createApplicationCommandBridge(
         });
       },
     ).catch(() => undefined).finally(() => {
-      controllers.delete(payload.requestId);
+      if (controllers.get(payload.requestId) === trackedController) {
+        controllers.delete(payload.requestId);
+      }
     });
   };
 
   return {
     async start() {
-      if (started) return started;
-      disposed = false;
-      started = (async () => {
-        let disposeStarted = false;
+      if (stopping) {
         try {
-          requestUnlisten = await dependencies.listen<ApplicationCommandRequestPayload>(
-            APPLICATION_COMMAND_REQUEST_EVENT,
-            (event) => runCommand(event.payload),
-          );
-          cancelUnlisten = await dependencies.listen<ApplicationCommandCancelPayload>(
-            APPLICATION_COMMAND_CANCEL_EVENT,
-            (event) => cancelCommand(event.payload),
-          );
-          await dependencies.invoke("register_application_command_dispatcher");
-        } catch (error) {
-          requestUnlisten?.();
-          cancelUnlisten?.();
-          requestUnlisten = null;
-          cancelUnlisten = null;
-          started = null;
-          throw error;
+          await stopping;
+        } catch {
+          // The existing registration and listeners remain active when teardown fails.
         }
-        return {
-          async dispose() {
-            if (disposeStarted) return;
-            disposeStarted = true;
-            disposed = true;
-            for (const tracked of controllers.values()) {
-              tracked.cancelled = true;
-              tracked.controller.abort();
-            }
-            controllers.clear();
+      }
+      if (!started) {
+        disposed = false;
+        started = (async () => {
+          let disposePromise: Promise<void> | null = null;
+          try {
+            requestUnlisten = await dependencies.listen<ApplicationCommandRequestPayload>(
+              APPLICATION_COMMAND_REQUEST_EVENT,
+              (event) => runCommand(event.payload),
+            );
+            cancelUnlisten = await dependencies.listen<ApplicationCommandCancelPayload>(
+              APPLICATION_COMMAND_CANCEL_EVENT,
+              (event) => cancelCommand(event.payload),
+            );
+            await dependencies.invoke("register_application_command_dispatcher");
+          } catch (error) {
             requestUnlisten?.();
             cancelUnlisten?.();
             requestUnlisten = null;
             cancelUnlisten = null;
-            try {
-              await dependencies.invoke("unregister_application_command_dispatcher");
-            } finally {
-              started = null;
-            }
-          },
-        };
-      })();
-      return started;
+            started = null;
+            throw error;
+          }
+          return {
+            dispose() {
+              if (!disposePromise) {
+                disposePromise = (async () => {
+                  await dependencies.invoke("unregister_application_command_dispatcher");
+                  disposed = true;
+                  for (const tracked of controllers.values()) {
+                    tracked.cancelled = true;
+                    tracked.controller.abort();
+                  }
+                  controllers.clear();
+                  requestUnlisten?.();
+                  cancelUnlisten?.();
+                  requestUnlisten = null;
+                  cancelUnlisten = null;
+                  started = null;
+                })().catch((error: unknown) => {
+                  disposePromise = null;
+                  throw error;
+                });
+              }
+              return disposePromise;
+            },
+          };
+        })();
+      }
+
+      leaseCount += 1;
+      let sharedDisposer: ApplicationCommandBridgeDisposer;
+      try {
+        sharedDisposer = await started;
+      } catch (error) {
+        leaseCount -= 1;
+        throw error;
+      }
+      let leaseDisposed = false;
+      return {
+        async dispose() {
+          if (leaseDisposed) return;
+          leaseDisposed = true;
+          leaseCount -= 1;
+          if (leaseCount === 0) {
+            const stopPromise = sharedDisposer.dispose();
+            let trackedStop: Promise<void>;
+            trackedStop = stopPromise.finally(() => {
+              if (stopping === trackedStop) {
+                stopping = null;
+              }
+            });
+            stopping = trackedStop;
+            await trackedStop;
+          }
+        },
+      };
     },
   };
 }

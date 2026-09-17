@@ -50,7 +50,9 @@ impl PathAuthorizationService {
         }
 
         let canonical_root = fs::canonicalize(root_path).map_err(|error| {
-            AppError::InvalidParam(format!("output root must be an existing directory: {error}"))
+            AppError::InvalidParam(format!(
+                "output root must be an existing directory: {error}"
+            ))
         })?;
         if !canonical_root.is_dir() {
             return Err(AppError::InvalidParam(
@@ -75,9 +77,10 @@ impl PathAuthorizationService {
     }
 
     pub fn revoke_output_root(&mut self, root_id: &str) -> Result<(), AppError> {
-        self.roots.remove(root_id).map(|_| ()).ok_or_else(|| {
-            AppError::InvalidParam(format!("unknown output root id: {root_id}"))
-        })
+        self.roots
+            .remove(root_id)
+            .map(|_| ())
+            .ok_or_else(|| AppError::InvalidParam(format!("unknown output root id: {root_id}")))
     }
 
     pub fn resolve_output(
@@ -85,9 +88,10 @@ impl PathAuthorizationService {
         root_id: &str,
         relative_path: &str,
     ) -> Result<ResolvedOutputPath, AppError> {
-        let root = self.roots.get(root_id).ok_or_else(|| {
-            AppError::InvalidParam(format!("unknown output root id: {root_id}"))
-        })?;
+        let root = self
+            .roots
+            .get(root_id)
+            .ok_or_else(|| AppError::InvalidParam(format!("unknown output root id: {root_id}")))?;
 
         let relative = Path::new(relative_path);
         if relative_path.trim().is_empty() {
@@ -119,7 +123,11 @@ impl PathAuthorizationService {
             }
         }
 
-        let target_exists = validate_resolved_output_path(root, &relative.components().collect::<Vec<_>>(), &target)?;
+        let target_exists = validate_resolved_output_path(
+            root,
+            &relative.components().collect::<Vec<_>>(),
+            &target,
+        )?;
 
         Ok(ResolvedOutputPath {
             path: target,
@@ -328,8 +336,11 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let escape_root = TempDir::new().expect("escape dir");
         std::fs::create_dir_all(temp.path().join("nested")).expect("nested dir");
-        symlink(escape_root.path(), temp.path().join("nested").join("outside"))
-            .expect("symlink escape");
+        symlink(
+            escape_root.path(),
+            temp.path().join("nested").join("outside"),
+        )
+        .expect("symlink escape");
 
         let mut service = service();
         let grant = service
@@ -403,7 +414,13 @@ mod tests {
             .resolve_output(&grant.root_id, "nested/safe/new-export.csv")
             .expect("resolve nested new file");
 
-        assert_eq!(resolved.path, temp.path().join("nested").join("safe").join("new-export.csv"));
+        assert_eq!(
+            resolved.path,
+            temp.path()
+                .join("nested")
+                .join("safe")
+                .join("new-export.csv")
+        );
         assert_eq!(resolved.status, OutputPathStatus::CreateNew);
     }
 
@@ -430,7 +447,8 @@ mod tests {
     fn resolve_output_classifies_existing_target_as_overwrite() {
         let temp = TempDir::new().expect("temp dir");
         let target = temp.path().join("nested").join("existing.csv");
-        std::fs::create_dir_all(target.parent().expect("target parent")).expect("target parent dir");
+        std::fs::create_dir_all(target.parent().expect("target parent"))
+            .expect("target parent dir");
         std::fs::write(&target, b"existing").expect("seed target");
 
         let mut service = service();

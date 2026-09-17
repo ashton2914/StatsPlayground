@@ -26,8 +26,13 @@ pub struct PostHocResult {
 }
 
 pub fn holm_adjust(p_values: &[f64]) -> Result<Vec<f64>, AppError> {
-    if p_values.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
-        return Err(AppError::Stats("Holm adjustment requires finite probabilities".into()));
+    if p_values
+        .iter()
+        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err(AppError::Stats(
+            "Holm adjustment requires finite probabilities".into(),
+        ));
     }
     let mut order = p_values.iter().copied().enumerate().collect::<Vec<_>>();
     order.sort_by(|left, right| left.1.total_cmp(&right.1).then(left.0.cmp(&right.0)));
@@ -47,17 +52,27 @@ pub fn compact_letters(
     alpha: f64,
 ) -> Result<Vec<(String, String)>, AppError> {
     if conditions.is_empty() || !alpha.is_finite() || !(0.0..1.0).contains(&alpha) {
-        return Err(AppError::InvalidParam("compact letters require conditions and alpha in (0, 1)".into()));
+        return Err(AppError::InvalidParam(
+            "compact letters require conditions and alpha in (0, 1)".into(),
+        ));
     }
-    let condition_index = conditions.iter().enumerate()
+    let condition_index = conditions
+        .iter()
+        .enumerate()
         .map(|(index, condition)| (condition.as_str(), index))
         .collect::<std::collections::HashMap<_, _>>();
     let mut significant = Vec::new();
     for comparison in comparisons {
-        let left = *condition_index.get(comparison.left.as_str())
-            .ok_or_else(|| AppError::InvalidParam("post-hoc comparison has unknown condition".into()))?;
-        let right = *condition_index.get(comparison.right.as_str())
-            .ok_or_else(|| AppError::InvalidParam("post-hoc comparison has unknown condition".into()))?;
+        let left = *condition_index
+            .get(comparison.left.as_str())
+            .ok_or_else(|| {
+                AppError::InvalidParam("post-hoc comparison has unknown condition".into())
+            })?;
+        let right = *condition_index
+            .get(comparison.right.as_str())
+            .ok_or_else(|| {
+                AppError::InvalidParam("post-hoc comparison has unknown condition".into())
+            })?;
         if comparison.adjusted_p_value <= alpha {
             significant.push((left.min(right), left.max(right)));
         }
@@ -68,8 +83,20 @@ pub fn compact_letters(
         let mut next = Vec::new();
         for column in columns {
             if column.contains(&left) && column.contains(&right) {
-                next.push(column.iter().copied().filter(|index| *index != left).collect());
-                next.push(column.iter().copied().filter(|index| *index != right).collect());
+                next.push(
+                    column
+                        .iter()
+                        .copied()
+                        .filter(|index| *index != left)
+                        .collect(),
+                );
+                next.push(
+                    column
+                        .iter()
+                        .copied()
+                        .filter(|index| *index != right)
+                        .collect(),
+                );
             } else {
                 next.push(column);
             }
@@ -77,13 +104,19 @@ pub fn compact_letters(
         columns = absorb_columns(next);
     }
     columns.sort_by(|left, right| left.first().cmp(&right.first()).then(left.cmp(right)));
-    Ok(conditions.iter().enumerate().map(|(condition_index, condition)| {
-        let label = columns.iter().enumerate()
-            .filter(|(_, column)| column.contains(&condition_index))
-            .map(|(index, _)| letter_label(index))
-            .collect::<String>();
-        (condition.clone(), label)
-    }).collect())
+    Ok(conditions
+        .iter()
+        .enumerate()
+        .map(|(condition_index, condition)| {
+            let label = columns
+                .iter()
+                .enumerate()
+                .filter(|(_, column)| column.contains(&condition_index))
+                .map(|(index, _)| letter_label(index))
+                .collect::<String>();
+            (condition.clone(), label)
+        })
+        .collect())
 }
 
 fn absorb_columns(mut columns: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
@@ -91,11 +124,14 @@ fn absorb_columns(mut columns: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
     columns.sort();
     columns.dedup();
     let snapshot = columns.clone();
-    columns.into_iter().filter(|candidate| {
-        !snapshot.iter().any(|other| {
-            other.len() > candidate.len() && candidate.iter().all(|item| other.contains(item))
+    columns
+        .into_iter()
+        .filter(|candidate| {
+            !snapshot.iter().any(|other| {
+                other.len() > candidate.len() && candidate.iter().all(|item| other.contains(item))
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn letter_label(mut index: usize) -> String {
@@ -129,11 +165,14 @@ mod tests {
             comparison("B", "C", 0.20),
         ];
         let letters = compact_letters(&conditions, &comparisons, 0.05).expect("letters");
-        assert_eq!(letters, vec![
-            ("A".into(), "a".into()),
-            ("B".into(), "ab".into()),
-            ("C".into(), "b".into()),
-        ]);
+        assert_eq!(
+            letters,
+            vec![
+                ("A".into(), "a".into()),
+                ("B".into(), "ab".into()),
+                ("C".into(), "b".into()),
+            ]
+        );
     }
 
     fn comparison(left: &str, right: &str, adjusted_p_value: f64) -> PostHocComparison {

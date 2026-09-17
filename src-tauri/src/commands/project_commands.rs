@@ -67,8 +67,11 @@ pub(crate) fn create_table_transform_entry(
         .db
         .lock()
         .map_err(|error| AppError::Database(error.to_string()))?;
-    let (definition, execution) = TableTransformService::new(&engine)
-        .create_from_draft(&draft, input_bindings, &mut lineage_graph)?;
+    let (definition, execution) = TableTransformService::new(&engine).create_from_draft(
+        &draft,
+        input_bindings,
+        &mut lineage_graph,
+    )?;
     Ok(TableTransformCommandResult {
         definition,
         execution,
@@ -316,12 +319,7 @@ pub fn create_table_transform(
     input_bindings: Vec<TableTransformInputBinding>,
     lineage_graph: ProjectLineageGraph,
 ) -> Result<TableTransformCommandResult, AppError> {
-    create_table_transform_entry(
-        state.inner(),
-        draft,
-        input_bindings,
-        lineage_graph,
-    )
+    create_table_transform_entry(state.inner(), draft, input_bindings, lineage_graph)
 }
 
 #[tauri::command]
@@ -721,14 +719,13 @@ mod tests {
             engine.list_datasets().expect("list before")
         };
 
-        let error = super::preflight_run_table_transform_entry(
-            &state,
-            created.definition,
-            stale_binding,
-        )
-        .expect_err("stale definition should fail in preflight");
+        let error =
+            super::preflight_run_table_transform_entry(&state, created.definition, stale_binding)
+                .expect_err("stale definition should fail in preflight");
 
-        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("stale table transform definition revision")));
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("stale table transform definition revision"))
+        );
 
         let datasets_after = {
             let engine = state.db.lock().expect("lock database");

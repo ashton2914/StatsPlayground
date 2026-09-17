@@ -630,7 +630,7 @@ git commit -m "feat(mcp): add correlated frontend command broker"
 
 **Interfaces:**
 - Produces: `start_mcp_server() -> McpServerStatus`, `stop_mcp_server()`, `get_mcp_server_status()`, and `list_mcp_audit_entries()`.
-- Produces a single `/mcp` Streamable HTTP endpoint and all Phase 1 `statsplayground.*` tools.
+- Produces a single `/mcp` Streamable HTTP endpoint and all Phase 1 `statsplayground_*` tools.
 - Consumes: Task 9 broker and Task 8 path authorization/confirmation state.
 
 - [ ] **Step 1: Pin dependencies and write failing transport tests**

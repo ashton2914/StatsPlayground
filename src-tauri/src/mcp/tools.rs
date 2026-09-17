@@ -1962,133 +1962,133 @@ impl<E: ApplicationCommandEventEmitter> ServerHandler for StatsPlaygroundMcpServ
 pub fn tool_catalog() -> Vec<McpToolCatalogEntry> {
     vec![
         entry::<ProjectInspectToolInput, ProjectInspectToolOutput>(
-            "statsplayground.project.inspect",
+            "statsplayground_project_inspect",
             "project.inspect",
             "Inspect the current project",
             true,
         ),
         entry::<TableListToolInput, TableListToolOutput>(
-            "statsplayground.table.list",
+            "statsplayground_table_list",
             "table.list",
             "List project tables",
             true,
         ),
         entry::<TableDescribeToolInput, TableDescribeToolOutput>(
-            "statsplayground.table.describe",
+            "statsplayground_table_describe",
             "table.describe",
             "Describe one table",
             true,
         ),
         entry::<DocumentListToolInput, DocumentListToolOutput>(
-            "statsplayground.document.list",
+            "statsplayground_document_list",
             "document.list",
             "List project documents",
             true,
         ),
         entry::<DocumentGetToolInput, DocumentGetToolOutput>(
-            "statsplayground.document.get",
+            "statsplayground_document_get",
             "document.get",
             "Get a project document",
             true,
         ),
         entry::<TableCreateToolInput, TableCreateToolOutput>(
-            "statsplayground.table.create",
+            "statsplayground_table_create",
             "table.create",
             "Create a managed table",
             false,
         ),
         entry::<TableTransformCreateToolInput, TableTransformCreateToolOutput>(
-            "statsplayground.table.transform.create",
+            "statsplayground_table_transform_create",
             "tableTransform.create",
             "Create a table transform",
             false,
         ),
         entry::<TableTransformRunToolInput, TableTransformRunToolOutput>(
-            "statsplayground.table.transform.run",
+            "statsplayground_table_transform_run",
             "tableTransform.run",
             "Run a table transform",
             false,
         ),
         entry::<SqlCreateTableToolInput, SqlCreateTableToolOutput>(
-            "statsplayground.sql.create_table",
+            "statsplayground_sql_create_table",
             "sql.createTable",
             "Create a table from read-only SQL",
             false,
         ),
         entry::<TableExportCsvToolInput, TableExportCsvToolOutput>(
-            "statsplayground.table.export_csv",
+            "statsplayground_table_export_csv",
             "table.exportCsv",
             "Export a table as CSV",
             false,
         ),
         entry::<TabulateCreateToolInput, TabulateCreateToolOutput>(
-            "statsplayground.tabulate.create",
+            "statsplayground_tabulate_create",
             "tabulate.create",
             "Create a Tabulate document",
             false,
         ),
         entry::<TabulateRunToolInput, TabulateRunToolOutput>(
-            "statsplayground.tabulate.run",
+            "statsplayground_tabulate_run",
             "tabulate.run",
             "Run a Tabulate document",
             false,
         ),
         entry::<TabulateToTableToolInput, TabulateToTableToolOutput>(
-            "statsplayground.tabulate.to_table",
+            "statsplayground_tabulate_to_table",
             "tabulate.exportTable",
             "Create a table from Tabulate",
             false,
         ),
         entry::<GraphCreateToolInput, GraphCreateToolOutput>(
-            "statsplayground.graph.create",
+            "statsplayground_graph_create",
             "graph.create",
             "Create a Graph Builder document",
             false,
         ),
         entry::<GraphUpdateToolInput, GraphUpdateToolOutput>(
-            "statsplayground.graph.update",
+            "statsplayground_graph_update",
             "graph.update",
             "Update a Graph Builder document",
             false,
         ),
         entry::<AnalysisCreateToolInput, AnalysisCreateToolOutput>(
-            "statsplayground.analysis.create",
+            "statsplayground_analysis_create",
             "analysis.create",
             "Create an Analysis document",
             false,
         ),
         entry::<AnalysisUpdateToolInput, AnalysisUpdateToolOutput>(
-            "statsplayground.analysis.update",
+            "statsplayground_analysis_update",
             "analysis.update",
             "Update an Analysis document",
             false,
         ),
         entry::<AnalysisRunToolInput, AnalysisRunToolOutput>(
-            "statsplayground.analysis.run",
+            "statsplayground_analysis_run",
             "analysis.run",
             "Run an Analysis document",
             false,
         ),
         entry::<ReportCreateToolInput, ReportCreateToolOutput>(
-            "statsplayground.report.create",
+            "statsplayground_report_create",
             "report.create",
             "Create a Report document",
             false,
         ),
         entry::<ReportUpdateToolInput, ReportUpdateToolOutput>(
-            "statsplayground.report.update",
+            "statsplayground_report_update",
             "report.update",
             "Update a Report document",
             false,
         ),
         entry::<ProjectSaveToolInput, ProjectSaveToolOutput>(
-            "statsplayground.project.save",
+            "statsplayground_project_save",
             "project.save",
             "Save the current project",
             false,
         ),
         entry::<SnapshotCreateToolInput, SnapshotCreateToolOutput>(
-            "statsplayground.snapshot.create",
+            "statsplayground_snapshot_create",
             "snapshot.create",
             "Create a project snapshot",
             false,
@@ -2559,7 +2559,7 @@ mod tests {
         assert_eq!(names.len(), 22);
         assert!(names
             .iter()
-            .all(|name| name.starts_with("statsplayground.")));
+            .all(|name| name.starts_with("statsplayground_")));
     }
 
     #[test]
@@ -2582,7 +2582,7 @@ mod tests {
     fn table_create_schema_is_typed_and_rejects_unknown_top_level_fields() {
         let entry = tool_catalog()
             .into_iter()
-            .find(|entry| entry.name == "statsplayground.table.create")
+            .find(|entry| entry.name == "statsplayground_table_create")
             .expect("table.create entry");
 
         assert_eq!(entry.input_schema["required"], json!(["request"]));
@@ -2656,7 +2656,7 @@ mod tests {
     fn analysis_create_schema_is_discriminated_by_kind() {
         let entry = tool_catalog()
             .into_iter()
-            .find(|entry| entry.name == "statsplayground.analysis.create")
+            .find(|entry| entry.name == "statsplayground_analysis_create")
             .expect("analysis.create entry");
 
         let variants = entry.input_schema["oneOf"]
@@ -2684,7 +2684,7 @@ mod tests {
     fn table_describe_output_schema_is_family_specific() {
         let entry = tool_catalog()
             .into_iter()
-            .find(|entry| entry.name == "statsplayground.table.describe")
+            .find(|entry| entry.name == "statsplayground_table_describe")
             .expect("table.describe entry");
 
         assert_eq!(
@@ -2704,7 +2704,7 @@ mod tests {
         let catalog = tool_catalog();
         let transform = catalog
             .iter()
-            .find(|entry| entry.name == "statsplayground.table.transform.create")
+            .find(|entry| entry.name == "statsplayground_table_transform_create")
             .expect("table transform create entry");
         let operation = find_schema_property(&transform.input_schema, "operation")
             .expect("transform operation schema");
@@ -2716,7 +2716,7 @@ mod tests {
 
         let graph = catalog
             .iter()
-            .find(|entry| entry.name == "statsplayground.graph.update")
+            .find(|entry| entry.name == "statsplayground_graph_update")
             .expect("graph update entry");
         let definition = find_schema_property(&graph.input_schema, "definition")
             .expect("graph definition schema");
@@ -2741,7 +2741,7 @@ mod tests {
         }))
         .expect("raw MCP arguments object");
         let envelope = project_tool_request_to_application_command_envelope(
-            "statsplayground.table.describe",
+            "statsplayground_table_describe",
             Some(raw_arguments),
         )
         .expect("table.describe should project into a canonical command envelope");
@@ -2824,7 +2824,7 @@ mod tests {
             async move {
                 server
                     .call_catalog_tool(
-                        CallToolRequestParams::new("statsplayground.table.describe")
+                        CallToolRequestParams::new("statsplayground_table_describe")
                             .with_arguments(arguments),
                         None,
                     )
@@ -2911,7 +2911,7 @@ mod tests {
 
         let result = server
             .call_catalog_tool(
-                CallToolRequestParams::new("statsplayground.table.export_csv")
+                CallToolRequestParams::new("statsplayground_table_export_csv")
                     .with_arguments(arguments),
                 None,
             )

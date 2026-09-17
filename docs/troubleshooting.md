@@ -342,3 +342,79 @@ Select-String -Path src/graphCore/*.ts,src/components/**/*.tsx `
 - 写涉及大数据的代码时要**主动**用 `for` 循环、批处理、`requestIdleCallback` 等防御技巧，而不是依赖框架兜底。
 
 如有需要，后续可在 `Workspace.tsx` 顶层加一个简单的 ErrorBoundary，把异常 fallback 成可读错误页，避免一直裸奔。
+
+---
+
+## 7. MCP Command Layer 常见问题
+
+### `app_not_ready`
+
+**现象**
+
+- MCP 调用返回结构化错误 `app_not_ready`。
+
+**根因**
+
+- 应用命令 dispatcher 尚未注册，或 MCP 服务未处于 running。
+
+**处理**
+
+- 先在应用 MCP 面板手动启动服务。
+- 确认 running 后再发起 `tools/call`。
+
+### `401 Unauthorized`
+
+**现象**
+
+- 服务返回 401。
+
+**根因**
+
+- 缺失 `Authorization` header，或服务重启/停止后 token 已轮换失效。
+
+**处理**
+
+- 从 MCP 面板重新复制当前 token。
+- 使用 `Authorization: Bearer <token>`。
+
+### `403 Forbidden`
+
+**现象**
+
+- 带 Origin 的调用返回 403。
+
+**根因**
+
+- Origin/Host 不在 loopback 允许范围内。
+
+**处理**
+
+- 使用应用显示的 loopback endpoint。
+- 不要经由远端域名或代理转发调用。
+
+### `revision_conflict`
+
+**现象**
+
+- mutation 命令返回 `revision_conflict`。
+
+**根因**
+
+- `expectedProjectRevision` 已过期。
+
+**处理**
+
+- 先重新 `project.inspect` 获取最新 revision。
+- 带新 revision 重新执行 mutation。
+
+### CSV 导出覆盖确认与路径授权
+
+**现象**
+
+- `confirmation_required`：目标已存在但未确认覆盖。
+- `path_not_authorized`：rootId 无效、路径越界，或传入了绝对路径。
+
+**处理**
+
+- 仅使用已授权根目录对应的 `rootId + relativePath`。
+- 覆盖流程必须在应用内完成确认。

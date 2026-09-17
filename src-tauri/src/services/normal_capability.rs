@@ -367,11 +367,13 @@ pub fn normal_process_summary_with_nested_subgroups(
         .values()
         .map(|subgroup| subgroup.len().saturating_sub(2) as u64)
         .sum::<u64>();
-    let moving_range_sum = compensated_sum(subgroups.values().flat_map(|subgroup| {
-        subgroup.windows(2).map(|pair| (pair[1] - pair[0]).abs())
-    }));
-    summary.moving_range_average = (moving_range_count > 0)
-        .then(|| moving_range_sum / moving_range_count as f64);
+    let moving_range_sum = compensated_sum(
+        subgroups
+            .values()
+            .flat_map(|subgroup| subgroup.windows(2).map(|pair| (pair[1] - pair[0]).abs())),
+    );
+    summary.moving_range_average =
+        (moving_range_count > 0).then(|| moving_range_sum / moving_range_count as f64);
     let within_effective_degrees_of_freedom = (moving_range_count > 0).then(|| {
         moving_range_effective_degrees_of_freedom(
             moving_range_count,
@@ -935,7 +937,10 @@ mod tests {
             (8.0, Some("A")),
         ]);
 
-        assert_eq!(nested.summary.moving_range_average, legacy.moving_range_average);
+        assert_eq!(
+            nested.summary.moving_range_average,
+            legacy.moving_range_average
+        );
         assert_eq!(nested.summary.within_sigma, legacy.within_sigma);
         assert_eq!(
             nested.within_effective_degrees_of_freedom,
@@ -963,17 +968,19 @@ mod tests {
 
         assert_ne!(nested.cp, legacy.cp);
         assert_eq!(nested.pp, legacy.pp);
-        assert_eq!(nested.provenance.within_effective_degrees_of_freedom, Some(2.0));
-
-        let no_ranges = capability_intervals_with_within_degrees_of_freedom(
-            &summary,
-            &indices,
-            0.95,
-            None,
+        assert_eq!(
+            nested.provenance.within_effective_degrees_of_freedom,
+            Some(2.0)
         );
+
+        let no_ranges =
+            capability_intervals_with_within_degrees_of_freedom(&summary, &indices, 0.95, None);
         assert_eq!(no_ranges.cp.lower.state, NumericStateV1::Unavailable);
         assert_eq!(no_ranges.pp, legacy.pp);
-        assert_eq!(no_ranges.provenance.within_effective_degrees_of_freedom, None);
+        assert_eq!(
+            no_ranges.provenance.within_effective_degrees_of_freedom,
+            None
+        );
     }
 
     #[test]
@@ -997,8 +1004,7 @@ mod tests {
             0.95,
             nested.within_effective_degrees_of_freedom,
         );
-        let nonconformance =
-            nonconformance_metrics(&nested.summary, &limits, &values, 0.95);
+        let nonconformance = nonconformance_metrics(&nested.summary, &limits, &values, 0.95);
         let chart = capability_chart_data(
             &limits,
             &nested.summary,
@@ -1568,8 +1574,8 @@ pub fn capability_intervals_with_within_degrees_of_freedom(
         return intervals;
     }
 
-    let Some(within_degrees_of_freedom) = within_degrees_of_freedom
-        .filter(|value| value.is_finite() && *value > 0.0)
+    let Some(within_degrees_of_freedom) =
+        within_degrees_of_freedom.filter(|value| value.is_finite() && *value > 0.0)
     else {
         intervals.cp = unavailable_interval_from_point(
             &indices.cp,

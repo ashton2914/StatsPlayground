@@ -313,11 +313,11 @@ Tool names use the stable `statsplayground.<domain>.<action>` namespace.
 
 | MCP tool | Application command | Result |
 | --- | --- | --- |
-| `statsplayground.project.inspect` | `project.inspect` | Project metadata, dirty/read-only state, revision, object summaries, and capabilities. |
-| `statsplayground.table.list` | `table.list` | Paginated stable IDs, names, and row/column counts. |
-| `statsplayground.table.describe` | `table.describe` | Schema, complete display/extras properties, generation, and optional bounded preview. |
-| `statsplayground.document.list` | `document.list` | Paginated Transform, Tabulate, Graph, Analysis, and Report summaries. |
-| `statsplayground.document.get` | `document.get` | Full current document definition and execution state by stable ID. |
+| `statsplayground_project_inspect` | `project.inspect` | Project metadata, dirty/read-only state, revision, object summaries, and capabilities. |
+| `statsplayground_table_list` | `table.list` | Paginated stable IDs, names, and row/column counts. |
+| `statsplayground_table_describe` | `table.describe` | Schema, complete display/extras properties, generation, and optional bounded preview. |
+| `statsplayground_document_list` | `document.list` | Paginated Transform, Tabulate, Graph, Analysis, and Report summaries. |
+| `statsplayground_document_get` | `document.get` | Full current document definition and execution state by stable ID. |
 
 Preview is opt-in and row-limited. No inspect tool returns an entire unbounded
 Table or an absolute filesystem path.
@@ -326,11 +326,11 @@ Table or an absolute filesystem path.
 
 | MCP tool | Application command | Result |
 | --- | --- | --- |
-| `statsplayground.table.create` | `table.create` | Managed Table ID, final name, generation, schema, and complete column properties. |
-| `statsplayground.table.transform.create` | `tableTransform.create` | Persistent Transform definition and ID. |
-| `statsplayground.table.transform.run` | `tableTransform.run` | Updated target Table and execution summary. |
-| `statsplayground.sql.create_table` | `sql.createTable` | New managed Table created from the complete query result. |
-| `statsplayground.table.export_csv` | `table.exportCsv` | Authorized root alias, relative path, and export summary. |
+| `statsplayground_table_create` | `table.create` | Managed Table ID, final name, generation, schema, and complete column properties. |
+| `statsplayground_table_transform_create` | `tableTransform.create` | Persistent Transform definition and ID. |
+| `statsplayground_table_transform_run` | `tableTransform.run` | Updated target Table and execution summary. |
+| `statsplayground_sql_create_table` | `sql.createTable` | New managed Table created from the complete query result. |
+| `statsplayground_table_export_csv` | `table.exportCsv` | Authorized root alias, relative path, and export summary. |
 
 `sql.createTable` does not create a persisted SQL document. It reuses the
 existing SQL Query product behavior: execute one read-only query and explicitly
@@ -340,16 +340,16 @@ create a managed result Table.
 
 | MCP tool | Application command | Result |
 | --- | --- | --- |
-| `statsplayground.tabulate.create` | `tabulate.create` | Canonical Tabulate document and ID. |
-| `statsplayground.tabulate.run` | `tabulate.run` | Persisted latest execution state and summary. |
-| `statsplayground.tabulate.to_table` | `tabulate.exportTable` | Canonical managed Table from a current or refreshed result. |
-| `statsplayground.graph.create` | `graph.create` | Canonical Graph Builder document and ID. |
-| `statsplayground.graph.update` | `graph.update` | Validated updated Graph definition. |
-| `statsplayground.analysis.create` | `analysis.create` | Canonical registered Analysis document and ID. |
-| `statsplayground.analysis.update` | `analysis.update` | Validated definition or presentation update. |
-| `statsplayground.analysis.run` | `analysis.run` | Current result summary under the full Analysis stale fence. |
-| `statsplayground.report.create` | `report.create` | Canonical Report document and ID. |
-| `statsplayground.report.update` | `report.update` | Updated Markdown and validated project references. |
+| `statsplayground_tabulate_create` | `tabulate.create` | Canonical Tabulate document and ID. |
+| `statsplayground_tabulate_run` | `tabulate.run` | Persisted latest execution state and summary. |
+| `statsplayground_tabulate_to_table` | `tabulate.exportTable` | Canonical managed Table from a current or refreshed result. |
+| `statsplayground_graph_create` | `graph.create` | Canonical Graph Builder document and ID. |
+| `statsplayground_graph_update` | `graph.update` | Validated updated Graph definition. |
+| `statsplayground_analysis_create` | `analysis.create` | Canonical registered Analysis document and ID. |
+| `statsplayground_analysis_update` | `analysis.update` | Validated definition or presentation update. |
+| `statsplayground_analysis_run` | `analysis.run` | Current result summary under the full Analysis stale fence. |
+| `statsplayground_report_create` | `report.create` | Canonical Report document and ID. |
+| `statsplayground_report_update` | `report.update` | Updated Markdown and validated project references. |
 
 Analysis uses one tool family with a registry-constrained `kind`; it does not
 add a transport-level tool for every statistical method. The input schema or
@@ -360,8 +360,8 @@ kind-specific definition.
 
 | MCP tool | Application command | Result |
 | --- | --- | --- |
-| `statsplayground.project.save` | `project.save` | Saved project identity and revision without absolute path disclosure. |
-| `statsplayground.snapshot.create` | `snapshot.create` | Snapshot ID, name, timestamp, and project revision. |
+| `statsplayground_project_save` | `project.save` | Saved project identity and revision without absolute path disclosure. |
+| `statsplayground_snapshot_create` | `snapshot.create` | Snapshot ID, name, timestamp, and project revision. |
 
 `project.save` saves only to the current project destination. A project without
 a writable current path returns `project_path_required`; MCP cannot turn that
@@ -469,7 +469,7 @@ project archive and do not silently transfer to another machine.
 
 ## SQL Safety
 
-`statsplayground.sql.create_table` accepts exactly one query that produces a
+`statsplayground_sql_create_table` accepts exactly one query that produces a
 result set. It reuses the existing AST allowlist and database hardening rather
 than keyword checks.
 

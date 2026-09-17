@@ -203,10 +203,7 @@ pub trait FitModel {
     fn pdf(&self, estimate: &FitEstimateV1, x: f64) -> Result<f64, FitFailureV1>;
 }
 
-pub fn attach_parameter_inference(
-    estimate: &mut FitEstimateV1,
-    observations: &[FitObservationV1],
-) {
+pub fn attach_parameter_inference(estimate: &mut FitEstimateV1, observations: &[FitObservationV1]) {
     let values = estimate
         .parameters
         .iter()
@@ -276,10 +273,7 @@ fn available_typed_value(value: f64) -> CapabilityTypedValueV1 {
     }
 }
 
-fn set_parameter_inference_unavailable(
-    parameter: &mut DistributionFitParameterV1,
-    reason: &str,
-) {
+fn set_parameter_inference_unavailable(parameter: &mut DistributionFitParameterV1, reason: &str) {
     let unavailable = unavailable_metric(reason);
     parameter.standard_error = unavailable.clone();
     parameter.lower_confidence = unavailable.clone();
@@ -304,8 +298,12 @@ fn trigamma(mut value: f64) -> Option<f64> {
 }
 
 fn gamma_standard_errors(shape: f64, scale: f64, total_weight: f64) -> Option<Vec<f64>> {
-    if !shape.is_finite() || shape <= 0.0 || !scale.is_finite() || scale <= 0.0
-        || !total_weight.is_finite() || total_weight <= 0.0
+    if !shape.is_finite()
+        || shape <= 0.0
+        || !scale.is_finite()
+        || scale <= 0.0
+        || !total_weight.is_finite()
+        || total_weight <= 0.0
     {
         return None;
     }
@@ -361,25 +359,30 @@ fn weibull_standard_errors(
         plus[index] += steps[index];
         minus[index] -= steps[index];
         hessian[index][index] =
-            (objective(plus)? - 2.0 * center_value + objective(minus)?)
-                / steps[index].powi(2);
+            (objective(plus)? - 2.0 * center_value + objective(minus)?) / steps[index].powi(2);
     }
     let mut plus_plus = center;
     let mut plus_minus = center;
     let mut minus_plus = center;
     let mut minus_minus = center;
-    plus_plus[0] += steps[0]; plus_plus[1] += steps[1];
-    plus_minus[0] += steps[0]; plus_minus[1] -= steps[1];
-    minus_plus[0] -= steps[0]; minus_plus[1] += steps[1];
-    minus_minus[0] -= steps[0]; minus_minus[1] -= steps[1];
-    let cross = (objective(plus_plus)? - objective(plus_minus)?
-        - objective(minus_plus)? + objective(minus_minus)?)
+    plus_plus[0] += steps[0];
+    plus_plus[1] += steps[1];
+    plus_minus[0] += steps[0];
+    plus_minus[1] -= steps[1];
+    minus_plus[0] -= steps[0];
+    minus_plus[1] += steps[1];
+    minus_minus[0] -= steps[0];
+    minus_minus[1] -= steps[1];
+    let cross = (objective(plus_plus)? - objective(plus_minus)? - objective(minus_plus)?
+        + objective(minus_minus)?)
         / (4.0 * steps[0] * steps[1]);
     hessian[0][1] = cross;
     hessian[1][0] = cross;
     let determinant = hessian[0][0] * hessian[1][1] - cross * cross;
-    if !determinant.is_finite() || determinant <= 0.0
-        || hessian[0][0] <= 0.0 || hessian[1][1] <= 0.0
+    if !determinant.is_finite()
+        || determinant <= 0.0
+        || hessian[0][0] <= 0.0
+        || hessian[1][1] <= 0.0
     {
         return None;
     }
@@ -1399,9 +1402,7 @@ pub fn build_pdf_curve(
         }
         let y = match model.pdf(estimate, x) {
             Err(failure)
-                if index == 0
-                    && x == 0.0
-                    && failure.reason_code == PDF_NON_FINITE_REASON =>
+                if index == 0 && x == 0.0 && failure.reason_code == PDF_NON_FINITE_REASON =>
             {
                 x = (step / 1024.0).max(f64::MIN_POSITIVE);
                 model.pdf(estimate, x)?
@@ -1776,7 +1777,8 @@ fn available_parameter(
         return Err(objective_failure(LOG_LIKELIHOOD_INVALID_REASON));
     }
 
-    let inference_unavailable = unavailable_metric("distribution.fit.parameterInferenceUnavailable.v1");
+    let inference_unavailable =
+        unavailable_metric("distribution.fit.parameterInferenceUnavailable.v1");
     Ok(DistributionFitParameterV1 {
         parameter_id: parameter_id.to_string(),
         value: CapabilityTypedValueV1 {
@@ -1890,15 +1892,14 @@ fn value_from_metric(metric: &CapabilityTypedValueV1) -> Result<f64, AppError> {
 mod tests {
     use super::{
         attach_parameter_inference, build_pdf_curve, closed_form_convergence, effective_n,
-        fit_information_criteria, objective_failure,
-        optimized_convergence, positive_transform, refine_score_root, run_optimizer,
-        total_frequency, weibull_profile_parameters, ArgminBrentOptimizerV1, ExponentialFitV1,
-        FitEstimateV1, FitFailureClassificationV1, FitFailureV1, FitModel, FitObjective,
-        FitObservationV1, FitOptimizationProblemV1, FitOptimizationResultV1,
-        FitOptimizationStateV1, FitOptimizer, GammaFitV1, GammaObjectiveV1, LognormalFitV1,
-        NormalFitV1, WeibullFitV1, WeibullObjectiveV1, ARGMIN_BRENT_OPTIMIZER_ID,
-        ARGMIN_BRENT_OPTIMIZER_VERSION, CONTINUOUS_FIT_ITERATION_LIMIT, CONTINUOUS_FIT_TOLERANCE,
-        trigamma, LOG_LIKELIHOOD_INVALID_REASON, STAGE1_FIT_REGISTRY,
+        fit_information_criteria, objective_failure, optimized_convergence, positive_transform,
+        refine_score_root, run_optimizer, total_frequency, trigamma, weibull_profile_parameters,
+        ArgminBrentOptimizerV1, ExponentialFitV1, FitEstimateV1, FitFailureClassificationV1,
+        FitFailureV1, FitModel, FitObjective, FitObservationV1, FitOptimizationProblemV1,
+        FitOptimizationResultV1, FitOptimizationStateV1, FitOptimizer, GammaFitV1,
+        GammaObjectiveV1, LognormalFitV1, NormalFitV1, WeibullFitV1, WeibullObjectiveV1,
+        ARGMIN_BRENT_OPTIMIZER_ID, ARGMIN_BRENT_OPTIMIZER_VERSION, CONTINUOUS_FIT_ITERATION_LIMIT,
+        CONTINUOUS_FIT_TOLERANCE, LOG_LIKELIHOOD_INVALID_REASON, STAGE1_FIT_REGISTRY,
     };
     use crate::engine::distribution_executor::PreparedObservationV1;
     use crate::models::distribution::{
@@ -2696,7 +2697,11 @@ mod tests {
         attach_parameter_inference(&mut compact_fit, &compact);
         attach_parameter_inference(&mut expanded_fit, &expanded);
 
-        for (left, right) in compact_fit.parameters.iter().zip(expanded_fit.parameters.iter()) {
+        for (left, right) in compact_fit
+            .parameters
+            .iter()
+            .zip(expanded_fit.parameters.iter())
+        {
             assert_close(left.value.value.unwrap(), right.value.value.unwrap());
             assert_numerical_inference_close(
                 left.standard_error.value.unwrap(),
@@ -3589,7 +3594,8 @@ mod tests {
                 Err(FitFailureV1 { reason_code, classification: FitFailureClassificationV1::Curve })
                     if reason_code == "distribution.fit.pdfNonFinite.v1"
             ));
-            let gamma_curve = build_pdf_curve(&GammaFitV1, &gamma_shape_below_one, 0.0, 4.0).unwrap();
+            let gamma_curve =
+                build_pdf_curve(&GammaFitV1, &gamma_shape_below_one, 0.0, 4.0).unwrap();
             assert_eq!(gamma_curve.len(), 256);
             assert!(gamma_curve[0].x > 0.0 && gamma_curve[0].y.is_finite());
 
@@ -3656,7 +3662,10 @@ mod tests {
             assert!((WeibullFitV1.pdf(&weibull_shape_one, 0.0).unwrap() - 0.5).abs() < 1e-12);
             let mut weibull_shape_above_one = weibull_shape_one.clone();
             weibull_shape_above_one.parameters[0].value.value = Some(2.0);
-            assert_eq!(WeibullFitV1.pdf(&weibull_shape_above_one, 0.0).unwrap(), 0.0);
+            assert_eq!(
+                WeibullFitV1.pdf(&weibull_shape_above_one, 0.0).unwrap(),
+                0.0
+            );
             let mut weibull_shape_below_one = weibull_shape_one.clone();
             weibull_shape_below_one.parameters[0].value.value = Some(0.5);
             assert!(matches!(
@@ -3664,7 +3673,8 @@ mod tests {
                 Err(FitFailureV1 { reason_code, classification: FitFailureClassificationV1::Curve })
                     if reason_code == "distribution.fit.pdfNonFinite.v1"
             ));
-            let weibull_curve = build_pdf_curve(&WeibullFitV1, &weibull_shape_below_one, 0.0, 4.0).unwrap();
+            let weibull_curve =
+                build_pdf_curve(&WeibullFitV1, &weibull_shape_below_one, 0.0, 4.0).unwrap();
             assert_eq!(weibull_curve.len(), 256);
             assert!(weibull_curve[0].x > 0.0 && weibull_curve[0].y.is_finite());
 

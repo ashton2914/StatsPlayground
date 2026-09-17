@@ -3367,8 +3367,8 @@ pub fn read_table_file(path: &str) -> Result<TableDoc, AppError> {
 /// Write a single `GraphDoc` to a `.spgh` file.
 pub fn write_graph_file(doc: &GraphDoc, path: &str) -> Result<(), AppError> {
     let sanitized = without_standalone_filters(doc);
-    let bytes = serde_json::to_vec_pretty(&sanitized)
-        .map_err(|e| AppError::FileIO(e.to_string()))?;
+    let bytes =
+        serde_json::to_vec_pretty(&sanitized).map_err(|e| AppError::FileIO(e.to_string()))?;
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -6838,8 +6838,14 @@ mod tests {
         })]);
 
         assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
-        assert_eq!(docs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert_eq!(
+            docs[0].body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
+        assert_eq!(
+            docs[0].body.get("title"),
+            Some(&serde_json::json!("Preserved"))
+        );
         assert!(!docs[0].body.contains_key("filters"));
     }
 
@@ -6855,7 +6861,10 @@ mod tests {
         let persisted = read_graph_file(path.to_str().unwrap()).unwrap();
 
         assert!(!persisted.body.contains_key("filters"));
-        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        assert_eq!(
+            persisted.body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -6891,10 +6900,14 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         let graph_entry = &bundle.manifest.graphs[0].file;
-        let persisted: GraphDoc = serde_json::from_reader(archive.by_name(graph_entry).unwrap()).unwrap();
+        let persisted: GraphDoc =
+            serde_json::from_reader(archive.by_name(graph_entry).unwrap()).unwrap();
 
         assert!(!persisted.body.contains_key("filters"));
-        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        assert_eq!(
+            persisted.body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
         drop(archive);
         let _ = std::fs::remove_file(path);
     }
@@ -7073,7 +7086,10 @@ mod tests {
         assert!(migrated.dataset_filters.is_empty());
         assert!(migrated.conflicts.is_empty());
         assert!(migrated.changed);
-        assert_eq!(graphs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert_eq!(
+            graphs[0].body.get("title"),
+            Some(&serde_json::json!("Preserved"))
+        );
         assert!(!graphs[0].body.contains_key("filters"));
     }
 

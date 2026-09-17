@@ -18,6 +18,22 @@ use crate::mcp::tools::{McpAuditLog, StatsPlaygroundMcpServer};
 use crate::models::mcp::{McpAuditEntry, McpServerStatus};
 
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+#[cfg(debug_assertions)]
+const MCP_BIND_ENV: &str = "STATSPLAYGROUND_MCP_BIND";
+#[cfg(debug_assertions)]
+const MCP_TOKEN_ENV: &str = "STATSPLAYGROUND_MCP_TOKEN";
+
+struct McpStartConfiguration {
+    bind_address: String,
+    token: BearerToken,
+}
+
+fn production_start_configuration() -> McpStartConfiguration {
+    McpStartConfiguration {
+        bind_address: "127.0.0.1:0".to_string(),
+        token: BearerToken::generate(),
+    }
+}
 
 pub struct McpServerRuntime {
     inner: Mutex<McpServerState>,
@@ -67,8 +83,23 @@ impl McpServerRuntime {
             }
         }
 
-        let token = BearerToken::generate();
-        let listener = match TcpListener::bind("127.0.0.1:0").await {
+        let configuration = mcp_start_configuration();
+        let bind_address: SocketAddr = match configuration.bind_address.parse() {
+            Ok(address) => address,
+            Err(error) => {
+                self.finish_failed_start()?;
+                return Err(AppError::InvalidParam(format!(
+                    "Invalid MCP bind address: {error}"
+                )));
+            }
+        };
+        if !bind_address.ip().is_loopback() {
+            self.finish_failed_start()?;
+            return Err(AppError::InvalidParam(
+                "MCP server bind address must use loopback".to_string(),
+            ));
+        }
+        let listener = match TcpListener::bind(bind_address).await {
             Ok(listener) => listener,
             Err(error) => {
                 self.finish_failed_start()?;
@@ -83,6 +114,7 @@ impl McpServerRuntime {
             }
         };
         let endpoint = endpoint_for(address);
+        let token = configuration.token;
         let security_state = McpHttpSecurityState::new(token.clone());
         let limits_state = McpHttpLimitsState::default();
         let audit_log = self.audit_log.clone();
@@ -219,6 +251,21 @@ fn endpoint_for(address: SocketAddr) -> String {
     format!("http://127.0.0.1:{}/mcp", address.port())
 }
 
+#[cfg(debug_assertions)]
+fn mcp_start_configuration() -> McpStartConfiguration {
+    McpStartConfiguration {
+        bind_address: std::env::var(MCP_BIND_ENV).unwrap_or_else(|_| "127.0.0.1:0".to_string()),
+        token: std::env::var(MCP_TOKEN_ENV)
+            .map(BearerToken::from_runtime_value)
+            .unwrap_or_else(|_| BearerToken::generate()),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn mcp_start_configuration() -> McpStartConfiguration {
+    production_start_configuration()
+}
+
 fn inactive_status(state: &str) -> McpServerStatus {
     McpServerStatus {
         state: state.to_string(),
@@ -250,5 +297,18 @@ mod tests {
     fn endpoint_uses_ipv4_loopback_and_mcp_path() {
         let address = SocketAddr::from(([127, 0, 0, 1], 48123));
         assert_eq!(endpoint_for(address), "http://127.0.0.1:48123/mcp");
+    }
+
+    #[test]
+    fn production_configuration_uses_random_loopback_defaults() {
+        let first = production_start_configuration();
+        let second = production_start_configuration();
+
+        assert_eq!(first.bind_address, "127.0.0.1:0");
+        assert_eq!(second.bind_address, "127.0.0.1:0");
+        assert_ne!(
+            first.token.expose_for_management(),
+            second.token.expose_for_management()
+        );
     }
 }

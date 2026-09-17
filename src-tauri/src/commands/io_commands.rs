@@ -63,10 +63,7 @@ pub fn authorize_csv_export_root(
 }
 
 #[tauri::command]
-pub fn revoke_csv_export_root(
-    state: State<'_, AppState>,
-    root_id: String,
-) -> Result<(), AppError> {
+pub fn revoke_csv_export_root(state: State<'_, AppState>, root_id: String) -> Result<(), AppError> {
     let service = IoService::new(&state);
     service.revoke_output_root(&root_id)
 }

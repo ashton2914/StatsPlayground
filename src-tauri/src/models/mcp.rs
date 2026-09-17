@@ -157,7 +157,11 @@ pub struct McpBrokerCompletion {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum McpBrokerUpdate {
     Progress {
         request_id: String,
@@ -200,5 +204,32 @@ impl McpBrokerUpdate {
                 response,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::McpBrokerUpdate;
+
+    #[test]
+    fn frontend_completion_payload_deserializes_for_the_broker() {
+        let update: McpBrokerUpdate = serde_json::from_value(json!({
+            "kind": "complete",
+            "requestId": "request-1",
+            "response": {
+                "kind": "success",
+                "changed": false,
+                "projectRevision": 0,
+                "data": { "project": null },
+                "warnings": []
+            }
+        }))
+        .expect("deserialize frontend completion");
+
+        assert!(
+            matches!(update, McpBrokerUpdate::Complete { request_id, .. } if request_id == "request-1")
+        );
     }
 }

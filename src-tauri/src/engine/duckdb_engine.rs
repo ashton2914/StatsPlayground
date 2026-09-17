@@ -14,13 +14,13 @@ use crate::engine::sql_query::{normalize_identifier, validate_read_only_query};
 use crate::error::AppError;
 use crate::models::data_link::SourceObjectRef;
 use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRow, FitYByXRows};
-use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::graph_data::{
     BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, CorrelationMatrixCell, CorrelationMatrixPacket,
     CorrelationMethod, CorrelationUnavailableReason, GraphAggregatePacket, GraphDataRequest,
     GraphSampling, HeatmapCell, HeatmapPacket, HistogramBin, HistogramPacket, SummaryEntry,
     SummaryPacket, GRAPH_VIRTUAL_SOURCE_COLUMN, GRAPH_VIRTUAL_VALUE_COLUMN,
 };
+use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::table::{
     CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
     TableQueryResult, TableWindowFilterRule, TableWindowRequest, TableWindowResult,
@@ -4056,9 +4056,7 @@ impl DuckDbEngine {
                             ));
                         }
                         let row_id = i64::try_from(row.source_index).map_err(|_| {
-                            AppError::InvalidParam(
-                                "Database row index is out of range".to_string(),
-                            )
+                            AppError::InvalidParam("Database row index is out of range".to_string())
                         })?;
                         let mut values = Vec::with_capacity(columns.len() + 1);
                         values.push(Value::BigInt(row_id));
@@ -4132,9 +4130,13 @@ impl DuckDbEngine {
         let base = source_type.split(['(', ' ']).next().unwrap_or("");
         match base {
             "bigint" if source_type.contains("unsigned") => "VARCHAR",
-            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => "BIGINT",
+            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => {
+                "BIGINT"
+            }
             "float" | "double" | "real" => "DOUBLE",
-            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => "BLOB",
+            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => {
+                "BLOB"
+            }
             _ => "VARCHAR",
         }
     }
@@ -8440,12 +8442,21 @@ impl DuckDbEngine {
                 .iter()
                 .find(|(name, _)| name == &field.name)
                 .map(|(_, column_type)| column_type.as_str())
-                .ok_or_else(|| AppError::InvalidParam(format!("unknown hypothesis test column: {}", field.name)))
+                .ok_or_else(|| {
+                    AppError::InvalidParam(format!(
+                        "unknown hypothesis test column: {}",
+                        field.name
+                    ))
+                })
         };
         let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
 
         match roles {
-            HypothesisTestRoles::Long { response, condition, subject } => {
+            HypothesisTestRoles::Long {
+                response,
+                condition,
+                subject,
+            } => {
                 if response.name == condition.name
                     || subject.as_ref().is_some_and(|field| {
                         field.name == response.name || field.name == condition.name
@@ -8463,7 +8474,10 @@ impl DuckDbEngine {
                 }
                 column_type(condition)?;
                 let condition_role = self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
-                if !matches!(condition_role.to_ascii_lowercase().as_str(), "nominal" | "ordinal") {
+                if !matches!(
+                    condition_role.to_ascii_lowercase().as_str(),
+                    "nominal" | "ordinal"
+                ) {
                     return Err(AppError::InvalidParam(format!(
                         "hypothesis test condition must be categorical: {}",
                         condition.name
@@ -8475,7 +8489,8 @@ impl DuckDbEngine {
 
                 let response = Self::quote_identifier(&response.name);
                 let condition = Self::quote_identifier(&condition.name);
-                let subject_projection = subject.as_ref()
+                let subject_projection = subject
+                    .as_ref()
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
@@ -8485,8 +8500,10 @@ impl DuckDbEngine {
                 let mut query_rows = statement.query([])?;
                 let mut rows = Vec::new();
                 while let Some(row) = query_rows.next()? {
-                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
-                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let identity =
+                        fit_y_by_x_display_value(row.get::<_, Value>(0)?).ok_or_else(|| {
+                            AppError::Stats("hypothesis test row identity is missing".into())
+                        })?;
                     rows.push(LongHypothesisTestRow {
                         identity,
                         response: fit_y_by_x_numeric_value(row.get::<_, Value>(1)?),
@@ -8500,7 +8517,10 @@ impl DuckDbEngine {
                 }
                 Ok(HypothesisTestRows::Long(rows))
             }
-            HypothesisTestRoles::Wide { measurements, subject } => {
+            HypothesisTestRoles::Wide {
+                measurements,
+                subject,
+            } => {
                 if measurements.len() < 2 {
                     return Err(AppError::InvalidParam(
                         "wide hypothesis test requires at least two measurement columns".into(),
@@ -8529,11 +8549,13 @@ impl DuckDbEngine {
                     column_type(subject)?;
                 }
 
-                let measurement_projection = measurements.iter()
+                let measurement_projection = measurements
+                    .iter()
                     .map(|field| Self::quote_identifier(&field.name))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let subject_projection = subject.as_ref()
+                let subject_projection = subject
+                    .as_ref()
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
@@ -8543,8 +8565,10 @@ impl DuckDbEngine {
                 let mut query_rows = statement.query([])?;
                 let mut rows = Vec::new();
                 while let Some(row) = query_rows.next()? {
-                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
-                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let identity =
+                        fit_y_by_x_display_value(row.get::<_, Value>(0)?).ok_or_else(|| {
+                            AppError::Stats("hypothesis test row identity is missing".into())
+                        })?;
                     let values = (0..measurements.len())
                         .map(|index| row.get::<_, Value>(index + 1).map(fit_y_by_x_numeric_value))
                         .collect::<Result<Vec<_>, _>>()?;
@@ -8559,7 +8583,10 @@ impl DuckDbEngine {
                     });
                 }
                 Ok(HypothesisTestRows::Wide {
-                    conditions: measurements.iter().map(|field| field.name.clone()).collect(),
+                    conditions: measurements
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
                     explicit_subject: subject.is_some(),
                     rows,
                 })
@@ -10470,14 +10497,22 @@ mod tests {
             params!["hypothesis-long-reader"],
         ).expect("set condition role");
 
-        let rows = engine.read_hypothesis_test_rows(
-            "hypothesis-long-reader",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
-                subject: None,
-            },
-        ).expect("read hypothesis test rows");
+        let rows = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-long-reader",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "nominal".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect("read hypothesis test rows");
 
         let HypothesisTestRows::Long(rows) = rows else {
             panic!("expected long rows");

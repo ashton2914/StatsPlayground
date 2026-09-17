@@ -317,7 +317,7 @@ async fn mcp_http_lists_exact_tool_catalog() {
         .as_array()
         .expect("tools array");
     assert_eq!(tools.len(), 22);
-    assert_eq!(tools[0]["name"], "statsplayground.project.inspect");
+    assert_eq!(tools[0]["name"], "statsplayground_project_inspect");
     state.mcp_server.stop().await.expect("stop");
 }
 
@@ -350,7 +350,7 @@ async fn mcp_http_tools_call_returns_standard_tool_response() {
         "id": 2,
         "method": "tools/call",
         "params": {
-            "name": "statsplayground.project.inspect",
+            "name": "statsplayground_project_inspect",
             "arguments": {}
         }
     });
@@ -413,33 +413,43 @@ fn mcp_tool_catalog_is_exact_unique_and_schema_backed() {
     assert_eq!(
         names,
         vec![
-            "statsplayground.project.inspect",
-            "statsplayground.table.list",
-            "statsplayground.table.describe",
-            "statsplayground.document.list",
-            "statsplayground.document.get",
-            "statsplayground.table.create",
-            "statsplayground.table.transform.create",
-            "statsplayground.table.transform.run",
-            "statsplayground.sql.create_table",
-            "statsplayground.table.export_csv",
-            "statsplayground.tabulate.create",
-            "statsplayground.tabulate.run",
-            "statsplayground.tabulate.to_table",
-            "statsplayground.graph.create",
-            "statsplayground.graph.update",
-            "statsplayground.analysis.create",
-            "statsplayground.analysis.update",
-            "statsplayground.analysis.run",
-            "statsplayground.report.create",
-            "statsplayground.report.update",
-            "statsplayground.project.save",
-            "statsplayground.snapshot.create",
+            "statsplayground_project_inspect",
+            "statsplayground_table_list",
+            "statsplayground_table_describe",
+            "statsplayground_document_list",
+            "statsplayground_document_get",
+            "statsplayground_table_create",
+            "statsplayground_table_transform_create",
+            "statsplayground_table_transform_run",
+            "statsplayground_sql_create_table",
+            "statsplayground_table_export_csv",
+            "statsplayground_tabulate_create",
+            "statsplayground_tabulate_run",
+            "statsplayground_tabulate_to_table",
+            "statsplayground_graph_create",
+            "statsplayground_graph_update",
+            "statsplayground_analysis_create",
+            "statsplayground_analysis_update",
+            "statsplayground_analysis_run",
+            "statsplayground_report_create",
+            "statsplayground_report_update",
+            "statsplayground_project_save",
+            "statsplayground_snapshot_create",
         ]
     );
     let unique: std::collections::BTreeSet<_> = names.iter().copied().collect();
     assert_eq!(unique.len(), 22);
     for tool in catalog {
+        assert!(
+            tool.name.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || character == '_'
+                    || character == '-'
+            }),
+            "tool name must satisfy [a-z0-9_-]+: {}",
+            tool.name
+        );
         assert_eq!(tool.input_schema["type"], "object");
         assert_eq!(tool.output_schema["type"], "object");
         assert!(!tool.name.contains("resource"));

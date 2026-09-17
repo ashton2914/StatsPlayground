@@ -161,8 +161,14 @@ mod tests {
             )
             .expect_err("create-new publish must reject a racing target");
 
-        assert!(matches!(error, AppError::InvalidParam(_) | AppError::FileIO(_)));
-        assert_eq!(std::fs::read(&target).expect("read racing target"), b"racing-bytes");
+        assert!(matches!(
+            error,
+            AppError::InvalidParam(_) | AppError::FileIO(_)
+        ));
+        assert_eq!(
+            std::fs::read(&target).expect("read racing target"),
+            b"racing-bytes"
+        );
         assert_directory_entries(&nested, &["alpha.csv"]);
     }
 
@@ -190,13 +196,20 @@ mod tests {
             .export_csv_authorized(&dataset_id, &grant.root_id, "nested/alpha.csv", false)
             .expect_err("overwrite must require trusted confirmation");
 
-        assert!(matches!(error, AppError::InvalidParam(_) | AppError::FileIO(_)));
-        assert_eq!(std::fs::read(&target).expect("read seeded target"), b"original-bytes");
+        assert!(matches!(
+            error,
+            AppError::InvalidParam(_) | AppError::FileIO(_)
+        ));
+        assert_eq!(
+            std::fs::read(&target).expect("read seeded target"),
+            b"original-bytes"
+        );
         assert_directory_entries(&nested, &["alpha.csv"]);
     }
 
     #[test]
-    fn export_csv_authorized_staging_leaf_is_absent_before_exporter_runs_and_staging_dir_is_cleaned_on_success() {
+    fn export_csv_authorized_staging_leaf_is_absent_before_exporter_runs_and_staging_dir_is_cleaned_on_success(
+    ) {
         let temp = TempDir::new().expect("temp dir");
         let export_root = temp.path().join("exports");
         std::fs::create_dir_all(&export_root).expect("export root");
@@ -213,9 +226,14 @@ mod tests {
                 "nested/alpha.csv",
                 false,
                 |staging_leaf| {
-                    observed_staging_dir.replace(staging_leaf.parent().map(std::path::Path::to_path_buf));
-                    assert!(!staging_leaf.exists(), "staging leaf must not exist before exporter runs");
-                    std::fs::write(staging_leaf, b"label,value\nada,1\n").expect("write staged csv");
+                    observed_staging_dir
+                        .replace(staging_leaf.parent().map(std::path::Path::to_path_buf));
+                    assert!(
+                        !staging_leaf.exists(),
+                        "staging leaf must not exist before exporter runs"
+                    );
+                    std::fs::write(staging_leaf, b"label,value\nada,1\n")
+                        .expect("write staged csv");
                     Ok(())
                 },
                 || Ok(()),
@@ -232,7 +250,10 @@ mod tests {
             .borrow()
             .clone()
             .expect("observe staging dir");
-        assert!(!staging_dir.exists(), "staging directory must be removed after publish");
+        assert!(
+            !staging_dir.exists(),
+            "staging directory must be removed after publish"
+        );
     }
 
     #[test]
@@ -253,8 +274,12 @@ mod tests {
                 "nested/alpha.csv",
                 false,
                 |staging_leaf| {
-                    observed_staging_dir.replace(staging_leaf.parent().map(std::path::Path::to_path_buf));
-                    assert!(!staging_leaf.exists(), "staging leaf must not exist before exporter runs");
+                    observed_staging_dir
+                        .replace(staging_leaf.parent().map(std::path::Path::to_path_buf));
+                    assert!(
+                        !staging_leaf.exists(),
+                        "staging leaf must not exist before exporter runs"
+                    );
                     std::fs::write(staging_leaf, b"partial-bytes").expect("write partial bytes");
                     Err(AppError::FileIO("injected export failure".to_string()))
                 },
@@ -267,7 +292,10 @@ mod tests {
             .borrow()
             .clone()
             .expect("observe staging dir");
-        assert!(!staging_dir.exists(), "staging directory must be removed after export failure");
+        assert!(
+            !staging_dir.exists(),
+            "staging directory must be removed after export failure"
+        );
         assert!(!export_root.join("nested").join("alpha.csv").exists());
         assert_directory_entries(&export_root, &["nested"]);
         assert_directory_entries(&export_root.join("nested"), &[]);
@@ -276,18 +304,37 @@ mod tests {
     #[test]
     fn authorized_export_staging_windows_creation_contract() {
         let source = include_str!("io_service.rs");
-        let windows = source.split_once("\nmod windows_acl {").expect("Windows ACL module").1;
-        let creator = source.split_once("\nfn create_authorized_export_staging_dir").expect("staging creator").1;
+        let windows = source
+            .split_once("\nmod windows_acl {")
+            .expect("Windows ACL module")
+            .1;
+        let creator = source
+            .split_once("\nfn create_authorized_export_staging_dir")
+            .expect("staging creator")
+            .1;
         assert!(
             creator.contains("windows_acl::create_private_current_user_directory(parent)"),
             "Windows staging must use native create-time security, not tempdir_in followed by ACL replacement"
         );
-        assert!(!windows.contains("SetNamedSecurityInfoW"), "no post-create ACL replacement");
-        assert!(!windows.contains("tempdir_in("), "Windows must not create an inherited-ACL TempDir");
+        assert!(
+            !windows.contains("SetNamedSecurityInfoW"),
+            "no post-create ACL replacement"
+        );
+        assert!(
+            !windows.contains("tempdir_in("),
+            "Windows must not create an inherited-ACL TempDir"
+        );
         assert!(windows.contains("CreateDirectoryW(path_wide.as_ptr(), security_attributes)"));
-        let prepare = windows.find("SetSecurityDescriptorControl(").expect("protected descriptor");
-        let create = windows.find("create_directory(&path, &security_attributes)").expect("create-time attributes");
-        assert!(prepare < create, "DACL protection must precede native creation");
+        let prepare = windows
+            .find("SetSecurityDescriptorControl(")
+            .expect("protected descriptor");
+        let create = windows
+            .find("create_directory(&path, &security_attributes)")
+            .expect("create-time attributes");
+        assert!(
+            prepare < create,
+            "DACL protection must precede native creation"
+        );
         assert!(windows.contains("SetSecurityDescriptorDacl(descriptor_ptr, 1, dacl.0, 0)"));
         assert!(windows.contains("SetSecurityDescriptorOwner(descriptor_ptr, current_user.sid, 0)"));
         assert!(windows.contains("lpSecurityDescriptor: descriptor_ptr"));
@@ -312,8 +359,14 @@ mod tests {
         let staging = windows_acl::create_private_current_user_directory_with(
             temp.path(),
             |path, attributes| {
-                assert!(!path.exists(), "descriptor must be ready before the directory exists");
-                assert_eq!(attributes.nLength as usize, std::mem::size_of_val(attributes));
+                assert!(
+                    !path.exists(),
+                    "descriptor must be ready before the directory exists"
+                );
+                assert_eq!(
+                    attributes.nLength as usize,
+                    std::mem::size_of_val(attributes)
+                );
                 assert_eq!(attributes.bInheritHandle, 0);
                 let mut control = 0;
                 let mut revision = 0;
@@ -322,9 +375,31 @@ mod tests {
                 let mut dacl = std::ptr::null_mut();
                 let mut owner = std::ptr::null_mut();
                 unsafe {
-                    assert_ne!(GetSecurityDescriptorControl(attributes.lpSecurityDescriptor, &mut control, &mut revision), 0);
-                    assert_ne!(GetSecurityDescriptorDacl(attributes.lpSecurityDescriptor, &mut present, &mut dacl, &mut defaulted), 0);
-                    assert_ne!(GetSecurityDescriptorOwner(attributes.lpSecurityDescriptor, &mut owner, &mut defaulted), 0);
+                    assert_ne!(
+                        GetSecurityDescriptorControl(
+                            attributes.lpSecurityDescriptor,
+                            &mut control,
+                            &mut revision
+                        ),
+                        0
+                    );
+                    assert_ne!(
+                        GetSecurityDescriptorDacl(
+                            attributes.lpSecurityDescriptor,
+                            &mut present,
+                            &mut dacl,
+                            &mut defaulted
+                        ),
+                        0
+                    );
+                    assert_ne!(
+                        GetSecurityDescriptorOwner(
+                            attributes.lpSecurityDescriptor,
+                            &mut owner,
+                            &mut defaulted
+                        ),
+                        0
+                    );
                 }
                 assert_ne!(control & SE_DACL_PROTECTED, 0);
                 assert_ne!(present, 0);
@@ -336,42 +411,63 @@ mod tests {
                     assert_ne!(GetAce(dacl, 0, &mut ace), 0);
                     let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
                     assert_eq!(u32::from(allowed.Header.AceType), ACCESS_ALLOWED_ACE_TYPE);
-                    assert_eq!(u32::from(allowed.Header.AceFlags), CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE);
+                    assert_eq!(
+                        u32::from(allowed.Header.AceFlags),
+                        CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE
+                    );
                     assert_eq!(allowed.Mask, FILE_ALL_ACCESS);
-                    assert_ne!(EqualSid((&allowed.SidStart as *const u32).cast_mut().cast(), owner), 0);
+                    assert_ne!(
+                        EqualSid((&allowed.SidStart as *const u32).cast_mut().cast(), owner),
+                        0
+                    );
                 }
                 attempts += 1;
                 if attempts == 1 {
                     std::fs::create_dir(path).expect("collision fixture");
                     std::fs::write(path.join("keep"), b"keep").expect("collision contents");
                     collision = Some(path.to_path_buf());
-                    assert_eq!(windows_acl::create_directory(path, attributes), Err(ERROR_ALREADY_EXISTS));
+                    assert_eq!(
+                        windows_acl::create_directory(path, attributes),
+                        Err(ERROR_ALREADY_EXISTS)
+                    );
                     Err(ERROR_ALREADY_EXISTS)
                 } else {
                     windows_acl::create_directory(path, attributes)
                 }
             },
-        ).expect("retry collision with a new path");
+        )
+        .expect("retry collision with a new path");
         assert_eq!(attempts, 2);
         let staging_path = staging.path().to_path_buf();
-        let inspection = inspect_windows_staging_dir_acl(&staging_path).expect("inspect created directory");
+        let inspection =
+            inspect_windows_staging_dir_acl(&staging_path).expect("inspect created directory");
         assert!(inspection.owner_is_current_user && inspection.dacl_is_protected);
-        assert!(inspection.current_user_has_full_control && inspection.only_current_user_allows_access);
+        assert!(
+            inspection.current_user_has_full_control && inspection.only_current_user_allows_access
+        );
         std::fs::create_dir(staging_path.join("child")).expect("create child directory");
         std::fs::write(staging_path.join("child/data"), b"private").expect("create child file");
         for child in [staging_path.join("child"), staging_path.join("child/data")] {
-            let child_acl = inspect_windows_staging_dir_acl(&child).expect("inspect inherited child ACL");
-            assert!(child_acl.current_user_has_full_control && child_acl.only_current_user_allows_access);
+            let child_acl =
+                inspect_windows_staging_dir_acl(&child).expect("inspect inherited child ACL");
+            assert!(
+                child_acl.current_user_has_full_control
+                    && child_acl.only_current_user_allows_access
+            );
         }
         drop(staging);
         assert!(!staging_path.exists());
-        assert_eq!(std::fs::read(collision.expect("collision path").join("keep")).unwrap(), b"keep");
+        assert_eq!(
+            std::fs::read(collision.expect("collision path").join("keep")).unwrap(),
+            b"keep"
+        );
 
         let mut failed_attempts = 0;
-        let result = windows_acl::create_private_current_user_directory_with(temp.path(), |_, _| {
-            failed_attempts += 1;
-            Err(ERROR_ACCESS_DENIED)
-        });
+        let result =
+            windows_acl::create_private_current_user_directory_with(temp.path(), |_, _| {
+                failed_attempts += 1;
+                Err(ERROR_ACCESS_DENIED)
+            });
         assert!(result.is_err());
         assert_eq!(failed_attempts, 1, "only name collisions may be retried");
     }
@@ -380,11 +476,11 @@ mod tests {
     #[test]
     fn authorized_export_staging_dir_has_protected_current_user_windows_acl() {
         let temp = TempDir::new().expect("temp dir");
-        let staging_dir = create_authorized_export_staging_dir(temp.path())
-            .expect("create private staging dir");
+        let staging_dir =
+            create_authorized_export_staging_dir(temp.path()).expect("create private staging dir");
 
-        let protection = inspect_windows_staging_dir_acl(staging_dir.path())
-            .expect("inspect staging ACL");
+        let protection =
+            inspect_windows_staging_dir_acl(staging_dir.path()).expect("inspect staging ACL");
 
         assert!(
             protection.owner_is_current_user,
@@ -500,7 +596,9 @@ mod tests {
         );
         assert!(!names.contains("Gamma"));
         let exported_label: String = sqlite
-            .query_row("SELECT label FROM \"Nested-Beta Share\"", [], |row| row.get(0))
+            .query_row("SELECT label FROM \"Nested-Beta Share\"", [], |row| {
+                row.get(0)
+            })
             .expect("read exported beta row");
         assert_eq!(exported_label, "grace");
         drop(sqlite);
@@ -527,10 +625,8 @@ mod tests {
             "Gamma",
             vec![vec![serde_json::json!("linus"), serde_json::json!(3)]],
         );
-        let path = std::env::temp_dir().join(format!(
-            "datalink-export-csv-{}.zip",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("datalink-export-csv-{}.zip", uuid::Uuid::new_v4()));
         let archive_paths = HashMap::from([
             (alpha_id.clone(), "Incoming/Alpha Share".to_string()),
             (beta_id.clone(), "Nested/Review/Beta Share".to_string()),
@@ -684,10 +780,12 @@ mod tests {
     fn mysql_snapshot_import_and_cancellation() {
         let definition = ConnectionDefinition {
             connector: ConnectorKind::MySql,
-            host: "127.0.0.1".into(), port: 53306,
+            host: "127.0.0.1".into(),
+            port: 53306,
             database: "statsplayground_test".into(),
             authentication_type: AuthenticationType::UsernamePassword,
-            tls_mode: TlsMode::Disabled, connect_timeout_seconds: 10,
+            tls_mode: TlsMode::Disabled,
+            connect_timeout_seconds: 10,
             tls_root_certificate_pem: None,
         };
         let credentials = ConnectionCredentials {
@@ -697,29 +795,58 @@ mod tests {
         let state = AppState::new().expect("app state");
         let service = IoService::new(&state);
         let object = |name: &str| SourceObjectRef {
-            catalog: Some("statsplayground_test".into()), schema: Some("statsplayground_test".into()),
-            name: name.into(), object_type: SourceObjectType::Table,
+            catalog: Some("statsplayground_test".into()),
+            schema: Some("statsplayground_test".into()),
+            name: name.into(),
+            object_type: SourceObjectType::Table,
         };
-        for (name, expected) in [("customers", 3), ("measurements", 100_000), ("type_samples", 2), ("empty_table", 0)] {
+        for (name, expected) in [
+            ("customers", 3),
+            ("measurements", 100_000),
+            ("type_samples", 2),
+            ("empty_table", 0),
+        ] {
             let progress = std::cell::Cell::new((0, 0));
-            let summary = service.import_server_snapshot(
-                definition.clone(), credentials.clone(), object(name), name,
-                |done, total| progress.set((done, total)), || false,
-            ).expect("import fixture");
+            let summary = service
+                .import_server_snapshot(
+                    definition.clone(),
+                    credentials.clone(),
+                    object(name),
+                    name,
+                    |done, total| progress.set((done, total)),
+                    || false,
+                )
+                .expect("import fixture");
             assert_eq!(summary.total_rows_written, expected);
             assert_eq!(progress.get(), (expected, expected));
         }
-        let cancelled = service.import_server_snapshot(
-            definition, credentials, object("measurements"), "cancelled_import", |_, _| {}, || true,
-        ).expect_err("cancel import");
+        let cancelled = service
+            .import_server_snapshot(
+                definition,
+                credentials,
+                object("measurements"),
+                "cancelled_import",
+                |_, _| {},
+                || true,
+            )
+            .expect_err("cancel import");
         assert!(matches!(cancelled, AppError::Cancelled(_)));
         let database = state.db.lock().expect("database");
         let datasets = database.list_datasets().expect("datasets");
         assert_eq!(datasets.len(), 4);
-        assert!(datasets.iter().all(|dataset| dataset.source_type == "mysql"));
-        assert!(!datasets.iter().any(|dataset| dataset.name == "cancelled_import"));
-        let types = datasets.iter().find(|dataset| dataset.name == "type_samples").expect("type dataset");
-        let values = database.query_table(&types.id, 0, 100, Some("id"), Some("asc")).expect("read imported values");
+        assert!(datasets
+            .iter()
+            .all(|dataset| dataset.source_type == "mysql"));
+        assert!(!datasets
+            .iter()
+            .any(|dataset| dataset.name == "cancelled_import"));
+        let types = datasets
+            .iter()
+            .find(|dataset| dataset.name == "type_samples")
+            .expect("type dataset");
+        let values = database
+            .query_table(&types.id, 0, 100, Some("id"), Some("asc"))
+            .expect("read imported values");
         assert_eq!(values.rows[0][2], "18446744073709551615");
         assert_eq!(values.rows[0][3], "123456789012345678901.123456789");
         assert_eq!(values.column_types[4], "BLOB");
@@ -1005,7 +1132,14 @@ impl<'a> IoService<'a> {
         F: Fn(usize, usize),
         C: Fn() -> bool,
     {
-        self.import_server_snapshot(definition, credentials, object, target_name, on_progress, is_cancelled)
+        self.import_server_snapshot(
+            definition,
+            credentials,
+            object,
+            target_name,
+            on_progress,
+            is_cancelled,
+        )
     }
 
     pub fn import_server_snapshot<F, C>(
@@ -1161,7 +1295,8 @@ impl Drop for WindowsStagingDir {
 }
 
 fn verify_staged_export_leaf(path: &Path) -> Result<(), AppError> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| AppError::FileIO(error.to_string()))?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| AppError::FileIO(error.to_string()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(AppError::FileIO(
             "staged export must be a regular non-symlink file".to_string(),
@@ -1177,17 +1312,26 @@ fn publish_authorized_export(
 ) -> Result<(), AppError> {
     match initial_status {
         OutputPathStatus::CreateNew => publish_authorized_export_create_new(temp_path, output_path),
-        OutputPathStatus::OverwriteExisting => publish_authorized_export_overwrite(temp_path, output_path),
+        OutputPathStatus::OverwriteExisting => {
+            publish_authorized_export_overwrite(temp_path, output_path)
+        }
     }
 }
 
-fn publish_authorized_export_create_new(temp_path: &Path, output_path: &Path) -> Result<(), AppError> {
-    std::fs::hard_link(temp_path, output_path).map_err(|error| AppError::FileIO(error.to_string()))?;
+fn publish_authorized_export_create_new(
+    temp_path: &Path,
+    output_path: &Path,
+) -> Result<(), AppError> {
+    std::fs::hard_link(temp_path, output_path)
+        .map_err(|error| AppError::FileIO(error.to_string()))?;
     std::fs::remove_file(temp_path).map_err(|error| AppError::FileIO(error.to_string()))?;
     Ok(())
 }
 
-fn publish_authorized_export_overwrite(temp_path: &Path, output_path: &Path) -> Result<(), AppError> {
+fn publish_authorized_export_overwrite(
+    temp_path: &Path,
+    output_path: &Path,
+) -> Result<(), AppError> {
     atomic_replace_file(temp_path, output_path)
 }
 
@@ -1233,17 +1377,17 @@ mod windows_acl {
         ERROR_SUCCESS, HANDLE, HLOCAL,
     };
     use windows_sys::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SetEntriesInAclW, EXPLICIT_ACCESS_W,
-        NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT,
-        TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+        GetNamedSecurityInfoW, SetEntriesInAclW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE,
+        SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{
         AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-        GetTokenInformation, InitializeSecurityDescriptor, IsValidSid, SetSecurityDescriptorControl,
-        SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TokenUser, ACCESS_ALLOWED_ACE, ACL,
-        ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE,
-        OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
-        SECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+        GetTokenInformation, InitializeSecurityDescriptor, IsValidSid,
+        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, SetSecurityDescriptorOwner,
+        TokenUser, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE,
+        DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE,
+        OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+        SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::Storage::FileSystem::{CreateDirectoryW, FILE_ALL_ACCESS};
     use windows_sys::Win32::System::Memory::{LocalAlloc, LMEM_FIXED};
@@ -1252,7 +1396,9 @@ mod windows_acl {
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    pub(super) fn create_private_current_user_directory(parent: &Path) -> Result<WindowsStagingDir, AppError> {
+    pub(super) fn create_private_current_user_directory(
+        parent: &Path,
+    ) -> Result<WindowsStagingDir, AppError> {
         create_private_current_user_directory_with(parent, create_directory)
     }
 
@@ -1283,7 +1429,9 @@ mod windows_acl {
 
         let mut descriptor = MaybeUninit::<SECURITY_DESCRIPTOR>::uninit();
         let descriptor_ptr = descriptor.as_mut_ptr().cast();
-        if unsafe { InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) } == 0 {
+        if unsafe { InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) }
+            == 0
+        {
             return Err(last_io_error("initialize private staging descriptor"));
         }
         if unsafe { SetSecurityDescriptorOwner(descriptor_ptr, current_user.sid, 0) } == 0 {
@@ -1292,7 +1440,10 @@ mod windows_acl {
         if unsafe { SetSecurityDescriptorDacl(descriptor_ptr, 1, dacl.0, 0) } == 0 {
             return Err(last_io_error("set private staging DACL"));
         }
-        if unsafe { SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED) } == 0 {
+        if unsafe {
+            SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
+        } == 0
+        {
             return Err(last_io_error("protect private staging DACL"));
         }
         let security_attributes = SECURITY_ATTRIBUTES {
@@ -1302,7 +1453,10 @@ mod windows_acl {
         };
 
         for _attempt in 0..32 {
-            let path = parent.join(format!("{AUTHORIZED_EXPORT_TEMP_PREFIX}{}", uuid::Uuid::new_v4()));
+            let path = parent.join(format!(
+                "{AUTHORIZED_EXPORT_TEMP_PREFIX}{}",
+                uuid::Uuid::new_v4()
+            ));
             match create_directory(&path, &security_attributes) {
                 Ok(()) => {
                     let staging = WindowsStagingDir { path };
@@ -1314,16 +1468,25 @@ mod windows_acl {
                     {
                         return Ok(staging);
                     }
-                    return Err(AppError::FileIO("private export staging ACL verification failed".to_string()));
+                    return Err(AppError::FileIO(
+                        "private export staging ACL verification failed".to_string(),
+                    ));
                 }
                 Err(ERROR_ALREADY_EXISTS) => continue,
-                Err(status) => return Err(last_acl_error("create private staging directory", status)),
+                Err(status) => {
+                    return Err(last_acl_error("create private staging directory", status))
+                }
             }
         }
-        Err(AppError::FileIO("private export staging name collisions exhausted".to_string()))
+        Err(AppError::FileIO(
+            "private export staging name collisions exhausted".to_string(),
+        ))
     }
 
-    pub(super) fn create_directory(path: &Path, security_attributes: &SECURITY_ATTRIBUTES) -> Result<(), u32> {
+    pub(super) fn create_directory(
+        path: &Path,
+        security_attributes: &SECURITY_ATTRIBUTES,
+    ) -> Result<(), u32> {
         let path_wide = wide_path(path);
         if unsafe { CreateDirectoryW(path_wide.as_ptr(), security_attributes) } != 0 {
             Ok(())
@@ -1356,7 +1519,8 @@ mod windows_acl {
             return Err(last_acl_error("read private staging ACL", status));
         }
         let security_descriptor = LocalSecurityDescriptor(security_descriptor);
-        let owner_is_current_user = !owner.is_null() && unsafe { EqualSid(owner, current_user.sid) } != 0;
+        let owner_is_current_user =
+            !owner.is_null() && unsafe { EqualSid(owner, current_user.sid) } != 0;
         let dacl_is_protected = security_descriptor.is_dacl_protected()?;
         let (current_user_has_full_control, only_current_user_allows_access) =
             inspect_allow_aces(dacl, current_user.sid)?;
@@ -1369,7 +1533,10 @@ mod windows_acl {
         })
     }
 
-    fn inspect_allow_aces(dacl: *mut ACL, current_user_sid: PSID) -> Result<(bool, bool), AppError> {
+    fn inspect_allow_aces(
+        dacl: *mut ACL,
+        current_user_sid: PSID,
+    ) -> Result<(bool, bool), AppError> {
         if dacl.is_null() {
             return Ok((false, false));
         }
@@ -1434,8 +1601,10 @@ mod windows_acl {
             let token = TokenHandle(token);
 
             let mut needed = 0u32;
-            let sized = unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut needed) };
-            if sized != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
+            let sized =
+                unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut needed) };
+            if sized != 0
+                || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
                 || needed < std::mem::size_of::<TOKEN_USER>() as u32
             {
                 return Err(last_io_error("size current user token"));
@@ -1445,7 +1614,8 @@ mod windows_acl {
                 return Err(last_io_error("allocate current user token buffer"));
             }
             let buffer = buffer_handle;
-            let ok = unsafe { GetTokenInformation(token.0, TokenUser, buffer, needed, &mut needed) };
+            let ok =
+                unsafe { GetTokenInformation(token.0, TokenUser, buffer, needed, &mut needed) };
             if ok == 0 {
                 let error = last_io_error("read current user token");
                 unsafe { LocalFree(buffer_handle) };
@@ -1534,7 +1704,9 @@ fn atomic_replace_file(temp_path: &Path, output_path: &Path) -> Result<(), AppEr
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH};
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH,
+    };
 
     fn wide(path: &Path) -> Vec<u16> {
         OsStr::new(path)
@@ -1559,10 +1731,18 @@ fn atomic_replace_file(temp_path: &Path, output_path: &Path) -> Result<(), AppEr
         return Ok(());
     }
 
-    let moved = unsafe { MoveFileExW(temp_wide.as_ptr(), output_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    let moved = unsafe {
+        MoveFileExW(
+            temp_wide.as_ptr(),
+            output_wide.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
     if moved != 0 {
         return Ok(());
     }
 
-    Err(AppError::FileIO(std::io::Error::last_os_error().to_string()))
+    Err(AppError::FileIO(
+        std::io::Error::last_os_error().to_string(),
+    ))
 }

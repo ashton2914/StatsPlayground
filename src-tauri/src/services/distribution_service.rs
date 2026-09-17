@@ -11,21 +11,19 @@ use crate::models::distribution::{
     DistributionFitConvergenceStatusV1, DistributionFitConvergenceV1, DistributionFitDataV1,
     DistributionFitProvenanceV1, DistributionFitStatusV1, DistributionFittedCurveDataV1,
     DistributionGraphFrames, DistributionGroupResult, DistributionGroupResultV1,
-    DistributionQuantileValueV1, DistributionReportBlock,
-    DistributionReportBlockV1, DistributionReportResponse, DistributionRequest,
-    DistributionRequestV1, DistributionSummaryDataV1,
-    DistributionYResult, DistributionYResultV1, GraphDataFrameDto, HistogramBinV1,
-    Jmp19CompatibilityStatusV1, ProcessCapabilityChartBinV1,
+    DistributionQuantileValueV1, DistributionReportBlock, DistributionReportBlockV1,
+    DistributionReportResponse, DistributionRequest, DistributionRequestV1,
+    DistributionSummaryDataV1, DistributionYResult, DistributionYResultV1, GraphDataFrameDto,
+    HistogramBinV1, Jmp19CompatibilityStatusV1, ProcessCapabilityChartBinV1,
     ProcessCapabilityChartDataV1, ProcessCapabilityChartProvenanceV1, ProcessCapabilityDataV1,
     ProcessCapabilityDensitySeriesV1, ProcessCapabilityExpectedNonconformanceBySigmaV1,
     ProcessCapabilityExpectedTailV1, ProcessCapabilityIndicesV1,
     ProcessCapabilityIntervalProvenanceV1, ProcessCapabilityIntervalV1,
-    ProcessCapabilityIntervalsV1, ProcessCapabilityNonconformanceV1,
-    ProcessCapabilityNestedSubgroupV1,
-    ProcessCapabilityObservedNonconformanceV1, ProcessCapabilityObservedTailV1,
-    ProcessCapabilityProportionIntervalV1, ProcessCapabilitySpecificationLinesV1,
-    ProcessCapabilitySpecificationV1, ProcessCapabilityStabilityIndexV1,
-    ProcessCapabilitySummaryV1,
+    ProcessCapabilityIntervalsV1, ProcessCapabilityNestedSubgroupV1,
+    ProcessCapabilityNonconformanceV1, ProcessCapabilityObservedNonconformanceV1,
+    ProcessCapabilityObservedTailV1, ProcessCapabilityProportionIntervalV1,
+    ProcessCapabilitySpecificationLinesV1, ProcessCapabilitySpecificationV1,
+    ProcessCapabilityStabilityIndexV1, ProcessCapabilitySummaryV1,
 };
 use crate::models::graph_data::{
     BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, GraphAggregatePacket, GraphRawPointDisposition,
@@ -50,10 +48,9 @@ use crate::services::normal_capability::{
     capability_chart_data, capability_indices, capability_intervals,
     capability_intervals_with_within_degrees_of_freedom, nonconformance_metrics,
     normal_process_summary, normal_process_summary_with_nested_subgroups,
-    resolve_specification_limits, stability_index,
-    CapabilityDensitySeriesV1, CapabilityIntervalV1, NormalCapabilityChartDataV1,
-    NormalCapabilityIntervalsV1, NormalNonconformanceV1, NumericStateV1, SpecificationOverrideV1,
-    SpecificationSourceV1, TypedCountV1, TypedValueV1,
+    resolve_specification_limits, stability_index, CapabilityDensitySeriesV1, CapabilityIntervalV1,
+    NormalCapabilityChartDataV1, NormalCapabilityIntervalsV1, NormalNonconformanceV1,
+    NumericStateV1, SpecificationOverrideV1, SpecificationSourceV1, TypedCountV1, TypedValueV1,
 };
 use crate::state::AppState;
 
@@ -598,7 +595,8 @@ impl<'a> DistributionService<'a> {
                                 ordered.sort_by_key(|value| value.row_id);
                                 let values =
                                     ordered.iter().map(|value| value.y).collect::<Vec<_>>();
-                                let nested_summary = if request.nested_subgroup_column_id.is_some() {
+                                let nested_summary = if request.nested_subgroup_column_id.is_some()
+                                {
                                     let labels = ordered
                                         .iter()
                                         .map(|observation| {
@@ -630,17 +628,21 @@ impl<'a> DistributionService<'a> {
                                 let stability = stability_index(&process_summary);
                                 let indices = capability_indices(&process_summary, limits);
                                 let intervals = nested_summary.as_ref().map_or_else(
-                                    || capability_intervals(
-                                        &process_summary,
-                                        &indices,
-                                        request.confidence_level,
-                                    ),
-                                    |nested| capability_intervals_with_within_degrees_of_freedom(
-                                        &process_summary,
-                                        &indices,
-                                        request.confidence_level,
-                                        nested.within_effective_degrees_of_freedom,
-                                    ),
+                                    || {
+                                        capability_intervals(
+                                            &process_summary,
+                                            &indices,
+                                            request.confidence_level,
+                                        )
+                                    },
+                                    |nested| {
+                                        capability_intervals_with_within_degrees_of_freedom(
+                                            &process_summary,
+                                            &indices,
+                                            request.confidence_level,
+                                            nested.within_effective_degrees_of_freedom,
+                                        )
+                                    },
                                 );
                                 let nonconformance = nonconformance_metrics(
                                     &process_summary,
@@ -2023,11 +2025,10 @@ mod tests {
         DistributionCoordinateV1, DistributionFitConvergenceStatusV1, DistributionFitConvergenceV1,
         DistributionFitDataV1, DistributionFitProvenanceV1, DistributionFitStatusV1,
         DistributionFittedCurveDataV1, DistributionGroupResult, DistributionModeV1,
-        DistributionModelingTypeV1, DistributionReportBlock,
-        DistributionReportBlockV1, DistributionRequest, DistributionRequestV1, DistributionYResult,
-        HistogramBinV1, Jmp19CompatibilityStatusV1, NormalQuantileBandPointV1,
-        NormalQuantileDataV1, NormalQuantilePointV1, ObservationContributionPolicyV1,
-        ResourceBudgetV1,
+        DistributionModelingTypeV1, DistributionReportBlock, DistributionReportBlockV1,
+        DistributionRequest, DistributionRequestV1, DistributionYResult, HistogramBinV1,
+        Jmp19CompatibilityStatusV1, NormalQuantileBandPointV1, NormalQuantileDataV1,
+        NormalQuantilePointV1, ObservationContributionPolicyV1, ResourceBudgetV1,
     };
     use crate::services::data_service::DataService;
     use std::collections::HashMap;
@@ -2219,7 +2220,10 @@ mod tests {
                             Some(DistributionChartDataV1::CdfData {
                                 schema_version: "1".to_string(),
                                 provenance: graph_test_provenance(),
-                                points: vec![DistributionCoordinateV1 { x: index as f64, y: 0.5 }],
+                                points: vec![DistributionCoordinateV1 {
+                                    x: index as f64,
+                                    y: 0.5,
+                                }],
                             }),
                             None,
                         ),
@@ -2235,7 +2239,10 @@ mod tests {
                                         normal_score: 0.0,
                                         observed_value: index as f64,
                                     }],
-                                    reference_line: vec![DistributionCoordinateV1 { x: 0.0, y: index as f64 }],
+                                    reference_line: vec![DistributionCoordinateV1 {
+                                        x: 0.0,
+                                        y: index as f64,
+                                    }],
                                     confidence_band: vec![NormalQuantileBandPointV1 {
                                         x: 0.0,
                                         lower: index as f64 - 0.1,
@@ -2279,7 +2286,13 @@ mod tests {
             .filter(|packet| packet.element_id == DISTRIBUTION_OVERVIEW_FITTED_CURVES_ELEMENT_ID)
             .map(|packet| (packet.source_column.as_deref(), packet.group.as_deref()))
             .collect::<Vec<_>>();
-        assert_eq!(fitted_sources, vec![(Some("col-a"), Some("Length")), (Some("col-b"), Some("Length"))]);
+        assert_eq!(
+            fitted_sources,
+            vec![
+                (Some("col-a"), Some("Length")),
+                (Some("col-b"), Some("Length"))
+            ]
+        );
         let box_sources = frames
             .box_plot
             .aggregates
@@ -2293,11 +2306,20 @@ mod tests {
                 (
                     entry.source_column.as_deref(),
                     entry.group.as_deref(),
-                    entry.outliers.first().and_then(|outlier| outlier.source_column.as_deref()),
+                    entry
+                        .outliers
+                        .first()
+                        .and_then(|outlier| outlier.source_column.as_deref()),
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(box_sources, vec![(Some("col-a"), Some("Length"), Some("col-a")), (Some("col-b"), Some("Length"), Some("col-b"))]);
+        assert_eq!(
+            box_sources,
+            vec![
+                (Some("col-a"), Some("Length"), Some("col-a")),
+                (Some("col-b"), Some("Length"), Some("col-b"))
+            ]
+        );
         let ecdf_sources = frames
             .ecdf
             .aggregates
@@ -2317,7 +2339,10 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(normal_quantile_sources, vec!["col-a", "col-a", "col-a", "col-b", "col-b", "col-b"]);
+        assert_eq!(
+            normal_quantile_sources,
+            vec!["col-a", "col-a", "col-a", "col-b", "col-b", "col-b"]
+        );
     }
 
     fn create_value_freq_weight_dataset(
@@ -3739,13 +3764,7 @@ mod tests {
                 &["DOUBLE".into(), "VARCHAR".into()],
             )
             .expect("create dataset");
-        for (value, subgroup) in [
-            ("1", "A"),
-            ("10", "B"),
-            ("3", "A"),
-            ("14", "B"),
-            ("7", "C"),
-        ] {
+        for (value, subgroup) in [("1", "A"), ("10", "B"), ("3", "A"), ("14", "B"), ("7", "C")] {
             let row_id = data.add_row(&dataset.id).expect("add row");
             data.update_cell(&dataset.id, row_id, "value", value)
                 .expect("update value");
@@ -3761,7 +3780,10 @@ mod tests {
             .expect("db")
             .get_distribution_columns(&dataset.id)
             .expect("columns");
-        let value = descriptors.iter().find(|column| column.name == "value").expect("value");
+        let value = descriptors
+            .iter()
+            .find(|column| column.name == "value")
+            .expect("value");
         let subgroup = descriptors
             .iter()
             .find(|column| column.name == "subgroup")
@@ -3789,19 +3811,26 @@ mod tests {
         let result = DistributionService::new(&state)
             .execute_one_shot(&request, &one_shot_context(request.config_revision))
             .expect("execute distribution");
-        let capability = result.report_blocks
+        let capability = result
+            .report_blocks
             .iter()
             .find_map(|block| block.capability_data.as_ref())
             .expect("capability data");
 
         assert_eq!(capability.process_summary.moving_range_average, Some(3.0));
         assert_eq!(capability.process_summary.mean, 7.0);
-        assert_eq!(capability.nonconformance.observed.total.count.value, Some(0));
+        assert_eq!(
+            capability.nonconformance.observed.total.count.value,
+            Some(0)
+        );
         assert_eq!(
             capability.warnings,
             vec!["capability.nestedSubgroupMissingLabels.v1".to_string()],
         );
-        let nested = capability.nested_subgroup.as_ref().expect("nested subgroup provenance");
+        let nested = capability
+            .nested_subgroup
+            .as_ref()
+            .expect("nested subgroup provenance");
         assert_eq!(nested.method_version, "2.0.0");
         assert_eq!(nested.column_id, subgroup.column_id);
         assert_eq!(nested.subgroup_count, 3);

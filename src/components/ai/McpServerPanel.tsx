@@ -125,6 +125,7 @@ export function McpServerPanel({
         </div>
       </div>
 
+      <div className="ai-panel-scroll">
       <div className="ai-summary-grid">
         <div className="ai-summary-item">
           <span className="ai-summary-label">{t("ai.mcpServer.state", { defaultValue: "State" })}</span>
@@ -270,6 +271,7 @@ export function McpServerPanel({
           {t("ai.skills.openPlaceholder", { defaultValue: "View Skills placeholder" })}
         </button>
         {lastError ? <span className="ai-error-text">{lastError}</span> : null}
+      </div>
       </div>
     </section>
   );

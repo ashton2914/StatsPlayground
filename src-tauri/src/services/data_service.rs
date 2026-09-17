@@ -1,9 +1,8 @@
 use crate::error::AppError;
 use crate::models::table::{
     ColumnDisplayProps, ColumnDisplayPropsWithoutIndex, CreateManagedTableRequest,
-    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateColumn,
-    ManagedTableCreateResult, SqlQueryResult, TableQueryResult, TableWindowRequest,
-    TableWindowResult,
+    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateColumn, ManagedTableCreateResult,
+    SqlQueryResult, TableQueryResult, TableWindowRequest, TableWindowResult,
 };
 use crate::services::spprj_archive::{
     normalize_unsafe_portable_basename, validate_portable_basename,
@@ -283,7 +282,9 @@ mod tests {
             .preflight_create_table_from_sql_query("SELECT 1 AS \"_row_id\"", "Bad")
             .expect_err("reserved row id must fail preflight");
 
-        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("reserved name _row_id")));
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("reserved name _row_id"))
+        );
         assert_eq!(metadata_total_dataset_count(&state), datasets_before);
         assert_eq!(physical_table_count(&state), physical_before);
     }
@@ -394,7 +395,10 @@ mod tests {
             Some(3)
         );
         assert_eq!(
-            display[0].format.as_ref().and_then(|value| value.currency.clone()),
+            display[0]
+                .format
+                .as_ref()
+                .and_then(|value| value.currency.clone()),
             Some("USD".to_string())
         );
         assert_eq!(
@@ -495,13 +499,11 @@ mod tests {
         assert!(matches!(error, AppError::InvalidParam(message) if message.contains("width")));
         assert_eq!(metadata_total_dataset_count(&state), datasets_before);
         assert_eq!(physical_table_count(&state), physical_before);
-        assert!(
-            state
-                .column_display
-                .lock()
-                .expect("display lock")
-                .is_empty()
-        );
+        assert!(state
+            .column_display
+            .lock()
+            .expect("display lock")
+            .is_empty());
     }
 
     #[test]
@@ -538,17 +540,16 @@ mod tests {
         assert!(matches!(error, AppError::InvalidParam(message) if message.contains("width")));
         assert_eq!(metadata_total_dataset_count(&state), datasets_before);
         assert_eq!(physical_table_count(&state), physical_before);
-        assert!(
-            state
-                .column_display
-                .lock()
-                .expect("display lock")
-                .is_empty()
-        );
+        assert!(state
+            .column_display
+            .lock()
+            .expect("display lock")
+            .is_empty());
     }
 
     #[test]
-    fn create_managed_table_rejects_unsupported_but_canonicalizable_sql_type_without_side_effects() {
+    fn create_managed_table_rejects_unsupported_but_canonicalizable_sql_type_without_side_effects()
+    {
         let state = AppState::new().expect("state");
         let service = DataService::new(&state);
         let datasets_before = metadata_total_dataset_count(&state);
@@ -567,16 +568,16 @@ mod tests {
             .create_managed_table(&request)
             .expect_err("unsupported canonical SQL type must be rejected");
 
-        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("unsupported column type")));
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("unsupported column type"))
+        );
         assert_eq!(metadata_total_dataset_count(&state), datasets_before);
         assert_eq!(physical_table_count(&state), physical_before);
-        assert!(
-            state
-                .column_display
-                .lock()
-                .expect("display lock")
-                .is_empty()
-        );
+        assert!(state
+            .column_display
+            .lock()
+            .expect("display lock")
+            .is_empty());
     }
 
     #[test]
@@ -607,16 +608,16 @@ mod tests {
             .create_managed_table(&request)
             .expect_err("unknown display format kind must be rejected");
 
-        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("unsupported display format kind")));
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("unsupported display format kind"))
+        );
         assert_eq!(metadata_total_dataset_count(&state), datasets_before);
         assert_eq!(physical_table_count(&state), physical_before);
-        assert!(
-            state
-                .column_display
-                .lock()
-                .expect("display lock")
-                .is_empty()
-        );
+        assert!(state
+            .column_display
+            .lock()
+            .expect("display lock")
+            .is_empty());
     }
 
     #[test]
@@ -693,7 +694,9 @@ impl<'a> DataService<'a> {
         Ok(resolved)
     }
 
-    fn validate_display_without_index(display: &ColumnDisplayPropsWithoutIndex) -> Result<(), AppError> {
+    fn validate_display_without_index(
+        display: &ColumnDisplayPropsWithoutIndex,
+    ) -> Result<(), AppError> {
         if let Some(width) = display.width {
             if !width.is_finite() || width <= 0.0 {
                 return Err(AppError::InvalidParam(
@@ -705,7 +708,9 @@ impl<'a> DataService<'a> {
         if let Some(format) = &display.format {
             let kind = format.kind.trim();
             if kind.is_empty() {
-                return Err(AppError::InvalidParam("display format kind must be non-empty".into()));
+                return Err(AppError::InvalidParam(
+                    "display format kind must be non-empty".into(),
+                ));
             }
             if !SUPPORTED_DISPLAY_FORMAT_KINDS
                 .iter()
@@ -735,7 +740,9 @@ impl<'a> DataService<'a> {
         if let Some(extras) = &display.extras {
             for key in extras.keys() {
                 if key.trim().is_empty() {
-                    return Err(AppError::InvalidParam("display extras keys must be non-empty".into()));
+                    return Err(AppError::InvalidParam(
+                        "display extras keys must be non-empty".into(),
+                    ));
                 }
             }
         }
@@ -859,11 +866,13 @@ impl<'a> DataService<'a> {
             columns: column_names
                 .iter()
                 .zip(column_types.iter())
-                .map(|(column_name, column_type)| crate::models::table::CreateTableColumn {
-                    name: column_name.clone(),
-                    column_type: column_type.clone(),
-                    display: None,
-                })
+                .map(
+                    |(column_name, column_type)| crate::models::table::CreateTableColumn {
+                        name: column_name.clone(),
+                        column_type: column_type.clone(),
+                        display: None,
+                    },
+                )
                 .collect(),
             rows: Vec::new(),
         };
@@ -914,11 +923,13 @@ impl<'a> DataService<'a> {
                 .column_names
                 .iter()
                 .zip(request.column_types.iter())
-                .map(|(column_name, column_type)| crate::models::table::CreateTableColumn {
-                    name: column_name.clone(),
-                    column_type: column_type.clone(),
-                    display: None,
-                })
+                .map(
+                    |(column_name, column_type)| crate::models::table::CreateTableColumn {
+                        name: column_name.clone(),
+                        column_type: column_type.clone(),
+                        display: None,
+                    },
+                )
                 .collect(),
             rows: request.rows.clone(),
         };
@@ -998,7 +1009,10 @@ impl<'a> DataService<'a> {
                     normalized
                 })
             });
-            let normalized_extras = column.display.as_ref().and_then(|display| display.extras.clone());
+            let normalized_extras = column
+                .display
+                .as_ref()
+                .and_then(|display| display.extras.clone());
             let width = column.display.as_ref().and_then(|display| display.width);
 
             if let Some(display) = &column.display {
@@ -1029,7 +1043,11 @@ impl<'a> DataService<'a> {
         } else {
             let resolved_request = CreateTableFromRowsRequest {
                 name: resolved_name,
-                column_names: request.columns.iter().map(|column| column.name.clone()).collect(),
+                column_names: request
+                    .columns
+                    .iter()
+                    .map(|column| column.name.clone())
+                    .collect(),
                 column_types: canonical_column_types,
                 rows: request.rows.clone(),
             };

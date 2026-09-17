@@ -127,9 +127,11 @@ function createHarnessService(scenario: HarnessScenario): McpManagementServiceLi
 export function McpManagementHarness({
   scenario = "running",
   initialSubview = "server",
+  constrainedHeight,
 }: {
   scenario?: HarnessScenario;
   initialSubview?: "server" | "skills";
+  constrainedHeight?: number;
 }) {
   const [subview, setSubview] = useState<"server" | "skills">(initialSubview);
   const [copied, setCopied] = useState<string[]>([]);
@@ -166,12 +168,26 @@ export function McpManagementHarness({
   });
 
   return (
-    <main className="mcp-harness-shell">
+    <main
+      className="mcp-harness-shell"
+      style={constrainedHeight === undefined ? undefined : {
+        display: "flex",
+        flexDirection: "column",
+        height: constrainedHeight,
+      }}
+    >
       <div className="mcp-harness-menu" role="menubar" aria-label="AI menu">
         <button type="button" onClick={() => setSubview("server")}>MCP Server...</button>
         <button type="button" onClick={() => setSubview("skills")}>Skills...</button>
       </div>
-      <div className="mcp-harness-body">
+      <div
+        className="mcp-harness-body"
+        style={constrainedHeight === undefined ? undefined : {
+          display: "flex",
+          flex: "1 1 auto",
+          minHeight: 0,
+        }}
+      >
         <aside className="mcp-harness-activity" aria-label="AI activity">
           <button
             type="button"

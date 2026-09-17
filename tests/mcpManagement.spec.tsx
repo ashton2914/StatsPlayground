@@ -83,3 +83,38 @@ test("switches subviews and keeps the Skills placeholder unavailable", async ({ 
   expect(overflow.document, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
   expect(overflow.body, JSON.stringify(overflow)).toBeLessThanOrEqual(1);
 });
+
+test("keeps MCP lifecycle controls visible while panel content scrolls", async ({ mount, page }) => {
+  await page.setViewportSize({ width: 390, height: 420 });
+  const component = await mount(
+    <McpManagementHarness scenario="running" initialSubview="server" constrainedHeight={420} />,
+  );
+  const view = component.locator(".ai-activity-view");
+  const scrollBody = component.locator(".ai-panel-scroll");
+  const header = component.locator(".ai-panel-header");
+  const stopButton = component.getByRole("button", { name: "Stop server" });
+
+  const scrollMetrics = await scrollBody.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    };
+  });
+
+  const [viewBox, headerBox, stopBox] = await Promise.all([
+    view.boundingBox(),
+    header.boundingBox(),
+    stopButton.boundingBox(),
+  ]);
+  expect(viewBox).not.toBeNull();
+  expect(headerBox).not.toBeNull();
+  expect(stopBox).not.toBeNull();
+  expect(viewBox!.height).toBeLessThanOrEqual(420);
+  expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight);
+  expect(scrollMetrics.scrollTop).toBeGreaterThan(0);
+  expect(headerBox!.y).toBeGreaterThanOrEqual(viewBox!.y);
+  expect(stopBox!.y + stopBox!.height).toBeLessThanOrEqual(viewBox!.y + viewBox!.height);
+  await expect(stopButton).toBeEnabled();
+});

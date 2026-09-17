@@ -16,6 +16,11 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(debug_assertions)]
+    {
+        std::env::set_var("STATSPLAYGROUND_MCP_BIND", "127.0.0.1:48188");
+        std::env::set_var("STATSPLAYGROUND_MCP_TOKEN", "statsplayground-local-dev");
+    }
     let app_state = AppState::new().expect("Failed to initialize application state");
 
     let app = tauri::Builder::default()

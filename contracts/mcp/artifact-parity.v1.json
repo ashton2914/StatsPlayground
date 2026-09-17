@@ -190,7 +190,7 @@
   "projectionCases": [
     {
       "id": "table.create",
-      "toolName": "statsplayground.table.create",
+      "toolName": "statsplayground_table_create",
       "rawArguments": {
         "request": {
           "name": "Main Table",
@@ -355,7 +355,7 @@
     },
     {
       "id": "tableTransform.create",
-      "toolName": "statsplayground.table.transform.create",
+      "toolName": "statsplayground_table_transform_create",
       "rawArguments": {
         "draft": {
           "name": "Sort width",
@@ -394,7 +394,7 @@
     },
     {
       "id": "tableTransform.run",
-      "toolName": "statsplayground.table.transform.run",
+      "toolName": "statsplayground_table_transform_run",
       "rawArguments": {
         "transformId": "transform-1"
       },
@@ -407,7 +407,7 @@
     },
     {
       "id": "sql.createTable",
-      "toolName": "statsplayground.sql.create_table",
+      "toolName": "statsplayground_sql_create_table",
       "rawArguments": {
         "sql": "select width, build from dataset_main",
         "name": "SQL Result"
@@ -422,7 +422,7 @@
     },
     {
       "id": "table.exportCsv",
-      "toolName": "statsplayground.table.export_csv",
+      "toolName": "statsplayground_table_export_csv",
       "rawArguments": {
         "datasetId": "table-main",
         "rootId": "root-1",
@@ -439,7 +439,7 @@
     },
     {
       "id": "tabulate.create",
-      "toolName": "statsplayground.tabulate.create",
+      "toolName": "statsplayground_tabulate_create",
       "rawArguments": {
         "sourceDatasetId": "table-main"
       },
@@ -452,7 +452,7 @@
     },
     {
       "id": "tabulate.run",
-      "toolName": "statsplayground.tabulate.run",
+      "toolName": "statsplayground_tabulate_run",
       "rawArguments": {
         "tabulateId": "tabulate-1",
         "request": {
@@ -499,7 +499,7 @@
     },
     {
       "id": "tabulate.exportTable",
-      "toolName": "statsplayground.tabulate.to_table",
+      "toolName": "statsplayground_tabulate_to_table",
       "rawArguments": {
         "tabulateId": "tabulate-1",
         "tableName": "Tabulate Export",
@@ -548,7 +548,7 @@
     },
     {
       "id": "graph.create",
-      "toolName": "statsplayground.graph.create",
+      "toolName": "statsplayground_graph_create",
       "rawArguments": {
         "sourceDatasetId": "table-main"
       },
@@ -561,7 +561,7 @@
     },
     {
       "id": "graph.update",
-      "toolName": "statsplayground.graph.update",
+      "toolName": "statsplayground_graph_update",
       "rawArguments": {
         "graphId": "graph-1",
         "expectedDocumentRevision": 2,
@@ -648,7 +648,7 @@
     },
     {
       "id": "analysis.create",
-      "toolName": "statsplayground.analysis.create",
+      "toolName": "statsplayground_analysis_create",
       "rawArguments": {
         "analysisKind": "hypothesisTest",
         "sourceDatasetId": "table-main",
@@ -725,7 +725,7 @@
     },
     {
       "id": "analysis.update",
-      "toolName": "statsplayground.analysis.update",
+      "toolName": "statsplayground_analysis_update",
       "rawArguments": {
         "analysisId": "analysis-1",
         "analysisKind": "hypothesisTest",
@@ -802,7 +802,7 @@
     },
     {
       "id": "analysis.run",
-      "toolName": "statsplayground.analysis.run",
+      "toolName": "statsplayground_analysis_run",
       "rawArguments": {
         "analysisId": "analysis-1"
       },
@@ -815,7 +815,7 @@
     },
     {
       "id": "report.create",
-      "toolName": "statsplayground.report.create",
+      "toolName": "statsplayground_report_create",
       "rawArguments": {},
       "expectedEnvelope": {
         "type": "report.create",
@@ -824,7 +824,7 @@
     },
     {
       "id": "report.update",
-      "toolName": "statsplayground.report.update",
+      "toolName": "statsplayground_report_update",
       "rawArguments": {
         "reportId": "report-1",
         "expectedDocumentRevision": 2,
@@ -841,7 +841,7 @@
     },
     {
       "id": "project.save",
-      "toolName": "statsplayground.project.save",
+      "toolName": "statsplayground_project_save",
       "rawArguments": {
         "control": {
           "expectedProjectRevision": 29
@@ -857,7 +857,7 @@
     },
     {
       "id": "snapshot.create",
-      "toolName": "statsplayground.snapshot.create",
+      "toolName": "statsplayground_snapshot_create",
       "rawArguments": {
         "name": "Task 12 Snapshot"
       },
@@ -872,7 +872,7 @@
   "projectionRejections": [
     {
       "id": "save-reject-file-path",
-      "toolName": "statsplayground.project.save",
+      "toolName": "statsplayground_project_save",
       "rawArguments": {
         "filePath": "exports/project.spprj"
       },
@@ -880,7 +880,7 @@
     },
     {
       "id": "csv-reject-top-level-confirmed",
-      "toolName": "statsplayground.table.export_csv",
+      "toolName": "statsplayground_table_export_csv",
       "rawArguments": {
         "datasetId": "table-main",
         "rootId": "root-1",
@@ -891,7 +891,7 @@
     },
     {
       "id": "csv-reject-nested-confirmed",
-      "toolName": "statsplayground.table.export_csv",
+      "toolName": "statsplayground_table_export_csv",
       "rawArguments": {
         "datasetId": "table-main",
         "rootId": "root-1",
@@ -904,7 +904,7 @@
     },
     {
       "id": "csv-reject-confirmation",
-      "toolName": "statsplayground.table.export_csv",
+      "toolName": "statsplayground_table_export_csv",
       "rawArguments": {
         "datasetId": "table-main",
         "rootId": "root-1",
@@ -915,7 +915,7 @@
     },
     {
       "id": "csv-reject-nested-overwrite-confirmed",
-      "toolName": "statsplayground.table.export_csv",
+      "toolName": "statsplayground_table_export_csv",
       "rawArguments": {
         "datasetId": "table-main",
         "rootId": "root-1",

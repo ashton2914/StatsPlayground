@@ -13,15 +13,21 @@ pub fn cdf(value: f64, groups: usize, degrees_of_freedom: f64) -> Result<f64, Ap
     if value.is_infinite() {
         return Ok(1.0);
     }
-    let chi_squared = ChiSquared::new(degrees_of_freedom)
-        .map_err(|error| AppError::Stats(error.to_string()))?;
+    let chi_squared =
+        ChiSquared::new(degrees_of_freedom).map_err(|error| AppError::Stats(error.to_string()))?;
     let (nodes, weights) = gauss_legendre(MIXTURE_ORDER);
     let epsilon = 1e-12;
-    let expectation = nodes.iter().zip(weights).map(|(node, weight)| {
-        let probability = epsilon + (1.0 - 2.0 * epsilon) * (node + 1.0) / 2.0;
-        let scale = (chi_squared.inverse_cdf(probability) / degrees_of_freedom).sqrt();
-        weight * normal_range_cdf(value * scale, groups)
-    }).sum::<f64>() * (1.0 - 2.0 * epsilon) / 2.0;
+    let expectation = nodes
+        .iter()
+        .zip(weights)
+        .map(|(node, weight)| {
+            let probability = epsilon + (1.0 - 2.0 * epsilon) * (node + 1.0) / 2.0;
+            let scale = (chi_squared.inverse_cdf(probability) / degrees_of_freedom).sqrt();
+            weight * normal_range_cdf(value * scale, groups)
+        })
+        .sum::<f64>()
+        * (1.0 - 2.0 * epsilon)
+        / 2.0;
     Ok(expectation.clamp(0.0, 1.0))
 }
 
@@ -32,7 +38,9 @@ pub fn inverse_cdf(
 ) -> Result<f64, AppError> {
     validate_parameters(groups, degrees_of_freedom)?;
     if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
-        return Err(AppError::InvalidParam("studentized-range probability must be in [0, 1]".into()));
+        return Err(AppError::InvalidParam(
+            "studentized-range probability must be in [0, 1]".into(),
+        ));
     }
     if probability == 0.0 {
         return Ok(0.0);
@@ -45,7 +53,9 @@ pub fn inverse_cdf(
     while cdf(upper, groups, degrees_of_freedom)? < probability {
         upper *= 2.0;
         if upper > 1e6 {
-            return Err(AppError::Stats("studentized-range quantile did not converge".into()));
+            return Err(AppError::Stats(
+                "studentized-range quantile did not converge".into(),
+            ));
         }
     }
     for _ in 0..48 {
@@ -62,7 +72,8 @@ pub fn inverse_cdf(
 fn validate_parameters(groups: usize, degrees_of_freedom: f64) -> Result<(), AppError> {
     if groups < 2 || !degrees_of_freedom.is_finite() || degrees_of_freedom <= 0.0 {
         return Err(AppError::InvalidParam(
-            "studentized range requires at least two groups and positive finite degrees of freedom".into(),
+            "studentized range requires at least two groups and positive finite degrees of freedom"
+                .into(),
         ));
     }
     Ok(())
@@ -70,11 +81,16 @@ fn validate_parameters(groups: usize, degrees_of_freedom: f64) -> Result<(), App
 
 fn normal_range_cdf(value: f64, groups: usize) -> f64 {
     let (nodes, weights) = gauss_legendre(NORMAL_ORDER);
-    let integral = nodes.iter().zip(weights).map(|(node, weight)| {
-        let x = node * 9.0;
-        let interval = (standard_normal_cdf(x + value) - standard_normal_cdf(x)).max(0.0);
-        weight * standard_normal_pdf(x) * interval.powi((groups - 1) as i32)
-    }).sum::<f64>() * 9.0;
+    let integral = nodes
+        .iter()
+        .zip(weights)
+        .map(|(node, weight)| {
+            let x = node * 9.0;
+            let interval = (standard_normal_cdf(x + value) - standard_normal_cdf(x)).max(0.0);
+            weight * standard_normal_pdf(x) * interval.powi((groups - 1) as i32)
+        })
+        .sum::<f64>()
+        * 9.0;
     (groups as f64 * integral).clamp(0.0, 1.0)
 }
 
@@ -90,8 +106,7 @@ fn gauss_legendre(order: usize) -> (Vec<f64>, Vec<f64>) {
     let mut nodes = vec![0.0; order];
     let mut weights = vec![0.0; order];
     for index in 0..order.div_ceil(2) {
-        let mut root = (std::f64::consts::PI * (index as f64 + 0.75)
-            / (order as f64 + 0.5)).cos();
+        let mut root = (std::f64::consts::PI * (index as f64 + 0.75) / (order as f64 + 0.5)).cos();
         let derivative = loop {
             let (value, derivative) = legendre(order, root);
             let next = root - value / derivative;
@@ -114,8 +129,8 @@ fn legendre(order: usize, value: f64) -> (f64, f64) {
     let mut previous = 1.0;
     let mut current = value;
     for degree in 2..=order {
-        let next = ((2 * degree - 1) as f64 * value * current
-            - (degree - 1) as f64 * previous) / degree as f64;
+        let next = ((2 * degree - 1) as f64 * value * current - (degree - 1) as f64 * previous)
+            / degree as f64;
         previous = current;
         current = next;
     }

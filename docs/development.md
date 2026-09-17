@@ -300,3 +300,41 @@ cargo tauri --version  # ≥ 2.0
 | [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) | Tauri 项目调试支持 |
 | [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) | 前端代码质量检查 |
 | [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode) | 代码格式化 |
+
+---
+
+## MCP Command Layer 开发与联调
+
+### 启动方式
+
+- MCP 服务默认关闭，不会随应用自动启动。
+- 在应用内 MCP 管理面板手动启动后，服务会绑定随机 loopback 端点：
+    - `http://127.0.0.1:<random-port>/mcp`
+- 每次启动都会轮换新的 bearer token；停止服务后 token 立即失效。
+
+### Streamable HTTP 客户端最小配置
+
+- URL: 使用面板显示的 endpoint。
+- Header:
+    - `Authorization: Bearer <token>`
+    - `MCP-Protocol-Version: 2025-11-25`
+- 仅支持本机 loopback 调试，默认不对局域网或公网开放。
+
+### 文件输出与授权模型
+
+- CSV 导出必须先在应用内授权根目录，客户端只传 `rootId + relativePath`。
+- 绝对路径会在命令层被拒绝。
+- 覆盖已有目标时必须走应用内确认流程（confirmation）。
+
+### Phase 1 范围说明
+
+- 已支持：MCP tools over Streamable HTTP（命令层）。
+- 明确不支持：resources / prompts / sampling / tasks，以及自动远程暴露。
+
+### 推荐本地验证命令
+
+```bash
+npm run test:mcp
+```
+
+该命令会聚合 MCP runtime/bridge/domain/component/CT 与 Rust HTTP/E2E/parity 核心验证。

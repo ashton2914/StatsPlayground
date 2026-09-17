@@ -90,7 +90,8 @@ impl<'a> FitModelService<'a> {
             .iter()
             .map(|metric| format!("{prefix} {}", metric_label(metric)))
             .collect::<Vec<_>>();
-        let resolved_names = db.resolve_valued_column_names(&request.dataset_id, &requested_names)?;
+        let resolved_names =
+            db.resolve_valued_column_names(&request.dataset_id, &requested_names)?;
         let columns = request
             .metrics
             .iter()
@@ -99,9 +100,7 @@ impl<'a> FitModelService<'a> {
                 let values = computation
                     .diagnostic_rows
                     .iter()
-                    .map(|row| {
-                        metric_value(row, metric).map(|value| (row.row_index, Some(value)))
-                    })
+                    .map(|row| metric_value(row, metric).map(|value| (row.row_index, Some(value))))
                     .collect::<Option<Vec<_>>>()
                     .ok_or_else(|| {
                         AppError::InvalidParam(format!(
@@ -147,12 +146,7 @@ fn prepare_fit_input(
 ) -> Result<FitModelData, AppError> {
     let terms = resolve_terms(requested_terms).map_err(map_term_error)?;
     let predictor_names = required_column_names(&terms);
-    let rows = db.read_fit_model_rows(
-        dataset_id,
-        generation,
-        response_column,
-        &predictor_names,
-    )?;
+    let rows = db.read_fit_model_rows(dataset_id, generation, response_column, &predictor_names)?;
     let mut columns = BTreeMap::new();
     for (index, name) in rows.predictor_names.iter().enumerate() {
         columns.insert(
@@ -548,7 +542,10 @@ mod tests {
             .iter()
             .all(|(predicted, residual)| predicted.is_some() && residual.is_some()));
         assert_eq!(values[3], (None, None));
-        assert_eq!(db.get_dataset_generation("fit-model-save-columns").unwrap(), 1);
+        assert_eq!(
+            db.get_dataset_generation("fit-model-save-columns").unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -585,7 +582,10 @@ mod tests {
         ));
 
         let db = state.db.lock().expect("lock");
-        assert_eq!(db.get_dataset_generation("fit-model-save-invalid").unwrap(), 0);
+        assert_eq!(
+            db.get_dataset_generation("fit-model-save-invalid").unwrap(),
+            0
+        );
         let saved_columns: i64 = db
             .conn()
             .query_row(

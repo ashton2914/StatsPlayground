@@ -5,3 +5,6 @@ pub mod tools;
 
 #[cfg(test)]
 mod artifact_parity;
+
+#[cfg(test)]
+mod end_to_end;
