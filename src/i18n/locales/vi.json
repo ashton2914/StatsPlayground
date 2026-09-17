@@ -228,6 +228,7 @@
     "newGraph": "Biểu đồ mới \"{{name}}\" (nguồn: {{source}})",
     "newReport": "Báo cáo mới \"{{name}}\"",
     "newAnalysis": "Phân tích mới \"{{name}}\"",
+    "editGraph": "Chỉnh sửa biểu đồ \"{{name}}\"",
     "editReport": "Chỉnh sửa báo cáo \"{{name}}\"",
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "Tạo Khớp Y theo X \"{{name}}\" (nguồn: {{source}})",

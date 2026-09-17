@@ -3202,10 +3202,26 @@ mod tests {
         }
 
         let mut extras = BTreeMap::new();
-        extras.insert("unit".to_string(), serde_json::json!("USD"));
+        extras.insert("unit".to_string(), serde_json::json!({ "symbol": "USD" }));
+        extras.insert(
+            "spec".to_string(),
+            serde_json::json!({ "lsl": 1000.0, "target": 1250.0, "usl": 1500.0 }),
+        );
+        extras.insert(
+            "range".to_string(),
+            serde_json::json!({ "min": 1000.0, "max": 1600.0 }),
+        );
         extras.insert(
             "notes".to_string(),
-            serde_json::json!({"precision": "cents"}),
+            serde_json::json!({"precision": "cents", "owner": "qa"}),
+        );
+        extras.insert(
+            "valueOrder".to_string(),
+            serde_json::json!({ "values": ["EV", "DV", "PQ"] }),
+        );
+        extras.insert(
+            "opaqueNested".to_string(),
+            serde_json::json!({"nested": {"a": [1, true, "x"], "b": {"c": 2}}}),
         );
         state.column_display.lock().unwrap().insert(
             "preserve-id".to_string(),
@@ -3389,12 +3405,35 @@ mod tests {
         assert_eq!(restored_props[0].col_index, 2);
         assert_eq!(restored_props[0].width, Some(180.0));
         assert_eq!(restored_props[0].format.as_ref().unwrap().kind, "currency");
+        let restored_extras = restored_props[0]
+            .extras
+            .as_ref()
+            .expect("restored extras for preserve-id col 2");
         assert_eq!(
-            restored_props[0]
-                .extras
-                .as_ref()
-                .and_then(|extras| extras.get("unit")),
-            Some(&serde_json::json!("USD"))
+            restored_extras,
+            &BTreeMap::from([
+                ("unit".to_string(), serde_json::json!({ "symbol": "USD" })),
+                (
+                    "spec".to_string(),
+                    serde_json::json!({ "lsl": 1000.0, "target": 1250.0, "usl": 1500.0 }),
+                ),
+                (
+                    "range".to_string(),
+                    serde_json::json!({ "min": 1000.0, "max": 1600.0 }),
+                ),
+                (
+                    "notes".to_string(),
+                    serde_json::json!({"precision": "cents", "owner": "qa"}),
+                ),
+                (
+                    "valueOrder".to_string(),
+                    serde_json::json!({ "values": ["EV", "DV", "PQ"] }),
+                ),
+                (
+                    "opaqueNested".to_string(),
+                    serde_json::json!({"nested": {"a": [1, true, "x"], "b": {"c": 2}}}),
+                ),
+            ])
         );
 
         let db = reopened_state.db.lock().unwrap();

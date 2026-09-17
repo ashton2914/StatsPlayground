@@ -28,8 +28,9 @@ assertSourceIncludes(workspaceSource, "handleCreateDistributionItem", "Validated
 assertSourceIncludes(workspaceSource, "showDistributionDialog", "Workspace must track the Distribution creation dialog");
 assertSourceIncludes(workspaceSource, "draggable={!readOnly}", "Distribution tree movement must be disabled while read-only");
 assertSourceIncludes(workspaceSource, "if (readOnly) return", "Distribution mutation handlers must guard read-only projects");
-assertSourceIncludes(workspaceSource, "createDistributionAnalysisDocument", "Distribution creation must produce an Analysis document");
-assertSourceIncludes(workspaceSource, "addAnalysis(created)", "Distribution creation must use the Analysis store");
+assertSourceIncludes(workspaceSource, "applicationRuntime.execute", "Distribution creation must use the shared application command runtime");
+assertSourceIncludes(workspaceSource, 'type: "analysis.create"', "Distribution creation must execute the Analysis create command");
+assertSourceIncludes(workspaceSource, 'analysisKind: "distribution"', "Distribution creation must identify the Distribution Analysis kind");
 assertSourceIncludes(workspaceSource, "buildDistributionFieldInfo", "Workspace must build distribution field metadata from columns and display props");
 assertSourceIncludes(workspaceSource, "Promise.all([", "Workspace must block the distribution dialog on parallel metadata loads");
 assertSourceIncludes(workspaceSource, "dataService.getColumnDisplayProps(activeDatasetId)", "Distribution creation must load display props for the active dataset");

@@ -1,6 +1,8 @@
-use crate::engine::hypothesis_test::normalize::{CompleteBlocks, IndependentGroups};
 use crate::engine::hypothesis_test::methods::parametric::{paired_t, sample_moments};
-use crate::engine::hypothesis_test::post_hoc::{compact_letters, holm_adjust, PostHocComparison, PostHocResult};
+use crate::engine::hypothesis_test::normalize::{CompleteBlocks, IndependentGroups};
+use crate::engine::hypothesis_test::post_hoc::{
+    compact_letters, holm_adjust, PostHocComparison, PostHocResult,
+};
 use crate::error::AppError;
 use crate::models::hypothesis_test::HypothesisTestAlternative;
 
@@ -14,28 +16,38 @@ pub fn tukey_kramer(
     validate(groups, alpha, confidence_level)?;
     let moments = group_moments(groups)?;
     let residual_df = moments.iter().map(|(count, _, _)| count - 1.0).sum::<f64>();
-    let residual_sum_squares = moments.iter()
-        .map(|(count, _, variance)| (count - 1.0) * variance).sum::<f64>();
+    let residual_sum_squares = moments
+        .iter()
+        .map(|(count, _, variance)| (count - 1.0) * variance)
+        .sum::<f64>();
     let mean_square_error = residual_sum_squares / residual_df;
     if mean_square_error <= 0.0 {
-        return Err(AppError::Stats("Tukey-Kramer residual variance is not estimable".into()));
+        return Err(AppError::Stats(
+            "Tukey-Kramer residual variance is not estimable".into(),
+        ));
     }
-    let critical = studentized_range::inverse_cdf(confidence_level, groups.groups.len(), residual_df)?;
+    let critical =
+        studentized_range::inverse_cdf(confidence_level, groups.groups.len(), residual_df)?;
     let mut comparisons = Vec::new();
     for left in 0..groups.groups.len() - 1 {
         for right in left + 1..groups.groups.len() {
             let estimate = moments[left].1 - moments[right].1;
-            let standard_error = (mean_square_error / 2.0
-                * (1.0 / moments[left].0 + 1.0 / moments[right].0)).sqrt();
+            let standard_error =
+                (mean_square_error / 2.0 * (1.0 / moments[left].0 + 1.0 / moments[right].0)).sqrt();
             let statistic = estimate.abs() / standard_error;
-            let probability = (1.0 - studentized_range::cdf(
-                statistic,
-                groups.groups.len(),
-                residual_df,
-            )?).clamp(0.0, 1.0);
+            let probability = (1.0
+                - studentized_range::cdf(statistic, groups.groups.len(), residual_df)?)
+            .clamp(0.0, 1.0);
             comparisons.push(comparison(
-                groups, left, right, estimate, standard_error, statistic,
-                residual_df, probability, critical,
+                groups,
+                left,
+                right,
+                estimate,
+                standard_error,
+                statistic,
+                residual_df,
+                probability,
+                critical,
             ));
         }
     }
@@ -50,7 +62,9 @@ pub fn games_howell(
     validate(groups, alpha, confidence_level)?;
     let moments = group_moments(groups)?;
     if moments.iter().any(|(_, _, variance)| *variance <= 0.0) {
-        return Err(AppError::Stats("Games-Howell requires positive variance in every group".into()));
+        return Err(AppError::Stats(
+            "Games-Howell requires positive variance in every group".into(),
+        ));
     }
     let mut comparisons = Vec::new();
     for left in 0..groups.groups.len() - 1 {
@@ -64,19 +78,24 @@ pub fn games_howell(
             let standard_error = (variance_sum / 2.0).sqrt();
             let estimate = moments[left].1 - moments[right].1;
             let statistic = estimate.abs() / standard_error;
-            let probability = (1.0 - studentized_range::cdf(
-                statistic,
-                groups.groups.len(),
-                degrees_of_freedom,
-            )?).clamp(0.0, 1.0);
+            let probability = (1.0
+                - studentized_range::cdf(statistic, groups.groups.len(), degrees_of_freedom)?)
+            .clamp(0.0, 1.0);
             let critical = studentized_range::inverse_cdf(
                 confidence_level,
                 groups.groups.len(),
                 degrees_of_freedom,
             )?;
             comparisons.push(comparison(
-                groups, left, right, estimate, standard_error, statistic,
-                degrees_of_freedom, probability, critical,
+                groups,
+                left,
+                right,
+                estimate,
+                standard_error,
+                statistic,
+                degrees_of_freedom,
+                probability,
+                critical,
             ));
         }
     }
@@ -92,9 +111,16 @@ pub fn paired_t_holm(
     let mut comparisons = Vec::new();
     for left in 0..study.conditions.len() - 1 {
         for right in left + 1..study.conditions.len() {
-            let pairs = study.blocks.iter().map(|block| [block[left], block[right]])
+            let pairs = study
+                .blocks
+                .iter()
+                .map(|block| [block[left], block[right]])
                 .collect::<Vec<_>>();
-            let result = paired_t(&pairs, HypothesisTestAlternative::TwoSided, confidence_level)?;
+            let result = paired_t(
+                &pairs,
+                HypothesisTestAlternative::TwoSided,
+                confidence_level,
+            )?;
             comparisons.push(PostHocComparison {
                 left: study.conditions[left].clone(),
                 right: study.conditions[right].clone(),
@@ -114,21 +140,31 @@ pub fn paired_t_holm(
 
 fn validate(groups: &IndependentGroups, alpha: f64, confidence_level: f64) -> Result<(), AppError> {
     if groups.groups.len() < 3 || groups.groups.iter().any(|group| group.values.len() < 2) {
-        return Err(AppError::Stats("multi-group post-hoc requires three groups with two observations each".into()));
+        return Err(AppError::Stats(
+            "multi-group post-hoc requires three groups with two observations each".into(),
+        ));
     }
-    if !alpha.is_finite() || !(0.0..1.0).contains(&alpha)
-        || !confidence_level.is_finite() || !(0.0..1.0).contains(&confidence_level)
+    if !alpha.is_finite()
+        || !(0.0..1.0).contains(&alpha)
+        || !confidence_level.is_finite()
+        || !(0.0..1.0).contains(&confidence_level)
     {
-        return Err(AppError::InvalidParam("alpha and confidence level must be inside (0, 1)".into()));
+        return Err(AppError::InvalidParam(
+            "alpha and confidence level must be inside (0, 1)".into(),
+        ));
     }
     Ok(())
 }
 
 fn group_moments(groups: &IndependentGroups) -> Result<Vec<(f64, f64, f64)>, AppError> {
-    groups.groups.iter().map(|group| {
-        sample_moments(&group.values)
-            .map(|(mean, variance)| (group.values.len() as f64, mean, variance))
-    }).collect()
+    groups
+        .groups
+        .iter()
+        .map(|group| {
+            sample_moments(&group.values)
+                .map(|(mean, variance)| (group.values.len() as f64, mean, variance))
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -163,9 +199,17 @@ fn finish(
     comparisons: Vec<PostHocComparison>,
     alpha: f64,
 ) -> Result<PostHocResult, AppError> {
-    let conditions = groups.groups.iter().map(|group| group.condition.clone()).collect::<Vec<_>>();
+    let conditions = groups
+        .groups
+        .iter()
+        .map(|group| group.condition.clone())
+        .collect::<Vec<_>>();
     let compact_letters = compact_letters(&conditions, &comparisons, alpha)?;
-    Ok(PostHocResult { family: family.into(), comparisons, compact_letters })
+    Ok(PostHocResult {
+        family: family.into(),
+        comparisons,
+        compact_letters,
+    })
 }
 
 fn validate_blocks(
@@ -173,15 +217,25 @@ fn validate_blocks(
     alpha: f64,
     confidence_level: f64,
 ) -> Result<(), AppError> {
-    if study.conditions.len() < 3 || study.blocks.len() < 2
-        || study.blocks.iter().any(|block| block.len() != study.conditions.len())
+    if study.conditions.len() < 3
+        || study.blocks.len() < 2
+        || study
+            .blocks
+            .iter()
+            .any(|block| block.len() != study.conditions.len())
     {
-        return Err(AppError::Stats("paired post-hoc requires a complete matrix with three conditions".into()));
+        return Err(AppError::Stats(
+            "paired post-hoc requires a complete matrix with three conditions".into(),
+        ));
     }
-    if !alpha.is_finite() || !(0.0..1.0).contains(&alpha)
-        || !confidence_level.is_finite() || !(0.0..1.0).contains(&confidence_level)
+    if !alpha.is_finite()
+        || !(0.0..1.0).contains(&alpha)
+        || !confidence_level.is_finite()
+        || !(0.0..1.0).contains(&confidence_level)
     {
-        return Err(AppError::InvalidParam("alpha and confidence level must be inside (0, 1)".into()));
+        return Err(AppError::InvalidParam(
+            "alpha and confidence level must be inside (0, 1)".into(),
+        ));
     }
     Ok(())
 }
@@ -192,12 +246,21 @@ fn finish_holm(
     mut comparisons: Vec<PostHocComparison>,
     alpha: f64,
 ) -> Result<PostHocResult, AppError> {
-    let adjusted = holm_adjust(&comparisons.iter().map(|item| item.raw_p_value).collect::<Vec<_>>())?;
+    let adjusted = holm_adjust(
+        &comparisons
+            .iter()
+            .map(|item| item.raw_p_value)
+            .collect::<Vec<_>>(),
+    )?;
     for (comparison, adjusted_p_value) in comparisons.iter_mut().zip(adjusted) {
         comparison.adjusted_p_value = adjusted_p_value;
     }
     let compact_letters = compact_letters(conditions, &comparisons, alpha)?;
-    Ok(PostHocResult { family: family.into(), comparisons, compact_letters })
+    Ok(PostHocResult {
+        family: family.into(),
+        comparisons,
+        compact_letters,
+    })
 }
 
 #[cfg(test)]
@@ -221,16 +284,31 @@ mod tests {
 
     #[test]
     fn games_howell_uses_pair_specific_satterthwaite_degrees_of_freedom() {
-        let groups = IndependentGroups { groups: vec![
-            ConditionValues { condition: "A".into(), values: vec![1.0, 2.0, 3.0, 4.0] },
-            ConditionValues { condition: "B".into(), values: vec![3.0, 7.0, 11.0, 15.0, 19.0] },
-            ConditionValues { condition: "C".into(), values: vec![20.0, 21.0, 22.0, 23.0, 24.0, 25.0] },
-        ] };
+        let groups = IndependentGroups {
+            groups: vec![
+                ConditionValues {
+                    condition: "A".into(),
+                    values: vec![1.0, 2.0, 3.0, 4.0],
+                },
+                ConditionValues {
+                    condition: "B".into(),
+                    values: vec![3.0, 7.0, 11.0, 15.0, 19.0],
+                },
+                ConditionValues {
+                    condition: "C".into(),
+                    values: vec![20.0, 21.0, 22.0, 23.0, 24.0, 25.0],
+                },
+            ],
+        };
         let result = games_howell(&groups, 0.05, 0.95).expect("Games-Howell");
-        let degrees = result.comparisons.iter()
+        let degrees = result
+            .comparisons
+            .iter()
             .map(|comparison| comparison.degrees_of_freedom.expect("df"))
             .collect::<Vec<_>>();
-        assert!(degrees.iter().all(|value| value.is_finite() && *value > 0.0));
+        assert!(degrees
+            .iter()
+            .all(|value| value.is_finite() && *value > 0.0));
         assert!((degrees[0] - degrees[1]).abs() > 0.1);
         assert!((degrees[1] - degrees[2]).abs() > 0.1);
     }
@@ -259,10 +337,21 @@ mod tests {
     }
 
     fn fixture() -> IndependentGroups {
-        IndependentGroups { groups: vec![
-            ConditionValues { condition: "A".into(), values: vec![1.0, 2.0, 3.0, 4.0] },
-            ConditionValues { condition: "B".into(), values: vec![2.0, 3.0, 4.0, 5.0] },
-            ConditionValues { condition: "C".into(), values: vec![8.0, 9.0, 10.0, 11.0] },
-        ] }
+        IndependentGroups {
+            groups: vec![
+                ConditionValues {
+                    condition: "A".into(),
+                    values: vec![1.0, 2.0, 3.0, 4.0],
+                },
+                ConditionValues {
+                    condition: "B".into(),
+                    values: vec![2.0, 3.0, 4.0, 5.0],
+                },
+                ConditionValues {
+                    condition: "C".into(),
+                    values: vec![8.0, 9.0, 10.0, 11.0],
+                },
+            ],
+        }
     }
 }

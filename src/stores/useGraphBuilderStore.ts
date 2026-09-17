@@ -27,7 +27,7 @@ function normalizeSampling(sampling: GraphSampling | undefined): GraphSampling {
   return { mode: "sample", size, seed };
 }
 
-function normalizeItem(item: GraphBuilderItem): GraphBuilderItem {
+export function normalizeStoredGraphBuilderItem(item: GraphBuilderItem): GraphBuilderItem {
   const normalized = normalizeGraphBuilderItem(item);
   const groupThemeSlots = normalizeGroupThemeSlots(normalized.groupThemeSlots);
   return {
@@ -39,7 +39,9 @@ function normalizeItem(item: GraphBuilderItem): GraphBuilderItem {
 
 interface GraphBuilderStore {
   items: GraphBuilderItem[];
+  documentRevisions: Record<string, number>;
   addItem: (item: GraphBuilderItem) => void;
+  replaceItem: (item: GraphBuilderItem) => void;
   updateItem: (id: string, patch: Partial<GraphBuilderItem>) => void;
   renameItem: (id: string, name: string) => void;
   migrateLegacyColumnName: (datasetId: string, oldName: string, newName: string, sqlType: string) => void;
@@ -53,14 +55,31 @@ interface GraphBuilderStore {
   /** 自增计数器（用于默认命名） */
   counter: number;
   bumpCounter: (n: number) => void;
+  getDocumentRevision: (id: string) => number;
+  setDocumentRevision: (id: string, revision: number) => void;
 }
 
-export const useGraphBuilderStore = create<GraphBuilderStore>((set) => ({
+export const useGraphBuilderStore = create<GraphBuilderStore>((set, get) => ({
   items: [],
+  documentRevisions: {},
   counter: 0,
   addItem: (item) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
-    set((s) => ({ items: [...s.items, normalizeItem(item)] }));
+    set((s) => {
+      const next = normalizeStoredGraphBuilderItem(item);
+      const documentRevisions = { ...s.documentRevisions };
+      delete documentRevisions[next.id];
+      return {
+        items: [...s.items, next],
+        documentRevisions,
+      };
+    });
+  },
+  replaceItem: (item) => {
+    assertProjectMutable(useProjectStore.getState().readOnly);
+    set((s) => ({
+      items: s.items.map((it) => (it.id === item.id ? normalizeStoredGraphBuilderItem(item) : it)),
+    }));
   },
   updateItem: (id, patch) =>
     {
@@ -90,27 +109,53 @@ export const useGraphBuilderStore = create<GraphBuilderStore>((set) => ({
   deleteItem: (id) =>
     {
       assertProjectMutable(useProjectStore.getState().readOnly);
-      set((s) => ({ items: s.items.filter((it) => it.id !== id) }));
+      set((s) => {
+        const documentRevisions = { ...s.documentRevisions };
+        delete documentRevisions[id];
+        return {
+          items: s.items.filter((it) => it.id !== id),
+          documentRevisions,
+        };
+      });
     },
   deleteByDataset: (datasetId) =>
     {
       assertProjectMutable(useProjectStore.getState().readOnly);
-      set((s) => ({
-        items: s.items.filter((it) => it.sourceDatasetId !== datasetId),
-      }));
+      set((s) => {
+        const removedIds = new Set(
+          s.items.filter((it) => it.sourceDatasetId === datasetId).map((it) => it.id),
+        );
+        const documentRevisions = { ...s.documentRevisions };
+        for (const id of removedIds) {
+          delete documentRevisions[id];
+        }
+        return {
+          items: s.items.filter((it) => it.sourceDatasetId !== datasetId),
+          documentRevisions,
+        };
+      });
     },
   loadFromProject: (items) =>
     set(() => {
-      const normalized = items.map(normalizeItem);
+      const normalized = items.map(normalizeStoredGraphBuilderItem);
       const maxNum = items.reduce((m, it) => {
         const match = it.name.match(/^图表(\d+)$/);
         return match ? Math.max(m, parseInt(match[1], 10)) : m;
       }, 0);
-      return { items: normalized, counter: maxNum };
+      return { items: normalized, documentRevisions: {}, counter: maxNum };
     }),
-  reset: () => set({ items: [], counter: 0 }),
+  reset: () => set({ items: [], documentRevisions: {}, counter: 0 }),
   bumpCounter: (n) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     set({ counter: n });
+  },
+  getDocumentRevision: (id) => get().documentRevisions[id] ?? 0,
+  setDocumentRevision: (id, revision) => {
+    set((state) => ({
+      documentRevisions: {
+        ...state.documentRevisions,
+        [id]: revision,
+      },
+    }));
   },
 }));

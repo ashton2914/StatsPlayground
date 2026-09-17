@@ -22,24 +22,45 @@ pub fn randomized_block_anova(study: &CompleteBlocks) -> Result<BlockTestResult,
     let condition_count = study.conditions.len();
     let observation_count = block_count * condition_count;
     let grand_mean = study.blocks.iter().flatten().sum::<f64>() / observation_count as f64;
-    let condition_means = (0..condition_count).map(|condition| {
-        study.blocks.iter().map(|block| block[condition]).sum::<f64>() / block_count as f64
-    }).collect::<Vec<_>>();
-    let block_means = study.blocks.iter().map(|block| {
-        block.iter().sum::<f64>() / condition_count as f64
-    }).collect::<Vec<_>>();
-    let condition_ss = block_count as f64 * condition_means.iter()
-        .map(|mean| (mean - grand_mean).powi(2)).sum::<f64>();
-    let block_ss = condition_count as f64 * block_means.iter()
-        .map(|mean| (mean - grand_mean).powi(2)).sum::<f64>();
-    let total_ss = study.blocks.iter().flatten()
-        .map(|value| (value - grand_mean).powi(2)).sum::<f64>();
+    let condition_means = (0..condition_count)
+        .map(|condition| {
+            study
+                .blocks
+                .iter()
+                .map(|block| block[condition])
+                .sum::<f64>()
+                / block_count as f64
+        })
+        .collect::<Vec<_>>();
+    let block_means = study
+        .blocks
+        .iter()
+        .map(|block| block.iter().sum::<f64>() / condition_count as f64)
+        .collect::<Vec<_>>();
+    let condition_ss = block_count as f64
+        * condition_means
+            .iter()
+            .map(|mean| (mean - grand_mean).powi(2))
+            .sum::<f64>();
+    let block_ss = condition_count as f64
+        * block_means
+            .iter()
+            .map(|mean| (mean - grand_mean).powi(2))
+            .sum::<f64>();
+    let total_ss = study
+        .blocks
+        .iter()
+        .flatten()
+        .map(|value| (value - grand_mean).powi(2))
+        .sum::<f64>();
     let residual_ss = (total_ss - condition_ss - block_ss).max(0.0);
     let condition_df = (condition_count - 1) as f64;
     let residual_df = ((condition_count - 1) * (block_count - 1)) as f64;
     let residual_mean_square = residual_ss / residual_df;
     if residual_mean_square <= 0.0 {
-        return Err(AppError::Stats("randomized-block residual variance is not estimable".into()));
+        return Err(AppError::Stats(
+            "randomized-block residual variance is not estimable".into(),
+        ));
     }
     let statistic = (condition_ss / condition_df) / residual_mean_square;
     let distribution = FisherSnedecor::new(condition_df, residual_df)
@@ -75,15 +96,17 @@ pub fn friedman(study: &CompleteBlocks) -> Result<BlockTestResult, AppError> {
     let uncorrected = 12.0 / (block_count * condition_count * (condition_count + 1)) as f64
         * rank_sums.iter().map(|sum| sum.powi(2)).sum::<f64>()
         - 3.0 * block_count as f64 * (condition_count + 1) as f64;
-    let tie_correction = 1.0 - tie_sum as f64
-        / (block_count * condition_count * (condition_count.pow(2) - 1)) as f64;
+    let tie_correction = 1.0
+        - tie_sum as f64 / (block_count * condition_count * (condition_count.pow(2) - 1)) as f64;
     if tie_correction <= 0.0 {
-        return Err(AppError::Stats("Friedman test is undefined when every block is tied".into()));
+        return Err(AppError::Stats(
+            "Friedman test is undefined when every block is tied".into(),
+        ));
     }
     let statistic = uncorrected / tie_correction;
     let degrees_of_freedom = (condition_count - 1) as f64;
-    let distribution = ChiSquared::new(degrees_of_freedom)
-        .map_err(|error| AppError::Stats(error.to_string()))?;
+    let distribution =
+        ChiSquared::new(degrees_of_freedom).map_err(|error| AppError::Stats(error.to_string()))?;
     Ok(BlockTestResult {
         statistic,
         numerator_degrees_of_freedom: degrees_of_freedom,
@@ -105,7 +128,9 @@ fn validate_complete_blocks(study: &CompleteBlocks) -> Result<(), AppError> {
     if study.blocks.iter().any(|block| {
         block.len() != study.conditions.len() || block.iter().any(|value| !value.is_finite())
     }) {
-        return Err(AppError::Stats("complete-block matrix must be rectangular and finite".into()));
+        return Err(AppError::Stats(
+            "complete-block matrix must be rectangular and finite".into(),
+        ));
     }
     Ok(())
 }

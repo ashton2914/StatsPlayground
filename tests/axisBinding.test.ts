@@ -206,6 +206,11 @@ const graphBuilderSource = readFileSync(
   new URL("../src/components/graphBuilder/GraphBuilderView.tsx", import.meta.url),
   "utf8",
 ).replace(/\r\n/g, "\n");
+const bindFieldToSlotStart = graphBuilderSource.indexOf("const bindFieldToSlot = useCallback(");
+const bindFieldToSlotEnd = graphBuilderSource.indexOf("const setMultiAtSlot = useCallback(", bindFieldToSlotStart);
+assert.notEqual(bindFieldToSlotStart, -1, "GraphBuilderView must define bindFieldToSlot");
+assert.notEqual(bindFieldToSlotEnd, -1, "GraphBuilderView must define the next slot helper after bindFieldToSlot");
+const bindFieldToSlotSource = graphBuilderSource.slice(bindFieldToSlotStart, bindFieldToSlotEnd);
 assert.ok(
   graphBuilderSource.includes("bindGraphBuilderField(currentItem, slot, field)"),
   "GraphBuilderView must bind fields against the latest store item",
@@ -213,6 +218,11 @@ assert.ok(
 assert.ok(
   graphBuilderSource.includes("updateItem(item.id, { modeStates: nextItem.modeStates })"),
   "GraphBuilderView must persist the mode-aware binding result",
+);
+assert.doesNotMatch(
+  bindFieldToSlotSource,
+  /markDirty\(\)/,
+  "GraphBuilderView field binding must leave graph dirty/history ownership to graph.update",
 );
 
 console.log("axis binding helper checks passed");

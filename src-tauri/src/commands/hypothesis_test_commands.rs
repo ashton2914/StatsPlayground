@@ -22,8 +22,6 @@ mod tests {
         assert!(source.contains("HypothesisTestService::new(&state).run(request)"));
 
         let lib_source = include_str!("../lib.rs");
-        assert!(lib_source.contains(
-            "commands::hypothesis_test_commands::run_hypothesis_test,"
-        ));
+        assert!(lib_source.contains("commands::hypothesis_test_commands::run_hypothesis_test,"));
     }
 }

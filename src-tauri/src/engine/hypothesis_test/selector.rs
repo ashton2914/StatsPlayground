@@ -31,19 +31,25 @@ pub fn select_execution_plan(
     definition: &HypothesisTestDefinition,
 ) -> Result<ExecutionPlan, AppError> {
     if definition.selector_version != "1" {
-        return Err(AppError::InvalidParam("unsupported hypothesis-test selector version".into()));
+        return Err(AppError::InvalidParam(
+            "unsupported hypothesis-test selector version".into(),
+        ));
     }
     let recommended_method = recommended_method(study, diagnostics);
     ensure_compatible(study, &recommended_method, definition)?;
     let manual_method = match definition.selection_mode {
         HypothesisTestSelectionMode::Manual => Some(
-            definition.manual_selection.as_ref()
+            definition
+                .manual_selection
+                .as_ref()
                 .ok_or_else(|| AppError::InvalidParam("manual mode requires a method".into()))?
-                .method_id.clone(),
+                .method_id
+                .clone(),
         ),
-        HypothesisTestSelectionMode::Guided => {
-            definition.manual_selection.as_ref().map(|selection| selection.method_id.clone())
-        }
+        HypothesisTestSelectionMode::Guided => definition
+            .manual_selection
+            .as_ref()
+            .map(|selection| selection.method_id.clone()),
         HypothesisTestSelectionMode::Automatic => None,
     };
     if let Some(method) = &manual_method {
@@ -131,11 +137,8 @@ fn ensure_compatible(
     method: &HypothesisTestMethodId,
     definition: &HypothesisTestDefinition,
 ) -> Result<(), AppError> {
-    let compatibility = evaluate_method_compatibility(
-        study,
-        method.clone(),
-        definition.alternative.clone(),
-    );
+    let compatibility =
+        evaluate_method_compatibility(study, method.clone(), definition.alternative.clone());
     if matches!(compatibility.state, CompatibilityState::Compatible) {
         Ok(())
     } else {
@@ -188,12 +191,30 @@ mod tests {
     fn selector_routes_all_independent_methods_from_shape_then_variance() {
         let two = independent(2);
         let multi = independent(3);
-        assert_eq!(selected(&two, diagnostic(false, false)).executed_method, HypothesisTestMethodId::StudentTwoSampleT);
-        assert_eq!(selected(&two, diagnostic(false, true)).executed_method, HypothesisTestMethodId::WelchTwoSampleT);
-        assert_eq!(selected(&two, diagnostic(true, true)).executed_method, HypothesisTestMethodId::MannWhitneyU);
-        assert_eq!(selected(&multi, diagnostic(false, false)).executed_method, HypothesisTestMethodId::OneWayAnova);
-        assert_eq!(selected(&multi, diagnostic(false, true)).executed_method, HypothesisTestMethodId::WelchAnova);
-        assert_eq!(selected(&multi, diagnostic(true, true)).executed_method, HypothesisTestMethodId::KruskalWallis);
+        assert_eq!(
+            selected(&two, diagnostic(false, false)).executed_method,
+            HypothesisTestMethodId::StudentTwoSampleT
+        );
+        assert_eq!(
+            selected(&two, diagnostic(false, true)).executed_method,
+            HypothesisTestMethodId::WelchTwoSampleT
+        );
+        assert_eq!(
+            selected(&two, diagnostic(true, true)).executed_method,
+            HypothesisTestMethodId::MannWhitneyU
+        );
+        assert_eq!(
+            selected(&multi, diagnostic(false, false)).executed_method,
+            HypothesisTestMethodId::OneWayAnova
+        );
+        assert_eq!(
+            selected(&multi, diagnostic(false, true)).executed_method,
+            HypothesisTestMethodId::WelchAnova
+        );
+        assert_eq!(
+            selected(&multi, diagnostic(true, true)).executed_method,
+            HypothesisTestMethodId::KruskalWallis
+        );
     }
 
     #[test]
@@ -206,12 +227,28 @@ mod tests {
         let blocked = NormalizedStudy::CompleteBlock(CompleteBlocks {
             conditions: vec!["A".into(), "B".into(), "C".into()],
             subjects: vec!["1".into(), "2".into(), "3".into()],
-            blocks: vec![vec![1.0, 2.0, 4.0], vec![2.0, 4.0, 5.0], vec![4.0, 5.0, 8.0]],
+            blocks: vec![
+                vec![1.0, 2.0, 4.0],
+                vec![2.0, 4.0, 5.0],
+                vec![4.0, 5.0, 8.0],
+            ],
         });
-        assert_eq!(selected(&paired, diagnostic(false, false)).executed_method, HypothesisTestMethodId::PairedT);
-        assert_eq!(selected(&paired, diagnostic(true, false)).executed_method, HypothesisTestMethodId::WilcoxonSignedRank);
-        assert_eq!(selected(&blocked, diagnostic(false, false)).executed_method, HypothesisTestMethodId::RandomizedBlockAnova);
-        assert_eq!(selected(&blocked, diagnostic(true, false)).executed_method, HypothesisTestMethodId::Friedman);
+        assert_eq!(
+            selected(&paired, diagnostic(false, false)).executed_method,
+            HypothesisTestMethodId::PairedT
+        );
+        assert_eq!(
+            selected(&paired, diagnostic(true, false)).executed_method,
+            HypothesisTestMethodId::WilcoxonSignedRank
+        );
+        assert_eq!(
+            selected(&blocked, diagnostic(false, false)).executed_method,
+            HypothesisTestMethodId::RandomizedBlockAnova
+        );
+        assert_eq!(
+            selected(&blocked, diagnostic(true, false)).executed_method,
+            HypothesisTestMethodId::Friedman
+        );
     }
 
     #[test]
@@ -225,10 +262,18 @@ mod tests {
         });
         let plan = select_execution_plan(&study, &diagnostic(false, true), &definition)
             .expect("manual plan");
-        assert_eq!(plan.recommended_method, HypothesisTestMethodId::WelchTwoSampleT);
-        assert_eq!(plan.executed_method, HypothesisTestMethodId::StudentTwoSampleT);
+        assert_eq!(
+            plan.recommended_method,
+            HypothesisTestMethodId::WelchTwoSampleT
+        );
+        assert_eq!(
+            plan.executed_method,
+            HypothesisTestMethodId::StudentTwoSampleT
+        );
         assert!(plan.overridden);
-        assert!(plan.sensitivity_methods.contains(&HypothesisTestMethodId::WelchTwoSampleT));
+        assert!(plan
+            .sensitivity_methods
+            .contains(&HypothesisTestMethodId::WelchTwoSampleT));
     }
 
     fn selected(study: &NormalizedStudy, diagnostics: DiagnosticSummary) -> ExecutionPlan {
@@ -247,10 +292,12 @@ mod tests {
     }
 
     fn independent(count: usize) -> NormalizedStudy {
-        let groups = (0..count).map(|index| ConditionValues {
-            condition: index.to_string(),
-            values: vec![index as f64, index as f64 + 1.0, index as f64 + 3.0],
-        }).collect();
+        let groups = (0..count)
+            .map(|index| ConditionValues {
+                condition: index.to_string(),
+                values: vec![index as f64, index as f64 + 1.0, index as f64 + 3.0],
+            })
+            .collect();
         if count == 2 {
             NormalizedStudy::IndependentTwo(IndependentGroups { groups })
         } else {
@@ -263,8 +310,14 @@ mod tests {
             kind: "hypothesisTest".into(),
             roles: HypothesisTestRoles::Wide {
                 measurements: vec![
-                    HypothesisTestFieldRef { name: "A".into(), field_type: "continuous".into() },
-                    HypothesisTestFieldRef { name: "B".into(), field_type: "continuous".into() },
+                    HypothesisTestFieldRef {
+                        name: "A".into(),
+                        field_type: "continuous".into(),
+                    },
+                    HypothesisTestFieldRef {
+                        name: "B".into(),
+                        field_type: "continuous".into(),
+                    },
                 ],
                 subject: None,
             },

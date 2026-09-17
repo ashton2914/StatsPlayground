@@ -72,6 +72,7 @@ import {
   reconcileGroupThemeSlots,
   resolveGroupThemeFieldName,
 } from "./graphThemeIdentity";
+import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 import { useLayoutPreferencesStore } from "@/stores/useLayoutPreferencesStore";
 
 interface GraphBuilderViewProps {
@@ -138,46 +139,61 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const multivariate = item.modeStates.multivariate;
   const cartesianState = isThreeDMode ? threeD : twoD;
   const visualSlots = resolveVisualGraphSlots(item.mode === "2d" && twoD.transposed === true);
-  const modeStates = item.modeStates;
-  const updateItemRaw = useGraphBuilderStore((s) => s.updateItem);
   const markDirtyRaw = useProjectStore((s) => s.markDirty);
   const readOnly = useProjectStore((s) => s.readOnly);
   const markDirty = useCallback(() => {
     if (readOnly) return;
     markDirtyRaw();
   }, [readOnly, markDirtyRaw]);
-  const updateItem = useCallback((id: string, patch: Partial<GraphBuilderItem>) => {
+  const graphUpdateQueueRef = useRef(Promise.resolve());
+  const queueGraphUpdate = useCallback((buildNext: (current: GraphBuilderItem) => GraphBuilderItem) => {
     if (readOnly) return;
-    updateItemRaw(id, patch);
-  }, [readOnly, updateItemRaw]);
+    graphUpdateQueueRef.current = graphUpdateQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
+        const expectedDocumentRevision = useGraphBuilderStore.getState().getDocumentRevision(item.id);
+        await applicationRuntime.execute(
+          {
+            type: "graph.update",
+            input: {
+              graphId: item.id,
+              expectedDocumentRevision,
+              definition: buildNext(currentItem),
+            },
+          },
+          { kind: "ui" },
+        );
+      })
+      .catch(() => undefined);
+  }, [item, readOnly]);
+  const updateItem = useCallback((_id: string, patch: Partial<GraphBuilderItem>) => {
+    queueGraphUpdate((current) => ({ ...current, ...patch }));
+  }, [queueGraphUpdate]);
   const setMode = useCallback((mode: GraphBuilderMode) => {
     if (item.mode === mode) return;
-    updateItem(item.id, { mode });
-    markDirty();
-  }, [item.id, item.mode, updateItem, markDirty]);
+    queueGraphUpdate((current) => ({ ...current, mode }));
+  }, [item.mode, queueGraphUpdate]);
   const setTwoDState = useCallback(
     (updater: typeof twoD | ((prev: typeof twoD) => typeof twoD)) => {
-      const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
-      const nextItem = updateGraphBuilder2D(currentItem, updater);
-      updateItem(item.id, {
-        modeStates: nextItem.modeStates,
-      });
-      markDirty();
+      queueGraphUpdate((current) => updateGraphBuilder2D(current, updater));
     },
-    [item, twoD, updateItem, markDirty],
+    [queueGraphUpdate, twoD],
   );
   const setThreeDState = useCallback(
     (updater: typeof threeD | ((prev: typeof threeD) => typeof threeD)) => {
-      const next = typeof updater === "function" ? updater(threeD) : updater;
-      updateItem(item.id, {
-        modeStates: {
-          ...modeStates,
-          threeD: next,
-        },
+      queueGraphUpdate((current) => {
+        const next = typeof updater === "function" ? updater(current.modeStates.threeD) : updater;
+        return {
+          ...current,
+          modeStates: {
+            ...current.modeStates,
+            threeD: next,
+          },
+        };
       });
-      markDirty();
     },
-    [item.id, threeD, modeStates, updateItem, markDirty],
+    [queueGraphUpdate, threeD],
   );
   const setMultivariateState = useCallback(
     (
@@ -185,16 +201,18 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         | typeof multivariate
         | ((prev: typeof multivariate) => typeof multivariate),
     ) => {
-      const next = typeof updater === "function" ? updater(multivariate) : updater;
-      updateItem(item.id, {
-        modeStates: {
-          ...modeStates,
-          multivariate: next,
-        },
+      queueGraphUpdate((current) => {
+        const next = typeof updater === "function" ? updater(current.modeStates.multivariate) : updater;
+        return {
+          ...current,
+          modeStates: {
+            ...current.modeStates,
+            multivariate: next,
+          },
+        };
       });
-      markDirty();
     },
-    [item.id, multivariate, modeStates, updateItem, markDirty],
+    [multivariate, queueGraphUpdate],
   );
   // Cross-view bridge: click a scatter point → highlight the matching
   // cell in the DataTableView for `dataset.id` next time it mounts.
@@ -586,8 +604,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       return;
     }
     updateItem(item.id, { groupThemeSlots: resolvedThemeSlots });
-    markDirty();
-  }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem, markDirty]);
+  }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem]);
 
   const setElements = useCallback(
     (
@@ -845,9 +862,8 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
       const nextItem = bindGraphBuilderField(currentItem, slot, field);
       updateItem(item.id, { modeStates: nextItem.modeStates });
-      markDirty();
     },
-    [item, updateItem, markDirty],
+    [item, updateItem],
   );
 
   /** Replace a slot's multi-mode list. Length 0 / undefined exits
@@ -1106,7 +1122,6 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const setSamplingMode = useCallback((mode: "full" | "sample") => {
     if (mode === "full") {
       updateItem(item.id, { sampling: { mode: "full" } });
-      markDirty();
       return;
     }
     updateItem(item.id, {
@@ -1116,8 +1131,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed: sampleSeed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSize, sampleSeed]);
+  }, [item.id, updateItem, sampleSize, sampleSeed]);
 
   const setSampleSize = useCallback((raw: number) => {
     const size = clampSampleSize(Number.isFinite(raw) ? raw : sampleSize);
@@ -1128,8 +1142,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed: sampleSeed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSeed, sampleSize]);
+  }, [item.id, updateItem, sampleSeed, sampleSize]);
 
   const setSampleSeed = useCallback((raw: number) => {
     const seed = Math.max(0, Math.trunc(raw) || 0);
@@ -1140,8 +1153,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSize]);
+  }, [item.id, updateItem, sampleSize]);
 
   const rowStatus = useMemo(() => {
     if (!progress) {
@@ -1686,9 +1698,8 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
                     groupThemeSlots: nextItem.groupThemeSlots,
                   });
                   if (!readOnly && nextItem.filters) {
-                    replaceDatasetFilters(dataset.id, nextItem.filters);
+                    if (replaceDatasetFilters(dataset.id, nextItem.filters)) markDirty();
                   }
-                  markDirty();
                 }}
                 onStateChange={setRuntimeState}
                 resolveLatestItem={resolveLatestRuntimeItem}

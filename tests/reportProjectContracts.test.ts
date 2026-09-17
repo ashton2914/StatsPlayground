@@ -88,5 +88,9 @@ assert.deepEqual(saveRequest.reports, [reportItem]);
 assert.deepEqual(saveRequest.reportFolders, { "report-1": "Reports" });
 assert.deepEqual(openResult.reports, [reportItem]);
 assert.deepEqual(openResult.reportFolders, { "report-1": "Reports" });
+assert.equal(saveRequest.reports[0]?.schemaVersion, 1);
+assert.equal(openResult.reports[0]?.schemaVersion, 1);
+assert.equal(saveRequest.reports[0]?.markdown, "# Report");
+assert.equal(openResult.reports[0]?.markdown, "# Report");
 
 console.log("report project contracts passed");

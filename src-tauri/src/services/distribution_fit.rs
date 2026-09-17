@@ -205,10 +205,7 @@ pub trait FitModel {
     fn pdf(&self, estimate: &FitEstimateV1, x: f64) -> Result<f64, FitFailureV1>;
 }
 
-pub fn attach_parameter_inference(
-    estimate: &mut FitEstimateV1,
-    observations: &[FitObservationV1],
-) {
+pub fn attach_parameter_inference(estimate: &mut FitEstimateV1, observations: &[FitObservationV1]) {
     let values = estimate
         .parameters
         .iter()
@@ -281,10 +278,7 @@ fn available_typed_value(value: f64) -> CapabilityTypedValueV1 {
     }
 }
 
-fn set_parameter_inference_unavailable(
-    parameter: &mut DistributionFitParameterV1,
-    reason: &str,
-) {
+fn set_parameter_inference_unavailable(parameter: &mut DistributionFitParameterV1, reason: &str) {
     let unavailable = unavailable_metric(reason);
     parameter.standard_error = unavailable.clone();
     parameter.lower_confidence = unavailable.clone();
@@ -309,8 +303,12 @@ fn trigamma(mut value: f64) -> Option<f64> {
 }
 
 fn gamma_standard_errors(shape: f64, scale: f64, total_weight: f64) -> Option<Vec<f64>> {
-    if !shape.is_finite() || shape <= 0.0 || !scale.is_finite() || scale <= 0.0
-        || !total_weight.is_finite() || total_weight <= 0.0
+    if !shape.is_finite()
+        || shape <= 0.0
+        || !scale.is_finite()
+        || scale <= 0.0
+        || !total_weight.is_finite()
+        || total_weight <= 0.0
     {
         return None;
     }
@@ -366,25 +364,30 @@ fn weibull_standard_errors(
         plus[index] += steps[index];
         minus[index] -= steps[index];
         hessian[index][index] =
-            (objective(plus)? - 2.0 * center_value + objective(minus)?)
-                / steps[index].powi(2);
+            (objective(plus)? - 2.0 * center_value + objective(minus)?) / steps[index].powi(2);
     }
     let mut plus_plus = center;
     let mut plus_minus = center;
     let mut minus_plus = center;
     let mut minus_minus = center;
-    plus_plus[0] += steps[0]; plus_plus[1] += steps[1];
-    plus_minus[0] += steps[0]; plus_minus[1] -= steps[1];
-    minus_plus[0] -= steps[0]; minus_plus[1] += steps[1];
-    minus_minus[0] -= steps[0]; minus_minus[1] -= steps[1];
-    let cross = (objective(plus_plus)? - objective(plus_minus)?
-        - objective(minus_plus)? + objective(minus_minus)?)
+    plus_plus[0] += steps[0];
+    plus_plus[1] += steps[1];
+    plus_minus[0] += steps[0];
+    plus_minus[1] -= steps[1];
+    minus_plus[0] -= steps[0];
+    minus_plus[1] += steps[1];
+    minus_minus[0] -= steps[0];
+    minus_minus[1] -= steps[1];
+    let cross = (objective(plus_plus)? - objective(plus_minus)? - objective(minus_plus)?
+        + objective(minus_minus)?)
         / (4.0 * steps[0] * steps[1]);
     hessian[0][1] = cross;
     hessian[1][0] = cross;
     let determinant = hessian[0][0] * hessian[1][1] - cross * cross;
-    if !determinant.is_finite() || determinant <= 0.0
-        || hessian[0][0] <= 0.0 || hessian[1][1] <= 0.0
+    if !determinant.is_finite()
+        || determinant <= 0.0
+        || hessian[0][0] <= 0.0
+        || hessian[1][1] <= 0.0
     {
         return None;
     }
@@ -457,7 +460,10 @@ fn cauchy_standard_errors(
             + evaluate(minus_minus)?)
             / (4.0 * steps[0] * steps[1])
     };
-    let information_scale = hessian[0][0].abs().max(hessian[1][1].abs()).max(cross.abs());
+    let information_scale = hessian[0][0]
+        .abs()
+        .max(hessian[1][1].abs())
+        .max(cross.abs());
     if !information_scale.is_finite() || information_scale <= 0.0 {
         return None;
     }
@@ -465,8 +471,8 @@ fn cauchy_standard_errors(
     let diagonal_11 = hessian[1][1] / information_scale;
     let off_diagonal = cross / information_scale;
     let determinant = diagonal_00 * diagonal_11 - off_diagonal * off_diagonal;
-    let largest_eigenvalue = 0.5 * (diagonal_00 + diagonal_11)
-        + (0.5 * (diagonal_00 - diagonal_11)).hypot(off_diagonal);
+    let largest_eigenvalue =
+        0.5 * (diagonal_00 + diagonal_11) + (0.5 * (diagonal_00 - diagonal_11)).hypot(off_diagonal);
     let smallest_eigenvalue = determinant / largest_eigenvalue;
     let relative_information_tolerance = 64.0 * f64::EPSILON.sqrt();
     if !determinant.is_finite()
@@ -1826,9 +1832,7 @@ pub fn build_pdf_curve(
         }
         let y = match model.pdf(estimate, x) {
             Err(failure)
-                if index == 0
-                    && x == 0.0
-                    && failure.reason_code == PDF_NON_FINITE_REASON =>
+                if index == 0 && x == 0.0 && failure.reason_code == PDF_NON_FINITE_REASON =>
             {
                 x = (step / 1024.0).max(f64::MIN_POSITIVE);
                 model.pdf(estimate, x)?
@@ -2254,7 +2258,8 @@ fn available_parameter(
         return Err(objective_failure(LOG_LIKELIHOOD_INVALID_REASON));
     }
 
-    let inference_unavailable = unavailable_metric("distribution.fit.parameterInferenceUnavailable.v1");
+    let inference_unavailable =
+        unavailable_metric("distribution.fit.parameterInferenceUnavailable.v1");
     Ok(DistributionFitParameterV1 {
         parameter_id: parameter_id.to_string(),
         value: CapabilityTypedValueV1 {
@@ -3182,7 +3187,11 @@ mod tests {
         attach_parameter_inference(&mut compact_fit, &compact);
         attach_parameter_inference(&mut expanded_fit, &expanded);
 
-        for (left, right) in compact_fit.parameters.iter().zip(expanded_fit.parameters.iter()) {
+        for (left, right) in compact_fit
+            .parameters
+            .iter()
+            .zip(expanded_fit.parameters.iter())
+        {
             assert_close(left.value.value.unwrap(), right.value.value.unwrap());
             assert_numerical_inference_close(
                 left.standard_error.value.unwrap(),
@@ -3608,15 +3617,23 @@ mod tests {
         fn cauchy_fit_finite_heavy_tail_survives_normalization_overflow() {
             let values = [-1.0, -0.5, 0.0, 0.25, 0.5, 1e308];
             let observations = values.map(|value| observation(value, 1.0, 1.0));
-            let estimate = CauchyFitV1.fit(&observations).expect("finite heavy-tail fit");
+            let estimate = CauchyFitV1
+                .fit(&observations)
+                .expect("finite heavy-tail fit");
 
             assert_eq!(estimate.distribution_id, ContinuousDistributionIdV1::Cauchy);
             assert!(estimate.log_likelihood.is_finite());
             assert!(estimate_parameter(&estimate, "location").is_finite());
             let scale = estimate_parameter(&estimate, "scale");
             assert!(scale.is_finite() && scale > 0.0);
-            assert_eq!(estimate.convergence.objective, Some(-estimate.log_likelihood));
-            assert_eq!(estimate, CauchyFitV1.fit(&observations).expect("repeat fit"));
+            assert_eq!(
+                estimate.convergence.objective,
+                Some(-estimate.log_likelihood)
+            );
+            assert_eq!(
+                estimate,
+                CauchyFitV1.fit(&observations).expect("repeat fit")
+            );
             for value in values.into_iter().chain([1e150, -1e150]) {
                 let density = CauchyFitV1.pdf(&estimate, value).expect("finite tail pdf");
                 assert!(density.is_finite() && density >= 0.0);
@@ -3638,7 +3655,9 @@ mod tests {
                     center,
                     reference_scale,
                 };
-                let actual = objective.evaluate(&parameters).expect("finite candidate objective");
+                let actual = objective
+                    .evaluate(&parameters)
+                    .expect("finite candidate objective");
                 let expected = std::f64::consts::PI.ln() + parameters[1] + expected_kernel;
                 assert!(actual.is_finite());
                 assert!((actual - expected).abs() < 1e-10);
@@ -3698,12 +3717,14 @@ mod tests {
                 (-7e100, 1e100),
                 (-7e-100, 1e-100),
             ] {
-                let transformed = values.map(|value| observation(offset + factor * value, 1.0, 1.0));
+                let transformed =
+                    values.map(|value| observation(offset + factor * value, 1.0, 1.0));
                 let estimate = CauchyFitV1.fit(&transformed).expect("affine fit");
                 let normalized_location =
                     (estimate_parameter(&estimate, "location") - offset) / factor;
                 let normalized_scale = estimate_parameter(&estimate, "scale") / factor;
-                let normalized_likelihood = estimate.log_likelihood + values.len() as f64 * factor.ln();
+                let normalized_likelihood =
+                    estimate.log_likelihood + values.len() as f64 * factor.ln();
                 println!(
                     "offset={offset:e}, factor={factor:e}, location={normalized_location}, \
                      scale={normalized_scale}, likelihood={normalized_likelihood}, iterations={}",
@@ -3715,7 +3736,10 @@ mod tests {
                 );
                 assert!((normalized_scale - estimate_parameter(&baseline, "scale")).abs() < 3e-5);
                 assert!((normalized_likelihood - baseline.log_likelihood).abs() < 1e-8);
-                assert_eq!(estimate.convergence.objective, Some(-estimate.log_likelihood));
+                assert_eq!(
+                    estimate.convergence.objective,
+                    Some(-estimate.log_likelihood)
+                );
                 assert_eq!(estimate, CauchyFitV1.fit(&transformed).unwrap());
             }
         }
@@ -3728,7 +3752,10 @@ mod tests {
                 let failure = CauchyFitV1
                     .fit_with_iteration_limit(&observations, budget)
                     .unwrap_err();
-                assert_eq!(failure.classification, FitFailureClassificationV1::Optimizer);
+                assert_eq!(
+                    failure.classification,
+                    FitFailureClassificationV1::Optimizer
+                );
                 assert_eq!(
                     failure.reason_code,
                     "distribution.fit.optimizerIterationLimit.v1"
@@ -3779,7 +3806,10 @@ mod tests {
             assert_eq!(estimate.convergence.iterations, selected.iterations);
             assert!(
                 estimate.convergence.iterations
-                    < candidates.iter().map(|candidate| candidate.iterations).sum()
+                    < candidates
+                        .iter()
+                        .map(|candidate| candidate.iterations)
+                        .sum()
             );
             assert_close(
                 estimate.convergence.objective.unwrap(),
@@ -4031,7 +4061,9 @@ mod tests {
                 build_pdf_curve(&CauchyFitV1, &estimate, -3.0, 3.0).unwrap(),
                 curve
             );
-            assert!((estimate.log_likelihood + 2.0 * (2.0 * std::f64::consts::PI).ln()).abs() < 1e-8);
+            assert!(
+                (estimate.log_likelihood + 2.0 * (2.0 * std::f64::consts::PI).ln()).abs() < 1e-8
+            );
             for (parameter, point) in estimate.parameters.iter().zip(&original.parameters) {
                 assert_eq!(parameter.value, point.value);
                 assert_eq!(parameter.value.state, "available");
@@ -4040,7 +4072,10 @@ mod tests {
                     &parameter.lower_confidence,
                     &parameter.upper_confidence,
                 ] {
-                    assert_eq!(inference.state, "unavailable", "ridge inference: {inference:?}");
+                    assert_eq!(
+                        inference.state, "unavailable",
+                        "ridge inference: {inference:?}"
+                    );
                     assert_eq!(inference.value, None);
                     assert_eq!(
                         inference.reason_code.as_deref(),
@@ -4491,7 +4526,8 @@ mod tests {
                 Err(FitFailureV1 { reason_code, classification: FitFailureClassificationV1::Curve })
                     if reason_code == "distribution.fit.pdfNonFinite.v1"
             ));
-            let gamma_curve = build_pdf_curve(&GammaFitV1, &gamma_shape_below_one, 0.0, 4.0).unwrap();
+            let gamma_curve =
+                build_pdf_curve(&GammaFitV1, &gamma_shape_below_one, 0.0, 4.0).unwrap();
             assert_eq!(gamma_curve.len(), 256);
             assert!(gamma_curve[0].x > 0.0 && gamma_curve[0].y.is_finite());
 
@@ -4558,7 +4594,10 @@ mod tests {
             assert!((WeibullFitV1.pdf(&weibull_shape_one, 0.0).unwrap() - 0.5).abs() < 1e-12);
             let mut weibull_shape_above_one = weibull_shape_one.clone();
             weibull_shape_above_one.parameters[0].value.value = Some(2.0);
-            assert_eq!(WeibullFitV1.pdf(&weibull_shape_above_one, 0.0).unwrap(), 0.0);
+            assert_eq!(
+                WeibullFitV1.pdf(&weibull_shape_above_one, 0.0).unwrap(),
+                0.0
+            );
             let mut weibull_shape_below_one = weibull_shape_one.clone();
             weibull_shape_below_one.parameters[0].value.value = Some(0.5);
             assert!(matches!(
@@ -4566,7 +4605,8 @@ mod tests {
                 Err(FitFailureV1 { reason_code, classification: FitFailureClassificationV1::Curve })
                     if reason_code == "distribution.fit.pdfNonFinite.v1"
             ));
-            let weibull_curve = build_pdf_curve(&WeibullFitV1, &weibull_shape_below_one, 0.0, 4.0).unwrap();
+            let weibull_curve =
+                build_pdf_curve(&WeibullFitV1, &weibull_shape_below_one, 0.0, 4.0).unwrap();
             assert_eq!(weibull_curve.len(), 256);
             assert!(weibull_curve[0].x > 0.0 && weibull_curve[0].y.is_finite());
 

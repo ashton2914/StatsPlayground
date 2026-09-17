@@ -8,6 +8,7 @@ pub mod graph_data_commands;
 pub mod history_commands;
 pub mod hypothesis_test_commands;
 pub mod io_commands;
+pub mod mcp_commands;
 #[cfg(test)]
 mod mutation_guard_coverage;
 pub mod project_commands;

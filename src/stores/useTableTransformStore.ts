@@ -20,19 +20,21 @@ export interface TableTransformStore {
   definitions: TableTransformDefinition[];
   bindings: TableTransformBindingState[];
   pendingById: Record<string, number>;
+  preflightCreateAndRun: (draft: TableTransformDraft) => Promise<void>;
+  preflightRun: (transformId: string) => Promise<void>;
   loadFromProject: (
     definitions: TableTransformDefinition[],
     bindings: TableTransformProjectBinding[],
   ) => void;
-  createAndRun: (
-    draft: TableTransformDraft,
-  ) => Promise<TableTransformExecutionResult>;
+  createAndRun: (draft: TableTransformDraft) => Promise<TableTransformExecutionResult>;
   rebindAndRun: (
     transformId: string,
     role: string,
     tableDocumentId: string,
   ) => Promise<TableTransformExecutionResult>;
-  rerun: (transformId: string) => Promise<TableTransformExecutionResult>;
+  rerun: (
+    transformId: string,
+  ) => Promise<TableTransformExecutionResult>;
   remove: (transformId: string) => void;
   reset: () => void;
 }
@@ -63,10 +65,22 @@ function stateCreator(
   dependencies: TableTransformStoreDependencies,
 ): (set: StoreApi<TableTransformStore>["setState"], get: StoreApi<TableTransformStore>["getState"]) => TableTransformStore {
   return (set, get) => {
+    let createRequestCounter = 0;
+
     const beginRequest = (transformId: string): number => {
       const token = (get().pendingById[transformId] ?? 0) + 1;
       set((state) => ({ pendingById: { ...state.pendingById, [transformId]: token } }));
       return token;
+    };
+
+    const endRequest = (requestKey: string, token: number): void => {
+      set((state) => {
+        if (state.pendingById[requestKey] !== token) {
+          return state;
+        }
+        const { [requestKey]: _removed, ...pendingById } = state.pendingById;
+        return { ...state, pendingById };
+      });
     };
 
     const applyResult = (
@@ -97,19 +111,39 @@ function stateCreator(
       definitions: [],
       bindings: [],
       pendingById: {},
+      preflightCreateAndRun: async (draft) => {
+        await dependencies.service.preflightCreateAndRun(
+          clone(draft),
+          clone(dependencies.getLineage()),
+        );
+      },
+      preflightRun: async (transformId) => {
+        const definition = findDefinition(get(), transformId);
+        const binding = findBinding(get(), transformId);
+        await dependencies.service.preflightRun(
+          clone(definition),
+          clone(binding),
+          clone(dependencies.getLineage()),
+        );
+      },
       loadFromProject: (definitions, bindings) => set({
         definitions: clone(definitions),
         bindings: clone(bindings),
         pendingById: {},
       }),
       createAndRun: async (draft) => {
-        const requestKey = `create:${draft.name}`;
+        createRequestCounter += 1;
+        const requestKey = `create:${createRequestCounter}`;
         const token = beginRequest(requestKey);
-        const result = await dependencies.service.createAndRun(
-          clone(draft),
-          clone(dependencies.getLineage()),
-        );
-        return applyResult(result, token, requestKey);
+        try {
+          const result = await dependencies.service.createAndRun(
+            clone(draft),
+            clone(dependencies.getLineage()),
+          );
+          return applyResult(result, token, requestKey);
+        } finally {
+          endRequest(requestKey, token);
+        }
       },
       rebindAndRun: async (transformId, role, tableDocumentId) => {
         const definition = findDefinition(get(), transformId);

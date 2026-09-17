@@ -81,6 +81,9 @@
   },
   "menu": {
     "file": "File",
+    "ai": "AI",
+    "mcpServer": "MCP Server...",
+    "skills": "Skills...",
     "save": "Save",
     "dataLink": "DataLink...",
     "preferences": "Preferences",
@@ -118,6 +121,39 @@
     "about": "About",
     "exportTables": "Export Tables",
     "fitModel": "Fit Model"
+  },
+  "ai": {
+    "mcpServer": {
+      "description": "Manage the in-app MCP endpoint for external AI clients.",
+      "start": "Start server",
+      "stop": "Stop server",
+      "state": "State",
+      "connections": "Connections",
+      "queued": "Queued",
+      "running": "Running",
+      "endpoint": "Endpoint",
+      "token": "Token",
+      "notRunning": "Not running",
+      "copyEndpoint": "Copy endpoint",
+      "copyToken": "Copy token",
+      "clientConfig": "Client config",
+      "clientConfigHint": "Start the server to generate a client configuration.",
+      "copyConfig": "Copy client config",
+      "authorizedRoots": "Authorized output roots",
+      "authorizeRoot": "Authorize output root",
+      "authorizeRootButton": "Authorize root",
+      "noAuthorizedRoots": "No output roots authorized for this session.",
+      "confirmations": "Pending confirmations",
+      "noConfirmations": "No pending confirmations.",
+      "activity": "Session activity",
+      "noActivity": "No MCP activity in this session."
+    },
+    "skills": {
+      "openPlaceholder": "View Skills placeholder",
+      "placeholderLead": "Skills are not available in Phase 1.",
+      "placeholderBody": "This placeholder is truthful by design: there is no Skill runtime, installation flow, or enablement control in the current MCP scope.",
+      "backToServer": "Back to MCP Server"
+    }
   },
   "alert": {
     "selectDatasetFirst": "Please select a data table as the source first.",
@@ -234,6 +270,7 @@
     "newGraph": "New graph \"{{name}}\" (source: {{source}})",
     "newReport": "New report \"{{name}}\"",
     "newAnalysis": "New analysis \"{{name}}\"",
+    "editGraph": "Edit graph \"{{name}}\"",
     "editReport": "Edit report \"{{name}}\"",
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "New Fit Y by X \"{{name}}\" (source: {{source}})",

@@ -37,6 +37,8 @@ interface ProjectStore {
   saveProgress: SaveProgress | null;
   /** 最近一次保存错误（保存失败时保留）。 */
   saveError: string | null;
+  /** 应用层命令修订号。 */
+  projectRevision: number;
   /** 初始化项目（内存中，未保存到磁盘） */
   initProject: () => Promise<void>;
   /** 创建新项目 */
@@ -49,6 +51,12 @@ interface ProjectStore {
   closeProject: () => void;
   /** 标记有未保存的修改 */
   markDirty: () => void;
+  /** 直接设置 dirty（用于打开/关闭生命周期）。 */
+  setDirty: (dirty: boolean) => void;
+  /** 重置命令修订号（用于打开/关闭生命周期）。 */
+  resetRevision: () => void;
+  /** 设置命令修订号（由命令运行时同步）。 */
+  setRevision: (revision: number) => void;
 }
 
 export function createProjectStore(
@@ -65,17 +73,18 @@ export function createProjectStore(
     readOnly: false,
     saveProgress: null,
     saveError: null,
+    projectRevision: 0,
 
     initProject: async () => {
       set({ loading: true });
       const project = await deps.projectService.initProject();
-      set({ project, loading: false, dirty: false, saveError: null });
+      set({ project, loading: false, dirty: false, saveError: null, projectRevision: 0 });
     },
 
     createProject: async (name, filePath) => {
       set({ loading: true });
       const project = await deps.projectService.createProject(name, filePath);
-      set({ project, loading: false, dirty: false, saveError: null });
+      set({ project, loading: false, dirty: false, saveError: null, projectRevision: 0 });
     },
 
     openProject: async (filePath) => {
@@ -99,6 +108,7 @@ export function createProjectStore(
             || normalizedResult.documentNameMigrations.length > 0
             || normalizedResult.datasetNameMigrations.length > 0,
           saveError: null,
+          projectRevision: 0,
         });
         return normalizedResult;
       } finally {
@@ -174,12 +184,28 @@ export function createProjectStore(
         readOnly: false,
         saveProgress: null,
         saveError: null,
+        projectRevision: 0,
       });
     },
 
     markDirty: () => {
       assertProjectMutable(get().readOnly);
       set({ dirty: true });
+    },
+
+    setDirty: (dirty) => {
+      if (dirty) {
+        assertProjectMutable(get().readOnly);
+      }
+      set({ dirty });
+    },
+
+    resetRevision: () => {
+      set({ projectRevision: 0 });
+    },
+
+    setRevision: (revision) => {
+      set({ projectRevision: revision });
     },
   }));
 }

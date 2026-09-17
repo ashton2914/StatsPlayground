@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { dataService } from "@/services/dataService";
-import { tabulateService } from "@/services/tabulateService";
+import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import type { ColumnDisplayProps, DatasetMeta } from "@/types/data";
@@ -27,7 +26,6 @@ import {
   formatStatisticLabel,
 } from "./TabulateStatisticEditor";
 import {
-  buildTabulateExportRequest,
   canExportTabulateResult,
   canShowReadyResult,
   canAssignTabulateField,
@@ -41,12 +39,12 @@ interface TabulateViewProps {
   item: TabulateItem;
   dataset: DatasetMeta | undefined;
   existingDatasetNames: string[];
-  onTableCreated: (dataset: DatasetMeta) => Promise<void>;
 }
 
-export function TabulateView({ item, dataset, existingDatasetNames, onTableCreated }: TabulateViewProps) {
+export function TabulateView({ item, dataset, existingDatasetNames }: TabulateViewProps) {
   const { t } = useTranslation();
   const updateItemRaw = useTabulateStore((state) => state.updateItem);
+  const latestResultById = useTabulateStore((state) => state.latestResultsById[item.id] ?? null);
   const markDirtyRaw = useProjectStore((state) => state.markDirty);
   const readOnly = useProjectStore((state) => state.readOnly);
   const updateItem = (id: string, patch: Partial<TabulateItem>) => {
@@ -64,8 +62,8 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
   );
   const [fieldsLoading, setFieldsLoading] = useState(false);
   const [fieldLoadError, setFieldLoadError] = useState<string | null>(null);
-  const [result, setResult] = useState<TabulateResult | null>(null);
-  const [completedQueryRequest, setCompletedQueryRequest] = useState<TabulateRequest | null>(null);
+  const [result, setResult] = useState<TabulateResult | null>(latestResultById?.result ?? null);
+  const [completedQueryRequest, setCompletedQueryRequest] = useState<TabulateRequest | null>(latestResultById ? null : null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -82,7 +80,7 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
 
   useEffect(() => {
     requestSequence.current += 1;
-    setResult(null);
+    setResult(useTabulateStore.getState().getLatestResult(item.id)?.result ?? null);
     setCompletedQueryRequest(null);
     setError(null);
     setExportError(null);
@@ -93,6 +91,10 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
     previousRowDepthRef.current = item.rowFields.length;
     previousColumnDepthRef.current = item.columnFields.length;
   }, [item.id]);
+
+  useEffect(() => {
+    setResult(latestResultById?.result ?? null);
+  }, [latestResultById]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 1100px)");
@@ -147,11 +149,15 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
     setFieldsLoading(true);
     setFieldLoadError(null);
 
-    Promise.all([
-      dataService.getColumns(dataset.id),
-      dataService.getColumnDisplayProps(dataset.id).catch(() => []),
-    ])
-      .then(([columns, displayProps]) => {
+    applicationRuntime.execute({ type: "table.describe", input: { datasetId: dataset.id } }, { kind: "ui" })
+      .then((response) => {
+        const columns = response.data.columns.map((column) => [column.colName, column.colType] as [string, string]);
+        const displayProps = response.data.columns.map((column) => ({
+          colIndex: column.colIndex,
+          width: column.width,
+          format: column.format,
+          extras: column.extras,
+        }));
         if (!alive) {
           return;
         }
@@ -231,11 +237,25 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
     setLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const next = await tabulateService.run(queryRequest);
+        const runResult = await applicationRuntime.execute(
+          {
+            type: "tabulate.run",
+            input: {
+              tabulateId: item.id,
+              request: queryRequest,
+            },
+          },
+          { kind: "ui" },
+        );
+        const next = runResult.data.result;
         if (isLatestSequence(sequence, requestSequence.current)) {
           setResult(next);
           setCompletedQueryRequest(queryRequest);
-          setError(null);
+          if (runResult.warnings.some((warning) => warning.code === "tabulate_run_source_changed")) {
+            setError(t("tabulate.refreshingAggregate"));
+          } else {
+            setError(null);
+          }
         }
       } catch (reason: unknown) {
         if (isLatestSequence(sequence, requestSequence.current)) {
@@ -347,14 +367,17 @@ export function TabulateView({ item, dataset, existingDatasetNames, onTableCreat
     setExportError(null);
 
     try {
-      const exportResult = await tabulateService.run(fullQueryRequest);
-      const request = buildTabulateExportRequest(item, exportResult, {
-        tableName: resolved.basename,
-        missingLabel: t("tabulate.missing"),
-        statisticLabel: formatStatisticLabel,
-      });
-      const created = await dataService.createTableFromRows(request);
-      await onTableCreated(created);
+      await applicationRuntime.execute(
+        {
+          type: "tabulate.exportTable",
+          input: {
+            tabulateId: item.id,
+            request: fullQueryRequest,
+            tableName: resolved.basename,
+          },
+        },
+        { kind: "ui" },
+      );
     } catch {
       setExportError(t("tabulate.exportTableFailed"));
     } finally {

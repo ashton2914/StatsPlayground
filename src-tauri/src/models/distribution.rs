@@ -1221,14 +1221,19 @@ mod tests {
             "median": 3.0, "primaryMode": 1.0, "modeIsUnique": false,
             "range": 4.0, "iqr": 2.0, "mad": 1.0
         });
-        let summary: DistributionSummaryDataV1 = serde_json::from_value(legacy.clone()).expect("legacy summary");
+        let summary: DistributionSummaryDataV1 =
+            serde_json::from_value(legacy.clone()).expect("legacy summary");
         assert_eq!(summary.confidence_level, 0.95);
         for confidence in [0.9, 0.95, 0.99] {
             let mut payload = legacy.clone();
             payload["confidenceLevel"] = json!(confidence);
-            let summary: DistributionSummaryDataV1 = serde_json::from_value(payload.clone()).expect("summary");
+            let summary: DistributionSummaryDataV1 =
+                serde_json::from_value(payload.clone()).expect("summary");
             assert_eq!(summary.confidence_level, confidence);
-            assert_eq!(serde_json::to_value(summary).expect("summary wire"), payload);
+            assert_eq!(
+                serde_json::to_value(summary).expect("summary wire"),
+                payload
+            );
         }
     }
 
@@ -1254,10 +1259,13 @@ mod tests {
 
         assert_eq!(request.response_columns, vec!["height", "width"]);
         assert_eq!(request.by_columns, vec!["region", "batch"]);
-        assert_eq!(request.fit_distributions, vec![
-            ContinuousDistributionIdV1::Normal,
-            ContinuousDistributionIdV1::Cauchy,
-        ]);
+        assert_eq!(
+            request.fit_distributions,
+            vec![
+                ContinuousDistributionIdV1::Normal,
+                ContinuousDistributionIdV1::Cauchy,
+            ]
+        );
         assert!(request.fit_all);
         assert_eq!(
             serde_json::to_value(request).expect("serialize request"),

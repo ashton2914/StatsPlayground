@@ -6,6 +6,8 @@ import type {
   CalculatedColumnValidation,
   CellPosition,
   CellUpdate,
+  CreateManagedTableRequest,
+  ManagedTableCreateResult,
   DatasetMeta,
   CreateTableFromRowsRequest,
   SqlQueryResult,
@@ -22,6 +24,10 @@ export const dataService = {
   /** 执行 SQL 查询（分页） */
   executeSqlQuery: (sql: string, page: number, pageSize = 200) =>
     invoke<SqlQueryResult>("execute_sql_query", { sql, page, pageSize }),
+
+  /** 根据 SQL 查询创建数据表 */
+  preflightCreateTableFromSqlQuery: (sql: string, name: string) =>
+    invoke<void>("preflight_create_table_from_sql_query", { sql, name }),
 
   /** 根据 SQL 查询创建数据表 */
   createTableFromSqlQuery: (sql: string, name: string) =>
@@ -80,6 +86,10 @@ export const dataService = {
   /** 通过类型化行数据原子创建数据表 */
   createTableFromRows: (request: CreateTableFromRowsRequest) =>
     invoke<DatasetMeta>("create_table_from_rows", { request }),
+
+  /** 原子创建数据表并持久化完整列显示属性 */
+  createManagedTable: (request: CreateManagedTableRequest) =>
+    invoke<ManagedTableCreateResult>("create_managed_table", { request }),
 
   /** 添加空行 */
   addRow: (datasetId: string) => invoke<number>("add_row", { datasetId }),
