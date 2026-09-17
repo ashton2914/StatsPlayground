@@ -1136,7 +1136,8 @@
       "fitline": "擬合線",
       "scatter3d": "散佈",
       "surface": "曲面",
-      "contour3d": "等高線"
+      "contour3d": "等高線",
+      "timeSeries": "時間序列"
     },
     "frequency": "頻次",
     "mode": {
@@ -1301,6 +1302,55 @@
         "insufficientData": "樣本不足",
         "zeroVariance": "零變異",
         "unknown": "未知"
+      }
+    },
+    "timeSeries": {
+      "xInterpretation": {
+        "label": "X 軸解釋",
+        "nativeTemporal": "原生 DATE/TIMESTAMP",
+        "textDate": "文字日期",
+        "sequence": "序列 / 經過值"
+      },
+      "format": {
+        "label": "文字格式",
+        "isoDate": "ISO 日期 (YYYY-MM-DD)",
+        "isoDateTime": "ISO 日期時間",
+        "usDate": "美式日期 (M/D/YYYY)",
+        "usDateTime": "美式日期時間",
+        "dayFirstDate": "日優先日期 (D/M/YYYY)",
+        "dayFirstDateTime": "日優先日期時間"
+      },
+      "order": {
+        "label": "順序",
+        "timeAscending": "時間遞增",
+        "sourceRow": "來源列順序"
+      },
+      "missingValues": {
+        "label": "缺失值",
+        "break": "中斷折線",
+        "connect": "跨過連接"
+      },
+      "connection": {
+        "label": "連接",
+        "line": "直線",
+        "step": "階梯"
+      },
+      "markerMode": {
+        "label": "標記",
+        "auto": "自動",
+        "show": "顯示",
+        "hide": "隱藏"
+      },
+      "status": {
+        "fullResolution": "全解析度",
+        "includedCount": "已包含 {{count}} 列"
+      },
+      "error": {
+        "textDateRequired": "請為 {{field}} 選擇一種支援的文字日期格式。",
+        "sequenceRequired": "數值型時間序列 X 欄 {{field}} 需要選擇序列 / 經過值。",
+        "nativeTemporalRequired": "時間型時間序列 X 欄 {{field}} 需要選擇原生 DATE/TIMESTAMP。",
+        "standaloneTime": "單獨的 TIME 欄不能定義時間序列順序。請選擇 DATE/TIMESTAMP 欄或明確文字日期格式。",
+        "invalidXRows": "{{count}} 個無效 X 值"
       }
     },
     "removeSlot": "移除",

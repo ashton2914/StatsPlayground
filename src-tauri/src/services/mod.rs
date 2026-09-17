@@ -19,6 +19,7 @@ pub mod streaming_project_writer;
 pub mod table_transform_domain;
 pub mod table_transform_service;
 pub mod tabulate_service;
+pub mod time_series;
 pub mod workflow_document_executor;
 pub mod workflow_domain;
 pub mod workflow_executor;

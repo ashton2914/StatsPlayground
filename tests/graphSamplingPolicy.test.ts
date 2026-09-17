@@ -90,3 +90,55 @@ assert.deepEqual(
   ),
   { mode: "sample", size: SCATTER_RENDER_BUDGET, seed: 17 },
 );
+
+const timeSeriesElements = [{
+  kind: "timeSeries",
+  summaryStat: "none",
+  timeSeries: {
+    xInterpretation: { kind: "nativeTemporal" as const },
+    order: "timeAscending" as const,
+    missingValues: "break" as const,
+    markerMode: "auto" as const,
+    connection: "line" as const,
+  },
+}];
+assert.equal(requiresRawGraphFrame(timeSeriesElements), true);
+assert.deepEqual(
+  resolveEffectiveGraphSampling({ mode: "full" }, timeSeriesElements),
+  { mode: "full" },
+);
+assert.deepEqual(
+  resolveEffectiveGraphSampling({ mode: "sample", size: 500, seed: 7 }, timeSeriesElements),
+  { mode: "full" },
+);
+
+const malformedTimeSeriesPayloads = [
+  { label: "missing interpretation", timeSeries: { order: "timeAscending", missingValues: "break", markerMode: "auto", connection: "line" } },
+  { label: "bad interpretation", timeSeries: { xInterpretation: { kind: "nativeTime" }, order: "timeAscending", missingValues: "break", markerMode: "auto", connection: "line" } },
+  { label: "missing text format", timeSeries: { xInterpretation: { kind: "textDate" }, order: "timeAscending", missingValues: "break", markerMode: "auto", connection: "line" } },
+  { label: "bad text format", timeSeries: { xInterpretation: { kind: "textDate", format: "shortDate" }, order: "timeAscending", missingValues: "break", markerMode: "auto", connection: "line" } },
+  { label: "bad order", timeSeries: { xInterpretation: { kind: "nativeTemporal" }, order: "bad", missingValues: "break", markerMode: "auto", connection: "line" } },
+  { label: "missing missingValues", timeSeries: { xInterpretation: { kind: "nativeTemporal" }, order: "timeAscending", markerMode: "auto", connection: "line" } },
+  { label: "bad missingValues", timeSeries: { xInterpretation: { kind: "nativeTemporal" }, order: "timeAscending", missingValues: "skip", markerMode: "auto", connection: "line" } },
+  { label: "bad markerMode", timeSeries: { xInterpretation: { kind: "nativeTemporal" }, order: "timeAscending", missingValues: "break", markerMode: "sometimes", connection: "line" } },
+  { label: "bad connection", timeSeries: { xInterpretation: { kind: "nativeTemporal" }, order: "timeAscending", missingValues: "break", markerMode: "auto", connection: "curve" } },
+];
+
+for (const { label, timeSeries } of malformedTimeSeriesPayloads) {
+  const elements = [{ kind: "timeSeries", summaryStat: "none", timeSeries }];
+  assert.deepEqual(
+    resolveEffectiveGraphSampling({ mode: "full" }, elements),
+    { mode: "sample", size: SCATTER_RENDER_BUDGET, seed: 0 },
+    label,
+  );
+  assert.deepEqual(
+    resolveEffectiveGraphSampling({ mode: "sample", size: 500, seed: 7 }, elements),
+    { mode: "sample", size: 500, seed: 7 },
+    `${label} sample`,
+  );
+}
+
+assert.deepEqual(
+  resolveEffectiveGraphSampling({ mode: "full" }, [{ kind: "timeSeries", summaryStat: "none" }]),
+  { mode: "sample", size: SCATTER_RENDER_BUDGET, seed: 0 },
+);

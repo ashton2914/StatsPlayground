@@ -1151,7 +1151,8 @@
       "fitline": "拟合线",
       "scatter3d": "散点",
       "surface": "曲面",
-      "contour3d": "等高线"
+      "contour3d": "等高线",
+      "timeSeries": "时间序列"
     },
     "frequency": "频次",
     "mode": {
@@ -1316,6 +1317,55 @@
         "insufficientData": "样本不足",
         "zeroVariance": "零方差",
         "unknown": "未知"
+      }
+    },
+    "timeSeries": {
+      "xInterpretation": {
+        "label": "X 轴解释",
+        "nativeTemporal": "原生 DATE/TIMESTAMP",
+        "textDate": "文本日期",
+        "sequence": "序列 / 经过值"
+      },
+      "format": {
+        "label": "文本格式",
+        "isoDate": "ISO 日期 (YYYY-MM-DD)",
+        "isoDateTime": "ISO 日期时间",
+        "usDate": "美式日期 (M/D/YYYY)",
+        "usDateTime": "美式日期时间",
+        "dayFirstDate": "日优先日期 (D/M/YYYY)",
+        "dayFirstDateTime": "日优先日期时间"
+      },
+      "order": {
+        "label": "顺序",
+        "timeAscending": "时间升序",
+        "sourceRow": "源行顺序"
+      },
+      "missingValues": {
+        "label": "缺失值",
+        "break": "断开折线",
+        "connect": "跨过连接"
+      },
+      "connection": {
+        "label": "连接",
+        "line": "直线",
+        "step": "阶梯"
+      },
+      "markerMode": {
+        "label": "标记",
+        "auto": "自动",
+        "show": "显示",
+        "hide": "隐藏"
+      },
+      "status": {
+        "fullResolution": "全分辨率",
+        "includedCount": "已包含 {{count}} 行"
+      },
+      "error": {
+        "textDateRequired": "请为 {{field}} 选择一种受支持的文本日期格式。",
+        "sequenceRequired": "数值型时间序列 X 列 {{field}} 需要选择序列 / 经过值。",
+        "nativeTemporalRequired": "时间型时间序列 X 列 {{field}} 需要选择原生 DATE/TIMESTAMP。",
+        "standaloneTime": "单独的 TIME 列不能定义时间序列顺序。请选择 DATE/TIMESTAMP 列或显式文本日期格式。",
+        "invalidXRows": "{{count}} 个无效 X 值"
       }
     },
     "removeSlot": "移除",

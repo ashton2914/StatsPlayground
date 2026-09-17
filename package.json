@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "build:portable": "node scripts/buildPortable.mjs",
     "benchmark:scatter": "node scripts/runScatterBudget.mjs",
+    "benchmark:time-series": "node scripts/runTimeSeriesBenchmark.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "test:app-version": "node --test scripts/appVersionCore.test.mjs",

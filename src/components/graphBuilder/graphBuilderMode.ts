@@ -1,5 +1,6 @@
 import type { ChartElement, FieldRef } from "@/graphCore";
 import { getLayerMode } from "@/components/graphBuilder/graphLayerConfig";
+import { reconcileTimeSeriesElements } from "@/components/graphBuilder/timeSeriesContract";
 import type {
   EmbeddedGraphConfig,
   Graph2DSlotKey,
@@ -346,6 +347,7 @@ function normalizeCurrentModeItem(item: GraphBuilderItem): GraphBuilderItem {
     "elements",
     toElements(twoDInput.elements).filter((element) => getLayerMode(element.kind) === "2d"),
   );
+  const twoDNormalized = reconcileTimeSeriesElements(twoDWithOpts);
 
   const threeDCore: Graph3DState = {
     ...threeDDefault,
@@ -371,7 +373,7 @@ function normalizeCurrentModeItem(item: GraphBuilderItem): GraphBuilderItem {
     sourceDatasetId: item.sourceDatasetId,
     mode: item.mode,
     modeStates: {
-      twoD: twoDWithOpts,
+      twoD: twoDNormalized,
       threeD: threeDWithOpts,
       multivariate: {
         columns: canonicalizeMultivariateColumns(multivariateInput.columns),
@@ -466,6 +468,7 @@ export function normalizeGraphBuilderItem(item: unknown): GraphBuilderItem {
   Object.assign(twoD, withOptional({}, "autoSpecLines", maybeAutoSpecLines));
   Object.assign(twoD, withOptional({}, "yAxis", maybeYAxis));
   Object.assign(twoD, withOptional({}, "xAxis", maybeXAxis));
+  const normalizedTwoD = reconcileTimeSeriesElements(twoD);
 
   threeD.encoding = { ...shared3D, ...only3D };
   threeD.elements = elements.filter((element) => getLayerMode(element.kind) === "3d");
@@ -481,7 +484,7 @@ export function normalizeGraphBuilderItem(item: unknown): GraphBuilderItem {
     sourceDatasetId: toStringOr(source.sourceDatasetId, ""),
     mode,
     modeStates: {
-      twoD,
+      twoD: normalizedTwoD,
       threeD,
       multivariate,
     },

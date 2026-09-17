@@ -12,6 +12,10 @@ if (import.meta.env.DEV && import.meta.env.VITE_SCATTER_BENCHMARK === "1") {
   import("./benchmarks/ScatterBudgetBenchmark").then(({ ScatterBudgetBenchmark }) => {
     root.render(<ScatterBudgetBenchmark />);
   });
+} else if (import.meta.env.DEV && import.meta.env.VITE_TIME_SERIES_BENCHMARK === "1") {
+  import("./benchmarks/TimeSeriesBenchmark").then(({ TimeSeriesBenchmark }) => {
+    root.render(<TimeSeriesBenchmark />);
+  });
 } else {
   root.render(
     <React.StrictMode>

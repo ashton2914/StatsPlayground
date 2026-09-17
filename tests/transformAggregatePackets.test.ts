@@ -35,7 +35,15 @@ Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
 });
 
-const { buildGraph, transposeOption } = await import("../src/graphCore/transform.ts");
+const transformModule = await import("../src/graphCore/transform.ts");
+const { buildGraph, transposeOption } = transformModule;
+const pickBySeriesDataIndex = (transformModule as {
+  pickBySeriesDataIndex?: (
+    option: Record<string, unknown>,
+    seriesId: string,
+    dataIndex: number,
+  ) => { rowId: number; colName: string } | null;
+}).pickBySeriesDataIndex;
 
 {
   const transformSource = readFileSync(resolve(TEST_FILE_DIR, "../src/graphCore/transform.ts"), "utf8");
@@ -3658,4 +3666,198 @@ for (const element of [
   const boxplotSeries = series.find((entry) => entry.type === "boxplot");
   assert.ok(boxplotSeries);
   assert.equal((boxplotSeries.data as unknown[]).length, responses.length);
+}
+
+function typedTemporalTimeSeriesFrame(): GraphDataFrame {
+  return {
+    ...frameBackedAggregateFrame([], 5),
+    dictionaries: { group: ["Visible", "Hidden"], source: ["temperature"] },
+    extents: {
+      x: { min: 1_722_038_400_000, max: 1_722_297_600_000 },
+      y: { min: 4.1, max: 9.9 },
+    },
+    rawPointDisposition: { status: "included", validRows: 5, budget: 5 },
+    rawChunks: [{
+      chunkIndex: 0,
+      rowOffset: 0,
+      rowCount: 5,
+      xValues: new Float64Array([
+        1_722_038_400_000,
+        1_722_038_400_000,
+        1_722_124_800_000,
+        1_722_211_200_000,
+        1_722_297_600_000,
+      ]),
+      yValues: new Float64Array([4.1, 4.2, 0, 4.3, 9.9]),
+      rowIds: new BigInt64Array([11n, 12n, 13n, 14n, 99n]),
+      groupCodes: new Uint32Array([0, 0, 0, 0, 1]),
+      sourceCodes: new Uint32Array([0, 0, 0, 0, 0]),
+      validity: {
+        x: new Uint8Array([0b00011111]),
+        y: new Uint8Array([0b00011011]),
+        group: new Uint8Array([0b00011111]),
+        source: new Uint8Array([0b00011111]),
+      },
+    }],
+  };
+}
+
+{
+  const baseSpec: GraphSpec = {
+    encoding: {
+      x: { name: "Date", type: "datetime" },
+      y: { name: "Reading", type: "continuous" },
+      overlay: { name: "Build", type: "nominal" },
+    },
+    elements: [{
+      kind: "timeSeries",
+      enabled: true,
+      options: {
+        xInterpretation: { kind: "nativeTemporal" },
+        order: "timeAscending",
+        missingValues: "break",
+        connection: "line",
+        markerMode: "auto",
+      },
+    }],
+    hiddenGroups: ["Hidden"],
+  };
+  const option = buildGraph(
+    baseSpec,
+    baseData(["Date", "Reading", "Build"], []),
+    theme,
+    { Build: ["Visible", "Hidden"] },
+    typedTemporalTimeSeriesFrame(),
+  ).panels[0].option as Record<string, unknown>;
+  const timeSeries = panelSeries(option).find((entry) => String(entry.id ?? "").startsWith("__time_series__"));
+  assert.ok(timeSeries, "Time Series must render through a dedicated ordinary line series");
+  assert.equal(option.useUTC, true, "temporal time axes must render in UTC");
+  assert.equal((option.xAxis as Record<string, unknown>).type, "time");
+  assert.equal(timeSeries.type, "line");
+  assert.equal(timeSeries.sampling, "none");
+  assert.equal(timeSeries.animation, false);
+  assert.equal(timeSeries.progressive, 0);
+  assert.deepEqual(timeSeries.emphasis, { disabled: true });
+  assert.equal(timeSeries.showSymbol, false, "auto markers may hide glyphs without dropping vertices");
+  assert.equal(timeSeries.connectNulls, false);
+  assert.equal(timeSeries.step, false);
+  assert.deepEqual(timeSeries.data, [
+    [1_722_038_400_000, 4.1],
+    [1_722_038_400_000, 4.2],
+    [1_722_124_800_000, null],
+    [1_722_211_200_000, 4.3],
+  ]);
+  assert.deepEqual(timeSeries.__timeSeriesRowIds, [11n, 12n, 13n, 14n]);
+  assert.ok((timeSeries.data as unknown[]).every((point) => Array.isArray(point)), "Time Series data must not allocate per-point pick objects");
+  assert.equal(typeof pickBySeriesDataIndex, "function");
+  assert.deepEqual(pickBySeriesDataIndex?.(option, String(timeSeries.id), 3), {
+    rowId: 14,
+    colName: "temperature",
+  });
+  const tooltip = option.tooltip as Record<string, unknown>;
+  const formatter = tooltip.formatter as ((params: unknown) => string) | undefined;
+  assert.equal(typeof formatter, "function", "Time Series tooltip must resolve row identity through the ECharts formatter path");
+  const formatTimeSeriesPoint = (series: Record<string, unknown>, dataIndex: number) => formatter?.({
+    componentType: "series",
+    seriesId: String(series.id),
+    seriesName: String(series.name ?? ""),
+    dataIndex,
+    data: (series.data as unknown[])[dataIndex],
+  }) ?? "";
+  const firstDuplicateTooltip = formatTimeSeriesPoint(timeSeries, 0);
+  const secondDuplicateTooltip = formatTimeSeriesPoint(timeSeries, 1);
+  const nullTupleTooltip = formatTimeSeriesPoint(timeSeries, 2);
+  assert.match(firstDuplicateTooltip, /temperature/);
+  assert.match(firstDuplicateTooltip, /Row:\s*11\b/);
+  assert.match(firstDuplicateTooltip, /Reading:\s*4\.1\b/);
+  assert.match(secondDuplicateTooltip, /Row:\s*12\b/, "duplicate timestamps must not collapse tooltip row identity");
+  assert.match(secondDuplicateTooltip, /Reading:\s*4\.2\b/);
+  assert.match(nullTupleTooltip, /Row:\s*13\b/, "break-mode null tuples must retain parallel row identity");
+  assert.match(nullTupleTooltip, /Reading:\s*null\b/);
+
+  const connectOption = buildGraph(
+    {
+      ...baseSpec,
+      elements: [{
+        ...baseSpec.elements[0],
+        options: { ...baseSpec.elements[0].options, missingValues: "connect" },
+      }],
+    },
+    baseData(["Date", "Reading", "Build"], []),
+    theme,
+    { Build: ["Visible", "Hidden"] },
+    typedTemporalTimeSeriesFrame(),
+  ).panels[0].option as Record<string, unknown>;
+  const connected = panelSeries(connectOption).find((entry) => String(entry.id ?? "").startsWith("__time_series__"))!;
+  assert.deepEqual(connected.data, [
+    [1_722_038_400_000, 4.1],
+    [1_722_038_400_000, 4.2],
+    [1_722_211_200_000, 4.3],
+  ]);
+  assert.deepEqual(connected.__timeSeriesRowIds, [11n, 12n, 14n]);
+  const connectFormatter = (connectOption.tooltip as Record<string, unknown>).formatter as (params: unknown) => string;
+  const shiftedConnectTooltip = connectFormatter({
+    componentType: "series",
+    seriesId: String(connected.id),
+    seriesName: String(connected.name ?? ""),
+    dataIndex: 2,
+    data: (connected.data as unknown[])[2],
+  });
+  assert.match(shiftedConnectTooltip, /Row:\s*14\b/, "connect mode must resolve the shifted row-id vector index");
+  assert.match(shiftedConnectTooltip, /temperature/);
+
+  const shownMarkers = buildGraph(
+    {
+      ...baseSpec,
+      elements: [{
+        ...baseSpec.elements[0],
+        options: { ...baseSpec.elements[0].options, markerMode: "show" },
+      }],
+    },
+    baseData(["Date", "Reading", "Build"], []),
+    theme,
+    { Build: ["Visible", "Hidden"] },
+    typedTemporalTimeSeriesFrame(),
+  ).panels[0].option as Record<string, unknown>;
+  const hiddenMarkers = buildGraph(
+    {
+      ...baseSpec,
+      elements: [{
+        ...baseSpec.elements[0],
+        options: { ...baseSpec.elements[0].options, markerMode: "hide" },
+      }],
+    },
+    baseData(["Date", "Reading", "Build"], []),
+    theme,
+    { Build: ["Visible", "Hidden"] },
+    typedTemporalTimeSeriesFrame(),
+  ).panels[0].option as Record<string, unknown>;
+  const shownSeries = panelSeries(shownMarkers).find((entry) => String(entry.id ?? "").startsWith("__time_series__"))!;
+  const hiddenSeries = panelSeries(hiddenMarkers).find((entry) => String(entry.id ?? "").startsWith("__time_series__"))!;
+  assert.equal(shownSeries.showSymbol, true);
+  assert.equal(hiddenSeries.showSymbol, false);
+  assert.deepEqual(shownSeries.data, timeSeries.data, "marker show must not change vertex count or order");
+  assert.deepEqual(hiddenSeries.data, timeSeries.data, "marker hide must not change vertex count or order");
+  const shownFormatter = (shownMarkers.tooltip as Record<string, unknown>).formatter as (params: unknown) => string;
+  const hiddenFormatter = (hiddenMarkers.tooltip as Record<string, unknown>).formatter as (params: unknown) => string;
+  assert.match(shownFormatter({
+    componentType: "series",
+    seriesId: String(shownSeries.id),
+    dataIndex: 1,
+    data: (shownSeries.data as unknown[])[1],
+  }), /Row:\s*12\b/, "show marker mode must preserve tooltip row identity");
+  assert.match(hiddenFormatter({
+    componentType: "series",
+    seriesId: String(hiddenSeries.id),
+    dataIndex: 1,
+    data: (hiddenSeries.data as unknown[])[1],
+  }), /Row:\s*12\b/, "hide marker mode must preserve tooltip row identity");
+
+  assert.deepEqual(pickBySeriesDataIndex?.({
+    series: [{
+      id: "legacy-scatter",
+      type: "scatter",
+      data: [{ value: [1, 2], __pick: { rowId: 77, colName: "Reading" } }],
+    }],
+  }, "legacy-scatter", 0), { rowId: 77, colName: "Reading" });
 }

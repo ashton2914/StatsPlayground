@@ -1106,7 +1106,8 @@
       "fitline": "Đường khớp",
       "scatter3d": "Điểm",
       "surface": "Bề mặt",
-      "contour3d": "Đường đồng mức"
+      "contour3d": "Đường đồng mức",
+      "timeSeries": "Chuỗi thời gian"
     },
     "frequency": "Tần suất",
     "mode": {
@@ -1271,6 +1272,55 @@
         "insufficientData": "Không đủ dữ liệu",
         "zeroVariance": "Phương sai bằng 0",
         "unknown": "Không xác định"
+      }
+    },
+    "timeSeries": {
+      "xInterpretation": {
+        "label": "Cách hiểu trục X",
+        "nativeTemporal": "DATE/TIMESTAMP gốc",
+        "textDate": "Ngày dạng văn bản",
+        "sequence": "Chuỗi / giá trị đã trôi qua"
+      },
+      "format": {
+        "label": "Định dạng văn bản",
+        "isoDate": "Ngày ISO (YYYY-MM-DD)",
+        "isoDateTime": "Ngày giờ ISO",
+        "usDate": "Ngày kiểu Mỹ (M/D/YYYY)",
+        "usDateTime": "Ngày giờ kiểu Mỹ",
+        "dayFirstDate": "Ngày trước tháng (D/M/YYYY)",
+        "dayFirstDateTime": "Ngày giờ ngày trước tháng"
+      },
+      "order": {
+        "label": "Thứ tự",
+        "timeAscending": "Thời gian tăng dần",
+        "sourceRow": "Thứ tự hàng nguồn"
+      },
+      "missingValues": {
+        "label": "Giá trị thiếu",
+        "break": "Ngắt đường",
+        "connect": "Nối xuyên qua"
+      },
+      "connection": {
+        "label": "Kết nối",
+        "line": "Đường",
+        "step": "Bậc"
+      },
+      "markerMode": {
+        "label": "Điểm đánh dấu",
+        "auto": "Tự động",
+        "show": "Hiện",
+        "hide": "Ẩn"
+      },
+      "status": {
+        "fullResolution": "Độ phân giải đầy đủ",
+        "includedCount": "Đã bao gồm {{count}}"
+      },
+      "error": {
+        "textDateRequired": "Chọn một định dạng ngày văn bản được hỗ trợ cho {{field}}.",
+        "sequenceRequired": "Chọn Chuỗi / giá trị đã trôi qua cho cột X chuỗi thời gian dạng số {{field}}.",
+        "nativeTemporalRequired": "Chọn DATE/TIMESTAMP gốc cho cột X chuỗi thời gian dạng thời gian {{field}}.",
+        "standaloneTime": "Cột TIME độc lập không thể xác định thứ tự chuỗi thời gian. Chọn cột DATE/TIMESTAMP hoặc định dạng ngày văn bản rõ ràng.",
+        "invalidXRows": "{{count}} giá trị X không hợp lệ"
       }
     },
     "removeSlot": "Xóa",
