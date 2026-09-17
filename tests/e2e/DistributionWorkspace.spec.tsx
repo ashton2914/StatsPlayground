@@ -1,9 +1,18 @@
 import { expect, test } from "@playwright/experimental-ct-react";
+import type { Locator } from "@playwright/test";
 
 import { createDistributionItem } from "../../src/components/distribution/distributionConfig";
 import * as distributionViewModule from "../../src/components/distribution/DistributionView";
+import { AnalysisViewHarness } from "../AnalysisViewHarness";
 import { DataTableViewPropertyManagerHarness } from "../DataTableViewPropertyManagerHarness";
 import { DistributionWorkspaceHarness } from "../DistributionWorkspaceHarness";
+
+async function ensureFrameExpanded(root: Locator, title: string) {
+  const button = root.getByRole("button", { name: title, exact: true }).first();
+  if ((await button.getAttribute("aria-expanded")) === "false") {
+    await button.click();
+  }
+}
 
 const currentColumns = [
   { name: "value", sqlType: "DOUBLE", integerCompatible: false, field: { name: "value", type: "continuous" as const } },
@@ -28,6 +37,28 @@ test("materializes four stable embedded GraphRuntime documents", () => {
   expect(graphs.overview.id).toBe("distribution-graph:distribution-1:overview");
   expect(graphs.boxPlot.sourceDatasetId).toBe("dataset-1");
   expect(graphs.ecdf.modeStates.twoD.encoding.x?.name).toBe("value");
+});
+
+test("capability report renders typed Cpm confidence intervals", async ({ mount }) => {
+  const component = await mount(<AnalysisViewHarness mode="multiResponseBy" />);
+  const groupFrames = component.locator("[data-analysis-document] > .analysis-ui-frame");
+  const overallGroup = groupFrames.first();
+  await ensureFrameExpanded(overallGroup, "Overall");
+
+  const responseFrames = overallGroup.locator(
+    ":scope > .analysis-ui-frame-body > .analysis-ui-stack > .analysis-ui-frame",
+  );
+  const firstResponse = responseFrames.first();
+  await ensureFrameExpanded(firstResponse, "301A-F01");
+
+  const capabilityReport = firstResponse.locator("[data-analysis-surface='processCapability']").first();
+  await ensureFrameExpanded(capabilityReport, "Process Capability");
+  await expect(
+    capabilityReport.getByRole("row", { name: "cpm 1.044 0.944 1.144", exact: true }),
+  ).toBeVisible();
+  await expect(
+    capabilityReport.getByRole("row", { name: "cpm 0.720 0.620 0.820", exact: true }),
+  ).toBeVisible();
 });
 
 test("table property manager controller waits for current table data and display props before consuming a matching one-shot request", async ({ mount, page }) => {

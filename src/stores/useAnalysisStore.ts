@@ -18,24 +18,24 @@ interface AnalysisStore {
 
 const ANALYSIS_HELPERS = createNamedDocumentHelpers("Analysis");
 
-function ensureNormalFit(analysis: AnalysisDocument): AnalysisDocument {
+function normalizeDistributionAnalysisIdentity(analysis: AnalysisDocument): AnalysisDocument {
   if (analysis.analysisKind !== "distribution") return analysis;
-  const fitDistributions = analysis.definition.analysis.fitDistributions;
-  if (fitDistributions.includes("normal")) return analysis;
+  const configuration = analysis.definition.analysis;
+  if (typeof configuration.fitAll === "boolean") return analysis;
   return {
     ...analysis,
     definition: {
       ...analysis.definition,
       analysis: {
-        ...analysis.definition.analysis,
-        fitDistributions: ["normal", ...fitDistributions],
+        ...configuration,
+        fitAll: false,
       },
     },
   };
 }
 
 export function normalizePersistedAnalysisDocument(analysis: AnalysisDocument): AnalysisDocument {
-  return ensureNormalFit(analysis);
+  return normalizeDistributionAnalysisIdentity(analysis);
 }
 
 function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentPatch): AnalysisDocument {
@@ -46,7 +46,7 @@ function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentP
     ...(patch.updatedAt !== undefined ? { updatedAt: patch.updatedAt } : {}),
   };
   if (analysis.analysisKind === "distribution") {
-    return ensureNormalFit({
+    return normalizeDistributionAnalysisIdentity({
       ...analysis,
       ...shared,
       ...(patch.definition?.kind === "distribution" ? { definition: patch.definition } : {}),
@@ -82,7 +82,7 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
   counter: 0,
   addAnalysis: (analysis) => {
     assertProjectMutable(useProjectStore.getState().readOnly);
-    const normalizedAnalysis = ensureNormalFit(analysis);
+    const normalizedAnalysis = normalizeDistributionAnalysisIdentity(analysis);
     set((state) => ({
       items: [...state.items, normalizedAnalysis],
       counter: Math.max(state.counter, ANALYSIS_HELPERS.maxSuffix([normalizedAnalysis])),
@@ -102,7 +102,7 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
     }));
   },
   loadAnalyses: (items) => {
-    const normalizedItems = items.map(ensureNormalFit);
+    const normalizedItems = items.map(normalizeDistributionAnalysisIdentity);
     set({ items: normalizedItems, counter: ANALYSIS_HELPERS.maxSuffix(normalizedItems) });
   },
   reset: () => set({ items: [], counter: 0 }),

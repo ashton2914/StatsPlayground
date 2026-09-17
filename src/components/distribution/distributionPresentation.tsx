@@ -7,12 +7,18 @@ import { GraphRuntime } from "@/components/graphBuilder/GraphRuntime";
 import type { GraphRuntimeProps } from "@/components/graphBuilder/GraphRuntime";
 import {
   DISTRIBUTION_GRAPH_ROLES,
+  filterDistributionFitCurvePackets,
   mapDistributionExternalDataState,
+  type DistributionFitSelections,
   type DistributionGraphRole,
   type DistributionFrameSourceState,
 } from "@/graphCore/distributionAdapter";
 import type { DatasetMeta } from "@/types/data";
-import type { DistributionItem, DistributionReportResponse } from "@/types/distribution";
+import type {
+  ContinuousDistributionIdV1,
+  DistributionItem,
+  DistributionReportResponse,
+} from "@/types/distribution";
 import type { GraphBuilderItem } from "@/types/graphBuilder";
 
 import { DistributionReport } from "./DistributionReport";
@@ -48,6 +54,7 @@ export interface DistributionGraphGridProps {
     min: number,
     max: number,
   ) => void;
+  selectedFitDistributionIds?: DistributionFitSelections;
 }
 
 export function materializeDistributionGraphItems(
@@ -71,6 +78,7 @@ export function DistributionGraphGrid({
   reportState,
   renderGraph,
   onAxisRangeChange,
+  selectedFitDistributionIds = {},
 }: DistributionGraphGridProps) {
   const { t } = useTranslation();
   const graphItems = useMemo(() => materializeDistributionGraphItems(item), [item]);
@@ -78,10 +86,19 @@ export function DistributionGraphGrid({
   return (
     <div className="distribution-graph-grid">
       {DISTRIBUTION_GRAPH_ROLES.map((role) => {
+        const externalDataState = mapDistributionExternalDataState(reportState, role);
         const graphProps = {
           item: graphItems[role],
           dataset,
-          externalDataState: mapDistributionExternalDataState(reportState, role),
+          externalDataState: role === "overview" && externalDataState.status === "ready"
+            ? {
+                ...externalDataState,
+                frame: filterDistributionFitCurvePackets(
+                  externalDataState.frame,
+                  selectedFitDistributionIds,
+                ),
+              }
+            : externalDataState,
           onAxisRangeChange: onAxisRangeChange == null
             ? undefined
             : (axis: "x" | "y", min: number, max: number) => onAxisRangeChange(role, axis, min, max),
@@ -101,7 +118,18 @@ export function DistributionGraphGrid({
   );
 }
 
-export function DistributionReportPanel({ reportState }: { reportState: DistributionExecutionLikeState }) {
+export function DistributionReportPanel({
+  reportState,
+  selectedFitDistributionIds,
+  onSelectedFitDistributionIdChange,
+}: {
+  reportState: DistributionExecutionLikeState;
+  selectedFitDistributionIds?: DistributionFitSelections;
+  onSelectedFitDistributionIdChange?: (
+    selectionKey: string,
+    distributionId: ContinuousDistributionIdV1,
+  ) => void;
+}) {
   const { t } = useTranslation();
 
   return (
@@ -116,7 +144,12 @@ export function DistributionReportPanel({ reportState }: { reportState: Distribu
         <AnalysisText role="alert">{reportState.error}</AnalysisText>
       )}
       {reportState.status === "success" && (
-        <DistributionReport groups={reportState.result.groups} reportBlocks={reportState.result.reportBlocks} />
+        <DistributionReport
+          groups={reportState.result.groups}
+          reportBlocks={reportState.result.reportBlocks}
+          selectedFitDistributionIds={selectedFitDistributionIds}
+          onSelectedFitDistributionIdChange={onSelectedFitDistributionIdChange}
+        />
       )}
     </AnalysisFrame>
   );

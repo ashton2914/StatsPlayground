@@ -250,6 +250,11 @@ for (const entry of manifest.kinds) {
   }
   assert.ok(distributionAnalysis.properties?.specLimits, "distribution create must project analysis.specLimits");
   assert.deepEqual(
+    distributionAnalysis.properties?.fitDistributions?.items?.enum,
+    ["normal", "lognormal", "exponential", "gamma", "weibull", "cauchy"],
+    "distribution create must expose every supported continuous fit",
+  );
+  assert.deepEqual(
     Object.keys(distributionGraphs.properties ?? {}).sort(),
     ["boxPlot", "ecdf", "normalQuantile", "overview"],
     "distribution create must project every distribution graph role",

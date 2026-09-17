@@ -693,7 +693,7 @@ mod tests {
             source: SpecificationSourceV1::AnalysisOverride,
         };
         let indices = capability_indices(&summary, &limits);
-        let intervals = capability_intervals(&summary, &indices, 0.95);
+        let intervals = capability_intervals(&summary, &indices, limits.target, 0.95);
 
         assert_eq!(intervals.confidence_level, 0.95);
         assert_close(
@@ -735,8 +735,13 @@ mod tests {
         let fixture = load_moving_range_fixture();
         let summary = normal_process_summary(&fixture.observations);
         let indices = capability_indices(&summary, &fixture.specification);
-        let serialized = serde_json::to_value(capability_intervals(&summary, &indices, 0.95))
-            .expect("capability intervals should serialize");
+        let serialized = serde_json::to_value(capability_intervals(
+            &summary,
+            &indices,
+            fixture.specification.target,
+            0.95,
+        ))
+        .expect("capability intervals should serialize");
 
         assert_eq!(serialized["confidenceLevel"], 0.95);
         assert!(serialized.get("confidence_level").is_none());
@@ -755,7 +760,8 @@ mod tests {
         let fixture = load_moving_range_fixture();
         let summary = normal_process_summary(&fixture.observations);
         let indices = capability_indices(&summary, &fixture.specification);
-        let intervals = capability_intervals(&summary, &indices, 0.95);
+        let intervals =
+            capability_intervals(&summary, &indices, fixture.specification.target, 0.95);
         let expected = fixture.public_method_expected;
 
         assert_close(
@@ -953,29 +959,41 @@ mod tests {
         let summary = normal_process_summary(&[1.0, 2.0, 3.0, 4.0, 5.0]);
         let limits = SpecificationLimitsV1 {
             lsl: Some(0.0),
-            target: None,
+            target: Some(3.0),
             usl: Some(6.0),
             source: SpecificationSourceV1::ColumnProperty,
         };
         let indices = capability_indices(&summary, &limits);
-        let legacy = capability_intervals(&summary, &indices, 0.95);
+        let legacy = capability_intervals(&summary, &indices, limits.target, 0.95);
         let nested = capability_intervals_with_within_degrees_of_freedom(
             &summary,
             &indices,
+            limits.target,
             0.95,
             Some(2.0),
         );
 
         assert_ne!(nested.cp, legacy.cp);
+        assert_ne!(nested.cpm_within, legacy.cpm_within);
         assert_eq!(nested.pp, legacy.pp);
+        assert_eq!(nested.cpm_overall, legacy.cpm_overall);
         assert_eq!(
             nested.provenance.within_effective_degrees_of_freedom,
             Some(2.0)
         );
 
-        let no_ranges =
-            capability_intervals_with_within_degrees_of_freedom(&summary, &indices, 0.95, None);
+        let no_ranges = capability_intervals_with_within_degrees_of_freedom(
+            &summary,
+            &indices,
+            limits.target,
+            0.95,
+            None,
+        );
         assert_eq!(no_ranges.cp.lower.state, NumericStateV1::Unavailable);
+        assert_eq!(
+            no_ranges.cpm_within.lower.state,
+            NumericStateV1::Unavailable
+        );
         assert_eq!(no_ranges.pp, legacy.pp);
         assert_eq!(
             no_ranges.provenance.within_effective_degrees_of_freedom,
@@ -1001,6 +1019,7 @@ mod tests {
         let intervals = capability_intervals_with_within_degrees_of_freedom(
             &nested.summary,
             &indices,
+            limits.target,
             0.95,
             nested.within_effective_degrees_of_freedom,
         );
@@ -1130,7 +1149,7 @@ mod tests {
             source: SpecificationSourceV1::ColumnProperty,
         };
         let indices = capability_indices(&summary, &limits);
-        let intervals = capability_intervals(&summary, &indices, 0.95);
+        let intervals = capability_intervals(&summary, &indices, limits.target, 0.95);
         assert_eq!(intervals.confidence_level, 0.95);
         assert_eq!(
             intervals.provenance.within_effective_degrees_of_freedom,
@@ -1164,10 +1183,10 @@ mod tests {
     }
 
     #[test]
-    fn intervals_use_chi_square_and_wald_and_defer_cpm() {
+    fn cpm_intervals_match_independent_log_delta_constants() {
         let summary = NormalProcessSummaryV1 {
             n: 10,
-            mean: 5.0,
+            mean: 6.0,
             moving_range_average: Some(2.0 / std::f64::consts::PI.sqrt()),
             d2: 2.0 / std::f64::consts::PI.sqrt(),
             within_sigma: Some(1.0),
@@ -1180,7 +1199,36 @@ mod tests {
             source: SpecificationSourceV1::ColumnProperty,
         };
         let indices = capability_indices(&summary, &limits);
-        let intervals = capability_intervals(&summary, &indices, 0.95);
+        let intervals = capability_intervals(&summary, &indices, limits.target, 0.95);
+
+        for (endpoint, expected) in [
+            (&intervals.cpm_within.lower, 0.7699606904602408),
+            (&intervals.cpm_within.upper, 1.8038438924183076),
+            (&intervals.cpm_overall.lower, 0.4776295794985282),
+            (&intervals.cpm_overall.upper, 1.1631514868464454),
+        ] {
+            assert_eq!(endpoint.state, NumericStateV1::Available);
+            let actual = endpoint.value.expect("available Cpm endpoint");
+            assert!(
+                (actual - expected).abs() <= 1e-10,
+                "expected {expected}, got {actual}"
+            );
+        }
+        assert_eq!(
+            intervals.cpm_within.interval_method.as_deref(),
+            Some("movingRangeEffectiveDfLogDeltaCpm.v1")
+        );
+        assert_eq!(
+            intervals.cpm_overall.interval_method.as_deref(),
+            Some("logDeltaCpm.v1")
+        );
+        assert_eq!(intervals.provenance.distribution_crate, "statrs");
+        assert_eq!(intervals.provenance.distribution_crate_version, "0.19.1");
+        assert_eq!(intervals.provenance.method_version, "1.2.0");
+        assert_eq!(
+            intervals.provenance.parameterization,
+            "withinMovingRangeEffectiveDf, overallChiSquared(df=n-1), standardNormal(0,1), cpmLogDeltaApproximation"
+        );
         assert_eq!(
             intervals.cp.interval_method.as_deref(),
             Some("movingRangeEffectiveDfChiSquare.v1")
@@ -1193,15 +1241,415 @@ mod tests {
             intervals.cpu.interval_method.as_deref(),
             Some("movingRangeEffectiveDfWald.v1")
         );
-        assert_eq!(intervals.cpk.limiting_side.as_deref(), Some("both"));
-        assert_eq!(
-            intervals.cpm_within.lower.state,
-            NumericStateV1::Unavailable
+        assert_eq!(intervals.cpk.limiting_side.as_deref(), Some("upper"));
+    }
+
+    #[test]
+    fn cpm_intervals_narrow_as_confidence_decreases() {
+        let summary = NormalProcessSummaryV1 {
+            n: 10,
+            mean: 6.0,
+            moving_range_average: Some(2.0 / std::f64::consts::PI.sqrt()),
+            d2: 2.0 / std::f64::consts::PI.sqrt(),
+            within_sigma: Some(1.0),
+            overall_sigma: Some(2.0),
+        };
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: Some(5.0),
+            usl: Some(10.0),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        let indices = capability_indices(&summary, &limits);
+        let intervals_90 = capability_intervals(&summary, &indices, limits.target, 0.90);
+        let intervals_95 = capability_intervals(&summary, &indices, limits.target, 0.95);
+
+        for (narrower, wider) in [
+            (&intervals_90.cpm_within, &intervals_95.cpm_within),
+            (&intervals_90.cpm_overall, &intervals_95.cpm_overall),
+        ] {
+            assert!(
+                narrower.lower.value.expect("90% lower") > wider.lower.value.expect("95% lower")
+            );
+            assert!(
+                narrower.upper.value.expect("90% upper") < wider.upper.value.expect("95% upper")
+            );
+        }
+    }
+
+    fn assert_cpm_scale_invariance(scale: f64, mean: f64, target: f64, lsl: f64, usl: f64) {
+        let summary = NormalProcessSummaryV1 {
+            n: 10,
+            mean,
+            moving_range_average: Some(2.0 / std::f64::consts::PI.sqrt()),
+            d2: 2.0 / std::f64::consts::PI.sqrt(),
+            within_sigma: Some(1.0),
+            overall_sigma: Some(2.0),
+        };
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(lsl),
+            target: Some(target),
+            usl: Some(usl),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        let baseline_indices = capability_indices(&summary, &limits);
+        let baseline = capability_intervals(&summary, &baseline_indices, limits.target, 0.95);
+        let scaled_summary = NormalProcessSummaryV1 {
+            mean: mean * scale,
+            moving_range_average: summary.moving_range_average.map(|value| value * scale),
+            within_sigma: Some(scale),
+            overall_sigma: Some(2.0 * scale),
+            ..summary
+        };
+        let scaled_limits = SpecificationLimitsV1 {
+            lsl: Some(lsl * scale),
+            target: Some(target * scale),
+            usl: Some(usl * scale),
+            ..limits
+        };
+        let scaled_indices = capability_indices(&scaled_summary, &scaled_limits);
+        let intervals_95 =
+            capability_intervals(&scaled_summary, &scaled_indices, scaled_limits.target, 0.95);
+        let intervals_90 =
+            capability_intervals(&scaled_summary, &scaled_indices, scaled_limits.target, 0.90);
+        for (expected, wider, narrower, point) in [
+            (
+                &baseline.cpm_within,
+                &intervals_95.cpm_within,
+                &intervals_90.cpm_within,
+                &scaled_indices.cpm_within,
+            ),
+            (
+                &baseline.cpm_overall,
+                &intervals_95.cpm_overall,
+                &intervals_90.cpm_overall,
+                &scaled_indices.cpm_overall,
+            ),
+        ] {
+            for (actual, expected) in [
+                (&wider.lower, &expected.lower),
+                (&wider.upper, &expected.upper),
+            ] {
+                assert_eq!(
+                    actual.state,
+                    NumericStateV1::Available,
+                    "scale={scale}, mean={mean}"
+                );
+                assert!(
+                    (actual.value.unwrap() - expected.value.unwrap()).abs() <= 1e-10,
+                    "scale={scale}, mean={mean}: expected {:?}, got {:?}",
+                    expected.value,
+                    actual.value
+                );
+            }
+            assert_eq!(wider.interval_method, expected.interval_method);
+            assert_eq!(narrower.lower.state, NumericStateV1::Available);
+            assert_eq!(narrower.upper.state, NumericStateV1::Available);
+            assert!(wider.lower.value.unwrap() < narrower.lower.value.unwrap());
+            assert!(narrower.lower.value.unwrap() < point.value.unwrap());
+            assert!(point.value.unwrap() < narrower.upper.value.unwrap());
+            assert!(narrower.upper.value.unwrap() < wider.upper.value.unwrap());
+        }
+    }
+
+    #[test]
+    fn cpm_scaling_analytic_fixture_at_1e_minus_100() {
+        assert_cpm_scale_invariance(1e-100, 6.0, 5.0, 0.0, 10.0);
+    }
+
+    #[test]
+    fn cpm_scaling_symmetric_target_at_1e_minus_100() {
+        assert_cpm_scale_invariance(1e-100, 5.0, 5.0, 0.0, 10.0);
+    }
+
+    #[test]
+    fn cpm_scaling_q_underflow() {
+        for scale in [1e-200, 1e-300, 1e-320] {
+            for mean in [5.0, 6.0] {
+                assert_cpm_scale_invariance(scale, mean, 5.0, 0.0, 10.0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpm_scaling_q_overflow() {
+        for scale in [1e100, 1e200, 1e307] {
+            for mean in [5.0, 6.0] {
+                assert_cpm_scale_invariance(scale, mean, 5.0, 0.0, 10.0);
+            }
+        }
+    }
+
+    #[test]
+    fn cpm_scaling_overflowing_finite_differences() {
+        assert_cpm_scale_invariance(8e307, 1.5, -1.5, -2.0, 2.0);
+    }
+
+    #[test]
+    fn cpm_mixed_scale_points_and_intervals_remain_available() {
+        let summary = NormalProcessSummaryV1 {
+            n: 10,
+            mean: 0.0,
+            moving_range_average: None,
+            d2: 2.0 / std::f64::consts::PI.sqrt(),
+            within_sigma: Some(0.5),
+            overall_sigma: Some(0.5),
+        };
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: Some(0.0),
+            usl: Some(3.0),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        for (sigma, span, expected_point) in [
+            (0.5, 1e308, 3.333333333333333e307),
+            (0.25, 5e307, 3.333333333333333e307),
+            (1.0, 1e308, 1.6666666666666666e307),
+            (1e308, 1e308, 1.0 / 6.0),
+            (1e308, 10.0, 1.6666666666666667e-308),
+            (1e-308, 3.0, 5e307),
+            (1e-308, 1e-307, 1.6666666666666667),
+        ] {
+            let mixed_summary = NormalProcessSummaryV1 {
+                within_sigma: Some(sigma),
+                overall_sigma: Some(sigma),
+                ..summary.clone()
+            };
+            let mixed_limits = SpecificationLimitsV1 {
+                usl: Some(span),
+                ..limits.clone()
+            };
+            let indices = capability_indices(&mixed_summary, &mixed_limits);
+            let intervals = capability_intervals(&mixed_summary, &indices, limits.target, 0.95);
+            if sigma == 0.5 && span == 1e308 {
+                for (actual, expected) in [
+                    (&intervals.cpm_overall.lower, 2.1001417928947413e307),
+                    (&intervals.cpm_overall.upper, 5.290648064193824e307),
+                    (&intervals.cpm_within.lower, 1.8595612320219735e307),
+                    (&intervals.cpm_within.upper, 5.975125163815964e307),
+                ] {
+                    assert_eq!(actual.state, NumericStateV1::Available);
+                    assert!((actual.value.unwrap() / expected - 1.0).abs() < 1e-11);
+                }
+            }
+            for (actual, expected) in [
+                (&indices.cpm_overall, expected_point),
+                (&indices.cpm_within, expected_point),
+                (
+                    &intervals.cpm_overall.lower,
+                    expected_point * 0.6300425378684224,
+                ),
+                (
+                    &intervals.cpm_overall.upper,
+                    expected_point * 1.5871944192581472,
+                ),
+                (
+                    &intervals.cpm_within.lower,
+                    expected_point * 0.557868369606592,
+                ),
+                (
+                    &intervals.cpm_within.upper,
+                    expected_point * 1.7925375491447895,
+                ),
+            ] {
+                assert_eq!(
+                    actual.state,
+                    NumericStateV1::Available,
+                    "sigma={sigma}, span={span}: {actual:?}"
+                );
+                assert!(
+                    (actual.value.unwrap() / expected - 1.0).abs() < 1e-11,
+                    "sigma={sigma}, span={span}: expected {expected}, got {actual:?}"
+                );
+            }
+            assert_eq!(
+                intervals.cpm_within.interval_method.as_deref(),
+                Some("movingRangeEffectiveDfLogDeltaCpm.v1")
+            );
+            assert_eq!(
+                intervals.cpm_overall.interval_method.as_deref(),
+                Some("logDeltaCpm.v1")
+            );
+        }
+    }
+
+    #[test]
+    fn cpm_mixed_scale_subnormal_point_does_not_round_early() {
+        let limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: Some(0.0),
+            usl: Some(f64::from_bits(3)),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+        let point = indices_for_sigma(0.0, Some(0.5), &limits, false).target;
+        assert_eq!(point.state, NumericStateV1::Available);
+        assert_eq!(point.value, Some(f64::from_bits(1)));
+        let underflow = indices_for_sigma(
+            0.0,
+            Some(1.0),
+            &SpecificationLimitsV1 {
+                usl: Some(f64::from_bits(1)),
+                ..limits
+            },
+            false,
+        )
+        .target;
+        assert_eq!(underflow.state, NumericStateV1::Unavailable);
+        assert_eq!(underflow.value, None);
+    }
+
+    #[test]
+    fn cpm_mixed_scale_rejects_nonpositive_span_or_denominator() {
+        for (sigma, lsl, usl) in [(-0.5, 0.0, 1e308), (0.5, 1.0, 0.0), (0.5, 1.0, 1.0)] {
+            let limits = SpecificationLimitsV1 {
+                lsl: Some(lsl),
+                target: Some(0.0),
+                usl: Some(usl),
+                source: SpecificationSourceV1::ColumnProperty,
+            };
+            let point = indices_for_sigma(0.0, Some(sigma), &limits, false).target;
+            assert_eq!(point.state, NumericStateV1::Unavailable, "{point:?}");
+            assert_eq!(point.value, None);
+        }
+    }
+
+    #[test]
+    fn cpm_intervals_reject_unrepresentable_uncertainty() {
+        for (sigma, mean) in [(1e-320, 1e308), (1e-200, 1e100)] {
+            let point = available(1.0);
+            let interval = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+                point_value: &point,
+                sigma: Some(sigma),
+                mean,
+                target: Some(0.0),
+                n: 10,
+                degrees_of_freedom: 9.0,
+                alpha: 0.05,
+                method: "logDeltaCpm.v1",
+            });
+            for endpoint in [&interval.lower, &interval.upper] {
+                assert_eq!(endpoint.state, NumericStateV1::Unavailable);
+                assert_eq!(endpoint.value, None);
+                assert_eq!(
+                    endpoint.reason_code.as_deref(),
+                    Some("capability.intervalUnavailable.v1")
+                );
+            }
+            assert_eq!(interval.interval_method.as_deref(), Some("logDeltaCpm.v1"));
+        }
+    }
+
+    #[test]
+    fn cpm_intervals_preserve_typed_edge_states() {
+        let base_summary = NormalProcessSummaryV1 {
+            n: 10,
+            mean: 5.0,
+            moving_range_average: Some(2.0 / std::f64::consts::PI.sqrt()),
+            d2: 2.0 / std::f64::consts::PI.sqrt(),
+            within_sigma: Some(1.0),
+            overall_sigma: Some(1.0),
+        };
+        let base_limits = SpecificationLimitsV1 {
+            lsl: Some(0.0),
+            target: Some(5.0),
+            usl: Some(10.0),
+            source: SpecificationSourceV1::ColumnProperty,
+        };
+
+        for limits in [
+            SpecificationLimitsV1 {
+                target: None,
+                ..base_limits.clone()
+            },
+            SpecificationLimitsV1 {
+                lsl: None,
+                ..base_limits.clone()
+            },
+        ] {
+            let indices = capability_indices(&base_summary, &limits);
+            let intervals = capability_intervals(&base_summary, &indices, limits.target, 0.95);
+            for interval in [&intervals.cpm_within, &intervals.cpm_overall] {
+                assert_eq!(interval.lower.state, NumericStateV1::NotApplicable);
+                assert_eq!(interval.upper.state, NumericStateV1::NotApplicable);
+            }
+        }
+
+        let small_summary = NormalProcessSummaryV1 {
+            n: 2,
+            ..base_summary.clone()
+        };
+        let small_indices = capability_indices(&small_summary, &base_limits);
+        let small_intervals =
+            capability_intervals(&small_summary, &small_indices, base_limits.target, 0.95);
+        for (interval, method) in [
+            (
+                &small_intervals.cpm_within,
+                "movingRangeEffectiveDfLogDeltaCpm.v1",
+            ),
+            (&small_intervals.cpm_overall, "logDeltaCpm.v1"),
+        ] {
+            assert_eq!(interval.lower.state, NumericStateV1::Unavailable);
+            assert_eq!(
+                interval.lower.reason_code.as_deref(),
+                Some("capability.intervalSampleTooSmall.v1")
+            );
+            assert_eq!(interval.interval_method.as_deref(), Some(method));
+        }
+
+        let zero_sigma_summary = NormalProcessSummaryV1 {
+            within_sigma: Some(0.0),
+            overall_sigma: Some(0.0),
+            ..base_summary.clone()
+        };
+        let zero_sigma_indices = capability_indices(&zero_sigma_summary, &base_limits);
+        let zero_sigma_intervals = capability_intervals(
+            &zero_sigma_summary,
+            &zero_sigma_indices,
+            base_limits.target,
+            0.95,
         );
-        assert_eq!(
-            intervals.cpm_within.lower.reason_code.as_deref(),
-            Some("capability.cpmIntervalDeferred.v1")
-        );
+        for interval in [
+            &zero_sigma_intervals.cpm_within,
+            &zero_sigma_intervals.cpm_overall,
+        ] {
+            assert_eq!(interval.lower.state, NumericStateV1::Unbounded);
+            assert_eq!(interval.upper.state, NumericStateV1::Unbounded);
+        }
+
+        for summary in [
+            NormalProcessSummaryV1 {
+                within_sigma: Some(f64::NAN),
+                overall_sigma: Some(f64::INFINITY),
+                ..base_summary.clone()
+            },
+            NormalProcessSummaryV1 {
+                mean: f64::INFINITY,
+                ..base_summary.clone()
+            },
+        ] {
+            let indices = capability_indices(&summary, &base_limits);
+            let intervals = capability_intervals(&summary, &indices, base_limits.target, 0.95);
+            for interval in [&intervals.cpm_within, &intervals.cpm_overall] {
+                assert_eq!(interval.lower.state, NumericStateV1::Unavailable);
+                assert_eq!(interval.upper.state, NumericStateV1::Unavailable);
+                assert_eq!(
+                    interval.lower.reason_code.as_deref(),
+                    Some("capability.intervalUnavailable.v1")
+                );
+            }
+        }
+
+        let non_finite_target = SpecificationLimitsV1 {
+            target: Some(f64::NAN),
+            ..base_limits
+        };
+        let indices = capability_indices(&base_summary, &non_finite_target);
+        let intervals =
+            capability_intervals(&base_summary, &indices, non_finite_target.target, 0.95);
+        for interval in [&intervals.cpm_within, &intervals.cpm_overall] {
+            assert_eq!(interval.lower.state, NumericStateV1::Unavailable);
+            assert_eq!(interval.upper.state, NumericStateV1::Unavailable);
+        }
     }
 
     #[test]
@@ -1407,16 +1855,17 @@ pub fn capability_indices(
 pub fn capability_intervals(
     summary: &NormalProcessSummaryV1,
     indices: &NormalCapabilityIndicesV1,
+    target: Option<f64>,
     confidence_level: f64,
 ) -> NormalCapabilityIntervalsV1 {
     let provenance = CapabilityIntervalProvenanceV1 {
         distribution_crate: "statrs".to_string(),
-        distribution_crate_version: "0.18.0".to_string(),
+        distribution_crate_version: "0.19.1".to_string(),
         parameterization:
-            "withinMovingRangeEffectiveDf, overallChiSquared(df=n-1), standardNormal(0,1)"
+            "withinMovingRangeEffectiveDf, overallChiSquared(df=n-1), standardNormal(0,1), cpmLogDeltaApproximation"
                 .to_string(),
         inverse_cdf_algorithm_id: "statrs.inverseCdf.v1".to_string(),
-        method_version: "1.1.0".to_string(),
+        method_version: "1.2.0".to_string(),
         within_effective_degrees_of_freedom: (summary.n >= 3).then(|| {
             moving_range_effective_degrees_of_freedom(
                 summary.n.saturating_sub(1),
@@ -1451,8 +1900,8 @@ pub fn capability_intervals(
             ),
             cpm_within: unavailable_interval_from_point(
                 &indices.cpm_within,
-                "capability.cpmIntervalDeferred.v1",
-                None,
+                "capability.intervalSampleTooSmall.v1",
+                Some("movingRangeEffectiveDfLogDeltaCpm.v1"),
             ),
             pp: unavailable_interval_from_point(
                 &indices.pp,
@@ -1476,8 +1925,8 @@ pub fn capability_intervals(
             ),
             cpm_overall: unavailable_interval_from_point(
                 &indices.cpm_overall,
-                "capability.cpmIntervalDeferred.v1",
-                None,
+                "capability.intervalSampleTooSmall.v1",
+                Some("logDeltaCpm.v1"),
             ),
             provenance,
         };
@@ -1527,6 +1976,26 @@ pub fn capability_intervals(
         alpha,
         "wald.v1",
     );
+    let cpm_within = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+        point_value: &indices.cpm_within,
+        sigma: summary.within_sigma,
+        mean: summary.mean,
+        target,
+        n: summary.n,
+        degrees_of_freedom: within_degrees_of_freedom,
+        alpha,
+        method: "movingRangeEffectiveDfLogDeltaCpm.v1",
+    });
+    let cpm_overall = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+        point_value: &indices.cpm_overall,
+        sigma: summary.overall_sigma,
+        mean: summary.mean,
+        target,
+        n: summary.n,
+        degrees_of_freedom: overall_degrees_of_freedom,
+        alpha,
+        method: "logDeltaCpm.v1",
+    });
 
     NormalCapabilityIntervalsV1 {
         confidence_level,
@@ -1540,20 +2009,12 @@ pub fn capability_intervals(
         ),
         cpl,
         cpu,
-        cpm_within: unavailable_interval_from_point(
-            &indices.cpm_within,
-            "capability.cpmIntervalDeferred.v1",
-            None,
-        ),
+        cpm_within,
         pp,
         ppk: combine_performance_interval(&indices.ppl, &indices.ppu, &ppl, &ppu, "wald.v1"),
         ppl,
         ppu,
-        cpm_overall: unavailable_interval_from_point(
-            &indices.cpm_overall,
-            "capability.cpmIntervalDeferred.v1",
-            None,
-        ),
+        cpm_overall,
         provenance,
     }
 }
@@ -1561,12 +2022,13 @@ pub fn capability_intervals(
 pub fn capability_intervals_with_within_degrees_of_freedom(
     summary: &NormalProcessSummaryV1,
     indices: &NormalCapabilityIndicesV1,
+    target: Option<f64>,
     confidence_level: f64,
     within_degrees_of_freedom: Option<f64>,
 ) -> NormalCapabilityIntervalsV1 {
-    let mut intervals = capability_intervals(summary, indices, confidence_level);
+    let mut intervals = capability_intervals(summary, indices, target, confidence_level);
     intervals.provenance.parameterization =
-        "withinNestedMovingRangeEffectiveDf, overallChiSquared(df=n-1), standardNormal(0,1)"
+        "withinNestedMovingRangeEffectiveDf, overallChiSquared(df=n-1), standardNormal(0,1), cpmLogDeltaApproximation"
             .to_string();
     intervals.provenance.method_version = "2.0.0".to_string();
     intervals.provenance.within_effective_degrees_of_freedom = within_degrees_of_freedom;
@@ -1596,6 +2058,11 @@ pub fn capability_intervals_with_within_degrees_of_freedom(
             &indices.cpk,
             "capability.nestedSubgroupNoMovingRanges.v1",
             Some("movingRangeEffectiveDfWald.v1"),
+        );
+        intervals.cpm_within = unavailable_interval_from_point(
+            &indices.cpm_within,
+            "capability.nestedSubgroupNoMovingRanges.v1",
+            Some("movingRangeEffectiveDfLogDeltaCpm.v1"),
         );
         return intervals;
     };
@@ -1628,6 +2095,16 @@ pub fn capability_intervals_with_within_degrees_of_freedom(
         &intervals.cpu,
         "movingRangeEffectiveDfWald.v1",
     );
+    intervals.cpm_within = cpm_log_delta_interval(CpmLogDeltaIntervalInput {
+        point_value: &indices.cpm_within,
+        sigma: summary.within_sigma,
+        mean: summary.mean,
+        target,
+        n: summary.n,
+        degrees_of_freedom: within_degrees_of_freedom,
+        alpha,
+        method: "movingRangeEffectiveDfLogDeltaCpm.v1",
+    });
     intervals
 }
 
@@ -1875,9 +2352,42 @@ fn indices_for_sigma(
         _ => not_applicable(),
     };
     let target = match (limits.lsl, limits.target, limits.usl) {
-        (Some(lsl), Some(target), Some(usl)) => {
-            available((usl - lsl) / (6.0 * (sigma * sigma + (mean - target).powi(2)).sqrt()))
+        (Some(lsl), Some(target), Some(usl))
+            if sigma.is_finite()
+                && sigma > 0.0
+                && mean.is_finite()
+                && target.is_finite()
+                && lsl.is_finite()
+                && usl.is_finite()
+                && usl > lsl =>
+        {
+            let (scale, scaled_sigma, scaled_delta) = cpm_scaled_components(sigma, mean, target);
+            let span = usl - lsl;
+            let scaled_span = if span.is_finite() {
+                span / scale
+            } else {
+                usl / scale - lsl / scale
+            };
+            let scaled_denominator = 6.0 * scaled_sigma.hypot(scaled_delta);
+            let ratio = scaled_span / scaled_denominator;
+            let point = if scaled_span.is_normal() && ratio.is_normal() {
+                ratio
+            } else {
+                let log_span = if span.is_finite() {
+                    span.ln()
+                } else {
+                    let span_scale = usl.abs().max(lsl.abs());
+                    span_scale.ln() + (usl / span_scale - lsl / span_scale).ln()
+                };
+                (log_span - scale.ln() - scaled_denominator.ln()).exp()
+            };
+            if point.is_finite() && point > 0.0 {
+                available(point)
+            } else {
+                unavailable(unavailable_reason)
+            }
         }
+        (Some(_), Some(_), Some(_)) => unavailable(unavailable_reason),
         _ => not_applicable(),
     };
     SigmaIndices {
@@ -2131,6 +2641,131 @@ fn wald_interval(
     if !(lower.is_finite() && upper.is_finite()) {
         return unavailable_interval_from_point(
             point,
+            "capability.intervalUnavailable.v1",
+            Some(method),
+        );
+    }
+    CapabilityIntervalV1 {
+        lower: available(lower),
+        upper: available(upper),
+        interval_method: Some(method.to_string()),
+        limiting_side: None,
+        warnings: Vec::new(),
+    }
+}
+
+fn cpm_scaled_components(sigma: f64, mean: f64, target: f64) -> (f64, f64, f64) {
+    let delta = mean - target;
+    let scale = sigma.abs().max(if delta.is_finite() {
+        delta.abs()
+    } else {
+        mean.abs().max(target.abs())
+    });
+    let scaled_delta = if delta.is_finite() {
+        delta / scale
+    } else {
+        mean / scale - target / scale
+    };
+    (scale, sigma / scale, scaled_delta)
+}
+
+struct CpmLogDeltaIntervalInput<'a> {
+    point_value: &'a TypedValueV1,
+    sigma: Option<f64>,
+    mean: f64,
+    target: Option<f64>,
+    n: u64,
+    degrees_of_freedom: f64,
+    alpha: f64,
+    method: &'a str,
+}
+
+fn cpm_log_delta_interval(input: CpmLogDeltaIntervalInput<'_>) -> CapabilityIntervalV1 {
+    let CpmLogDeltaIntervalInput {
+        point_value,
+        sigma,
+        mean,
+        target,
+        n,
+        degrees_of_freedom,
+        alpha,
+        method,
+    } = input;
+    if matches!(
+        point_value.state,
+        NumericStateV1::NotApplicable | NumericStateV1::Unbounded
+    ) {
+        return unavailable_interval_from_point(
+            point_value,
+            "capability.intervalUnavailable.v1",
+            Some(method),
+        );
+    }
+    let (Some(point), Some(sigma), Some(target)) = (point_value.value, sigma, target) else {
+        return unavailable_interval_from_point(
+            point_value,
+            "capability.intervalUnavailable.v1",
+            Some(method),
+        );
+    };
+    if n < 3
+        || !point.is_finite()
+        || point <= 0.0
+        || !sigma.is_finite()
+        || sigma <= 0.0
+        || !mean.is_finite()
+        || !target.is_finite()
+        || !degrees_of_freedom.is_finite()
+        || degrees_of_freedom <= 0.0
+        || !alpha.is_finite()
+        || alpha <= 0.0
+        || alpha >= 1.0
+    {
+        return unavailable_interval_from_point(
+            point_value,
+            "capability.intervalUnavailable.v1",
+            Some(method),
+        );
+    }
+
+    let (_, scaled_sigma, scaled_delta) = cpm_scaled_components(sigma, mean, target);
+    let scaled_root_q = scaled_sigma.hypot(scaled_delta);
+    if !scaled_root_q.is_finite() || scaled_root_q <= 0.0 {
+        return unavailable_interval_from_point(
+            point_value,
+            "capability.intervalUnavailable.v1",
+            Some(method),
+        );
+    }
+    let standard_normal = match Normal::new(0.0, 1.0) {
+        Ok(distribution) => distribution,
+        Err(_) => {
+            return unavailable_interval_from_point(
+                point_value,
+                "capability.intervalUnavailable.v1",
+                Some(method),
+            );
+        }
+    };
+    let critical = standard_normal.inverse_cdf(1.0 - alpha / 2.0);
+    let sigma_ratio = scaled_sigma / scaled_root_q;
+    let delta_ratio = scaled_delta / scaled_root_q;
+    let standard_error = (sigma_ratio * (sigma_ratio / degrees_of_freedom.sqrt())
+        / std::f64::consts::SQRT_2)
+        .hypot(delta_ratio * (sigma_ratio / (n as f64).sqrt()));
+    let lower = point * (-critical * standard_error).exp();
+    let upper = point * (critical * standard_error).exp();
+    if !(critical.is_finite()
+        && standard_error.is_finite()
+        && standard_error > 0.0
+        && lower.is_finite()
+        && lower > 0.0
+        && upper.is_finite()
+        && upper > 0.0
+        && lower < upper)
+    {
+        return unavailable_interval_from_point(
+            point_value,
             "capability.intervalUnavailable.v1",
             Some(method),
         );

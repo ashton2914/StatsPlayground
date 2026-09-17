@@ -3,8 +3,8 @@ use tauri::State;
 use crate::error::AppError;
 use crate::models::table::{
     CellPosition, CellUpdate, ColumnDisplayProps, CreateManagedTableRequest,
-    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateResult, TableQueryResult,
-    TableWindowRequest, TableWindowResult,
+    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateResult, TableFilterValue,
+    TableQueryResult, TableWindowRequest, TableWindowResult,
 };
 use crate::services::data_service::DataService;
 use crate::state::AppState;
@@ -103,7 +103,7 @@ pub fn query_table_filter_values(
     search: String,
     limit: usize,
     generation: u64,
-) -> Result<Vec<String>, AppError> {
+) -> Result<Vec<TableFilterValue>, AppError> {
     let service = DataService::new(&state);
     service.query_table_filter_values(&dataset_id, &field, &search, limit, generation)
 }

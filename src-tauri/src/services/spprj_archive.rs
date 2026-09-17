@@ -681,7 +681,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_report_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!("Archive report entry {} missing id", entry.file))
         })?;
@@ -700,6 +699,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_report_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.fit_y_by_x_files {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -764,6 +764,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_legacy_distribution_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.analyses {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -778,7 +779,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_analysis_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!("Archive analysis entry {} missing id", entry.file))
         })?;
@@ -797,6 +797,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_analysis_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.tabulate_files {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -1214,11 +1215,6 @@ fn read_indexed_values<R: Read + Seek>(
             .ok_or_else(|| AppError::FileIO(format!("Missing indexed entry: {}", entry.file)))?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| AppError::FileIO(format!("Invalid indexed file {}: {}", entry.file, e)))?;
-        match expected_kind {
-            DocumentKind::Report => validate_report_value(&value, &entry.file)?,
-            DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
-            _ => {}
-        }
         let body_id = value
             .get("id")
             .and_then(Value::as_str)
@@ -1237,6 +1233,12 @@ fn read_indexed_values<R: Read + Seek>(
                     entry.file, entry.name, body_name
                 )));
             }
+        }
+        match expected_kind {
+            DocumentKind::Report => validate_report_value(&value, &entry.file)?,
+            DocumentKind::Distribution => validate_legacy_distribution_value(&value, &entry.file)?,
+            DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
+            _ => {}
         }
         out.push(value);
     }
@@ -1726,6 +1728,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
             ensure_unique_bundle_id(&mut active_document_ids, &id, "active document")?;
         }
         for doc in &distributions {
+            validate_legacy_distribution_value(doc, "build bundle distribution")?;
             let id = value_required_id(doc, "distribution")?;
             ensure_unique_bundle_id(&mut distribution_ids, &id, "distribution")?;
             ensure_unique_bundle_id(&mut active_document_ids, &id, "active document")?;
@@ -3764,6 +3767,7 @@ fn validate_bundle_payload_stable_ids(bundle: &ProjectBundle) -> Result<(), AppE
         ensure_unique_bundle_id(&mut active_document_ids, &id, "active document")?;
     }
     for doc in &bundle.distributions {
+        validate_legacy_distribution_value(doc, "bundle distribution")?;
         let id = value_required_id(doc, "distribution")?;
         ensure_unique_bundle_id(&mut distribution_ids, &id, "distribution")?;
         ensure_unique_bundle_id(&mut active_document_ids, &id, "active document")?;
@@ -4809,11 +4813,6 @@ fn validate_hypothesis_test_analysis_definition(
             "{context} pairedOrBlocked long analysis requires roles.subject"
         )));
     }
-    if study_design == Some("independent") && has_subject {
-        return Err(AppError::FileIO(format!(
-            "{context} independent analysis must not define roles.subject"
-        )));
-    }
 
     let selection_mode = definition.get("selectionMode").and_then(Value::as_str);
     if !matches!(selection_mode, Some("automatic" | "guided" | "manual")) {
@@ -5270,7 +5269,7 @@ fn validate_distribution_analysis_config(
         })?;
         if !matches!(
             fit_id,
-            "normal" | "lognormal" | "exponential" | "gamma" | "weibull"
+            "normal" | "cauchy" | "lognormal" | "exponential" | "gamma" | "weibull"
         ) {
             return Err(AppError::FileIO(format!(
                 "{context}.fitDistributions contains unsupported distribution id {fit_id}"
@@ -5278,7 +5277,33 @@ fn validate_distribution_analysis_config(
         }
     }
 
+    if let Some(fit_all) = analysis.get("fitAll") {
+        if fit_all.as_bool().is_none() {
+            return Err(AppError::FileIO(format!(
+                "{context}.fitAll must be a boolean"
+            )));
+        }
+    }
+
     Ok(())
+}
+
+fn validate_legacy_distribution_value(value: &Value, context: &str) -> Result<(), AppError> {
+    let distribution = value.as_object().ok_or_else(|| {
+        AppError::FileIO(format!(
+            "{context} legacy Distribution is not a JSON object"
+        ))
+    })?;
+    let analysis = distribution
+        .get("analysis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::FileIO(format!("{context} legacy Distribution analysis is missing"))
+        })?;
+    validate_distribution_analysis_config(
+        analysis,
+        &format!("{context} legacy Distribution analysis"),
+    )
 }
 
 fn validate_spec_limit_override(value: &Value, context: &str) -> Result<(), AppError> {
@@ -5631,7 +5656,8 @@ mod tests {
             "analysis": {
                 "confidenceLevel": 0.95,
                 "specLimits": {},
-                "fitDistributions": ["normal"]
+                "fitDistributions": ["normal"],
+                "fitAll": false
             },
             "graphs": {},
             "createdAt": "2026-09-02T00:00:00Z"
@@ -5660,7 +5686,8 @@ mod tests {
                 "analysis": {
                     "confidenceLevel": 0.95,
                     "specLimits": {},
-                    "fitDistributions": ["normal"]
+                    "fitDistributions": ["normal"],
+                    "fitAll": false
                 },
                 "graphs": {
                     "overview": {
@@ -7463,6 +7490,50 @@ mod tests {
     }
 
     #[test]
+    fn independent_hypothesis_test_with_subject_round_trips_through_project_archive() {
+        let path = temp_project_path("independent-hypothesis-subject");
+        let mut analysis = hypothesis_test_analysis_doc("hypothesis-1", "Strength by Site");
+        analysis["definition"]["roles"]["subject"] = json!({
+            "name": "Part",
+            "type": "id"
+        });
+
+        let bundle = super::build_bundle_with_workflows(
+            "Project".to_string(),
+            "4.0.0".to_string(),
+            "2026-09-15T00:00:00.000Z".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![analysis.clone()],
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("independent hypothesis test with optional subject should build");
+
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let loaded = read_project_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded.analyses, vec![analysis]);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn fit_y_by_x_analysis_save_writes_span_without_legacy_spf() {
         let path = temp_project_path("fit-y-by-x-analysis-only");
         let analysis = fit_y_by_x_analysis_doc("fit-1", "Strength by Site");
@@ -7619,6 +7690,25 @@ mod tests {
             Err(AppError::FileIO(message)) if message.contains("fitDistributions")
         ));
 
+        let mut cauchy_fit = analysis_doc("analysis-1", "DIM1 Analysis");
+        cauchy_fit["definition"]["analysis"]["fitDistributions"] = json!(["cauchy"]);
+        cauchy_fit["definition"]["analysis"]["fitAll"] = json!(true);
+        assert!(validate_analysis_value(&cauchy_fit, "analysis validation").is_ok());
+
+        let mut missing_fit_all = analysis_doc("analysis-1", "DIM1 Analysis");
+        missing_fit_all["definition"]["analysis"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fitAll");
+        assert!(validate_analysis_value(&missing_fit_all, "analysis validation").is_ok());
+
+        let mut invalid_fit_all = analysis_doc("analysis-1", "DIM1 Analysis");
+        invalid_fit_all["definition"]["analysis"]["fitAll"] = json!("true");
+        assert!(matches!(
+            validate_analysis_value(&invalid_fit_all, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("fitAll")
+        ));
+
         let mut invalid_mode = analysis_doc("analysis-1", "DIM1 Analysis");
         invalid_mode["definition"]["graphs"]["overview"]["mode"] = json!("polar");
         assert!(matches!(
@@ -7729,6 +7819,13 @@ mod tests {
 
         let hypothesis_test = hypothesis_test_analysis_doc("hypothesis-1", "Strength by Site");
         assert!(validate_analysis_value(&hypothesis_test, "analysis validation").is_ok());
+
+        let mut invalid_hypothesis_subject = hypothesis_test.clone();
+        invalid_hypothesis_subject["definition"]["roles"]["subject"] = json!({ "name": "Part" });
+        assert!(matches!(
+            validate_analysis_value(&invalid_hypothesis_subject, "analysis validation"),
+            Err(AppError::FileIO(message)) if message.contains("subject")
+        ));
 
         let mut invalid_hypothesis_response = hypothesis_test.clone();
         invalid_hypothesis_response["definition"]["roles"]["response"]["type"] = json!("nominal");
@@ -7855,6 +7952,46 @@ mod tests {
             .finish()
             .map_err(|e| AppError::FileIO(format!("failed to finish mutated archive: {e}")))?;
         Ok(())
+    }
+
+    fn distribution_bundle(version: &str, distribution: Value) -> ProjectBundle {
+        super::build_bundle(
+            "Project".to_string(),
+            version.to_string(),
+            "2026-09-14T00:00:00Z".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![distribution],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("build Distribution bundle")
+    }
+
+    fn rewrite_distribution_archive(
+        source_path: &std::path::Path,
+        destination_path: &std::path::Path,
+        distribution: &Value,
+    ) {
+        rewrite_named_entry_in_archive(
+            source_path,
+            destination_path,
+            "distributions/Distribution.spdist",
+            &serde_json::to_vec_pretty(distribution).expect("serialize Distribution fixture"),
+        )
+        .expect("rewrite Distribution archive member");
     }
 
     #[test]
@@ -8385,6 +8522,133 @@ mod tests {
         assert_eq!(loaded.manifest.distribution_folders, folders);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_distribution_archive_open_accepts_missing_fit_all_and_cauchy() {
+        let cauchy_path = temp_project_path("legacy-distribution-open-cauchy");
+        let mut cauchy = distribution_doc("dist-1", "Distribution");
+        cauchy["analysis"]["fitDistributions"] = json!(["cauchy"]);
+        cauchy["analysis"]["fitAll"] = json!(true);
+        let bundle = distribution_bundle("4.0.0", cauchy);
+        write_project_archive(&bundle, cauchy_path.to_str().unwrap()).unwrap();
+
+        let loaded = read_project_file(cauchy_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            loaded.distributions[0]["analysis"]["fitDistributions"],
+            json!(["cauchy"])
+        );
+        assert_eq!(loaded.distributions[0]["analysis"]["fitAll"], true);
+
+        let missing_path = temp_project_path("legacy-distribution-open-missing-fit-all");
+        let mut missing = distribution_doc("dist-1", "Distribution");
+        missing["analysis"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fitAll");
+        rewrite_distribution_archive(&cauchy_path, &missing_path, &missing);
+
+        let loaded = read_project_file(missing_path.to_str().unwrap()).unwrap();
+        assert!(loaded.distributions[0]["analysis"].get("fitAll").is_none());
+
+        let _ = std::fs::remove_file(cauchy_path);
+        let _ = std::fs::remove_file(missing_path);
+    }
+
+    #[test]
+    fn legacy_distribution_archive_open_rejects_non_boolean_fit_all() {
+        let source_path = temp_project_path("legacy-distribution-open-invalid-fit-all-source");
+        let invalid_path = temp_project_path("legacy-distribution-open-invalid-fit-all");
+        let bundle = distribution_bundle("4.0.0", distribution_doc("dist-1", "Distribution"));
+        write_project_archive(&bundle, source_path.to_str().unwrap()).unwrap();
+        let mut invalid = distribution_doc("dist-1", "Distribution");
+        invalid["analysis"]["fitAll"] = json!("true");
+        rewrite_distribution_archive(&source_path, &invalid_path, &invalid);
+
+        let error = match read_project_file(invalid_path.to_str().unwrap()) {
+            Ok(_) => panic!("expected non-boolean legacy Distribution fitAll to fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AppError::FileIO(message) if message.contains("fitAll")
+        ));
+
+        let _ = std::fs::remove_file(source_path);
+        let _ = std::fs::remove_file(invalid_path);
+    }
+
+    #[test]
+    fn legacy_distribution_archive_open_rejects_unknown_fit_id() {
+        let source_path = temp_project_path("legacy-distribution-open-unknown-fit-source");
+        let invalid_path = temp_project_path("legacy-distribution-open-unknown-fit");
+        let bundle = distribution_bundle("4.0.0", distribution_doc("dist-1", "Distribution"));
+        write_project_archive(&bundle, source_path.to_str().unwrap()).unwrap();
+        let mut invalid = distribution_doc("dist-1", "Distribution");
+        invalid["analysis"]["fitDistributions"] = json!(["normal", "unknown-fit"]);
+        rewrite_distribution_archive(&source_path, &invalid_path, &invalid);
+
+        let error = match read_project_file(invalid_path.to_str().unwrap()) {
+            Ok(_) => panic!("expected unknown legacy Distribution fit id to fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AppError::FileIO(message) if message.contains("unknown-fit")
+        ));
+
+        let _ = std::fs::remove_file(source_path);
+        let _ = std::fs::remove_file(invalid_path);
+    }
+
+    #[test]
+    fn legacy_distribution_pre_save_accepts_missing_fit_all_and_cauchy() {
+        let cauchy_path = temp_project_path("legacy-distribution-save-cauchy");
+        let mut cauchy = distribution_doc("dist-1", "Distribution");
+        cauchy["analysis"]["fitDistributions"] = json!(["cauchy"]);
+        cauchy["analysis"]["fitAll"] = json!(true);
+        let cauchy_bundle = distribution_bundle("3.0.0", cauchy);
+        write_project_archive(&cauchy_bundle, cauchy_path.to_str().unwrap()).unwrap();
+
+        let missing_path = temp_project_path("legacy-distribution-save-missing-fit-all");
+        let mut missing = distribution_doc("dist-1", "Distribution");
+        missing["analysis"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fitAll");
+        let missing_bundle = distribution_bundle("3.0.0", missing);
+        write_project_archive(&missing_bundle, missing_path.to_str().unwrap()).unwrap();
+
+        let _ = std::fs::remove_file(cauchy_path);
+        let _ = std::fs::remove_file(missing_path);
+    }
+
+    #[test]
+    fn legacy_distribution_pre_save_rejects_non_boolean_fit_all() {
+        let path = temp_project_path("legacy-distribution-save-invalid-fit-all");
+        let mut bundle = distribution_bundle("3.0.0", distribution_doc("dist-1", "Distribution"));
+        bundle.distributions[0]["analysis"]["fitAll"] = json!("true");
+
+        let error = write_project_archive(&bundle, path.to_str().unwrap()).unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::FileIO(message) if message.contains("fitAll")
+        ));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn legacy_distribution_pre_save_rejects_unknown_fit_id() {
+        let path = temp_project_path("legacy-distribution-save-unknown-fit");
+        let mut bundle = distribution_bundle("3.0.0", distribution_doc("dist-1", "Distribution"));
+        bundle.distributions[0]["analysis"]["fitDistributions"] = json!(["normal", "unknown-fit"]);
+
+        let error = write_project_archive(&bundle, path.to_str().unwrap()).unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::FileIO(message) if message.contains("unknown-fit")
+        ));
+        assert!(!path.exists());
     }
 
     #[test]

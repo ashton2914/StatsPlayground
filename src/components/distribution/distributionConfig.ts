@@ -1,4 +1,5 @@
 import type { FieldRef } from "@/graphCore";
+import { DISTRIBUTION_FIT_ORDER } from "@/graphCore/distributionFitStyle";
 
 import {
   createDefaultGraph2DState,
@@ -29,6 +30,8 @@ export type DistributionRoleValidationError =
   | "invalidBy"
   | "invalidNestedSubgroup"
   | "duplicateRole";
+
+export type DistributionAnalysisValidationError = "fitSelectionRequired";
 
 export interface DistributionFieldInfo {
   name: string;
@@ -162,6 +165,33 @@ export function createDefaultDistributionAnalysisConfig(): DistributionAnalysisC
     confidenceLevel: 0.95,
     specLimits: {},
     fitDistributions: ["normal"],
+    fitAll: true,
+  };
+}
+
+function hasContinuousFitSelection(
+  fitAll: boolean,
+  distributionIds: readonly ContinuousDistributionIdV1[],
+): boolean {
+  return fitAll || distributionIds.length > 0;
+}
+
+export function validateDistributionAnalysisConfig(
+  analysis: DistributionAnalysisConfig,
+): DistributionAnalysisValidationError | null {
+  if (!hasContinuousFitSelection(analysis.fitAll, analysis.fitDistributions)) {
+    return "fitSelectionRequired";
+  }
+  return null;
+}
+
+function normalizeDistributionAnalysisConfigValue(
+  analysis: DistributionAnalysisConfig | undefined,
+): DistributionAnalysisConfig {
+  if (!analysis) return createDefaultDistributionAnalysisConfig();
+  return {
+    ...clone(analysis),
+    fitAll: analysis.fitAll ?? false,
   };
 }
 
@@ -240,7 +270,7 @@ export function createDistributionItem(input: {
     frequency: clone(input.frequency),
     by: clone(input.by),
     nestedSubgroup: clone(input.nestedSubgroup ?? null),
-    analysis: clone(input.analysis ?? createDefaultDistributionAnalysisConfig()),
+    analysis: normalizeDistributionAnalysisConfigValue(input.analysis),
     graphs: createDefaultDistributionGraphs(input.responses[0]!),
     createdAt: input.createdAt,
   };
@@ -258,48 +288,71 @@ export interface CapabilityOverrideRegistryV1 {
   validate: (envelope: CapabilityOverrideEnvelopeV1) => DistributionConfigErrorV1[];
 }
 
-export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[] = [
-  {
-    distributionId: "normal",
+const DISTRIBUTION_FIT_CAPABILITY_BY_ID = {
+  normal: {
     methodId: "fit.normal.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "normal.locationScale.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "lognormal",
+  cauchy: {
+    methodId: "fit.cauchy.locationScale.mle.v1",
+    methodVersion: "1.0.0",
+    parameterizationId: "cauchy.locationScale.v1",
+    implemented: true,
+    compatibilityStatus: "compatibilityPending",
+  },
+  lognormal: {
     methodId: "fit.lognormal.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "lognormal.logLocationLogScale.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "exponential",
+  exponential: {
     methodId: "fit.exponential.location0.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "exponential.scaleLocation0.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "gamma",
+  gamma: {
     methodId: "fit.gamma.shapeScale.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "gamma.shapeScale.location0.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-  {
-    distributionId: "weibull",
+  weibull: {
     methodId: "fit.weibull.shapeScale.mle.v1",
     methodVersion: "1.0.0",
     parameterizationId: "weibull.shapeScale.location0.v1",
     implemented: true,
     compatibilityStatus: "compatibilityPending",
   },
-] as const;
+} satisfies Record<
+  ContinuousDistributionIdV1,
+  Omit<DistributionFitCapabilityV1, "distributionId">
+>;
+
+export const DISTRIBUTION_FIT_CAPABILITY_REGISTRY: DistributionFitCapabilityV1[] =
+  DISTRIBUTION_FIT_ORDER.map((distributionId) => ({
+    distributionId,
+    ...DISTRIBUTION_FIT_CAPABILITY_BY_ID[distributionId],
+  }));
+
+const IMPLEMENTED_DISTRIBUTION_FIT_IDS = new Set<ContinuousDistributionIdV1>(
+  DISTRIBUTION_FIT_CAPABILITY_REGISTRY
+    .filter((capability) => capability.implemented)
+    .map((capability) => capability.distributionId),
+);
+
+export function isDistributionFitImplemented(
+  distributionId: ContinuousDistributionIdV1,
+): boolean {
+  return IMPLEMENTED_DISTRIBUTION_FIT_IDS.has(distributionId);
+}
 
 const error = (
   code: string,
@@ -320,8 +373,8 @@ export function createDefaultDistributionVisualDiagnosticsConfig(): Distribution
 
 export function createDefaultDistributionContinuousFitConfig(): DistributionContinuousFitConfigV1 {
   return {
-    enabledDistributionIds: [],
-    fitAll: false,
+    enabledDistributionIds: ["normal"],
+    fitAll: true,
     diagnostics: {
       goodnessOfFit: false,
       qqPlot: false,
@@ -331,13 +384,21 @@ export function createDefaultDistributionContinuousFitConfig(): DistributionCont
   };
 }
 
+function createLegacyDistributionContinuousFitConfig(): DistributionContinuousFitConfigV1 {
+  return {
+    enabledDistributionIds: [],
+    fitAll: false,
+    diagnostics: { goodnessOfFit: false, qqPlot: false, cdfPlot: false, ppPlot: false },
+  };
+}
+
 export function normalizeDistributionAnalysisConfig(
   config: DistributionAnalysisConfigV1,
 ): DistributionAnalysisConfigV1 {
   return {
     ...config,
     nestedSubgroupColumnId: config.nestedSubgroupColumnId ?? null,
-    continuousFit: config.continuousFit ?? createDefaultDistributionContinuousFitConfig(),
+    continuousFit: config.continuousFit ?? createLegacyDistributionContinuousFitConfig(),
     visualDiagnostics: config.visualDiagnostics ?? createDefaultDistributionVisualDiagnosticsConfig(),
   };
 }
@@ -346,14 +407,9 @@ export function validateDistributionContinuousFitConfig(
   continuousFit: DistributionContinuousFitConfigV1,
 ): DistributionConfigErrorV1[] {
   const errors: DistributionConfigErrorV1[] = [];
-  const implementedIds = new Set(
-    DISTRIBUTION_FIT_CAPABILITY_REGISTRY
-      .filter((capability) => capability.implemented)
-      .map((capability) => capability.distributionId),
-  );
   const seenDistributionIds = new Set<ContinuousDistributionIdV1>();
   continuousFit.enabledDistributionIds.forEach((distributionId, index) => {
-    if (!implementedIds.has(distributionId)) {
+    if (!isDistributionFitImplemented(distributionId)) {
       errors.push(error(
         "distribution.config.unknownContinuousFitCapability",
         "distribution.errors.unknownContinuousFitCapability",
@@ -585,7 +641,7 @@ export function validateDistributionConfig(
     config.visualDiagnostics ?? createDefaultDistributionVisualDiagnosticsConfig();
   errors.push(...validateDistributionVisualDiagnosticsConfig(visualDiagnostics));
 
-  const continuousFit = config.continuousFit ?? createDefaultDistributionContinuousFitConfig();
+  const continuousFit = config.continuousFit ?? createLegacyDistributionContinuousFitConfig();
   errors.push(...validateDistributionContinuousFitConfig(continuousFit));
 
   const occupied = new Set(yIds);

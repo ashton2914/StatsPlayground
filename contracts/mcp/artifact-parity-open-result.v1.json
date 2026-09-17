@@ -9,6 +9,7 @@
         "definition": {
           "analysis": {
             "confidenceLevel": 0.9,
+            "fitAll": false,
             "fitDistributions": [
               "normal"
             ],
@@ -869,6 +870,7 @@
             "definition": {
               "analysis": {
                 "confidenceLevel": 0.9,
+                "fitAll": false,
                 "fitDistributions": [
                   "normal"
                 ],

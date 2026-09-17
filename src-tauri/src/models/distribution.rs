@@ -63,6 +63,7 @@ pub enum DistributionGroupValueV1 {
 #[serde(rename_all = "camelCase")]
 pub enum ContinuousDistributionIdV1 {
     Normal,
+    Cauchy,
     Lognormal,
     Exponential,
     Gamma,
@@ -546,6 +547,8 @@ pub struct DistributionRequest {
     pub confidence_level: f64,
     pub spec_limits: HashMap<String, SpecLimitsOverride>,
     pub fit_distributions: Vec<DistributionFitKind>,
+    #[serde(default)]
+    pub fit_all: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -947,6 +950,8 @@ pub struct ProcessCapabilityDataV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DistributionSummaryDataV1 {
+    #[serde(default = "default_summary_confidence_level")]
+    pub confidence_level: f64,
     pub n: u64,
     pub n_missing: u64,
     pub mean: f64,
@@ -964,6 +969,10 @@ pub struct DistributionSummaryDataV1 {
     pub mad: f64,
 }
 
+fn default_summary_confidence_level() -> f64 {
+    0.95
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DistributionQuantileValueV1 {
@@ -976,6 +985,10 @@ pub struct DistributionQuantileValueV1 {
 pub struct DistributionYResultV1 {
     pub y_column: DistributionColumnRefV1,
     pub y_name: String,
+    #[serde(default)]
+    pub source_rows: u64,
+    #[serde(default)]
+    pub processed_rows: u64,
     pub quantiles: Vec<DistributionQuantileValueV1>,
     pub blocks: Vec<DistributionReportBlockV1>,
 }
@@ -994,6 +1007,10 @@ pub struct DistributionGroupResultV1 {
 pub struct DistributionYResult {
     pub y_column: DistributionColumnRefV1,
     pub y_name: String,
+    #[serde(default)]
+    pub source_rows: u64,
+    #[serde(default)]
+    pub processed_rows: u64,
     pub quantiles: Vec<DistributionQuantileValueV1>,
     pub blocks: Vec<DistributionReportBlock>,
 }
@@ -1197,6 +1214,30 @@ mod tests {
     }
 
     #[test]
+    fn summary_confidence_preserves_explicit_values_and_defaults_legacy_payload() {
+        let legacy = json!({
+            "n": 5, "nMissing": 0, "mean": 3.0, "stdDev": 1.5, "stdError": 0.7,
+            "meanCiLower": 1.0, "meanCiUpper": 5.0, "minimum": 1.0, "maximum": 5.0,
+            "median": 3.0, "primaryMode": 1.0, "modeIsUnique": false,
+            "range": 4.0, "iqr": 2.0, "mad": 1.0
+        });
+        let summary: DistributionSummaryDataV1 =
+            serde_json::from_value(legacy.clone()).expect("legacy summary");
+        assert_eq!(summary.confidence_level, 0.95);
+        for confidence in [0.9, 0.95, 0.99] {
+            let mut payload = legacy.clone();
+            payload["confidenceLevel"] = json!(confidence);
+            let summary: DistributionSummaryDataV1 =
+                serde_json::from_value(payload.clone()).expect("summary");
+            assert_eq!(summary.confidence_level, confidence);
+            assert_eq!(
+                serde_json::to_value(summary).expect("summary wire"),
+                payload
+            );
+        }
+    }
+
+    #[test]
     fn distribution_request_round_trips_camel_case_wire_fields() {
         let value = json!({
             "datasetId": "dataset-1",
@@ -1210,7 +1251,8 @@ mod tests {
             "specLimits": {
                 "height": { "lsl": 1.0, "target": 2.0, "usl": 3.0 }
             },
-            "fitDistributions": ["normal", "gamma"]
+            "fitDistributions": ["normal", "cauchy"],
+            "fitAll": true
         });
         let request: DistributionRequest =
             serde_json::from_value(value.clone()).expect("deserialize one-shot request");
@@ -1218,7 +1260,46 @@ mod tests {
         assert_eq!(request.response_columns, vec!["height", "width"]);
         assert_eq!(request.by_columns, vec!["region", "batch"]);
         assert_eq!(
+            request.fit_distributions,
+            vec![
+                ContinuousDistributionIdV1::Normal,
+                ContinuousDistributionIdV1::Cauchy,
+            ]
+        );
+        assert!(request.fit_all);
+        assert_eq!(
             serde_json::to_value(request).expect("serialize request"),
+            value
+        );
+    }
+
+    #[test]
+    fn continuous_fit_config_deserializes_cauchy_fit_all_and_disabled_diagnostics() {
+        let value = json!({
+            "enabledDistributionIds": ["cauchy"],
+            "fitAll": true,
+            "diagnostics": {
+                "goodnessOfFit": false,
+                "qqPlot": false,
+                "cdfPlot": false,
+                "ppPlot": false
+            }
+        });
+
+        let config: DistributionContinuousFitConfigV1 =
+            serde_json::from_value(value.clone()).expect("deserialize continuous fit config");
+
+        assert_eq!(
+            config.enabled_distribution_ids,
+            vec![ContinuousDistributionIdV1::Cauchy]
+        );
+        assert!(config.fit_all);
+        assert!(!config.diagnostics.goodness_of_fit);
+        assert!(!config.diagnostics.qq_plot);
+        assert!(!config.diagnostics.cdf_plot);
+        assert!(!config.diagnostics.pp_plot);
+        assert_eq!(
+            serde_json::to_value(config).expect("serialize continuous fit config"),
             value
         );
     }

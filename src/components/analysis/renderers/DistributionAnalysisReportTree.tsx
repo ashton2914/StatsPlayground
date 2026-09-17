@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -21,6 +21,7 @@ import type { FieldRef } from "@/graphCore/types";
 import type { DistributionAnalysisDocument } from "@/types/analysis";
 import type { DatasetMeta } from "@/types/data";
 import type {
+  ContinuousDistributionIdV1,
   DistributionGroupResult,
   DistributionReportResponse,
   DistributionYResultV1,
@@ -139,6 +140,17 @@ function ResponseFrame({
   const responseIdentity = responseResult?.yColumn.columnId ?? responseField.columnId ?? responseField.name;
   const responseName = responseResult?.yName ?? responseField.name;
   const persistedResponse = item.definition.responses[0] ?? responseField;
+  const firstFitDistributionId = responseResult?.blocks.find(
+    (block) => block.distributionFitData,
+  )?.distributionFitData?.distributionId;
+  const [requestedFitDistributionId, setRequestedFitDistributionId] = useState<ContinuousDistributionIdV1 | undefined>(
+    firstFitDistributionId,
+  );
+  const selectedFitDistributionId = responseResult?.blocks.some(
+    (block) => block.distributionFitData?.distributionId === requestedFitDistributionId,
+  )
+    ? requestedFitDistributionId
+    : firstFitDistributionId;
 
   return (
     <AnalysisFrame
@@ -179,6 +191,7 @@ function ResponseFrame({
                         seriesName: responseName,
                       }, group, {
                         allowLegacyOverallFallback,
+                        selectedDistributionId: selectedFitDistributionId,
                       }),
                       error: null,
                     },
@@ -190,6 +203,8 @@ function ResponseFrame({
               />
               <DistributionResponseReport
                 result={responseResult}
+                selectedFitDistributionId={selectedFitDistributionId}
+                onSelectedFitDistributionIdChange={setRequestedFitDistributionId}
                 renderProcessCapabilityGraph={(capability) => capability.chartData ? (
                   <AnalysisGraph
                     title={t("distribution.report.processCapability", { defaultValue: "Process Capability" })}

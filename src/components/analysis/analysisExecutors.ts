@@ -28,6 +28,7 @@ function normalizeDistributionAnalysisForFrontend(
   return {
     ...cloneValue(analysis),
     specLimits: {},
+    fitAll: analysis.fitAll ?? false,
   };
 }
 

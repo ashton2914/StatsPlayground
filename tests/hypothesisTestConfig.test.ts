@@ -34,6 +34,14 @@ function definition(): HypothesisTestAnalysisDefinition {
 }
 
 assert.deepEqual(validateHypothesisTestDefinition(definition()), { ok: true });
+const independentWithSubject: HypothesisTestAnalysisDefinition = {
+  ...definition(),
+  roles: {
+    ...definition().roles,
+    subject: { name: "Part", type: "id" },
+  },
+};
+assert.deepEqual(validateHypothesisTestDefinition(independentWithSubject), { ok: true });
 assert.equal(validateHypothesisTestDefinition({
   ...definition(),
   studyDesign: "pairedOrBlocked",
@@ -77,6 +85,17 @@ const document = createHypothesisTestAnalysisDocument({
 });
 assert.equal(document.analysisKind, "hypothesisTest");
 assert.equal(document.configRevision, 1);
+const independentSubjectDocument = createHypothesisTestAnalysisDocument({
+  id: "analysis-2",
+  name: "Hypothesis Test 2",
+  sourceDatasetId: "dataset-1",
+  definition: independentWithSubject,
+  createdAt: "2026-09-15T00:00:00.000Z",
+});
+assert.deepEqual(independentSubjectDocument.definition.roles.subject, {
+  name: "Part",
+  type: "id",
+});
 const editor = toHypothesisTestEditorItem(document);
 editor.definition.alpha = 0.01;
 assert.equal(document.definition.alpha, 0.05, "editor data must be cloned");

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -7,9 +7,18 @@ import {
   AnalysisTable,
   AnalysisText,
 } from "@/components/analysis/presentation";
+import { Select } from "@/components/ui";
+import { distributionFitColor } from "@/graphCore/distributionFitStyle";
+import {
+  getDistributionFitSelectionKey,
+  getDistributionGroupName,
+  type DistributionFitSelections,
+} from "@/graphCore/distributionAdapter";
+import { getGraphTheme } from "@/graphCore/theme";
 import type {
   DistributionGroupResult,
   DistributionGroupValueV1,
+  ContinuousDistributionIdV1,
   DistributionReportBlock,
   DistributionReportBlockV1,
   DistributionYResultV1,
@@ -22,11 +31,18 @@ import { ProcessCapabilityReport } from "./ProcessCapabilityReport";
 interface DistributionReportProps {
   groups: DistributionGroupResult[];
   reportBlocks: DistributionReportBlock[];
+  selectedFitDistributionIds?: DistributionFitSelections;
+  onSelectedFitDistributionIdChange?: (
+    selectionKey: string,
+    distributionId: ContinuousDistributionIdV1,
+  ) => void;
 }
 
 export interface DistributionResponseReportProps {
   result: DistributionYResultV1;
   renderProcessCapabilityGraph?: (data: ProcessCapabilityDataV1) => ReactNode;
+  selectedFitDistributionId?: ContinuousDistributionIdV1;
+  onSelectedFitDistributionIdChange?: (distributionId: ContinuousDistributionIdV1) => void;
 }
 
 type ReportBlockLike = DistributionReportBlock | DistributionReportBlockV1;
@@ -44,7 +60,12 @@ export function formatDistributionGroupLabel(
       }).join(" / ");
 }
 
-export function DistributionReport({ groups, reportBlocks }: DistributionReportProps) {
+export function DistributionReport({
+  groups,
+  reportBlocks,
+  selectedFitDistributionIds,
+  onSelectedFitDistributionIdChange,
+}: DistributionReportProps) {
   const nestedBlockIds = new Set(
     groups.flatMap((group) => group.yResults.flatMap((result) => result.blocks.map((block) => block.blockId))),
   );
@@ -58,6 +79,8 @@ export function DistributionReport({ groups, reportBlocks }: DistributionReportP
           group={group}
           groupIndex={groupIndex}
           defaultOpen={groupIndex === 0}
+          selectedFitDistributionIds={selectedFitDistributionIds}
+          onSelectedFitDistributionIdChange={onSelectedFitDistributionIdChange}
         />
       ))}
       {standaloneBlocks.length > 0 && (
@@ -77,10 +100,14 @@ function GroupSection({
   group,
   groupIndex,
   defaultOpen,
+  selectedFitDistributionIds,
+  onSelectedFitDistributionIdChange,
 }: {
   group: DistributionGroupResult;
   groupIndex: number;
   defaultOpen: boolean;
+  selectedFitDistributionIds?: DistributionFitSelections;
+  onSelectedFitDistributionIdChange?: DistributionReportProps["onSelectedFitDistributionIdChange"];
 }) {
   const { t } = useTranslation();
   const label = formatDistributionGroupLabel(group, t);
@@ -93,9 +120,18 @@ function GroupSection({
     >
       <AnalysisStack>
         {group.yResults.map((result, yIndex) => {
+          const groupName = getDistributionGroupName(group);
+          const seriesName = groupName === "Overall" ? result.yName : `${result.yName} | ${groupName}`;
+          const selectionKey = getDistributionFitSelectionKey(result.yColumn.columnId, seriesName);
           return (
             <AnalysisFrame title={result.yName} key={result.yColumn.columnId} defaultExpanded={yIndex === 0}>
-              <DistributionResponseReport result={result} />
+              <DistributionResponseReport
+                result={result}
+                selectedFitDistributionId={selectedFitDistributionIds?.[selectionKey]}
+                onSelectedFitDistributionIdChange={onSelectedFitDistributionIdChange
+                  ? (distributionId) => onSelectedFitDistributionIdChange(selectionKey, distributionId)
+                  : undefined}
+              />
             </AnalysisFrame>
           );
         })}
@@ -107,9 +143,29 @@ function GroupSection({
 export function DistributionResponseReport({
   result,
   renderProcessCapabilityGraph,
+  selectedFitDistributionId,
+  onSelectedFitDistributionIdChange,
 }: DistributionResponseReportProps) {
   const { t } = useTranslation();
   const summaryBlock = result.blocks.find((block) => block.summaryData);
+  const fitBlocks = result.blocks.filter((block) => block.distributionFitData);
+  const firstFitDistributionId = fitBlocks[0]?.distributionFitData?.distributionId;
+  const [internalFitDistributionId, setInternalFitDistributionId] = useState(firstFitDistributionId);
+  const activeFitDistributionId = fitBlocks.some(
+    (block) => block.distributionFitData?.distributionId === selectedFitDistributionId,
+  )
+    ? selectedFitDistributionId
+    : fitBlocks.some((block) => block.distributionFitData?.distributionId === internalFitDistributionId)
+      ? internalFitDistributionId
+      : firstFitDistributionId;
+  const activeFitBlock = fitBlocks.find(
+    (block) => block.distributionFitData?.distributionId === activeFitDistributionId,
+  );
+
+  const selectFit = (distributionId: ContinuousDistributionIdV1) => {
+    setInternalFitDistributionId(distributionId);
+    onSelectedFitDistributionIdChange?.(distributionId);
+  };
 
   return (
     <AnalysisStack>
@@ -135,8 +191,36 @@ export function DistributionResponseReport({
           {summaryBlock?.summaryData && <SummaryDataTables summaryData={summaryBlock.summaryData} />}
         </AnalysisStack>
       </AnalysisFrame>
+      {activeFitBlock?.distributionFitData && (
+        <AnalysisFrame
+          title={t("distribution.report.continuousFit")}
+          data-testid="distribution-continuous-fit"
+          data-analysis-surface="continuousFit"
+          headerActions={fitBlocks.length > 1 ? (
+            <Select
+              aria-label={t("distribution.fit.selectorAria", { defaultValue: "Continuous Fit distribution" })}
+              className="distribution-fit-model-select"
+              value={activeFitBlock.distributionFitData.distributionId}
+              onChange={(event) => selectFit(event.currentTarget.value as ContinuousDistributionIdV1)}
+            >
+              {fitBlocks.map((block) => {
+                const fitData = block.distributionFitData!;
+                return (
+                  <option key={fitData.distributionId} value={fitData.distributionId}>
+                    {t(`distribution.fit.distributions.${fitData.distributionId}`, {
+                      defaultValue: fitData.distributionId,
+                    })}
+                  </option>
+                );
+              })}
+            </Select>
+          ) : undefined}
+        >
+          <FitBlockContent block={activeFitBlock} />
+        </AnalysisFrame>
+      )}
       {result.blocks
-        .filter((block) => block !== summaryBlock && hasReportContent(block))
+        .filter((block) => block !== summaryBlock && !block.distributionFitData && hasReportContent(block))
         .map((block) => (
           <ReportBlock
             key={block.blockId}
@@ -156,8 +240,6 @@ export function ReportBlock({
   renderProcessCapabilityGraph?: (data: ProcessCapabilityDataV1) => ReactNode;
 }) {
   const { t } = useTranslation();
-  const compatibilityStatus = getCompatibilityStatus(block);
-  const reasonCode = getBlockReasonCode(block);
   const blockTitle = block.distributionFitData
     ? `${t(block.titleKey)} - ${t(`distribution.fit.distributions.${block.distributionFitData.distributionId}`, {
       defaultValue: block.distributionFitData.distributionId,
@@ -170,7 +252,46 @@ export function ReportBlock({
       data-testid={`distribution-report-block-${block.blockId}`}
       data-analysis-surface={getReportSurfaceKind(block)}
     >
-      <AnalysisStack>
+      <FitBlockContent block={block} blockTitle={blockTitle} renderProcessCapabilityGraph={renderProcessCapabilityGraph} />
+    </AnalysisFrame>
+  );
+}
+
+function FitBlockContent({
+  block,
+  blockTitle,
+  renderProcessCapabilityGraph,
+}: {
+  block: ReportBlockLike;
+  blockTitle?: string;
+  renderProcessCapabilityGraph?: (data: ProcessCapabilityDataV1) => ReactNode;
+}) {
+  const { t } = useTranslation();
+  const compatibilityStatus = getCompatibilityStatus(block);
+  const reasonCode = getBlockReasonCode(block);
+  const fitTitle = blockTitle ?? (block.distributionFitData
+    ? `${t(block.titleKey)} - ${t(`distribution.fit.distributions.${block.distributionFitData.distributionId}`, {
+      defaultValue: block.distributionFitData.distributionId,
+    })}`
+    : t(block.titleKey));
+
+  return (
+    <AnalysisStack>
+      {block.distributionFitData && (
+        <AnalysisText data-testid={`distribution-fit-report-title-${block.blockId}`}>
+          <span
+            className="distribution-fit-report-swatch"
+            aria-hidden="true"
+            style={{
+              backgroundColor: distributionFitColor(
+                block.distributionFitData.distributionId,
+                getGraphTheme().categorical,
+              ),
+            }}
+          />
+          <span className="distribution-fit-report-label">{fitTitle}</span>
+        </AnalysisText>
+      )}
       {compatibilityStatus && (
         <AnalysisText>
           {t(`distribution.compatibility.${compatibilityStatus}`)}
@@ -188,8 +309,7 @@ export function ReportBlock({
       )}
       {block.capabilityData && renderProcessCapabilityGraph?.(block.capabilityData)}
       {block.capabilityData && <ProcessCapabilityReport data={block.capabilityData} />}
-      </AnalysisStack>
-    </AnalysisFrame>
+    </AnalysisStack>
   );
 }
 
@@ -200,25 +320,24 @@ function SummaryDataTables({
 }) {
   const { t } = useTranslation();
   return (
-    <AnalysisStack>
-      <SummaryTable title={t("distribution.report.location")} rows={[
-        ["n", summaryData.n], ["nMissing", summaryData.nMissing],
-        ["mean", summaryData.mean], ["median", summaryData.median],
-        ["mode", summaryData.modeIsUnique
-          ? summaryData.primaryMode
-          : t("distribution.statistics.noUniqueMode")], ["minimum", summaryData.minimum],
-        ["maximum", summaryData.maximum],
-      ]} />
-      <SummaryTable title={t("distribution.report.variation")} rows={[
-        ["stdDev", summaryData.stdDev], ["stdError", summaryData.stdError],
-        ["meanCiLower", summaryData.meanCiLower], ["meanCiUpper", summaryData.meanCiUpper],
-        ["range", summaryData.range], ["iqr", summaryData.iqr], ["mad", summaryData.mad],
-      ]} />
-    </AnalysisStack>
+    <SummaryTable
+      title={t("distribution.report.summaryStatistics")}
+      confidenceLevel={summaryData.confidenceLevel ?? 0.95}
+      rows={[
+        ["n", summaryData.n],
+        ["nMissing", summaryData.nMissing],
+        ["mean", summaryData.mean],
+        ["median", summaryData.median],
+        ["stdDev", summaryData.stdDev],
+        ["stdError", summaryData.stdError],
+        ["meanCiLower", summaryData.meanCiLower],
+        ["meanCiUpper", summaryData.meanCiUpper],
+      ]}
+    />
   );
 }
 
-function SummaryTable({ title, rows }: { title: string; rows: Array<[string, number | string | null]> }) {
+function SummaryTable({ title, rows, confidenceLevel }: { title: string; rows: Array<[string, number | string | null]>; confidenceLevel: number }) {
   const { t } = useTranslation();
   return (
     <AnalysisTable
@@ -231,7 +350,7 @@ function SummaryTable({ title, rows }: { title: string; rows: Array<[string, num
       rows={rows.map(([label, value]) => ({
         key: label,
         cells: [
-          t(`distribution.statistics.${label}`),
+          t(`distribution.statistics.${label}`, { confidence: `${Number((confidenceLevel * 100).toFixed(6))}%` }),
           typeof value === "number" ? formatNumber(value) : value ?? "-",
         ],
       }))}

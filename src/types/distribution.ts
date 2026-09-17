@@ -65,6 +65,7 @@ export interface DistributionColumnDescriptorV1 {
 
 export type ContinuousDistributionIdV1 =
   | "normal"
+  | "cauchy"
   | "lognormal"
   | "exponential"
   | "gamma"
@@ -82,6 +83,7 @@ export interface DistributionAnalysisConfig {
   confidenceLevel: number;
   specLimits: Record<string, SpecLimitsOverride>;
   fitDistributions: DistributionFitKind[];
+  fitAll: boolean;
 }
 
 export interface DistributionItem {
@@ -114,6 +116,7 @@ export interface DistributionRequest {
   confidenceLevel: number;
   specLimits: Record<string, SpecLimitsOverride>;
   fitDistributions: DistributionFitKind[];
+  fitAll: boolean;
 }
 
 export type DistributionFitStatusV1 = "available" | "unavailable" | "failed";
@@ -574,6 +577,7 @@ export interface ProcessCapabilityNonconformanceV1 {
 }
 
 export interface DistributionSummaryDataV1 {
+  confidenceLevel?: number;
   n: number;
   nMissing: number;
   mean: number;
@@ -599,6 +603,8 @@ export interface DistributionQuantileValueV1 {
 export interface DistributionYResultV1 {
   yColumn: DistributionColumnRefV1;
   yName: string;
+  sourceRows?: number;
+  processedRows?: number;
   quantiles: DistributionQuantileValueV1[];
   blocks: DistributionReportBlockV1[];
 }

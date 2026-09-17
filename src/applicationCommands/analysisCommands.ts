@@ -750,11 +750,12 @@ export const analysisCommandSchemas = (() => {
     additionalProperties: false,
   });
   const distributionConfigSchema = objectSchema({
-    required: ["confidenceLevel", "specLimits", "fitDistributions"],
+    required: ["confidenceLevel", "specLimits", "fitAll", "fitDistributions"],
     properties: {
       confidenceLevel: numberSchema(),
       specLimits: objectSchema({ additionalProperties: specLimitsOverrideSchema }),
-      fitDistributions: arraySchema(enumSchema(["normal", "lognormal", "exponential", "gamma", "weibull"]), { minItems: 1 }),
+      fitAll: booleanSchema(),
+      fitDistributions: arraySchema(enumSchema(["normal", "lognormal", "exponential", "gamma", "weibull", "cauchy"]), { minItems: 1 }),
     },
     additionalProperties: false,
   });
@@ -1161,6 +1162,7 @@ export const analysisCommandFixtures = {
         analysis: {
           confidenceLevel: 0.95,
           specLimits: {},
+          fitAll: false,
           fitDistributions: ["normal"],
         },
         graphs: {
@@ -1196,6 +1198,7 @@ export const analysisCommandFixtures = {
         analysis: {
           confidenceLevel: 0.9,
           specLimits: {},
+          fitAll: false,
           fitDistributions: ["normal"],
         },
         graphs: {

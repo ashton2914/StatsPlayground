@@ -1,6 +1,6 @@
 .analysis-shell {
   display: grid;
-  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  grid-template-columns: var(--analysis-summary-width) auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -8,10 +8,29 @@
   background: var(--bg-main);
 }
 
+.analysis-shell[data-analysis-shell-mode="compact"] {
+  grid-template-columns: 1fr;
+  overflow: auto;
+}
+
 .analysis-shell-info {
   min-width: 0;
   border-right: 1px solid var(--border-main);
   background: var(--bg-panel);
+}
+
+.analysis-shell-splitter-track {
+  position: relative;
+  width: 0;
+  min-width: 0;
+  overflow: visible;
+}
+
+.analysis-shell-splitter-track > .panel-splitter {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  transform: translateX(-50%);
 }
 
 .analysis-shell-titlebar {
@@ -53,7 +72,21 @@
 .analysis-shell-edit-inputs:disabled { color: var(--fg-hint); cursor: default; opacity: 0.65; }
 .analysis-shell-results { min-width: 0; min-height: 0; overflow: auto; padding: 10px; }
 
+.analysis-shell[data-analysis-shell-mode="compact"] .analysis-shell-info {
+  border-right: 0;
+  border-bottom: 1px solid var(--border-main);
+}
+
+.analysis-shell[data-analysis-shell-mode="compact"] .analysis-shell-splitter-track {
+  display: none;
+}
+
+.analysis-shell[data-analysis-shell-mode="compact"] .analysis-shell-results {
+  overflow: visible;
+}
+
 .analysis-ui-frame {
+  position: relative;
   max-width: 100%;
   overflow: hidden;
   border: 1px solid var(--border-main);
@@ -83,6 +116,12 @@
 .analysis-ui-frame-title[aria-expanded="false"] { border-bottom: 0; }
 .analysis-ui-frame-title:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .analysis-ui-disclosure { width: 14px; flex: 0 0 14px; }
+.analysis-ui-frame-actions {
+  position: absolute;
+  z-index: 1;
+  top: 4px;
+  right: 8px;
+}
 .analysis-ui-frame-body { min-width: 0; }
 .analysis-ui-frame-body-compact { padding: 10px; }
 .analysis-ui-frame-body-standard { padding: 16px; }
@@ -172,5 +211,6 @@
 @media (max-width: 900px) {
   .analysis-shell { grid-template-columns: 1fr; overflow: auto; }
   .analysis-shell-info { border-right: 0; border-bottom: 1px solid var(--border-main); }
+  .analysis-shell-splitter-track { display: none; }
   .analysis-shell-results { overflow: visible; }
 }

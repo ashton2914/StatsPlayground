@@ -42,6 +42,7 @@ import {
   DEFAULT_GRAPH_SAMPLE_SIZE,
 } from "./graphSamplingPolicy";
 import { FilterPanel } from "@/components/filter";
+import { PanelSplitter } from "@/components/layout";
 import { defaultLayerOptions, GRAPH_LAYER_DEFS, getLayerMode, type GraphLayerDef } from "./graphLayerConfig";
 import {
   createDefaultGraph2DState,
@@ -65,6 +66,7 @@ import {
   resolveGroupThemeFieldName,
 } from "./graphThemeIdentity";
 import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
+import { useLayoutPreferencesStore } from "@/stores/useLayoutPreferencesStore";
 
 interface GraphBuilderViewProps {
   item: GraphBuilderItem;
@@ -86,7 +88,26 @@ const GRAPH_LAYER_DEFS_WITH_CORRELATION: readonly GraphLayerDef[] = GRAPH_LAYER_
 const DRAG_MIME = "text/plain";
 const CORRELATION_MAX_COLUMNS = MAX_MULTIVARIATE_COLUMNS;
 const EMPTY_FILTERS: FilterRuleItem[] = [];
+const GRAPH_BUILDER_FILTER_ID = "graphBuilder.filter";
+const GRAPH_BUILDER_LEFT_RAIL_ID = "graphBuilder.leftRail";
+const GRAPH_BUILDER_RIGHT_RAIL_ID = "graphBuilder.rightRail";
+const GRAPH_BUILDER_LEFT_STACK_ID = "graphBuilder.leftStack";
+const GRAPH_BUILDER_PANEL_MIN_WIDTH = 160;
+const GRAPH_BUILDER_PANEL_MAX_WIDTH = 500;
+const GRAPH_BUILDER_FILTER_DEFAULT_WIDTH = 240;
+const GRAPH_BUILDER_RAIL_DEFAULT_WIDTH = 220;
+const GRAPH_BUILDER_LEFT_STACK_MIN_PERCENT = 15;
+const GRAPH_BUILDER_LEFT_STACK_MAX_PERCENT = 85;
+const GRAPH_BUILDER_LEFT_STACK_DEFAULT_PERCENT = 50;
 type MultivariateDropNotice = "invalidFieldType" | "duplicateField" | "maxColumns";
+
+function clampPanelSize(value: number) {
+  return Math.min(GRAPH_BUILDER_PANEL_MAX_WIDTH, Math.max(GRAPH_BUILDER_PANEL_MIN_WIDTH, value));
+}
+
+function clampLeftStackPercent(value: number) {
+  return Math.min(GRAPH_BUILDER_LEFT_STACK_MAX_PERCENT, Math.max(GRAPH_BUILDER_LEFT_STACK_MIN_PERCENT, value));
+}
 
 export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const { t } = useTranslation();
@@ -288,75 +309,91 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       document.removeEventListener("contextmenu", close);
     };
   }, [axisCtxMenu]);
+  const persistedFilterWidth = useLayoutPreferencesStore((state) => state.sizes[GRAPH_BUILDER_FILTER_ID]);
+  const persistedLeftRailWidth = useLayoutPreferencesStore((state) => state.sizes[GRAPH_BUILDER_LEFT_RAIL_ID]);
+  const persistedRightRailWidth = useLayoutPreferencesStore((state) => state.sizes[GRAPH_BUILDER_RIGHT_RAIL_ID]);
+  const persistedLeftStackPercent = useLayoutPreferencesStore((state) => state.sizes[GRAPH_BUILDER_LEFT_STACK_ID]);
+  const setPanelSize = useLayoutPreferencesStore((state) => state.setPanelSize);
+  const resetPanelSize = useLayoutPreferencesStore((state) => state.resetPanelSize);
   // Resizable side-rail widths. Mirror the Excel-grid splitter pattern
   // (DataTableView): clamp on drag and double-click to reset.
-  const [leftWidth, setLeftWidth] = useState(220);
-  const [rightWidth, setRightWidth] = useState(220);
+  const [leftWidth, setLeftWidth] = useState(() =>
+    clampPanelSize(persistedLeftRailWidth ?? GRAPH_BUILDER_RAIL_DEFAULT_WIDTH),
+  );
+  const [rightWidth, setRightWidth] = useState(() =>
+    clampPanelSize(persistedRightRailWidth ?? GRAPH_BUILDER_RAIL_DEFAULT_WIDTH),
+  );
   // Local Data Filter panel (toggled by the toolbar Filter button).
   const [showFilters, setShowFilters] = useState(false);
-  const [filterWidth, setFilterWidth] = useState(240);
+  const [filterWidth, setFilterWidth] = useState(() =>
+    clampPanelSize(persistedFilterWidth ?? GRAPH_BUILDER_FILTER_DEFAULT_WIDTH),
+  );
   // Vertical split inside the left rail: percentage of the rail's height
   // that goes to the column list, the rest to LAYERS. Mirrors the
   // history-divider pattern in HistoryPanel.
-  const [leftTopPct, setLeftTopPct] = useState(50);
-  const leftRailRef = useRef<HTMLDivElement>(null);
-  const startSideResize = useCallback(
-    (side: "left" | "right" | "filter") => (e: React.MouseEvent) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startW =
-        side === "left" ? leftWidth : side === "right" ? rightWidth : filterWidth;
-      // Splitter on the right edge of a panel grows when dragged right (+1).
-      // The right rail splitter is to the LEFT of the right panel, so dragging
-      // right shrinks it (-1).
-      const dir = side === "right" ? -1 : 1;
-      const onMove = (ev: MouseEvent) => {
-        const next = Math.max(160, Math.min(500, startW + dir * (ev.clientX - startX)));
-        if (side === "left") setLeftWidth(next);
-        else if (side === "right") setRightWidth(next);
-        else setFilterWidth(next);
-      };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-    },
-    [leftWidth, rightWidth, filterWidth],
+  const [leftTopPct, setLeftTopPct] = useState(
+    () => clampLeftStackPercent(persistedLeftStackPercent ?? GRAPH_BUILDER_LEFT_STACK_DEFAULT_PERCENT),
   );
 
-  // Vertical drag inside the left rail (between TABLE columns and LAYERS).
-  const startLeftRowResize = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      const rail = leftRailRef.current;
-      if (!rail) return;
-      const railH = rail.clientHeight;
-      if (railH <= 0) return;
-      const startY = e.clientY;
-      const startPct = leftTopPct;
-      const onMove = (ev: MouseEvent) => {
-        const deltaPct = ((ev.clientY - startY) / railH) * 100;
-        setLeftTopPct(Math.max(15, Math.min(85, startPct + deltaPct)));
-      };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-      document.body.style.cursor = "row-resize";
-      document.body.style.userSelect = "none";
-    },
-    [leftTopPct],
-  );
+  const handleFilterWidthChange = useCallback((nextWidth: number) => {
+    setFilterWidth(clampPanelSize(nextWidth));
+  }, []);
+
+  const handleFilterWidthCommit = useCallback((nextWidth: number) => {
+    const preferredWidth = clampPanelSize(nextWidth);
+    setFilterWidth(preferredWidth);
+    setPanelSize(GRAPH_BUILDER_FILTER_ID, preferredWidth);
+  }, [setPanelSize]);
+
+  const handleFilterWidthReset = useCallback(() => {
+    setFilterWidth(GRAPH_BUILDER_FILTER_DEFAULT_WIDTH);
+    resetPanelSize(GRAPH_BUILDER_FILTER_ID);
+  }, [resetPanelSize]);
+
+  const handleLeftWidthChange = useCallback((nextWidth: number) => {
+    setLeftWidth(clampPanelSize(nextWidth));
+  }, []);
+
+  const handleLeftWidthCommit = useCallback((nextWidth: number) => {
+    const preferredWidth = clampPanelSize(nextWidth);
+    setLeftWidth(preferredWidth);
+    setPanelSize(GRAPH_BUILDER_LEFT_RAIL_ID, preferredWidth);
+  }, [setPanelSize]);
+
+  const handleLeftWidthReset = useCallback(() => {
+    setLeftWidth(GRAPH_BUILDER_RAIL_DEFAULT_WIDTH);
+    resetPanelSize(GRAPH_BUILDER_LEFT_RAIL_ID);
+  }, [resetPanelSize]);
+
+  const handleRightWidthChange = useCallback((nextWidth: number) => {
+    setRightWidth(clampPanelSize(nextWidth));
+  }, []);
+
+  const handleRightWidthCommit = useCallback((nextWidth: number) => {
+    const preferredWidth = clampPanelSize(nextWidth);
+    setRightWidth(preferredWidth);
+    setPanelSize(GRAPH_BUILDER_RIGHT_RAIL_ID, preferredWidth);
+  }, [setPanelSize]);
+
+  const handleRightWidthReset = useCallback(() => {
+    setRightWidth(GRAPH_BUILDER_RAIL_DEFAULT_WIDTH);
+    resetPanelSize(GRAPH_BUILDER_RIGHT_RAIL_ID);
+  }, [resetPanelSize]);
+
+  const handleLeftStackChange = useCallback((nextPercent: number) => {
+    setLeftTopPct(clampLeftStackPercent(nextPercent));
+  }, []);
+
+  const handleLeftStackCommit = useCallback((nextPercent: number) => {
+    const preferredPercent = clampLeftStackPercent(nextPercent);
+    setLeftTopPct(preferredPercent);
+    setPanelSize(GRAPH_BUILDER_LEFT_STACK_ID, preferredPercent);
+  }, [setPanelSize]);
+
+  const handleLeftStackReset = useCallback(() => {
+    setLeftTopPct(GRAPH_BUILDER_LEFT_STACK_DEFAULT_PERCENT);
+    resetPanelSize(GRAPH_BUILDER_LEFT_STACK_ID);
+  }, [resetPanelSize]);
 
   // 编码状态从 store 派生
   const encoding = cartesianState.encoding as Partial<Record<SlotKey, FieldRef>>;
@@ -1302,17 +1339,25 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
               categoricalMode="exclude"
               getCategoricalValues={getGraphCategoricalValues}
             />
-            <div
-              className="gb-splitter"
-              onMouseDown={startSideResize("filter")}
-              onDoubleClick={() => setFilterWidth(240)}
-              title={t("graph.resizePanel", { defaultValue: "Drag to resize" })}
-            />
+            <div className="gb-splitter-track gb-splitter-track-vertical">
+              <PanelSplitter
+                orientation="vertical"
+                value={filterWidth}
+                min={GRAPH_BUILDER_PANEL_MIN_WIDTH}
+                max={GRAPH_BUILDER_PANEL_MAX_WIDTH}
+                defaultValue={GRAPH_BUILDER_FILTER_DEFAULT_WIDTH}
+                unit="px"
+                label="Resize graph builder filter panel"
+                onChange={handleFilterWidthChange}
+                onCommit={handleFilterWidthCommit}
+                onReset={handleFilterWidthReset}
+              />
+            </div>
           </>
         )}
 
         {/* 左栏 */}
-        <div className="gb-left" style={{ width: leftWidth }} ref={leftRailRef}>
+        <div className="gb-left" style={{ width: leftWidth }}>
           {/* Reuse the same column-panel styling as the data table view so the
               two left rails look and feel identical. Items remain draggable so
               they can be dropped into encoding slots. */}
@@ -1348,12 +1393,20 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
           </div>
 
           {/* Horizontal splitter between TABLE columns and LAYERS */}
-          <div
-            className="gb-splitter-h"
-            onMouseDown={startLeftRowResize}
-            onDoubleClick={() => setLeftTopPct(50)}
-            title={t("graph.resizePanel", { defaultValue: "Drag to resize" })}
-          />
+          <div className="gb-splitter-track gb-splitter-track-horizontal">
+            <PanelSplitter
+              orientation="horizontal"
+              value={leftTopPct}
+              min={GRAPH_BUILDER_LEFT_STACK_MIN_PERCENT}
+              max={GRAPH_BUILDER_LEFT_STACK_MAX_PERCENT}
+              defaultValue={GRAPH_BUILDER_LEFT_STACK_DEFAULT_PERCENT}
+              unit="%"
+              label="Resize graph builder left stack"
+              onChange={handleLeftStackChange}
+              onCommit={handleLeftStackCommit}
+              onReset={handleLeftStackReset}
+            />
+          </div>
 
           {/* Layer cards: one per active chart kind, plus an add-card popover.
               Replaces the old per-chart-type sections and the top-toolbar
@@ -1423,12 +1476,20 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         </div>
 
         {/* Splitter: left | center */}
-        <div
-          className="gb-splitter"
-          onMouseDown={startSideResize("left")}
-          onDoubleClick={() => setLeftWidth(220)}
-          title={t("graph.resizePanel", { defaultValue: "Drag to resize" })}
-        />
+        <div className="gb-splitter-track gb-splitter-track-vertical">
+          <PanelSplitter
+            orientation="vertical"
+            value={leftWidth}
+            min={GRAPH_BUILDER_PANEL_MIN_WIDTH}
+            max={GRAPH_BUILDER_PANEL_MAX_WIDTH}
+            defaultValue={GRAPH_BUILDER_RAIL_DEFAULT_WIDTH}
+            unit="px"
+            label="Resize graph builder left rail"
+            onChange={handleLeftWidthChange}
+            onCommit={handleLeftWidthCommit}
+            onReset={handleLeftWidthReset}
+          />
+        </div>
 
         {/* 中栏：画布 + X 轴槽 */}
         <div className={`gb-center${isMultivariateMode ? " gb-center-correlation" : ""}`}>
@@ -1607,12 +1668,21 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
 
         {/* Splitter: center | right */}
         {!isMultivariateMode && (
-          <div
-            className="gb-splitter"
-            onMouseDown={startSideResize("right")}
-            onDoubleClick={() => setRightWidth(220)}
-            title={t("graph.resizePanel", { defaultValue: "Drag to resize" })}
-          />
+          <div className="gb-splitter-track gb-splitter-track-vertical">
+            <PanelSplitter
+              orientation="vertical"
+              value={rightWidth}
+              min={GRAPH_BUILDER_PANEL_MIN_WIDTH}
+              max={GRAPH_BUILDER_PANEL_MAX_WIDTH}
+              defaultValue={GRAPH_BUILDER_RAIL_DEFAULT_WIDTH}
+              unit="px"
+              direction={-1}
+              label="Resize graph builder right rail"
+              onChange={handleRightWidthChange}
+              onCommit={handleRightWidthCommit}
+              onReset={handleRightWidthReset}
+            />
+          </div>
         )}
 
         {/* Legend + Style editor:
