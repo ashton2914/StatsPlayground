@@ -3370,8 +3370,8 @@ pub fn read_table_file(path: &str) -> Result<TableDoc, AppError> {
 /// Write a single `GraphDoc` to a `.spgh` file.
 pub fn write_graph_file(doc: &GraphDoc, path: &str) -> Result<(), AppError> {
     let sanitized = without_standalone_filters(doc);
-    let bytes = serde_json::to_vec_pretty(&sanitized)
-        .map_err(|e| AppError::FileIO(e.to_string()))?;
+    let bytes =
+        serde_json::to_vec_pretty(&sanitized).map_err(|e| AppError::FileIO(e.to_string()))?;
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -5634,6 +5634,52 @@ mod tests {
         graph
     }
 
+    fn time_series_graph_doc() -> GraphDoc {
+        let mut graph = graph_doc_with_source("graph-time-series", "Saved Time Series", "table-1");
+        graph
+            .body
+            .insert("mode".to_string(), Value::String("2d".to_string()));
+        graph
+            .body
+            .insert("sampling".to_string(), json!({ "mode": "full" }));
+        graph.body.insert(
+            "modeStates".to_string(),
+            json!({
+                "twoD": {
+                    "encoding": {
+                        "x": { "name": "Captured", "type": "nominal" },
+                        "y": { "name": "Reading", "type": "continuous" }
+                    },
+                    "multiX": [],
+                    "multiY": [],
+                    "elements": [{
+                        "kind": "timeSeries",
+                        "enabled": true,
+                        "options": {
+                            "xInterpretation": { "kind": "textDate", "format": "usDate" },
+                            "order": "timeAscending",
+                            "missingValues": "break",
+                            "connection": "line",
+                            "markerMode": "auto"
+                        }
+                    }],
+                    "smootherLambda": 0.4
+                },
+                "threeD": {
+                    "encoding": {},
+                    "elements": [{ "kind": "scatter3d", "enabled": true }],
+                    "smootherLambda": 0.4
+                },
+                "multivariate": {
+                    "columns": [],
+                    "chartType": "correlationMatrix",
+                    "correlationMethod": "pearson"
+                }
+            }),
+        );
+        graph
+    }
+
     fn fit_doc(id: &str, name: &str) -> Value {
         json!({
             "id": id,
@@ -5662,6 +5708,44 @@ mod tests {
             "graphs": {},
             "createdAt": "2026-09-02T00:00:00Z"
         })
+    }
+
+    #[test]
+    fn time_series_graph_body_round_trips_through_spprj_archive() {
+        let graph = time_series_graph_doc();
+        let expected_body = graph.body.clone();
+        let bundle = build_bundle(
+            "Project".to_string(),
+            "4".to_string(),
+            "2026-09-16T00:00:00.000Z".to_string(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .expect("bundle should build");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let archive_path = temp_dir.path().join("time-series.spprj");
+
+        write_project_archive(&bundle, archive_path.to_str().expect("archive path"))
+            .expect("archive write should succeed");
+        let reopened = read_project_file(archive_path.to_str().expect("archive path"))
+            .expect("archive read should succeed");
+
+        assert_eq!(reopened.graphs.len(), 1);
+        let reopened_graph = &reopened.graphs[0];
+        assert_eq!(reopened_graph.id, "graph-time-series");
+        assert_eq!(reopened_graph.name, "Saved Time Series");
+        assert_eq!(reopened_graph.body, expected_body);
     }
 
     fn analysis_doc(id: &str, name: &str) -> Value {
@@ -6865,8 +6949,14 @@ mod tests {
         })]);
 
         assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
-        assert_eq!(docs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert_eq!(
+            docs[0].body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
+        assert_eq!(
+            docs[0].body.get("title"),
+            Some(&serde_json::json!("Preserved"))
+        );
         assert!(!docs[0].body.contains_key("filters"));
     }
 
@@ -6882,7 +6972,10 @@ mod tests {
         let persisted = read_graph_file(path.to_str().unwrap()).unwrap();
 
         assert!(!persisted.body.contains_key("filters"));
-        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        assert_eq!(
+            persisted.body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -6918,10 +7011,14 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         let graph_entry = &bundle.manifest.graphs[0].file;
-        let persisted: GraphDoc = serde_json::from_reader(archive.by_name(graph_entry).unwrap()).unwrap();
+        let persisted: GraphDoc =
+            serde_json::from_reader(archive.by_name(graph_entry).unwrap()).unwrap();
 
         assert!(!persisted.body.contains_key("filters"));
-        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        assert_eq!(
+            persisted.body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
         drop(archive);
         let _ = std::fs::remove_file(path);
     }
@@ -7100,7 +7197,10 @@ mod tests {
         assert!(migrated.dataset_filters.is_empty());
         assert!(migrated.conflicts.is_empty());
         assert!(migrated.changed);
-        assert_eq!(graphs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert_eq!(
+            graphs[0].body.get("title"),
+            Some(&serde_json::json!("Preserved"))
+        );
         assert!(!graphs[0].body.contains_key("filters"));
     }
 
@@ -7805,8 +7905,7 @@ mod tests {
         assert!(validate_analysis_value(&hypothesis_test, "analysis validation").is_ok());
 
         let mut invalid_hypothesis_subject = hypothesis_test.clone();
-        invalid_hypothesis_subject["definition"]["roles"]["subject"] =
-            json!({ "name": "Part" });
+        invalid_hypothesis_subject["definition"]["roles"]["subject"] = json!({ "name": "Part" });
         assert!(matches!(
             validate_analysis_value(&invalid_hypothesis_subject, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("subject")

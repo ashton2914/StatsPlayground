@@ -4,11 +4,13 @@
  * 引用一个数据表作为数据源，自身仅保存编码与元素配置。
  */
 
-import type { ChartElement, FieldRef, GroupStyleMap, RefLineY, RefLineX, YAxisConfig } from "@/graphCore";
+import type { ChartElement, FieldRef, GroupStyleMap, RefLineY, RefLineX, TimeSeriesOptions, YAxisConfig } from "@/graphCore";
 import type { FilterRuleItem } from "./filter";
 import type { GraphSampling } from "./graphData";
 
 export type GroupThemeSlots = Record<string, Record<string, number>>;
+
+export type GraphTimeSeriesOptions = TimeSeriesOptions;
 
 export type GraphSlotKey =
   | "x"

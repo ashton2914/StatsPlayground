@@ -6,8 +6,8 @@
  * 以及 X / Y / Color / Size / Overlay / GroupX / GroupY / Wrap 编码通道。
  */
 
-import type { GraphSpec, GraphData, ChartElement, FieldRef, GroupStyle, MarkerShape, RefLineY, RefLineX, RefLineStyle, BandRefLine, YAxisConfig, GridLineStyle, AutoSpec } from "./types.ts";
-import { DEFAULT_GROUP_KEY } from "./types.ts";
+import type { GraphSpec, GraphData, ChartElement, FieldRef, GroupStyle, MarkerShape, RefLineY, RefLineX, RefLineStyle, BandRefLine, YAxisConfig, GridLineStyle, AutoSpec, TimeSeriesOptions } from "./types.ts";
+import { DEFAULT_GROUP_KEY, DEFAULT_TIME_SERIES_OPTIONS } from "./types.ts";
 import { buildAxisCommon, buildCorrelationDivergingPalette, type GraphTheme } from "./theme.ts";
 import { buildBandSeries, FIT_BAND_ID_PREFIX } from "./confidenceBand.ts";
 import {
@@ -26,6 +26,7 @@ import type {
   SummaryPacket,
 } from "../types/graphData.ts";
 import { buildFrameScatterItems, type FrameScatterItem } from "./frameScatter.ts";
+import { buildFrameTimeSeries } from "./frameTimeSeries.ts";
 import {
   computeJitterOffsets as computeStableJitterOffsets,
   estimateJitterXBandwidth,
@@ -1478,6 +1479,28 @@ function renderHistCatBar(
 function getOpt<T>(opts: Record<string, unknown> | undefined, key: string, def: T): T {
   const v = opts?.[key];
   return v === undefined ? def : (v as T);
+}
+
+function normalizeTimeSeriesRenderOptions(options: Record<string, unknown> | undefined): TimeSeriesOptions {
+  const rawInterpretation = options?.xInterpretation;
+  const xInterpretation = rawInterpretation && typeof rawInterpretation === "object"
+    && "kind" in rawInterpretation
+    && (
+      rawInterpretation.kind === "nativeTemporal" ||
+      rawInterpretation.kind === "sequence" ||
+      rawInterpretation.kind === "textDate"
+    )
+    ? rawInterpretation as TimeSeriesOptions["xInterpretation"]
+    : DEFAULT_TIME_SERIES_OPTIONS.xInterpretation;
+  return {
+    xInterpretation,
+    order: options?.order === "sourceRow" ? "sourceRow" : "timeAscending",
+    missingValues: options?.missingValues === "connect" ? "connect" : "break",
+    connection: options?.connection === "step" ? "step" : "line",
+    markerMode: options?.markerMode === "show" || options?.markerMode === "hide"
+      ? options.markerMode
+      : "auto",
+  };
 }
 
 function _mean(xs: number[]): number {
@@ -3186,6 +3209,11 @@ function buildSingleOption(
     : "legacyRows";
   const hasCorrelationMatrix = enabledElements.some((element) => element.kind === "correlationMatrix");
   const correlationMatrixPacket = findCorrelationMatrixPacket(aggregatePackets, panelFacet);
+  const timeSeriesElement = enabledElements.find((element) => element.kind === "timeSeries");
+  const timeSeriesOptions = timeSeriesElement
+    ? normalizeTimeSeriesRenderOptions(timeSeriesElement.options)
+    : DEFAULT_TIME_SERIES_OPTIONS;
+  const timeSeriesUsesTimeAxis = !!timeSeriesElement && timeSeriesOptions.xInterpretation.kind !== "sequence";
 
   if (hasCorrelationMatrix && frameBackedAggregateMode && correlationMatrixPacket) {
     return buildCorrelationMatrixOption(
@@ -3525,9 +3553,11 @@ function buildSingleOption(
   const useRowIdxX = !xField;
   const hasBoxplot = elements.some((e) => e.kind === "boxplot" && e.enabled !== false);
   const xIsCategory =
-    useRowIdxX || hasBoxplot ||
-    xField?.type === "nominal" || xField?.type === "ordinal";
-  const xIsTime = !useRowIdxX && !hasBoxplot && xField?.type === "datetime";
+    !timeSeriesUsesTimeAxis && (
+      useRowIdxX || hasBoxplot ||
+      xField?.type === "nominal" || xField?.type === "ordinal"
+    );
+  const xIsTime = !useRowIdxX && !hasBoxplot && (xField?.type === "datetime" || timeSeriesUsesTimeAxis);
   const framePointsOnly = !!frame
     && enabledElements.length === 1
     && enabledElements[0].kind === "points"
@@ -5999,6 +6029,18 @@ function buildSingleOption(
   });
 
   if (frame) {
+    if (timeSeriesElement && yField) {
+      const timeSeriesBuild = buildFrameBackedTimeSeriesSeries(
+        spec,
+        frame,
+        panelFacet,
+        theme,
+        valueOrders,
+        timeSeriesOptions,
+        yField.name,
+      );
+      series.push(...timeSeriesBuild);
+    }
     const frameScatter = buildFrameBackedScatterSeries(
       spec,
       frame,
@@ -6416,9 +6458,17 @@ function buildSingleOption(
     }
   }
 
+  const timeSeriesTooltipFormatter = buildTimeSeriesTooltipFormatter(
+    series,
+    xField?.name ?? "X",
+    yField?.name ?? "Y",
+    xIsTime,
+  );
+
   return {
     backgroundColor: "transparent",
     textStyle: { color: theme.fgPrimary },
+    ...(xIsTime ? { useUTC: true } : {}),
     // The legend panel on the right already enumerates every group with
     // its color swatch — drawing a second legend strip on top of the
     // canvas is redundant and steals vertical space. Always reserve the
@@ -6442,7 +6492,12 @@ function buildSingleOption(
     },
     // See histogram path above — appendToBody avoids the bottom-edge
     // scrollbar flash; confine keeps the tooltip glued to the chart area.
-    tooltip: { trigger: "item", confine: true, appendToBody: true },
+    tooltip: {
+      trigger: "item",
+      confine: true,
+      appendToBody: true,
+      ...(timeSeriesTooltipFormatter ? { formatter: timeSeriesTooltipFormatter } : {}),
+    },
     // No in-chart legend: the right-side STYLE panel owns group identity.
     // Series still carry `name` so tooltips and exports stay labeled.
     legend: undefined,
@@ -7645,6 +7700,201 @@ function buildFrameBackedScatterSeries(
       ...(Number.isFinite(pointYMin) ? { y: { min: pointYMin, max: pointYMax } } : {}),
     },
   };
+}
+
+function safePickRowId(rowId: bigint): number | null {
+  const value = Number(rowId);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+interface SeriesDataIndexLookup {
+  rowId: number | null;
+  rowIdText: string;
+  colName: string;
+  isTimeSeries: boolean;
+}
+
+function lookupBySeriesDataIndex(
+  option: Record<string, unknown>,
+  seriesId: string,
+  dataIndex: number,
+): SeriesDataIndexLookup | null {
+  if (!Number.isInteger(dataIndex) || dataIndex < 0) return null;
+  const seriesList = Array.isArray(option.series)
+    ? option.series as Array<Record<string, unknown>>
+    : [];
+  const series = seriesList.find((entry) => entry.id === seriesId);
+  if (!series) return null;
+
+  const rowIds = series.__timeSeriesRowIds;
+  if (Array.isArray(rowIds)) {
+    const rowId = rowIds[dataIndex];
+    const colName = series.__timeSeriesSourceColumn;
+    if (typeof rowId !== "bigint" || typeof colName !== "string" || colName.length === 0) return null;
+    return {
+      rowId: safePickRowId(rowId),
+      rowIdText: rowId.toString(),
+      colName,
+      isTimeSeries: true,
+    };
+  }
+
+  const data = Array.isArray(series.data) ? series.data : [];
+  const item = data[dataIndex] as { __pick?: ScatterPointPick } | undefined;
+  const pick = item && typeof item === "object" ? item.__pick : undefined;
+  if (!pick || typeof pick.rowId !== "number" || pick.rowId < 0 || !pick.colName) return null;
+  return {
+    rowId: pick.rowId,
+    rowIdText: String(pick.rowId),
+    colName: pick.colName,
+    isTimeSeries: false,
+  };
+}
+
+function escapeTooltipText(value: unknown): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatTooltipValue(value: unknown, asTime = false): string {
+  if (value === null) return "null";
+  if (value === undefined) return "";
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return String(value);
+    return asTime ? new Date(value).toISOString() : String(value);
+  }
+  return String(value);
+}
+
+function formatFallbackItemTooltip(params: any): string {
+  const seriesName = params?.seriesName ?? params?.seriesId ?? "";
+  const data = params?.data;
+  const value = Array.isArray(data)
+    ? data.map((item) => formatTooltipValue(item)).join(", ")
+    : data && typeof data === "object" && "value" in data
+      ? formatTooltipValue((data as { value?: unknown }).value)
+      : formatTooltipValue(data);
+  return [seriesName, value]
+    .filter((part) => String(part).length > 0)
+    .map(escapeTooltipText)
+    .join("<br/>");
+}
+
+function buildTimeSeriesTooltipFormatter(
+  series: any[],
+  xLabel: string,
+  yLabel: string,
+  xIsTime: boolean,
+): ((params: any) => string) | undefined {
+  const hasTimeSeries = series.some((entry) => Array.isArray(entry?.__timeSeriesRowIds));
+  if (!hasTimeSeries) return undefined;
+  const lookupOption = { series } as Record<string, unknown>;
+  return (params: any) => {
+    const dataIndex = Number(params?.dataIndex);
+    const seriesId = typeof params?.seriesId === "string" ? params.seriesId : "";
+    const lookup = seriesId && Number.isInteger(dataIndex)
+      ? lookupBySeriesDataIndex(lookupOption, seriesId, dataIndex)
+      : null;
+    if (!lookup?.isTimeSeries) return formatFallbackItemTooltip(params);
+    const data = Array.isArray(params?.data) ? params.data : [];
+    const seriesName = params?.seriesName ?? "";
+    return [
+      seriesName ? `Series: ${formatTooltipValue(seriesName)}` : "",
+      `${xLabel}: ${formatTooltipValue(data[0], xIsTime)}`,
+      `${yLabel}: ${formatTooltipValue(data[1])}`,
+      `Source: ${lookup.colName}`,
+      `Row: ${lookup.rowIdText}`,
+    ].filter(Boolean).map(escapeTooltipText).join("<br/>");
+  };
+}
+
+function buildFrameBackedTimeSeriesSeries(
+  spec: GraphSpec,
+  frame: GraphDataFrame,
+  panelFacet: PanelFacetContext | undefined,
+  theme: GraphTheme,
+  valueOrders: Record<string, string[]> | undefined,
+  options: TimeSeriesOptions,
+  yColumn: string,
+): any[] {
+  if (frame.rawChunks.length === 0) return [];
+  const grouping = spec.encoding.overlay ?? spec.encoding.color;
+  const groupOrder = grouping
+    ? applyValueOrder([...(frame.dictionaries.group ?? [])], valueOrders?.[grouping.name])
+    : [];
+  const hiddenGroups = grouping
+    ? new Set(spec.hiddenGroups ?? [])
+    : new Set<string>();
+  const built = buildFrameTimeSeries({
+    frame,
+    yColumn,
+    groupOrder,
+    hiddenGroups,
+    missingValues: options.missingValues,
+    facet: panelFacet
+      ? {
+        ...(panelFacet.groupXValue === null ? {} : { facetX: panelFacet.groupXValue }),
+        ...(panelFacet.groupYValue === null ? {} : { facetY: panelFacet.groupYValue }),
+        ...(panelFacet.wrapValue == null ? {} : { wrap: panelFacet.wrapValue }),
+      }
+      : undefined,
+  });
+
+  return built.series
+    .filter((timeSeries) => timeSeries.data.length > 0)
+    .map((timeSeries) => {
+      const orderedIndex = grouping
+        ? Math.max(0, groupOrder.indexOf(timeSeries.name))
+        : 0;
+      const color = theme.categorical[orderedIndex % theme.categorical.length];
+      const styleKey = grouping ? timeSeries.name : DEFAULT_GROUP_KEY;
+      const style = resolveGroupStyle(styleKey, color, !!grouping, theme, spec.styles);
+      const marker = markerToSymbol(style.point.marker);
+      return {
+        id: `__time_series__${timeSeries.stableId}`,
+        type: "line",
+        name: grouping ? timeSeries.name : timeSeries.sourceColumn,
+        clip: true,
+        sampling: "none",
+        animation: false,
+        progressive: 0,
+        emphasis: { disabled: true },
+        hoverAnimation: false,
+        legendHoverLink: false,
+        showSymbol: options.markerMode === "show",
+        symbol: options.markerMode === "hide" ? "none" : marker.symbol,
+        symbolSize: style.point.size,
+        smooth: false,
+        step: options.connection === "step" ? "middle" : false,
+        connectNulls: options.missingValues === "connect",
+        lineStyle: {
+          color: style.line.color,
+          width: style.line.width,
+          opacity: style.line.opacity,
+        },
+        itemStyle: pointItemStyle(style.point, marker.hollow),
+        data: timeSeries.data,
+        __timeSeriesStableId: timeSeries.stableId,
+        __timeSeriesRowIds: timeSeries.rowIds,
+        __timeSeriesSourceColumn: timeSeries.sourceColumn,
+        z: 4,
+      };
+    });
+}
+
+export function pickBySeriesDataIndex(
+  option: Record<string, unknown>,
+  seriesId: string,
+  dataIndex: number,
+): ScatterPointPick | null {
+  const lookup = lookupBySeriesDataIndex(option, seriesId, dataIndex);
+  if (!lookup || lookup.rowId == null) return null;
+  return { rowId: lookup.rowId, colName: lookup.colName };
 }
 
 

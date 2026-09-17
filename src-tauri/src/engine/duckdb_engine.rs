@@ -14,13 +14,14 @@ use crate::engine::sql_query::{normalize_identifier, validate_read_only_query};
 use crate::error::AppError;
 use crate::models::data_link::SourceObjectRef;
 use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRow, FitYByXRows};
-use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::graph_data::{
     BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, CorrelationMatrixCell, CorrelationMatrixPacket,
     CorrelationMethod, CorrelationUnavailableReason, GraphAggregatePacket, GraphDataRequest,
-    GraphSampling, HeatmapCell, HeatmapPacket, HistogramBin, HistogramPacket, SummaryEntry,
-    SummaryPacket, GRAPH_VIRTUAL_SOURCE_COLUMN, GRAPH_VIRTUAL_VALUE_COLUMN,
+    GraphElementRequest, GraphSampling, GraphTimeSeriesOrder, GraphTimeSeriesRequest, HeatmapCell,
+    HeatmapPacket, HistogramBin, HistogramPacket, SummaryEntry, SummaryPacket,
+    GRAPH_VIRTUAL_SOURCE_COLUMN, GRAPH_VIRTUAL_VALUE_COLUMN,
 };
+use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::table::{
     CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
     TableFilterValue, TableQueryResult, TableWindowFilterRule, TableWindowRequest,
@@ -28,6 +29,7 @@ use crate::models::table::{
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
+use crate::services::time_series::validate_time_series_x;
 use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprintColumn};
 
 /// DuckDB engine wrapper
@@ -77,6 +79,7 @@ struct GraphQueryPlan {
     projection_select_items: Vec<String>,
     projected_columns: Vec<String>,
     projected_column_types: Vec<String>,
+    order_by_sql: String,
 }
 
 struct MaterializedQuery {
@@ -129,6 +132,19 @@ fn is_sampling_strata_role(role: &str) -> bool {
         "group" | "filter" | "groupx" | "groupy" | "groupz" | "wrap" | "overlay" | "color" | "x"
     ) || role.starts_with("multix")
         || role.starts_with("multiy")
+}
+
+fn time_series_request<'a>(
+    elements: &'a [GraphElementRequest],
+) -> Result<Option<&'a GraphTimeSeriesRequest>, AppError> {
+    let Some(element) = elements
+        .iter()
+        .find(|element| element.kind.eq_ignore_ascii_case("timeSeries"))
+    else {
+        return Ok(None);
+    };
+
+    Ok(element.time_series.as_ref())
 }
 
 pub(crate) struct ArchiveKeysetReadPlan {
@@ -1491,8 +1507,9 @@ impl DuckDbEngine {
     ) -> String {
         let row_id_select = if include_row_id { "\"_row_id\", " } else { "" };
         format!(
-            "SELECT {row_id_select}{projection} FROM ({}) AS __sp_graph_projection ORDER BY \"_row_id\" ASC",
+            "SELECT {row_id_select}{projection} FROM ({}) AS __sp_graph_projection ORDER BY {}",
             plan.projection_sql,
+            plan.order_by_sql,
             projection = plan.projection_select_items.join(", ")
         )
     }
@@ -1523,6 +1540,7 @@ impl DuckDbEngine {
         let group_y_column = role_to_column.get("groupy").cloned();
         let group_z_column = role_to_column.get("groupz").cloned();
         let wrap_column = role_to_column.get("wrap").cloned();
+        let time_series = time_series_request(&request.elements)?;
 
         let mut multi_x_columns = request
             .fields
@@ -1651,10 +1669,30 @@ impl DuckDbEngine {
             Self::compile_table_window_filters(&request.filters, allowed_columns)?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
 
-        let x_expr = x_column
-            .as_ref()
-            .map(|column| Self::quote_identifier(column))
-            .unwrap_or_else(|| "NULL".to_string());
+        let time_series_projection = if let Some(time_series_request) = time_series {
+            let x_name = x_column.as_ref().ok_or_else(|| {
+                AppError::InvalidParam("graph request is missing role x for time series".into())
+            })?;
+            let sql_type = allowed_columns
+                .get(x_name.as_str())
+                .copied()
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown graph column: {x_name}")))?;
+            Some(validate_time_series_x(
+                sql_type,
+                &time_series_request.x_interpretation,
+            )?)
+        } else {
+            None
+        };
+
+        let x_expr = if let (Some(column), Some(validated)) = (&x_column, time_series_projection) {
+            validated.projection_sql(&Self::quote_identifier(column))
+        } else {
+            x_column
+                .as_ref()
+                .map(|column| Self::quote_identifier(column))
+                .unwrap_or_else(|| "NULL".to_string())
+        };
         let group_expr = group_column
             .as_ref()
             .map(|column| Self::quote_identifier(column))
@@ -1799,6 +1837,7 @@ impl DuckDbEngine {
         let multi_x_merge_mode = multi_x_active && y_column.is_some();
         let multi_y_active = !multi_y_columns.is_empty();
         let melt_active = multi_x_active || multi_y_active;
+        let time_series_active = time_series.is_some();
         let mut projection_select_items = Vec::new();
         let mut projected_columns = Vec::new();
         let mut projected_column_types = Vec::new();
@@ -1812,7 +1851,9 @@ impl DuckDbEngine {
             projected_column_types.push(column_type);
         };
 
-        let x_public = if multi_x_axis_mode {
+        let x_public = if time_series_active {
+            x_column.clone().unwrap_or_else(|| "__sp_x".to_string())
+        } else if multi_x_axis_mode {
             GRAPH_VIRTUAL_SOURCE_COLUMN.to_string()
         } else if multi_x_merge_mode {
             GRAPH_VIRTUAL_VALUE_COLUMN.to_string()
@@ -1822,7 +1863,9 @@ impl DuckDbEngine {
         push_projected(
             format!("__sp_x AS {}", Self::quote_identifier(&x_public)),
             x_public,
-            if multi_x_axis_mode {
+            if time_series_active {
+                "DOUBLE".to_string()
+            } else if multi_x_axis_mode {
                 "VARCHAR".to_string()
             } else if multi_x_merge_mode {
                 "DOUBLE".to_string()
@@ -1944,6 +1987,13 @@ impl DuckDbEngine {
             );
         }
 
+        let order_by_sql = match time_series.map(|request| request.order) {
+            Some(GraphTimeSeriesOrder::TimeAscending) => {
+                "\"__sp_x\" ASC NULLS LAST, \"_row_id\" ASC".to_string()
+            }
+            _ => "\"_row_id\" ASC".to_string(),
+        };
+
         Ok(GraphQueryPlan {
             source_sql,
             source_values,
@@ -1952,6 +2002,7 @@ impl DuckDbEngine {
             projection_select_items,
             projected_columns,
             projected_column_types,
+            order_by_sql,
         })
     }
 
@@ -4044,9 +4095,7 @@ impl DuckDbEngine {
                             ));
                         }
                         let row_id = i64::try_from(row.source_index).map_err(|_| {
-                            AppError::InvalidParam(
-                                "Database row index is out of range".to_string(),
-                            )
+                            AppError::InvalidParam("Database row index is out of range".to_string())
                         })?;
                         let mut values = Vec::with_capacity(columns.len() + 1);
                         values.push(Value::BigInt(row_id));
@@ -4120,9 +4169,13 @@ impl DuckDbEngine {
         let base = source_type.split(['(', ' ']).next().unwrap_or("");
         match base {
             "bigint" if source_type.contains("unsigned") => "VARCHAR",
-            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => "BIGINT",
+            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => {
+                "BIGINT"
+            }
             "float" | "double" | "real" => "DOUBLE",
-            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => "BLOB",
+            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => {
+                "BLOB"
+            }
             _ => "VARCHAR",
         }
     }
@@ -8428,12 +8481,21 @@ impl DuckDbEngine {
                 .iter()
                 .find(|(name, _)| name == &field.name)
                 .map(|(_, column_type)| column_type.as_str())
-                .ok_or_else(|| AppError::InvalidParam(format!("unknown hypothesis test column: {}", field.name)))
+                .ok_or_else(|| {
+                    AppError::InvalidParam(format!(
+                        "unknown hypothesis test column: {}",
+                        field.name
+                    ))
+                })
         };
         let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
 
         match roles {
-            HypothesisTestRoles::Long { response, condition, subject } => {
+            HypothesisTestRoles::Long {
+                response,
+                condition,
+                subject,
+            } => {
                 if response.name == condition.name
                     || subject.as_ref().is_some_and(|field| {
                         field.name == response.name || field.name == condition.name
@@ -8451,8 +8513,12 @@ impl DuckDbEngine {
                 }
                 let condition_type = column_type(condition)?;
                 if is_numeric_type(condition_type) || is_temporal_type(condition_type) {
-                    let condition_role = self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
-                    if !matches!(condition_role.to_ascii_lowercase().as_str(), "nominal" | "ordinal") {
+                    let condition_role =
+                        self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
+                    if !matches!(
+                        condition_role.to_ascii_lowercase().as_str(),
+                        "nominal" | "ordinal"
+                    ) {
                         return Err(AppError::InvalidParam(format!(
                             "hypothesis test condition must be categorical: {}",
                             condition.name
@@ -8465,7 +8531,8 @@ impl DuckDbEngine {
 
                 let response = Self::quote_identifier(&response.name);
                 let condition = Self::quote_identifier(&condition.name);
-                let subject_projection = subject.as_ref()
+                let subject_projection = subject
+                    .as_ref()
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
@@ -8475,8 +8542,10 @@ impl DuckDbEngine {
                 let mut query_rows = statement.query([])?;
                 let mut rows = Vec::new();
                 while let Some(row) = query_rows.next()? {
-                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
-                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let identity =
+                        fit_y_by_x_display_value(row.get::<_, Value>(0)?).ok_or_else(|| {
+                            AppError::Stats("hypothesis test row identity is missing".into())
+                        })?;
                     rows.push(LongHypothesisTestRow {
                         identity,
                         response: fit_y_by_x_numeric_value(row.get::<_, Value>(1)?),
@@ -8490,7 +8559,10 @@ impl DuckDbEngine {
                 }
                 Ok(HypothesisTestRows::Long(rows))
             }
-            HypothesisTestRoles::Wide { measurements, subject } => {
+            HypothesisTestRoles::Wide {
+                measurements,
+                subject,
+            } => {
                 if measurements.len() < 2 {
                     return Err(AppError::InvalidParam(
                         "wide hypothesis test requires at least two measurement columns".into(),
@@ -8519,11 +8591,13 @@ impl DuckDbEngine {
                     column_type(subject)?;
                 }
 
-                let measurement_projection = measurements.iter()
+                let measurement_projection = measurements
+                    .iter()
                     .map(|field| Self::quote_identifier(&field.name))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let subject_projection = subject.as_ref()
+                let subject_projection = subject
+                    .as_ref()
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
@@ -8533,8 +8607,10 @@ impl DuckDbEngine {
                 let mut query_rows = statement.query([])?;
                 let mut rows = Vec::new();
                 while let Some(row) = query_rows.next()? {
-                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
-                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let identity =
+                        fit_y_by_x_display_value(row.get::<_, Value>(0)?).ok_or_else(|| {
+                            AppError::Stats("hypothesis test row identity is missing".into())
+                        })?;
                     let values = (0..measurements.len())
                         .map(|index| row.get::<_, Value>(index + 1).map(fit_y_by_x_numeric_value))
                         .collect::<Result<Vec<_>, _>>()?;
@@ -8549,7 +8625,10 @@ impl DuckDbEngine {
                     });
                 }
                 Ok(HypothesisTestRows::Wide {
-                    conditions: measurements.iter().map(|field| field.name.clone()).collect(),
+                    conditions: measurements
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
                     explicit_subject: subject.is_some(),
                     rows,
                 })
@@ -10050,6 +10129,7 @@ mod tests {
                 kind: "normalCurve".into(),
                 summary_stat: "none".into(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -10465,14 +10545,22 @@ mod tests {
             params!["hypothesis-long-reader"],
         ).expect("set condition role");
 
-        let rows = engine.read_hypothesis_test_rows(
-            "hypothesis-long-reader",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
-                subject: None,
-            },
-        ).expect("read hypothesis test rows");
+        let rows = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-long-reader",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "nominal".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect("read hypothesis test rows");
 
         let HypothesisTestRows::Long(rows) = rows else {
             panic!("expected long rows");
@@ -10502,18 +10590,28 @@ mod tests {
             1,
         );
         assert_eq!(
-            engine.fit_y_by_x_column_role("hypothesis-text-condition", "condition").unwrap(),
+            engine
+                .fit_y_by_x_column_role("hypothesis-text-condition", "condition")
+                .unwrap(),
             "continuous"
         );
 
-        let rows = engine.read_hypothesis_test_rows(
-            "hypothesis-text-condition",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
-                subject: None,
-            },
-        ).expect("text condition should not require categorical role metadata");
+        let rows = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-text-condition",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "nominal".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect("text condition should not require categorical role metadata");
 
         let HypothesisTestRows::Long(rows) = rows else {
             panic!("expected long rows");
@@ -10539,14 +10637,22 @@ mod tests {
             1,
         );
 
-        let error = engine.read_hypothesis_test_rows(
-            "hypothesis-temporal-condition",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "datetime".into() },
-                subject: None,
-            },
-        ).expect_err("temporal condition should require categorical role metadata");
+        let error = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-temporal-condition",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "datetime".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect_err("temporal condition should require categorical role metadata");
 
         assert!(matches!(
             error,
@@ -10572,14 +10678,22 @@ mod tests {
             1,
         );
 
-        let error = engine.read_hypothesis_test_rows(
-            "hypothesis-numeric-condition",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
-                subject: None,
-            },
-        ).expect_err("numeric condition should require categorical role metadata");
+        let error = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-numeric-condition",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "nominal".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect_err("numeric condition should require categorical role metadata");
 
         assert!(matches!(
             error,
@@ -10762,6 +10876,7 @@ mod tests {
                 kind: "points".into(),
                 summary_stat: "none".into(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Sample { size: 32, seed: 7 },
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -10848,6 +10963,7 @@ mod tests {
                 kind: "points".into(),
                 summary_stat: "none".into(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -10877,6 +10993,420 @@ mod tests {
         assert_eq!(seen.len(), 4);
         assert_eq!(seen[0], (1, "North".to_string(), 10.0));
         assert_eq!(seen[3], (4, "West".to_string(), 40.0));
+    }
+
+    #[test]
+    fn graph_projection_time_series_native_date_uses_epoch_projection_and_time_ascending_order() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "graph-time-series-native-date",
+            "Graph Time Series Native Date",
+            &["captured_on".into(), "value".into()],
+            &["DATE".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_graph_time_series_native_date\" (_row_id, captured_on, value)
+                 VALUES (4, DATE '2024-01-03', 40.0),
+                        (1, DATE '2024-01-01', 10.0),
+                        (3, DATE '2024-01-02', 30.0),
+                        (2, DATE '2024-01-02', 20.0)",
+                [],
+            )
+            .unwrap();
+
+        let allowed_columns = db
+            .get_user_columns("graph-time-series-native-date")
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let allowed = allowed_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let request = GraphDataRequest {
+            request_id: "req-time-series-native-date".into(),
+            dataset_id: "graph-time-series-native-date".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "x".into(),
+                    column: "captured_on".into(),
+                },
+                GraphFieldBinding {
+                    role: "y".into(),
+                    column: "value".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "timeSeries".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+                time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                    x_interpretation:
+                        crate::models::graph_data::TimeSeriesXInterpretation::NativeTemporal,
+                    order: crate::models::graph_data::GraphTimeSeriesOrder::TimeAscending,
+                    missing_values: crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                    marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                    connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                }),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+        assert!(plan.source_sql.contains("epoch_ms"));
+        assert!(plan.source_sql.contains("\"captured_on\""));
+
+        let select_sql = db.build_graph_projection_select_sql(&plan, true);
+        assert!(select_sql.ends_with("ORDER BY \"__sp_x\" ASC NULLS LAST, \"_row_id\" ASC"));
+
+        let mut stmt = db.conn().prepare(&select_sql).unwrap();
+        let mut rows = stmt
+            .query(params_from_iter(plan.projection_values.iter()))
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            seen.push((
+                row.get::<_, i64>(0).unwrap(),
+                row.get::<_, f64>(1).unwrap(),
+                row.get::<_, f64>(2).unwrap(),
+            ));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (1, 1_704_067_200_000.0, 10.0),
+                (2, 1_704_153_600_000.0, 20.0),
+                (3, 1_704_153_600_000.0, 30.0),
+                (4, 1_704_240_000_000.0, 40.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_projection_time_series_native_timestamp_variants_execute_epoch_projection() {
+        let cases = [
+            (
+                "graph-time-series-native-timestamp",
+                "dataset_graph_time_series_native_timestamp",
+                "TIMESTAMP",
+                "TIMESTAMP '2024-01-02 03:04:05'",
+                "TIMESTAMP '2024-01-01 00:00:00'",
+                1_704_067_200_000.0,
+                1_704_164_645_000.0,
+            ),
+            (
+                "graph-time-series-native-timestamptz",
+                "dataset_graph_time_series_native_timestamptz",
+                "TIMESTAMPTZ",
+                "TIMESTAMPTZ '2024-01-02 03:04:05+00'",
+                "TIMESTAMPTZ '2024-01-01 00:00:00+00'",
+                1_704_067_200_000.0,
+                1_704_164_645_000.0,
+            ),
+        ];
+
+        for (dataset_id, table_name, sql_type, late_value, early_value, early_epoch, late_epoch) in
+            cases
+        {
+            let db = DuckDbEngine::new_in_memory().unwrap();
+            db.create_empty_table(
+                dataset_id,
+                "Graph Time Series Native Timestamp",
+                &["captured_at".into(), "value".into()],
+                &[sql_type.into(), "DOUBLE".into()],
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    &format!(
+                        "INSERT INTO \"{table_name}\" (_row_id, captured_at, value)
+                         VALUES (3, {late_value}, 30.0),
+                                (1, {early_value}, 10.0),
+                                (2, {late_value}, 20.0)"
+                    ),
+                    [],
+                )
+                .unwrap();
+
+            let allowed_columns = db
+                .get_user_columns(dataset_id)
+                .unwrap()
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>();
+            let allowed = allowed_columns
+                .iter()
+                .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+                .collect::<std::collections::HashMap<_, _>>();
+            let request = GraphDataRequest {
+                request_id: format!("req-{dataset_id}"),
+                dataset_id: dataset_id.into(),
+                generation: 0,
+                fields: vec![
+                    GraphFieldBinding {
+                        role: "x".into(),
+                        column: "captured_at".into(),
+                    },
+                    GraphFieldBinding {
+                        role: "y".into(),
+                        column: "value".into(),
+                    },
+                ],
+                filters: Vec::new(),
+                elements: vec![GraphElementRequest {
+                    kind: "timeSeries".into(),
+                    summary_stat: "none".into(),
+                    correlation_method: None,
+                    time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                        x_interpretation:
+                            crate::models::graph_data::TimeSeriesXInterpretation::NativeTemporal,
+                        order: crate::models::graph_data::GraphTimeSeriesOrder::TimeAscending,
+                        missing_values:
+                            crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                        marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                        connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                    }),
+                }],
+                sampling: GraphSampling::Full,
+                raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+                viewport: GraphViewport {
+                    width: 1280,
+                    height: 720,
+                },
+            };
+
+            let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+            let select_sql = db.build_graph_projection_select_sql(&plan, true);
+            let mut stmt = db.conn().prepare(&select_sql).unwrap();
+            let mut rows = stmt
+                .query(params_from_iter(plan.projection_values.iter()))
+                .unwrap();
+            let mut seen = Vec::new();
+            while let Some(row) = rows.next().unwrap() {
+                seen.push((
+                    row.get::<_, i64>(0).unwrap(),
+                    row.get::<_, f64>(1).unwrap(),
+                    row.get::<_, f64>(2).unwrap(),
+                ));
+            }
+
+            assert_eq!(
+                seen,
+                vec![
+                    (1, early_epoch, 10.0),
+                    (2, late_epoch, 20.0),
+                    (3, late_epoch, 30.0),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn graph_projection_time_series_text_date_uses_static_us_date_pattern_and_source_row_order() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "graph-time-series-text-date",
+            "Graph Time Series Text Date",
+            &["captured_text".into(), "value".into()],
+            &["VARCHAR".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_graph_time_series_text_date\" (_row_id, captured_text, value)
+                 VALUES (3, '01/02/2024', 30.0),
+                        (1, '01/01/2024', 10.0),
+                        (2, '01/02/2024', 20.0),
+                        (4, '01/03/2024', 40.0)",
+                [],
+            )
+            .unwrap();
+
+        let allowed_columns = db
+            .get_user_columns("graph-time-series-text-date")
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let allowed = allowed_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let request = GraphDataRequest {
+            request_id: "req-time-series-text-date".into(),
+            dataset_id: "graph-time-series-text-date".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "x".into(),
+                    column: "captured_text".into(),
+                },
+                GraphFieldBinding {
+                    role: "y".into(),
+                    column: "value".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "timeSeries".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+                time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                    x_interpretation:
+                        crate::models::graph_data::TimeSeriesXInterpretation::TextDate {
+                            format: crate::models::graph_data::TimeSeriesTextDateFormat::UsDate,
+                        },
+                    order: crate::models::graph_data::GraphTimeSeriesOrder::SourceRow,
+                    missing_values: crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                    marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                    connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                }),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+        assert!(plan.source_sql.contains("%m/%d/%Y"));
+        assert!(!plan.source_sql.contains("%Y-%m-%d %H:%M:%S"));
+        assert!(!plan.source_sql.contains("%d/%m/%Y"));
+
+        let select_sql = db.build_graph_projection_select_sql(&plan, true);
+        assert!(select_sql.ends_with("ORDER BY \"_row_id\" ASC"));
+
+        let mut stmt = db.conn().prepare(&select_sql).unwrap();
+        let mut rows = stmt
+            .query(params_from_iter(plan.projection_values.iter()))
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            seen.push((
+                row.get::<_, i64>(0).unwrap(),
+                row.get::<_, f64>(1).unwrap(),
+                row.get::<_, f64>(2).unwrap(),
+            ));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (1, 1_704_067_200_000.0, 10.0),
+                (2, 1_704_153_600_000.0, 20.0),
+                (3, 1_704_153_600_000.0, 30.0),
+                (4, 1_704_240_000_000.0, 40.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_projection_time_series_sequence_executes_numeric_projection_and_alias_order() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "graph-time-series-sequence",
+            "Graph Time Series Sequence",
+            &["sample_index".into(), "value".into()],
+            &["BIGINT".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_graph_time_series_sequence\" (_row_id, sample_index, value)
+                 VALUES (4, 3, 40.0),
+                        (1, 1, 10.0),
+                        (3, 2, 30.0),
+                        (2, 2, 20.0)",
+                [],
+            )
+            .unwrap();
+
+        let allowed_columns = db
+            .get_user_columns("graph-time-series-sequence")
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let allowed = allowed_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let request = GraphDataRequest {
+            request_id: "req-time-series-sequence".into(),
+            dataset_id: "graph-time-series-sequence".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "x".into(),
+                    column: "sample_index".into(),
+                },
+                GraphFieldBinding {
+                    role: "y".into(),
+                    column: "value".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "timeSeries".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+                time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                    x_interpretation:
+                        crate::models::graph_data::TimeSeriesXInterpretation::Sequence,
+                    order: crate::models::graph_data::GraphTimeSeriesOrder::TimeAscending,
+                    missing_values: crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                    marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                    connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                }),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+        let select_sql = db.build_graph_projection_select_sql(&plan, true);
+        assert!(select_sql.ends_with("ORDER BY \"__sp_x\" ASC NULLS LAST, \"_row_id\" ASC"));
+
+        let mut stmt = db.conn().prepare(&select_sql).unwrap();
+        let mut rows = stmt
+            .query(params_from_iter(plan.projection_values.iter()))
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            seen.push((
+                row.get::<_, i64>(0).unwrap(),
+                row.get::<_, f64>(1).unwrap(),
+                row.get::<_, f64>(2).unwrap(),
+            ));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (1, 1.0, 10.0),
+                (2, 2.0, 20.0),
+                (3, 2.0, 30.0),
+                (4, 3.0, 40.0)
+            ]
+        );
     }
 
     #[test]
@@ -10971,6 +11501,7 @@ mod tests {
                 kind: "correlationMatrix".into(),
                 summary_stat: "none".into(),
                 correlation_method: Some(crate::models::graph_data::CorrelationMethod::Pearson),
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -11040,6 +11571,7 @@ mod tests {
                 kind: "correlationMatrix".into(),
                 summary_stat: "none".into(),
                 correlation_method: Some(crate::models::graph_data::CorrelationMethod::Pearson),
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
