@@ -225,8 +225,12 @@ impl<'a> GraphNewService<'a> {
                 disk_hit = cache.restore(&key)?;
                 if !disk_hit {
                     let started = Instant::now();
-                    let construction = cache.reserve_construction(build_request.construction_memory_limit_bytes)?;
-                    let built = self.build_with_disk_limit(&build_request, &mut |_| {}, &is_current, cache.construction_disk_budget())?;
+                    let required_disk = self.construction_disk_requirement(&build_request)?;
+                    let (construction, disk_limit) = cache.admit_construction(
+                        build_request.construction_memory_limit_bytes,
+                        required_disk,
+                    )?;
+                    let built = self.build_with_disk_limit(&build_request, &mut |_| {}, &is_current, disk_limit)?;
                     source_projection_query_count = built.query_count;
                     build_ms = started.elapsed().as_secs_f64() * 1000.0;
                     cache.prepare_admission(&built)?;
@@ -364,13 +368,26 @@ impl<'a> GraphNewService<'a> {
         is_current: &dyn Fn() -> bool,
     ) -> Result<GraphNewBuildResult, AppError> {
         request.validate()?;
+        self.ensure_current(request, is_current, "before construction admission")?;
+        let required_disk = self.construction_disk_requirement(request)?;
         let (construction, disk_limit) = {
             let mut cache = self.state.graph_new.cache.try_lock().map_err(|_| AppError::Busy("graph_new_busy".into()))?;
-            (cache.reserve_construction(request.construction_memory_limit_bytes)?, cache.construction_disk_budget())
+            cache.admit_construction(request.construction_memory_limit_bytes, required_disk)?
         };
         let result = self.build_with_disk_limit(request, progress_sink, is_current, disk_limit);
         drop(construction);
         result
+    }
+
+    fn construction_disk_requirement(&self, request: &GraphNewBuildRequest) -> Result<u64, AppError> {
+        let db = self.state.db.lock().map_err(|_| AppError::Stats("graph_new_render_failed".into()))?;
+        let rows: u64 = db.conn().query_row(
+            "SELECT row_count FROM _meta_datasets WHERE id = $1",
+            params![request.dataset_id], |row| row.get(0),
+        )?;
+        super::graph_new_cache::construction_disk_requirement(
+            rows, request.levels, request.max_tile_points, super::graph_new_key::RetentionPolicy::Bounded,
+        )
     }
 
     fn build_with_disk_limit(
@@ -762,6 +779,92 @@ mod tests {
     use crate::state::AppState;
 
     #[test]
+    fn graph_new_construction_pressure_service_paths_preserve_original_on_abort() {
+        use super::super::graph_new_cache::{construction_disk_requirement, tests::set_disk_limit, GraphNewCacheCoordinator};
+        use super::super::graph_new_key::RetentionPolicy;
+
+        for outcome in ["standalone", "render", "failure", "cancel"] {
+            let state = AppState::new().expect("state");
+            *state.graph_new.cache.lock().expect("cache") = GraphNewCacheCoordinator::new(1024 * 1024 * 1024, 0);
+            let directory = tempfile::tempdir().expect("directory");
+            state.set_graph_cache_directory(&directory.path().canonicalize().expect("canonical")).expect("cache directory");
+            let (x_column_id, y_column_id) = seed_dataset(&state, "disk-pressure");
+            let (old_x, old_y) = seed_dense_dataset(&state, "evictable", 64);
+            let request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+                "requestId":"replacement", "sessionId":"session", "datasetId":"disk-pressure", "datasetGeneration":0,
+                "xColumnId":x_column_id, "yColumnId":y_column_id, "width":320, "height":200,
+                "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0
+            })).expect("request");
+            let service = GraphNewService::new(&state);
+            let replacement = request.build_request();
+            let mut original_request = request.clone();
+            original_request.y_column_id = original_request.x_column_id.clone();
+            let original = service.build(&original_request.build_request(), &mut |_| {}).expect("original");
+            let original_key = original.key.clone();
+            let pinned_bytes = original.pyramid.encoded_bytes() + original.pyramid.persisted_bytes();
+            let mut old_request = replacement.clone();
+            old_request.dataset_id = "evictable".into();
+            old_request.x_column_id = old_x;
+            old_request.y_column_id = old_y;
+            let old = service.build(&old_request, &mut |_| {}).expect("evictable");
+            let old_key = old.key.hash_hex.clone();
+            let required = construction_disk_requirement(4, replacement.levels, replacement.max_tile_points, RetentionPolicy::Bounded).expect("bound");
+            {
+                let mut cache = state.graph_new.cache.lock().expect("cache");
+                cache.insert(old).expect("old insert");
+                cache.persist(&old_key).expect("old persist");
+                cache.insert(original).expect("original insert");
+                cache.persist(&original_key.hash_hex).expect("original persist");
+                cache.pin(&original_key.hash_hex);
+                set_disk_limit(&mut cache, pinned_bytes + required);
+            }
+            let render = |scene: &super::GraphNewScene| {
+                let (width, height) = scene.physical_size()?;
+                Ok(super::SyntheticFrame { rgba: vec![255; width as usize * height as usize * 4],
+                    padded_bytes_per_row: width * 4, render_ms: 0.0, readback_ms: 0.0 })
+            };
+            if outcome == "standalone" {
+                let built = service.build_with_cancel(&replacement, &mut |_| {}, &|| true).expect("standalone cold build after reclaim");
+                assert_eq!(built.query_count, 1);
+            } else {
+                let result = service.render_with(&request, |scene| {
+                    if outcome == "failure" { return Err(crate::error::AppError::Stats("graph_new_render_failed".into())); }
+                    if outcome == "cancel" {
+                        state.graph_new.cancel_request("session", "replacement", 1).expect("cancel replacement");
+                    }
+                    render(scene)
+                }, &mut |_, _| {
+                    assert_eq!(outcome, "render", "aborted replacement must not publish");
+                    Ok(())
+                });
+                match outcome {
+                    "render" => assert_eq!(result.expect("cold render after reclaim").source_projection_query_count, 1),
+                    "cancel" => assert!(matches!(result, Err(crate::error::AppError::Cancelled(_)))),
+                    _ => assert!(matches!(result, Err(crate::error::AppError::Stats(_)))),
+                }
+            }
+            {
+                let cache = state.graph_new.cache.lock().expect("cache");
+                assert!(cache.disk_evictions > 0, "construction must reclaim disk");
+                if outcome != "render" { assert!(cache.get(&original_key.hash_hex).is_some(), "pinned original survives"); }
+            }
+            if outcome == "failure" || outcome == "cancel" {
+                original_request.renderer_generation = 2;
+                let warm = service.render_with(&original_request, render, &mut |_, _| Ok(())).expect("original still warm");
+                assert!(warm.cpu_cache_hit);
+                assert_eq!(warm.source_projection_query_count, 0);
+                state.graph_new.close_session("session", 2).expect("close");
+                state.graph_new.release_idle_cache().expect("release residents");
+                original_request.session_id = "reopen".into();
+                original_request.renderer_generation = 3;
+                let disk_warm = service.render_with(&original_request, render, &mut |_, _| Ok(())).expect("original disk ownership survives");
+                assert!(disk_warm.persistent_cache_hit);
+                assert_eq!(disk_warm.source_projection_query_count, 0);
+            }
+        }
+    }
+
+    #[test]
     fn graph_new_lossless_cold_build_reserves_shared_memory_before_projection() {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "construction-pressure");
@@ -780,6 +883,103 @@ mod tests {
         assert!(result.is_err(), "construction cannot reserve 512 MiB from a 128 MiB pool");
         assert!(!rendered.get());
         assert_eq!(state.graph_new.cache.lock().expect("cache").process_cpu_reserved_bytes(), 0);
+    }
+
+    #[test]
+    fn graph_new_cpu_construction_failure_preserves_warm_cpu_and_disk_cache() {
+        use super::super::graph_new_cache::{
+            construction_disk_requirement,
+            tests::{reserve_process_cpu, set_disk_limit},
+            GraphNewCacheCoordinator,
+        };
+        use super::super::graph_new_key::RetentionPolicy;
+
+        let state = AppState::new().expect("state");
+        let (warm_x, warm_y) = seed_dataset(&state, "warm-under-pressure");
+        let (cold_x, cold_y) = seed_dense_dataset(&state, "cold-under-pressure", 4);
+        let service = GraphNewService::new(&state);
+        let warm_request: crate::models::graph_new::GraphNewRenderRequest =
+            serde_json::from_value(serde_json::json!({
+                "requestId":"warm", "sessionId":"session", "datasetId":"warm-under-pressure",
+                "datasetGeneration":0, "xColumnId":warm_x, "yColumnId":warm_y,
+                "width":320, "height":200, "devicePixelRatio":1,
+                "rendererGeneration":1, "cameraGeneration":0
+            }))
+            .expect("warm request");
+        let warm = service
+            .build(&warm_request.build_request(), &mut |_| {})
+            .expect("warm graph");
+        let warm_key = warm.key.hash_hex.clone();
+
+        let directory = tempfile::tempdir().expect("directory");
+        let mut constrained = GraphNewCacheCoordinator::new(1024 * 1024 * 1024, 0);
+        constrained
+            .set_directory(&directory.path().canonicalize().expect("canonical"))
+            .expect("cache directory");
+        constrained.insert(warm).expect("warm insert");
+        constrained.persist(&warm_key).expect("warm persist");
+        let _occupied_process_cpu = reserve_process_cpu(&constrained, 600 * 1024 * 1024);
+        let warm_path = directory
+            .path()
+            .join("graph-new-derived-v1")
+            .read_dir()
+            .expect("cache root")
+            .next()
+            .expect("namespace")
+            .expect("namespace entry")
+            .path()
+            .join(format!("{warm_key}.gnd"));
+        let cold_request: crate::models::graph_new::GraphNewRenderRequest =
+            serde_json::from_value(serde_json::json!({
+                "requestId":"cold", "sessionId":"session", "datasetId":"cold-under-pressure",
+                "datasetGeneration":0, "xColumnId":cold_x, "yColumnId":cold_y,
+                "width":320, "height":200, "devicePixelRatio":1,
+                "rendererGeneration":2, "cameraGeneration":0
+            }))
+            .expect("cold request");
+        let required = construction_disk_requirement(
+            4,
+            cold_request.build_request().levels,
+            cold_request.build_request().max_tile_points,
+            RetentionPolicy::Bounded,
+        )
+        .expect("construction bound");
+        let disk_limit = constrained.disk_bytes
+            + constrained
+                .get(&warm_key)
+                .expect("warm resident")
+                .pyramid
+                .encoded_bytes()
+            + required
+            - 1;
+        set_disk_limit(&mut constrained, disk_limit);
+        let before = (
+            constrained.cpu_bytes,
+            constrained.disk_bytes,
+            constrained.evictions,
+            constrained.disk_evictions,
+            constrained.process_cpu_reserved_bytes(),
+        );
+        *state.graph_new.cache.lock().expect("cache") = constrained;
+
+        let error = service
+            .build_with_cancel(&cold_request.build_request(), &mut |_| {}, &|| true)
+            .expect_err("construction CPU reservation must fail");
+        assert!(matches!(error, crate::error::AppError::Stats(message)
+            if message == "graph_new_cache_pressure"));
+        let cache = state.graph_new.cache.lock().expect("cache");
+        assert!(cache.get(&warm_key).is_some(), "warm resident must survive");
+        assert!(warm_path.is_file(), "warm disk entry must survive");
+        assert_eq!(
+            (
+                cache.cpu_bytes,
+                cache.disk_bytes,
+                cache.evictions,
+                cache.disk_evictions,
+                cache.process_cpu_reserved_bytes(),
+            ),
+            before,
+        );
     }
 
     #[test]

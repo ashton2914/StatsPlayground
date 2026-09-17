@@ -424,9 +424,9 @@ fn fs_main() -> @location(0) vec4<f32> {
     ) -> Result<SyntheticFrame, AppError> {
         let render_started = Instant::now();
         let target_bytes = u64::from(width) * u64::from(height) * 4 + u64::from(padded_bytes_per_row(width)?) * u64::from(height);
-        let geometry_bytes = scene.map_or(0, |scene| (scene.points.len() as u64 + 1024) * 40 + 32
+        let geometry_bytes = scene.map_or(0, |scene| (scene.points.len().max(1) as u64 + 1024) * 40 + 48
             + u64::from(super::graph_new_text::ATLAS_WIDTH) * u64::from(super::graph_new_text::ATLAS_HEIGHT));
-        super::graph_new_renderer::check_gpu_budget(self.cache_stats().allocated_bytes.max(geometry_bytes), target_bytes,
+        super::graph_new_renderer::check_gpu_budget(self.cache_stats().allocated_bytes, geometry_bytes.saturating_add(target_bytes),
             super::graph_new_cache::DEFAULT_GPU_BYTES)?;
         if let Some(scene) = scene {
             let pipeline = self

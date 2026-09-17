@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use super::graph_new_key::GraphKey;
+use super::graph_new_key::{GraphKey, RetentionPolicy};
 use super::graph_new_lod::TilePyramid;
 use super::graph_new_service::GraphNewBuildResult;
 use crate::error::AppError;
@@ -136,22 +136,55 @@ impl GraphNewCacheCoordinator {
         self.entries.get(key).map(|entry| &entry.built)
     }
 
-    pub(super) fn reserve_construction(&mut self, bytes: u64) -> Result<MemoryReservation, AppError> {
-        if bytes > self.cpu_limit { return Err(cache_pressure()); }
+    pub(super) fn admit_construction(
+        &mut self,
+        cpu_bytes: u64,
+        required_disk: u64,
+    ) -> Result<(MemoryReservation, u64), AppError> {
+        self.ensure_construction_disk_feasible(required_disk)?;
+        if cpu_bytes > self.cpu_limit {
+            return Err(cache_pressure());
+        }
+        let reservation = MemoryReservation::new(self.pool.clone(), cpu_bytes)?;
+        let disk_limit = self.construction_disk_budget(required_disk)?;
+        Ok((reservation, disk_limit))
+    }
+
+    fn ensure_construction_disk_feasible(&self, required: u64) -> Result<(), AppError> {
+        let pinned_live = self.pinned.as_ref().and_then(|key| self.entries.get(key))
+            .map_or(0, |entry| entry.built.pyramid.encoded_bytes());
+        let pinned_disk = self.pinned.as_ref().and_then(|key| self.disk.get(key))
+            .map_or(0, |entry| entry.bytes);
+        if pinned_live.checked_add(pinned_disk)
+            .and_then(|bytes| bytes.checked_add(required))
+            .is_none_or(|bytes| bytes > self.disk_limit) {
+            return Err(cache_pressure());
+        }
+        Ok(())
+    }
+
+    fn construction_disk_budget(&mut self, required: u64) -> Result<u64, AppError> {
+        self.ensure_construction_disk_feasible(required)?;
         loop {
-            if let Ok(reservation) = MemoryReservation::new(self.pool.clone(), bytes) {
-                return Ok(reservation);
+            let available = self.disk_limit.saturating_sub(self.disk_bytes)
+                .saturating_sub(self.live_file_bytes());
+            if required <= available {
+                return Ok(available);
             }
-            let victim = self.entries.iter().filter(|(key, _)| self.pinned.as_ref() != Some(key))
-                .min_by_key(|(key, entry)| (entry.touched, *key)).map(|(key, _)| key.clone());
+            if let Some(victim) = self.disk_victim() {
+                self.remove_disk(&victim)?;
+                self.disk_evictions += 1;
+                continue;
+            }
+            let victim = self.entries.iter()
+                .filter(|(key, entry)| self.pinned.as_ref() != Some(key)
+                    && entry.built.pyramid.encoded_bytes() > 0)
+                .min_by_key(|(key, entry)| (entry.touched, *key))
+                .map(|(key, _)| key.clone());
             let Some(victim) = victim else { return Err(cache_pressure()); };
             self.remove(&victim);
             self.evictions += 1;
         }
-    }
-
-    pub(super) fn construction_disk_budget(&self) -> u64 {
-        self.disk_limit.saturating_sub(self.disk_bytes + self.live_file_bytes())
     }
 
     pub fn insert(&mut self, built: GraphNewBuildResult) -> Result<(), AppError> {
@@ -312,7 +345,7 @@ impl GraphNewCacheCoordinator {
         self.entries
             .values()
             .map(|entry| entry.built.pyramid.encoded_bytes())
-            .sum()
+            .fold(0, u64::saturating_add)
     }
 
     pub fn set_directory(&mut self, base: &Path) -> Result<(), AppError> {
@@ -545,6 +578,33 @@ fn cache_pressure() -> AppError {
     AppError::Stats("graph_new_cache_pressure".into())
 }
 
+/// Conservative admission bound, not a measurement: every metadata row is assumed finite
+/// and tiles maximally occupied. This may reject clustered/non-finite data that would fit.
+/// Includes overlapping source spool, buckets, raw records (lossless), and encoded output;
+/// persistent copies are admitted separately. No scan or build retry is needed.
+pub(super) fn construction_disk_requirement(
+    rows: u64, levels: u8, max_tile_points: u32, policy: RetentionPolicy,
+) -> Result<u64, AppError> {
+    use crate::models::graph_new_data::{GRAPH_NEW_MAX_LEVELS, GRAPH_NEW_MAX_TILE_POINTS};
+    if levels == 0 || levels > GRAPH_NEW_MAX_LEVELS
+        || max_tile_points == 0 || max_tile_points > GRAPH_NEW_MAX_TILE_POINTS {
+        return Err(cache_pressure());
+    }
+    let record_bytes = if policy == RetentionPolicy::Lossless { 88 } else { 56 };
+    let mut required = rows.checked_mul(record_bytes).ok_or_else(cache_pressure)?;
+    for level in 0..levels {
+        let tiles = rows.min(1u64 << (2 * u32::from(level)));
+        let marks = if level + 1 == levels {
+            let limit = max_tile_points.min(if policy == RetentionPolicy::Lossless { 128 } else { 4096 });
+            rows.min(tiles.checked_mul(u64::from(limit)).ok_or_else(cache_pressure)?)
+        } else { tiles };
+        required = tiles.checked_mul(128)
+            .and_then(|bytes| marks.checked_mul(28).and_then(|marks| bytes.checked_add(marks)))
+            .and_then(|bytes| required.checked_add(bytes)).ok_or_else(cache_pressure)?;
+    }
+    Ok(required)
+}
+
 fn validate_directory(path: &Path) -> Result<(), AppError> {
     if !path.is_absolute() {
         return Err(cache_path_error());
@@ -612,10 +672,21 @@ fn open_owned(path: &Path, identity: &Metadata) -> Result<File, AppError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::graph_new_key::{GraphKey, GraphKeyParts};
     use super::super::graph_new_lod::{SourcePoint, TilePyramidBuilder};
     use super::*;
+
+    pub(in crate::services) fn set_disk_limit(cache: &mut GraphNewCacheCoordinator, bytes: u64) {
+        cache.disk_limit = bytes;
+    }
+
+    pub(in crate::services) fn reserve_process_cpu(
+        cache: &GraphNewCacheCoordinator,
+        bytes: u64,
+    ) -> MemoryReservation {
+        MemoryReservation::new(cache.pool.clone(), bytes).expect("process CPU fixture")
+    }
 
     fn built(generation: u64) -> GraphNewBuildResult {
         let key = GraphKey::canonical(&GraphKeyParts {
@@ -654,6 +725,137 @@ mod tests {
             processed_rows: 2,
             excluded_non_finite_rows: 0,
             query_count: 1,
+        }
+    }
+
+    #[test]
+    fn graph_new_cache_construction_pressure_reclaims_disk_before_second_cold_build() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+        cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("dir");
+        let first = built(0);
+        let first_key = first.key.hash_hex.clone();
+        cache.insert(first).expect("first");
+        cache.persist(&first_key).expect("persist first");
+        let first_path = cache.disk_path(&first_key).expect("path");
+        cache.remove(&first_key);
+        cache.disk_limit = 600;
+
+        let mut builder = TilePyramidBuilder::new(2, 16, 1.5).expect("builder");
+        builder.limit_disk_to(cache.construction_disk_budget(
+            construction_disk_requirement(2, 2, 16, RetentionPolicy::Bounded).expect("bound")
+        ).expect("construction admission"));
+        builder.push_batch(&[SourcePoint::new(1, 2.0, 3.0), SourcePoint::new(2, 4.0, 5.0)])
+            .expect("second scan fits after reclaim");
+        let pyramid = builder.finish().expect("second cold build fits after reclaim");
+        assert_eq!(pyramid.total_finite_rows, 2);
+        assert_eq!(cache.disk_evictions, 1);
+        assert!(!first_path.exists());
+        assert!(cache.disk_bytes + pyramid.encoded_bytes() <= cache.disk_limit);
+    }
+
+    #[test]
+    fn graph_new_cache_construction_bound_covers_both_retention_peaks() {
+        for (policy, two_row_bytes) in [(RetentionPolicy::Bounded, 580), (RetentionPolicy::Lossless, 644)] {
+            assert_eq!(construction_disk_requirement(2, 2, 16, policy).expect("bound"), two_row_bytes);
+            assert_eq!(construction_disk_requirement(0, 2, 16, policy).expect("empty"), 0);
+            assert!(construction_disk_requirement(u64::MAX, 2, 16, policy).is_err());
+            for rows in [2, 4097] {
+                let required = construction_disk_requirement(rows, 2, 16, policy).expect("bound");
+                for finite in [true, false] {
+                    let mut builder = match policy {
+                        RetentionPolicy::Bounded => TilePyramidBuilder::new(2, 16, 1.5),
+                        RetentionPolicy::Lossless => TilePyramidBuilder::lossless(2, 16, 1.5),
+                    }.expect("builder");
+                    builder.limit_disk_to(required);
+                    for ordinal in 0..rows {
+                        builder.push_batch(&[SourcePoint::new(ordinal as i64 + 1,
+                            if finite { (ordinal % 64) as f64 } else { f64::NAN },
+                            (ordinal / 64) as f64)]).expect("scan within bound");
+                    }
+                    let pyramid = builder.finish().expect("spool, buckets, raw and output fit together");
+                    assert_eq!(pyramid.total_processed_rows, rows);
+                    assert_eq!(pyramid.raw_store.is_some(), policy == RetentionPolicy::Lossless);
+                    assert!(pyramid.encoded_bytes() <= required);
+                }
+            }
+        }
+        assert!(construction_disk_requirement(1, u8::MAX, 16, RetentionPolicy::Bounded).is_err());
+    }
+
+    #[test]
+    fn graph_new_cache_construction_no_pressure_preserves_warm_entries() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+        cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("dir");
+        let first_key = built(0).key.hash_hex;
+        let second_key = built(1).key.hash_hex;
+        for generation in 0..2 {
+            let graph = built(generation);
+            let key = graph.key.hash_hex.clone();
+            cache.insert(graph).expect("insert");
+            cache.persist(&key).expect("persist");
+        }
+        cache.pin(&first_key);
+        let disk_bytes = cache.disk_bytes;
+        let cpu_bytes = cache.cpu_bytes;
+        assert!(cache.construction_disk_budget(580).expect("free space") >= 580);
+        assert_eq!((cache.disk_bytes, cache.cpu_bytes), (disk_bytes, cpu_bytes));
+        assert_eq!((cache.evictions, cache.disk_evictions), (0, 0));
+        for key in [first_key, second_key] {
+            assert!(cache.contains(&key));
+            assert!(cache.disk_path(&key).expect("path").exists());
+        }
+    }
+
+    #[test]
+    fn graph_new_cache_construction_pressure_stops_after_required_lru_reclaim() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+        cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("dir");
+        let mut keys = Vec::new();
+        for generation in 0..3 {
+            let graph = built(generation);
+            let key = graph.key.hash_hex.clone();
+            cache.insert(graph).expect("insert");
+            cache.persist(&key).expect("persist");
+            cache.remove(&key);
+            keys.push(key);
+        }
+        cache.pin(&keys[0]);
+        cache.disk_limit = cache.disk_bytes + 580 - cache.disk[&keys[1]].bytes;
+        assert_eq!(cache.construction_disk_budget(580).expect("reclaim one"), 580);
+        assert!(cache.disk.contains_key(&keys[0]));
+        assert!(!cache.disk.contains_key(&keys[1]));
+        assert!(cache.disk.contains_key(&keys[2]));
+        assert_eq!(cache.disk_evictions, 1);
+    }
+
+    #[test]
+    fn graph_new_cache_construction_impossible_request_keeps_pinned_and_eligible_files() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+        cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("dir");
+        let first = built(0);
+        let first_key = first.key.hash_hex.clone();
+        let pinned_live = first.pyramid.encoded_bytes();
+        cache.insert(first).expect("first");
+        cache.persist(&first_key).expect("persist first");
+        cache.pin(&first_key);
+        let second = built(1);
+        let second_key = second.key.hash_hex.clone();
+        cache.insert(second).expect("second");
+        cache.persist(&second_key).expect("persist second");
+        cache.disk_limit = pinned_live + cache.disk[&first_key].bytes + 579;
+        for required in [580, u64::MAX] {
+            assert!(matches!(cache.construction_disk_budget(required), Err(AppError::Stats(message))
+                if message == "graph_new_cache_pressure"));
+            assert_eq!((cache.evictions, cache.disk_evictions), (0, 0));
+            assert_eq!(cache.pinned.as_deref(), Some(first_key.as_str()));
+            for key in [&first_key, &second_key] {
+                assert!(cache.get(key).is_some());
+                assert!(cache.disk_path(key).expect("path").exists());
+            }
         }
     }
 
@@ -754,7 +956,7 @@ mod tests {
     fn graph_new_cache_hostile_entries_retire_without_deletion() {
         use std::os::unix::fs::symlink;
         for replacement in ["file", "symlink", "hardlink", "directory"] {
-            for operation in ["pressure", "restore", "persist", "epoch"] {
+            for operation in ["pressure", "construction", "restore", "persist", "epoch"] {
                 let directory = tempfile::tempdir().expect("directory");
                 let root = directory.path().canonicalize().expect("canonical");
                 let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
@@ -773,6 +975,11 @@ mod tests {
                     _ => fs::create_dir(&path).expect("directory"),
                 }
                 match operation {
+                    "construction" => {
+                        cache.remove(&key.hash_hex);
+                        cache.disk_limit = 580;
+                        assert_eq!(cache.construction_disk_budget(580).expect("safe reclaim"), 580);
+                    }
                     "pressure" => {
                         cache.remove(&key.hash_hex);
                         cache.disk_limit = built(1).pyramid.encoded_bytes();
