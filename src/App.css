@@ -1243,9 +1243,80 @@
 
 /* Grid wrapper */
 .sp-grid-wrapper {
-  flex: 1;
-  overflow: auto;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sp-grid-shell {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sp-grid-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sp-grid-footer {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border-cell);
+  background: var(--bg-panel);
+}
+
+.sp-grid-footer-table {
+  margin-top: -1px;
+}
+
+.sp-logical-scrollbar {
+  position: relative;
+  flex: 0 0 18px;
+  width: 18px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border-main);
+  background: var(--bg-panel);
+  cursor: pointer;
+  outline: none;
+}
+
+.sp-logical-scrollbar:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--fg-accent);
+}
+
+.sp-logical-scrollbar-disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.sp-logical-scrollbar-track {
+  position: absolute;
+  top: 0;
+  right: 5px;
+  bottom: 0;
+  width: 8px;
+  border-radius: 999px;
+  background: var(--scrollbar-track);
+}
+
+.sp-logical-scrollbar-thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  min-height: 32px;
+  border-radius: 999px;
+  background: var(--fg-hint);
 }
 
 /* ========= Spreadsheet table area: left columns panel + (formula bar + grid) ========= */
@@ -2119,7 +2190,7 @@
 }
 
 .sp-placeholder-row {
-  pointer-events: none;
+  cursor: default;
 }
 
 .sp-placeholder-row .sp-row-hdr {

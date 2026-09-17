@@ -2,8 +2,11 @@ use crate::error::AppError;
 use crate::models::table::{
     ColumnDisplayProps, ColumnDisplayPropsWithoutIndex, CreateManagedTableRequest,
     CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateColumn, ManagedTableCreateResult,
-    SqlQueryResult, TableFilterValue, TableQueryResult, TableWindowRequest, TableWindowResult,
+    SqlQueryResult, TableFilterValue, TableNavigationRequest, TableNavigationResult,
+    TableQueryResult, TableWindowRequest, TableWindowResult,
 };
+#[cfg(any(test, feature = "perf-harness"))]
+use crate::models::table::{TableNavigationBenchmarkFixture, TableNavigationBenchmarkRequest};
 use crate::services::spprj_archive::{
     normalize_unsafe_portable_basename, validate_portable_basename,
 };
@@ -200,6 +203,39 @@ mod tests {
         assert!(
             matches!(err, AppError::InvalidParam(message) if message.contains("control character"))
         );
+    }
+
+    #[test]
+    fn prepare_table_navigation_benchmark_seeds_dataset_and_columns() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+
+        let fixture = service
+            .prepare_table_navigation_benchmark(&TableNavigationBenchmarkRequest {
+                rows: 128,
+                columns: 6,
+            })
+            .expect("prepare benchmark fixture");
+
+        assert_eq!(fixture.total_rows, 128);
+        assert_eq!(fixture.column_ids.len(), 6);
+        assert!(!fixture.dataset_id.is_empty());
+        let result = service
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "benchmark-fixture".to_string(),
+                dataset_id: fixture.dataset_id,
+                generation: fixture.generation,
+                start: 0,
+                count: 1,
+                column_ids: fixture.column_ids,
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect("benchmark fixture should be queryable");
+        assert_eq!(result.generation, fixture.generation);
     }
 
     #[test]
@@ -811,6 +847,99 @@ impl<'a> DataService<'a> {
             .lock()
             .map_err(|error| AppError::Database(error.to_string()))?;
         db.query_table_window(request)
+    }
+
+    pub fn query_table_navigation_window(
+        &self,
+        request: &TableNavigationRequest,
+    ) -> Result<TableNavigationResult, AppError> {
+        let navigation = self
+            .state
+            .table_navigation
+            .read()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .clone();
+        navigation.query_table_navigation_window(request)
+    }
+
+    #[cfg(any(test, feature = "perf-harness"))]
+    pub fn prepare_table_navigation_benchmark(
+        &self,
+        request: &TableNavigationBenchmarkRequest,
+    ) -> Result<TableNavigationBenchmarkFixture, AppError> {
+        let dataset_id = format!("table-navigation-benchmark-{}", uuid::Uuid::new_v4());
+        let db = self
+            .state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.seed_benchmark_table(
+            &dataset_id,
+            "Table Navigation Benchmark",
+            request.rows,
+            request.columns,
+        )?;
+        let meta = db.get_dataset_meta(&dataset_id)?;
+        drop(db);
+        let column_ids = self
+            .get_column_descriptors(&dataset_id)?
+            .into_iter()
+            .map(|column| column.column_id)
+            .collect::<Vec<_>>();
+        Ok(TableNavigationBenchmarkFixture {
+            dataset_id,
+            generation: meta.generation,
+            total_rows: usize::try_from(meta.row_count).map_err(|_| {
+                AppError::InvalidParam("benchmark row count does not fit usize".into())
+            })?,
+            column_ids,
+        })
+    }
+
+    pub fn prepare_table_query_session(
+        &self,
+        request: &crate::models::table::TableQuerySessionRequest,
+    ) -> Result<crate::models::table::TableQuerySessionStatus, AppError> {
+        let navigation = self
+            .state
+            .table_navigation
+            .read()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .clone();
+        navigation.prepare_table_query_session(request)
+    }
+
+    pub fn get_table_query_session_status(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::models::table::TableQuerySessionStatus, AppError> {
+        let navigation = self
+            .state
+            .table_navigation
+            .read()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .clone();
+        navigation.get_table_query_session_status(session_id)
+    }
+
+    pub fn release_table_query_session(&self, session_id: &str) -> Result<(), AppError> {
+        let navigation = self
+            .state
+            .table_navigation
+            .read()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .clone();
+        navigation.release_table_query_session(session_id)
+    }
+
+    pub fn cancel_table_navigation_request(&self, request_id: &str) -> Result<(), AppError> {
+        let navigation = self
+            .state
+            .table_navigation
+            .read()
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .clone();
+        navigation.cancel_request(request_id)
     }
 
     pub fn get_dataset_generation(&self, dataset_id: &str) -> Result<u64, AppError> {

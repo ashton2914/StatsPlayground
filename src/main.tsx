@@ -8,7 +8,11 @@ import "./stores/useThemeStore";
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 
-if (import.meta.env.DEV && import.meta.env.VITE_SCATTER_BENCHMARK === "1") {
+if (import.meta.env.DEV && import.meta.env.VITE_TABLE_NAVIGATION_TRANSPORT_BENCHMARK === "1") {
+  import("./benchmarks/TableNavigationTransportBenchmark").then(({ TableNavigationTransportBenchmark }) => {
+    root.render(<TableNavigationTransportBenchmark />);
+  });
+} else if (import.meta.env.DEV && import.meta.env.VITE_SCATTER_BENCHMARK === "1") {
   import("./benchmarks/ScatterBudgetBenchmark").then(({ ScatterBudgetBenchmark }) => {
     root.render(<ScatterBudgetBenchmark />);
   });

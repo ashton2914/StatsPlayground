@@ -10,11 +10,22 @@ interface SelectionStats {
   max?: number;
 }
 
+interface TableCacheDiagnostics {
+  cacheHit: boolean | null;
+  diagnosticJsonEncodeMs: number | null;
+  postReceivePaintMs: number | null;
+  diagnosticJsonBytes: number | null;
+  retainedRows: number;
+  estimatedBytes: number;
+  entryCount: number;
+}
+
 interface StatusInfo {
   cellLabel: string;
   selectionLabel: string;
   dimensions: string;
   selectionStats?: SelectionStats;
+  tableCacheDiagnostics?: TableCacheDiagnostics;
 }
 
 interface DataStore {

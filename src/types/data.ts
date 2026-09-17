@@ -223,6 +223,71 @@ export interface TableWindowResult {
   generation: number;
 }
 
+export interface TableQuerySessionRequest {
+  datasetId: string;
+  generation: number;
+  sort: TableWindowSort | null;
+  filters: TableWindowFilter[];
+  columnIds: string[];
+}
+
+export type TableQuerySessionState = "preparing" | "ready" | "cancelled" | "failed";
+
+export interface TableQuerySessionStatus {
+  sessionId: string;
+  state: TableQuerySessionState;
+  totalRows: number | null;
+  progress: number | null;
+}
+
+export interface TableNavigationRequest {
+  version: 1;
+  requestId: string;
+  datasetId: string;
+  generation: number;
+  start: number;
+  count: number;
+  columnIds: string[];
+  sort: TableWindowSort | null;
+  filters: TableWindowFilter[];
+  sessionId?: string | null;
+  includeTransportDiagnostics?: boolean;
+}
+
+export interface TableNavigationTimings {
+  totalMs: number;
+  diagnosticJsonEncodeMs?: number | null;
+  diagnosticJsonBytes?: number | null;
+  diagnosticResponseReadyAtEpochMs?: number | null;
+}
+
+export interface TableNavigationResult {
+  version: 1;
+  requestId: string;
+  datasetId: string;
+  generation: number;
+  start: number;
+  totalRows: number;
+  totalRowsExact: boolean;
+  sessionId?: string | null;
+  columns: string[];
+  columnTypes: string[];
+  rows: unknown[][];
+  timings: TableNavigationTimings;
+}
+
+export interface TableNavigationBenchmarkRequest {
+  rows: number;
+  columns: number;
+}
+
+export interface TableNavigationBenchmarkFixture {
+  datasetId: string;
+  generation: number;
+  totalRows: number;
+  columnIds: string[];
+}
+
 export interface TableFilterValue {
   value: string;
   rowCount: number;

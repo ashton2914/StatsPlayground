@@ -16,14 +16,11 @@ test("keeps rows contiguous after rapid bidirectional scrolling", async ({ mount
   const dataRows = component.locator(".sp-grid tbody tr.sp-data-row");
 
   await expect(dataRows.first()).toBeVisible();
-  await wrapper.evaluate((element) => {
-    for (let index = 0; index < 20; index += 1) {
-      element.scrollTop = index % 2 === 0 ? element.scrollHeight : 0;
-      element.dispatchEvent(new Event("scroll"));
-    }
-    element.scrollTop = element.scrollHeight;
-    element.dispatchEvent(new Event("scroll"));
-  });
+  await wrapper.hover();
+  for (let index = 0; index < 20; index += 1) {
+    await component.page().mouse.wheel(0, index % 2 === 0 ? 10_000 : -10_000);
+  }
+  await component.page().mouse.wheel(0, 10_000);
 
   await expect.poll(() => component.locator(".sp-row-hdr").filter({ hasText: "238" }).count()).toBe(1);
   await expect.poll(async () => dataRows.evaluateAll((rows) => rows.every((row, index) => {

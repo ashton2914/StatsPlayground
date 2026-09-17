@@ -4,7 +4,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::error::AppError;
-    use crate::models::table::TableWindowRequest;
+    use crate::models::table::{TableNavigationRequest, TableWindowRequest};
     use crate::services::data_service::DataService;
     use crate::services::spprj_archive::{self, GraphDoc};
     use crate::state::AppState;
@@ -151,6 +151,30 @@ mod tests {
             ),
             (
                 "commands::data_commands::query_table_window",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::query_table_navigation_window",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::prepare_table_navigation_benchmark",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::prepare_table_query_session",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::get_table_query_session_status",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::release_table_query_session",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::cancel_table_navigation_request",
                 CommandClass::ReadOnly,
             ),
             (
@@ -707,6 +731,25 @@ mod tests {
     }
 
     #[test]
+    fn query_table_navigation_window_registration_is_read_only() {
+        let lib_source = include_str!("../lib.rs");
+        let registered = parse_registered_commands(lib_source);
+        let classifications = command_classes();
+
+        assert!(
+            registered
+                .iter()
+                .any(|command| command == "commands::data_commands::query_table_navigation_window"),
+            "query_table_navigation_window must be registered in generate_handler"
+        );
+        assert_eq!(
+            classifications.get("commands::data_commands::query_table_navigation_window"),
+            Some(&CommandClass::ReadOnly),
+            "query_table_navigation_window must be classified as read-only"
+        );
+    }
+
+    #[test]
     fn mutating_commands_in_guarded_families_require_permit_acquisition() {
         let calculated_column_source = include_str!("calculated_column_commands.rs");
         let data_source = include_str!("data_commands.rs");
@@ -843,6 +886,35 @@ mod tests {
         .expect("table-window command path should succeed during save");
         assert_eq!(table_window.total_rows, 1);
 
+        let descriptors = crate::services::data_service::DataService::new(&state)
+            .get_column_descriptors(&dataset_id)
+            .expect("column descriptors should be readable during save");
+        let table_navigation = crate::commands::data_commands::query_table_navigation_window_entry(
+            &state,
+            &TableNavigationRequest {
+                version: 1,
+                request_id: "req-save".to_string(),
+                dataset_id: dataset_id.clone(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: descriptors
+                    .into_iter()
+                    .map(|descriptor| descriptor.column_id)
+                    .collect(),
+                sort: None,
+                filters: vec![],
+                session_id: Some("session-save".to_string()),
+                include_transport_diagnostics: false,
+            },
+        )
+        .expect("table-navigation command path should succeed during save");
+        assert_eq!(table_navigation.total_rows, 1);
+        assert_eq!(
+            table_navigation.columns.first().map(String::as_str),
+            Some("_row_id")
+        );
+
         let graph = crate::commands::project_commands::import_graph_entry(&state, &graph_path)
             .expect("graph read path should succeed during save");
         assert_eq!(
@@ -869,5 +941,43 @@ mod tests {
 
         let _ = std::fs::remove_file(export_path);
         let _ = std::fs::remove_file(graph_path);
+    }
+
+    #[test]
+    fn query_table_navigation_window_entry_allows_save_guard_reads() {
+        let state = AppState::new().expect("app state should initialize");
+        let (dataset_id, generation) = seed_numeric_dataset(&state);
+        let descriptors = crate::services::data_service::DataService::new(&state)
+            .get_column_descriptors(&dataset_id)
+            .expect("column descriptors should be readable during save");
+
+        let _save_guard = state
+            .save_coordinator
+            .begin_save()
+            .expect("save guard should start");
+
+        let result = crate::commands::data_commands::query_table_navigation_window_entry(
+            &state,
+            &TableNavigationRequest {
+                version: 1,
+                request_id: "req-save-only".to_string(),
+                dataset_id,
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: descriptors
+                    .into_iter()
+                    .map(|descriptor| descriptor.column_id)
+                    .collect(),
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            },
+        )
+        .expect("table navigation read path should succeed during save");
+
+        assert_eq!(result.total_rows, 1);
+        assert_eq!(result.columns.first().map(String::as_str), Some("_row_id"));
     }
 }

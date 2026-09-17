@@ -1,10 +1,14 @@
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
 use tauri::State;
 
 use crate::error::AppError;
 use crate::models::table::{
     CellPosition, CellUpdate, ColumnDisplayProps, CreateManagedTableRequest,
     CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateResult, TableFilterValue,
-    TableQueryResult, TableWindowRequest, TableWindowResult,
+    TableNavigationBenchmarkFixture, TableNavigationBenchmarkRequest, TableNavigationRequest,
+    TableNavigationResult, TableQueryResult, TableQuerySessionRequest, TableQuerySessionStatus,
+    TableWindowRequest, TableWindowResult,
 };
 use crate::services::data_service::DataService;
 use crate::state::AppState;
@@ -27,6 +31,75 @@ pub(crate) fn query_table_window_entry(
 ) -> Result<TableWindowResult, AppError> {
     let service = DataService::new(state);
     service.query_table_window(request)
+}
+
+pub(crate) fn query_table_navigation_window_entry(
+    state: &AppState,
+    request: &TableNavigationRequest,
+) -> Result<TableNavigationResult, AppError> {
+    let service = DataService::new(state);
+    let mut result = service.query_table_navigation_window(request)?;
+    if request.include_transport_diagnostics {
+        let encode_started = Instant::now();
+        let _ = serde_json::to_vec(&result)
+            .map_err(|error| AppError::InvalidParam(error.to_string()))?;
+        result.timings.diagnostic_json_encode_ms = Some(
+            u64::try_from(encode_started.elapsed().as_millis()).map_err(|_| {
+                AppError::Database("table navigation encode proxy timing overflowed".into())
+            })?,
+        );
+        result.timings.diagnostic_response_ready_at_epoch_ms = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| AppError::Database(error.to_string()))?
+                .as_millis()
+                .try_into()
+                .map_err(|_| {
+                    AppError::Database("table navigation response timestamp overflowed".into())
+                })?,
+        );
+        result.timings.diagnostic_json_bytes =
+            Some(compute_navigation_response_bytes(&mut result)?);
+    }
+    Ok(result)
+}
+
+fn compute_navigation_response_bytes(result: &mut TableNavigationResult) -> Result<u64, AppError> {
+    result.timings.diagnostic_json_bytes = Some(0);
+    let mut previous = 0u64;
+    for _ in 0..4 {
+        let encoded = serde_json::to_vec(result)
+            .map_err(|error| AppError::InvalidParam(error.to_string()))?;
+        let encoded_len = u64::try_from(encoded.len())
+            .map_err(|_| AppError::Database("table navigation payload is too large".into()))?;
+        if encoded_len == previous {
+            return Ok(encoded_len);
+        }
+        previous = encoded_len;
+        result.timings.diagnostic_json_bytes = Some(encoded_len);
+    }
+    Ok(previous)
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+#[tauri::command(async)]
+pub fn prepare_table_navigation_benchmark(
+    state: State<'_, AppState>,
+    request: TableNavigationBenchmarkRequest,
+) -> Result<TableNavigationBenchmarkFixture, AppError> {
+    let service = DataService::new(&state);
+    service.prepare_table_navigation_benchmark(&request)
+}
+
+#[cfg(not(any(test, feature = "perf-harness")))]
+#[tauri::command(async)]
+pub fn prepare_table_navigation_benchmark(
+    _state: State<'_, AppState>,
+    _request: TableNavigationBenchmarkRequest,
+) -> Result<TableNavigationBenchmarkFixture, AppError> {
+    Err(AppError::InvalidParam(
+        "table navigation benchmark is unavailable in production builds".into(),
+    ))
 }
 
 #[tauri::command]
@@ -72,6 +145,50 @@ pub fn query_table_window(
     request: TableWindowRequest,
 ) -> Result<TableWindowResult, AppError> {
     query_table_window_entry(state.inner(), &request)
+}
+
+#[tauri::command(async)]
+pub fn query_table_navigation_window(
+    state: State<'_, AppState>,
+    request: TableNavigationRequest,
+) -> Result<TableNavigationResult, AppError> {
+    query_table_navigation_window_entry(state.inner(), &request)
+}
+
+#[tauri::command(async)]
+pub fn prepare_table_query_session(
+    state: State<'_, AppState>,
+    request: TableQuerySessionRequest,
+) -> Result<TableQuerySessionStatus, AppError> {
+    let service = DataService::new(&state);
+    service.prepare_table_query_session(&request)
+}
+
+#[tauri::command(async)]
+pub fn get_table_query_session_status(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<TableQuerySessionStatus, AppError> {
+    let service = DataService::new(&state);
+    service.get_table_query_session_status(&session_id)
+}
+
+#[tauri::command(async)]
+pub fn release_table_query_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.release_table_query_session(&session_id)
+}
+
+#[tauri::command(async)]
+pub fn cancel_table_navigation_request(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<(), AppError> {
+    let service = DataService::new(&state);
+    service.cancel_table_navigation_request(&request_id)
 }
 
 #[tauri::command]

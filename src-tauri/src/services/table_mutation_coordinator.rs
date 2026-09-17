@@ -111,6 +111,7 @@ pub(crate) fn execute_table_mutation<T>(
             "UPDATE _meta_datasets SET generation = ?, updated_at = CAST(current_timestamp AS VARCHAR) WHERE id = ?",
             params![generation + 1, dataset_id],
         )?;
+        engine.rebuild_natural_anchors(dataset_id, generation + 1)?;
 
         Ok(effects.value)
     })();

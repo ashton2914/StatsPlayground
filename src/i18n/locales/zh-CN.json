@@ -1121,6 +1121,9 @@
     "ctxDeleteSelectedRows": "删除选中的 {{n}} 行",
     "ctxDeleteSelectedCols": "删除选中的 {{n}} 列",
     "ctxDeleteCol": "删除列 \"{{name}}\"",
+    "ctxSortAsc": "升序排序",
+    "ctxSortDesc": "降序排序",
+    "ctxClearSort": "清除排序",
     "ctxColProps": "列属性",
     "ctxColPropsBatch": "列属性（{{n}} 列）",
     "calculatedColumn": {

@@ -1,6 +1,22 @@
 use std::collections::BTreeMap;
 
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
+
+const TABLE_NAVIGATION_VERSION: u64 = 1;
+
+fn deserialize_table_navigation_version<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let version = u64::deserialize(deserializer)?;
+    if version != TABLE_NAVIGATION_VERSION {
+        return Err(D::Error::custom(format!(
+            "table navigation version must be {TABLE_NAVIGATION_VERSION}, received {version}"
+        )));
+    }
+    Ok(version)
+}
 
 /// Dataset metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +206,112 @@ pub struct TableWindowResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TableQuerySessionRequest {
+    pub dataset_id: String,
+    pub generation: u64,
+    pub sort: Option<TableWindowSort>,
+    pub filters: Vec<TableWindowFilter>,
+    pub column_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TableQuerySessionState {
+    Preparing,
+    Ready,
+    Cancelled,
+    Failed,
+}
+
+impl TableQuerySessionState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Ready => "ready",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableQuerySessionStatus {
+    pub session_id: String,
+    pub state: TableQuerySessionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_rows: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableNavigationRequest {
+    #[serde(deserialize_with = "deserialize_table_navigation_version")]
+    pub version: u64,
+    pub request_id: String,
+    pub dataset_id: String,
+    pub generation: u64,
+    pub start: usize,
+    pub count: usize,
+    pub column_ids: Vec<String>,
+    pub sort: Option<TableWindowSort>,
+    pub filters: Vec<TableWindowFilter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub include_transport_diagnostics: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TableNavigationTimings {
+    pub total_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_json_encode_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_json_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_response_ready_at_epoch_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableNavigationResult {
+    pub version: u64,
+    pub request_id: String,
+    pub dataset_id: String,
+    pub generation: u64,
+    pub start: usize,
+    pub total_rows: i64,
+    pub total_rows_exact: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub columns: Vec<String>,
+    pub column_types: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub timings: TableNavigationTimings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableNavigationBenchmarkRequest {
+    pub rows: usize,
+    pub columns: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableNavigationBenchmarkFixture {
+    pub dataset_id: String,
+    pub generation: u64,
+    pub total_rows: usize,
+    pub column_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CellPosition {
     pub row_id: i64,
     pub column_name: String,
@@ -247,4 +369,54 @@ pub struct ColumnDisplayProps {
     /// by the frontend registry; backend treats it as opaque JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn navigation_request_json(version: u64) -> serde_json::Value {
+        json!({
+            "version": version,
+            "requestId": "req-1",
+            "datasetId": "dataset-1",
+            "generation": 3,
+            "start": 10,
+            "count": 25,
+            "columnIds": ["col-category", "col-value"],
+            "sort": {
+                "column": "_row_id",
+                "descending": false
+            },
+            "filters": [],
+            "sessionId": "session-1"
+        })
+    }
+
+    #[test]
+    fn query_table_navigation_window_contract_deserializes_camel_case_with_version_one() {
+        let request: TableNavigationRequest = serde_json::from_value(navigation_request_json(1))
+            .expect("table navigation request should deserialize");
+
+        assert_eq!(request.version, 1);
+        assert_eq!(request.request_id, "req-1");
+        assert_eq!(request.dataset_id, "dataset-1");
+        assert_eq!(request.column_ids, vec!["col-category", "col-value"]);
+        assert_eq!(request.session_id.as_deref(), Some("session-1"));
+    }
+
+    #[test]
+    fn query_table_navigation_window_contract_rejects_non_one_versions() {
+        for version in [0_u64, 2_u64] {
+            let error =
+                serde_json::from_value::<TableNavigationRequest>(navigation_request_json(version))
+                    .expect_err("non-v1 navigation requests must be rejected");
+
+            assert!(
+                error.to_string().contains("version"),
+                "unexpected error for version {version}: {error}"
+            );
+        }
+    }
 }
