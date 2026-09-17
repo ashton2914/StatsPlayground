@@ -225,6 +225,95 @@ Absolute timing thresholds do not run in normal CI because shared runner
 hardware varies. Normal tests assert fixture shape and bounded result sizes.
 Release acceptance compares phase timings and memory on the same machine class.
 
+## Task 5 Natural-Order 10M Table Navigation Benchmark (2026-09-17)
+
+Command:
+
+```powershell
+/Users/ashton/git/ashton2914/StatsPlayground.worktrees/224-10m-table-navigation/src-tauri/target/release/examples/performance_baseline --rows 10000000 --columns 20 --operation table-navigation --position-percent 99
+```
+
+Environment facts:
+
+- Date: 2026-09-17
+- OS: macOS
+- Build profile: Rust `release`
+- Dataset shape: 10,000,000 rows x 20 columns
+- Navigation mode: natural-order table navigation at 99%
+
+Exact JSON emitted by the benchmark:
+
+```json
+{"rows":10000000,"columns":20,"operation":"table_navigation","setupMs":2914,"operationMs":12,"positionPercent":99,"targetStart":9899505,"lockWaitMs":0,"countMs":0,"anchorMs":0,"totalMs":2927,"resultRows":500,"selectedColumns":21,"queryMs":11,"encodeMs":0,"decodeMs":null,"drawMs":null,"processedRows":null,"transferredBytes":116921,"archiveBytes":0}
+```
+
+Interpretation:
+
+- `queryMs` was 11 ms, which is comfortably under the 100 ms cold natural-jump target.
+- The legacy Task 1 navigation baseline recorded `queryMs` 1140 ms, so this run is materially faster on the settled navigation path.
+- `setupMs` was 2914 ms, but it is excluded from settled navigation latency because it creates and seeds the 10M table and its natural-order anchors.
+- The returned viewport had 500 rows, 21 selected columns including `_row_id`, and 116921 transferred bytes.
+
+## Task 8 Transport Gate (2026-09-17)
+
+Decision: APPROVED. Retain JSON transport; no Arrow IPC implementation is introduced.
+
+Environment facts:
+
+- OS: macOS
+- CPU: Apple M3 Pro
+- Node: v24.20.0
+- Build profile: Rust `release` (`performance_baseline` with `perf-harness`)
+- Dataset shape: 10,000,000 rows
+- Viewport shape: 500 backend rows, 40 painted frontend rows
+- Navigation mode: natural-order table navigation at 99%
+
+Actual invoke evidence:
+
+- A real macOS Tauri invoke runner exists locally in `src/benchmarks/TableNavigationTransportBenchmark.tsx` and is launched by `scripts/measureTableNavigationTransport.mjs`.
+- Both workloads ran in release Tauri/WKWebView with 5 warmups and 20 measured invokes at the 99% position.
+- Both artifacts report `progress.done: true`, 25 completed runs, and 20 measured runs.
+
+| Workload | Query p95 | Diagnostic JSON encode p95 | Invoke wall p95 | Post-backend delivery p95 | JSON reparse p95 | Paint p95 | JSON bytes p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 columns | 7 ms | 0 ms | 10 ms | 1 ms | 1 ms | 25 ms | 117045 |
+| 200 columns | 38 ms | 3 ms | 53 ms | 15 ms | 3 ms | 22 ms | 1282804 |
+
+Required backend benchmark command:
+
+```powershell
+cd src-tauri && cargo run --release --example performance_baseline --features perf-harness -- --rows 10000000 --columns 20 --operation table-navigation --position-percent 99
+```
+
+Retained backend benchmark JSON artifact:
+
+```json
+{"rows":10000000,"columns":20,"operation":"table_navigation","setupMs":2442,"operationMs":10,"positionPercent":99,"targetStart":9899505,"lockWaitMs":0,"countMs":0,"anchorMs":0,"totalMs":2453,"resultRows":500,"selectedColumns":21,"queryMs":9,"encodeMs":0,"transferMs":null,"decodeMs":null,"drawMs":null,"processedRows":null,"transferredBytes":116920,"archiveBytes":0}
+```
+
+Valid retained browser snapshot replay evidence from the current artifacts:
+
+| Workload | Snapshot JSON parse p50 / p95 | Browser paint p50 / p95 | Snapshot bytes p50 / p95 |
+| --- | ---: | ---: | ---: |
+| 20 columns | 0.3 / 0.3 ms | 30.1 / 31.0 ms | 116920 / 116920 |
+| 200 columns | 1.9 / 2.0 ms | 44.9 / 46.6 ms | 1282678 / 1282678 |
+
+Interpretation:
+
+- The required encode, delivery, and decode-proxy P95 slices are below the 20 ms gate for both workloads.
+- The 200-column invoke wall P95 is 53 ms, below the 100 ms settled-navigation target.
+- CLI stdout capture must not be labeled or interpreted as Tauri transfer. The perf harness now uses `stdoutWriteMs` for `--payload-stdout` captures to make that distinction explicit.
+- Ordinary navigation no longer requests diagnostics by default; runtime diagnostic JSON encode and size measurements are now opt-in so the product path does not pay duplicate serialization overhead outside dedicated measurement work.
+- These are explicitly named proxy slices rather than internal Tauri serializer/bridge instrumentation. They approve JSON for this gate; Windows WebView acceptance remains in Task 9.
+
+## Task 9 Automated Acceptance (2026-09-17)
+
+The macOS automated regression gate passed five table-focused TypeScript scripts, 21 Playwright component cases, the frontend production build, 29 focused Rust table-navigation tests, command registration classification, and `cargo build`.
+
+The full Rust suite passed 819 of 820 runnable tests with 18 ignored. The remaining failure is the unrelated Distribution archive case `distribution_v4_rejects_missing_duplicate_mismatched_and_unsafe_manifest_entries` on a branch 71 commits behind `origin/dev`. Strict `cargo clippy -- -D warnings` is still blocked by the existing repository-wide lint baseline in unrelated code.
+
+Full cross-platform acceptance is not claimed. Windows WebView2 execution and the complete 0/50/90/99/100 natural-order plus prepared-session matrix on both platforms remain pending external evidence.
+
 ## GraphBuilderView Old-Path Baseline (Pending Desktop Capture)
 
 Task 1 requires a manual baseline note for the old `GraphBuilderView` path at
@@ -402,3 +491,47 @@ Notes:
 - Therefore `--operation graph` is the current projection benchmark command,
   not a semantically different substitute for a separate `graph_projection`
   mode.
+
+## Task 1 Table Navigation Baseline (2026-09-17)
+
+Command run once for the 10M-row table-navigation gate:
+
+```powershell
+/Users/ashton/git/ashton2914/StatsPlayground.worktrees/224-10m-table-navigation/src-tauri/target/release/examples/performance_baseline --rows 10000000 --columns 20 --operation table-navigation --position-percent 99
+```
+
+Environment facts:
+
+- OS: macOS
+- Build profile: Rust `release` with `--features perf-harness`
+- Executable: `/Users/ashton/git/ashton2914/StatsPlayground.worktrees/224-10m-table-navigation/src-tauri/target/release/examples/performance_baseline`
+- Dataset shape: 10,000,000 rows x 20 columns
+- Position: 99%
+
+Captured JSON:
+
+```json
+{"rows":10000000,"columns":20,"operation":"table_navigation","setupMs":2398,"operationMs":1147,"positionPercent":99,"targetStart":9899505,"lockWaitMs":0,"countMs":6,"anchorMs":0,"totalMs":3546,"resultRows":500,"selectedColumns":0,"queryMs":1140,"encodeMs":0,"decodeMs":null,"drawMs":null,"processedRows":null,"transferredBytes":116767,"archiveBytes":0}
+```
+
+Measured stage values:
+
+- `setupMs`: 2398 ms
+- `operationMs`: 1147 ms
+- `totalMs`: 3546 ms
+- `positionPercent`: 99
+- `targetStart`: 9899505
+- `lockWaitMs`: 0 ms
+- `countMs`: 6 ms
+- `anchorMs`: 0 ms
+- `resultRows`: 500
+- `selectedColumns`: 0
+- `queryMs`: 1140 ms
+- `encodeMs`: 0 ms
+- `transferredBytes`: 116767 bytes
+- `archiveBytes`: 0
+- `decodeMs` / `drawMs` / `processedRows`: `null`
+
+Artifact:
+
+- [task-1-benchmark.json](../.superpowers/sdd/2026-09-17-10m-row-table-random-navigation/task-1-benchmark.json)

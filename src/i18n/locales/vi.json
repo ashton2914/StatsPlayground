@@ -1076,6 +1076,9 @@
     "ctxDeleteSelectedRows": "Xóa {{n}} hàng đã chọn",
     "ctxDeleteSelectedCols": "Xóa {{n}} cột đã chọn",
     "ctxDeleteCol": "Xóa cột \"{{name}}\"",
+    "ctxSortAsc": "Sắp xếp tăng dần",
+    "ctxSortDesc": "Sắp xếp giảm dần",
+    "ctxClearSort": "Xóa sắp xếp",
     "ctxColProps": "Thuộc tính cột",
     "ctxColPropsBatch": "Thuộc tính cột ({{n}} cột)",
     "calculatedColumn": {

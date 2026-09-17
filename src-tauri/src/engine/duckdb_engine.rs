@@ -3,7 +3,9 @@ use std::mem;
 use std::time::Instant;
 
 use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
-use duckdb::{appender_params_from_iter, params, params_from_iter, Config, Connection};
+use duckdb::{
+    appender_params_from_iter, params, params_from_iter, Config, Connection, OptionalExt,
+};
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
 use crate::engine::correlation::{correlate, CorrelationFailure, StatisticalMethod};
@@ -29,7 +31,8 @@ use crate::models::graph_data::{
 use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::table::{
     CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
-    TableFilterValue, TableQueryResult, TableWindowFilterRule, TableWindowRequest,
+    TableFilterValue, TableNavigationRequest, TableNavigationResult, TableNavigationTimings,
+    TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule, TableWindowRequest,
     TableWindowResult,
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
@@ -46,6 +49,8 @@ use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprint
 pub struct DuckDbEngine {
     conn: Connection,
 }
+
+pub const NATURAL_ANCHOR_STRIDE: usize = 4096;
 
 pub(crate) struct DatasetReplacement {
     pub stable_id: String,
@@ -198,6 +203,19 @@ fn build_calculated_descriptor(
         },
     }
 }
+
+pub(crate) struct TableQuerySessionPlan {
+    pub projection: Vec<(String, String)>,
+    pub where_clause: String,
+    pub filter_values: Vec<Value>,
+    pub order_clause: String,
+}
+
+pub(crate) struct PreparedTableQuerySessionInfo {
+    pub projection: Vec<(String, String)>,
+    pub total_rows: i64,
+    pub measured_bytes_estimate: usize,
+}
 type GroupedStatisticValues = std::collections::HashMap<(String, String), Vec<Option<f64>>>;
 
 struct CorrelationRequestBinding {
@@ -281,15 +299,44 @@ impl DuckDbEngine {
     }
 
     pub(crate) fn bump_dataset_generation(&self, dataset_id: &str) -> Result<(), AppError> {
+        let generation = self.get_dataset_generation(dataset_id)?;
+        let next_generation = generation
+            .checked_add(1)
+            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
+        self.copy_natural_anchors_between_generations(dataset_id, generation, next_generation)?;
         let changed = self.conn.execute(
-            "UPDATE _meta_datasets SET generation = generation + 1 WHERE id = ?",
-            params![dataset_id],
+            "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
+            params![next_generation, dataset_id],
         )?;
         if changed == 0 {
             return Err(AppError::InvalidParam(format!(
                 "unknown dataset: {dataset_id}"
             )));
         }
+        Ok(())
+    }
+
+    fn copy_natural_anchors_between_generations(
+        &self,
+        dataset_id: &str,
+        source_generation: u64,
+        target_generation: u64,
+    ) -> Result<(), AppError> {
+        let source_generation_i64 = i64::try_from(source_generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let target_generation_i64 = i64::try_from(target_generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, target_generation_i64],
+        )?;
+        self.conn.execute(
+            "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
+             SELECT dataset_id, ?, ordinal, row_id
+             FROM _table_navigation_anchors
+             WHERE dataset_id = ? AND generation = ?",
+            params![target_generation_i64, dataset_id, source_generation_i64],
+        )?;
         Ok(())
     }
 
@@ -378,6 +425,8 @@ impl DuckDbEngine {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = operation().and_then(|value| {
             self.bump_dataset_generation(dataset_id)?;
+            let generation = self.get_dataset_generation(dataset_id)?;
+            self.rebuild_natural_anchors(dataset_id, generation)?;
             Ok(value)
         });
         match result {
@@ -442,6 +491,8 @@ impl DuckDbEngine {
             "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
             params![row_count as i64, id],
         )?;
+        let generation = self.get_dataset_generation(id)?;
+        self.rebuild_natural_anchors(id, generation)?;
 
         Ok(())
     }
@@ -513,6 +564,14 @@ impl DuckDbEngine {
                 after_present BOOLEAN NOT NULL DEFAULT TRUE,
                 PRIMARY KEY (change_set_id, ordinal)
             );
+
+            CREATE TABLE IF NOT EXISTS _table_navigation_anchors (
+                dataset_id TEXT NOT NULL,
+                generation BIGINT NOT NULL,
+                ordinal    BIGINT NOT NULL,
+                row_id     BIGINT NOT NULL,
+                PRIMARY KEY (dataset_id, generation, ordinal)
+            );
             ",
         )?;
         conn.execute(
@@ -565,6 +624,53 @@ impl DuckDbEngine {
         )?;
 
         Ok(Self { conn })
+    }
+
+    pub fn try_clone(&self) -> Result<DuckDbEngine, AppError> {
+        Ok(Self {
+            conn: self.conn.try_clone()?,
+        })
+    }
+
+    pub fn rebuild_natural_anchors(
+        &self,
+        dataset_id: &str,
+        generation: u64,
+    ) -> Result<(), AppError> {
+        let current_generation = self.get_dataset_generation(dataset_id)?;
+        if current_generation != generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {generation}"
+            )));
+        }
+        let generation_i64 = i64::try_from(generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let stride_i64 = i64::try_from(NATURAL_ANCHOR_STRIDE)
+            .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation <> ?",
+            params![dataset_id, generation_i64],
+        )?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, generation_i64],
+        )?;
+        self.conn.execute(
+            &format!(
+                "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
+                 SELECT ?, ?, ordinal, \"_row_id\"
+                 FROM (
+                     SELECT \"_row_id\", row_number() OVER (ORDER BY \"_row_id\" ASC) - 1 AS ordinal
+                     FROM {table_name}
+                 ) AS ordered_rows
+                 WHERE ordinal % ? = 0"
+            ),
+            params![dataset_id, generation_i64, stride_i64],
+        )?;
+
+        Ok(())
     }
 
     pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {
@@ -942,50 +1048,66 @@ impl DuckDbEngine {
         self.validate_dataset_name(name, None)?;
         let table_name = format!("dataset_{}", id.replace('-', "_"));
 
-        // Create table from CSV with the stable row identity required by
-        // bounded windows, edits, history, and project serialization.
-        let create_sql = format!(
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<DatasetMeta, AppError> {
+            // Create table from CSV with the stable row identity required by
+            // bounded windows, edits, history, and project serialization.
+            let create_sql = format!(
             "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __csv__.* FROM read_csv($1, auto_detect=true) AS __csv__",
             table_name
         );
-        self.conn.execute(&create_sql, params![file_path])?;
+            self.conn.execute(&create_sql, params![file_path])?;
 
-        // Get row count
-        let row_count: i64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
-            [],
-            |row| row.get(0),
-        )?;
+            // Get row count
+            let row_count: i64 = self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+                [],
+                |row| row.get(0),
+            )?;
 
-        // Get column info
-        let mut col_stmt = self.conn.prepare(
+            // Get column info
+            let mut col_stmt = self.conn.prepare(
             "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
         )?;
 
-        let col_count: i32 = {
-            let mut rows = col_stmt.query(params![table_name])?;
-            let mut count = 0i32;
-            let mut col_index = 0i32;
-            while let Some(row) = rows.next()? {
-                let col_name: String = row.get(0)?;
-                let col_type: String = row.get(1)?;
-                self.conn.execute(
+            let col_count: i32 = {
+                let mut rows = col_stmt.query(params![table_name])?;
+                let mut count = 0i32;
+                let mut col_index = 0i32;
+                while let Some(row) = rows.next()? {
+                    let col_name: String = row.get(0)?;
+                    let col_type: String = row.get(1)?;
+                    self.conn.execute(
                     "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
                     params![id, col_index, col_name, col_type],
                 )?;
-                col_index += 1;
-                count += 1;
-            }
-            count
-        };
+                    col_index += 1;
+                    count += 1;
+                }
+                count
+            };
 
-        // Insert dataset metadata
-        self.conn.execute(
+            // Insert dataset metadata
+            self.conn.execute(
             "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'csv', $4, $5)",
             params![id, name, file_path, row_count, col_count],
         )?;
 
-        self.get_dataset_meta(id)
+            self.rebuild_natural_anchors(id, 0)?;
+
+            self.get_dataset_meta(id)
+        })();
+
+        match result {
+            Ok(meta) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(meta)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Get metadata for a single dataset
@@ -1052,6 +1174,10 @@ impl DuckDbEngine {
         )?;
         self.conn.execute(
             "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
             params![id],
         )?;
         self.conn
@@ -1170,6 +1296,8 @@ impl DuckDbEngine {
                 "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, NULL, 'query', $3, $4)",
                 params![id, name, materialized.rows.len() as i64, materialized.columns.len() as i32],
             )?;
+
+            self.rebuild_natural_anchors(id, 0)?;
 
             self.get_dataset_meta(id)
         })();
@@ -1346,6 +1474,8 @@ impl DuckDbEngine {
                 params![request.rows.len() as i64, id],
             )?;
 
+            self.rebuild_natural_anchors(id, 0)?;
+
             self.get_dataset_meta(id)
         })();
 
@@ -1428,23 +1558,7 @@ impl DuckDbEngine {
         let (where_clause, filter_values) =
             Self::compile_table_window_filters(&request.filters, &allowed_columns)?;
 
-        let order_clause = if let Some(sort) = &request.sort {
-            if sort.column != "_row_id" && !allowed_columns.contains_key(sort.column.as_str()) {
-                return Err(AppError::InvalidParam(format!(
-                    "unknown sort column: {}",
-                    sort.column
-                )));
-            }
-            let direction = if sort.descending { "DESC" } else { "ASC" };
-            let sort_column = Self::quote_identifier(&sort.column);
-            if sort.column == "_row_id" {
-                format!("ORDER BY {sort_column} {direction}")
-            } else {
-                format!("ORDER BY {sort_column} {direction}, \"_row_id\" ASC")
-            }
-        } else {
-            "ORDER BY \"_row_id\" ASC".to_string()
-        };
+        let order_clause = Self::build_table_window_order_clause(&request.sort, &allowed_columns)?;
 
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
         let count_sql = format!("SELECT COUNT(*) FROM {table_name} {where_clause}");
@@ -1516,6 +1630,556 @@ impl DuckDbEngine {
         let _ = self.collect_sql_query_schema(&snapshot, &sql)?;
         self.validate_dataset_name(name, None)?;
         Ok(())
+    }
+
+    pub fn query_table_navigation_window(
+        &self,
+        request: &TableNavigationRequest,
+    ) -> Result<TableNavigationResult, AppError> {
+        let started_at = Instant::now();
+        if !(1..=2_000).contains(&request.count) {
+            return Err(AppError::InvalidParam(
+                "window count must be between 1 and 2000".into(),
+            ));
+        }
+        let offset = i64::try_from(request.start)
+            .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
+        let limit = i64::try_from(request.count)
+            .map_err(|_| AppError::InvalidParam("window count is too large".into()))?;
+
+        let generation = self.get_dataset_generation(&request.dataset_id)?;
+        if generation != request.generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let actual_user_columns = self.get_storage_user_columns(&request.dataset_id)?;
+        let allowed_columns = actual_user_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let (where_clause, filter_values) =
+            Self::compile_table_window_filters(&request.filters, &allowed_columns)?;
+
+        let order_clause = Self::build_table_window_order_clause(&request.sort, &allowed_columns)?;
+
+        let navigation_columns =
+            self.resolve_navigation_projection(&request.dataset_id, &request.column_ids)?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let count_sql = format!("SELECT COUNT(*) FROM {table_name} {where_clause}");
+        let total_rows: i64 =
+            self.conn
+                .query_row(&count_sql, params_from_iter(filter_values.iter()), |row| {
+                    row.get(0)
+                })?;
+
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(navigation_columns.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            navigation_columns
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({quoted} AS VARCHAR) AS {quoted}")
+                } else {
+                    quoted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query_sql = format!(
+            "SELECT {select_columns} FROM {table_name} {where_clause} {order_clause} LIMIT ? OFFSET ?"
+        );
+        let mut query_values = filter_values;
+        query_values.push(Value::BigInt(limit));
+        query_values.push(Value::BigInt(offset));
+        let mut stmt = self.conn.prepare(&query_sql)?;
+        let mut result_rows = stmt.query(params_from_iter(query_values.iter()))?;
+        let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
+        while let Some(row) = result_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        let total_ms = u64::try_from(started_at.elapsed().as_millis())
+            .map_err(|_| AppError::Database("table navigation timing overflowed".into()))?;
+
+        Ok(TableNavigationResult {
+            version: 1,
+            request_id: request.request_id.clone(),
+            dataset_id: request.dataset_id.clone(),
+            generation,
+            start: request.start,
+            total_rows,
+            total_rows_exact: true,
+            session_id: request.session_id.clone(),
+            columns,
+            column_types,
+            rows,
+            timings: TableNavigationTimings {
+                total_ms,
+                diagnostic_json_encode_ms: None,
+                diagnostic_json_bytes: None,
+                diagnostic_response_ready_at_epoch_ms: None,
+            },
+        })
+    }
+
+    pub(crate) fn build_table_query_session_plan_on_connection(
+        connection: &Connection,
+        request: &TableQuerySessionRequest,
+    ) -> Result<TableQuerySessionPlan, AppError> {
+        let actual_user_columns =
+            Self::storage_user_columns_on_connection(connection, &request.dataset_id)?;
+        let allowed_columns = actual_user_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let projection = Self::resolve_navigation_projection_on_connection(
+            connection,
+            &request.dataset_id,
+            &request.column_ids,
+        )?;
+        let (where_clause, filter_values) =
+            Self::compile_table_window_filters(&request.filters, &allowed_columns)?;
+        let order_clause = Self::build_table_window_order_clause(&request.sort, &allowed_columns)?;
+        Ok(TableQuerySessionPlan {
+            projection,
+            where_clause,
+            filter_values,
+            order_clause,
+        })
+    }
+
+    pub(crate) fn prepare_table_query_session_on_connection(
+        connection: &Connection,
+        request: &TableQuerySessionRequest,
+        mapping_table_name: &str,
+        mapping_index_name: &str,
+    ) -> Result<PreparedTableQuerySessionInfo, AppError> {
+        let current_generation: i64 = connection
+            .query_row(
+                "SELECT generation FROM _meta_datasets WHERE id = ?",
+                params![&request.dataset_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                duckdb::Error::QueryReturnedNoRows => {
+                    AppError::InvalidParam(format!("unknown dataset: {}", request.dataset_id))
+                }
+                other => AppError::from(other),
+            })?;
+        let requested_generation = i64::try_from(request.generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        if current_generation != requested_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let plan = Self::build_table_query_session_plan_on_connection(connection, request)?;
+        Self::release_table_query_session_on_connection(
+            connection,
+            mapping_table_name,
+            mapping_index_name,
+        )?;
+        let baseline_memory_bytes = Self::table_query_session_memory_bytes(connection);
+
+        let materialize_result = (|| -> Result<PreparedTableQuerySessionInfo, AppError> {
+            let mapping_table = Self::quote_identifier(mapping_table_name);
+            let table_name =
+                Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+            let create_sql = format!(
+                "CREATE TEMP TABLE {mapping_table} AS
+                 SELECT CAST(row_number() OVER ({order_clause}) - 1 AS BIGINT) AS ordinal,
+                        CAST(\"_row_id\" AS BIGINT) AS row_id
+                 FROM {table_name} {where_clause}",
+                order_clause = plan.order_clause,
+                where_clause = plan.where_clause,
+            );
+            connection.execute(&create_sql, params_from_iter(plan.filter_values.iter()))?;
+
+            let total_rows: i64 = connection.query_row(
+                &format!("SELECT COUNT(*) FROM {mapping_table}"),
+                [],
+                |row| row.get(0),
+            )?;
+            let mapping_index = Self::quote_identifier(mapping_index_name);
+            connection.execute(
+                &format!("CREATE INDEX {mapping_index} ON {mapping_table} (ordinal)"),
+                [],
+            )?;
+
+            let logical_bytes_floor = Self::table_query_session_logical_bytes_floor(total_rows);
+            let measured_bytes_estimate = match (
+                baseline_memory_bytes,
+                Self::table_query_session_memory_bytes(connection),
+            ) {
+                (Some(before_bytes), Some(after_bytes)) if after_bytes >= before_bytes => {
+                    usize::try_from(after_bytes - before_bytes)
+                        .ok()
+                        .map(|delta| delta.max(logical_bytes_floor))
+                        .unwrap_or(usize::MAX)
+                }
+                _ => logical_bytes_floor,
+            };
+            Ok(PreparedTableQuerySessionInfo {
+                projection: plan.projection,
+                total_rows,
+                measured_bytes_estimate,
+            })
+        })();
+
+        match materialize_result {
+            Ok(info) => Ok(info),
+            Err(error) => {
+                let _ = Self::release_table_query_session_on_connection(
+                    connection,
+                    mapping_table_name,
+                    mapping_index_name,
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn table_query_session_memory_bytes(connection: &Connection) -> Option<u64> {
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(memory_usage_bytes + temporary_storage_bytes), 0) FROM duckdb_memory()",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .and_then(|bytes| u64::try_from(bytes).ok())
+    }
+
+    fn table_query_session_logical_bytes_floor(total_rows: i64) -> usize {
+        usize::try_from(total_rows.max(0))
+            .ok()
+            .and_then(|row_count| row_count.checked_mul(std::mem::size_of::<i64>() * 2))
+            .unwrap_or(usize::MAX)
+    }
+
+    pub(crate) fn query_prepared_table_navigation_window_on_connection(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+        mapping_table_name: &str,
+        projection: &[(String, String)],
+        total_rows: i64,
+    ) -> Result<TableNavigationResult, AppError> {
+        let started_at = Instant::now();
+        if !(1..=2_000).contains(&request.count) {
+            return Err(AppError::InvalidParam(
+                "window count must be between 1 and 2000".into(),
+            ));
+        }
+
+        let current_generation: i64 = connection
+            .query_row(
+                "SELECT generation FROM _meta_datasets WHERE id = ?",
+                params![&request.dataset_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                duckdb::Error::QueryReturnedNoRows => {
+                    AppError::InvalidParam(format!("unknown dataset: {}", request.dataset_id))
+                }
+                other => AppError::from(other),
+            })?;
+        let requested_generation = i64::try_from(request.generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        if current_generation != requested_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let start = request.start.min(total_rows.max(0) as usize);
+        let start_i64 = i64::try_from(start)
+            .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
+        let count_i64 = i64::try_from(request.count)
+            .map_err(|_| AppError::InvalidParam("window count is too large".into()))?;
+        let end_i64 = start_i64
+            .checked_add(count_i64)
+            .ok_or_else(|| AppError::InvalidParam("window end is too large".into()))?;
+
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(projection.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            projection
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+
+        let mapping_table = Self::quote_identifier(mapping_table_name);
+        let source_alias = "source";
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let qualified = format!("{source_alias}.{quoted}");
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({qualified} AS VARCHAR) AS {quoted}")
+                } else {
+                    format!("{qualified} AS {quoted}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let query_sql = format!(
+            "SELECT {select_columns}
+             FROM {mapping_table} AS mapping
+             JOIN {table_name} AS {source_alias} ON {source_alias}.\"_row_id\" = mapping.row_id
+             WHERE mapping.ordinal >= ? AND mapping.ordinal < ?
+             ORDER BY mapping.ordinal ASC"
+        );
+        let mut stmt = connection.prepare(&query_sql)?;
+        let mut result_rows = stmt.query(params![start_i64, end_i64])?;
+        let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
+        while let Some(row) = result_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        let total_ms = u64::try_from(started_at.elapsed().as_millis())
+            .map_err(|_| AppError::Database("table navigation timing overflowed".into()))?;
+        Ok(TableNavigationResult {
+            version: 1,
+            request_id: request.request_id.clone(),
+            dataset_id: request.dataset_id.clone(),
+            generation: request.generation,
+            start,
+            total_rows,
+            total_rows_exact: true,
+            session_id: request.session_id.clone(),
+            columns,
+            column_types,
+            rows,
+            timings: TableNavigationTimings {
+                total_ms,
+                diagnostic_json_encode_ms: None,
+                diagnostic_json_bytes: None,
+                diagnostic_response_ready_at_epoch_ms: None,
+            },
+        })
+    }
+
+    pub(crate) fn release_table_query_session_on_connection(
+        connection: &Connection,
+        mapping_table_name: &str,
+        mapping_index_name: &str,
+    ) -> Result<(), AppError> {
+        connection.execute(
+            &format!(
+                "DROP INDEX IF EXISTS {}",
+                Self::quote_identifier(mapping_index_name)
+            ),
+            [],
+        )?;
+        connection.execute(
+            &format!(
+                "DROP TABLE IF EXISTS {}",
+                Self::quote_identifier(mapping_table_name)
+            ),
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn query_natural_navigation_window(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+    ) -> Result<TableNavigationResult, AppError> {
+        let started_at = Instant::now();
+        let (result, _) = Self::query_natural_navigation_window_inner(connection, request)?;
+        let total_ms = u64::try_from(started_at.elapsed().as_millis())
+            .map_err(|_| AppError::Database("table navigation timing overflowed".into()))?;
+        Ok(TableNavigationResult {
+            timings: TableNavigationTimings {
+                total_ms,
+                diagnostic_json_encode_ms: None,
+                diagnostic_json_bytes: None,
+                diagnostic_response_ready_at_epoch_ms: None,
+            },
+            ..result
+        })
+    }
+
+    fn query_natural_navigation_window_inner(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+    ) -> Result<(TableNavigationResult, usize), AppError> {
+        if !(1..=2_000).contains(&request.count) {
+            return Err(AppError::InvalidParam(
+                "window count must be between 1 and 2000".into(),
+            ));
+        }
+        if request.sort.is_some() || !request.filters.is_empty() {
+            return Err(AppError::InvalidParam(
+                "natural navigation supports only unsorted, unfiltered requests".into(),
+            ));
+        }
+
+        let generation_i64 = i64::try_from(request.generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let (total_rows, current_generation): (i64, i64) = connection
+            .query_row(
+                "SELECT row_count, generation FROM _meta_datasets WHERE id = ?",
+                params![&request.dataset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| match error {
+                duckdb::Error::QueryReturnedNoRows => {
+                    AppError::InvalidParam(format!("unknown dataset: {}", request.dataset_id))
+                }
+                other => AppError::from(other),
+            })?;
+        if current_generation != generation_i64 {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let navigation_columns = Self::resolve_navigation_projection_on_connection(
+            connection,
+            &request.dataset_id,
+            &request.column_ids,
+        )?;
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(navigation_columns.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            navigation_columns
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+
+        let clamped_start = request.start.min(total_rows.max(0) as usize);
+        let start_i64 = i64::try_from(clamped_start)
+            .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
+        let anchor: Option<(i64, i64)> = connection
+            .query_row(
+                "SELECT ordinal, row_id
+                 FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ? AND ordinal <= ?
+                 ORDER BY ordinal DESC
+                 LIMIT 1",
+                params![&request.dataset_id, generation_i64, start_i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (anchor_ordinal, anchor_row_id) = match anchor {
+            Some(anchor) => anchor,
+            None if total_rows <= 0 => (0, i64::MAX),
+            None => {
+                return Err(AppError::Database(format!(
+                    "natural navigation anchors are not ready for dataset {} generation {}",
+                    request.dataset_id, request.generation
+                )));
+            }
+        };
+        let local_offset = usize::try_from(start_i64 - anchor_ordinal).map_err(|_| {
+            AppError::Database("natural navigation local offset is negative".into())
+        })?;
+        if local_offset >= NATURAL_ANCHOR_STRIDE {
+            return Err(AppError::Database(
+                "natural navigation local offset exceeded anchor stride".into(),
+            ));
+        }
+
+        let limit = i64::try_from(request.count)
+            .map_err(|_| AppError::InvalidParam("window count is too large".into()))?;
+        let offset = i64::try_from(local_offset)
+            .map_err(|_| AppError::InvalidParam("window offset is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({quoted} AS VARCHAR) AS {quoted}")
+                } else {
+                    quoted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query_sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
+        let mut stmt = connection.prepare(&query_sql)?;
+        let mut result_rows = stmt.query(params![anchor_row_id, limit, offset])?;
+        let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
+        while let Some(row) = result_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        Ok((
+            TableNavigationResult {
+                version: 1,
+                request_id: request.request_id.clone(),
+                dataset_id: request.dataset_id.clone(),
+                generation: request.generation,
+                start: request.start,
+                total_rows,
+                total_rows_exact: true,
+                session_id: request.session_id.clone(),
+                columns,
+                column_types,
+                rows,
+                timings: TableNavigationTimings {
+                    total_ms: 0,
+                    diagnostic_json_encode_ms: None,
+                    diagnostic_json_bytes: None,
+                    diagnostic_response_ready_at_epoch_ms: None,
+                },
+            },
+            local_offset,
+        ))
+    }
+
+    fn natural_navigation_viewport_sql(table_name: &str, select_columns: &str) -> String {
+        format!(
+            "SELECT {select_columns} FROM {table_name} WHERE \"_row_id\" >= ? ORDER BY \"_row_id\" ASC LIMIT ? OFFSET ?"
+        )
     }
 
     pub fn locate_table_row(
@@ -3171,7 +3835,7 @@ impl DuckDbEngine {
         })
     }
 
-    fn compile_table_window_filters(
+    pub(crate) fn compile_table_window_filters(
         filters: &[crate::models::table::TableWindowFilter],
         allowed_columns: &std::collections::HashMap<&str, &str>,
     ) -> Result<(String, Vec<Value>), AppError> {
@@ -3302,6 +3966,31 @@ impl DuckDbEngine {
             format!("WHERE {expression}")
         };
         Ok((clause, values))
+    }
+
+    fn build_table_window_order_clause(
+        sort: &Option<crate::models::table::TableWindowSort>,
+        allowed_columns: &std::collections::HashMap<&str, &str>,
+    ) -> Result<String, AppError> {
+        if let Some(sort) = sort {
+            if sort.column != "_row_id" && !allowed_columns.contains_key(sort.column.as_str()) {
+                return Err(AppError::InvalidParam(format!(
+                    "unknown sort column: {}",
+                    sort.column
+                )));
+            }
+            let direction = if sort.descending { "DESC" } else { "ASC" };
+            let sort_column = Self::quote_identifier(&sort.column);
+            if sort.column == "_row_id" {
+                Ok(format!("ORDER BY {sort_column} {direction}"))
+            } else {
+                Ok(format!(
+                    "ORDER BY {sort_column} {direction}, \"_row_id\" ASC"
+                ))
+            }
+        } else {
+            Ok("ORDER BY \"_row_id\" ASC".to_string())
+        }
     }
 
     /// Query a dataset table with pagination
@@ -3679,6 +4368,78 @@ impl DuckDbEngine {
         Ok(())
     }
 
+    pub(crate) fn resolve_navigation_projection_on_connection(
+        connection: &Connection,
+        dataset_id: &str,
+        column_ids: &[String],
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let mut metadata_stmt = connection.prepare(
+            "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = ? ORDER BY col_index",
+        )?;
+        let descriptors = metadata_stmt
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut by_id = descriptors
+            .iter()
+            .map(|(column_id, name, column_type)| {
+                (column_id.as_str(), (name.clone(), column_type.clone()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut selected = Vec::with_capacity(column_ids.len());
+        let mut seen = HashSet::new();
+        for column_id in column_ids {
+            if !seen.insert(column_id.as_str()) {
+                return Err(AppError::InvalidParam(format!(
+                    "duplicate navigation column id: {column_id}"
+                )));
+            }
+            let column = by_id.remove(column_id.as_str()).ok_or_else(|| {
+                AppError::InvalidParam(format!("unknown navigation column id: {column_id}"))
+            })?;
+            selected.push(column);
+        }
+        let table_name = Self::internal_table_name(dataset_id);
+        let storage_columns = Self::storage_user_columns_on_connection(connection, dataset_id)?;
+        let storage_by_name = storage_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        for (column_name, column_type) in &selected {
+            let actual_type = storage_by_name.get(column_name.as_str()).ok_or_else(|| {
+                AppError::InvalidParam(format!(
+                    "navigation projection column not found in storage table {table_name}: {column_name}"
+                ))
+            })?;
+            if !actual_type.eq_ignore_ascii_case(column_type) {
+                return Err(AppError::InvalidParam(format!(
+                    "navigation projection column type mismatch for {column_name}: metadata {column_type}, storage {actual_type}"
+                )));
+            }
+        }
+        Ok(selected)
+    }
+
+    pub(crate) fn storage_user_columns_on_connection(
+        connection: &Connection,
+        dataset_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let table_name = Self::internal_table_name(dataset_id);
+        let mut stmt = connection.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
+        )?;
+        Ok(stmt
+            .query_map(params![table_name], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
     fn finalize_transaction<T, Commit, Rollback>(
         commit: Commit,
         rollback: Rollback,
@@ -3698,6 +4459,77 @@ impl DuckDbEngine {
 
     pub(crate) fn internal_table_name(id: &str) -> String {
         format!("dataset_{}", id.replace('-', "_"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn natural_navigation_local_offset_for_test(
+        &self,
+        dataset_id: &str,
+        generation: u64,
+        start: usize,
+    ) -> Result<usize, AppError> {
+        let request = TableNavigationRequest {
+            version: 1,
+            request_id: "offset-test".to_string(),
+            dataset_id: dataset_id.to_string(),
+            generation,
+            start,
+            count: 1,
+            column_ids: vec![],
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        };
+        let (_, local_offset) = Self::query_natural_navigation_window_inner(&self.conn, &request)?;
+        Ok(local_offset)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn explain_natural_navigation_window_for_test(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+    ) -> Result<String, AppError> {
+        let navigation_columns = Self::resolve_navigation_projection_on_connection(
+            connection,
+            &request.dataset_id,
+            &request.column_ids,
+        )?;
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(navigation_columns.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            navigation_columns
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({quoted} AS VARCHAR) AS {quoted}")
+                } else {
+                    quoted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
+        let mut statement = connection.prepare(&format!("EXPLAIN {sql}"))?;
+        let mut rows = statement.query(params![0_i64, 1_i64, 0_i64])?;
+        let mut lines = Vec::new();
+        while let Some(row) = rows.next()? {
+            let value: String = row.get(1)?;
+            lines.push(value);
+        }
+        Ok(lines.join("\n"))
     }
 
     fn duckdb_value_to_json(value: Value) -> serde_json::Value {
@@ -4178,6 +5010,8 @@ impl DuckDbEngine {
                     params![row_count, id],
                 )?;
                     self.bump_dataset_generation(&id)?;
+                    let generation = self.get_dataset_generation(&id)?;
+                    self.rebuild_natural_anchors(&id, generation)?;
                 } else {
                     let col_count_i32 = columns.len() as i32;
                     for (col_index, (col_name, sqlite_type)) in columns.iter().enumerate() {
@@ -4191,6 +5025,7 @@ impl DuckDbEngine {
                     "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'sqlite', $4, $5)",
                     params![id, target_name, source_description, row_count, col_count_i32],
                 )?;
+                    self.rebuild_natural_anchors(&id, 0)?;
                 }
 
                 let meta = self.get_dataset_meta(&id)?;
@@ -4333,6 +5168,7 @@ impl DuckDbEngine {
                 "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, $4, $5, $6)",
                 params![id, target_name, source_description, connector.source_type(), row_count, column_count],
             )?;
+            self.rebuild_natural_anchors(&id, 0)?;
             Ok((self.get_dataset_meta(&id)?, rows_done))
         })();
 
@@ -4811,6 +5647,7 @@ impl DuckDbEngine {
             "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, NULL, 'manual', 0, $3)",
             params![id, name, col_count],
         )?;
+        self.rebuild_natural_anchors(id, 0)?;
 
         self.get_dataset_meta(id)
     }
@@ -6886,6 +7723,7 @@ impl DuckDbEngine {
                 "UPDATE _history_change_sets SET applied = ?, generation = ? WHERE id = ?",
                 params![!undo, generation + 1, change_set_id],
             )?;
+            self.rebuild_natural_anchors(&dataset_id, generation + 1)?;
             Ok(())
         })();
         match result {
@@ -7521,6 +8359,8 @@ impl DuckDbEngine {
                 "UPDATE _meta_datasets SET row_count = $1, col_count = $2, generation = generation + 1 WHERE id = $3",
                 params![row_count, col_count, dataset_id],
             )?;
+            let generation = self.get_dataset_generation(dataset_id)?;
+            self.rebuild_natural_anchors(dataset_id, generation)?;
 
             Ok(())
         })();
@@ -7590,6 +8430,7 @@ impl DuckDbEngine {
              VALUES ($1, $2, NULL, $3, $4, $5)",
             params![new_id, new_name, source_type, row_count, col_index],
         )?;
+        self.rebuild_natural_anchors(new_id, 0)?;
 
         self.get_dataset_meta(new_id)
     }
@@ -7773,6 +8614,7 @@ impl DuckDbEngine {
              VALUES ($1, $2, NULL, 'transpose', $3, $4)",
             params![new_id, new_name, user_cols.len() as i64, n_new_cols as i32],
         )?;
+        self.rebuild_natural_anchors(new_id, 0)?;
         self.get_dataset_meta(new_id)
     }
 
@@ -8295,6 +9137,12 @@ impl DuckDbEngine {
             if rematerialize_calculated {
                 self.rematerialize_all_calculated_outputs(stable_id)?;
             }
+            let generation = self.get_dataset_generation(stable_id)?;
+            self.rebuild_natural_anchors(stable_id, generation)?;
+            self.conn.execute(
+                "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+                params![temporary_id],
+            )?;
             Ok(())
         })();
 
@@ -8447,6 +9295,12 @@ impl DuckDbEngine {
                 if rematerialize_calculated {
                     self.rematerialize_all_calculated_outputs(&replacement.stable_id)?;
                 }
+                let generation = self.get_dataset_generation(&replacement.stable_id)?;
+                self.rebuild_natural_anchors(&replacement.stable_id, generation)?;
+                self.conn.execute(
+                    "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+                    params![replacement.temporary_id],
+                )?;
                 Ok(())
             },
         );
@@ -9285,6 +10139,74 @@ impl DuckDbEngine {
         }
 
         Ok(FitYByXRows { source_rows, rows })
+    }
+
+    fn get_storage_user_columns(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        self.get_dataset_meta(dataset_id)?;
+        let internal_table_name = Self::internal_table_name(dataset_id);
+        let mut stmt = self.conn.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ? AND column_name <> '_row_id' ORDER BY ordinal_position",
+        )?;
+        stmt.query_map(params![internal_table_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::from)
+    }
+
+    fn resolve_navigation_projection(
+        &self,
+        dataset_id: &str,
+        column_ids: &[String],
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let actual_columns = self
+            .get_storage_user_columns(dataset_id)?
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut stmt = self.conn.prepare(
+            "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = ?",
+        )?;
+        let descriptors = stmt
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|(column_id, column_name, column_type)| (column_id, (column_name, column_type)))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut seen = HashSet::new();
+        let mut projection = Vec::with_capacity(column_ids.len());
+        for column_id in column_ids {
+            if !seen.insert(column_id.as_str()) {
+                return Err(AppError::InvalidParam(format!(
+                    "duplicate column id: {column_id}"
+                )));
+            }
+            let (column_name, metadata_type) = descriptors
+                .get(column_id)
+                .cloned()
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown column id: {column_id}")))?;
+            let actual_type = actual_columns.get(&column_name).ok_or_else(|| {
+                AppError::InvalidParam(format!(
+                    "unresolved projection column for id {column_id}: {column_name}"
+                ))
+            })?;
+            if actual_type != &metadata_type {
+                return Err(AppError::InvalidParam(format!(
+                    "unresolved projection type for id {column_id}: metadata {metadata_type}, actual {actual_type}"
+                )));
+            }
+            projection.push((column_name, metadata_type));
+        }
+        Ok(projection)
     }
 
     pub fn read_hypothesis_test_rows(
@@ -10215,8 +11137,8 @@ mod tests {
         GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphSampling, GraphViewport,
     };
     use crate::models::table::{
-        CellUpdate, CreateTableFromRowsRequest, TableFilterValue, TableWindowFilter,
-        TableWindowFilterRule, TableWindowRequest, TableWindowSort,
+        CellUpdate, CreateTableFromRowsRequest, TableFilterValue, TableNavigationRequest,
+        TableWindowFilter, TableWindowFilterRule, TableWindowRequest, TableWindowSort,
     };
     use crate::services::archive_cell::{
         archive_cell_to_json_call_count, reset_archive_cell_to_json_call_count,
@@ -10532,6 +11454,374 @@ mod tests {
             .query_table(id, 0, 100, None, None)
             .expect("read transform table");
         (result.columns, result.rows)
+    }
+
+    fn navigation_column_descriptors(
+        engine: &DuckDbEngine,
+        dataset_id: &str,
+    ) -> Vec<(String, String, String)> {
+        let mut statement = engine
+            .conn
+            .prepare(
+                "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = ? ORDER BY col_index",
+            )
+            .expect("prepare navigation descriptor query");
+        statement
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query navigation descriptors")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect navigation descriptors")
+    }
+
+    fn seed_navigation_dataset(engine: &DuckDbEngine, dataset_id: &str) -> u64 {
+        engine
+            .create_empty_table(
+                dataset_id,
+                "Navigation",
+                &["value".to_string(), "category".to_string()],
+                &["DOUBLE".to_string(), "VARCHAR".to_string()],
+            )
+            .expect("create navigation fixture");
+
+        for (value, category) in [("1.5", "alpha"), ("2.5", "beta")] {
+            let row_id = engine.add_row(dataset_id).expect("add navigation row");
+            engine
+                .update_cell(dataset_id, row_id, "value", value)
+                .expect("write navigation value");
+            engine
+                .update_cell(dataset_id, row_id, "category", category)
+                .expect("write navigation category");
+        }
+
+        engine
+            .get_dataset_generation(dataset_id)
+            .expect("navigation generation")
+    }
+
+    fn seed_navigation_tie_dataset(engine: &DuckDbEngine, dataset_id: &str) -> u64 {
+        engine
+            .create_empty_table(
+                dataset_id,
+                "Navigation ties",
+                &["value".to_string(), "category".to_string()],
+                &["DOUBLE".to_string(), "VARCHAR".to_string()],
+            )
+            .expect("create navigation tie fixture");
+
+        for (value, category) in [("2.5", "beta"), ("1.5", "alpha"), ("2.5", "gamma")] {
+            let row_id = engine.add_row(dataset_id).expect("add navigation tie row");
+            engine
+                .update_cell(dataset_id, row_id, "value", value)
+                .expect("write navigation tie value");
+            engine
+                .update_cell(dataset_id, row_id, "category", category)
+                .expect("write navigation tie category");
+        }
+
+        engine
+            .get_dataset_generation(dataset_id)
+            .expect("navigation tie generation")
+    }
+
+    fn navigation_request(
+        dataset_id: &str,
+        generation: u64,
+        column_ids: Vec<String>,
+    ) -> TableNavigationRequest {
+        TableNavigationRequest {
+            version: 1,
+            request_id: format!("req-{dataset_id}"),
+            dataset_id: dataset_id.to_string(),
+            generation,
+            start: 0,
+            count: 10,
+            column_ids,
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        }
+    }
+
+    fn seed_natural_navigation_sparse_dataset(engine: &DuckDbEngine, dataset_id: &str) -> u64 {
+        engine
+            .seed_benchmark_table(dataset_id, "Natural navigation", 20_000, 1)
+            .expect("seed natural navigation fixture");
+        let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+        engine
+            .conn
+            .execute(
+                &format!(
+                    "DELETE FROM {table} WHERE _row_id BETWEEN ? AND ? OR _row_id BETWEEN ? AND ? OR _row_id BETWEEN ? AND ?"
+                ),
+                params![4093_i64, 4100_i64, 8191_i64, 8198_i64, 12_287_i64, 12_294_i64],
+            )
+            .expect("delete rows around sparse anchor boundaries");
+        let retained_rows: i64 = engine
+            .conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("retained natural rows");
+        engine
+            .conn
+            .execute(
+                "UPDATE _meta_datasets SET row_count = ?, generation = generation + 1 WHERE id = ?",
+                params![retained_rows, dataset_id],
+            )
+            .expect("publish natural navigation generation");
+        engine
+            .get_dataset_generation(dataset_id)
+            .expect("natural navigation generation")
+    }
+
+    fn natural_navigation_request(
+        dataset_id: &str,
+        generation: u64,
+        start: usize,
+        count: usize,
+    ) -> TableNavigationRequest {
+        TableNavigationRequest {
+            version: 1,
+            request_id: format!("req-natural-{start}"),
+            dataset_id: dataset_id.to_string(),
+            generation,
+            start,
+            count,
+            column_ids: vec![],
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        }
+    }
+
+    #[test]
+    fn natural_navigation_sparse_anchors_match_row_id_order_after_boundary_deletions() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_sparse";
+        let generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        let descriptors = navigation_column_descriptors(&engine, dataset_id);
+        let value_id = descriptors[0].0.clone();
+
+        engine
+            .rebuild_natural_anchors(dataset_id, generation)
+            .expect("rebuild natural anchors");
+
+        for start in [
+            0_usize, 1, 4090, 4095, 4096, 4097, 8188, 8192, 12_280, 19_960,
+        ] {
+            let expected = engine
+                .query_table_window(&TableWindowRequest {
+                    dataset_id: dataset_id.to_string(),
+                    start,
+                    count: 32,
+                    sort: None,
+                    filters: vec![],
+                    generation,
+                })
+                .expect("task 4 natural-order window");
+            let mut request = natural_navigation_request(dataset_id, generation, start, 32);
+            request.column_ids = vec![value_id.clone()];
+
+            let actual = DuckDbEngine::query_natural_navigation_window(engine.conn(), &request)
+                .expect("task 5 anchor-backed natural navigation");
+
+            assert_eq!(actual.total_rows, expected.total_rows);
+            assert_eq!(actual.rows, expected.rows);
+            assert!(
+                engine
+                    .natural_navigation_local_offset_for_test(dataset_id, generation, start)
+                    .expect("local natural offset")
+                    <= NATURAL_ANCHOR_STRIDE - 1
+            );
+        }
+    }
+
+    #[test]
+    fn natural_navigation_uses_generation_row_count_and_has_no_count_in_viewport_plan() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_plan";
+        let generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        let value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        engine
+            .rebuild_natural_anchors(dataset_id, generation)
+            .expect("rebuild natural anchors");
+
+        let mut request = natural_navigation_request(dataset_id, generation, 20_000, 16);
+        request.column_ids = vec![value_id];
+        let result = DuckDbEngine::query_natural_navigation_window(engine.conn(), &request)
+            .expect("past-end natural navigation");
+
+        assert_eq!(result.total_rows, 19_976);
+        assert!(result.rows.is_empty());
+
+        let plan =
+            DuckDbEngine::explain_natural_navigation_window_for_test(engine.conn(), &request)
+                .expect("natural navigation plan");
+        assert!(!plan.to_ascii_uppercase().contains("COUNT(*)"));
+    }
+
+    #[test]
+    fn natural_navigation_batch_cell_edit_publishes_matching_generation_anchors() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_cell_edit";
+        let initial_generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        engine
+            .rebuild_natural_anchors(dataset_id, initial_generation)
+            .expect("initial anchors");
+        let value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+
+        let next_generation = engine
+            .update_cells_if_generation(
+                dataset_id,
+                &[
+                    CellUpdate {
+                        row_id: 4101,
+                        column_name: "value_1".to_string(),
+                        value: Some("111".to_string()),
+                    },
+                    CellUpdate {
+                        row_id: 8199,
+                        column_name: "value_1".to_string(),
+                        value: Some("222".to_string()),
+                    },
+                ],
+                Some(initial_generation),
+            )
+            .expect("batch cell edit");
+
+        let mut request = natural_navigation_request(dataset_id, next_generation, 4092, 4);
+        request.column_ids = vec![value_id];
+        let result = DuckDbEngine::query_natural_navigation_window(engine.conn(), &request)
+            .expect("natural navigation after batch cell edit");
+
+        assert_eq!(result.generation, next_generation);
+        assert_eq!(result.rows[0][0], serde_json::json!(4101));
+        assert_eq!(result.rows[0][1], serde_json::json!(111));
+    }
+
+    #[test]
+    fn natural_navigation_column_only_change_set_publishes_matching_generation_anchors() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_column_change";
+        let initial_generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        engine
+            .rebuild_natural_anchors(dataset_id, initial_generation)
+            .expect("initial anchors");
+
+        let add_change_set = engine
+            .add_column_with_change_set(
+                dataset_id,
+                "added",
+                "BIGINT",
+                Some(0),
+                Some(initial_generation),
+            )
+            .expect("add column change set");
+        let after_add_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after add");
+        let added_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        let mut after_add = natural_navigation_request(dataset_id, after_add_generation, 4095, 2);
+        after_add.column_ids = vec![added_id];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_add)
+            .expect("natural navigation after column add");
+
+        engine
+            .apply_change_set(&add_change_set, true)
+            .expect("undo column add");
+        let after_undo_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after undo");
+        let value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        let mut after_undo = natural_navigation_request(dataset_id, after_undo_generation, 4095, 2);
+        after_undo.column_ids = vec![value_id];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_undo)
+            .expect("natural navigation after column-only undo");
+
+        engine
+            .add_column_with_change_set(
+                dataset_id,
+                "spare",
+                "BIGINT",
+                None,
+                Some(after_undo_generation),
+            )
+            .expect("add spare column before delete");
+        let before_delete_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation before delete");
+
+        let delete_change_set = engine
+            .delete_columns_with_change_set(
+                dataset_id,
+                &["value_1".to_string()],
+                Some(before_delete_generation),
+            )
+            .expect("delete column change set");
+        let after_delete_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after delete");
+        let mut after_delete =
+            natural_navigation_request(dataset_id, after_delete_generation, 4095, 2);
+        after_delete.column_ids = vec![];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_delete)
+            .expect("natural navigation after column delete");
+
+        engine
+            .apply_change_set(&delete_change_set, true)
+            .expect("undo column delete");
+        let after_restore_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after restore");
+        let restored_value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        let mut after_restore =
+            natural_navigation_request(dataset_id, after_restore_generation, 4095, 2);
+        after_restore.column_ids = vec![restored_value_id];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_restore)
+            .expect("natural navigation after column-only restore");
+    }
+
+    #[test]
+    fn natural_navigation_csv_import_rolls_back_visible_metadata_when_anchor_publication_fails() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let csv_path = std::env::temp_dir().join(format!(
+            "statsplayground-natural-navigation-{}.csv",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&csv_path, "value\n1\n2\n").expect("write csv fixture");
+        engine
+            .conn
+            .execute("DROP TABLE _table_navigation_anchors", [])
+            .expect("induce anchor publication failure");
+
+        let result = engine.import_csv(
+            "natural_csv_rollback",
+            "Natural CSV rollback",
+            csv_path.to_str().expect("utf-8 csv fixture path"),
+        );
+        let _ = std::fs::remove_file(csv_path);
+
+        assert!(result.is_err());
+        assert!(engine.get_dataset_meta("natural_csv_rollback").is_err());
+        assert!(engine.list_datasets().expect("list datasets").is_empty());
     }
 
     #[test]
@@ -12567,6 +13857,249 @@ mod tests {
             .expect("status output column");
         assert_eq!(output_rows[0][status_index], serde_json::json!("new"));
         assert_eq!(output_rows[1][status_index], serde_json::json!("keep"));
+    }
+
+    #[test]
+    fn query_table_navigation_window_returns_only_requested_columns_in_requested_order() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_order");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_order");
+        let value_id = descriptors[0].0.clone();
+        let category_id = descriptors[1].0.clone();
+
+        let result = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-order".to_string(),
+                dataset_id: "navigation_order".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec![category_id, value_id],
+                sort: None,
+                filters: vec![],
+                session_id: Some("session-order".to_string()),
+                include_transport_diagnostics: false,
+            })
+            .expect("navigation query should succeed");
+
+        assert_eq!(result.version, 1);
+        assert_eq!(result.columns, vec!["_row_id", "category", "value"]);
+        assert_eq!(result.column_types, vec!["BIGINT", "VARCHAR", "DOUBLE"]);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].len(), 3);
+        assert_eq!(result.request_id, "req-order");
+        assert_eq!(result.session_id.as_deref(), Some("session-order"));
+    }
+
+    #[test]
+    fn query_table_navigation_window_rejects_duplicate_unknown_and_stale_requests() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_validation");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_validation");
+        let value_id = descriptors[0].0.clone();
+
+        let duplicate_error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-duplicate".to_string(),
+                dataset_id: "navigation_validation".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec![value_id.clone(), value_id.clone()],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("duplicate column ids must be rejected");
+        assert!(
+            matches!(duplicate_error, AppError::InvalidParam(message) if message.contains("duplicate"))
+        );
+
+        let unknown_error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-unknown".to_string(),
+                dataset_id: "navigation_validation".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec!["missing-column".to_string()],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("unknown column ids must be rejected");
+        assert!(
+            matches!(unknown_error, AppError::InvalidParam(message) if message.contains("unknown"))
+        );
+
+        let stale_error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-stale".to_string(),
+                dataset_id: "navigation_validation".to_string(),
+                generation: generation + 1,
+                start: 0,
+                count: 10,
+                column_ids: vec![value_id],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("stale generation must be rejected");
+        assert!(
+            matches!(stale_error, AppError::InvalidParam(message) if message.contains("stale dataset generation"))
+        );
+    }
+
+    #[test]
+    fn query_table_navigation_window_rejects_unresolved_projection_metadata() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_unresolved");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_unresolved");
+        let category_id = descriptors[1].0.clone();
+
+        engine
+            .conn
+            .execute(
+                "UPDATE _meta_columns SET col_name = 'missing_projection' WHERE dataset_id = ? AND column_id = ?",
+                params!["navigation_unresolved", &category_id],
+            )
+            .expect("corrupt projection metadata");
+
+        let error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-unresolved".to_string(),
+                dataset_id: "navigation_unresolved".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec![category_id],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("unresolved metadata projection must be rejected");
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("projection") || message.contains("column"))
+        );
+    }
+
+    #[test]
+    fn query_table_navigation_window_rejects_zero_and_oversized_counts() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_count_bounds");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_count_bounds");
+        let value_id = descriptors[0].0.clone();
+
+        for (count, label) in [(0_usize, "zero"), (2_001_usize, "oversized")] {
+            let mut request = navigation_request(
+                "navigation_count_bounds",
+                generation,
+                vec![value_id.clone()],
+            );
+            request.request_id = format!("req-count-{label}");
+            request.count = count;
+
+            let error = engine
+                .query_table_navigation_window(&request)
+                .expect_err("out-of-range count must be rejected");
+            assert!(
+                matches!(error, AppError::InvalidParam(message) if message.contains("between 1 and 2000"))
+            );
+        }
+    }
+
+    #[test]
+    fn query_table_navigation_window_clamps_past_dataset_end_without_error() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_clamp");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_clamp");
+        let value_id = descriptors[0].0.clone();
+
+        let mut tail_request =
+            navigation_request("navigation_clamp", generation, vec![value_id.clone()]);
+        tail_request.request_id = "req-tail-clamp".to_string();
+        tail_request.start = 1;
+        tail_request.count = 10;
+        let tail_result = engine
+            .query_table_navigation_window(&tail_request)
+            .expect("tail-overflow window should clamp to remaining rows");
+
+        assert_eq!(tail_result.start, 1);
+        assert_eq!(tail_result.total_rows, 2);
+        assert_eq!(tail_result.rows.len(), 1);
+        assert_eq!(tail_result.rows[0][0], serde_json::json!(2));
+
+        let mut past_end_request =
+            navigation_request("navigation_clamp", generation, vec![value_id]);
+        past_end_request.request_id = "req-past-end-clamp".to_string();
+        past_end_request.start = 20;
+        past_end_request.count = 10;
+        let past_end_result = engine
+            .query_table_navigation_window(&past_end_request)
+            .expect("past-end window should return an empty slice");
+
+        assert_eq!(past_end_result.start, 20);
+        assert_eq!(past_end_result.total_rows, 2);
+        assert!(past_end_result.rows.is_empty());
+    }
+
+    #[test]
+    fn query_table_navigation_window_sorts_ties_deterministically_by_row_id() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_tie_dataset(&engine, "navigation_ties");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_ties");
+        let value_id = descriptors[0].0.clone();
+        let category_id = descriptors[1].0.clone();
+
+        let mut request =
+            navigation_request("navigation_ties", generation, vec![value_id, category_id]);
+        request.request_id = "req-navigation-ties".to_string();
+        request.count = 3;
+        request.sort = Some(TableWindowSort {
+            column: "value".to_string(),
+            descending: true,
+        });
+
+        let result = engine
+            .query_table_navigation_window(&request)
+            .expect("sorted navigation query should succeed");
+
+        let row_ids = result
+            .rows
+            .iter()
+            .map(|row| row[0].clone())
+            .collect::<Vec<_>>();
+        let categories = result
+            .rows
+            .iter()
+            .map(|row| row[2].clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            row_ids,
+            vec![
+                serde_json::json!(1),
+                serde_json::json!(3),
+                serde_json::json!(2)
+            ]
+        );
+        assert_eq!(
+            categories,
+            vec![
+                serde_json::json!("beta"),
+                serde_json::json!("gamma"),
+                serde_json::json!("alpha")
+            ]
+        );
     }
 
     #[test]

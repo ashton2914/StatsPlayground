@@ -1106,6 +1106,9 @@
     "ctxDeleteSelectedRows": "刪除選取的 {{n}} 列",
     "ctxDeleteSelectedCols": "刪除選取的 {{n}} 欄",
     "ctxDeleteCol": "刪除欄 \"{{name}}\"",
+    "ctxSortAsc": "遞增排序",
+    "ctxSortDesc": "遞減排序",
+    "ctxClearSort": "清除排序",
     "ctxColProps": "欄屬性",
     "ctxColPropsBatch": "欄屬性（{{n}} 欄）",
     "calculatedColumn": {

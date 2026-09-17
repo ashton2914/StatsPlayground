@@ -268,6 +268,16 @@ function MenuDropdown({ label, children, openMenu, setOpenMenu }: {
   );
 }
 
+function formatStatusBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${bytes} B`;
+}
+
 export function Workspace() {
   const { t } = useTranslation();
   const {
@@ -2902,6 +2912,27 @@ export function Workspace() {
           <span>{statusInfo.selectionLabel || statusInfo.cellLabel}</span>
         )}
         {statusInfo?.dimensions && <span>{statusInfo.dimensions}</span>}
+        {statusInfo?.tableCacheDiagnostics && (
+          <span>
+            {statusInfo.tableCacheDiagnostics.cacheHit == null
+              ? t("workspace.tableCache.pending", { defaultValue: "Cache pending" })
+              : statusInfo.tableCacheDiagnostics.cacheHit
+                ? t("workspace.tableCache.hit", { defaultValue: "Cache hit" })
+                : t("workspace.tableCache.miss", { defaultValue: "Cache miss" })}
+            {statusInfo.tableCacheDiagnostics.diagnosticJsonEncodeMs == null
+              ? ""
+              : ` · ${t("workspace.tableCache.encodeProxy", { defaultValue: "Diagnostic JSON encode" })} ${statusInfo.tableCacheDiagnostics.diagnosticJsonEncodeMs.toFixed(3)} ms`}
+            {statusInfo.tableCacheDiagnostics.postReceivePaintMs == null
+              ? ""
+              : ` · ${t("workspace.tableCache.postReceivePaint", { defaultValue: "Post-receive paint" })} ${statusInfo.tableCacheDiagnostics.postReceivePaintMs.toFixed(3)} ms`}
+            {statusInfo.tableCacheDiagnostics.diagnosticJsonBytes == null
+              ? ""
+              : ` · ${t("workspace.tableCache.responseBytes", { defaultValue: "Diagnostic JSON bytes" })} ${formatStatusBytes(statusInfo.tableCacheDiagnostics.diagnosticJsonBytes)}`}
+            {` · ${statusInfo.tableCacheDiagnostics.retainedRows.toLocaleString()} ${t("workspace.tableCache.rows", { defaultValue: "rows" })}`}
+            {` · ${statusInfo.tableCacheDiagnostics.entryCount.toLocaleString()} ${t("workspace.tableCache.entries", { defaultValue: "entries" })}`}
+            {` · ${formatStatusBytes(statusInfo.tableCacheDiagnostics.estimatedBytes)}`}
+          </span>
+        )}
         {activeDatasetId && <TableZoomControl />}
         {saving && (
           <span>

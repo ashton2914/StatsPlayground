@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::time::Instant;
 
 use duckdb::params;
@@ -15,9 +16,11 @@ use crate::models::graph_data::{
     TimeSeriesXInterpretation,
 };
 use crate::models::save::SaveProjectRequest;
+use crate::models::table::TableNavigationRequest;
 use crate::services::calculated_column_service::{
     CalculatedColumnService, UpsertCalculatedColumnInput,
 };
+use crate::services::data_service::DataService;
 #[cfg(test)]
 use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
@@ -42,6 +45,7 @@ enum Operation {
     Save,
     Datalink,
     Calculated,
+    TableNavigation,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -51,6 +55,8 @@ struct Options {
     operation: Operation,
     chain_depth: usize,
     runs: usize,
+    position_percent: Option<u32>,
+    payload_stdout: bool,
 }
 
 #[derive(Serialize)]
@@ -61,11 +67,17 @@ struct PerformanceReport {
     operation: Operation,
     setup_ms: u128,
     operation_ms: u128,
+    position_percent: Option<u32>,
+    target_start: Option<usize>,
+    lock_wait_ms: Option<u128>,
+    count_ms: Option<u128>,
+    anchor_ms: Option<u128>,
     total_ms: u128,
     result_rows: usize,
     selected_columns: usize,
     query_ms: Option<u128>,
     encode_ms: Option<u128>,
+    stdout_write_ms: Option<u128>,
     decode_ms: Option<DesktopOnlyMetric>,
     draw_ms: Option<DesktopOnlyMetric>,
     processed_rows: Option<u64>,
@@ -406,6 +418,19 @@ fn parse_positive_usize(flag: &str, value: Option<String>) -> Result<usize, AppE
     Ok(parsed)
 }
 
+fn parse_position_percent(flag: &str, value: Option<String>) -> Result<u32, AppError> {
+    let value = value.ok_or_else(|| AppError::InvalidParam(format!("missing value for {flag}")))?;
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| AppError::InvalidParam(format!("invalid value for {flag}: {value}")))?;
+    if parsed > 100 {
+        return Err(AppError::InvalidParam(format!(
+            "{flag} must be between 0 and 100"
+        )));
+    }
+    Ok(parsed)
+}
+
 fn parse_args<I>(args: I) -> Result<Options, AppError>
 where
     I: IntoIterator<Item = String>,
@@ -416,6 +441,8 @@ where
         operation: Operation::Query,
         chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
         runs: 1,
+        position_percent: None,
+        payload_stdout: false,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -424,6 +451,12 @@ where
             "--columns" => options.columns = parse_positive_usize(&flag, args.next())?,
             "--chain-depth" => options.chain_depth = parse_positive_usize(&flag, args.next())?,
             "--runs" => options.runs = parse_positive_usize(&flag, args.next())?,
+            "--position-percent" => {
+                options.position_percent = Some(parse_position_percent(&flag, args.next())?);
+            }
+            "--payload-stdout" => {
+                options.payload_stdout = true;
+            }
             "--operation" => {
                 let value = args.next().ok_or_else(|| {
                     AppError::InvalidParam("missing value for --operation".into())
@@ -437,6 +470,7 @@ where
                     "save" => Operation::Save,
                     "datalink" => Operation::Datalink,
                     "calculated" => Operation::Calculated,
+                    "table-navigation" => Operation::TableNavigation,
                     _ => {
                         return Err(AppError::InvalidParam(format!(
                             "unknown operation: {value}"
@@ -447,7 +481,165 @@ where
             _ => return Err(AppError::InvalidParam(format!("unknown argument: {flag}"))),
         }
     }
+
+    if options.operation == Operation::TableNavigation && options.position_percent.is_none() {
+        return Err(AppError::InvalidParam(
+            "table-navigation requires --position-percent".into(),
+        ));
+    }
+    if options.operation != Operation::TableNavigation && options.position_percent.is_some() {
+        return Err(AppError::InvalidParam(
+            "--position-percent is only valid with table-navigation".into(),
+        ));
+    }
+    if options.operation != Operation::TableNavigation && options.payload_stdout {
+        return Err(AppError::InvalidParam(
+            "--payload-stdout is only valid with table-navigation".into(),
+        ));
+    }
+
     Ok(options)
+}
+
+fn execute_table_navigation(
+    options: Options,
+    total_started: Instant,
+) -> Result<PerformanceReport, AppError> {
+    let position_percent = options.position_percent.ok_or_else(|| {
+        AppError::InvalidParam("table-navigation requires --position-percent".into())
+    })?;
+    let setup_started = Instant::now();
+    let state = AppState::new()?;
+    let dataset_id = "performance-table-navigation-baseline";
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.seed_benchmark_table(
+            dataset_id,
+            "Performance Table Navigation Baseline",
+            options.rows,
+            options.columns,
+        )?;
+    }
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let operation_started = Instant::now();
+    let lock_started = Instant::now();
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let lock_wait_ms = lock_started.elapsed().as_millis();
+
+    let count_started = Instant::now();
+    let meta = db.get_dataset_meta(dataset_id)?;
+    let count_ms = count_started.elapsed().as_millis();
+    let total_rows = usize::try_from(meta.row_count).map_err(|_| {
+        AppError::InvalidParam("table navigation row count does not fit usize".into())
+    })?;
+    let generation = meta.generation;
+    drop(db);
+
+    let data_service = DataService::new(&state);
+    let column_ids = data_service
+        .get_column_descriptors(dataset_id)?
+        .into_iter()
+        .map(|column| column.column_id)
+        .collect::<Vec<_>>();
+
+    let anchor_started = Instant::now();
+    let visible_rows = 500usize;
+    let max_start = total_rows.saturating_sub(visible_rows);
+    let target_start = if max_start == 0 {
+        0
+    } else {
+        let ratio = position_percent as f64 / 100.0;
+        ((max_start as f64) * ratio)
+            .round()
+            .clamp(0.0, max_start as f64) as usize
+    };
+    let anchor_ms = anchor_started.elapsed().as_millis();
+
+    let query_started = Instant::now();
+    let request = TableNavigationRequest {
+        version: 1,
+        request_id: "performance-table-navigation".to_string(),
+        dataset_id: dataset_id.to_string(),
+        generation,
+        start: target_start,
+        count: visible_rows,
+        column_ids,
+        sort: None,
+        filters: Vec::new(),
+        session_id: None,
+        include_transport_diagnostics: false,
+    };
+    let window = data_service.query_table_navigation_window(&request)?;
+    let query_ms = query_started.elapsed().as_millis();
+
+    let encode_started = Instant::now();
+    let encoded_window =
+        serde_json::to_vec(&window).map_err(|error| AppError::InvalidParam(error.to_string()))?;
+    let encode_ms = encode_started.elapsed().as_millis();
+    let stdout_write_ms = if options.payload_stdout {
+        let stdout_write_started = Instant::now();
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(&encoded_window)
+            .map_err(|error| AppError::FileIO(error.to_string()))?;
+        stdout
+            .flush()
+            .map_err(|error| AppError::FileIO(error.to_string()))?;
+        Some(stdout_write_started.elapsed().as_millis())
+    } else {
+        None
+    };
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: options.columns,
+        operation: options.operation,
+        setup_ms,
+        operation_ms: operation_started.elapsed().as_millis(),
+        position_percent: Some(position_percent),
+        target_start: Some(target_start),
+        lock_wait_ms: Some(lock_wait_ms),
+        count_ms: Some(count_ms),
+        anchor_ms: Some(anchor_ms),
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows: window.rows.len(),
+        selected_columns: window.columns.len(),
+        query_ms: Some(query_ms),
+        encode_ms: Some(encode_ms),
+        stdout_write_ms,
+        decode_ms: None,
+        draw_ms: None,
+        processed_rows: None,
+        source_rows: None,
+        chunks: None,
+        transferred_bytes: Some(encoded_window.len() as u64),
+        projection_passes: None,
+        invalid_x_count: None,
+        archive_bytes: 0,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        process_memory: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: None,
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
+    })
 }
 
 fn build_graph_request(dataset_id: &str, generation: u64) -> GraphDataRequest {
@@ -780,6 +972,11 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows: usize::try_from(completion.processed_rows).map_err(|_| {
             AppError::InvalidParam("graph processed row count does not fit usize".to_string())
@@ -787,6 +984,7 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         selected_columns,
         query_ms: Some(query_ms),
         encode_ms: Some(encode_ms),
+        stdout_write_ms: None,
         decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
         draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
         processed_rows: Some(completion.processed_rows),
@@ -874,6 +1072,11 @@ fn execute_time_series_graph(
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows: usize::try_from(completion.processed_rows).map_err(|_| {
             AppError::InvalidParam("time series processed row count does not fit usize".to_string())
@@ -881,6 +1084,7 @@ fn execute_time_series_graph(
         selected_columns: capture.selected_columns,
         query_ms: Some(capture.query_ms),
         encode_ms: Some(capture.encode_ms),
+        stdout_write_ms: None,
         decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
         draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
         processed_rows: Some(completion.processed_rows),
@@ -923,6 +1127,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     }
 
     let total_started = Instant::now();
+    if options.operation == Operation::TableNavigation {
+        return execute_table_navigation(options, total_started);
+    }
     if options.operation == Operation::Graph {
         return execute_graph(options, total_started);
     }
@@ -984,6 +1191,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         Operation::Save => unreachable!("save is handled before this branch"),
         Operation::Datalink => unreachable!("datalink is handled before this branch"),
         Operation::Calculated => unreachable!("calculated is handled before this branch"),
+        Operation::TableNavigation => {
+            unreachable!("table-navigation is handled before this branch")
+        }
     };
     let operation_ms = operation_started.elapsed().as_millis();
 
@@ -993,11 +1203,17 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows,
         selected_columns,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
@@ -1087,11 +1303,17 @@ fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
         operation: options.operation,
         setup_ms,
         operation_ms: median_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows: options.rows,
         selected_columns: options.chain_depth,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: None,
         draw_ms: None,
         processed_rows: Some(
@@ -1469,11 +1691,17 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows,
         selected_columns: 0,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
@@ -1612,11 +1840,17 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows,
         selected_columns: 0,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
@@ -1683,9 +1917,14 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 
 pub fn run_cli() -> Result<(), String> {
     let options = parse_args(std::env::args().skip(1)).map_err(|error| error.to_string())?;
+    let payload_stdout = options.payload_stdout;
     let report = execute(options).map_err(|error| error.to_string())?;
     let json = serde_json::to_string(&report).map_err(|error| error.to_string())?;
-    println!("{json}");
+    if payload_stdout {
+        eprintln!("{json}");
+    } else {
+        println!("{json}");
+    }
     if let Some(failure) = report.qualification_failure() {
         return Err(failure.to_string());
     }
@@ -1832,6 +2071,8 @@ mod tests {
             operation: Operation::Calculated,
             chain_depth: 2,
             runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 
@@ -1846,6 +2087,195 @@ mod tests {
         let options = parse_args(["--operation", "time-series-graph"].map(String::from)).unwrap();
 
         assert_eq!(options.operation, Operation::TimeSeriesGraph);
+    }
+
+    #[test]
+    fn parses_table_navigation_operation() {
+        let options = parse_args(
+            [
+                "--rows",
+                "10000000",
+                "--columns",
+                "20",
+                "--operation",
+                "table-navigation",
+                "--position-percent",
+                "99",
+            ]
+            .map(String::from),
+        )
+        .unwrap();
+
+        assert_eq!(options.operation, Operation::TableNavigation);
+        assert_eq!(options.position_percent, Some(99));
+    }
+
+    #[test]
+    fn performance_cli_rejects_table_navigation_percent_above_100() {
+        let error = parse_args(
+            [
+                "--operation",
+                "table-navigation",
+                "--position-percent",
+                "101",
+            ]
+            .map(String::from),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn performance_cli_rejects_position_percent_for_other_operations() {
+        let error =
+            parse_args(["--operation", "query", "--position-percent", "50"].map(String::from))
+                .unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn performance_cli_reports_table_navigation_metrics_shape() {
+        let report = execute(Options {
+            rows: 1_000,
+            columns: 20,
+            operation: Operation::TableNavigation,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: Some(99),
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(
+            json.get("operation").and_then(|value| value.as_str()),
+            Some("table_navigation")
+        );
+        assert_eq!(
+            json.get("positionPercent").and_then(|value| value.as_u64()),
+            Some(99)
+        );
+        assert!(json
+            .get("targetStart")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("lockWaitMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("countMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("anchorMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("queryMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("encodeMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("totalMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert_eq!(
+            json.get("resultRows").and_then(|value| value.as_u64()),
+            Some(500)
+        );
+        assert!(json
+            .get("transferredBytes")
+            .and_then(|value| value.as_u64())
+            .is_some());
+    }
+
+    #[test]
+    fn performance_cli_table_navigation_uses_natural_service_payload_shape() {
+        let rows = 1_000;
+        let columns = 4;
+        let position_percent = 50;
+        let state = AppState::new().expect("state");
+        {
+            let db = state.db.lock().expect("db lock");
+            db.seed_benchmark_table(
+                "performance-table-navigation-baseline",
+                "Performance Table Navigation Baseline",
+                rows,
+                columns,
+            )
+            .expect("seed table");
+        }
+
+        let service = DataService::new(&state);
+        let meta = {
+            let db = state.db.lock().expect("db lock");
+            db.get_dataset_meta("performance-table-navigation-baseline")
+                .expect("meta")
+        };
+        let total_rows = usize::try_from(meta.row_count).expect("row count fits usize");
+        let visible_rows = 500usize;
+        let max_start = total_rows.saturating_sub(visible_rows);
+        let target_start = if max_start == 0 {
+            0
+        } else {
+            let ratio = position_percent as f64 / 100.0;
+            ((max_start as f64) * ratio)
+                .round()
+                .clamp(0.0, max_start as f64) as usize
+        };
+        let column_ids = service
+            .get_column_descriptors("performance-table-navigation-baseline")
+            .expect("columns")
+            .into_iter()
+            .map(|column| column.column_id)
+            .collect::<Vec<_>>();
+        let request = TableNavigationRequest {
+            version: 1,
+            request_id: "performance-table-navigation".to_string(),
+            dataset_id: "performance-table-navigation-baseline".to_string(),
+            generation: meta.generation,
+            start: target_start,
+            count: visible_rows,
+            column_ids,
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        };
+        let mut natural_result = service
+            .query_table_navigation_window(&request)
+            .expect("natural navigation result");
+        natural_result.timings.total_ms = 0;
+        let minimum_transferred_bytes = serde_json::to_vec(&natural_result)
+            .expect("natural navigation json")
+            .len() as u64;
+
+        let report = execute(Options {
+            rows,
+            columns,
+            operation: Operation::TableNavigation,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: Some(position_percent),
+            payload_stdout: false,
+        })
+        .expect("table navigation benchmark");
+
+        natural_result.timings.total_ms = u64::try_from(report.total_ms).unwrap_or(u64::MAX);
+        let maximum_transferred_bytes = serde_json::to_vec(&natural_result)
+            .expect("natural navigation json")
+            .len() as u64;
+        assert!(matches!(
+            report.transferred_bytes,
+            Some(bytes) if bytes >= minimum_transferred_bytes && bytes <= maximum_transferred_bytes
+        ));
+        assert_eq!(report.selected_columns, natural_result.columns.len());
     }
 
     #[test]
@@ -1864,6 +2294,8 @@ mod tests {
                 operation,
                 chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
                 runs: 1,
+                position_percent: None,
+                payload_stdout: false,
             })
             .unwrap();
 
@@ -1955,6 +2387,8 @@ mod tests {
             operation: Operation::Graph,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
             runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 
@@ -1971,6 +2405,8 @@ mod tests {
             operation: Operation::Graph,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
             runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 
@@ -2013,6 +2449,8 @@ mod tests {
             operation: Operation::TimeSeriesGraph,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
             runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 
@@ -2182,6 +2620,8 @@ mod tests {
             operation: Operation::Graph,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
             runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         });
 
         match result {
@@ -2220,6 +2660,8 @@ mod tests {
             operation: Operation::Save,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
             runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 

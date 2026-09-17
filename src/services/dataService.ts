@@ -12,6 +12,12 @@ import type {
   CreateTableFromRowsRequest,
   SqlQueryResult,
   TableFilterValue,
+  TableNavigationBenchmarkFixture,
+  TableNavigationBenchmarkRequest,
+  TableNavigationRequest,
+  TableNavigationResult,
+  TableQuerySessionRequest,
+  TableQuerySessionStatus,
   TableQueryParams,
   TableQueryResult,
   TableWindowRequest,
@@ -40,6 +46,30 @@ export const dataService = {
   /** 查询数据表的有界行窗口 */
   queryTableWindow: (request: TableWindowRequest) =>
     invoke<TableWindowResult>("query_table_window", { request }),
+
+  /** 按稳定列 ID 查询数据表的可见列窗口 */
+  queryTableNavigationWindow: (request: TableNavigationRequest) =>
+    invoke<TableNavigationResult>("query_table_navigation_window", { request }),
+
+  /** 准备仅供本地基准使用的确定性大表导航数据集 */
+  prepareTableNavigationBenchmark: (request: TableNavigationBenchmarkRequest) =>
+    invoke<TableNavigationBenchmarkFixture>("prepare_table_navigation_benchmark", { request }),
+
+  /** 为筛选/排序签名准备或复用后端窗口查询会话 */
+  prepareTableQuerySession: (request: TableQuerySessionRequest) =>
+    invoke<TableQuerySessionStatus>("prepare_table_query_session", { request }),
+
+  /** 查询后端窗口查询会话状态 */
+  getTableQuerySessionStatus: (sessionId: string) =>
+    invoke<TableQuerySessionStatus>("get_table_query_session_status", { sessionId }),
+
+  /** 释放后端窗口查询会话 */
+  releaseTableQuerySession: (sessionId: string) =>
+    invoke<void>("release_table_query_session", { sessionId }),
+
+  /** 取消指定的可见列窗口导航请求 */
+  cancelTableNavigationRequest: (requestId: string) =>
+    invoke<void>("cancel_table_navigation_request", { requestId }),
 
   /** 获取数据表当前版本，用于窗口缓存失效 */
   getDatasetGeneration: (datasetId: string) =>

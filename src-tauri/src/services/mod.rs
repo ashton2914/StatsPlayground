@@ -19,6 +19,7 @@ pub mod spprj_archive;
 pub mod stats_service;
 pub mod streaming_project_writer;
 pub mod table_mutation_coordinator;
+pub mod table_navigation_service;
 pub mod table_transform_domain;
 pub mod table_transform_service;
 pub mod tabulate_service;

@@ -1255,6 +1255,9 @@
     "ctxDeleteSelectedRows": "Delete selected {{n}} rows",
     "ctxDeleteSelectedCols": "Delete selected {{n}} columns",
     "ctxDeleteCol": "Delete column \"{{name}}\"",
+    "ctxSortAsc": "Sort ascending",
+    "ctxSortDesc": "Sort descending",
+    "ctxClearSort": "Clear sort",
     "ctxColProps": "Column properties",
     "ctxColPropsBatch": "Column properties ({{n}} columns)",
     "calculatedColumn": {

@@ -108,7 +108,7 @@ assert.deepEqual(
       rule: {
         kind: "categorical",
         field: { name: "category", type: "nominal" },
-        selected: ["A"],
+        selected: ["B", "A", "A"],
       },
     },
   ]),
@@ -116,7 +116,7 @@ assert.deepEqual(
     { op: "AND", rule: { kind: "continuous", field: "amount", min: 10, max: null } },
     {
       op: "OR",
-      rule: { kind: "categorical", field: "category", selected: ["A"], exclude: false },
+      rule: { kind: "categorical", field: "category", selected: ["A", "B"], exclude: false },
     },
   ],
 );
