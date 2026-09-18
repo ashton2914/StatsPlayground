@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
 use std::mem;
-use std::path::PathBuf;
 use std::time::Instant;
 
 use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
@@ -35,7 +34,6 @@ use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprint
 /// DuckDB engine wrapper
 pub struct DuckDbEngine {
     conn: Connection,
-    shared_db_path: PathBuf,
     _shared_db_dir: TempDir,
 }
 
@@ -158,7 +156,7 @@ impl DuckDbEngine {
     }
 
     pub fn open_secondary_connection(&self) -> Result<Connection, AppError> {
-        Connection::open(&self.shared_db_path).map_err(AppError::from)
+        self.conn.try_clone().map_err(AppError::from)
     }
 
     fn bump_dataset_generation(&self, dataset_id: &str) -> Result<(), AppError> {
@@ -391,7 +389,6 @@ impl DuckDbEngine {
 
         Ok(Self {
             conn,
-            shared_db_path,
             _shared_db_dir: shared_db_dir,
         })
     }
@@ -9350,6 +9347,19 @@ mod tests {
         archive_cell_to_json_call_count, reset_archive_cell_to_json_call_count,
     };
     use duckdb::types::Decimal;
+
+    #[test]
+    fn secondary_connection_shares_the_open_database() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        engine.conn().execute_batch("CREATE TABLE secondary_probe(value BIGINT); INSERT INTO secondary_probe VALUES (42);")
+            .expect("seed primary connection");
+
+        let secondary = engine.open_secondary_connection().expect("secondary connection");
+        let value: i64 = secondary.query_row("SELECT value FROM secondary_probe", [], |row| row.get(0))
+            .expect("read through secondary connection");
+
+        assert_eq!(value, 42);
+    }
 
     fn seed_transform_value_table(engine: &DuckDbEngine, id: &str, name: &str, values: &[i64]) {
         engine
