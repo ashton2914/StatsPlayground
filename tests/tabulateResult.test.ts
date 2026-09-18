@@ -100,6 +100,14 @@ const tabulateCss = readFileSync(
   new URL("../src/components/tabulate/tabulate.css", import.meta.url),
   "utf8",
 );
+const tabulateTypesSource = readFileSync(
+  new URL("../src/types/tabulate.ts", import.meta.url),
+  "utf8",
+);
+const tabulateServiceSource = readFileSync(
+  new URL("../src/services/tabulateService.ts", import.meta.url),
+  "utf8",
+);
 const englishLocale = JSON.parse(readFileSync(
   new URL("../src/i18n/locales/en.json", import.meta.url),
   "utf8",
@@ -142,6 +150,30 @@ assert.match(tabulateViewSource, /exporting/);
 assert.match(tabulateViewSource, /readOnly/);
 assert.match(tabulateResultTableSource, /fa-table-arrow-up/);
 assert.match(tabulateResultTableSource, /sp-tabulate-results-toolbar/);
+assert.match(tabulateTypesSource, /interface TabulateSessionRequest/);
+assert.doesNotMatch(
+  tabulateTypesSource.match(/interface TabulateSessionRequest \{[\s\S]*?\n\}/)?.[0] ?? "",
+  /maxResultCells/,
+);
+assert.doesNotMatch(
+  tabulateTypesSource.match(/interface TabulateWindowResult \{[\s\S]*?\n\}/)?.[0] ?? "",
+  /cells:\s*Array<number \| null>/,
+);
+for (const command of [
+  "prepare_tabulate_session",
+  "get_tabulate_session_status",
+  "query_tabulate_window",
+  "query_tabulate_totals",
+  "cancel_tabulate_request",
+  "release_tabulate_session",
+  "materialize_tabulate_table",
+]) {
+  assert.equal(
+    (tabulateServiceSource.match(new RegExp(`"${command}"`, "g")) ?? []).length,
+    1,
+    `${command} must have exactly one TypeScript wrapper`,
+  );
+}
 assert.equal(englishLocale.tabulate.fields, "Columns");
 assert.equal(englishLocale.tabulate.searchFields, "Search columns");
 assert.equal(englishLocale.tabulate.rowsEmptyHint, "Drag columns here to build row nesting.");
