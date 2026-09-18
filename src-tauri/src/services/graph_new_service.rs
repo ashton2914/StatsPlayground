@@ -999,6 +999,32 @@ mod tests {
     use crate::state::AppState;
 
     #[test]
+    fn graph_new_persistence_fresh_transport_survives_closed_owner_and_late_controls() {
+        let runtime = super::GraphNewRuntime::default();
+        let mut request: super::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId": "old-request", "sessionId": "old-transport", "datasetId": "dataset",
+            "datasetGeneration": 7, "xColumnId": "column-x", "yColumnId": "column-y",
+            "width": 640, "height": 360, "devicePixelRatio": 1,
+            "rendererGeneration": 1, "cameraGeneration": 0
+        })).unwrap();
+        runtime.begin(&request).unwrap();
+        runtime.close_session("old-transport", 1).unwrap();
+        request.renderer_generation = 2;
+        assert!(matches!(runtime.begin(&request), Err(crate::error::AppError::Cancelled(_))));
+        request.session_id = "fresh-transport".into();
+        request.request_id = "fresh-request".into();
+        runtime.begin(&request).unwrap();
+        assert!(runtime.is_current(&request));
+        runtime.close_session("old-transport", 1).unwrap();
+        runtime.cancel_request("old-transport", "old-request", 1).unwrap();
+        runtime.close("old-transport").unwrap();
+        assert!(runtime.is_current(&request), "late old controls cannot close the fresh transport");
+        request.renderer_generation = 3;
+        runtime.begin(&request).unwrap();
+        assert!(runtime.is_current(&request));
+    }
+
+    #[test]
     fn graph_new_review_extreme_completion_is_finite() {
         let state = AppState::new().unwrap();
         let (x_id, y_id) = seed_dense_dataset(&state, "extreme", 3);

@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
-import { cameraTransform, createCameraScheduler, isCameraDomain, panCamera, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
+import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, zoomCamera } from "../src/components/graphBuilderNew/graphNewCamera.ts";
 
 const domain = { xMin: 0, xMax: 100, yMin: -50, yMax: 50 };
 const plot = { x: 60, y: 10, width: 400, height: 200 };
+assert.equal(isRestorableCamera(domain, domain), true);
+assert.equal(isRestorableCamera({ xMin: 25, xMax: 75, yMin: -25, yMax: 25 }, domain), true);
+for (const invalid of [
+  { xMin: 25, xMax: 75, yMin: -50, yMax: 50 },
+  { xMin: 0, xMax: 1e-5, yMin: 0, yMax: 1e-5 },
+  { xMin: 0, xMax: 500, yMin: 0, yMax: 500 },
+  { xMin: 1000, xMax: 1100, yMin: 0, yMax: 100 },
+  { xMin: -1e308, xMax: 1e308, yMin: -1e308, yMax: 1e308 },
+]) assert.equal(isRestorableCamera(invalid, domain), false);
 const zoomed = zoomCamera(domain, domain, plot, { x: 160, y: 60 }, -Math.log(2) / 0.002);
 assert.deepEqual(zoomed, { xMin: 12.5, xMax: 62.5, yMin: -12.5, yMax: 37.5 });
 const transform = cameraTransform(domain, zoomed, plot);
@@ -20,6 +29,7 @@ for (const extreme of [
   let current = extreme;
   for (let index = 0; index < 500; index++) current = zoomCamera(current, extreme, plot, { x: 300, y: 100 }, -1000);
   assert.ok(isCameraDomain(current));
+  assert.equal(isRestorableCamera(current, extreme), true);
   assert.ok(Number.isFinite(cameraTransform(extreme, current, plot).scale));
   assert.ok(isCameraDomain(panCamera(current, extreme, plot, 1e300, -1e300)));
 }

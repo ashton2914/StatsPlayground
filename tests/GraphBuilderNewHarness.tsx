@@ -5,9 +5,13 @@ import i18n from "../src/i18n";
 import { dataService } from "../src/services/dataService";
 import { graphNewService, type GraphNewRenderRequest } from "../src/services/graphNewService";
 import { useGraphBuilderNewStore } from "../src/stores/useGraphBuilderNewStore";
+import { useProjectStore } from "../src/stores/useProjectStore";
+import type { GraphBuilderNewCamera, GraphBuilderNewDocument } from "../src/types/graphBuilderNew";
 import type { ColumnDescriptor, DatasetMeta } from "../src/types/data";
 
 interface GraphBuilderNewHarnessProps {
+  deferClose?: boolean;
+  savedCamera?: GraphBuilderNewCamera;
   locale?: "en" | "zh-CN";
   axisFixture?: "nanoTime" | "microTime" | "microDuration" | "unicode";
   mode?: "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "slow" | "renderError" | "unknownCount" | "largeExact" | "mixedFields" | "unsupportedFields" | "deferredFields";
@@ -39,13 +43,16 @@ const REPLACEMENT_FIELDS: ColumnDescriptor[] = [
   { columnId: "new-text", name: "New text", sqlType: "VARCHAR" },
 ];
 
-export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture }: GraphBuilderNewHarnessProps) {
+export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture, savedCamera, deferClose = false }: GraphBuilderNewHarnessProps) {
   const [ready, setReady] = useState(false);
   const [descriptorCalls, setDescriptorCalls] = useState(0);
   const [closeCount, setCloseCount] = useState(0);
   const [lastRequest, setLastRequest] = useState<GraphNewRenderRequest | null>(null);
   const [renderTimes, setRenderTimes] = useState<number[]>([]);
   const [cancelModes, setCancelModes] = useState<boolean[]>([]);
+  const [closedIds, setClosedIds] = useState<string[]>([]);
+  const [cancelledIds, setCancelledIds] = useState<string[]>([]);
+  const pendingCloses = useRef<(() => void)[]>([]);
   const [metrics, setMetrics] = useState({ renders: 0, cancels: 0, closes: 0, presented: 0, maximumActive: 0, settled: 0 });
   const [width, setWidth] = useState(960);
   const [invalidated, setInvalidated] = useState(false);
@@ -54,6 +61,8 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
   const refreshedFields = useRef(false);
   const pendingFields = useRef<{ resolve: (fields: ColumnDescriptor[]) => void; reject: (error: Error) => void } | null>(null);
   const selectedSession = useGraphBuilderNewStore((state) => state.sessions[0] ?? null);
+  const documents = useGraphBuilderNewStore((state) => state.items);
+  const dirty = useProjectStore((state) => state.dirty);
 
   useEffect(() => {
     const previous = i18n.language;
@@ -64,6 +73,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
   useEffect(() => {
     const previousGetColumnDescriptors = dataService.getColumnDescriptors;
     const previousStoreState = useGraphBuilderNewStore.getState();
+    const previousProjectState = useProjectStore.getState();
     const previousRender = graphNewService.render;
     const previousClose = graphNewService.close;
     const previousInternals = (window as any).__TAURI_INTERNALS__;
@@ -72,11 +82,12 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
     if (["render", "slow", "renderError", "unknownCount", "largeExact", "mixedFields", "unsupportedFields", "deferredFields"].includes(mode)) {
       (window as any).__TAURI_INTERNALS__ = {};
       graphNewService.close = async (sessionId) => {
+        setClosedIds((value) => [...value, sessionId]);
+        if (deferClose) await new Promise<void>((resolve) => pendingCloses.current.push(resolve));
         closedSessions.add(sessionId);
         setMetrics((value) => ({ ...value, closes: value.closes + 1 }));
       };
       graphNewService.render = (request, handlers) => {
-        if (closedSessions.has(request.sessionId)) throw new Error("graph_new_cancelled");
         setLastRequest(request);
         setRenderTimes((value) => [...value, performance.now()]);
         active += 1;
@@ -90,6 +101,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
         const completion = new Promise<any>((resolve, reject) => setTimeout(() => {
           active -= 1;
           setMetrics((value) => ({ ...value, settled: value.settled + 1 }));
+          if (closedSessions.has(request.sessionId)) { handlers.onError("graph_new_cancelled"); reject(new Error("graph_new_cancelled")); return; }
           if (mode === "renderError") { handlers.onError("graph_new_render_failed"); reject(new Error("private /user/source.db")); return; }
           const pixels = new Uint8Array(header.byteLength).fill(255);
           for (let row = Math.floor(frameHeight / 3); row < Math.floor(frameHeight * 2 / 3); row++) {
@@ -131,9 +143,10 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
               height: Math.floor((request.height - 32) * request.devicePixelRatio) - Math.ceil(16 * request.devicePixelRatio) },
             sourceProjectionQueryCount: request.cameraDomain ? 0 : 1, renderGenerationCheckCount: 4 });
         }, mode === "slow" ? 400 : 60));
-        return { completion, canPresent: () => !cancelled && !presented,
+        return { completion, canPresent: () => !cancelled && !presented && !closedSessions.has(request.sessionId),
           markPresented: () => { presented = true; setMetrics((value) => ({ ...value, presented: value.presented + 1 })); },
           cancel: async (preserveCache = false) => {
+            setCancelledIds((value) => [...value, request.sessionId]);
             setCancelModes((value) => [...value, preserveCache]);
             if (!cancelled) setMetrics((value) => ({ ...value, cancels: value.cancels + 1 })); cancelled = true;
           },
@@ -142,15 +155,17 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
       };
     }
 
-    useGraphBuilderNewStore.setState({
-      sessions: [{
+    useProjectStore.setState({ dirty: false, readOnly: false });
+    useGraphBuilderNewStore.getState().loadFromProject([{
+        version: 1,
         id: SESSION_ID,
+        name: "Graph Builder-new 1",
         datasetId: DATASET.id,
-        datasetGeneration: mode === "stale" ? DATASET.generation - 1 : DATASET.generation,
-        xColumnId: mode === "invalid" ? "removed-x" : null,
-        yColumnId: mode === "invalid" ? "column-label" : null,
-      }],
-    });
+        xColumnId: mode === "invalid" ? "removed-x" : savedCamera ? "column-x" : null,
+        yColumnId: mode === "invalid" ? "column-label" : savedCamera ? "column-y" : null,
+        showMean: true, xMode: "auto", rawMode: "scatter", camera: savedCamera ?? null,
+    }]);
+    useGraphBuilderNewStore.getState().reopen(SESSION_ID, mode === "stale" ? DATASET.generation - 1 : DATASET.generation);
     dataService.getColumnDescriptors = async (datasetId) => {
       setDescriptorCalls((count) => count + 1);
       if (mode === "error") throw new Error("descriptor lookup failed");
@@ -180,8 +195,9 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
       if (previousInternals === undefined) delete (window as any).__TAURI_INTERNALS__;
       else (window as any).__TAURI_INTERNALS__ = previousInternals;
       useGraphBuilderNewStore.setState(previousStoreState, true);
+      useProjectStore.setState(previousProjectState, true);
     };
-  }, [mode, axisFixture]);
+  }, [mode, axisFixture, savedCamera, deferClose]);
 
   if (!ready) return null;
 
@@ -201,6 +217,33 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
       <output data-testid="render-request">{JSON.stringify(lastRequest)}</output>
       <output data-testid="render-times">{JSON.stringify(renderTimes)}</output>
       <output data-testid="cancel-modes">{JSON.stringify(cancelModes)}</output>
+      <output data-testid="closed-ids">{JSON.stringify(closedIds)}</output>
+      <output data-testid="cancelled-ids">{JSON.stringify(cancelledIds)}</output>
+      <button onClick={() => pendingCloses.current.splice(0).forEach((resolve) => resolve())}>Release old closes</button>
+      <button onClick={() => useGraphBuilderNewStore.getState().reopen(SESSION_ID, DATASET.generation)}>Reopen retained generation</button>
+      <output data-testid="documents">{JSON.stringify(documents)}</output>
+      <output data-testid="project-dirty">{String(dirty)}</output>
+      <button onClick={() => useProjectStore.setState({ dirty: false })}>Mark saved</button>
+      <button onClick={() => useProjectStore.setState({ readOnly: true, dirty: false })}>Begin save</button>
+      <button onClick={() => useProjectStore.setState({ readOnly: false })}>Finish save</button>
+      <button onClick={() => {
+        const saved = JSON.parse(JSON.stringify(useGraphBuilderNewStore.getState().items)) as GraphBuilderNewDocument[];
+        useGraphBuilderNewStore.getState().reset();
+        useGraphBuilderNewStore.getState().loadFromProject(saved);
+        useGraphBuilderNewStore.getState().reopen(SESSION_ID, DATASET.generation);
+        useProjectStore.setState({ dirty: false });
+        setVisible(true);
+      }}>Reload documents</button>
+      <button onClick={() => {
+        const saved = useGraphBuilderNewStore.getState().items.map((item) => ({ ...item, camera: null }));
+        useGraphBuilderNewStore.getState().loadFromProject(saved);
+        useGraphBuilderNewStore.getState().reopen(SESSION_ID, DATASET.generation);
+        useProjectStore.setState({ dirty: false });
+      }}>Reload full view</button>
+      <button onClick={() => {
+        useGraphBuilderNewStore.getState().reopen(SESSION_ID, CHANGED_DATASET.generation);
+        setFieldDataset(CHANGED_DATASET);
+      }}>Reopen current generation</button>
       <button onClick={() => setWidth((value) => value === 960 ? 800 : 960)}>Resize fixture</button>
       <button onClick={() => setInvalidated(true)}>Invalidate source</button>
       <button onClick={() => setVisible(false)}>Unmount view</button>
@@ -208,7 +251,8 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
       {["mixedFields", "unsupportedFields", "deferredFields"].includes(mode) && <>
         <button onClick={() => {
           const replacement = { ...DATASET, id: "dataset-2", name: "Replacement" };
-          useGraphBuilderNewStore.setState({ sessions: [{ id: SESSION_ID, datasetId: replacement.id, datasetGeneration: replacement.generation, xColumnId: null, yColumnId: null }] });
+          useGraphBuilderNewStore.getState().loadFromProject([{ ...useGraphBuilderNewStore.getState().items[0], datasetId: replacement.id, xColumnId: null, yColumnId: null, camera: null }]);
+          useGraphBuilderNewStore.getState().reopen(SESSION_ID, replacement.generation);
           setFieldDataset(replacement);
         }}>Replace field source</button>
         <button onClick={() => {

@@ -1,5 +1,10 @@
 {
   "graphNew": {
+    "sourceUnavailable": "源数据表已不可用。",
+    "sourceChanged": "源数据表已更改。请关闭此视图并重新打开。",
+    "fieldUnavailable": "{{field}}（不可用）",
+    "fieldsUnavailable": "已保存的字段不可用或不兼容：{{fields}}。图表定义已保留。",
+    "cameraUnavailable": "已保存的视图与当前数据范围不兼容。已保留原视图。",
     "xInterpretation": "X 解析方式",
     "rawSeries": "原始数据系列",
     "xMode": { "auto": "自动", "numeric": "数值", "time": "时间", "duration": "时长", "category": "类别" },
@@ -99,6 +104,7 @@
     "preferences": "首选项",
     "openProject": "打开项目",
     "closeProject": "关闭项目",
+    "saveAs": "另存为...",
     "table": "表格",
     "newTable": "新建数据表",
     "transform": "转换...",
@@ -150,7 +156,11 @@
     "invalidName": {
       "empty": "名称不能为空。",
       "invalidChars": "名称包含非法字符: / \\ : * ? \" < > |",
-      "edgeDots": "名称首尾不能为点或空格。"
+      "edgeDots": "名称首尾不能为点或空格。",
+      "controlChars": "请移除名称中的控制字符。",
+      "reserved": "此名称是 Windows 保留名称。请选择其他名称或重命名目标文件夹。",
+      "tooLong": "请将图形名称缩短至最多 255 个 UTF-8 字节（包括重名后缀）。",
+      "pathTooLong": "请将文件夹路径缩短至最多 4096 个 UTF-8 字节（包括嵌套文件夹）。"
     }
   },
   "dataLink": {
@@ -326,6 +336,7 @@
     "noLineage": "当前暂无可用的工作流谱系。"
   },
   "workspace": {
+    "discardUnsavedChanges": "放弃当前项目未保存的更改？",
     "directory": "目录",
     "datasourceLabel": "数据源: {{name}}",
     "datasourceDeleted": "数据源已删除",

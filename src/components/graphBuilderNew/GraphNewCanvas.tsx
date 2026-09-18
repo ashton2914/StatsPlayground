@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { graphNewService, type GraphNewAxis, type GraphNewRenderController, type GraphNewRenderRequest } from "@/services/graphNewService";
 import type { GraphNewFrame } from "@/types/graphNew";
-import { cameraTransform, createCameraScheduler, isCameraDomain, panCamera, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
+import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
 
 interface RenderJob { run: () => Promise<void>; cancel: (preserveCache?: boolean) => void }
 let activeJob: RenderJob | null = null;
@@ -25,11 +25,15 @@ function enqueue(job: RenderJob) {
   pump();
 }
 
-type Props = Pick<GraphNewRenderRequest, "sessionId" | "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode"> & {
+type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode"> & {
+  transportId: string;
   xTitle: string;
   yTitle: string;
   showMean: boolean;
   onMeanChange: (enabled: boolean) => void;
+  savedCamera?: CameraDomain | null;
+  readOnly?: boolean;
+  onCameraChange?: (camera: CameraDomain | null) => void;
 };
 
 export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks"][number]): string {
@@ -64,7 +68,7 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
   return String(tick.value);
 }
 
-export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xTitle, yTitle, showMean, onMeanChange, xMode = "auto", rawMode = "scatter" }: Props) {
+export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xTitle, yTitle, showMean, onMeanChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
   const { t } = useTranslation();
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
   const [rawAvailable, setRawAvailable] = useState(true);
@@ -74,7 +78,10 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
   const plotHost = useRef<HTMLDivElement>(null);
   const preview = useRef<HTMLCanvasElement>(null);
   const resetView = useRef<() => void>(() => {});
-  const cameraState = useRef<{ identity: string; full: CameraDomain | null; desired: CameraDomain | null; resetPending: boolean } | null>(null);
+  const cameraState = useRef<{ identity: string; full: CameraDomain | null; desired: CameraDomain | null; presented: CameraDomain | null; resetPending: boolean; restorePending: boolean; gesturePending: boolean } | null>(null);
+  const persistence = useRef({ savedCamera, readOnly, onCameraChange });
+  persistence.current = { savedCamera, readOnly, onCameraChange };
+  const [cameraRestoreRejected, setCameraRestoreRejected] = useState(false);
   const [size, setSize] = useState<{ width: number; height: number; devicePixelRatio: number } | null>(null);
   const [hasFrame, setHasFrame] = useState(false);
   const [status, setStatus] = useState("Rendering...");
@@ -119,7 +126,8 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
     if (!element || !plotElement) return;
     const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xMode]);
     if (cameraState.current?.identity !== identity) {
-      cameraState.current = { identity, full: null, desired: null, resetPending: false };
+      cameraState.current = { identity, full: null, desired: null, presented: null, resetPending: false, restorePending: true, gesturePending: false };
+      setCameraRestoreRejected(false);
     }
     const retained = cameraState.current;
     let disposed = false;
@@ -156,24 +164,43 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
     };
     const scheduler = createCameraScheduler({
       invalidate: () => { currentJob?.cancel(!disposed); if (pendingJob === currentJob) pendingJob = null; },
-      settled: (generation) => { if (!disposed && current) launch(resetPending ? null : current, generation); },
+      settled: (generation) => {
+        if (disposed || !current) return;
+        if (persistence.current.readOnly) {
+          retained.desired = current = retained.presented;
+          retained.resetPending = resetPending = false;
+          retained.gesturePending = false;
+          if (preview.current) preview.current.style.transform = "none";
+          element.removeAttribute("data-provisional");
+          setProvisional(false);
+          if (!plot) launch(current, generation);
+          return;
+        }
+        if (retained.gesturePending) {
+          retained.gesturePending = false;
+          setCameraRestoreRejected(false);
+          persistence.current.onCameraChange?.(resetPending ? null : current);
+        }
+        launch(resetPending ? null : current, generation);
+      },
     });
     const physicalPointer = (event: { clientX: number; clientY: number }) => {
       const { bounds, scale, left, top } = geometry();
       return { x: (event.clientX - bounds.x - left) / scale, y: (event.clientY - bounds.y - top) / scale };
     };
     const down = (event: PointerEvent) => {
-      if (event.button !== 0 || pointer || !current || !full || !plot) return;
+      if (persistence.current.readOnly || event.button !== 0 || pointer || !current || !full || !plot) return;
       event.preventDefault();
       plotElement.setPointerCapture(event.pointerId);
       pointer = { id: event.pointerId, ...physicalPointer(event) };
       scheduler.begin();
     };
     const move = (event: PointerEvent) => {
-      if (!pointer || pointer.id !== event.pointerId || !current || !full || !plot) return;
+      if (persistence.current.readOnly || !pointer || pointer.id !== event.pointerId || !current || !full || !plot) return;
       const next = physicalPointer(event);
       current = panCamera(current, full, plot, next.x - pointer.x, next.y - pointer.y);
       retained.desired = current;
+      retained.gesturePending = true;
       pointer = { id: event.pointerId, ...next };
       retained.resetPending = resetPending = false;
       scheduler.change(); showPreview();
@@ -185,16 +212,18 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
       scheduler.end();
     };
     const wheel = (event: WheelEvent) => {
-      if (!current || !full || !plot) return;
+      if (persistence.current.readOnly || !current || !full || !plot) return;
       event.preventDefault();
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? size.height : 1);
       current = zoomCamera(current, full, plot, physicalPointer(event), delta);
       retained.desired = current;
+      retained.gesturePending = true;
       retained.resetPending = resetPending = false;
       scheduler.change(); showPreview();
     };
     resetView.current = () => {
-      if (!full) return;
+      if (persistence.current.readOnly || !full) return;
+      retained.gesturePending = true;
       retained.desired = current = full;
       retained.resetPending = resetPending = true;
       scheduler.change(); showPreview();
@@ -265,6 +294,7 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
           } else { presented = null; current = null; full = null; }
           retained.full = full;
           retained.desired = current;
+          retained.presented = presented;
           const { scale, left, top } = geometry();
           const axis = completion.xAxis;
           context.font = `11px ${getComputedStyle(element).fontFamily}`;
@@ -297,6 +327,16 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
             ? `${completion.selectedMarks.toLocaleString()} submitted; visible count unknown`
             : `${completion.visibleRows.toLocaleString()} visible; ${completion.selectedMarks.toLocaleString()} submitted`;
           setStatus(`${completion.exactVisible ? "Exact" : "Approximate LOD"}: ${visibleStatus}; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`);
+          if (cameraDomain === null && retained.restorePending) {
+            retained.restorePending = false;
+            const saved = persistence.current.savedCamera;
+            if (saved && full && isRestorableCamera(saved, full)) {
+              retained.desired = current = saved;
+              launch(saved, scheduler.generation());
+            } else if (saved) {
+              setCameraRestoreRejected(true);
+            }
+          }
         } catch (error) {
           if (!cancelled) {
             const missing = error instanceof Error && error.message === "graph_new_missing_cache";
@@ -314,7 +354,8 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
     currentJob = job;
     enqueue(job);
     };
-    launch(resetPending ? null : current, scheduler.generation());
+    if (retained.gesturePending) scheduler.change();
+    else launch(resetPending ? null : current, scheduler.generation());
     return () => {
       disposed = true;
       scheduler.dispose(); currentJob?.cancel();
@@ -332,7 +373,7 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
     <div className="graph-new-chart">
       <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
         <label className="graph-new-mean-toggle">
-          <input type="checkbox" checked={showMean} disabled={meanFrame?.available === false}
+          <input type="checkbox" checked={showMean} disabled={readOnly || meanFrame?.available === false}
             onChange={(event) => onMeanChange(event.target.checked)} />
           {t("graphNew.mean")}
         </label>
@@ -356,12 +397,15 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
         <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
           <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
         </div>
-        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={!cameraAvailable} onClick={() => resetView.current()}>
+        <button className="graph-new-reset" aria-label="Reset view" title="Reset view" disabled={readOnly || !cameraAvailable} onClick={() => resetView.current()}>
           <i className="fa-solid fa-rotate-left" aria-hidden="true" />
         </button>
       </div>
       <span className="graph-new-x-title" data-testid="x-axis-title">{xTitle}</span>
-      <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>{provisional ? `Axes frozen; preview cropped; hatched area awaits frame. ${reason ? status : ""}` : status}</span>
+      <span className="graph-new-frame-status" role={reason ? "alert" : "status"} data-reason={reason}>
+        {cameraRestoreRejected && !reason ? <span data-testid="camera-restore-unavailable">{t("graphNew.cameraUnavailable")}</span>
+          : provisional ? `Axes frozen; preview cropped; hatched area awaits frame. ${reason ? status : ""}` : status}
+      </span>
     </div>
   );
 }

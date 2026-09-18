@@ -6,6 +6,7 @@ import {
   formatSnapshotTimestamp,
   normalizeProjectBasenameInput,
   projectFileExtension,
+  resolveProjectBasenameForKind,
   validateProjectBasename,
   type ProjectFileExtension,
 } from "../src/utils/projectFileNaming.ts";
@@ -137,4 +138,14 @@ assert.equal(allocateProjectBasename("snapshot", ".json", snapshots), "snapshot-
 const explicitExtension: ProjectFileExtension = ".spdist";
 assert.equal(explicitExtension, ".spdist");
 
+for (const name of ["a".repeat(256), "界".repeat(86), "😀".repeat(64)]) {
+  assert.equal(resolveProjectBasenameForKind(name, "graphNew", []).error, "tooLong", "native names are limited in UTF-8 bytes");
+}
+for (const name of ["a".repeat(255), "界".repeat(85), "😀".repeat(63) + "abc"]) {
+  assert.equal(resolveProjectBasenameForKind(name, "graphNew", []).basename, name);
+  assert.equal(resolveProjectBasenameForKind(name, "graphNew", [name]).error, "tooLong", "collision suffix must also fit");
+}
+assert.equal(resolveProjectBasenameForKind("a".repeat(256), "graph", []).error, null, "do not impose native limits on legacy documents");
+assert.equal(resolveProjectBasenameForKind("  Valid.spgn  ", "graphNew", []).basename, "Valid");
+for (const name of ["mid\u0085name", "mid\u009fname"]) assert.equal(validateProjectBasename(name), "controlChars");
 console.log("project-file-naming contract passed");

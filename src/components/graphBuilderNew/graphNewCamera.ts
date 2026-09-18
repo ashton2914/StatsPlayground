@@ -16,6 +16,23 @@ export function isCameraDomain(domain: CameraDomain): boolean {
 
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
 
+export function isRestorableCamera(domain: CameraDomain, full: CameraDomain): boolean {
+  if (!isCameraDomain(domain) || !isCameraDomain(full)) return false;
+  const ratios: number[] = [];
+  for (const [minimum, maximum, baseMinimum, baseMaximum] of [
+    [domain.xMin, domain.xMax, full.xMin, full.xMax],
+    [domain.yMin, domain.yMax, full.yMin, full.yMax],
+  ]) {
+    const span = baseMaximum - baseMinimum;
+    const ratio = (maximum - minimum) / span;
+    const center = (minimum - baseMinimum) / span + ratio / 2;
+    if (!Number.isFinite(ratio) || !Number.isFinite(center) || ratio < 0.999e-6 || ratio > 4.000001
+      || center < -2.000001 || center > 3.000001) return false;
+    ratios.push(ratio);
+  }
+  return Math.abs(ratios[0] / ratios[1] - 1) <= 1e-6;
+}
+
 function isUniformCamera(domain: CameraDomain, full: CameraDomain): boolean {
   const horizontal = (domain.xMax - domain.xMin) / (full.xMax - full.xMin);
   const vertical = (domain.yMax - domain.yMin) / (full.yMax - full.yMin);

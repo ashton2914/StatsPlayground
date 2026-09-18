@@ -135,6 +135,10 @@ pub struct ProjectManifest {
     /// Index of graph entries.
     #[serde(default)]
     pub graphs: Vec<GraphEntryRef>,
+    #[serde(default)]
+    pub graph_builders_new: Vec<DocumentEntryRef>,
+    #[serde(default)]
+    pub graph_new_folders: HashMap<String, String>,
     /// All folders that exist in the project, including empty ones.
     /// Paths use `/` as the separator and never start or end with `/`.
     /// Implicit ancestors (e.g. `a` for `a/b`) are still listed explicitly.
@@ -299,6 +303,7 @@ pub struct ProjectRelationship {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DocumentKind {
+    GraphBuilderNew,
     FitYByX,
     Report,
     Distribution,
@@ -510,6 +515,7 @@ pub struct ProjectBundle {
     pub manifest: ProjectManifest,
     pub tables: Vec<TableDoc>,
     pub graphs: Vec<GraphDoc>,
+    pub graph_builders_new: Vec<Value>,
     pub fit_y_by_x: Vec<Value>,
     pub fit_models: Vec<Value>,
     pub reports: Vec<Value>,
@@ -544,6 +550,10 @@ struct LegacySpprj {
     snapshots: Option<Vec<Value>>,
     #[serde(default)]
     graph_builders: Option<Vec<Value>>,
+    #[serde(default)]
+    graph_builders_new: Vec<Value>,
+    #[serde(default)]
+    graph_new_folders: HashMap<String, String>,
     #[serde(default)]
     fit_y_by_x: Option<Vec<Value>>,
     #[serde(default)]
@@ -635,6 +645,12 @@ pub fn validate_archive_manifest_and_entries(
     }
 
     validate_manifest_entry_refs(expected_manifest)?;
+    read_indexed_values(
+        &mut zip,
+        &expected_manifest.graph_builders_new,
+        DocumentKind::GraphBuilderNew,
+        true,
+    )?;
     let strict_v4_name_checks = is_format_v4(&expected_manifest.version);
 
     for table in &expected_manifest.tables {
@@ -1067,6 +1083,12 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         .or_else(|| read_entry_bytes(&mut zip, "history.json"))
         .map(|b| serde_json::from_slice::<Vec<Value>>(&b).unwrap_or_default())
         .unwrap_or_default();
+    let graph_builders_new = read_indexed_values(
+        &mut zip,
+        &manifest.graph_builders_new,
+        DocumentKind::GraphBuilderNew,
+        true,
+    )?;
     let fit_y_by_x = if !manifest.fit_y_by_x_files.is_empty() {
         read_indexed_values(
             &mut zip,
@@ -1144,6 +1166,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         manifest,
         tables,
         graphs,
+        graph_builders_new,
         fit_y_by_x,
         fit_models,
         reports,
@@ -1216,6 +1239,7 @@ fn read_indexed_values<R: Read + Seek>(
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| AppError::FileIO(format!("Invalid indexed file {}: {}", entry.file, e)))?;
         match expected_kind {
+            DocumentKind::GraphBuilderNew => validate_graph_builder_new_value(&value)?,
             DocumentKind::Report => validate_report_value(&value, &entry.file)?,
             DocumentKind::Distribution => validate_legacy_distribution_value(&value, &entry.file)?,
             DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
@@ -1389,6 +1413,8 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         created_at: legacy.created_at,
         tables: table_refs,
         graphs: graph_refs,
+        graph_builders_new: Vec::new(),
+        graph_new_folders: HashMap::new(),
         folders: Vec::new(),
         table_folders: None,
         graph_folders: None,
@@ -1417,10 +1443,11 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         dataset_filters: HashMap::new(),
     };
 
-    Ok(ProjectBundle {
+    let mut bundle = ProjectBundle {
         manifest,
         tables,
         graphs,
+        graph_builders_new: Vec::new(),
         fit_y_by_x,
         fit_models,
         reports: Vec::new(),
@@ -1431,7 +1458,9 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         snapshots: legacy.snapshots.unwrap_or_default(),
         workflows: Vec::new(),
         table_transforms: Vec::new(),
-    })
+    };
+    set_graph_builders_new(&mut bundle, legacy.graph_builders_new, legacy.graph_new_folders)?;
+    Ok(bundle)
 }
 
 /// Pull `id` and `name` out of an opaque graph builder JSON value for use in
@@ -1977,6 +2006,8 @@ pub fn build_bundle_with_workflows_and_fit_models(
             created_at,
             tables: table_refs,
             graphs: graph_refs,
+            graph_builders_new: Vec::new(),
+            graph_new_folders: HashMap::new(),
             folders: normalized_folders,
             table_folders: Some(table_folders.clone()),
             graph_folders: Some(graph_folders.clone()),
@@ -2006,6 +2037,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
         },
         tables,
         graphs,
+        graph_builders_new: Vec::new(),
         fit_y_by_x,
         fit_models,
         reports,
@@ -2017,6 +2049,114 @@ pub fn build_bundle_with_workflows_and_fit_models(
         workflows,
         table_transforms,
     })
+}
+
+fn validate_native_graph_string(value: &str, field: &str, limit: usize) -> Result<(), AppError> {
+    if value.trim().is_empty() || value.trim() != value || value.len() > limit || value.chars().any(char::is_control) {
+        return Err(AppError::InvalidParam(format!("Invalid graphBuildersNew {field}")));
+    }
+    Ok(())
+}
+
+fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
+    let fields = ["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "showMean", "xMode", "rawMode", "camera"];
+    let object = value.as_object().ok_or_else(|| AppError::InvalidParam("graphBuildersNew document must be an object".into()))?;
+    if object.len() != fields.len() || fields.iter().any(|field| !object.contains_key(*field)) {
+        return Err(AppError::InvalidParam("graphBuildersNew document has missing or unknown fields; runtime fields must not be persisted".into()));
+    }
+    if value["version"].as_u64() != Some(1) {
+        return Err(AppError::InvalidParam("Unsupported graphBuildersNew document version (expected 1)".into()));
+    }
+    for field in ["id", "name", "datasetId", "xColumnId", "yColumnId"] {
+        if matches!(field, "xColumnId" | "yColumnId") && value[field].is_null() {
+            continue;
+        }
+        let text = value[field].as_str().ok_or_else(|| AppError::InvalidParam(format!("Invalid graphBuildersNew {field}")))?;
+        validate_native_graph_string(text, field, if field == "name" { 255 } else { 256 })?;
+        if field == "name" {
+            validate_display_basename(text)?;
+        }
+    }
+    if value["showMean"].as_bool().is_none()
+        || !matches!(value["xMode"].as_str(), Some("auto" | "numeric" | "time" | "duration" | "category"))
+        || !matches!(value["rawMode"].as_str(), Some("scatter" | "line" | "pointsLine"))
+    {
+        return Err(AppError::InvalidParam("Invalid graphBuildersNew modes or showMean".into()));
+    }
+    if !value["camera"].is_null() {
+        let camera: crate::models::graph_new::GraphNewCameraDomain = serde_json::from_value(value["camera"].clone())
+            .map_err(|error| AppError::InvalidParam(format!("Invalid graphBuildersNew camera: {error}")))?;
+        camera.validate().map_err(|_| AppError::InvalidParam("graphBuildersNew camera must have finite increasing bounds and spans".into()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn set_graph_builders_new(
+    bundle: &mut ProjectBundle,
+    mut documents: Vec<Value>,
+    folders: HashMap<String, String>,
+) -> Result<(), AppError> {
+    let mut ids = HashSet::new();
+    let mut paths = HashSet::new();
+    let mut entries = Vec::with_capacity(documents.len());
+    for document in &mut documents {
+        validate_graph_builder_new_value(document)?;
+        let id = value_required_id(document, "graphBuildersNew")?;
+        ensure_unique_bundle_id(&mut ids, &id, "graphBuildersNew")?;
+        let name = value_required_name(document, "graphBuildersNew", "graphBuildersNew")?;
+        let (name, file) = allocate_archive_name(&name, &id, ".spgn", "graphs-new", &mut paths)?;
+        validate_native_graph_string(&name, "name", 255)?;
+        set_value_name(document, &name, "graphBuildersNew")?;
+        entries.push(DocumentEntryRef { id, name, file, kind: DocumentKind::GraphBuilderNew });
+    }
+    validate_graph_new_folders(&entries, &folders)?;
+    bundle.manifest.graph_builders_new = entries;
+    bundle.manifest.graph_new_folders = folders;
+    bundle.graph_builders_new = documents;
+    Ok(())
+}
+
+fn validate_graph_new_folders(entries: &[DocumentEntryRef], folders: &HashMap<String, String>) -> Result<(), AppError> {
+    let ids: HashSet<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+    for (id, folder) in folders {
+        if !ids.contains(id.as_str()) {
+            return Err(AppError::InvalidParam(format!("graphNewFolders references unknown graph: {id}")));
+        }
+        validate_native_graph_string(folder, "folder", 4096)?;
+        for component in folder.split('/') {
+            validate_display_basename(component)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_native_graph_payloads(manifest: &ProjectManifest, documents: &[Value]) -> Result<(), AppError> {
+    if manifest.graph_builders_new.len() != documents.len() {
+        return Err(AppError::InvalidParam("graphBuildersNew index/payload count mismatch".into()));
+    }
+    let mut ids = HashSet::new();
+    for document in documents {
+        validate_graph_builder_new_value(document)?;
+        let id = value_required_id(document, "graphBuildersNew")?;
+        ensure_unique_bundle_id(&mut ids, &id, "graphBuildersNew")?;
+        if !manifest.graph_builders_new.iter().any(|entry| entry.id == id && document["name"].as_str() == Some(entry.name.as_str())) {
+            return Err(AppError::InvalidParam("graphBuildersNew index/payload mismatch".into()));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn write_graph_builders_new<W: Write + Seek>(
+    zip: &mut zip::ZipWriter<W>, manifest: &ProjectManifest, documents: &[Value],
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), AppError> {
+    validate_native_graph_payloads(manifest, documents)?;
+    for entry in &manifest.graph_builders_new {
+        let document = documents.iter().find(|document| document["id"].as_str() == Some(entry.id.as_str()))
+            .ok_or_else(|| AppError::InvalidParam("Missing graphBuildersNew payload".into()))?;
+        write_zip_json_entry(zip, &entry.file, document, options)?;
+    }
+    Ok(())
 }
 
 fn strip_transient_fit_model_fields(value: Value) -> Value {
@@ -3023,6 +3163,7 @@ fn write_project_archive_impl(
         let write_v4_flat = is_format_v4(&bundle.manifest.version);
 
         write_zip_json_entry_pretty(&mut zip, "manifest.json", &bundle.manifest, opts)?;
+        write_graph_builders_new(&mut zip, &bundle.manifest, &bundle.graph_builders_new, opts)?;
 
         if !write_v4_flat {
             // Older bundles keep explicit directories so extraction preserves
@@ -3794,6 +3935,7 @@ fn validate_bundle_payload_stable_ids(bundle: &ProjectBundle) -> Result<(), AppE
 }
 
 fn validate_bundle_before_write(bundle: &ProjectBundle) -> Result<(), AppError> {
+    validate_native_graph_payloads(&bundle.manifest, &bundle.graph_builders_new)?;
     validate_bundle_payload_stable_ids(bundle)?;
     validate_workflow_collections(
         &bundle.workflows,
@@ -3920,6 +4062,20 @@ fn validate_dataset_filter_field(
 fn validate_manifest_entry_refs(manifest: &ProjectManifest) -> Result<(), AppError> {
     let mut seen_files = HashSet::new();
     let strict_v4_name_checks = is_format_v4(&manifest.version);
+    let mut native_ids = HashSet::new();
+    for entry in &manifest.graph_builders_new {
+        ensure_unique_manifest_id(&mut native_ids, &entry.id, "graphBuildersNew")?;
+        validate_native_graph_string(&entry.id, "id", 256)?;
+        validate_native_graph_string(&entry.name, "name", 255)?;
+        if entry.kind != DocumentKind::GraphBuilderNew {
+            return Err(AppError::FileIO("graphBuildersNew entry has unexpected kind".into()));
+        }
+        validate_indexed_path(&entry.file, "graphs-new", ".spgn", "graphBuildersNew")?;
+        validate_display_basename(&entry.name)?;
+        validate_manifest_name_matches_file_basename(&entry.file, &entry.name, ".spgn", "graphBuildersNew")?;
+        ensure_unique_file(&mut seen_files, &entry.file)?;
+    }
+    validate_graph_new_folders(&manifest.graph_builders_new, &manifest.graph_new_folders)?;
 
     if strict_v4_name_checks {
         validate_manifest_stable_ids(manifest)?;
@@ -5616,6 +5772,201 @@ mod tests {
         }
     }
 
+    fn native_graph_document() -> Value {
+        serde_json::json!({
+            "version": 1, "id": "native-1", "name": "Native Graph",
+            "datasetId": "missing-dataset", "xColumnId": "missing-x", "yColumnId": "missing-y",
+            "showMean": true, "xMode": "numeric", "rawMode": "line", "camera": null
+        })
+    }
+
+    fn native_graph_bundle() -> ProjectBundle {
+        let mut bundle = build_bundle(
+            "Native Project".into(), "4.0.0".into(), "now".into(),
+            vec![], vec![graph_doc("legacy-1", "Native Graph")], vec![], vec![], vec![],
+            vec!["Graphs".into()], &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), vec![], vec![],
+        ).unwrap();
+        set_graph_builders_new(&mut bundle, vec![native_graph_document()], HashMap::from([("native-1".into(), "Graphs".into())])).unwrap();
+        bundle
+    }
+
+    #[test]
+    fn native_graph_persistence_reference_bounds_match_renderer() {
+        for field in ["id", "datasetId", "xColumnId", "yColumnId"] {
+            for invalid in [" padded".to_string(), "padded ".to_string(), "".into(), " ".into(), "a\nb".into(), "a".repeat(257)] {
+                let mut document = native_graph_document();
+                document[field] = Value::String(invalid);
+                assert!(validate_graph_builder_new_value(&document).is_err(), "accepted invalid {field}: {document}");
+            }
+            let mut document = native_graph_document();
+            document[field] = Value::String("a".repeat(256));
+            validate_graph_builder_new_value(&document).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_graph_persistence_rejects_invalid_versions_modes_and_runtime_fields() {
+        let valid = native_graph_document();
+        for (field, invalid) in [
+            ("version", serde_json::json!(2)), ("version", serde_json::json!(0)),
+            ("version", serde_json::json!("1")), ("version", serde_json::json!(1.5)),
+            ("xMode", serde_json::json!("future")), ("rawMode", serde_json::json!("bar")),
+            ("showMean", serde_json::json!(1)), ("datasetId", Value::Null),
+            ("xColumnId", serde_json::json!(1)), ("name", serde_json::json!("CON")),
+            ("name", serde_json::json!("../Graph")), ("name", serde_json::json!("Graph.")),
+            ("name", serde_json::json!("a".repeat(256))),
+        ] {
+            let mut document = valid.clone();
+            document[field] = invalid;
+            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted {document}");
+        }
+        for field in valid.as_object().unwrap().keys() {
+            let mut document = valid.clone();
+            document.as_object_mut().unwrap().remove(field);
+            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted missing {field}");
+        }
+        for field in ["datasetGeneration", "sessionId", "cachePath", "runtime", "pixels", "requestId", "result"] {
+            let mut document = valid.clone();
+            document[field] = serde_json::json!(1);
+            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted runtime field {field}");
+        }
+        for x_mode in ["auto", "numeric", "time", "duration", "category"] {
+            for raw_mode in ["scatter", "line", "pointsLine"] {
+                let mut document = valid.clone();
+                document["xMode"] = serde_json::json!(x_mode);
+                document["rawMode"] = serde_json::json!(raw_mode);
+                validate_graph_builder_new_value(&document).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn native_graph_persistence_camera_checks_finite_bounds_and_spans() {
+        for (min, max) in [(0.0, 0.0), (1.0, 0.0), (-f64::MAX, f64::MAX), (f64::NAN, 1.0), (0.0, f64::INFINITY)] {
+            for (min_key, max_key) in [("xMin", "xMax"), ("yMin", "yMax")] {
+                let mut document = native_graph_document();
+                document["camera"] = serde_json::json!({"xMin": 0.0, "xMax": 1.0, "yMin": 0.0, "yMax": 1.0});
+                document["camera"][min_key] = serde_json::json!(min);
+                document["camera"][max_key] = serde_json::json!(max);
+                assert!(validate_graph_builder_new_value(&document).is_err(), "accepted {document}");
+            }
+        }
+        for camera in [serde_json::json!({}), serde_json::json!({"xMin": 0, "xMax": 1, "yMin": 0}), serde_json::json!({"xMin": 0, "xMax": 1, "yMin": 0, "yMax": 1, "extra": 1}), serde_json::json!({"xMin": "0", "xMax": 1, "yMin": 0, "yMax": 1})] {
+            let mut document = native_graph_document();
+            document["camera"] = camera;
+            assert!(validate_graph_builder_new_value(&document).is_err());
+        }
+        for (min, max) in [(1e-280, 2e-280), (1e300, 1.01e300)] {
+            let mut document = native_graph_document();
+            document["camera"] = serde_json::json!({"xMin": min, "xMax": max, "yMin": min, "yMax": max});
+            validate_graph_builder_new_value(&document).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_graph_persistence_rejects_duplicate_ids_and_invalid_folders() {
+        for duplicate_id in ["native-1", "NATIVE-1"] {
+            let mut bundle = native_graph_bundle();
+            let mut duplicate = native_graph_document();
+            duplicate["id"] = serde_json::json!(duplicate_id);
+            assert!(set_graph_builders_new(&mut bundle, vec![native_graph_document(), duplicate], HashMap::new()).is_err());
+        }
+        for (id, folder) in [("unknown", "Graphs"), ("native-1", "../Graphs"), ("native-1", "/Graphs"), ("native-1", "Graphs/"), ("native-1", "Graphs//Sub"), ("native-1", "Graphs\\Sub")] {
+            let mut bundle = native_graph_bundle();
+            assert!(set_graph_builders_new(&mut bundle, vec![native_graph_document()], HashMap::from([(id.into(), folder.into())])).is_err());
+        }
+    }
+
+    #[test]
+    fn native_graph_persistence_direct_archive_roundtrip_allocates_safe_names() {
+        let mut bundle = native_graph_bundle();
+        let mut second = native_graph_document();
+        second["id"] = serde_json::json!("native-2");
+        second["name"] = serde_json::json!("native graph");
+        set_graph_builders_new(&mut bundle, vec![native_graph_document(), second], HashMap::new()).unwrap();
+        assert_eq!(bundle.manifest.graph_builders_new[0].file, "graphs-new/Native Graph.spgn");
+        assert_eq!(bundle.manifest.graph_builders_new[1].file, "graphs-new/native graph-2.spgn");
+        let path = temp_project_path("native-graph-direct");
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        validate_archive_manifest_and_entries(&path, &bundle.manifest, &[]).unwrap();
+        let reopened = read_project_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.graph_builders_new, bundle.graph_builders_new);
+        assert_eq!(reopened.graphs[0].id, "legacy-1");
+        assert_eq!(reopened.graphs[0].name, "Native Graph");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let body: Value = serde_json::from_reader(zip.by_name("graphs-new/Native Graph.spgn").unwrap()).unwrap();
+        assert_eq!(body, native_graph_document());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn native_graph_persistence_old_archive_and_request_default_empty() {
+        let mut bundle = native_graph_bundle();
+        set_graph_builders_new(&mut bundle, vec![], HashMap::new()).unwrap();
+        let source = temp_project_path("native-graph-default-source");
+        let target = temp_project_path("native-graph-default-old");
+        write_project_archive(&bundle, source.to_str().unwrap()).unwrap();
+        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+        manifest.as_object_mut().unwrap().remove("graphBuildersNew");
+        manifest.as_object_mut().unwrap().remove("graphNewFolders");
+        rewrite_named_entry_in_archive(&source, &target, "manifest.json", &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let reopened = read_project_file(target.to_str().unwrap()).unwrap();
+        assert!(reopened.graph_builders_new.is_empty());
+        assert!(reopened.manifest.graph_new_folders.is_empty());
+        let legacy = read_legacy_json(br#"{"name":"Old","datasets":[]}"#).unwrap();
+        assert!(legacy.graph_builders_new.is_empty());
+        assert!(legacy.manifest.graph_new_folders.is_empty());
+        let request: crate::models::save::SaveProjectRequest = serde_json::from_value(serde_json::json!({
+            "history": [], "snapshots": [], "graphBuilders": [], "reports": [], "tabulates": [],
+            "folders": [], "tableFolders": {}, "graphFolders": {}, "reportFolders": {}, "tabulateFolders": {}
+        })).unwrap();
+        assert!(request.graph_builders_new.is_empty());
+        assert!(request.graph_new_folders.is_empty());
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(target).unwrap();
+    }
+
+    #[test]
+    fn native_graph_persistence_corrupt_payload_rejected_on_open_and_save_validation() {
+        let bundle = native_graph_bundle();
+        let source = temp_project_path("native-graph-valid-source");
+        let target = temp_project_path("native-graph-invalid-payload");
+        write_project_archive(&bundle, source.to_str().unwrap()).unwrap();
+        for (field, value) in [("version", serde_json::json!(2)), ("id", serde_json::json!("wrong-id")), ("name", serde_json::json!("Wrong Name")), ("datasetGeneration", serde_json::json!(1)), ("xMode", serde_json::json!("unknown"))] {
+            let mut document = native_graph_document();
+            document[field] = value;
+            rewrite_named_entry_in_archive(&source, &target, "graphs-new/Native Graph.spgn", &serde_json::to_vec(&document).unwrap()).unwrap();
+            assert!(read_project_file(target.to_str().unwrap()).is_err(), "accepted payload {document}");
+            assert!(validate_archive_manifest_and_entries(&target, &bundle.manifest, &[]).is_err());
+        }
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(target).unwrap();
+    }
+
+    #[test]
+    fn native_graph_persistence_corrupt_manifest_rejected() {
+        let bundle = native_graph_bundle();
+        let source = temp_project_path("native-graph-manifest-source");
+        let target = temp_project_path("native-graph-manifest-invalid");
+        write_project_archive(&bundle, source.to_str().unwrap()).unwrap();
+        for (field, value) in [("file", serde_json::json!("graphs-new/../Native Graph.spgn")), ("file", serde_json::json!("graphs-new/Missing.spgn")), ("kind", serde_json::json!("analysis")), ("id", serde_json::json!("wrong-id")), ("name", serde_json::json!("Wrong Name"))] {
+            let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+            manifest["graphBuildersNew"][0][field] = value;
+            rewrite_named_entry_in_archive(&source, &target, "manifest.json", &serde_json::to_vec(&manifest).unwrap()).unwrap();
+            assert!(read_project_file(target.to_str().unwrap()).is_err(), "accepted manifest {manifest}");
+        }
+        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+        let mut duplicate = manifest["graphBuildersNew"][0].clone();
+        duplicate["id"] = serde_json::json!("NATIVE-1");
+        manifest["graphBuildersNew"].as_array_mut().unwrap().push(duplicate);
+        rewrite_named_entry_in_archive(&source, &target, "manifest.json", &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(read_project_file(target.to_str().unwrap()).is_err());
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(target).unwrap();
+    }
+
     fn graph_doc(id: &str, name: &str) -> GraphDoc {
         GraphDoc {
             id: id.into(),
@@ -6802,6 +7153,8 @@ mod tests {
     #[test]
     fn manifest_round_trip_preserves_empty_folder_maps() {
         let manifest = ProjectManifest {
+            graph_builders_new: Vec::new(),
+            graph_new_folders: HashMap::new(),
             name: "Project".into(),
             version: "3.0.0".into(),
             created_at: "now".into(),
@@ -7171,6 +7524,8 @@ mod tests {
     fn dataset_filters_round_trip() {
         let path = temp_project_path("dataset-filters-round-trip");
         let manifest = ProjectManifest {
+            graph_builders_new: Vec::new(),
+            graph_new_folders: HashMap::new(),
             name: "Project".into(),
             version: "4.0.0".into(),
             created_at: "2026-09-14T00:00:00Z".into(),

@@ -71,7 +71,7 @@ assertSourceIncludes(distributionCreateHandler, 'activateWorkspaceDocument("anal
 assert.equal(distributionCreateHandler.includes("addDistribution"), false, "Distribution creation must not enter the legacy store");
 assertSourceIncludes(workspaceSource, "nextDistributionAnalysisName", "Distribution default names must come from the Analysis namespace");
 assert.equal(workspaceSource.includes("deleteAnalysisByDataset"), false, "Deleting a source table must not cascade-delete saved Analysis documents");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Prune must include live Analysis ids without dropping Fit Model ids");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds,", "Prune must include live Analysis ids without dropping Fit Model ids");
 assertSourceIncludes(workspaceSource, "selectWorkspaceDocument", "Workspace must use the shared lifecycle helper for active-document exclusivity");
 assertSourceIncludes(workspaceSource, "getRetainedActiveAnalysisIdAfterDatasetDeletion", "Workspace must use the shared lifecycle helper for source deletion retention");
 

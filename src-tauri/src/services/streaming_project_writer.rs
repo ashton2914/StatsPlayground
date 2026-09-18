@@ -345,7 +345,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             })
             .collect::<Vec<_>>();
 
-        let bundle = spprj_archive::build_bundle_with_workflows_and_fit_models(
+        let mut bundle = spprj_archive::build_bundle_with_workflows_and_fit_models(
             snapshot.destination_name.clone(),
             STREAM_VERSION.to_string(),
             snapshot.current_project.created_at.clone(),
@@ -375,6 +375,11 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             snapshot.request.table_transforms.clone(),
             snapshot.request.table_transform_bindings.clone(),
         )?;
+        spprj_archive::set_graph_builders_new(
+            &mut bundle,
+            snapshot.request.graph_builders_new.clone(),
+            snapshot.request.graph_new_folders.clone(),
+        )?;
 
         thread::scope(|scope| {
             let mut perf = SaveRunPerf::default();
@@ -395,6 +400,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 snapshot,
                 &bundle.manifest,
                 &bundle.graphs,
+                &bundle.graph_builders_new,
                 &bundle.fit_y_by_x,
                 &bundle.reports,
                 &bundle.distributions,
@@ -452,6 +458,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         snapshot: &SaveSnapshot,
         manifest: &ProjectManifest,
         graph_docs: &[GraphDoc],
+        native_graph_docs: &[serde_json::Value],
         fit_docs: &[serde_json::Value],
         report_docs: &[serde_json::Value],
         distribution_docs: &[serde_json::Value],
@@ -476,6 +483,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         zip.start_file("manifest.json", file_opts)
             .map_err(|e| AppError::FileIO(e.to_string()))?;
         zip.write_all(&manifest_bytes)?;
+        spprj_archive::write_graph_builders_new(&mut zip, manifest, native_graph_docs, file_opts)?;
 
         let graph_by_id: HashMap<&str, &GraphDoc> = graph_docs
             .iter()
@@ -1417,6 +1425,8 @@ mod tests {
                 file_path: None,
                 history: vec![serde_json::json!({"event": "save"})],
                 snapshots: vec![serde_json::json!({"id": "snap-1"})],
+                graph_builders_new: Vec::new(),
+                graph_new_folders: HashMap::new(),
                 graph_builders: vec![serde_json::json!({
                     "id": "graph-1",
                     "name": "Graph 1",
@@ -1473,6 +1483,8 @@ mod tests {
             column_display: HashMap::new(),
             request: SaveProjectRequest {
                 file_path: None,
+                graph_builders_new: Vec::new(),
+                graph_new_folders: HashMap::new(),
                 history: vec![serde_json::json!({"event": "save"})],
                 snapshots: vec![serde_json::json!({
                     "id": "snap-1",

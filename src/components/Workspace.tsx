@@ -112,6 +112,7 @@ import {
 import { buildProjectDependencyGraph } from "@/workflow/projectDependencyGraph";
 import {
   allocateProjectBasename,
+  ProjectNameValidationError,
   projectFileExtension,
   resolveProjectBasenameForKind,
   type ProjectBasenameValidationError,
@@ -314,8 +315,12 @@ export function Workspace() {
   const addWorkflow = useWorkflowStore((s) => s.addWorkflow);
   const resetWorkflows = useWorkflowStore((s) => s.reset);
   const graphBuilderNewSessions = useGraphBuilderNewStore((s) => s.sessions);
+  const graphBuildersNew = useGraphBuilderNewStore((s) => s.items);
   const openGraphBuilderNew = useGraphBuilderNewStore((s) => s.open);
   const closeGraphBuilderNew = useGraphBuilderNewStore((s) => s.close);
+  const reopenGraphBuilderNew = useGraphBuilderNewStore((s) => s.reopen);
+  const resetGraphBuildersNew = useGraphBuilderNewStore((s) => s.reset);
+  const loadGraphBuildersNewFromProject = useGraphBuilderNewStore((s) => s.loadFromProject);
   const addGraphBuilder = useGraphBuilderStore((s) => s.addItem);
   const renameGraphBuilder = useGraphBuilderStore((s) => s.renameItem);
   const migrateLegacyGraphColumnName = useGraphBuilderStore((s) => s.migrateLegacyColumnName);
@@ -402,6 +407,7 @@ export function Workspace() {
   const folders = useFolderStore((s) => s.folders);
   const tableFolders = useFolderStore((s) => s.tableFolders);
   const graphFolders = useFolderStore((s) => s.graphFolders);
+  const graphNewFolders = useFolderStore((s) => s.graphNewFolders);
   const reportFolders = useFolderStore((s) => s.reportFolders);
   const analysisFolders = useFolderStore((s) => s.analysisFolders);
   const tabulateFolders = useFolderStore((s) => s.tabulateFolders);
@@ -412,6 +418,7 @@ export function Workspace() {
   const fsMoveFolder = useFolderStore((s) => s.moveFolder);
   const fsSetTableFolder = useFolderStore((s) => s.setTableFolder);
   const fsSetGraphFolder = useFolderStore((s) => s.setGraphFolder);
+  const fsSetGraphNewFolder = useFolderStore((s) => s.setGraphNewFolder);
   const fsSetReportFolder = useFolderStore((s) => s.setReportFolder);
   const fsSetAnalysisFolder = useFolderStore((s) => s.setAnalysisFolder);
   const fsSetTabulateFolder = useFolderStore((s) => s.setTabulateFolder);
@@ -435,6 +442,7 @@ export function Workspace() {
     | { kind: "table"; id: string; x: number; y: number }
     | { kind: "tableTransform"; id: string; x: number; y: number }
     | { kind: "graph"; id: string; x: number; y: number }
+    | { kind: "graphNew"; id: string; x: number; y: number }
     | { kind: "report"; id: string; x: number; y: number }
     | { kind: "analysis"; id: string; x: number; y: number }
     | { kind: "tabulate"; id: string; x: number; y: number }
@@ -458,17 +466,15 @@ export function Workspace() {
   }, [recordHistory]);
 
   const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
-    setActiveGraphBuilderNewId((activeId) => {
-      if (activeId) closeGraphBuilderNew(activeId);
-      return null;
-    });
+    if (activeGraphBuilderNewId) closeGraphBuilderNew(activeGraphBuilderNewId);
+    setActiveGraphBuilderNewId(null);
     setActiveDataset(selection.activeDatasetId);
     setActiveTableTransformId(selection.activeTableTransformId);
     setActiveGraphBuilderId(selection.activeGraphBuilderId);
     setActiveReportId(selection.activeReportId);
     setActiveAnalysisId(selection.activeAnalysisId);
     setActiveTabulateId(selection.activeTabulateId);
-  }, [closeGraphBuilderNew, setActiveDataset]);
+  }, [activeGraphBuilderNewId, closeGraphBuilderNew, setActiveDataset]);
 
   const activateWorkspaceDocument = useCallback((kind: WorkspaceDocumentKind, id: string) => {
     applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
@@ -477,6 +483,14 @@ export function Workspace() {
   const clearWorkspaceDocumentSelection = useCallback(() => {
     applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
   }, [applyWorkspaceDocumentSelection]);
+
+  const handleOpenGraphBuilderNew = (id: string) => {
+    const item = useGraphBuilderNewStore.getState().items.find((candidate) => candidate.id === id);
+    if (!item) return;
+    const dataset = useDataStore.getState().datasets.find((candidate) => candidate.id === item.datasetId);
+    if (activeGraphBuilderNewId !== id) clearWorkspaceDocumentSelection();
+    setActiveGraphBuilderNewId(reopenGraphBuilderNew(id, dataset?.generation ?? 0));
+  };
 
   const flushPendingReportHistory = useCallback(() => {
     const pending = pendingReportHistoryRef.current;
@@ -572,6 +586,8 @@ export function Workspace() {
       existingNames = datasets.map((d) => d.name);
     } else if (kind === "graph") {
       existingNames = graphBuilders.map((item) => item.name);
+    } else if (kind === "graphNew") {
+      existingNames = graphBuildersNew.map((item) => item.name);
     } else if (kind === "analysis") {
       existingNames = analysisItems.map((item) => item.name);
     } else if (kind === "fitYByX" || kind === "tabulate") {
@@ -596,7 +612,7 @@ export function Workspace() {
       return { basename: null, error: invalidProjectNameMessage(resolved.error) };
     }
     return { basename: resolved.basename, error: null };
-  }, [analysisDocumentNames, analysisItems, datasets, graphBuilders, invalidProjectNameMessage, reportItems, t]);
+  }, [analysisDocumentNames, analysisItems, datasets, graphBuilders, graphBuildersNew, invalidProjectNameMessage, reportItems, t]);
 
   /** Called when history/snapshot is restored — refresh all UI */
   const handleHistoryRestored = useCallback(async () => {
@@ -672,8 +688,8 @@ export function Workspace() {
     const reportIds = new Set(reportItems.map((item) => item.id));
     const distributionIds = new Set<string>();
     const analysisIds = new Set(analysisItems.map((item) => item.id));
-    fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds);
-  }, [analysisItems, datasets, graphBuilders, tabulates, reportItems, fsPrune]);
+    fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds, new Set(graphBuildersNew.map((item) => item.id)));
+  }, [analysisItems, datasets, graphBuilders, graphBuildersNew, tabulates, reportItems, fsPrune]);
 
   // Cmd/Ctrl+,: open preferences
   useEffect(() => {
@@ -805,12 +821,14 @@ export function Workspace() {
   };
 
   const handleCreateGraphBuilderNew = () => {
+    if (readOnly) return;
     if (!activeDatasetId) {
       alert(t("alert.selectDatasetFirst"));
       return;
     }
     const dataset = datasets.find((candidate) => candidate.id === activeDatasetId);
     if (!dataset) return;
+    clearWorkspaceDocumentSelection();
     setActiveGraphBuilderNewId(openGraphBuilderNew(dataset.id, dataset.generation));
   };
 
@@ -1257,6 +1275,20 @@ export function Workspace() {
       setRenamingId(null);
       return;
     }
+    const nativeGraph = useGraphBuilderNewStore.getState().items.find((item) => item.id === id);
+    if (nativeGraph) {
+      const resolved = resolveProjectBasename(trimmed, "graphNew", nativeGraph.name);
+      if (resolved.error !== null) {
+        alert(resolved.error);
+        return;
+      }
+      if (resolved.basename !== nativeGraph.name) {
+        useGraphBuilderNewStore.getState().renameItem(id, resolved.basename);
+        recordAction(t("history.renameGraph", { old: nativeGraph.name, new: resolved.basename }));
+      }
+      setRenamingId(null);
+      return;
+    }
     const tabulate = useTabulateStore.getState().items.find((it) => it.id === id);
     if (tabulate) {
       const resolved = resolveProjectBasename(trimmed, "tabulate", tabulate.name);
@@ -1340,6 +1372,16 @@ export function Workspace() {
     if (it) recordAction(t("history.deleteGraph", { name: it.name }));
   };
 
+  const handleDeleteGraphBuilderNew = (id: string) => {
+    if (readOnly) return;
+    const item = useGraphBuilderNewStore.getState().items.find((candidate) => candidate.id === id);
+    if (!item) return;
+    useGraphBuilderNewStore.getState().deleteItem(id);
+    fsSetGraphNewFolder(id, null);
+    if (activeGraphBuilderNewId === id) setActiveGraphBuilderNewId(null);
+    recordAction(t("history.deleteGraph", { name: item.name }));
+  };
+
   const handleDeleteTableTransform = (id: string) => {
     if (readOnly) return;
     const item = useTableTransformStore.getState().definitions.find((entry) => entry.id === id);
@@ -1389,6 +1431,10 @@ export function Workspace() {
     if (activeDatasetId === id) setActiveDataset(null);
     // 联动删除引用此数据表的图表
     deleteGraphBuildersByDataset(id);
+    const nativeDependents = useGraphBuilderNewStore.getState().items.filter((item) => item.datasetId === id);
+    useGraphBuilderNewStore.getState().deleteByDataset(id);
+    for (const item of nativeDependents) fsSetGraphNewFolder(item.id, null);
+    if (nativeDependents.some((item) => item.id === activeGraphBuilderNewId)) setActiveGraphBuilderNewId(null);
     if (activeGraphBuilderId) {
       const stillExists = useGraphBuilderStore
         .getState()
@@ -1487,11 +1533,12 @@ export function Workspace() {
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = async (saveAs = false) => {
     if (saving) return;
     flushPendingReportHistory();
     const { snapshots } = useHistoryStore.getState();
     const gbItems = useGraphBuilderStore.getState().items;
+    const gbNewItems = useGraphBuilderNewStore.getState().items;
     const datasetFilters = useDatasetFilterStore.getState().toProjectPayload();
     // History is session-only (not persisted); only snapshots are saved.
     // Per issue #7 folder routing for both tables and graphs flows OUT-OF-BAND
@@ -1507,10 +1554,10 @@ export function Workspace() {
       ...buildAnalysisProjectPayload({ analyses: analysisItems, analysisFolders }),
     };
     try {
-      if (!project?.filePath) {
+      if (saveAs || !project?.filePath) {
         const filePath = await save({
           title: t("welcome.saveProjectDialog"),
-          defaultPath: "Untitled Project.spprj",
+          defaultPath: project?.filePath || "Untitled Project.spprj",
           filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
         });
         if (!filePath) return; // User cancelled
@@ -1520,6 +1567,8 @@ export function Workspace() {
           snapshots,
           datasetFilters,
           graphBuilders: gbItems,
+          graphBuildersNew: useGraphBuilderNewStore.getState().items,
+          graphNewFolders: useFolderStore.getState().graphNewFolders,
           fitYByX: [],
           tabulates,
           distributions: [],
@@ -1545,6 +1594,8 @@ export function Workspace() {
           snapshots,
           datasetFilters,
           graphBuilders: gbItems,
+          graphBuildersNew: gbNewItems,
+          graphNewFolders: useFolderStore.getState().graphNewFolders,
           fitYByX: [],
           tabulates,
           distributions: [],
@@ -1717,10 +1768,13 @@ export function Workspace() {
   };
 
   const handleCloseProject = async () => {
+    if (useProjectStore.getState().readOnly) return;
+    if (useProjectStore.getState().dirty && !window.confirm(t("workspace.discardUnsavedChanges"))) return;
     flushPendingReportHistory();
     clearWorkspaceDocumentSelection();
     resetHistory();
     resetGraphBuilders();
+    resetGraphBuildersNew();
     resetReports();
     resetAnalyses();
     resetTabulates();
@@ -1734,22 +1788,15 @@ export function Workspace() {
   };
 
   const handleOpenAnother = async () => {
+    if (useProjectStore.getState().readOnly) return;
     const selected = await open({
       title: t("welcome.openProjectDialog"),
       filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
       multiple: false,
     });
     if (selected) {
-      flushPendingReportHistory();
-      clearWorkspaceDocumentSelection();
-      resetHistory();
-      resetGraphBuilders();
-      resetReports();
-      resetAnalyses();
-      resetTabulates();
-      resetWorkflows();
-      resetTableTransforms();
-      resetDatasetFilters();
+      if (useProjectStore.getState().readOnly) return;
+      if (useProjectStore.getState().dirty && !window.confirm(t("workspace.discardUnsavedChanges"))) return;
       setBusyMessage(t("workspace.openingProject"));
       const unlisten = await listen<{
         datasetIndex: number;
@@ -1777,9 +1824,11 @@ export function Workspace() {
           fitModels: result.fitModels ?? [],
           fitModelFolders: result.fitModelFolders ?? {},
         });
+        flushPendingReportHistory();
         clearWorkspaceDocumentSelection();
         resetHistory();
         resetGraphBuilders();
+        resetGraphBuildersNew();
         resetReports();
         resetAnalyses();
         resetTabulates();
@@ -1805,6 +1854,7 @@ export function Workspace() {
           );
         }
         // Restore graph builders
+        loadGraphBuildersNewFromProject(result.graphBuildersNew ?? []);
         if (result.graphBuilders && result.graphBuilders.length > 0) {
           loadGraphBuildersFromProject(result.graphBuilders as GraphBuilderItem[]);
         }
@@ -1843,6 +1893,7 @@ export function Workspace() {
           folders: result.folders ?? [],
           tableFolders: result.tableFolders ?? {},
           graphFolders: result.graphFolders ?? {},
+          graphNewFolders: result.graphNewFolders ?? {},
           fitYByXFolders: {},
           fitModelFolders: {},
           reportFolders: result.reportFolders ?? {},
@@ -1962,7 +2013,14 @@ export function Workspace() {
   const handleCreateFolder = (parent: string | null) => {
     if (readOnly) return;
     const baseName = t("folder.defaultName", { defaultValue: "New Folder" });
-    const newPath = fsCreateFolder(parent, baseName);
+    let newPath: string;
+    try {
+      newPath = fsCreateFolder(parent, baseName);
+    } catch (error) {
+      if (!(error instanceof ProjectNameValidationError)) throw error;
+      alert(invalidProjectNameMessage(error.code));
+      return;
+    }
     // Make sure the parent folder is expanded so the new child is visible.
     if (parent && collapsedFolders[parent]) fsToggleCollapsed(parent);
     // Drop straight into rename mode for the new folder so the user can name
@@ -1984,10 +2042,17 @@ export function Workspace() {
     }
     const err = validateFolderOrFileName(newBase);
     if (err) {
-      alert(t(`alert.invalidName.${err}`, { defaultValue: "Invalid name." }));
+      alert(invalidProjectNameMessage(err));
       return;
     }
-    const newPath = fsRenameFolder(oldPath, newBase);
+    let newPath: string | null;
+    try {
+      newPath = fsRenameFolder(oldPath, newBase);
+    } catch (error) {
+      if (!(error instanceof ProjectNameValidationError)) throw error;
+      alert(invalidProjectNameMessage(error.code));
+      return;
+    }
     if (newPath) markDirty();
     setRenamingFolder(null);
   };
@@ -2008,6 +2073,7 @@ export function Workspace() {
   type DragPayload =
     | { kind: "table"; id: string }
     | { kind: "graph"; id: string }
+    | { kind: "graphNew"; id: string }
     | { kind: "report"; id: string }
     | { kind: "analysis"; id: string }
     | { kind: "tabulate"; id: string }
@@ -2042,12 +2108,19 @@ export function Workspace() {
       return;
     }
     if (!canDropOn(payload, target)) return;
-    if (payload.kind === "table") fsSetTableFolder(payload.id, target);
-    else if (payload.kind === "graph") fsSetGraphFolder(payload.id, target);
-    else if (payload.kind === "report") fsSetReportFolder(payload.id, target);
-    else if (payload.kind === "analysis") fsSetAnalysisFolder(payload.id, target);
-    else if (payload.kind === "tabulate") fsSetTabulateFolder(payload.id, target);
-    else if (payload.kind === "folder") fsMoveFolder(payload.path, target);
+    try {
+      if (payload.kind === "table") fsSetTableFolder(payload.id, target);
+      else if (payload.kind === "graph") fsSetGraphFolder(payload.id, target);
+      else if (payload.kind === "graphNew") fsSetGraphNewFolder(payload.id, target);
+      else if (payload.kind === "report") fsSetReportFolder(payload.id, target);
+      else if (payload.kind === "analysis") fsSetAnalysisFolder(payload.id, target);
+      else if (payload.kind === "tabulate") fsSetTabulateFolder(payload.id, target);
+      else if (payload.kind === "folder") fsMoveFolder(payload.path, target);
+    } catch (error) {
+      if (!(error instanceof ProjectNameValidationError)) throw error;
+      alert(invalidProjectNameMessage(error.code));
+      return;
+    }
     markDirty();
   };
 
@@ -2100,6 +2173,13 @@ export function Workspace() {
       arr.push(gb);
       graphsByParent.set(p, arr);
     }
+    const graphsNewByParent = new Map<string, typeof graphBuildersNew>();
+    for (const item of graphBuildersNew) {
+      const parent = graphNewFolders[item.id] ?? ROOT;
+      const children = graphsNewByParent.get(parent) ?? [];
+      children.push(item);
+      graphsNewByParent.set(parent, children);
+    }
     const reportsByParent = new Map<string, ReportItem[]>();
     for (const item of reportItems) {
       const p = reportFolders[item.id] ?? ROOT;
@@ -2121,8 +2201,8 @@ export function Workspace() {
       arr.push(item);
       tabulatesByParent.set(p, arr);
     }
-    return { ROOT, childFolders, tablesByParent, tableTransformsByParent, graphsByParent, reportsByParent, analysesByParent, tabulatesByParent };
-  }, [folders, tableFolders, graphFolders, reportFolders, analysisFolders, tabulateFolders, datasets, tableTransforms, graphBuilders, reportItems, analysisItems, tabulates]);
+    return { ROOT, childFolders, tablesByParent, tableTransformsByParent, graphsByParent, graphsNewByParent, reportsByParent, analysesByParent, tabulatesByParent };
+  }, [folders, tableFolders, graphFolders, graphNewFolders, reportFolders, analysisFolders, tabulateFolders, datasets, tableTransforms, graphBuilders, graphBuildersNew, reportItems, analysisItems, tabulates]);
 
   /** Recursively render one folder level. */
   const renderFolderLevel = (parent: string | null, depth: number): React.ReactNode[] => {
@@ -2133,6 +2213,7 @@ export function Workspace() {
     const tableChildren = tree.tablesByParent.get(key) ?? [];
     const transformChildren = tree.tableTransformsByParent.get(key) ?? [];
     const graphChildren = tree.graphsByParent.get(key) ?? [];
+    const graphNewChildren = tree.graphsNewByParent.get(key) ?? [];
     const reportChildren = tree.reportsByParent.get(key) ?? [];
     const analysisChildren = tree.analysesByParent.get(key) ?? [];
     const tabulateChildren = tree.tabulatesByParent.get(key) ?? [];
@@ -2316,6 +2397,54 @@ export function Workspace() {
         </div>,
       );
     }
+    for (const item of graphNewChildren) {
+      const source = datasets.find((dataset) => dataset.id === item.datasetId);
+      out.push(
+        <div
+          key={`graphNew:${item.id}`}
+          data-testid={`graph-new-document-${item.id}`}
+          className={`dataset-item ${activeGraphBuilderNewId === item.id ? "active" : ""}`}
+          style={{ paddingLeft: 8 + depth * 12 + 12 }}
+          draggable={!readOnly}
+          onDragStart={(event) => handleDragStart(event, { kind: "graphNew", id: item.id })}
+          onClick={() => handleOpenGraphBuilderNew(item.id)}
+          onDoubleClick={() => {
+            if (readOnly) return;
+            setRenamingId(item.id);
+            setRenameValue(item.name);
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setCtxMenu({ kind: "graphNew", id: item.id, x: event.clientX, y: event.clientY });
+          }}
+          title={source ? t("workspace.datasourceLabel", { name: source.name }) : t("workspace.datasourceDeleted")}
+        >
+          <i className="ds-icon fa-solid fa-chart-line" aria-hidden="true" />
+          {renamingId === item.id ? (
+            <span className="ds-rename-shell">
+              <input
+                ref={renameInputRef}
+                className="ds-rename-input"
+                value={renameValue}
+                onChange={(event) => setRenameValue(event.target.value)}
+                onBlur={() => void handleRenameSubmit(item.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void handleRenameSubmit(item.id);
+                  if (event.key === "Escape") setRenamingId(null);
+                }}
+                onClick={(event) => event.stopPropagation()}
+                autoFocus
+              />
+              <span className="ds-fixed-ext">{projectFileExtension("graphNew")}</span>
+            </span>
+          ) : (
+            <span className="ds-name">{withProjectExtension(item.name, "graphNew")}</span>
+          )}
+          <span className="ds-info gb-source-tag">{source?.name ?? t("workspace.datasourceMissing")}</span>
+        </div>,
+      );
+    }
     for (const item of reportChildren) {
       out.push(
         <div
@@ -2475,14 +2604,16 @@ export function Workspace() {
         <div className="menu-bar-menus">
           <MenuBar>
             <MenuDropdown label={t("menu.file")}>
-              <div className={`menu-item${saving ? " menu-item-disabled" : ""}`} onClick={saving ? undefined : handleSave}>{t("menu.save")}<span className="menu-shortcut">{modKey}S</span></div>
+              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCloseProject}>{t("welcome.newProject")}</div>
+              <div className={`menu-item${saving ? " menu-item-disabled" : ""}`} onClick={saving ? undefined : () => void handleSave()}>{t("menu.save")}<span className="menu-shortcut">{modKey}S</span></div>
+              <div className={`menu-item${saving ? " menu-item-disabled" : ""}`} onClick={saving ? undefined : () => void handleSave(true)}>{t("menu.saveAs")}</div>
               <div className="menu-sep" />
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : () => setShowPostgresDataLink(true)}>{t("menu.dataLink")}</div>
               <div className="menu-sep" />
               <div className="menu-item" onClick={() => setShowPrefs(true)}>{t("menu.preferences")}<span className="menu-shortcut">{modKey},</span></div>
               <div className="menu-sep" />
-              <div className="menu-item" onClick={handleOpenAnother}>{t("menu.openProject")}<span className="menu-shortcut">{modKey}O</span></div>
-              <div className="menu-item" onClick={handleCloseProject}>{t("menu.closeProject")}</div>
+              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleOpenAnother}>{t("menu.openProject")}<span className="menu-shortcut">{modKey}O</span></div>
+              <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCloseProject}>{t("menu.closeProject")}</div>
             </MenuDropdown>
             <MenuDropdown label={t("menu.table")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateTable}>{t("menu.newTable")}<span className="menu-shortcut">{modKey}N</span></div>
@@ -2509,16 +2640,16 @@ export function Workspace() {
             <MenuDropdown label={t("menu.graph")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateGraphBuilder}>{t("menu.newGraph")}</div>
               <div
-                className={`menu-item${activeDatasetId ? "" : " menu-item-disabled"}`}
-                onClick={activeDatasetId ? handleCreateGraphBuilderNew : undefined}
-                onKeyDown={activeDatasetId ? (event) => {
+                className={`menu-item${activeDatasetId && !readOnly ? "" : " menu-item-disabled"}`}
+                onClick={activeDatasetId && !readOnly ? handleCreateGraphBuilderNew : undefined}
+                onKeyDown={activeDatasetId && !readOnly ? (event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     handleCreateGraphBuilderNew();
                   }
                 } : undefined}
                 role="menuitem"
-                tabIndex={activeDatasetId ? 0 : -1}
+                tabIndex={activeDatasetId && !readOnly ? 0 : -1}
               >
                 Graph Builder-new
               </div>
@@ -2597,7 +2728,7 @@ export function Workspace() {
         <button
           className={`menu-bar-save${dirty ? " menu-bar-save-dirty" : ""}`}
           disabled={saving}
-          onClick={handleSave}
+          onClick={() => void handleSave()}
           title={t("common.saveWith", { key: modKey })}
         >
           <i className="fa-solid fa-floppy-disk" aria-hidden="true" />
@@ -2675,7 +2806,7 @@ export function Workspace() {
                   }
                 }}
               >
-                {datasets.length === 0 && graphBuilders.length === 0 && reportItems.length === 0 && analysisItems.length === 0 && tabulates.length === 0 && folders.length === 0 ? (
+                {datasets.length === 0 && graphBuilders.length === 0 && graphBuildersNew.length === 0 && reportItems.length === 0 && analysisItems.length === 0 && tabulates.length === 0 && folders.length === 0 ? (
                   <div className="empty-hint">{t("common.noContent")}</div>
                 ) : (
                   renderFolderLevel(null, 0)
@@ -3202,6 +3333,24 @@ export function Workspace() {
                 })}>{t("common.rename")}</div>
                 <div className="sp-ctx-sep" />
                 <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => { handleDeleteGraphBuilder(id); setCtxMenu(null); })}>{t("common.delete")}</div>
+              </>
+            );
+          })()}
+          {ctxMenu.kind === "graphNew" && (() => {
+            const item = graphBuildersNew.find((candidate) => candidate.id === ctxMenu.id);
+            if (!item) return null;
+            return (
+              <>
+                <div className={`sp-ctx-item${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
+                  setRenamingId(item.id);
+                  setRenameValue(item.name);
+                  setCtxMenu(null);
+                })}>{t("common.rename")}</div>
+                <div className="sp-ctx-sep" />
+                <div className={`sp-ctx-item sp-ctx-danger${readOnly ? " sp-ctx-item-disabled" : ""}`} onClick={readOnly ? undefined : (() => {
+                  handleDeleteGraphBuilderNew(item.id);
+                  setCtxMenu(null);
+                })}>{t("common.delete")}</div>
               </>
             );
           })()}

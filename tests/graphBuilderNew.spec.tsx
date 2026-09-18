@@ -2,6 +2,202 @@ import { expect, test } from "@playwright/experimental-ct-react";
 
 import { GraphBuilderNewHarness } from "./GraphBuilderNewHarness";
 
+for (const reopen of ["Reopen current generation", "Reopen retained generation"]) {
+test(`transport identity close and reopen survives native permanent tombstones: ${reopen}`, async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="render" />);
+  await component.getByLabel("X field").selectOption("column-x");
+  await component.getByLabel("Y field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  await expect(metrics).toContainText('"presented":1');
+  const original = JSON.parse((await component.getByTestId("render-request").textContent())!);
+  const document = JSON.parse((await component.getByTestId("documents").textContent())!)[0];
+  await component.getByRole("button", { name: "Close retained session", exact: true }).click();
+  await expect(metrics).toContainText('"closes":1');
+  await component.getByRole("button", { name: reopen, exact: true }).click();
+  await expect(metrics).toContainText('"presented":2');
+  const reopened = JSON.parse((await component.getByTestId("render-request").textContent())!);
+  const session = JSON.parse((await component.getByTestId("selected-columns").textContent())!);
+  expect(reopened.sessionId).not.toBe(original.sessionId);
+  expect(reopened.sessionId).toBe(session.transportId);
+  expect(session.id).toBe(document.id);
+  expect(reopened.rendererGeneration).toBeGreaterThan(original.rendererGeneration);
+  expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0]).toEqual(document);
+});
+}
+
+for (const replacement of ["Reopen current generation", "Reload full view"]) {
+  test(`transport identity replacement isolates delayed old close: ${replacement}`, async ({ mount }) => {
+    const component = await mount(<GraphBuilderNewHarness mode="render" deferClose />);
+    await component.getByLabel("X field").selectOption("column-x");
+    await component.getByLabel("Y field").selectOption("column-y");
+    const metrics = component.getByTestId("render-metrics");
+    await expect(metrics).toContainText('"presented":1');
+    const original = JSON.parse((await component.getByTestId("render-request").textContent())!);
+    await component.getByRole("button", { name: replacement, exact: true }).click();
+    await expect(metrics).toContainText('"presented":2');
+    const current = JSON.parse((await component.getByTestId("render-request").textContent())!);
+    expect(current.sessionId).not.toBe(original.sessionId);
+    await expect(component.getByTestId("closed-ids")).toHaveText(JSON.stringify([original.sessionId]));
+    await expect(component.getByTestId("cancelled-ids")).toContainText(original.sessionId);
+    await component.getByRole("button", { name: "Release old closes", exact: true }).click();
+    await expect(metrics).toContainText('"closes":1');
+    await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
+    await expect(metrics).toContainText('"presented":3');
+    expect(JSON.parse((await component.getByTestId("render-request").textContent())!).sessionId).toBe(current.sessionId);
+    expect(JSON.parse((await component.getByTestId("selected-columns").textContent())!).id).toBe("graph-builder-new-session");
+  });
+}
+
+test("persistence settles camera once and restores a saved document without dirty feedback", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
+  await component.getByLabel("X field").selectOption("column-x");
+  await component.getByLabel("Y field").selectOption("column-y");
+  const metrics = component.getByTestId("render-metrics");
+  await expect(metrics).toContainText('"presented":1');
+  await component.getByRole("button", { name: "Mark saved", exact: true }).click();
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
+  await expect(metrics).toContainText('"presented":2');
+  const camera = JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain;
+  expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toEqual(camera);
+  await expect(component.getByTestId("project-dirty")).toHaveText("true");
+  await component.getByRole("button", { name: "Close Graph Builder-new", exact: true }).click();
+  await component.getByRole("button", { name: "Reload documents", exact: true }).click();
+  await expect(metrics).toContainText('"presented":4');
+  expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toEqual(camera);
+  await expect(component.getByTestId("project-dirty")).toHaveText("false");
+  await component.getByRole("button", { name: "Reset view", exact: true }).click();
+  await expect(metrics).toContainText('"presented":5');
+  expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toBeNull();
+});
+
+test("persistence save read-only disables document edits and camera gestures", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
+  await component.getByLabel("X field").selectOption("column-x");
+  await component.getByLabel("Y field").selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  await component.getByRole("button", { name: "Begin save", exact: true }).click();
+  for (const label of ["X field", "Y field", "X interpretation", "Raw series"]) await expect(component.getByLabel(label)).toBeDisabled();
+  await expect(component.getByRole("checkbox", { name: "Mean", exact: true })).toBeDisabled();
+  await expect(component.getByRole("button", { name: "Reset view", exact: true })).toBeDisabled();
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
+  await page.waitForTimeout(150);
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
+  await expect(component.getByTestId("project-dirty")).toHaveText("false");
+});
+
+for (const locale of ["en", "zh-CN"] as const) {
+  test(`persistence retains unavailable fields with a localized diagnostic in ${locale}`, async ({ mount }) => {
+    const component = await mount(<GraphBuilderNewHarness mode="invalid" locale={locale} />);
+    await expect(component.locator(".graph-builder-new-stage").getByRole("status")).toContainText(locale === "en" ? "unavailable" : "不可用");
+    await expect(component.getByTestId("documents")).toContainText('"xColumnId":"removed-x"');
+    await expect(component.getByTestId("documents")).toContainText('"yColumnId":"column-label"');
+    await expect(component.getByTestId("project-dirty")).toHaveText("false");
+    await expect(component.getByLabel("X field")).toHaveValue("removed-x");
+  });
+}
+
+test("persistence restores only after a compatible full-domain frame without a feedback render", async ({ mount, page }) => {
+  const camera = { xMin: 12.500000000000004, xMax: 62.5, yMin: 25, yMax: 75 };
+  const component = await mount(<GraphBuilderNewHarness mode="slow" savedCamera={camera} />);
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
+  expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toBeNull();
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toEqual(camera);
+  await component.getByRole("button", { name: "Resize fixture", exact: true }).click();
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":3');
+  expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toEqual(camera);
+  await page.waitForTimeout(150);
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":3');
+  await expect(component.getByTestId("project-dirty")).toHaveText("false");
+});
+
+for (const [kind, camera] of Object.entries({
+  anisotropic: { xMin: 0, xMax: 50, yMin: 0, yMax: 100 },
+  overzoomed: { xMin: 0, xMax: 1e-7, yMin: 0, yMax: 1e-7 },
+  distant: { xMin: 1000, xMax: 1100, yMin: 1000, yMax: 1100 },
+})) {
+  test(`persistence preserves incompatible ${kind} camera without sending it`, async ({ mount }) => {
+    const component = await mount(<GraphBuilderNewHarness mode="render" savedCamera={camera} />);
+    await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+    await expect(component.getByTestId("camera-restore-unavailable")).toContainText("incompatible");
+    expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toBeNull();
+    expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toEqual(camera);
+    await expect(component.getByTestId("project-dirty")).toHaveText("false");
+  });
+}
+
+test("persistence fences an old generation decode before restoring the current generation", async ({ mount, page }) => {
+  await page.evaluate(() => {
+    const original = window.createImageBitmap.bind(window);
+    let held = false;
+    (window as any).createImageBitmap = async (...args: any[]) => {
+      const bitmap = await (original as any)(...args);
+      if (held) return bitmap;
+      held = true;
+      return new Promise((resolve) => { (window as any).releaseGenerationBitmap = () => resolve(bitmap); });
+    };
+  });
+  const camera = { xMin: 25, xMax: 75, yMin: 25, yMax: 75 };
+  const component = await mount(<GraphBuilderNewHarness mode="render" savedCamera={camera} />);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).releaseGenerationBitmap)).toBe("function");
+  await component.getByRole("button", { name: "Reopen current generation", exact: true }).click();
+  await page.evaluate(() => (window as any).releaseGenerationBitmap());
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":3');
+  const request = JSON.parse((await component.getByTestId("render-request").textContent())!);
+  expect(request.datasetGeneration).toBe(8);
+  expect(request.cameraDomain).toEqual(camera);
+  await expect(component.getByTestId("project-dirty")).toHaveText("false");
+});
+
+test("persistence drops an unsettled camera mutation if save starts during the gesture", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
+  await component.getByLabel("X field").selectOption("column-x");
+  await component.getByLabel("Y field").selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  await component.getByTestId("camera-plot").evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
+    const button = Array.from(document.querySelectorAll("button")).find((candidate) => candidate.textContent === "Begin save")!;
+    button.click();
+  });
+  await page.waitForTimeout(160);
+  expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toBeNull();
+  await expect(component.getByTestId("project-dirty")).toHaveText("false");
+  await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
+  await expect(component.getByTestId("camera-preview")).toHaveCSS("transform", "none");
+});
+
+test("persistence batched hydration with the same ID and generation drops the old camera", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
+  await component.getByLabel("X field").selectOption("column-x");
+  await component.getByLabel("Y field").selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  await component.getByRole("button", { name: "Reload full view", exact: true }).click();
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":3');
+  expect(JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain).toBeNull();
+  await expect(component.getByTestId("project-dirty")).toHaveText("false");
+});
+
+test("persistence retains a pending gesture through a raw-mode effect replacement", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
+  await component.getByLabel("X field").selectOption("column-x");
+  await component.getByLabel("Y field").selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  await component.getByTestId("camera-plot").evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
+    const select = document.querySelector<HTMLSelectElement>('select[aria-label="Raw series"]')!;
+    select.value = "line";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  const request = JSON.parse((await component.getByTestId("render-request").textContent())!);
+  expect(request.rawMode).toBe("line");
+  expect(request.cameraDomain).not.toBeNull();
+  expect(JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera).toEqual(request.cameraDomain);
+});
+
 for (const width of [960, 390]) {
   for (const axisFixture of ["nanoTime", "microTime", "microDuration", "unicode"] as const) {
     test(`reviewed precise labels ${axisFixture} at ${width}px`, async ({ mount, page }, testInfo) => {
@@ -667,10 +863,10 @@ for (const selected of ["column-x", "duplicate-x"]) {
     await component.getByLabel("Y field").selectOption("column-y");
     await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
     await component.getByRole("button", { name: "Refresh field metadata" }).click();
-    await expect(component.getByTestId("selected-columns")).toContainText(selected === "column-x" ? '"xColumnId":"column-x"' : '"xColumnId":null');
+    await expect(component.getByTestId("selected-columns")).toContainText(`"xColumnId":"${selected}"`);
     await expect(component.getByTestId("selected-columns")).toContainText('"yColumnId":"column-y"');
     await expect(component.getByLabel("X field").locator('option[value="column-x"]')).toHaveJSProperty("disabled", false);
-    await expect(component.getByLabel("X field").locator('option[value="duplicate-x"]')).toHaveCount(0);
+    await expect(component.getByLabel("X field").locator('option[value="duplicate-x"]')).toHaveCount(selected === "duplicate-x" ? 1 : 0);
     await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
   });
 }
@@ -685,15 +881,15 @@ test("does not load descriptors for a stale dataset generation", async ({ mount 
 test("diagnoses a missing dataset without loading descriptors", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="missing" />);
 
-  await expect(component.getByText("The source table is no longer available.")).toBeVisible();
+  await expect(component.locator(".graph-builder-new-stage").getByRole("status")).toHaveText("The source table is no longer available.");
   await expect(component.getByTestId("descriptor-calls")).toHaveText("0");
 });
 
-test("clears selected IDs that are not numeric descriptors", async ({ mount }) => {
+test("retains selected IDs that are missing or no longer eligible", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="invalid" />);
 
-  await expect(component.getByTestId("selected-columns")).toContainText('"xColumnId":null');
-  await expect(component.getByTestId("selected-columns")).toContainText('"yColumnId":null');
+  await expect(component.getByTestId("selected-columns")).toContainText('"xColumnId":"removed-x"');
+  await expect(component.getByTestId("selected-columns")).toContainText('"yColumnId":"column-label"');
 });
 
 test("renders empty and error states", async ({ mount }) => {

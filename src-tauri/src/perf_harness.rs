@@ -1134,6 +1134,8 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
                 ProjectService::new(&state).save_project(
                     SaveProjectRequest {
                         file_path: None,
+                        graph_builders_new: Vec::new(),
+                        graph_new_folders: std::collections::HashMap::new(),
                         history,
                         snapshots,
                         graph_builders,

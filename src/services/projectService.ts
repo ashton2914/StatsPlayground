@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
 import type { DatasetFilterMap } from "@/stores/useDatasetFilterStore";
+import type { GraphBuilderNewDocument } from "@/types/graphBuilderNew";
 import type { ProjectInfo, OpenProjectResult, ImportTableResult } from "@/types/project";
 import type { ReportItem } from "@/types/report";
 import type {
@@ -28,6 +29,7 @@ export interface SaveProjectFolders {
   tableFolders: Record<string, string>;
   /** graphId → folder path. Root graphs are simply absent. */
   graphFolders: Record<string, string>;
+  graphNewFolders?: Record<string, string>;
   /** fitYByXId → folder path. Root analyses are simply absent. */
   fitYByXFolders: Record<string, string>;
   /** fitModelId → folder path. Root analyses are simply absent. */
@@ -52,6 +54,8 @@ export interface SaveProjectRequest {
   snapshots: unknown[];
   datasetFilters: DatasetFilterMap;
   graphBuilders: unknown[];
+  graphBuildersNew?: GraphBuilderNewDocument[];
+  graphNewFolders?: Record<string, string>;
   fitYByX: unknown[];
   fitModels?: unknown[];
   tabulates: unknown[];
@@ -93,8 +97,14 @@ export const projectService = {
   createProject: (name: string, filePath: string) =>
     invoke<ProjectInfo>("create_project", { name, filePath }),
 
-  openProject: (filePath: string) =>
-    invoke<OpenProjectResult>("open_project", { filePath }),
+  openProject: async (filePath: string) => {
+    const result = await invoke<OpenProjectResult>("open_project", { filePath });
+    return {
+      ...result,
+      graphBuildersNew: result.graphBuildersNew ?? [],
+      graphNewFolders: result.graphNewFolders ?? {},
+    };
+  },
 
   saveProject: (
     request: SaveProjectRequest,
@@ -105,7 +115,11 @@ export const projectService = {
       progressChannel.onmessage = onProgress;
     }
     return invoke<ProjectInfo>("save_project", {
-      request,
+      request: {
+        ...request,
+        graphBuildersNew: request.graphBuildersNew ?? [],
+        graphNewFolders: request.graphNewFolders ?? {},
+      },
       onProgress: progressChannel,
     });
   },

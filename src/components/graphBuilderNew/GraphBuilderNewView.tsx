@@ -5,6 +5,7 @@ import { inferFieldType } from "@/graphCore";
 import { dataService } from "@/services/dataService";
 import { graphNewService } from "@/services/graphNewService";
 import { useGraphBuilderNewStore } from "@/stores/useGraphBuilderNewStore";
+import { useProjectStore } from "@/stores/useProjectStore";
 import type { ColumnDescriptor, DatasetMeta } from "@/types/data";
 import type { GraphNewRawMode, GraphNewXMode } from "@/types/graphBuilderNew";
 import { GraphNewCanvas } from "./GraphNewCanvas";
@@ -14,8 +15,8 @@ import "./GraphBuilderNewView.css";
 const unsubscribeSessionClose = useGraphBuilderNewStore.subscribe((state, previous) => {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
   for (const session of previous.sessions) {
-    if (!state.sessions.some(({ id }) => id === session.id)) {
-      void graphNewService.close(session.id).catch(() => {});
+    if (!state.sessions.some(({ transportId }) => transportId === session.transportId)) {
+      void graphNewService.close(session.transportId).catch(() => {});
     }
   }
 });
@@ -39,15 +40,21 @@ export function GraphBuilderNewView({
   const setColumns = useGraphBuilderNewStore((state) => state.setColumns);
   const setMean = useGraphBuilderNewStore((state) => state.setMean);
   const setModes = useGraphBuilderNewStore((state) => state.setModes);
+  const setCamera = useGraphBuilderNewStore((state) => state.setCamera);
+  const readOnly = useProjectStore((state) => state.readOnly);
   const [columnMetadata, setColumnMetadata] = useState<{
     dataset: DatasetMeta;
     sessionId: string;
+    transportId: string;
+    runtimeEpoch: number | undefined;
     descriptors: ColumnDescriptor[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const datasetId = session?.datasetId;
   const datasetGeneration = session?.datasetGeneration;
+  const runtimeEpoch = session?.runtimeEpoch;
+  const transportId = session?.transportId;
   const missingDataset = Boolean(session && !dataset);
   const stale = Boolean(
     session
@@ -55,24 +62,26 @@ export function GraphBuilderNewView({
       && (dataset.id !== datasetId || dataset.generation !== datasetGeneration),
   );
   const columns = !missingDataset && !stale
-    && columnMetadata?.dataset === dataset && columnMetadata?.sessionId === sessionId
+    && columnMetadata?.dataset === dataset && columnMetadata?.sessionId === sessionId && columnMetadata?.transportId === transportId && columnMetadata?.runtimeEpoch === runtimeEpoch
     ? columnMetadata.descriptors : [];
   const numericColumns = columns.filter(({ sqlType }) => inferFieldType(sqlType) === "continuous");
   const numericColumnIds = new Set(numericColumns.map(({ columnId }) => columnId));
   const xColumnIds = new Set(columns.map(({ columnId }) => columnId));
+  const missingX = Boolean(session?.xColumnId && !xColumnIds.has(session.xColumnId));
+  const missingY = Boolean(session?.yColumnId && !numericColumnIds.has(session.yColumnId));
 
   useEffect(() => {
-    if ((missingDataset || stale) && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-      void graphNewService.close(sessionId).catch(() => {});
+    if (transportId && (missingDataset || stale) && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      void graphNewService.close(transportId).catch(() => {});
     }
-  }, [missingDataset, stale, sessionId]);
+  }, [missingDataset, stale, transportId]);
 
   useEffect(() => {
     let cancelled = false;
     setColumnMetadata(null);
     setError(null);
 
-    if (!datasetId || !dataset || missingDataset || stale) {
+    if (!datasetId || !dataset || !transportId || missingDataset || stale) {
       setLoading(false);
       return () => {
         cancelled = true;
@@ -83,22 +92,7 @@ export function GraphBuilderNewView({
     void dataService.getColumnDescriptors(datasetId)
       .then((descriptors) => {
         if (!cancelled) {
-          const nextNumericColumns = descriptors.filter(({ sqlType }) => (
-            inferFieldType(sqlType) === "continuous"
-          ));
-          setColumnMetadata({ dataset, sessionId, descriptors });
-          const validColumnIds = new Set(nextNumericColumns.map(({ columnId }) => columnId));
-          const validXIds = new Set(descriptors.map(({ columnId }) => columnId));
-          const currentSession = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === sessionId);
-          if (currentSession
-            && (!validXIds.has(currentSession.xColumnId ?? "")
-              || !validColumnIds.has(currentSession.yColumnId ?? ""))) {
-            setColumns(
-              sessionId,
-              validXIds.has(currentSession.xColumnId ?? "") ? currentSession.xColumnId : null,
-              validColumnIds.has(currentSession.yColumnId ?? "") ? currentSession.yColumnId : null,
-            );
-          }
+          setColumnMetadata({ dataset, sessionId, transportId, runtimeEpoch, descriptors });
         }
       })
       .catch(() => {
@@ -113,7 +107,7 @@ export function GraphBuilderNewView({
     return () => {
       cancelled = true;
     };
-  }, [dataset, datasetId, datasetGeneration, missingDataset, sessionId, setColumns, stale]);
+  }, [dataset, datasetId, datasetGeneration, missingDataset, sessionId, transportId, runtimeEpoch, stale]);
 
   if (!session) {
     return (
@@ -125,10 +119,12 @@ export function GraphBuilderNewView({
 
   const transportAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const updateX = (xColumnId: string) => {
+    if (useProjectStore.getState().readOnly) return;
     if (xColumnId && !xColumnIds.has(xColumnId)) return;
     setColumns(session.id, xColumnId || null, session.yColumnId);
   };
   const updateY = (yColumnId: string) => {
+    if (useProjectStore.getState().readOnly || (yColumnId && !numericColumnIds.has(yColumnId))) return;
     setColumns(session.id, session.xColumnId, yColumnId || null);
   };
 
@@ -136,8 +132,8 @@ export function GraphBuilderNewView({
     <main className="graph-builder-new">
       <header className="graph-builder-new-header">
         <div>
-          <h1>Graph Builder-new</h1>
-          <span className="graph-builder-new-source">{dataset?.name ?? "Source table unavailable"}</span>
+          <h1>{session.name ?? "Graph Builder-new"}</h1>
+          <span className="graph-builder-new-source">{dataset?.name ?? t("graphNew.sourceUnavailable")}</span>
         </div>
         <button
           className="graph-builder-new-close"
@@ -157,10 +153,11 @@ export function GraphBuilderNewView({
             <select
               aria-label="X field"
               value={session.xColumnId ?? ""}
-              disabled={loading || stale || Boolean(error) || columns.length === 0}
+              disabled={readOnly || loading || stale || missingDataset || Boolean(error) || columns.length === 0}
               onChange={(event) => updateX(event.target.value)}
             >
               <option value="">Select a field</option>
+              {!loading && !stale && !missingDataset && missingX && <option value={session.xColumnId!} disabled>{t("graphNew.fieldUnavailable", { field: session.xColumnId })}</option>}
               {columns.map((column) => {
                 const eligible = numericColumnIds.has(column.columnId);
                 const type = /CHAR|TEXT|STRING/i.test(column.sqlType)
@@ -179,10 +176,11 @@ export function GraphBuilderNewView({
             <select
               aria-label="Y field"
               value={session.yColumnId ?? ""}
-              disabled={loading || stale || Boolean(error) || numericColumns.length === 0}
+              disabled={readOnly || loading || stale || missingDataset || Boolean(error) || numericColumns.length === 0}
               onChange={(event) => updateY(event.target.value)}
             >
               <option value="">Select a field</option>
+              {!loading && !stale && !missingDataset && missingY && <option value={session.yColumnId!} disabled>{t("graphNew.fieldUnavailable", { field: session.yColumnId })}</option>}
               {numericColumns.map((column) => (
                 <option key={column.columnId} value={column.columnId}>{column.name}</option>
               ))}
@@ -191,6 +189,7 @@ export function GraphBuilderNewView({
           <label>
             <span>{t("graphNew.xInterpretation", { defaultValue: "X interpretation" })}</span>
             <select aria-label={t("graphNew.xInterpretation", { defaultValue: "X interpretation" })} value={session.xMode ?? "auto"}
+              disabled={readOnly}
               onChange={(event) => setModes(session.id, event.target.value as GraphNewXMode, session.rawMode ?? "scatter")}>
               {(["auto", "numeric", "time", "duration", "category"] as const).map((mode) =>
                 <option key={mode} value={mode}>{t(`graphNew.xMode.${mode}`, { defaultValue: mode })}</option>)}
@@ -199,6 +198,7 @@ export function GraphBuilderNewView({
           <label>
             <span>{t("graphNew.rawSeries", { defaultValue: "Raw series" })}</span>
             <select aria-label={t("graphNew.rawSeries", { defaultValue: "Raw series" })} value={session.rawMode ?? "scatter"}
+              disabled={readOnly}
               onChange={(event) => setModes(session.id, session.xMode ?? "auto", event.target.value as GraphNewRawMode)}>
               {(["scatter", "line", "pointsLine"] as const).map((mode) =>
                 <option key={mode} value={mode}>{t(`graphNew.rawMode.${mode}`, { defaultValue: mode })}</option>)}
@@ -208,20 +208,22 @@ export function GraphBuilderNewView({
 
         <section className="graph-builder-new-stage" aria-label="Point plot">
           {missingDataset ? (
-            <p role="status">The source table is no longer available.</p>
+            <p role="status">{t("graphNew.sourceUnavailable")}</p>
           ) : stale ? (
-            <p role="status">The source table changed. Close this session and open a new one.</p>
+            <p role="status">{t("graphNew.sourceChanged")}</p>
           ) : loading ? (
             <p role="status">Loading numeric fields...</p>
           ) : error ? (
             <p role="alert">{error}</p>
+          ) : missingX || missingY ? (
+            <p role="status">{t("graphNew.fieldsUnavailable", { fields: [missingX ? session.xColumnId : null, missingY ? session.yColumnId : null].filter(Boolean).join(", ") })}</p>
           ) : numericColumns.length === 0 ? (
             <p role="status">This table has no numeric columns.</p>
           ) : transportAvailable && session.xColumnId && session.yColumnId
             && xColumnIds.has(session.xColumnId) && numericColumnIds.has(session.yColumnId) ? (
             <GraphNewCanvas
-              key={JSON.stringify([session.id, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.xMode ?? "auto"])}
-              sessionId={session.id}
+              key={JSON.stringify([session.transportId, runtimeEpoch, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.xMode ?? "auto"])}
+              transportId={session.transportId}
               datasetId={session.datasetId}
               datasetGeneration={session.datasetGeneration}
               xColumnId={session.xColumnId}
@@ -229,6 +231,16 @@ export function GraphBuilderNewView({
               showMean={session.showMean ?? true}
               xMode={session.xMode ?? "auto"}
               rawMode={session.rawMode ?? "scatter"}
+              savedCamera={session.camera ?? null}
+              readOnly={readOnly}
+              onCameraChange={(camera) => {
+                const current = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === session.id);
+                if (!useProjectStore.getState().readOnly && current?.datasetGeneration === session.datasetGeneration
+                  && current.transportId === session.transportId
+                  && current.runtimeEpoch === session.runtimeEpoch
+                  && current.datasetId === session.datasetId && current.xColumnId === session.xColumnId
+                  && current.yColumnId === session.yColumnId && current.xMode === session.xMode) setCamera(session.id, camera);
+              }}
               onMeanChange={(enabled) => setMean(session.id, enabled)}
               xTitle={columns.find((column) => column.columnId === session.xColumnId)?.name ?? ""}
               yTitle={numericColumns.find((column) => column.columnId === session.yColumnId)?.name ?? ""}
