@@ -11,6 +11,7 @@ use crate::engine::duckdb_engine::{DuckDbEngine, PreparedTabulateSessionInfo};
 use crate::error::AppError;
 use crate::models::tabulate::{
     TabulateSessionRequest, TabulateSessionState, TabulateSessionStatus,
+    TabulateWindowRequest, TabulateWindowResult,
 };
 
 struct TabulateSessionPolicy {
@@ -102,6 +103,7 @@ struct TabulateSessionRegistry {
 struct SessionInner {
     source: Mutex<DuckDbEngine>,
     registry: Mutex<TabulateSessionRegistry>,
+    active_requests: Mutex<HashMap<String, TabulateActiveRequest>>,
     preparation: Mutex<()>,
     measured_bytes: AtomicUsize,
     closed: AtomicBool,
@@ -122,6 +124,31 @@ pub(crate) struct TabulateSessionLease {
 pub(crate) struct TabulateActiveQueryGuard {
     inner: Arc<SessionInner>,
     pub(crate) entry: Arc<TabulateSessionEntry>,
+}
+
+struct TabulateActiveRequest {
+    cancelled: Arc<AtomicBool>,
+    interrupt_handle: Arc<InterruptHandle>,
+    running: bool,
+}
+
+struct TabulateRequestGuard {
+    inner: Arc<SessionInner>,
+    request_id: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Drop for TabulateRequestGuard {
+    fn drop(&mut self) {
+        if let Ok(mut requests) = self.inner.active_requests.lock() {
+            if requests
+                .get(&self.request_id)
+                .is_some_and(|request| Arc::ptr_eq(&request.cancelled, &self.cancelled))
+            {
+                requests.remove(&self.request_id);
+            }
+        }
+    }
 }
 
 impl Drop for TabulateSessionLease {
@@ -167,6 +194,7 @@ impl TabulateSessionService {
             inner: Arc::new(SessionInner {
                 source: Mutex::new(engine.try_clone()?),
                 registry: Mutex::new(TabulateSessionRegistry::default()),
+                active_requests: Mutex::new(HashMap::new()),
                 preparation: Mutex::new(()),
                 measured_bytes: AtomicUsize::new(0),
                 closed: AtomicBool::new(false),
@@ -383,6 +411,125 @@ impl TabulateSessionService {
 
     fn unavailable() -> AppError {
         AppError::InvalidParam("tabulate_session_unavailable".into())
+    }
+
+    pub fn query_window(
+        &self,
+        request: &TabulateWindowRequest,
+    ) -> Result<TabulateWindowResult, AppError> {
+        if request.request_id.trim().is_empty() || request.request_id.len() > 256 {
+            return Err(AppError::InvalidParam("tabulate_invalid_request".into()));
+        }
+        let entry = self.entry(&request.session_id)?;
+        let _query = self.begin_query(
+            &request.session_id,
+            request.source_generation,
+            &entry.fingerprint,
+        )?;
+        let info = {
+            let registry = lock(&self.inner.registry)?;
+            let record = registry
+                .sessions
+                .get(&request.session_id)
+                .ok_or_else(Self::unavailable)?;
+            record.info.clone().ok_or_else(Self::unavailable)?
+        };
+        DuckDbEngine::validate_tabulate_window_bounds(
+            request,
+            &info,
+            entry.request.statistics.len(),
+        )?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let mut requests = lock(&self.inner.active_requests)?;
+            if requests.contains_key(&request.request_id) {
+                return Err(AppError::Busy("tabulate_request_active".into()));
+            }
+            requests.insert(
+                request.request_id.clone(),
+                TabulateActiveRequest {
+                    cancelled: Arc::clone(&cancelled),
+                    interrupt_handle: Arc::clone(&entry.interrupt_handle),
+                    running: false,
+                },
+            );
+        }
+        let active = TabulateRequestGuard {
+            inner: Arc::clone(&self.inner),
+            request_id: request.request_id.clone(),
+            cancelled,
+        };
+        let engine = lock(&entry.engine)?;
+        let result = (|| {
+            {
+                let mut requests = lock(&self.inner.active_requests)?;
+                let registered = requests
+                    .get_mut(&request.request_id)
+                    .ok_or_else(Self::unavailable)?;
+                if registered.cancelled.load(Ordering::Acquire) {
+                    return Err(AppError::Cancelled("tabulate_cancelled".into()));
+                }
+                registered.running = true;
+            }
+            self.validate_window_identity(&entry)?;
+            let result = engine.query_tabulate_window(
+                &entry.request,
+                &entry.uuid,
+                request,
+                &info,
+                &entry.fingerprint,
+                &active.cancelled,
+            )?;
+            self.validate_window_identity(&entry)?;
+            if engine
+                .get_dataset_generation(&entry.request.dataset_id)
+                .ok()
+                != Some(entry.request.source_generation)
+            {
+                return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+            }
+            Ok(result)
+        })();
+        let was_cancelled = {
+            let mut requests = lock(&self.inner.active_requests)?;
+            requests.remove(&request.request_id);
+            active.cancelled.load(Ordering::Acquire)
+        };
+        drop(active);
+        drop(engine);
+        if was_cancelled {
+            Err(AppError::Cancelled("tabulate_cancelled".into()))
+        } else if entry.released.load(Ordering::Acquire) {
+            Err(Self::unavailable())
+        } else {
+            result
+        }
+    }
+
+    fn validate_window_identity(&self, entry: &Arc<TabulateSessionEntry>) -> Result<(), AppError> {
+        let registry = lock(&self.inner.registry)?;
+        let record = registry
+            .sessions
+            .get(&entry.session_id)
+            .ok_or_else(Self::unavailable)?;
+        if entry.released.load(Ordering::Acquire) || !Arc::ptr_eq(entry, &record.entry) {
+            return Err(Self::unavailable());
+        }
+        if registry.signatures.get(&entry.fingerprint) != Some(&entry.session_id) {
+            return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+        }
+        Ok(())
+    }
+
+    pub fn cancel_request(&self, request_id: &str) -> Result<(), AppError> {
+        let requests = lock(&self.inner.active_requests)?;
+        if let Some(request) = requests.get(request_id) {
+            request.cancelled.store(true, Ordering::Release);
+            if request.running {
+                request.interrupt_handle.interrupt();
+            }
+        }
+        Ok(())
     }
 
     pub fn release(&self, session_id: &str) -> Result<(), AppError> {
@@ -622,7 +769,7 @@ impl TabulateSessionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::tabulate::{StatisticKind, TabulateStatistic};
+    use crate::models::tabulate::{StatisticKind, TabulateStatistic, TabulateWindowRequest};
     use std::sync::atomic::AtomicU64;
 
     struct SessionHarness {
@@ -708,6 +855,642 @@ mod tests {
                 .expect("tables");
             assert_eq!(count, 0);
         }
+    }
+
+    fn window_request(status: &TabulateSessionStatus) -> TabulateWindowRequest {
+        TabulateWindowRequest {
+            request_id: Uuid::new_v4().to_string(),
+            session_id: status.session_id.clone(),
+            source_generation: status.source_generation,
+            row_start: 0,
+            row_count: 2,
+            column_start: 0,
+            column_count: 2,
+        }
+    }
+
+    fn assert_window_error<T: std::fmt::Debug>(result: Result<T, AppError>, code: &str) {
+        let error = result.expect_err(code);
+        assert!(error.to_string().contains(code), "{error}");
+    }
+
+    #[test]
+    fn tabulate_window_exact_nested_null_duplicate_sparse_boundaries() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        harness
+            .source
+            .conn()
+            .execute_batch(
+                "ALTER TABLE dataset_session_test ADD COLUMN subregion VARCHAR;
+             ALTER TABLE dataset_session_test ADD COLUMN variant VARCHAR;
+             DELETE FROM dataset_session_test;
+             INSERT INTO dataset_session_test VALUES
+             ('A', 'X', 10, 'a', 'x'), ('A', 'X', 20, 'a', 'x'),
+             ('A', 'Y', 30, 'b', 'y'), ('B', 'X', 40, 'a', 'z'),
+             ('B', NULL, NULL, 'b', NULL), (NULL, 'Y', 60, NULL, 'y');",
+            )
+            .expect("nested fixture");
+        let mut definition = harness.request();
+        definition.row_fields = vec!["region".into(), "subregion".into()];
+        definition.column_fields = vec!["product".into(), "variant".into()];
+        definition.statistics.push(TabulateStatistic {
+            id: "count".into(),
+            field: "sales".into(),
+            kind: StatisticKind::Count,
+            quantile: None,
+        });
+        let status = harness.ready(&definition);
+        let members = [
+            serde_json::json!(["A", "a"]),
+            serde_json::json!(["A", "b"]),
+            serde_json::json!(["B", "a"]),
+            serde_json::json!(["B", "b"]),
+            serde_json::json!([null, null]),
+        ];
+        let columns = [
+            serde_json::json!(["X", "x"]),
+            serde_json::json!(["X", "z"]),
+            serde_json::json!(["Y", "y"]),
+            serde_json::json!([null, null]),
+        ];
+        for (row_start, column_start, expected) in [
+            (0, 0, vec![(0, 0, 0, Some(15.0)), (0, 0, 1, Some(2.0))]),
+            (
+                1,
+                1,
+                vec![
+                    (0, 1, 0, Some(30.0)),
+                    (0, 1, 1, Some(1.0)),
+                    (1, 0, 0, Some(40.0)),
+                    (1, 0, 1, Some(1.0)),
+                ],
+            ),
+            (
+                3,
+                2,
+                vec![
+                    (0, 1, 0, None),
+                    (0, 1, 1, Some(0.0)),
+                    (1, 0, 0, Some(60.0)),
+                    (1, 0, 1, Some(1.0)),
+                ],
+            ),
+            (4, 3, vec![]),
+        ] {
+            let request = TabulateWindowRequest {
+                row_start,
+                column_start,
+                ..window_request(&status)
+            };
+            let result = harness
+                .service
+                .query_window(&request)
+                .expect("exact window");
+            let row_end = (row_start as usize + 2).min(members.len());
+            let column_end = (column_start as usize + 2).min(columns.len());
+            assert_eq!(
+                serde_json::to_value(&result.row_members).unwrap(),
+                serde_json::json!(members[row_start as usize..row_end])
+            );
+            assert_eq!(
+                serde_json::to_value(&result.column_members).unwrap(),
+                serde_json::json!(columns[column_start as usize..column_end])
+            );
+            assert_eq!(
+                result
+                    .row_member_before
+                    .as_ref()
+                    .map(|member| serde_json::json!(member)),
+                row_start
+                    .checked_sub(1)
+                    .map(|index| members[index as usize].clone())
+            );
+            assert_eq!(
+                result
+                    .row_member_after
+                    .as_ref()
+                    .map(|member| serde_json::json!(member)),
+                members.get(row_end).cloned()
+            );
+            assert_eq!(
+                result
+                    .column_member_before
+                    .as_ref()
+                    .map(|member| serde_json::json!(member)),
+                column_start
+                    .checked_sub(1)
+                    .map(|index| columns[index as usize].clone())
+            );
+            assert_eq!(
+                result
+                    .column_member_after
+                    .as_ref()
+                    .map(|member| serde_json::json!(member)),
+                columns.get(column_end).cloned()
+            );
+            assert_eq!(
+                result
+                    .cells
+                    .iter()
+                    .map(|cell| (
+                        cell.row_index,
+                        cell.column_index,
+                        cell.statistic_index,
+                        cell.value
+                    ))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(
+                (result.row_start, result.column_start),
+                (row_start, column_start)
+            );
+            assert_eq!(
+                (result.row_member_count, result.column_member_count),
+                (5, 4)
+            );
+            assert_eq!(result.fingerprint, status.fingerprint);
+            assert_eq!(result.source_generation, status.source_generation);
+            assert_eq!(result.request_id, request.request_id);
+            assert_eq!(result.session_id, status.session_id);
+            assert_eq!(result.statistics, definition.statistics);
+            assert!(!result.row_totals_ready && !result.column_totals_ready);
+        }
+    }
+
+    #[test]
+    fn tabulate_window_deep_ordinals_are_local_and_sparse() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        harness.source.conn().execute_batch(
+            "DELETE FROM dataset_session_test;
+             INSERT INTO dataset_session_test SELECT printf('%06d', range), printf('%06d', range), range FROM range(10000);"
+        ).unwrap();
+        let status = harness.ready(&harness.request());
+        let result = harness
+            .service
+            .query_window(&TabulateWindowRequest {
+                row_start: 9998,
+                column_start: 9998,
+                row_count: 128,
+                column_count: 64,
+                ..window_request(&status)
+            })
+            .unwrap();
+        assert_eq!(
+            (result.row_member_count, result.column_member_count),
+            (10000, 10000)
+        );
+        assert_eq!(
+            (
+                result.row_members.len(),
+                result.column_members.len(),
+                result.cells.len()
+            ),
+            (2, 2, 2)
+        );
+        assert_eq!(
+            result
+                .cells
+                .iter()
+                .map(|cell| (cell.row_index, cell.column_index, cell.value))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, Some(9998.0)), (1, 1, Some(9999.0))]
+        );
+        assert!(result.row_member_after.is_none() && result.column_member_after.is_none());
+    }
+
+    #[test]
+    fn tabulate_window_empty_roles_and_empty_source() {
+        for (no_rows, no_columns, expected) in [
+            (true, false, vec![Some(2.0), Some(2.0)]),
+            (false, true, vec![Some(1.0), Some(2.0), Some(3.0)]),
+            (true, true, vec![Some(2.0)]),
+        ] {
+            let harness = SessionHarness::new(256 * 1024 * 1024);
+            let mut definition = harness.request();
+            if no_rows {
+                definition.row_fields.clear();
+            }
+            if no_columns {
+                definition.column_fields.clear();
+            }
+            let status = harness.ready(&definition);
+            let result = harness
+                .service
+                .query_window(&TabulateWindowRequest {
+                    row_count: 128,
+                    ..window_request(&status)
+                })
+                .unwrap();
+            assert_eq!(
+                result
+                    .cells
+                    .iter()
+                    .map(|cell| cell.value)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            if no_rows {
+                assert_eq!(result.row_members, vec![Vec::<serde_json::Value>::new()]);
+            }
+            if no_columns {
+                assert_eq!(result.column_members, vec![Vec::<serde_json::Value>::new()]);
+            }
+        }
+        for empty_roles in [false, true] {
+            let harness = SessionHarness::new(256 * 1024 * 1024);
+            harness
+                .source
+                .conn()
+                .execute("DELETE FROM dataset_session_test", [])
+                .unwrap();
+            let mut definition = harness.request();
+            if empty_roles {
+                definition.row_fields.clear();
+                definition.column_fields.clear();
+            }
+            let status = harness.ready(&definition);
+            let result = harness
+                .service
+                .query_window(&window_request(&status))
+                .unwrap();
+            assert!(result.cells.is_empty());
+            assert_eq!(result.row_members.len(), usize::from(empty_roles));
+            assert_eq!(result.column_members.len(), usize::from(empty_roles));
+        }
+    }
+
+    #[test]
+    fn tabulate_window_rejects_caps_overflow_and_unknown_bounds() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let mut definition = harness.request();
+        for index in 1..3 {
+            let mut statistic = definition.statistics[0].clone();
+            statistic.id = format!("mean-{index}");
+            definition.statistics.push(statistic);
+        }
+        let status = harness.ready(&definition);
+        let valid = window_request(&status);
+        let invalid = [
+            TabulateWindowRequest {
+                row_count: 129,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                column_count: 65,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                row_count: 128,
+                column_count: 64,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                row_start: u64::MAX,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                column_start: u64::MAX,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                row_start: 4,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                column_start: 3,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                row_count: 0,
+                ..valid.clone()
+            },
+            TabulateWindowRequest {
+                column_count: 0,
+                ..valid.clone()
+            },
+        ];
+        for request in invalid {
+            assert_window_error(
+                harness.service.query_window(&request),
+                "tabulate_invalid_bounds",
+            );
+        }
+        let edge = harness
+            .service
+            .query_window(&TabulateWindowRequest {
+                row_start: 3,
+                column_start: 2,
+                ..valid
+            })
+            .unwrap();
+        assert!(
+            edge.row_members.is_empty() && edge.column_members.is_empty() && edge.cells.is_empty()
+        );
+        assert!(harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn tabulate_window_rejects_stale_generation_released_and_wrong_fingerprint() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let status = harness.ready(&harness.request());
+        let request = window_request(&status);
+        assert_window_error(
+            harness.service.query_window(&TabulateWindowRequest {
+                source_generation: status.source_generation + 1,
+                ..request.clone()
+            }),
+            "tabulate_stale_source",
+        );
+        assert_window_error(
+            harness
+                .service
+                .begin_query(&status.session_id, status.source_generation, "wrong")
+                .map(|_| ()),
+            "tabulate_stale_source",
+        );
+        harness
+            .service
+            .inner
+            .registry
+            .lock()
+            .unwrap()
+            .signatures
+            .insert(status.fingerprint.clone(), "wrong-session".into());
+        assert_window_error(
+            harness.service.query_window(&request),
+            "tabulate_stale_source",
+        );
+        harness
+            .service
+            .inner
+            .registry
+            .lock()
+            .unwrap()
+            .signatures
+            .insert(status.fingerprint.clone(), status.session_id.clone());
+        harness
+            .source
+            .bump_dataset_generation("session-test")
+            .unwrap();
+        assert_window_error(
+            harness.service.query_window(&request),
+            "tabulate_stale_source",
+        );
+        assert_window_error(
+            harness.service.query_window(&request),
+            "tabulate_session_unavailable",
+        );
+        let next = harness.ready(&harness.request());
+        harness.service.release(&next.session_id).unwrap();
+        assert_window_error(
+            harness.service.query_window(&window_request(&next)),
+            "tabulate_session_unavailable",
+        );
+        assert!(harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    fn await_active(service: &TabulateSessionService, request_id: &str, running: bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if service
+                .inner
+                .active_requests
+                .lock()
+                .unwrap()
+                .get(request_id)
+                .is_some_and(|request| !running || request.running)
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "request never became active");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn tabulate_window_cancels_expensive_query_by_id_and_cleans_up() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let status = harness.ready(&harness.request());
+        harness
+            .source
+            .conn()
+            .execute_batch(
+                "DROP TABLE dataset_session_test;
+             CREATE VIEW dataset_session_test AS SELECT 'East'::VARCHAR AS region,
+             'A'::VARCHAR AS product, sin(range::DOUBLE) AS sales FROM range(1000000000);",
+            )
+            .unwrap();
+        let request = window_request(&status);
+        let service = harness.service.clone();
+        let worker_request = request.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker =
+            std::thread::spawn(move || sender.send(service.query_window(&worker_request)).unwrap());
+        await_active(&harness.service, &request.request_id, true);
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        harness.service.cancel_request("unrelated").unwrap();
+        let queued_request = window_request(&status);
+        let service = harness.service.clone();
+        let queued_id = queued_request.request_id.clone();
+        let queued = std::thread::spawn(move || service.query_window(&queued_request));
+        await_active(&harness.service, &queued_id, false);
+        harness.service.cancel_request(&queued_id).unwrap();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        harness.service.cancel_request(&request.request_id).unwrap();
+        assert_window_error(
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("cancellation must interrupt the running query"),
+            "tabulate_cancelled",
+        );
+        worker.join().unwrap();
+        assert_window_error(queued.join().unwrap(), "tabulate_cancelled");
+        assert!(harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            harness.service.inner.registry.lock().unwrap().sessions[&status.session_id]
+                .active_queries,
+            0
+        );
+        harness.source.conn().execute_batch(
+            "DROP VIEW dataset_session_test;
+             CREATE TABLE dataset_session_test AS SELECT 'East'::VARCHAR AS region, 'A'::VARCHAR AS product, 7.0::DOUBLE AS sales;"
+        ).unwrap();
+        harness.service.cancel_request(&request.request_id).unwrap();
+        let result = harness.service.query_window(&request).unwrap();
+        assert_eq!(result.cells[0].value, Some(7.0));
+    }
+
+    #[test]
+    fn tabulate_window_queued_cancellation_and_duplicate_id_are_isolated() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let status = harness.ready(&harness.request());
+        let entry = harness.service.entry(&status.session_id).unwrap();
+        let engine = entry.engine.lock().unwrap();
+        let request = window_request(&status);
+        let service = harness.service.clone();
+        let worker_request = request.clone();
+        let worker = std::thread::spawn(move || service.query_window(&worker_request));
+        await_active(&harness.service, &request.request_id, false);
+        assert_window_error(
+            harness.service.query_window(&request),
+            "tabulate_request_active",
+        );
+        harness.service.cancel_request(&request.request_id).unwrap();
+        drop(engine);
+        assert_window_error(worker.join().unwrap(), "tabulate_cancelled");
+        assert!(harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(harness.service.query_window(&request).is_ok());
+    }
+
+    #[test]
+    fn tabulate_window_completed_guard_cannot_remove_reused_request_id() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let status = harness.ready(&harness.request());
+        let entry = harness.service.entry(&status.session_id).unwrap();
+        let old = TabulateRequestGuard {
+            inner: Arc::clone(&harness.service.inner),
+            request_id: "reused".into(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let replacement = Arc::new(AtomicBool::new(false));
+        harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .insert(
+                "reused".into(),
+                TabulateActiveRequest {
+                    cancelled: Arc::clone(&replacement),
+                    interrupt_handle: Arc::clone(&entry.interrupt_handle),
+                    running: false,
+                },
+            );
+        drop(old);
+        harness.service.cancel_request("reused").unwrap();
+        assert!(
+            replacement.load(Ordering::Acquire),
+            "late cleanup removed the replacement request"
+        );
+        harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .clear();
+    }
+
+    #[test]
+    fn tabulate_window_queued_source_change_and_release_cannot_publish() {
+        for release in [false, true] {
+            let harness = SessionHarness::new(256 * 1024 * 1024);
+            let status = harness.ready(&harness.request());
+            let entry = harness.service.entry(&status.session_id).unwrap();
+            let engine = entry.engine.lock().unwrap();
+            let request = window_request(&status);
+            let service = harness.service.clone();
+            let worker_request = request.clone();
+            let worker = std::thread::spawn(move || service.query_window(&worker_request));
+            await_active(&harness.service, &request.request_id, false);
+            let releaser = if release {
+                let service = harness.service.clone();
+                let session_id = status.session_id.clone();
+                let worker = std::thread::spawn(move || service.release(&session_id));
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !entry.released.load(Ordering::Acquire) {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                Some(worker)
+            } else {
+                harness
+                    .source
+                    .bump_dataset_generation("session-test")
+                    .unwrap();
+                None
+            };
+            drop(engine);
+            assert_window_error(
+                worker.join().unwrap(),
+                if release {
+                    "tabulate_session_unavailable"
+                } else {
+                    "tabulate_stale_source"
+                },
+            );
+            if let Some(worker) = releaser {
+                worker.join().unwrap().unwrap();
+            }
+            assert!(harness
+                .service
+                .inner
+                .active_requests
+                .lock()
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn tabulate_window_sql_failure_removes_request_and_allows_retry() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let status = harness.ready(&harness.request());
+        let entry = harness.service.entry(&status.session_id).unwrap();
+        entry
+            .engine
+            .lock()
+            .unwrap()
+            .drop_tabulate_member_indexes(&entry.uuid)
+            .unwrap();
+        let request = window_request(&status);
+        assert!(harness.service.query_window(&request).is_err());
+        assert!(harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .is_empty());
+        entry
+            .engine
+            .lock()
+            .unwrap()
+            .prepare_tabulate_member_indexes(&entry.request, &entry.uuid, usize::MAX)
+            .unwrap();
+        assert!(harness.service.query_window(&request).is_ok());
     }
 
     #[test]

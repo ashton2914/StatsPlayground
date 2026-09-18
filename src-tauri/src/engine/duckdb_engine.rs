@@ -37,7 +37,7 @@ use crate::models::table::{
     TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule, TableWindowRequest,
     TableWindowResult,
 };
-use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateStatistic};
+use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateStatistic, TabulateSparseCell, TabulateWindowRequest, TabulateWindowResult};
 use crate::services::archive_cell::archive_export_expression;
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
@@ -228,6 +228,13 @@ pub(crate) struct PreparedTabulateSessionInfo {
     pub measured_bytes_estimate: usize,
 }
 type GroupedStatisticValues = std::collections::HashMap<(String, String), Vec<Option<f64>>>;
+
+#[derive(Default)]
+struct TabulateMemberSlice {
+    members: Vec<Vec<serde_json::Value>>,
+    before: Option<Vec<serde_json::Value>>,
+    after: Option<Vec<serde_json::Value>>,
+}
 
 struct CorrelationRequestBinding {
     suffix: u32,
@@ -920,6 +927,247 @@ impl DuckDbEngine {
             )?;
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_tabulate_window_bounds(
+        request: &TabulateWindowRequest,
+        info: &PreparedTabulateSessionInfo,
+        statistic_count: usize,
+    ) -> Result<(u64, u64), AppError> {
+        let invalid = || AppError::InvalidParam("tabulate_invalid_bounds".into());
+        let row_end = request
+            .row_start
+            .checked_add(u64::from(request.row_count))
+            .ok_or_else(invalid)?;
+        let column_end = request
+            .column_start
+            .checked_add(u64::from(request.column_count))
+            .ok_or_else(invalid)?;
+        let cells = u64::from(request.row_count)
+            .checked_mul(u64::from(request.column_count))
+            .and_then(|count| count.checked_mul(statistic_count as u64))
+            .ok_or_else(invalid)?;
+        if request.row_count == 0
+            || request.row_count > 128
+            || request.column_count == 0
+            || request.column_count > 64
+            || cells > 16_384
+            || request.row_start > info.row_member_count
+            || request.column_start > info.column_member_count
+        {
+            return Err(invalid());
+        }
+        Ok((
+            row_end.min(info.row_member_count),
+            column_end.min(info.column_member_count),
+        ))
+    }
+
+    fn query_tabulate_member_slice(
+        &self,
+        table: &str,
+        fields: &[String],
+        column_types: &std::collections::HashMap<String, String>,
+        start: u64,
+        end: u64,
+        total: u64,
+    ) -> Result<TabulateMemberSlice, AppError> {
+        let types = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                column_types
+                    .get(field)
+                    .cloned()
+                    .map(|data_type| (format!("dimension_{index}"), data_type))
+                    .ok_or_else(|| AppError::InvalidParam("tabulate_stale_source".into()))
+            })
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+        let projection = (0..fields.len())
+            .map(|index| {
+                dimension_select_expression(&format!("dimension_{index}"), &types)
+                    .map(|expression| format!(", {expression}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("");
+        let sql = format!("SELECT ordinal{projection} FROM {} WHERE ordinal >= ? AND ordinal < ? ORDER BY ordinal", Self::quote_identifier(table));
+        let upper = if end < total { end + 1 } else { end };
+        let mut statement = self.conn.prepare(&sql)?;
+        let mut rows = statement.query(params![start.saturating_sub(1), upper])?;
+        let mut slice = TabulateMemberSlice::default();
+        while let Some(row) = rows.next()? {
+            let ordinal: u64 = row.get(0)?;
+            let values = (0..fields.len())
+                .map(|index| row.get::<_, Value>(index + 1).map(json_dimension_value))
+                .collect::<Result<Vec<_>, _>>()?;
+            if ordinal < start {
+                slice.before = Some(values);
+            } else if ordinal >= end {
+                slice.after = Some(values);
+            } else {
+                slice.members.push(values);
+            }
+        }
+        Ok(slice)
+    }
+
+    pub(crate) fn query_tabulate_window(
+        &self,
+        definition: &TabulateSessionRequest,
+        session_id: &uuid::Uuid,
+        request: &TabulateWindowRequest,
+        info: &PreparedTabulateSessionInfo,
+        fingerprint: &str,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<TabulateWindowResult, AppError> {
+        let check_cancelled = || {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                Err(AppError::Cancelled("tabulate_cancelled".into()))
+            } else {
+                Ok(())
+            }
+        };
+        check_cancelled()?;
+        let (row_end, column_end) =
+            Self::validate_tabulate_window_bounds(request, info, definition.statistics.len())?;
+        if request.session_id != session_id.to_string()
+            || request.source_generation != definition.source_generation
+        {
+            return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+        }
+        self.validate_tabulate_session(definition)?;
+        let (table_name, column_types) = self.validate_tabulate_fields(
+            &definition.dataset_id,
+            &definition.row_fields,
+            &definition.column_fields,
+            &definition.statistics,
+        )?;
+        let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
+        check_cancelled()?;
+        let row_slice = self.query_tabulate_member_slice(
+            &row_table,
+            &definition.row_fields,
+            &column_types,
+            request.row_start,
+            row_end,
+            info.row_member_count,
+        )?;
+        check_cancelled()?;
+        let column_slice = self.query_tabulate_member_slice(
+            &column_table,
+            &definition.column_fields,
+            &column_types,
+            request.column_start,
+            column_end,
+            info.column_member_count,
+        )?;
+        let mut cells = Vec::new();
+        if !row_slice.members.is_empty() && !column_slice.members.is_empty() {
+            let join = |fields: &[String], alias: &str| {
+                let predicates = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(index, field)| {
+                        format!(
+                            "source.{} IS NOT DISTINCT FROM {alias}.dimension_{index}",
+                            Self::quote_identifier(field)
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if predicates.is_empty() {
+                    "TRUE".into()
+                } else {
+                    predicates.join(" AND ")
+                }
+            };
+            let aggregates = definition
+                .statistics
+                .iter()
+                .map(|statistic| {
+                    if matches!(
+                        statistic.kind,
+                        StatisticKind::RowPercentage
+                            | StatisticKind::ColumnPercentage
+                            | StatisticKind::TotalPercentage
+                    ) {
+                        Ok("NULL::DOUBLE".into())
+                    } else {
+                        aggregate_sql_for_field(
+                            statistic,
+                            &format!("source.{}", Self::quote_identifier(&statistic.field)),
+                        )
+                    }
+                })
+                .collect::<Result<Vec<_>, AppError>>()?
+                .join(", ");
+            let sql = format!(
+                "WITH selected_rows AS (SELECT * FROM {} WHERE ordinal >= ? AND ordinal < ?),
+                 selected_columns AS (SELECT * FROM {} WHERE ordinal >= ? AND ordinal < ?)
+                 SELECT row_members.ordinal, column_members.ordinal, {aggregates}
+                 FROM {} AS source
+                 JOIN selected_rows AS row_members ON {}
+                 JOIN selected_columns AS column_members ON {}
+                 GROUP BY row_members.ordinal, column_members.ordinal
+                 ORDER BY row_members.ordinal, column_members.ordinal",
+                Self::quote_identifier(&row_table),
+                Self::quote_identifier(&column_table),
+                Self::quote_identifier(&table_name),
+                join(&definition.row_fields, "row_members"),
+                join(&definition.column_fields, "column_members"),
+            );
+            check_cancelled()?;
+            let mut statement = self.conn.prepare(&sql)?;
+            check_cancelled()?;
+            let mut rows = statement.query(params![
+                request.row_start,
+                row_end,
+                request.column_start,
+                column_end
+            ])?;
+            while let Some(row) = rows.next()? {
+                check_cancelled()?;
+                let row_ordinal: u64 = row.get(0)?;
+                let column_ordinal: u64 = row.get(1)?;
+                let local_index = |ordinal: u64, start: u64, end: u64| {
+                    ordinal
+                        .checked_sub(start)
+                        .filter(|_| ordinal < end)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| AppError::Database("tabulate_invalid_ordinal".into()))
+                };
+                let row_index = local_index(row_ordinal, request.row_start, row_end)?;
+                let column_index = local_index(column_ordinal, request.column_start, column_end)?;
+                for statistic_index in 0..definition.statistics.len() {
+                    cells.push(TabulateSparseCell {
+                        row_index,
+                        column_index,
+                        statistic_index: statistic_index as u32,
+                        value: numeric_cell_value(row.get(statistic_index + 2)?)?,
+                    });
+                }
+            }
+        }
+        check_cancelled()?;
+        Ok(TabulateWindowResult {
+            session_id: request.session_id.clone(),
+            request_id: request.request_id.clone(),
+            fingerprint: fingerprint.into(),
+            source_generation: definition.source_generation,
+            row_start: request.row_start,
+            column_start: request.column_start,
+            row_members: row_slice.members,
+            column_members: column_slice.members,
+            row_member_before: row_slice.before,
+            row_member_after: row_slice.after,
+            column_member_before: column_slice.before,
+            column_member_after: column_slice.after,
+            statistics: definition.statistics.clone(),
+            cells,
+            row_totals_ready: false,
+            column_totals_ready: false,
+            row_member_count: info.row_member_count,
+            column_member_count: info.column_member_count,
+        })
     }
 
     pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {
@@ -10801,6 +11049,10 @@ struct PercentageTransformContext<'a> {
 
 fn aggregate_sql(statistic: &TabulateStatistic) -> Result<String, AppError> {
     let field = quote_identifier(&statistic.field);
+    aggregate_sql_for_field(statistic, &field)
+}
+
+fn aggregate_sql_for_field(statistic: &TabulateStatistic, field: &str) -> Result<String, AppError> {
     let expression = match statistic.kind {
         StatisticKind::Count => format!("CAST(COUNT({field}) AS DOUBLE)"),
         StatisticKind::MissingCount => {
@@ -19601,6 +19853,134 @@ mod tests {
                 .expect("tables");
             assert_eq!(count, 0);
         }
+    }
+
+    #[test]
+    fn tabulate_window_exact_statistics_typed_keys_and_pending_percentages() {
+        let (engine, mut definition) = tabulate_member_fixture();
+        engine
+            .conn()
+            .execute_batch(
+                "ALTER TABLE dataset_members ADD COLUMN ordinal DOUBLE;
+             ALTER TABLE dataset_members ADD COLUMN dimension_0 DATE;
+             DELETE FROM dataset_members;
+             INSERT INTO dataset_members VALUES
+             ('East', 1, 0, 1, DATE '2026-01-01'),
+             ('East', 1, 0, 3, DATE '2026-01-01'),
+             ('East', 1, 0, 3, DATE '2026-01-01'),
+             ('East', 1, 0, 5, DATE '2026-01-01'),
+             ('East', 1, 0, NULL, DATE '2026-01-01'),
+             (NULL, NULL, 0, NULL, NULL);",
+            )
+            .unwrap();
+        definition.row_fields = vec!["dimension_0".into()];
+        definition.column_fields = vec!["product".into()];
+        definition.statistics = [
+            StatisticKind::Count,
+            StatisticKind::MissingCount,
+            StatisticKind::UniqueCount,
+            StatisticKind::Sum,
+            StatisticKind::Mean,
+            StatisticKind::StandardDeviation,
+            StatisticKind::Variance,
+            StatisticKind::Minimum,
+            StatisticKind::Maximum,
+            StatisticKind::Median,
+            StatisticKind::Range,
+            StatisticKind::Quantile,
+            StatisticKind::RowPercentage,
+            StatisticKind::ColumnPercentage,
+            StatisticKind::TotalPercentage,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| TabulateStatistic {
+            id: format!("stat-{index}"),
+            field: "ordinal".into(),
+            kind,
+            quantile: Some(0.25),
+        })
+        .collect();
+        let session = uuid::Uuid::new_v4();
+        let info = engine
+            .prepare_tabulate_member_indexes(&definition, &session, usize::MAX)
+            .unwrap();
+        let request = TabulateWindowRequest {
+            request_id: "statistics".into(),
+            session_id: session.to_string(),
+            source_generation: definition.source_generation,
+            row_start: 0,
+            row_count: 2,
+            column_start: 0,
+            column_count: 2,
+        };
+        let result = engine
+            .query_tabulate_window(
+                &definition,
+                &session,
+                &request,
+                &info,
+                "typed",
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(
+            result.row_members,
+            vec![vec![json!("2026-01-01")], vec![JsonValue::Null]]
+        );
+        assert_eq!(
+            result.column_members,
+            vec![vec![json!(1)], vec![JsonValue::Null]]
+        );
+        let expected = [
+            Some(4.0),
+            Some(1.0),
+            Some(3.0),
+            Some(12.0),
+            Some(3.0),
+            Some((8.0_f64 / 3.0).sqrt()),
+            Some(8.0 / 3.0),
+            Some(1.0),
+            Some(5.0),
+            Some(3.0),
+            Some(4.0),
+            Some(2.5),
+            None,
+            None,
+            None,
+        ];
+        assert_eq!(result.cells.len(), 30);
+        for (cell, expected) in result.cells[..15].iter().zip(expected) {
+            assert_eq!((cell.row_index, cell.column_index), (0, 0));
+            match (cell.value, expected) {
+                (Some(actual), Some(expected)) => assert!((actual - expected).abs() < 1e-12),
+                (actual, expected) => assert_eq!(actual, expected),
+            }
+        }
+        assert_eq!(
+            result.cells[15..]
+                .iter()
+                .map(|cell| cell.value)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(0.0),
+                Some(1.0),
+                Some(0.0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None
+            ]
+        );
+        assert!(!result.row_totals_ready && !result.column_totals_ready);
     }
 
     #[test]

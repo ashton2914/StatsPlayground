@@ -3,6 +3,7 @@ use tauri::State;
 use crate::error::AppError;
 use crate::models::tabulate::{
     TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateSessionStatus,
+    TabulateWindowRequest, TabulateWindowResult,
 };
 use crate::services::tabulate_service::TabulateService;
 use crate::state::AppState;
@@ -52,6 +53,32 @@ pub fn release_tabulate_session(
         .map_err(|error| AppError::Database(error.to_string()))?
         .clone();
     service.release(&session_id)
+}
+
+#[tauri::command(async)]
+pub fn query_tabulate_window(
+    state: State<'_, AppState>,
+    request: TabulateWindowRequest,
+) -> Result<TabulateWindowResult, AppError> {
+    let service = state
+        .tabulate_sessions
+        .read()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .clone();
+    service.query_window(&request)
+}
+
+#[tauri::command]
+pub fn cancel_tabulate_request(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<(), AppError> {
+    let service = state
+        .tabulate_sessions
+        .read()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .clone();
+    service.cancel_request(&request_id)
 }
 
 #[cfg(test)]
