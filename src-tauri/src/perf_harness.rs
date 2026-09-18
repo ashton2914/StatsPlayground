@@ -1867,7 +1867,7 @@ fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
 
 fn balanced_factor(value: usize) -> usize {
     let mut factor = (value as f64).sqrt() as usize;
-    while factor > 1 && value % factor != 0 {
+    while factor > 1 && !value.is_multiple_of(factor) {
         factor -= 1;
     }
     factor.max(1)
