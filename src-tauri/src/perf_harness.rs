@@ -21,6 +21,10 @@ use crate::models::graph_new_data::{
 };
 use crate::models::save::SaveProjectRequest;
 use crate::models::table::TableNavigationRequest;
+use crate::models::tabulate::{
+    StatisticKind, TabulateSessionRequest, TabulateSessionState, TabulateStatistic,
+    TabulateTotalsKind, TabulateTotalsRequest, TabulateWindowRequest,
+};
 use crate::services::calculated_column_service::{
     CalculatedColumnService, UpsertCalculatedColumnInput,
 };
@@ -52,6 +56,7 @@ enum Operation {
     Datalink,
     Calculated,
     TableNavigation,
+    Tabulate,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -130,6 +135,31 @@ struct PerformanceReport {
     qualification_failure: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     machine: Option<MachineReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tabulate: Option<TabulatePerformanceReport>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TabulatePerformanceReport {
+    source_rows: usize,
+    row_members: u64,
+    column_members: u64,
+    statistic_count: usize,
+    logical_cells: usize,
+    nonempty_groups: u64,
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal_code: Option<String>,
+    exact_returned_cells: bool,
+    returned_cells: usize,
+    tile_payload_bytes: Vec<u64>,
+    member_index_bytes: u64,
+    whole_process_rss_bytes: u64,
+    preparation_ms: u128,
+    backend_tile_ms: Vec<u128>,
+    totals_ms: u128,
+    cancellation_latency_ms: u128,
 }
 
 #[derive(Serialize)]
@@ -605,6 +635,7 @@ where
                     "datalink" => Operation::Datalink,
                     "calculated" => Operation::Calculated,
                     "table-navigation" => Operation::TableNavigation,
+                    "tabulate" => Operation::Tabulate,
                     _ => {
                         return Err(AppError::InvalidParam(format!(
                             "unknown operation: {value}"
@@ -795,6 +826,7 @@ fn execute_table_navigation(
         qualification_passed: None,
         qualification_failure: None,
         machine: None,
+        tabulate: None,
     })
 }
 
@@ -1027,6 +1059,7 @@ fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError>
         qualification_passed: None,
         qualification_failure: None,
         machine: None,
+        tabulate: None,
     })
 }
 
@@ -1401,6 +1434,7 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         qualification_passed: None,
         qualification_failure: None,
         machine: None,
+        tabulate: None,
     })
 }
 
@@ -1502,6 +1536,7 @@ fn execute_time_series_graph(
         qualification_passed: None,
         qualification_failure: None,
         machine: None,
+        tabulate: None,
     })
 }
 
@@ -1517,6 +1552,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     }
     if options.operation == Operation::Calculated {
         return execute_calculated(options);
+    }
+    if options.operation == Operation::Tabulate {
+        return execute_tabulate(options);
     }
 
     let total_started = Instant::now();
@@ -1587,6 +1625,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         Operation::TableNavigation => {
             unreachable!("table-navigation is handled before this branch")
         }
+        Operation::Tabulate => unreachable!("tabulate is handled before this branch"),
     };
     let operation_ms = operation_started.elapsed().as_millis();
 
@@ -1633,7 +1672,205 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_passed: None,
         qualification_failure: None,
         machine: None,
+        tabulate: None,
     })
+}
+
+fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
+    const DATASET_ID: &str = "performance-tabulate-baseline";
+    let total_started = Instant::now();
+    let logical_cells = options.columns;
+    if options.rows < logical_cells {
+        return Err(AppError::InvalidParam(
+            "tabulate benchmark source rows must cover every logical cell".into(),
+        ));
+    }
+    let row_members = balanced_factor(logical_cells);
+    let column_members = logical_cells / row_members;
+    let state = AppState::new()?;
+    let setup_started = Instant::now();
+    let source_generation = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.create_empty_table(
+            DATASET_ID,
+            "Performance Tabulate Baseline",
+            &["row_group".into(), "column_group".into(), "value".into()],
+            &["VARCHAR".into(), "VARCHAR".into(), "DOUBLE".into()],
+        )?;
+        let source_rows = i64::try_from(options.rows)
+            .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?;
+        let row_members = i64::try_from(row_members)
+            .map_err(|_| AppError::InvalidParam("logical cell count is too large".into()))?;
+        let column_members = i64::try_from(column_members)
+            .map_err(|_| AppError::InvalidParam("logical cell count is too large".into()))?;
+        db.conn().execute(
+            r#"INSERT INTO "dataset_performance_tabulate_baseline"
+               SELECT i + 1,
+                      'row_' || CAST((i // ?1) % ?2 AS VARCHAR),
+                      'column_' || CAST(i % ?1 AS VARCHAR),
+                      CAST(i AS DOUBLE)
+               FROM range(0, ?3) AS generated(i)"#,
+            params![column_members, row_members, source_rows],
+        )?;
+        db.conn().execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![source_rows, DATASET_ID],
+        )?;
+        db.get_dataset_generation(DATASET_ID)?
+    };
+    let setup_ms = setup_started.elapsed().as_millis();
+    let service = state
+        .tabulate_sessions
+        .read()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .clone();
+    let request = TabulateSessionRequest {
+        dataset_id: DATASET_ID.into(),
+        source_generation,
+        row_fields: vec!["row_group".into()],
+        column_fields: vec!["column_group".into()],
+        statistics: vec![TabulateStatistic {
+            id: "mean-value".into(),
+            field: "value".into(),
+            kind: StatisticKind::Mean,
+            quantile: None,
+        }],
+        include_row_totals: true,
+        include_column_totals: true,
+    };
+    let preparation_started = Instant::now();
+    let initial = service.prepare(&request)?;
+    let session_id = initial.session_id;
+    let measured = (|| {
+        let deadline = Instant::now() + std::time::Duration::from_secs(600);
+        let status = loop {
+            let status = service.status(&session_id)?;
+            match status.state {
+                TabulateSessionState::Preparing if Instant::now() < deadline => std::thread::yield_now(),
+                TabulateSessionState::Preparing => return Err(AppError::Busy("tabulate_prepare_timeout".into())),
+                TabulateSessionState::Ready | TabulateSessionState::Failed => break status,
+                TabulateSessionState::Cancelled => return Err(AppError::Cancelled("tabulate_prepare_cancelled".into())),
+            }
+        };
+        let preparation_ms = preparation_started.elapsed().as_millis();
+        if status.state == TabulateSessionState::Failed {
+            let cancellation_started = Instant::now();
+            service.cancel_request("tabulate-benchmark-inactive-cancellation")?;
+            return Ok(TabulatePerformanceReport {
+                source_rows: options.rows,
+                row_members: row_members as u64,
+                column_members: column_members as u64,
+                statistic_count: request.statistics.len(),
+                logical_cells,
+                nonempty_groups: 0,
+                outcome: "controlled_refusal",
+                refusal_code: Some(status.failure_code.unwrap_or_else(|| "tabulate_prepare_failed".into())),
+                exact_returned_cells: false,
+                returned_cells: 0,
+                tile_payload_bytes: Vec::new(),
+                member_index_bytes: status.measured_member_index_bytes,
+                whole_process_rss_bytes: current_working_set_bytes().unwrap_or(0),
+                preparation_ms,
+                backend_tile_ms: Vec::new(),
+                totals_ms: 0,
+                cancellation_latency_ms: cancellation_started.elapsed().as_millis(),
+            });
+        }
+        if status.logical_cell_count != logical_cells as u64 {
+            return Err(AppError::Stats("tabulate_logical_cell_mismatch".into()));
+        }
+        let row_count = u32::try_from(status.row_member_count.min(128))
+            .map_err(|_| AppError::Stats("tabulate_window_bounds_invalid".into()))?;
+        let column_count = u32::try_from(status.column_member_count.min(64))
+            .map_err(|_| AppError::Stats("tabulate_window_bounds_invalid".into()))?;
+        let mut tile_payload_bytes = Vec::with_capacity(options.runs);
+        let mut backend_tile_ms = Vec::with_capacity(options.runs);
+        let mut returned_cells = 0;
+        let mut exact_returned_cells = true;
+        for sample in 0..options.runs {
+            let tile_started = Instant::now();
+            let window = service.query_window(&TabulateWindowRequest {
+                request_id: format!("tabulate-benchmark-window-{sample}"),
+                session_id: session_id.clone(),
+                source_generation,
+                row_start: 0,
+                row_count,
+                column_start: 0,
+                column_count,
+            })?;
+            backend_tile_ms.push(tile_started.elapsed().as_millis());
+            returned_cells = window.row_members.len()
+                .saturating_mul(window.column_members.len())
+                .saturating_mul(window.statistics.len());
+            exact_returned_cells &= window.row_members.len() == row_count as usize
+                && window.column_members.len() == column_count as usize;
+            tile_payload_bytes.push(u64::try_from(
+                serde_json::to_vec(&window)
+                    .map_err(|error| AppError::Stats(error.to_string()))?
+                    .len(),
+            ).map_err(|_| AppError::Stats("tabulate_payload_too_large".into()))?);
+        }
+        let totals_started = Instant::now();
+        service.query_totals(&TabulateTotalsRequest {
+            request_id: "tabulate-benchmark-totals".into(),
+            session_id: session_id.clone(),
+            source_generation,
+            totals: TabulateTotalsKind::Grand,
+        })?;
+        let totals_ms = totals_started.elapsed().as_millis();
+        let cancellation_started = Instant::now();
+        service.cancel_request("tabulate-benchmark-inactive-cancellation")?;
+        Ok(TabulatePerformanceReport {
+            source_rows: options.rows,
+            row_members: status.row_member_count,
+            column_members: status.column_member_count,
+            statistic_count: request.statistics.len(),
+            logical_cells,
+            nonempty_groups: status.logical_cell_count,
+            outcome: "completed",
+            refusal_code: None,
+            exact_returned_cells,
+            returned_cells,
+            tile_payload_bytes,
+            member_index_bytes: status.measured_member_index_bytes,
+            whole_process_rss_bytes: current_working_set_bytes().unwrap_or(0),
+            preparation_ms,
+            backend_tile_ms,
+            totals_ms,
+            cancellation_latency_ms: cancellation_started.elapsed().as_millis(),
+        })
+    })();
+    let release = service.release(&session_id);
+    let tabulate = measured.and_then(|report| release.map(|_| report))?;
+    let operation_ms = preparation_started.elapsed().as_millis();
+    Ok(PerformanceReport {
+        rows: options.rows, columns: options.columns, operation: options.operation,
+        setup_ms, operation_ms, position_percent: None, target_start: None,
+        lock_wait_ms: None, count_ms: None, anchor_ms: None,
+        total_ms: total_started.elapsed().as_millis(), result_rows: tabulate.returned_cells,
+        selected_columns: 0, query_ms: None, encode_ms: None, stdout_write_ms: None,
+        decode_ms: None, draw_ms: None, processed_rows: None, source_rows: Some(options.rows as u64),
+        chunks: None, transferred_bytes: Some(tabulate.tile_payload_bytes.iter().sum()),
+        projection_passes: None, invalid_x_count: None, archive_bytes: 0,
+        max_retained_batch_bytes: None, max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None, save_stage_ms: None, process_memory: None,
+        graph_new: None, chain_depth: None, runs_ms: None, median_ms: None,
+        process_memory_method: process_memory_method(), physical_input_bytes: None,
+        calculated_result_bytes: None, memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None, qualification_passed: None,
+        qualification_failure: None, machine: None, tabulate: Some(tabulate),
+    })
+}
+
+fn balanced_factor(value: usize) -> usize {
+    let mut factor = (value as f64).sqrt() as usize;
+    while factor > 1 && value % factor != 0 {
+        factor -= 1;
+    }
+    factor.max(1)
 }
 
 fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
@@ -1737,6 +1974,7 @@ fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_passed: Some(qualification_failure.is_none()),
         qualification_failure,
         machine: Some(machine_report(duckdb_version)),
+        tabulate: None,
     })
 }
 
@@ -2123,6 +2361,7 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_passed: None,
         qualification_failure: None,
         machine: None,
+        tabulate: None,
     })
 }
 
@@ -2284,6 +2523,7 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         qualification_passed: None,
         qualification_failure: None,
         machine: None,
+        tabulate: None,
     })
 }
 
@@ -2547,6 +2787,56 @@ mod tests {
         let options = parse_args(["--operation", "datalink"].map(String::from)).unwrap();
 
         assert_eq!(options.operation, Operation::Datalink);
+    }
+
+    #[test]
+    fn performance_cli_parses_tabulate_operation() {
+        let options = parse_args(
+            ["--rows", "1000", "--columns", "100", "--operation", "tabulate"]
+                .map(String::from),
+        )
+        .unwrap();
+
+        assert_eq!(options.operation, Operation::Tabulate);
+    }
+
+    #[test]
+    fn performance_cli_reports_exact_bounded_tabulate_measurements() {
+        let report = execute(Options {
+            rows: 1_000,
+            columns: 100,
+            operation: Operation::Tabulate,
+            graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 3,
+            position_percent: None,
+            payload_stdout: false,
+        })
+        .expect("Tabulate benchmark");
+        let payload = serde_json::to_value(report).expect("serialize report");
+        let tabulate = &payload["tabulate"];
+
+        assert_eq!(payload["operation"], "tabulate");
+        assert_eq!(tabulate["sourceRows"], 1_000);
+        assert_eq!(tabulate["logicalCells"], 100);
+        assert_eq!(tabulate["rowMembers"], 10);
+        assert_eq!(tabulate["columnMembers"], 10);
+        assert_eq!(tabulate["statisticCount"], 1);
+        assert_eq!(tabulate["nonemptyGroups"], 100);
+        assert_eq!(tabulate["outcome"], "completed");
+        assert_eq!(tabulate["exactReturnedCells"], true);
+        assert!(tabulate["returnedCells"].as_u64().is_some_and(|value| value <= 100));
+        assert_eq!(tabulate["tilePayloadBytes"].as_array().map(Vec::len), Some(3));
+        assert!(tabulate["tilePayloadBytes"]
+            .as_array()
+            .is_some_and(|values| values.iter().all(|value| value.as_u64().is_some_and(|value| value > 0))));
+        assert_eq!(tabulate["backendTileMs"].as_array().map(Vec::len), Some(3));
+        assert!(tabulate["memberIndexBytes"].as_u64().is_some_and(|value| value > 0));
+        assert!(tabulate["wholeProcessRssBytes"].as_u64().is_some_and(|value| value > 0));
+        assert!(tabulate["preparationMs"].as_u64().is_some());
+        assert!(tabulate["totalsMs"].as_u64().is_some());
     }
 
     #[test]
