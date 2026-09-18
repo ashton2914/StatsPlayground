@@ -19,10 +19,10 @@ import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useProjectStore } from "@/stores/useProjectStore";
-import { useTabulateStore, type TabulateLatestResult } from "@/stores/useTabulateStore";
+import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkspaceSelectionStore } from "@/stores/useWorkspaceSelectionStore";
 import { allocateProjectBasename, validateProjectBasename } from "@/utils/projectFileNaming";
-import type { TabulateItem, TabulateRequest, TabulateSessionRequest } from "@/types/tabulate";
+import type { TabulateItem, TabulateSessionRequest } from "@/types/tabulate";
 
 const TABULATE_EXTENSION = ".spf";
 
@@ -30,34 +30,6 @@ const TABULATE_RUN_SOURCE_CHANGED_WARNING: CommandWarning = {
   code: "tabulate_run_source_changed",
   message: "Tabulate finished, but source table changed during execution",
 };
-
-export function fingerprintTabulateRequest(request: TabulateRequest): string {
-  return JSON.stringify({
-    datasetId: request.datasetId,
-    rowFields: request.rowFields,
-    columnFields: request.columnFields,
-    statistics: request.statistics.map((statistic) => ({
-      id: statistic.id,
-      field: statistic.field,
-      kind: statistic.kind,
-      quantile: statistic.quantile ?? null,
-    })),
-    includeRowTotals: request.includeRowTotals,
-    includeColumnTotals: request.includeColumnTotals,
-    maxResultCells: request.maxResultCells,
-  });
-}
-
-export function isTabulateCacheFresh(
-  latest: TabulateLatestResult | null,
-  requestFingerprint: string,
-  sourceGeneration: number,
-): boolean {
-  if (!latest) {
-    return false;
-  }
-  return latest.requestFingerprint === requestFingerprint && latest.sourceGeneration === sourceGeneration;
-}
 
 export interface TabulateCommandDependencies {
   listTabulates: () => TabulateItem[];

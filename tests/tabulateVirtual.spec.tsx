@@ -156,11 +156,37 @@ test("totals stay pending independently of ready interior cells", async ({ mount
 test("read-only navigation preserves definitions and disables export", async ({ mount, page }) => {
   await mount(<TabulateVirtualHarness readOnly />);
   await ready(page);
+  const definitions = await page.getByTestId("definitions").textContent();
   await expect(page.getByRole("button", { name: "Export to Data Table", exact: true })).toBeDisabled();
+  await expect(page.getByRole("searchbox", { name: "Search available columns", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Remove Region", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Edit Sales · Mean", exact: true })).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: "Row totals", exact: true })).toBeDisabled();
   await position(page, "Row", 501);
   await expect(page.locator('[data-tabulate-cell="500:0:0"]')).toHaveText("500.07");
-  await page.getByRole("combobox", { name: "Visible rows", exact: true }).selectOption("1");
+  const visibleRows = page.getByRole("combobox", { name: "Visible rows", exact: true });
+  await expect(visibleRows).toBeEnabled();
+  await visibleRows.selectOption("1");
   await expect.poll(async () => (await evidence(page)).prepares.at(-1)?.rowFields).toEqual(["Region"]);
+  expect(await page.getByTestId("definitions").textContent()).toBe(definitions);
+  expect((await evidence(page)).exports).toEqual([]);
+});
+
+test("project reset unmounts runtime and reopen preserves only durable definitions", async ({ mount, page }) => {
+  await mount(<TabulateVirtualHarness readOnly />);
+  await ready(page);
+  const definitions = await page.getByTestId("definitions").textContent();
+  await position(page, "Row", 501);
+  await expect(page.locator('[data-tabulate-cell="500:0:0"]')).toHaveText("500.07");
+  await page.getByRole("button", { name: "Reset project", exact: true }).click();
+  await expect(page.getByRole("grid")).toHaveCount(0);
+  await expect.poll(async () => (await evidence(page)).released).toEqual(["session-1"]);
+  await expect(page.getByTestId("definitions")).toHaveText("[]");
+  await page.getByRole("button", { name: "Reopen project", exact: true }).click();
+  await ready(page);
+  expect(await page.getByTestId("definitions").textContent()).toBe(definitions);
+  expect((await evidence(page)).prepares).toHaveLength(2);
+  await expect(page.getByRole("button", { name: "Export to Data Table", exact: true })).toBeDisabled();
 });
 
 test("export sends full definition and session identity without legacy cell limits", async ({ mount, page }) => {

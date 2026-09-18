@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { TabulateReportEmbed } from "../src/components/report/TabulateReportEmbed";
 import type { TabulateReportEmbedRuntime } from "../src/components/report/TabulateReportEmbed";
 import type { TabulateSessionStatus } from "../src/types/tabulate";
-import { tabulateService } from "../src/services/tabulateService";
 import "../src/components/tabulate/tabulate.css";
 
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
@@ -179,10 +178,8 @@ export function TabulateReportLifecycleHarness({ late = false }: { late?: boolea
   });
   useEffect(() => {
     const readOnly = useProjectStore.getState().readOnly;
-    const run = tabulateService.run;
-    tabulateService.run = async () => { evidence.legacy += 1; throw new Error("report requested full result"); };
     useProjectStore.setState({ readOnly: true });
-    return () => { useProjectStore.setState({ readOnly }); tabulateService.run = run; };
+    return () => { useProjectStore.setState({ readOnly }); };
   }, []);
   return <div style={{ width: "100%" }}>
     <button onClick={() => setVisible(false)}>Unmount Tabulate</button>

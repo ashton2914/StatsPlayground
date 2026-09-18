@@ -2,8 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type { DatasetMeta } from "@/types/data";
 import type {
   TabulateMaterializeRequest,
-  TabulateRequest,
-  TabulateResult,
   TabulateSessionRequest,
   TabulateSessionStatus,
   TabulateTotalsRequest,
@@ -13,8 +11,6 @@ import type {
 } from "@/types/tabulate";
 
 export const tabulateService = {
-  run: (request: TabulateRequest) =>
-    invoke<TabulateResult>("tabulate", { request }),
   prepare: (request: TabulateSessionRequest) =>
     invoke<TabulateSessionStatus>("prepare_tabulate_session", { request }),
   getStatus: (sessionId: string) =>

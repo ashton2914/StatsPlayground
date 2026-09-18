@@ -34,16 +34,6 @@ export interface TabulateItem {
   createdAt: string;
 }
 
-export interface TabulateRequest {
-  datasetId: string;
-  rowFields: string[];
-  columnFields: string[];
-  statistics: TabulateStatistic[];
-  includeRowTotals: boolean;
-  includeColumnTotals: boolean;
-  maxResultCells: 10000;
-}
-
 export interface TabulateSessionRequest {
   datasetId: string;
   sourceGeneration: number;
@@ -142,16 +132,4 @@ export interface TabulateMaterializeRequest {
   destinationName: string;
   missingLabel: string;
   statisticLabels: string[];
-}
-
-export interface TabulateResult {
-  rowMembers: unknown[][];
-  columnMembers: unknown[][];
-  statistics: TabulateStatistic[];
-  cells: Array<number | null>;
-  rowTotals: Array<number | null>;
-  columnTotals: Array<number | null>;
-  grandTotals: Array<number | null>;
-  cellCount: number;
-  limit: number;
 }

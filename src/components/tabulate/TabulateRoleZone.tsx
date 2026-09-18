@@ -24,6 +24,7 @@ interface TabulateRoleZoneProps {
   subtitle: string;
   emptyHint: string;
   items: readonly TabulateRoleZoneItem[];
+  disabled: boolean;
   onDropPayload: (
     zone: TabulateRoleZoneKind,
     payload: TabulateDragPayload,
@@ -40,6 +41,7 @@ export function TabulateRoleZone({
   subtitle,
   emptyHint,
   items,
+  disabled,
   onDropPayload,
   onMove,
   onRemove,
@@ -51,10 +53,12 @@ export function TabulateRoleZone({
   return (
     <section
       className={`sp-tabulate-zone sp-tabulate-zone-${zone}`}
+      aria-disabled={disabled}
       onDragOver={(event) => {
         if (!hasTabulateDragType(event.dataTransfer.types)) {
           return;
         }
+        if (disabled) return;
         event.preventDefault();
         if (dragOverIndex == null) {
           setDragOverIndex(items.length);
@@ -62,6 +66,7 @@ export function TabulateRoleZone({
       }}
       onDragLeave={() => setDragOverIndex(null)}
       onDrop={(event) => {
+        if (disabled) return;
         const payload = readDragPayload(event.dataTransfer);
         setDragOverIndex(null);
         if (payload == null) {
@@ -86,9 +91,11 @@ export function TabulateRoleZone({
             <div
               key={item.key}
               role="listitem"
-              draggable
+              draggable={!disabled}
+              aria-disabled={disabled}
               className={`sp-tabulate-zone-item${isDropTarget ? " is-drop-target" : ""}`}
               onDragStart={(event) => {
+                if (disabled) return;
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData(
                   TABULATE_DRAG_MIME,
@@ -99,6 +106,7 @@ export function TabulateRoleZone({
                 if (!hasTabulateDragType(event.dataTransfer.types)) {
                   return;
                 }
+                if (disabled) return;
                 event.preventDefault();
                 setDragOverIndex(index);
               }}
@@ -111,7 +119,7 @@ export function TabulateRoleZone({
                 event.stopPropagation();
                 const payload = readDragPayload(event.dataTransfer);
                 setDragOverIndex(null);
-                if (payload == null) {
+                if (disabled || payload == null) {
                   return;
                 }
                 event.preventDefault();
@@ -128,7 +136,7 @@ export function TabulateRoleZone({
                   type="button"
                   className="sp-tabulate-inline-button"
                   onClick={() => onMove(index, -1)}
-                  disabled={index === 0}
+                  disabled={disabled || index === 0}
                   title={t("tabulate.moveEarlier")}
                   aria-label={t("tabulate.moveEarlierLabel", { label: item.label })}
                 >
@@ -138,7 +146,7 @@ export function TabulateRoleZone({
                   type="button"
                   className="sp-tabulate-inline-button"
                   onClick={() => onMove(index, 1)}
-                  disabled={index === items.length - 1}
+                  disabled={disabled || index === items.length - 1}
                   title={t("tabulate.moveLater")}
                   aria-label={t("tabulate.moveLaterLabel", { label: item.label })}
                 >
@@ -149,6 +157,7 @@ export function TabulateRoleZone({
                     type="button"
                     className="sp-tabulate-inline-button"
                     onClick={() => onEdit(item.key)}
+                    disabled={disabled}
                     title={t("tabulate.editStatistic")}
                     aria-label={t("tabulate.editStatisticLabel", { label: item.label })}
                   >
@@ -159,6 +168,7 @@ export function TabulateRoleZone({
                   type="button"
                   className="sp-tabulate-inline-button"
                   onClick={() => onRemove(item.key)}
+                  disabled={disabled}
                   title={t("tabulate.remove")}
                   aria-label={t("tabulate.removeLabel", { label: item.label })}
                 >

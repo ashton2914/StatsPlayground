@@ -789,20 +789,6 @@ pub struct TabulateRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TabulateResult {
-    pub row_members: Vec<Vec<Value>>,
-    pub column_members: Vec<Vec<Value>>,
-    pub statistics: Vec<TabulateStatistic>,
-    pub cells: Vec<Option<f64>>,
-    pub row_totals: Vec<Option<f64>>,
-    pub column_totals: Vec<Option<f64>>,
-    pub grand_totals: Vec<Option<f64>>,
-    pub cell_count: u64,
-    pub limit: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TabulateCreateToolInput {
     pub source_dataset_id: String,
 }

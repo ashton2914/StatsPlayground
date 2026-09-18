@@ -10789,7 +10789,14 @@ mod tests {
         let graph = graph_doc("graph-1", "data");
         let fit = fit_doc("fit-1", "data");
         let report = report_doc("report-1", "Report 1", "# report body");
-        let tabulate = tabulate_doc("tab-1", "data");
+        let tabulate = json!({
+            "id": "tab-1", "name": "data-2", "sourceDatasetId": "table-1",
+            "rowFields": ["Region"], "columnFields": ["Product"],
+            "statistics": [{"id": "count", "field": "Sales", "kind": "count"}],
+            "includeRowTotals": true, "includeColumnTotals": false,
+            "createdAt": "2026-08-13T00:00:00Z"
+        });
+        let expected_tabulate = tabulate.clone();
         let snapshot = snapshot_doc("snap-1", "data");
         let report_folders = HashMap::from([("report-1".to_string(), "Root/Nested".to_string())]);
         let tabulate_folders = HashMap::from([("tab-1".to_string(), "Root".to_string())]);
@@ -10849,6 +10856,12 @@ mod tests {
         let loaded = read_project_file(path.to_str().unwrap()).unwrap();
         assert_eq!(loaded.manifest.report_folders, report_folders);
         assert_eq!(loaded.manifest.tabulate_folders, tabulate_folders);
+        assert_eq!(loaded.tabulates, vec![expected_tabulate.clone()]);
+        assert_eq!(
+            serde_json::to_vec(&loaded.tabulates[0]).unwrap(),
+            serde_json::to_vec(&expected_tabulate).unwrap(),
+            "saved definitions must not acquire session, tile, totals, or generation fields"
+        );
 
         let _ = std::fs::remove_file(path);
     }

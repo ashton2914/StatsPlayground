@@ -70,7 +70,7 @@ export function TabulateVirtualHarness({
       }
       evidence.current.legacy += 1;
       changed();
-      return { data: { result: { rowMembers: [["Old"]], columnMembers: [["Old"]], statistics: ITEM.statistics, cells: [1, 1], rowTotals: [], columnTotals: [], grandTotals: [], cellCount: 2, limit: 10000 } }, warnings: [] };
+      throw new Error(`Unexpected Tabulate command: ${command.type}`);
     }) as typeof execute;
     tabulateService.prepare = async (request) => {
       evidence.current.prepares.push(structuredClone(request));
@@ -141,8 +141,11 @@ export function TabulateVirtualHarness({
       <button onClick={() => useTabulateStore.getState().loadFromProject([{ ...ITEM, id: "replacement" }])}>Replace</button>
       <button onClick={() => pending.current.splice(0).forEach((resolve) => resolve())}>Complete A</button>
       <button onClick={() => setVisible(false)}>Unmount</button>
+      <button onClick={() => useTabulateStore.getState().reset()}>Reset project</button>
+      <button onClick={() => useTabulateStore.getState().loadFromProject([structuredClone(ITEM)])}>Reopen project</button>
     </div>
     <output data-testid="evidence" style={{ display: "none" }} data-revision={revision}>{JSON.stringify(evidence.current)}</output>
+    <output data-testid="definitions" style={{ display: "none" }}>{JSON.stringify(useTabulateStore.getState().items)}</output>
     <div data-testid="workspace" style={{ width: `min(${width}px, 100%)`, height: 640 }}>
       {ready && visible && item ? <TabulateView item={item} dataset={dataset} existingDatasetNames={[]} /> : null}
     </div>

@@ -37,7 +37,7 @@ use crate::models::table::{
     TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule, TableWindowRequest,
     TableWindowResult,
 };
-use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateStatistic, TabulateSparseCell, TabulateWindowRequest, TabulateWindowResult};
+use crate::models::tabulate::{StatisticKind, TabulateSessionRequest, TabulateStatistic, TabulateSparseCell, TabulateWindowRequest, TabulateWindowResult};
 use crate::models::tabulate::{TabulateSparseTotal, TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult};
 use crate::services::archive_cell::archive_export_expression;
 use crate::services::calculated_column_expression::{
@@ -228,7 +228,6 @@ pub(crate) struct PreparedTabulateSessionInfo {
     pub logical_cell_count: u64,
     pub measured_bytes_estimate: usize,
 }
-type GroupedStatisticValues = std::collections::HashMap<(String, String), Vec<Option<f64>>>;
 
 #[derive(Default)]
 struct TabulateMemberSlice {
@@ -1542,304 +1541,6 @@ impl DuckDbEngine {
             let _ = self.conn.execute_batch("ROLLBACK");
         }
         outcome
-    }
-
-    pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {
-        let (table_name, column_types) = self.validate_tabulate_fields(
-            &request.dataset_id, &request.row_fields, &request.column_fields, &request.statistics,
-        )?;
-        let row_count = grouped_cardinality(&self.conn, &table_name, &request.row_fields)?;
-        let column_count = grouped_cardinality(&self.conn, &table_name, &request.column_fields)?;
-        let cell_count = row_count
-            .checked_mul(column_count)
-            .and_then(|value| value.checked_mul(request.statistics.len() as u64))
-            .ok_or_else(|| AppError::InvalidParam("Tabulate result size overflow".into()))?;
-        if cell_count > request.max_result_cells {
-            return Err(AppError::InvalidParam(format!(
-                "Tabulate result has {cell_count} cells; limit is {}",
-                request.max_result_cells,
-            )));
-        }
-
-        let row_members =
-            self.query_dimension_members(&table_name, &request.row_fields, &column_types)?;
-        let column_members =
-            self.query_dimension_members(&table_name, &request.column_fields, &column_types)?;
-        let grouped_values = self.query_grouped_values(
-            &table_name,
-            &request.row_fields,
-            &request.column_fields,
-            &request.statistics,
-            &column_types,
-        )?;
-        let needs_row_denominators = request
-            .statistics
-            .iter()
-            .any(|statistic| matches!(statistic.kind, StatisticKind::RowPercentage));
-        let needs_column_denominators = request
-            .statistics
-            .iter()
-            .any(|statistic| matches!(statistic.kind, StatisticKind::ColumnPercentage));
-        let needs_total_denominators = request
-            .statistics
-            .iter()
-            .any(|statistic| matches!(statistic.kind, StatisticKind::TotalPercentage));
-        let needs_percentage_denominators =
-            needs_row_denominators || needs_column_denominators || needs_total_denominators;
-
-        let mut cells = Vec::with_capacity(cell_count as usize);
-        for row_member in &row_members {
-            let row_key = member_key(row_member)?;
-            for column_member in &column_members {
-                let column_key = member_key(column_member)?;
-                if let Some(values) = grouped_values.get(&(row_key.clone(), column_key.clone())) {
-                    cells.extend(values.iter().copied());
-                } else {
-                    for statistic in &request.statistics {
-                        cells.push(default_missing_value(&statistic.kind));
-                    }
-                }
-            }
-        }
-
-        let raw_row_totals = if request.include_row_totals || needs_row_denominators {
-            let totals = self.query_grouped_values(
-                &table_name,
-                &request.row_fields,
-                &[],
-                &request.statistics,
-                &column_types,
-            )?;
-            let empty_key = member_key(&[])?;
-            let mut flattened = Vec::with_capacity(row_members.len() * request.statistics.len());
-            for row_member in &row_members {
-                let row_key = member_key(row_member)?;
-                if let Some(values) = totals.get(&(row_key, empty_key.clone())) {
-                    flattened.extend(values.iter().copied());
-                } else {
-                    for statistic in &request.statistics {
-                        flattened.push(default_missing_value(&statistic.kind));
-                    }
-                }
-            }
-            flattened
-        } else {
-            Vec::new()
-        };
-
-        let raw_column_totals = if request.include_column_totals || needs_column_denominators {
-            let totals = self.query_grouped_values(
-                &table_name,
-                &[],
-                &request.column_fields,
-                &request.statistics,
-                &column_types,
-            )?;
-            let empty_key = member_key(&[])?;
-            let mut flattened = Vec::with_capacity(column_members.len() * request.statistics.len());
-            for column_member in &column_members {
-                let column_key = member_key(column_member)?;
-                if let Some(values) = totals.get(&(empty_key.clone(), column_key)) {
-                    flattened.extend(values.iter().copied());
-                } else {
-                    for statistic in &request.statistics {
-                        flattened.push(default_missing_value(&statistic.kind));
-                    }
-                }
-            }
-            flattened
-        } else {
-            Vec::new()
-        };
-
-        let raw_grand_totals = if request.include_row_totals
-            || request.include_column_totals
-            || needs_percentage_denominators
-        {
-            let totals = self.query_grouped_values(
-                &table_name,
-                &[],
-                &[],
-                &request.statistics,
-                &column_types,
-            )?;
-            totals
-                .get(&(member_key(&[])?, member_key(&[])?))
-                .cloned()
-                .unwrap_or_else(|| {
-                    request
-                        .statistics
-                        .iter()
-                        .map(|statistic| default_missing_value(&statistic.kind))
-                        .collect()
-                })
-        } else {
-            Vec::new()
-        };
-
-        let mut row_totals = if request.include_row_totals {
-            raw_row_totals.clone()
-        } else {
-            Vec::new()
-        };
-        let mut column_totals = if request.include_column_totals {
-            raw_column_totals.clone()
-        } else {
-            Vec::new()
-        };
-        let mut grand_totals = if request.include_row_totals || request.include_column_totals {
-            raw_grand_totals.clone()
-        } else {
-            Vec::new()
-        };
-
-        if needs_percentage_denominators {
-            let mut percentage_context = PercentageTransformContext {
-                row_count: row_members.len(),
-                column_count: column_members.len(),
-                cells: &mut cells,
-                row_totals: &mut row_totals,
-                column_totals: &mut column_totals,
-                grand_totals: &mut grand_totals,
-                raw_row_totals: &raw_row_totals,
-                raw_column_totals: &raw_column_totals,
-                raw_grand_totals: &raw_grand_totals,
-            };
-            transform_percentage_values(&request.statistics, &mut percentage_context);
-        }
-
-        Ok(TabulateResult {
-            row_members,
-            column_members,
-            statistics: request.statistics.clone(),
-            cells,
-            row_totals,
-            column_totals,
-            grand_totals,
-            cell_count,
-            limit: request.max_result_cells,
-        })
-    }
-
-    fn query_dimension_members(
-        &self,
-        table_name: &str,
-        dimensions: &[String],
-        column_types: &std::collections::HashMap<String, String>,
-    ) -> Result<Vec<Vec<serde_json::Value>>, AppError> {
-        if dimensions.is_empty() {
-            return Ok(vec![vec![]]);
-        }
-
-        let table_ident = quote_identifier(table_name);
-        let select_dimensions = dimensions
-            .iter()
-            .enumerate()
-            .map(|(index, field)| {
-                dimension_select_expression(field, column_types)
-                    .map(|expression| format!("{expression} AS \"__dim_{index}\""))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .join(", ");
-        let group_dimensions = dimensions
-            .iter()
-            .map(|field| quote_identifier(field))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let order_clause = build_nulls_last_order(dimensions);
-        let sql = format!(
-            "SELECT {select_dimensions} FROM {table_ident} GROUP BY {group_dimensions} ORDER BY {order_clause}"
-        );
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query([])?;
-        let mut members = Vec::new();
-        while let Some(row) = rows.next()? {
-            let mut values = Vec::with_capacity(dimensions.len());
-            for index in 0..dimensions.len() {
-                let value: Value = row.get(index)?;
-                values.push(json_dimension_value(value));
-            }
-            members.push(values);
-        }
-        Ok(members)
-    }
-
-    fn query_grouped_values(
-        &self,
-        table_name: &str,
-        row_fields: &[String],
-        column_fields: &[String],
-        statistics: &[TabulateStatistic],
-        column_types: &std::collections::HashMap<String, String>,
-    ) -> Result<GroupedStatisticValues, AppError> {
-        let dimensions = row_fields
-            .iter()
-            .chain(column_fields.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        let table_ident = quote_identifier(table_name);
-        let statistic_sql = statistics
-            .iter()
-            .enumerate()
-            .map(|(index, statistic)| {
-                aggregate_sql(statistic).map(|sql| format!("{sql} AS \"__stat_{index}\""))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let sql = if dimensions.is_empty() {
-            format!("SELECT {} FROM {}", statistic_sql.join(", "), table_ident)
-        } else {
-            let select_dimensions = dimensions
-                .iter()
-                .enumerate()
-                .map(|(index, field)| {
-                    dimension_select_expression(field, column_types)
-                        .map(|expression| format!("{expression} AS \"__dim_{index}\""))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .join(", ");
-            let group_dimensions = dimensions
-                .iter()
-                .map(|field| quote_identifier(field))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let order_clause = build_nulls_last_order(&dimensions);
-            format!(
-                "SELECT {select_dimensions}, {} FROM {table_ident} GROUP BY {group_dimensions} ORDER BY {order_clause}",
-                statistic_sql.join(", "),
-            )
-        };
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query([])?;
-        let mut grouped = GroupedStatisticValues::new();
-        while let Some(row) = rows.next()? {
-            let mut row_member = Vec::with_capacity(row_fields.len());
-            let mut column_member = Vec::with_capacity(column_fields.len());
-            for index in 0..row_fields.len() {
-                let value: Value = row.get(index)?;
-                row_member.push(json_dimension_value(value));
-            }
-            for index in 0..column_fields.len() {
-                let value: Value = row.get(row_fields.len() + index)?;
-                column_member.push(json_dimension_value(value));
-            }
-
-            let mut values = Vec::with_capacity(statistics.len());
-            let stats_offset = dimensions.len();
-            for stat_index in 0..statistics.len() {
-                let value: Value = row.get(stats_offset + stat_index)?;
-                values.push(numeric_cell_value(value)?);
-            }
-
-            grouped.insert(
-                (member_key(&row_member)?, member_key(&column_member)?),
-                values,
-            );
-        }
-
-        Ok(grouped)
     }
 
     /// Import a CSV file as a new dataset
@@ -11409,23 +11110,6 @@ fn estimate_retained_value_bytes(value: &Value) -> usize {
     }
 }
 
-struct PercentageTransformContext<'a> {
-    row_count: usize,
-    column_count: usize,
-    cells: &'a mut [Option<f64>],
-    row_totals: &'a mut [Option<f64>],
-    column_totals: &'a mut [Option<f64>],
-    grand_totals: &'a mut [Option<f64>],
-    raw_row_totals: &'a [Option<f64>],
-    raw_column_totals: &'a [Option<f64>],
-    raw_grand_totals: &'a [Option<f64>],
-}
-
-fn aggregate_sql(statistic: &TabulateStatistic) -> Result<String, AppError> {
-    let field = quote_identifier(&statistic.field);
-    aggregate_sql_for_field(statistic, &field)
-}
-
 fn aggregate_sql_for_field(statistic: &TabulateStatistic, field: &str) -> Result<String, AppError> {
     let expression = match statistic.kind {
         StatisticKind::Count => format!("CAST(COUNT({field}) AS DOUBLE)"),
@@ -11455,28 +11139,6 @@ fn aggregate_sql_for_field(statistic: &TabulateStatistic, field: &str) -> Result
         | StatisticKind::TotalPercentage => format!("CAST(COUNT({field}) AS DOUBLE)"),
     };
     Ok(expression)
-}
-
-fn grouped_cardinality(
-    conn: &Connection,
-    table_name: &str,
-    dimensions: &[String],
-) -> Result<u64, AppError> {
-    if dimensions.is_empty() {
-        return Ok(1);
-    }
-
-    let table_ident = quote_identifier(table_name);
-    let group_dimensions = dimensions
-        .iter()
-        .map(|field| quote_identifier(field))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "SELECT COUNT(*) FROM (SELECT 1 FROM {table_ident} GROUP BY {group_dimensions}) AS \"__groups\""
-    );
-    let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
-    u64::try_from(count).map_err(|_| AppError::InvalidParam("Tabulate result size overflow".into()))
 }
 
 fn json_dimension_value(value: Value) -> serde_json::Value {
@@ -11615,21 +11277,6 @@ fn fit_y_by_x_display_value(value: Value) -> Option<String> {
     }
 }
 
-fn member_key(members: &[serde_json::Value]) -> Result<String, AppError> {
-    serde_json::to_string(members).map_err(|error| AppError::InvalidParam(error.to_string()))
-}
-
-fn build_nulls_last_order(dimensions: &[String]) -> String {
-    dimensions
-        .iter()
-        .flat_map(|field| {
-            let ident = quote_identifier(field);
-            [format!("{ident} IS NULL"), ident]
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn validate_unique_fields(role: &str, fields: &[String]) -> Result<(), AppError> {
     let mut seen = std::collections::HashSet::new();
     for field in fields {
@@ -11743,182 +11390,6 @@ fn divide_or_null(numerator: Option<f64>, denominator: Option<f64>) -> Option<f6
         _ => None,
     }
 }
-
-fn flattened_total_value(
-    values: &[Option<f64>],
-    outer_index: usize,
-    statistic_index: usize,
-    statistic_count: usize,
-) -> Option<f64> {
-    values
-        .get(outer_index * statistic_count + statistic_index)
-        .copied()
-        .flatten()
-}
-
-fn transform_percentage_values(
-    statistics: &[TabulateStatistic],
-    context: &mut PercentageTransformContext<'_>,
-) {
-    let statistic_count = statistics.len();
-
-    for (statistic_index, statistic) in statistics.iter().enumerate() {
-        let raw_grand_total = context
-            .raw_grand_totals
-            .get(statistic_index)
-            .copied()
-            .flatten();
-        match statistic.kind {
-            StatisticKind::RowPercentage => {
-                for row_index in 0..context.row_count {
-                    let denominator = flattened_total_value(
-                        context.raw_row_totals,
-                        row_index,
-                        statistic_index,
-                        statistic_count,
-                    );
-                    for column_index in 0..context.column_count {
-                        let cell_index = ((row_index * context.column_count) + column_index)
-                            * statistic_count
-                            + statistic_index;
-                        context.cells[cell_index] =
-                            divide_or_null(context.cells[cell_index], denominator);
-                    }
-
-                    if !context.row_totals.is_empty() {
-                        let total_index = row_index * statistic_count + statistic_index;
-                        context.row_totals[total_index] = divide_or_null(
-                            flattened_total_value(
-                                context.raw_row_totals,
-                                row_index,
-                                statistic_index,
-                                statistic_count,
-                            ),
-                            denominator,
-                        );
-                    }
-                }
-
-                if !context.column_totals.is_empty() {
-                    for column_index in 0..context.column_count {
-                        let total_index = column_index * statistic_count + statistic_index;
-                        context.column_totals[total_index] = divide_or_null(
-                            flattened_total_value(
-                                context.raw_column_totals,
-                                column_index,
-                                statistic_index,
-                                statistic_count,
-                            ),
-                            raw_grand_total,
-                        );
-                    }
-                }
-
-                if !context.grand_totals.is_empty() {
-                    context.grand_totals[statistic_index] =
-                        divide_or_null(raw_grand_total, raw_grand_total);
-                }
-            }
-            StatisticKind::ColumnPercentage => {
-                for column_index in 0..context.column_count {
-                    let denominator = flattened_total_value(
-                        context.raw_column_totals,
-                        column_index,
-                        statistic_index,
-                        statistic_count,
-                    );
-                    for row_index in 0..context.row_count {
-                        let cell_index = ((row_index * context.column_count) + column_index)
-                            * statistic_count
-                            + statistic_index;
-                        context.cells[cell_index] =
-                            divide_or_null(context.cells[cell_index], denominator);
-                    }
-
-                    if !context.column_totals.is_empty() {
-                        let total_index = column_index * statistic_count + statistic_index;
-                        context.column_totals[total_index] = divide_or_null(
-                            flattened_total_value(
-                                context.raw_column_totals,
-                                column_index,
-                                statistic_index,
-                                statistic_count,
-                            ),
-                            denominator,
-                        );
-                    }
-                }
-
-                if !context.row_totals.is_empty() {
-                    for row_index in 0..context.row_count {
-                        let total_index = row_index * statistic_count + statistic_index;
-                        context.row_totals[total_index] = divide_or_null(
-                            flattened_total_value(
-                                context.raw_row_totals,
-                                row_index,
-                                statistic_index,
-                                statistic_count,
-                            ),
-                            raw_grand_total,
-                        );
-                    }
-                }
-
-                if !context.grand_totals.is_empty() {
-                    context.grand_totals[statistic_index] =
-                        divide_or_null(raw_grand_total, raw_grand_total);
-                }
-            }
-            StatisticKind::TotalPercentage => {
-                for row_index in 0..context.row_count {
-                    for column_index in 0..context.column_count {
-                        let cell_index = ((row_index * context.column_count) + column_index)
-                            * statistic_count
-                            + statistic_index;
-                        context.cells[cell_index] =
-                            divide_or_null(context.cells[cell_index], raw_grand_total);
-                    }
-
-                    if !context.row_totals.is_empty() {
-                        let total_index = row_index * statistic_count + statistic_index;
-                        context.row_totals[total_index] = divide_or_null(
-                            flattened_total_value(
-                                context.raw_row_totals,
-                                row_index,
-                                statistic_index,
-                                statistic_count,
-                            ),
-                            raw_grand_total,
-                        );
-                    }
-                }
-
-                if !context.column_totals.is_empty() {
-                    for column_index in 0..context.column_count {
-                        let total_index = column_index * statistic_count + statistic_index;
-                        context.column_totals[total_index] = divide_or_null(
-                            flattened_total_value(
-                                context.raw_column_totals,
-                                column_index,
-                                statistic_index,
-                                statistic_count,
-                            ),
-                            raw_grand_total,
-                        );
-                    }
-                }
-
-                if !context.grand_totals.is_empty() {
-                    context.grand_totals[statistic_index] =
-                        divide_or_null(raw_grand_total, raw_grand_total);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-// ---- Free helpers for archive path / SQLite table name sanitization -------
 
 /// Sanitize a path destined for a ZIP archive. Each path segment is cleaned
 /// of characters that are illegal on Windows so the zip can be extracted
@@ -20009,8 +19480,87 @@ mod tests {
         ));
     }
 
-    use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateStatistic};
+    use crate::models::tabulate::{StatisticKind, TabulateSessionRequest, TabulateStatistic};
     use serde_json::{json, Value as JsonValue};
+
+    #[derive(Debug)]
+    struct BoundedTabulateOracle {
+        row_members: Vec<Vec<JsonValue>>,
+        column_members: Vec<Vec<JsonValue>>,
+        statistics: Vec<TabulateStatistic>,
+        cells: Vec<Option<f64>>,
+        row_totals: Vec<Option<f64>>,
+        column_totals: Vec<Option<f64>>,
+        grand_totals: Vec<Option<f64>>,
+        cell_count: u64,
+    }
+
+    fn bounded_tabulate_oracle(
+        engine: &DuckDbEngine,
+        definition: &TabulateSessionRequest,
+    ) -> Result<BoundedTabulateOracle, AppError> {
+        let mut definition = definition.clone();
+        definition.source_generation = engine.get_dataset_generation(&definition.dataset_id)?;
+        let session = uuid::Uuid::new_v4();
+        let info = engine.prepare_tabulate_member_indexes(&definition, &session, 256 * 1024 * 1024)?;
+        assert!(info.row_member_count <= 128);
+        assert!(info.column_member_count <= 64);
+        assert!(info.logical_cell_count <= 16_384);
+        let outcome = (|| {
+            let cancelled = std::sync::atomic::AtomicBool::new(false);
+            let window = engine.query_tabulate_window(
+                &definition, &session,
+                &TabulateWindowRequest {
+                    request_id: "oracle-window".into(), session_id: session.to_string(),
+                    source_generation: definition.source_generation,
+                    row_start: 0, row_count: info.row_member_count.max(1) as u32,
+                    column_start: 0, column_count: info.column_member_count.max(1) as u32,
+                },
+                &info, "oracle", &cancelled,
+            )?;
+            let statistic_count = definition.statistics.len();
+            let mut cells = (0..info.logical_cell_count as usize)
+                .map(|index| default_missing_value(&definition.statistics[index % statistic_count].kind))
+                .collect::<Vec<_>>();
+            for cell in &window.cells {
+                let index = ((cell.row_index as usize * window.column_members.len())
+                    + cell.column_index as usize) * statistic_count + cell.statistic_index as usize;
+                cells[index] = cell.value;
+            }
+            let totals = |kind| engine.query_tabulate_totals(
+                &definition, &session,
+                &TabulateTotalsRequest {
+                    request_id: "oracle-totals".into(), session_id: session.to_string(),
+                    source_generation: definition.source_generation, totals: kind,
+                },
+                &info, "oracle", &cancelled,
+            );
+            let mut row_totals = Vec::new();
+            if definition.include_row_totals && info.row_member_count > 0 {
+                row_totals.resize(window.row_members.len() * statistic_count, None);
+                for total in totals(TabulateTotalsKind::Rows { start: 0, count: info.row_member_count as u32 })?.row_totals {
+                    row_totals[total.member_index as usize * statistic_count + total.statistic_index as usize] = total.value;
+                }
+            }
+            let mut column_totals = Vec::new();
+            if definition.include_column_totals && info.column_member_count > 0 {
+                column_totals.resize(window.column_members.len() * statistic_count, None);
+                for total in totals(TabulateTotalsKind::Columns { start: 0, count: info.column_member_count as u32 })?.column_totals {
+                    column_totals[total.member_index as usize * statistic_count + total.statistic_index as usize] = total.value;
+                }
+            }
+            let grand_totals = if definition.include_row_totals || definition.include_column_totals {
+                totals(TabulateTotalsKind::Grand)?.grand_totals
+            } else { Vec::new() };
+            Ok(BoundedTabulateOracle {
+                row_members: window.row_members, column_members: window.column_members,
+                statistics: window.statistics, cells, row_totals, column_totals, grand_totals,
+                cell_count: info.logical_cell_count,
+            })
+        })();
+        engine.drop_tabulate_member_indexes(&session)?;
+        outcome
+    }
 
     fn assert_option_close(actual: Option<f64>, expected: f64) {
         let value = actual.expect("expected numeric value");
@@ -20020,7 +19570,7 @@ mod tests {
         );
     }
 
-    fn statistic_index(result: &TabulateResult, id: &str) -> usize {
+    fn statistic_index(result: &BoundedTabulateOracle, id: &str) -> usize {
         result
             .statistics
             .iter()
@@ -20029,7 +19579,7 @@ mod tests {
     }
 
     fn cell_value(
-        result: &TabulateResult,
+        result: &BoundedTabulateOracle,
         row: usize,
         column: usize,
         statistic_id: &str,
@@ -20040,14 +19590,14 @@ mod tests {
             [((row * result.column_members.len()) + column) * statistic_count + statistic_index]
     }
 
-    fn row_total_value(result: &TabulateResult, row: usize, statistic_id: &str) -> Option<f64> {
+    fn row_total_value(result: &BoundedTabulateOracle, row: usize, statistic_id: &str) -> Option<f64> {
         let statistic_index = statistic_index(result, statistic_id);
         let statistic_count = result.statistics.len();
         result.row_totals[row * statistic_count + statistic_index]
     }
 
     fn column_total_value(
-        result: &TabulateResult,
+        result: &BoundedTabulateOracle,
         column: usize,
         statistic_id: &str,
     ) -> Option<f64> {
@@ -20056,7 +19606,7 @@ mod tests {
         result.column_totals[column * statistic_count + statistic_index]
     }
 
-    fn grand_total_value(result: &TabulateResult, statistic_id: &str) -> Option<f64> {
+    fn grand_total_value(result: &BoundedTabulateOracle, statistic_id: &str) -> Option<f64> {
         result.grand_totals[statistic_index(result, statistic_id)]
     }
 
@@ -20073,28 +19623,16 @@ mod tests {
         row_fields: Vec<&str>,
         column_fields: Vec<&str>,
         statistics: Vec<TabulateStatistic>,
-    ) -> TabulateRequest {
-        TabulateRequest {
+    ) -> TabulateSessionRequest {
+        TabulateSessionRequest {
             dataset_id: "tabulate_fixture".to_string(),
             row_fields: row_fields.into_iter().map(str::to_string).collect(),
             column_fields: column_fields.into_iter().map(str::to_string).collect(),
             statistics,
             include_row_totals: false,
             include_column_totals: false,
-            max_result_cells: 10_000,
+            source_generation: 0,
         }
-    }
-
-    fn repeated_count_statistics(count: usize) -> Vec<TabulateStatistic> {
-        (0..count)
-            .map(|index| {
-                make_statistic(
-                    &format!("count-sales-{index}"),
-                    "sales",
-                    StatisticKind::Count,
-                )
-            })
-            .collect()
     }
 
     fn make_fixture_engine() -> DuckDbEngine {
@@ -20532,7 +20070,7 @@ mod tests {
             ],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(
             result.row_members,
@@ -20575,7 +20113,7 @@ mod tests {
             vec![make_statistic("count-sales", "sales", StatisticKind::Count)],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(
             result.row_members,
@@ -20602,7 +20140,7 @@ mod tests {
             ],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(result.row_members, vec![Vec::<JsonValue>::new()]);
         assert_eq!(result.column_members, vec![Vec::<JsonValue>::new()]);
@@ -20619,7 +20157,7 @@ mod tests {
             vec![make_statistic("count-sales", "sales", StatisticKind::Count)],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(
             result.row_members,
@@ -20638,32 +20176,6 @@ mod tests {
     }
 
     #[test]
-    fn tabulate_allows_exactly_ten_thousand_cells() {
-        let engine = make_fixture_engine();
-        let mut request = make_request(vec![], vec![], repeated_count_statistics(10_000));
-        request.max_result_cells = 10_000;
-
-        let result = engine.tabulate(&request).expect("tabulate result");
-
-        assert_eq!(result.cells.len(), 10_000);
-        assert_eq!(result.cell_count, 10_000);
-        assert_eq!(result.limit, 10_000);
-    }
-
-    #[test]
-    fn tabulate_rejects_results_above_max_cell_limit() {
-        let engine = make_fixture_engine();
-        let mut request = make_request(vec![], vec![], repeated_count_statistics(10_001));
-        request.max_result_cells = 10_000;
-
-        let error = engine.tabulate(&request).expect_err("cell limit must fail");
-
-        assert!(
-            matches!(error, AppError::InvalidParam(message) if message.contains("10001 cells") && message.contains("limit is 10000"))
-        );
-    }
-
-    #[test]
     fn tabulate_rejects_unknown_field_before_sql_preparation() {
         let engine = make_fixture_engine();
         let request = make_request(
@@ -20672,8 +20184,7 @@ mod tests {
             vec![make_statistic("count-sales", "sales", StatisticKind::Count)],
         );
 
-        let error = engine
-            .tabulate(&request)
+        let error = bounded_tabulate_oracle(&engine, &request)
             .expect_err("unknown field must fail");
 
         assert!(
@@ -20690,8 +20201,7 @@ mod tests {
             vec![make_statistic("mean-region", "region", StatisticKind::Mean)],
         );
 
-        let error = engine
-            .tabulate(&request)
+        let error = bounded_tabulate_oracle(&engine, &request)
             .expect_err("non-numeric field must fail");
 
         assert!(
@@ -20712,8 +20222,7 @@ mod tests {
             )],
         );
 
-        let error = engine
-            .tabulate(&request)
+        let error = bounded_tabulate_oracle(&engine, &request)
             .expect_err("interval must not be treated as numeric");
 
         assert!(
@@ -20734,7 +20243,7 @@ mod tests {
             )],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(
             result.row_members,
@@ -20791,7 +20300,7 @@ mod tests {
         request.include_row_totals = true;
         request.include_column_totals = true;
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(cell_value(&result, 0, 0, "count-sales"), Some(2.0));
         assert_eq!(cell_value(&result, 0, 1, "missing-sales"), Some(1.0));
@@ -20839,7 +20348,7 @@ mod tests {
             ],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_option_close(cell_value(&result, 0, 0, "row-pct-sales"), 1.0);
         assert_option_close(cell_value(&result, 0, 1, "row-pct-sales"), 0.0);
@@ -20867,7 +20376,7 @@ mod tests {
         request.include_row_totals = true;
         request.include_column_totals = true;
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(
             result.row_totals,
@@ -20896,7 +20405,7 @@ mod tests {
             vec![make_statistic("count-sales", "sales", StatisticKind::Count)],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert!(result.row_members.is_empty());
         assert!(result.column_members.is_empty());
@@ -20913,7 +20422,7 @@ mod tests {
             vec![make_statistic("count-sales", "sales", StatisticKind::Count)],
         );
 
-        let result = engine.tabulate(&request).expect("tabulate result");
+        let result = bounded_tabulate_oracle(&engine, &request).expect("tabulate result");
 
         assert_eq!(result.row_members, vec![vec![json!("A")], vec![json!("B")]]);
         assert_eq!(

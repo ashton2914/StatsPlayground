@@ -18,6 +18,7 @@ interface TabulateFieldListProps {
   fields: readonly TabulateFieldInfo[];
   loading: boolean;
   disabled: boolean;
+  readOnly: boolean;
   rowFields: readonly string[];
   columnFields: readonly string[];
   statistics: readonly TabulateStatistic[];
@@ -28,6 +29,7 @@ export function TabulateFieldList({
   fields,
   loading,
   disabled,
+  readOnly,
   rowFields,
   columnFields,
   statistics,
@@ -61,7 +63,7 @@ export function TabulateFieldList({
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={t("tabulate.searchFields")}
-            disabled={disabled}
+            disabled={disabled || readOnly}
             aria-label={t("tabulate.searchAvailableFields")}
           />
         </label>
@@ -94,11 +96,13 @@ export function TabulateFieldList({
                 <div
                   key={field.name}
                   role="listitem"
-                  tabIndex={0}
-                  draggable
+                  tabIndex={readOnly ? -1 : 0}
+                  draggable={!readOnly}
+                  aria-disabled={readOnly}
                   className={`sp-cols-panel-item${assigned ? " sp-cols-panel-item-selected" : ""}`}
                   title={`${field.name} (${typeLabel})`}
                   onDragStart={(event) => {
+                    if (readOnly) return;
                     event.dataTransfer.effectAllowed = "copyMove";
                     event.dataTransfer.setData(
                       TABULATE_DRAG_MIME,
@@ -106,6 +110,7 @@ export function TabulateFieldList({
                     );
                   }}
                   onKeyDown={(event) => {
+                    if (readOnly) return;
                     const key = event.key.toLowerCase();
                     if (key === "r") {
                       event.preventDefault();

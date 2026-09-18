@@ -352,8 +352,32 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
-                "commands::tabulate_commands::tabulate",
+                "commands::tabulate_commands::prepare_tabulate_session",
                 CommandClass::ReadOnly,
+            ),
+            (
+                "commands::tabulate_commands::get_tabulate_session_status",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::tabulate_commands::query_tabulate_window",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::tabulate_commands::query_tabulate_totals",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::tabulate_commands::cancel_tabulate_request",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::tabulate_commands::release_tabulate_session",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::tabulate_commands::materialize_tabulate_table",
+                CommandClass::Mutation,
             ),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
             (
@@ -713,6 +737,26 @@ mod tests {
             .get_dataset_generation(&dataset.id)
             .expect("dataset generation should be readable");
         (dataset.id, generation)
+    }
+
+    #[test]
+    fn tabulate_registered_commands_preserve_read_only_and_export_classification() {
+        let registered = parse_registered_commands(include_str!("../lib.rs"));
+        let classifications = command_classes();
+        let registered_tabulate: BTreeSet<&str> = registered.iter().map(String::as_str)
+            .filter(|command| command.starts_with("commands::tabulate_commands::")).collect();
+        let classified_tabulate: BTreeSet<&str> = classifications.keys().copied()
+            .filter(|command| command.starts_with("commands::tabulate_commands::")).collect();
+        assert_eq!(registered_tabulate, classified_tabulate);
+        assert_eq!(registered_tabulate.len(), 7);
+        for command in registered_tabulate {
+            let expected = if command.ends_with("::materialize_tabulate_table") {
+                CommandClass::Mutation
+            } else {
+                CommandClass::ReadOnly
+            };
+            assert_eq!(classifications[command], expected);
+        }
     }
 
     #[test]

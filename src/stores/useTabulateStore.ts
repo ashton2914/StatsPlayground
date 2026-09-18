@@ -3,13 +3,6 @@ import type { TabulateItem } from "../types/tabulate.ts";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 
-export interface TabulateLatestResult {
-  requestFingerprint: string;
-  sourceGeneration: number;
-  result: import("@/types/tabulate").TabulateResult;
-  completedAt: string;
-}
-
 interface TabulateStore {
   items: TabulateItem[];
   counter: number;
@@ -20,9 +13,6 @@ interface TabulateStore {
   loadFromProject: (items: TabulateItem[]) => void;
   reset: () => void;
   nextName: () => string;
-  setLatestResult: (id: string, latest: TabulateLatestResult) => void;
-  getLatestResult: (id: string) => TabulateLatestResult | null;
-  clearLatestResult: (id: string) => void;
 }
 
 const TABULATE_NAME_RE = /^Tabulate (\d+)$/;
@@ -79,7 +69,4 @@ export const useTabulateStore = create<TabulateStore>((set, get) => ({
     set({ counter: nextCounter });
     return `Tabulate ${nextCounter}`;
   },
-  setLatestResult: () => {},
-  getLatestResult: () => null,
-  clearLatestResult: () => {},
 }));

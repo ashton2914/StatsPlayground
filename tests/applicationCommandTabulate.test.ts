@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 
 import { createApplicationRuntime } from "@/applicationCommands/applicationRuntime";
-import { createTabulateCommandHandlers, fingerprintTabulateRequest, type TabulateCommandDependencies } from "@/applicationCommands/tabulateCommands";
+import { createTabulateCommandHandlers, type TabulateCommandDependencies } from "@/applicationCommands/tabulateCommands";
 import test from "node:test";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
 import type { DatasetMeta } from "@/types/data";
-import type { TabulateItem, TabulateRequest, TabulateResult, TabulateSessionStatus } from "@/types/tabulate";
+import type { TabulateItem, TabulateSessionRequest, TabulateSessionStatus } from "@/types/tabulate";
 
 function deferred<T>() {
   let resolve: ((value: T | PromiseLike<T>) => void) | null = null;
@@ -49,21 +49,7 @@ function tabulateItem(id: string, sourceDatasetId: string): TabulateItem {
   };
 }
 
-function tabulateResult(value: number): TabulateResult {
-  return {
-    rowMembers: [["North"]],
-    columnMembers: [["Online"]],
-    statistics: [{ id: "s-1", field: "value", kind: "mean" }],
-    cells: [value],
-    rowTotals: [value],
-    columnTotals: [value],
-    grandTotals: [value],
-    cellCount: 1,
-    limit: 10000,
-  };
-}
-
-const request: Omit<TabulateRequest, "maxResultCells"> = {
+const request: Omit<TabulateSessionRequest, "sourceGeneration"> = {
   datasetId: "ds-1",
   rowFields: ["region"],
   columnFields: ["channel"],
@@ -199,34 +185,9 @@ await test("export materializes metadata directly after commit and releases its 
   assert.deepEqual(events, ["prepare", "commit", "materialize", "complete", "release"]);
 });
 
-await test("legacy run fingerprint includes statistic identity", () => {
-  const requestA: TabulateRequest = {
-    ...request,
-    maxResultCells: 10000,
-    statistics: [{ id: "s-1", field: "value", kind: "mean" }],
-  };
-  const requestB: TabulateRequest = {
-    ...request,
-    maxResultCells: 10000,
-    statistics: [{ id: "s-2", field: "value", kind: "mean" }],
-  };
-
-  assert.notEqual(
-    fingerprintTabulateRequest(requestA),
-    fingerprintTabulateRequest(requestB),
-    "fingerprint must include statistic.id to avoid collisions across distinct requests",
-  );
-});
-
 await test("run cancellation after generation read releases its lease", async () => {
   const datasets = [dataset("ds-1", "Sales", 3)];
   const tabulates = [tabulateItem("tab-1", "ds-1")];
-  const cache = new Map<string, {
-    requestFingerprint: string;
-    sourceGeneration: number;
-    result: TabulateResult;
-    completedAt: string;
-  }>();
   let runCalls = 0;
   const released: string[] = [];
   const postRunGenerationGate = deferred<number>();
@@ -308,18 +269,11 @@ await test("run cancellation after generation read releases its lease", async ()
 
   assert.equal(runCalls, 1);
   assert.deepEqual(released, ["session-1"]);
-  assert.equal(cache.size, 0, "cancellation after run must leave latest runtime cache unchanged");
 });
 
 await test("export rejects changing source before commit and leaves revision unchanged", async () => {
   const datasets = [dataset("ds-1", "Sales", 8)];
   const tabulates = [tabulateItem("tab-1", "ds-1")];
-  const cache = new Map<string, {
-    requestFingerprint: string;
-    sourceGeneration: number;
-    result: TabulateResult;
-    completedAt: string;
-  }>();
   let runCalls = 0;
   let createTableCalls = 0;
   let beginCommitCalls = 0;
@@ -400,7 +354,6 @@ await test("export rejects changing source before commit and leaves revision unc
   assert.equal(runCalls, 1, "stale or missing cache must trigger rerun before export");
   assert.equal(createTableCalls, 0, "stale rerun result must reject before table.create");
   assert.equal(beginCommitCalls, 0, "stale rerun result must reject before beginCommit");
-  assert.equal(cache.size, 0, "export must not retain a full-result cache");
 
   const postRejectInspect = await runtime.execute(
     {
@@ -491,12 +444,6 @@ await test("create retains dirty history and revision semantics", async () => {
 await test("run retains its generation fence and source-change warnings", async () => {
   const datasets = [dataset("ds-1", "Sales", 3)];
   const tabulates = [tabulateItem("tab-1", "ds-1")];
-  const cache = new Map<string, {
-    requestFingerprint: string;
-    sourceGeneration: number;
-    result: TabulateResult;
-    completedAt: string;
-  }>();
   let runCalls = 0;
   const generationReadings = [3, 3, 4, 5];
 
@@ -575,18 +522,11 @@ await test("run retains its generation fence and source-change warnings", async 
   assert.equal(changedRun.data.session.sourceGeneration, 4);
   assert.equal(changedRun.data.cacheValid, false);
   assert.equal(changedRun.warnings[0]?.code, "tabulate_run_source_changed");
-  assert.equal(cache.size, 0);
 });
 
 await test("export retains canonical table coordinator and sqlType contract", async () => {
   const datasets = [dataset("ds-1", "Sales", 8)];
   const tabulates = [tabulateItem("tab-1", "ds-1")];
-  const cache = new Map<string, {
-    requestFingerprint: string;
-    sourceGeneration: number;
-    result: TabulateResult;
-    completedAt: string;
-  }>();
   let runCalls = 0;
   let refreshCalls = 0;
   let dirtyTransitions = 0;
@@ -678,12 +618,6 @@ await test("export retains canonical table coordinator and sqlType contract", as
   });
 
   const staleFingerprint = JSON.stringify({ ...request, rowFields: ["region", "store"] });
-  cache.set("tab-1", {
-    requestFingerprint: staleFingerprint,
-    sourceGeneration: 8,
-    result: tabulateResult(11),
-    completedAt: "2026-09-15T00:00:00.000Z",
-  });
 
   const exported = await runtime.execute(
     {

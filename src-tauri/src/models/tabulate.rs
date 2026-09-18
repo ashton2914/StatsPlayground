@@ -33,18 +33,6 @@ pub struct TabulateStatistic {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct TabulateRequest {
-    pub dataset_id: String,
-    pub row_fields: Vec<String>,
-    pub column_fields: Vec<String>,
-    pub statistics: Vec<TabulateStatistic>,
-    pub include_row_totals: bool,
-    pub include_column_totals: bool,
-    pub max_result_cells: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct TabulateSessionRequest {
     pub dataset_id: String,
     pub source_generation: u64,
@@ -170,18 +158,4 @@ pub struct TabulateMaterializeRequest {
     pub destination_name: String,
     pub missing_label: String,
     pub statistic_labels: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TabulateResult {
-    pub row_members: Vec<Vec<serde_json::Value>>,
-    pub column_members: Vec<Vec<serde_json::Value>>,
-    pub statistics: Vec<TabulateStatistic>,
-    pub cells: Vec<Option<f64>>,
-    pub row_totals: Vec<Option<f64>>,
-    pub column_totals: Vec<Option<f64>>,
-    pub grand_totals: Vec<Option<f64>>,
-    pub cell_count: u64,
-    pub limit: u64,
 }

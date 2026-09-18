@@ -441,6 +441,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
               fields={fields}
               loading={fieldsLoading}
               disabled={dataset == null}
+              readOnly={readOnly}
               rowFields={item.rowFields}
               columnFields={item.columnFields}
               statistics={item.statistics}
@@ -463,6 +464,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
           subtitle={t("tabulate.rowFieldsCount", { count: item.rowFields.length })}
           emptyHint={t("tabulate.rowsEmptyHint")}
           items={rowsItems}
+          disabled={readOnly}
           onDropPayload={handleRoleDrop}
           onMove={(index, direction) => {
             updateCurrentItem({ rowFields: reorder(item.rowFields, index, index + direction) });
@@ -478,6 +480,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
           subtitle={t("tabulate.columnFieldsCount", { count: item.columnFields.length })}
           emptyHint={t("tabulate.columnsEmptyHint")}
           items={columnsItems}
+          disabled={readOnly}
           onDropPayload={handleRoleDrop}
           onMove={(index, direction) => {
             updateCurrentItem({ columnFields: reorder(item.columnFields, index, index + direction) });
@@ -493,6 +496,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
           subtitle={t("tabulate.statisticsCount", { count: item.statistics.length })}
           emptyHint={t("tabulate.statisticsEmptyHint")}
           items={statisticsItems}
+          disabled={readOnly}
           onDropPayload={handleRoleDrop}
           onMove={(index, direction) => {
             updateCurrentItem({ statistics: reorder(item.statistics, index, index + direction) });
@@ -511,6 +515,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
             <input
               type="checkbox"
               checked={item.includeRowTotals}
+              disabled={readOnly}
               onChange={(event) => updateCurrentItem({ includeRowTotals: event.target.checked })}
             />
             <span>{t("tabulate.rowTotals")}</span>
@@ -519,6 +524,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
             <input
               type="checkbox"
               checked={item.includeColumnTotals}
+              disabled={readOnly}
               onChange={(event) => updateCurrentItem({ includeColumnTotals: event.target.checked })}
             />
             <span>{t("tabulate.columnTotals")}</span>
@@ -563,7 +569,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
         )}
       />
 
-      {editingStatistic ? (
+      {editingStatistic && !readOnly ? (
         <TabulateStatisticEditor
           open
           fields={fields}

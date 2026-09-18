@@ -46,4 +46,4 @@ export type {
 	FitModelTermKind,
 	FitModelWarningCode,
 } from "./fitModel";
-export type { TabulateRequest, TabulateResult, TabulateStatistic, TabulateStatisticKind } from "./tabulate";
+export type { TabulateStatistic, TabulateStatisticKind } from "./tabulate";

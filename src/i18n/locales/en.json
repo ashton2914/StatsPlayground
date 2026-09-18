@@ -924,8 +924,6 @@
     "runningDetail": "Aggregating the current configuration...",
     "emptyTitle": "No result rows",
     "emptyDetail": "The current prefixes returned an empty aggregate.",
-    "resultTooLargeTitle": "Result too large",
-    "resultTooLargeDetail": "The result exceeds the 10,000-cell limit.",
     "errorTitle": "Tabulate error",
     "errorDetail": "The tabulation failed.",
     "visibleRows": "Visible rows",
