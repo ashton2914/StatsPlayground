@@ -38,6 +38,7 @@ use crate::models::table::{
     TableWindowResult,
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateStatistic, TabulateSparseCell, TabulateWindowRequest, TabulateWindowResult};
+use crate::models::tabulate::{TabulateSparseTotal, TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult};
 use crate::services::archive_cell::archive_export_expression;
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
@@ -963,6 +964,212 @@ impl DuckDbEngine {
         ))
     }
 
+    pub(crate) fn validate_tabulate_totals_bounds(
+        totals: &TabulateTotalsKind,
+        info: &PreparedTabulateSessionInfo,
+        statistic_count: usize,
+    ) -> Result<(u64, u64), AppError> {
+        let invalid = || AppError::InvalidParam("tabulate_invalid_bounds".into());
+        let (start, count, cap, total) = match *totals {
+            TabulateTotalsKind::Rows { start, count } => (start, count, 128, info.row_member_count),
+            TabulateTotalsKind::Columns { start, count } => {
+                (start, count, 64, info.column_member_count)
+            }
+            TabulateTotalsKind::Grand => (0, 1, 1, 1),
+        };
+        let end = start.checked_add(u64::from(count)).ok_or_else(invalid)?;
+        let cells = u64::from(count)
+            .checked_mul(statistic_count as u64)
+            .ok_or_else(invalid)?;
+        if count == 0 || count > cap || cells > 16_384 || start > total {
+            return Err(invalid());
+        }
+        Ok((start, end.min(total)))
+    }
+
+    fn tabulate_member_join(fields: &[String], alias: &str) -> String {
+        let predicates = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                format!(
+                    "source.{} IS NOT DISTINCT FROM {alias}.dimension_{index}",
+                    Self::quote_identifier(field)
+                )
+            })
+            .collect::<Vec<_>>();
+        if predicates.is_empty() {
+            "TRUE".into()
+        } else {
+            predicates.join(" AND ")
+        }
+    }
+
+    fn query_tabulate_raw_totals(
+        &self,
+        definition: &TabulateSessionRequest,
+        session_id: &uuid::Uuid,
+        totals: &TabulateTotalsKind,
+        info: &PreparedTabulateSessionInfo,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Vec<TabulateSparseTotal>, AppError> {
+        check_tabulate_cancelled(cancelled)?;
+        let (start, end) =
+            Self::validate_tabulate_totals_bounds(totals, info, definition.statistics.len())?;
+        if start == end {
+            return Ok(Vec::new());
+        }
+        let aggregates = definition
+            .statistics
+            .iter()
+            .map(|statistic| {
+                aggregate_sql_for_field(
+                    statistic,
+                    &format!("source.{}", Self::quote_identifier(&statistic.field)),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ");
+        let source = Self::quote_identifier(&Self::internal_table_name(&definition.dataset_id));
+        let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
+        let selection = match totals {
+            TabulateTotalsKind::Rows { .. } => Some((&definition.row_fields, row_table)),
+            TabulateTotalsKind::Columns { .. } => Some((&definition.column_fields, column_table)),
+            TabulateTotalsKind::Grand => None,
+        };
+        let mut parameters = Vec::new();
+        let sql = match selection {
+            Some((fields, table)) if !fields.is_empty() => {
+                parameters.extend([start, end]);
+                format!(
+                    "WITH selected_members AS (SELECT * FROM {} WHERE ordinal >= ? AND ordinal < ?)
+                     SELECT members.ordinal, {aggregates} FROM {source} AS source
+                     JOIN selected_members AS members ON {}
+                     GROUP BY members.ordinal ORDER BY members.ordinal",
+                    Self::quote_identifier(&table),
+                    Self::tabulate_member_join(fields, "members"),
+                )
+            }
+            _ => format!("SELECT 0::UBIGINT, {aggregates} FROM {source} AS source"),
+        };
+        let mut statement = self.conn.prepare(&sql)?;
+        check_tabulate_cancelled(cancelled)?;
+        let mut rows = statement.query(params_from_iter(parameters))?;
+        let mut values = Vec::new();
+        while let Some(row) = rows.next()? {
+            check_tabulate_cancelled(cancelled)?;
+            let ordinal: u64 = row.get(0)?;
+            let member_index = ordinal
+                .checked_sub(start)
+                .filter(|_| ordinal < end)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| AppError::Database("tabulate_invalid_ordinal".into()))?;
+            for statistic_index in 0..definition.statistics.len() {
+                values.push(TabulateSparseTotal {
+                    member_index,
+                    statistic_index: statistic_index as u32,
+                    value: numeric_cell_value(row.get(statistic_index + 1)?)?,
+                });
+            }
+        }
+        check_tabulate_cancelled(cancelled)?;
+        Ok(values)
+    }
+
+    pub(crate) fn query_tabulate_totals(
+        &self,
+        definition: &TabulateSessionRequest,
+        session_id: &uuid::Uuid,
+        request: &TabulateTotalsRequest,
+        info: &PreparedTabulateSessionInfo,
+        fingerprint: &str,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<TabulateTotalsResult, AppError> {
+        check_tabulate_cancelled(cancelled)?;
+        if request.session_id != session_id.to_string()
+            || request.source_generation != definition.source_generation
+        {
+            return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+        }
+        self.validate_tabulate_session(definition)?;
+        let mut values = self.query_tabulate_raw_totals(
+            definition,
+            session_id,
+            &request.totals,
+            info,
+            cancelled,
+        )?;
+        let needs_grand = definition
+            .statistics
+            .iter()
+            .any(|statistic| match statistic.kind {
+                StatisticKind::RowPercentage => {
+                    matches!(request.totals, TabulateTotalsKind::Columns { .. })
+                }
+                StatisticKind::ColumnPercentage => {
+                    matches!(request.totals, TabulateTotalsKind::Rows { .. })
+                }
+                StatisticKind::TotalPercentage => {
+                    !matches!(request.totals, TabulateTotalsKind::Grand)
+                }
+                _ => false,
+            });
+        let grand = if needs_grand && !values.is_empty() {
+            self.query_tabulate_raw_totals(
+                definition,
+                session_id,
+                &TabulateTotalsKind::Grand,
+                info,
+                cancelled,
+            )?
+        } else {
+            Vec::new()
+        };
+        for value in &mut values {
+            let kind = &definition.statistics[value.statistic_index as usize].kind;
+            if is_tabulate_percentage(kind) {
+                let self_total = matches!(request.totals, TabulateTotalsKind::Grand)
+                    || matches!(
+                        (&request.totals, kind),
+                        (
+                            TabulateTotalsKind::Rows { .. },
+                            StatisticKind::RowPercentage
+                        ) | (
+                            TabulateTotalsKind::Columns { .. },
+                            StatisticKind::ColumnPercentage
+                        )
+                    );
+                let denominator = if self_total {
+                    value.value
+                } else {
+                    grand
+                        .get(value.statistic_index as usize)
+                        .and_then(|total| total.value)
+                };
+                value.value = divide_or_null(value.value, denominator);
+            }
+        }
+        check_tabulate_cancelled(cancelled)?;
+        let mut result = TabulateTotalsResult {
+            session_id: request.session_id.clone(),
+            request_id: request.request_id.clone(),
+            fingerprint: fingerprint.into(),
+            source_generation: definition.source_generation,
+            totals: request.totals.clone(),
+            row_totals: Vec::new(),
+            column_totals: Vec::new(),
+            grand_totals: Vec::new(),
+        };
+        match request.totals {
+            TabulateTotalsKind::Rows { .. } => result.row_totals = values,
+            TabulateTotalsKind::Columns { .. } => result.column_totals = values,
+            TabulateTotalsKind::Grand => {
+                result.grand_totals = values.into_iter().map(|value| value.value).collect()
+            }
+        }
+        Ok(result)
+    }
+
     fn query_tabulate_member_slice(
         &self,
         table: &str,
@@ -1063,40 +1270,49 @@ impl DuckDbEngine {
         )?;
         let mut cells = Vec::new();
         if !row_slice.members.is_empty() && !column_slice.members.is_empty() {
-            let join = |fields: &[String], alias: &str| {
-                let predicates = fields
+            let denominators = |kind: StatisticKind, totals: TabulateTotalsKind| {
+                if definition
+                    .statistics
                     .iter()
-                    .enumerate()
-                    .map(|(index, field)| {
-                        format!(
-                            "source.{} IS NOT DISTINCT FROM {alias}.dimension_{index}",
-                            Self::quote_identifier(field)
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                if predicates.is_empty() {
-                    "TRUE".into()
+                    .any(|statistic| statistic.kind == kind)
+                {
+                    self.query_tabulate_raw_totals(definition, session_id, &totals, info, cancelled)
+                        .map(|values| {
+                            values
+                                .into_iter()
+                                .map(|value| {
+                                    ((value.member_index, value.statistic_index), value.value)
+                                })
+                                .collect::<HashMap<_, _>>()
+                        })
                 } else {
-                    predicates.join(" AND ")
+                    Ok(HashMap::new())
                 }
             };
+            let row_totals = denominators(
+                StatisticKind::RowPercentage,
+                TabulateTotalsKind::Rows {
+                    start: request.row_start,
+                    count: request.row_count,
+                },
+            )?;
+            let column_totals = denominators(
+                StatisticKind::ColumnPercentage,
+                TabulateTotalsKind::Columns {
+                    start: request.column_start,
+                    count: request.column_count,
+                },
+            )?;
+            let grand_totals =
+                denominators(StatisticKind::TotalPercentage, TabulateTotalsKind::Grand)?;
             let aggregates = definition
                 .statistics
                 .iter()
                 .map(|statistic| {
-                    if matches!(
-                        statistic.kind,
-                        StatisticKind::RowPercentage
-                            | StatisticKind::ColumnPercentage
-                            | StatisticKind::TotalPercentage
-                    ) {
-                        Ok("NULL::DOUBLE".into())
-                    } else {
-                        aggregate_sql_for_field(
-                            statistic,
-                            &format!("source.{}", Self::quote_identifier(&statistic.field)),
-                        )
-                    }
+                    aggregate_sql_for_field(
+                        statistic,
+                        &format!("source.{}", Self::quote_identifier(&statistic.field)),
+                    )
                 })
                 .collect::<Result<Vec<_>, AppError>>()?
                 .join(", ");
@@ -1112,8 +1328,8 @@ impl DuckDbEngine {
                 Self::quote_identifier(&row_table),
                 Self::quote_identifier(&column_table),
                 Self::quote_identifier(&table_name),
-                join(&definition.row_fields, "row_members"),
-                join(&definition.column_fields, "column_members"),
+                Self::tabulate_member_join(&definition.row_fields, "row_members"),
+                Self::tabulate_member_join(&definition.column_fields, "column_members"),
             );
             check_cancelled()?;
             let mut statement = self.conn.prepare(&sql)?;
@@ -1138,11 +1354,27 @@ impl DuckDbEngine {
                 let row_index = local_index(row_ordinal, request.row_start, row_end)?;
                 let column_index = local_index(column_ordinal, request.column_start, column_end)?;
                 for statistic_index in 0..definition.statistics.len() {
+                    let value = numeric_cell_value(row.get(statistic_index + 2)?)?;
+                    let denominator = match definition.statistics[statistic_index].kind {
+                        StatisticKind::RowPercentage => {
+                            Some(row_totals.get(&(row_index, statistic_index as u32)))
+                        }
+                        StatisticKind::ColumnPercentage => {
+                            Some(column_totals.get(&(column_index, statistic_index as u32)))
+                        }
+                        StatisticKind::TotalPercentage => {
+                            Some(grand_totals.get(&(0, statistic_index as u32)))
+                        }
+                        _ => None,
+                    };
                     cells.push(TabulateSparseCell {
                         row_index,
                         column_index,
                         statistic_index: statistic_index as u32,
-                        value: numeric_cell_value(row.get(statistic_index + 2)?)?,
+                        value: match denominator {
+                            Some(total) => divide_or_null(value, total.copied().flatten()),
+                            None => value,
+                        },
                     });
                 }
             }
@@ -11318,6 +11550,23 @@ fn default_missing_value(kind: &StatisticKind) -> Option<f64> {
     }
 }
 
+fn check_tabulate_cancelled(cancelled: &std::sync::atomic::AtomicBool) -> Result<(), AppError> {
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        Err(AppError::Cancelled("tabulate_cancelled".into()))
+    } else {
+        Ok(())
+    }
+}
+
+fn is_tabulate_percentage(kind: &StatisticKind) -> bool {
+    matches!(
+        kind,
+        StatisticKind::RowPercentage
+            | StatisticKind::ColumnPercentage
+            | StatisticKind::TotalPercentage
+    )
+}
+
 fn divide_or_null(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
     match (numerator, denominator) {
         (Some(value), Some(total)) if total != 0.0 => Some(value / total),
@@ -19856,7 +20105,7 @@ mod tests {
     }
 
     #[test]
-    fn tabulate_window_exact_statistics_typed_keys_and_pending_percentages() {
+    fn tabulate_window_exact_statistics_typed_keys_and_percentages() {
         let (engine, mut definition) = tabulate_member_fixture();
         engine
             .conn()
@@ -19945,9 +20194,9 @@ mod tests {
             Some(3.0),
             Some(4.0),
             Some(2.5),
-            None,
-            None,
-            None,
+            Some(1.0),
+            Some(1.0),
+            Some(1.0),
         ];
         assert_eq!(result.cells.len(), 30);
         for (cell, expected) in result.cells[..15].iter().zip(expected) {
@@ -19977,7 +20226,7 @@ mod tests {
                 None,
                 None,
                 None,
-                None
+                Some(0.0)
             ]
         );
         assert!(!result.row_totals_ready && !result.column_totals_ready);

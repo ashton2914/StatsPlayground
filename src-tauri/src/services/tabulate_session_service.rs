@@ -11,6 +11,7 @@ use crate::engine::duckdb_engine::{DuckDbEngine, PreparedTabulateSessionInfo};
 use crate::error::AppError;
 use crate::models::tabulate::{
     TabulateSessionRequest, TabulateSessionState, TabulateSessionStatus,
+    TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult,
     TabulateWindowRequest, TabulateWindowResult,
 };
 
@@ -413,40 +414,95 @@ impl TabulateSessionService {
         AppError::InvalidParam("tabulate_session_unavailable".into())
     }
 
+    pub fn query_totals(
+        &self,
+        request: &TabulateTotalsRequest,
+    ) -> Result<TabulateTotalsResult, AppError> {
+        self.execute_query(
+            &request.request_id,
+            &request.session_id,
+            request.source_generation,
+            |info, statistic_count| {
+                DuckDbEngine::validate_tabulate_totals_bounds(
+                    &request.totals,
+                    info,
+                    statistic_count,
+                )
+                .map(|_| ())
+            },
+            |engine, entry, info, cancelled| {
+                engine.query_tabulate_totals(
+                    &entry.request,
+                    &entry.uuid,
+                    request,
+                    info,
+                    &entry.fingerprint,
+                    cancelled,
+                )
+            },
+        )
+    }
+
     pub fn query_window(
         &self,
         request: &TabulateWindowRequest,
     ) -> Result<TabulateWindowResult, AppError> {
-        if request.request_id.trim().is_empty() || request.request_id.len() > 256 {
-            return Err(AppError::InvalidParam("tabulate_invalid_request".into()));
-        }
-        let entry = self.entry(&request.session_id)?;
-        let _query = self.begin_query(
+        self.execute_query(
+            &request.request_id,
             &request.session_id,
             request.source_generation,
-            &entry.fingerprint,
-        )?;
+            |info, statistic_count| {
+                DuckDbEngine::validate_tabulate_window_bounds(request, info, statistic_count)
+                    .map(|_| ())
+            },
+            |engine, entry, info, cancelled| {
+                engine.query_tabulate_window(
+                    &entry.request,
+                    &entry.uuid,
+                    request,
+                    info,
+                    &entry.fingerprint,
+                    cancelled,
+                )
+            },
+        )
+    }
+
+    fn execute_query<T>(
+        &self,
+        request_id: &str,
+        session_id: &str,
+        source_generation: u64,
+        validate_bounds: impl FnOnce(&PreparedTabulateSessionInfo, usize) -> Result<(), AppError>,
+        query: impl FnOnce(
+            &DuckDbEngine,
+            &TabulateSessionEntry,
+            &PreparedTabulateSessionInfo,
+            &AtomicBool,
+        ) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        if request_id.trim().is_empty() || request_id.len() > 256 {
+            return Err(AppError::InvalidParam("tabulate_invalid_request".into()));
+        }
+        let entry = self.entry(session_id)?;
+        let _query = self.begin_query(session_id, source_generation, &entry.fingerprint)?;
         let info = {
             let registry = lock(&self.inner.registry)?;
             let record = registry
                 .sessions
-                .get(&request.session_id)
+                .get(session_id)
                 .ok_or_else(Self::unavailable)?;
             record.info.clone().ok_or_else(Self::unavailable)?
         };
-        DuckDbEngine::validate_tabulate_window_bounds(
-            request,
-            &info,
-            entry.request.statistics.len(),
-        )?;
+        validate_bounds(&info, entry.request.statistics.len())?;
         let cancelled = Arc::new(AtomicBool::new(false));
         {
             let mut requests = lock(&self.inner.active_requests)?;
-            if requests.contains_key(&request.request_id) {
+            if requests.contains_key(request_id) {
                 return Err(AppError::Busy("tabulate_request_active".into()));
             }
             requests.insert(
-                request.request_id.clone(),
+                request_id.to_owned(),
                 TabulateActiveRequest {
                     cancelled: Arc::clone(&cancelled),
                     interrupt_handle: Arc::clone(&entry.interrupt_handle),
@@ -456,30 +512,21 @@ impl TabulateSessionService {
         }
         let active = TabulateRequestGuard {
             inner: Arc::clone(&self.inner),
-            request_id: request.request_id.clone(),
+            request_id: request_id.to_owned(),
             cancelled,
         };
         let engine = lock(&entry.engine)?;
         let result = (|| {
             {
                 let mut requests = lock(&self.inner.active_requests)?;
-                let registered = requests
-                    .get_mut(&request.request_id)
-                    .ok_or_else(Self::unavailable)?;
+                let registered = requests.get_mut(request_id).ok_or_else(Self::unavailable)?;
                 if registered.cancelled.load(Ordering::Acquire) {
                     return Err(AppError::Cancelled("tabulate_cancelled".into()));
                 }
                 registered.running = true;
             }
             self.validate_window_identity(&entry)?;
-            let result = engine.query_tabulate_window(
-                &entry.request,
-                &entry.uuid,
-                request,
-                &info,
-                &entry.fingerprint,
-                &active.cancelled,
-            )?;
+            let result = query(&engine, &entry, &info, &active.cancelled)?;
             self.validate_window_identity(&entry)?;
             if engine
                 .get_dataset_generation(&entry.request.dataset_id)
@@ -492,7 +539,7 @@ impl TabulateSessionService {
         })();
         let was_cancelled = {
             let mut requests = lock(&self.inner.active_requests)?;
-            requests.remove(&request.request_id);
+            requests.remove(request_id);
             active.cancelled.load(Ordering::Acquire)
         };
         drop(active);
@@ -872,6 +919,625 @@ mod tests {
     fn assert_window_error<T: std::fmt::Debug>(result: Result<T, AppError>, code: &str) {
         let error = result.expect_err(code);
         assert!(error.to_string().contains(code), "{error}");
+    }
+
+    #[test]
+    fn tabulate_totals_percentages_ignore_tile_boundaries_and_display_flags() {
+        let harness = totals_fixture();
+        let mut definition = totals_definition(&harness);
+        definition.include_row_totals = false;
+        definition.include_column_totals = false;
+        let status = harness.ready(&definition);
+        for (row_start, column_start, expected) in [
+            (0, 0, vec![Some(0.5), Some(0.5), Some(0.2)]),
+            (0, 1, vec![Some(0.5), Some(0.5), Some(0.2)]),
+            (3, 2, vec![Some(1.0), Some(1.0), Some(0.2)]),
+        ] {
+            let result = harness
+                .service
+                .query_window(&TabulateWindowRequest {
+                    row_start,
+                    column_start,
+                    row_count: 1,
+                    column_count: 1,
+                    ..window_request(&status)
+                })
+                .unwrap();
+            assert_eq!(
+                result
+                    .cells
+                    .iter()
+                    .map(|cell| cell.value)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert!(!result.row_totals_ready && !result.column_totals_ready);
+        }
+        let wider = harness
+            .service
+            .query_window(&window_request(&status))
+            .unwrap();
+        assert_eq!(wider.cells[0].value, Some(0.5));
+        assert_eq!(wider.cells[1].value, Some(0.5));
+        assert_eq!(wider.cells[2].value, Some(0.2));
+    }
+
+    fn totals_fixture() -> SessionHarness {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        harness
+            .source
+            .conn()
+            .execute_batch(
+                "DELETE FROM dataset_session_test;
+             INSERT INTO dataset_session_test VALUES
+             ('A', 'X', 10), ('A', 'Y', 30), ('A', 'Y', NULL),
+             ('B', 'X', 15), ('B', 'Y', 30),
+             ('C', 'X', NULL), ('C', 'X', NULL), (NULL, NULL, 15);",
+            )
+            .unwrap();
+        harness
+    }
+
+    fn totals_definition(harness: &SessionHarness) -> TabulateSessionRequest {
+        let mut definition = harness.request();
+        definition.statistics = [
+            StatisticKind::RowPercentage,
+            StatisticKind::ColumnPercentage,
+            StatisticKind::TotalPercentage,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| TabulateStatistic {
+            id: format!("pct-{index}"),
+            field: "sales".into(),
+            kind,
+            quantile: None,
+        })
+        .collect();
+        definition
+    }
+
+    fn totals_request(
+        status: &TabulateSessionStatus,
+        totals: TabulateTotalsKind,
+    ) -> TabulateTotalsRequest {
+        TabulateTotalsRequest {
+            request_id: Uuid::new_v4().to_string(),
+            session_id: status.session_id.clone(),
+            source_generation: status.source_generation,
+            totals,
+        }
+    }
+
+    #[test]
+    fn tabulate_totals_bounded_ranges_separate_arrays_and_identity() {
+        let harness = totals_fixture();
+        let status = harness.ready(&totals_definition(&harness));
+        for (kind, expected) in [
+            (
+                TabulateTotalsKind::Rows { start: 1, count: 1 },
+                vec![Some(1.0), Some(0.4), Some(0.4)],
+            ),
+            (
+                TabulateTotalsKind::Columns { start: 1, count: 1 },
+                vec![Some(0.4), Some(1.0), Some(0.4)],
+            ),
+            (
+                TabulateTotalsKind::Rows { start: 3, count: 2 },
+                vec![Some(1.0), Some(0.2), Some(0.2)],
+            ),
+            (TabulateTotalsKind::Grand, vec![Some(1.0); 3]),
+        ] {
+            let request = totals_request(&status, kind.clone());
+            let result = harness
+                .service
+                .query_totals(&request)
+                .expect("exact bounded totals");
+            assert_eq!(result.session_id, status.session_id);
+            assert_eq!(result.request_id, request.request_id);
+            assert_eq!(result.fingerprint, status.fingerprint);
+            assert_eq!(result.source_generation, status.source_generation);
+            assert_eq!(result.totals, kind);
+            let values = match kind {
+                TabulateTotalsKind::Rows { .. } => {
+                    assert!(result.column_totals.is_empty() && result.grand_totals.is_empty());
+                    result.row_totals
+                }
+                TabulateTotalsKind::Columns { .. } => {
+                    assert!(result.row_totals.is_empty() && result.grand_totals.is_empty());
+                    result.column_totals
+                }
+                TabulateTotalsKind::Grand => {
+                    assert!(result.row_totals.is_empty() && result.column_totals.is_empty());
+                    assert_eq!(result.grand_totals, expected);
+                    continue;
+                }
+            };
+            assert_eq!(
+                values.iter().map(|cell| cell.value).collect::<Vec<_>>(),
+                expected
+            );
+            for (index, cell) in values.iter().enumerate() {
+                assert_eq!((cell.member_index, cell.statistic_index), (0, index as u32));
+            }
+        }
+    }
+
+    #[test]
+    fn tabulate_totals_zero_denominators_are_null_and_missing_groups_stay_sparse() {
+        let harness = totals_fixture();
+        let status = harness.ready(&totals_definition(&harness));
+        let window = harness
+            .service
+            .query_window(&TabulateWindowRequest {
+                row_start: 2,
+                row_count: 1,
+                column_count: 1,
+                ..window_request(&status)
+            })
+            .unwrap();
+        assert_eq!(
+            window
+                .cells
+                .iter()
+                .map(|cell| cell.value)
+                .collect::<Vec<_>>(),
+            vec![None, Some(0.0), Some(0.0)]
+        );
+        let result = harness
+            .service
+            .query_totals(&totals_request(
+                &status,
+                TabulateTotalsKind::Rows { start: 2, count: 1 },
+            ))
+            .unwrap();
+        assert_eq!(
+            result
+                .row_totals
+                .iter()
+                .map(|cell| cell.value)
+                .collect::<Vec<_>>(),
+            vec![None, Some(0.0), Some(0.0)]
+        );
+        let missing = harness
+            .service
+            .query_window(&TabulateWindowRequest {
+                row_start: 2,
+                column_start: 1,
+                row_count: 1,
+                column_count: 1,
+                ..window_request(&status)
+            })
+            .unwrap();
+        assert!(missing.cells.is_empty());
+        harness.service.release(&status.session_id).unwrap();
+        harness
+            .source
+            .conn()
+            .execute_batch("UPDATE dataset_session_test SET sales = NULL")
+            .unwrap();
+        let status = harness.ready(&totals_definition(&harness));
+        let result = harness
+            .service
+            .query_totals(&totals_request(&status, TabulateTotalsKind::Grand))
+            .unwrap();
+        assert_eq!(result.grand_totals, vec![None; 3]);
+    }
+
+    #[test]
+    fn tabulate_totals_reject_bounds_and_fence_stale_sessions() {
+        let harness = totals_fixture();
+        let status = harness.ready(&totals_definition(&harness));
+        for kind in [
+            TabulateTotalsKind::Rows {
+                start: 0,
+                count: 129,
+            },
+            TabulateTotalsKind::Columns {
+                start: 0,
+                count: 65,
+            },
+            TabulateTotalsKind::Rows { start: 0, count: 0 },
+            TabulateTotalsKind::Columns {
+                start: u64::MAX,
+                count: 1,
+            },
+            TabulateTotalsKind::Rows { start: 5, count: 1 },
+            TabulateTotalsKind::Columns { start: 4, count: 1 },
+        ] {
+            assert_window_error(
+                harness.service.query_totals(&totals_request(&status, kind)),
+                "tabulate_invalid_bounds",
+            );
+        }
+        let mut request = totals_request(&status, TabulateTotalsKind::Grand);
+        request.source_generation += 1;
+        assert_window_error(
+            harness.service.query_totals(&request),
+            "tabulate_stale_source",
+        );
+        request.source_generation = status.source_generation;
+        harness
+            .service
+            .inner
+            .registry
+            .lock()
+            .unwrap()
+            .signatures
+            .clear();
+        assert_window_error(
+            harness.service.query_totals(&request),
+            "tabulate_stale_source",
+        );
+        harness.service.release(&status.session_id).unwrap();
+        assert_window_error(
+            harness.service.query_totals(&request),
+            "tabulate_session_unavailable",
+        );
+        assert!(harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn tabulate_totals_exact_all_statistics_and_empty_roles() {
+        let harness = totals_fixture();
+        let mut definition = totals_definition(&harness);
+        definition.statistics = [
+            StatisticKind::Count,
+            StatisticKind::MissingCount,
+            StatisticKind::UniqueCount,
+            StatisticKind::Sum,
+            StatisticKind::Mean,
+            StatisticKind::StandardDeviation,
+            StatisticKind::Variance,
+            StatisticKind::Minimum,
+            StatisticKind::Maximum,
+            StatisticKind::Median,
+            StatisticKind::Range,
+            StatisticKind::Quantile,
+            StatisticKind::RowPercentage,
+            StatisticKind::ColumnPercentage,
+            StatisticKind::TotalPercentage,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| TabulateStatistic {
+            id: format!("stat-{index}"),
+            field: "sales".into(),
+            kind,
+            quantile: Some(0.25),
+        })
+        .collect();
+        let status = harness.ready(&definition);
+        for (kind, expected) in [
+            (
+                TabulateTotalsKind::Rows { start: 0, count: 1 },
+                vec![
+                    2.0,
+                    1.0,
+                    2.0,
+                    40.0,
+                    20.0,
+                    200.0_f64.sqrt(),
+                    200.0,
+                    10.0,
+                    30.0,
+                    20.0,
+                    20.0,
+                    15.0,
+                    1.0,
+                    0.4,
+                    0.4,
+                ],
+            ),
+            (
+                TabulateTotalsKind::Columns { start: 0, count: 1 },
+                vec![
+                    2.0,
+                    2.0,
+                    2.0,
+                    25.0,
+                    12.5,
+                    12.5_f64.sqrt(),
+                    12.5,
+                    10.0,
+                    15.0,
+                    12.5,
+                    5.0,
+                    11.25,
+                    0.4,
+                    1.0,
+                    0.4,
+                ],
+            ),
+            (
+                TabulateTotalsKind::Grand,
+                vec![
+                    5.0,
+                    3.0,
+                    3.0,
+                    100.0,
+                    20.0,
+                    87.5_f64.sqrt(),
+                    87.5,
+                    10.0,
+                    30.0,
+                    15.0,
+                    20.0,
+                    15.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                ],
+            ),
+        ] {
+            let result = harness
+                .service
+                .query_totals(&totals_request(&status, kind))
+                .unwrap();
+            let actual = result
+                .row_totals
+                .into_iter()
+                .chain(result.column_totals)
+                .map(|cell| cell.value)
+                .chain(result.grand_totals)
+                .collect::<Vec<_>>();
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!((actual.unwrap() - expected).abs() < 1e-12);
+            }
+        }
+        harness.service.release(&status.session_id).unwrap();
+        for (empty_rows, empty_columns) in [(true, false), (false, true), (true, true)] {
+            let mut definition = definition.clone();
+            if empty_rows {
+                definition.row_fields.clear();
+            }
+            if empty_columns {
+                definition.column_fields.clear();
+            }
+            let status = harness.ready(&definition);
+            let kind = if empty_rows {
+                TabulateTotalsKind::Rows { start: 0, count: 1 }
+            } else {
+                TabulateTotalsKind::Columns { start: 0, count: 1 }
+            };
+            let totals = harness
+                .service
+                .query_totals(&totals_request(&status, kind))
+                .unwrap();
+            let values = totals
+                .row_totals
+                .into_iter()
+                .chain(totals.column_totals)
+                .map(|cell| cell.value)
+                .collect::<Vec<_>>();
+            assert_eq!(values[0], Some(5.0));
+            assert_eq!(&values[12..], &[Some(1.0); 3]);
+            harness.service.release(&status.session_id).unwrap();
+        }
+        harness
+            .source
+            .conn()
+            .execute_batch("DELETE FROM dataset_session_test")
+            .unwrap();
+        definition.row_fields.clear();
+        definition.column_fields.clear();
+        let status = harness.ready(&definition);
+        for kind in [
+            TabulateTotalsKind::Rows { start: 0, count: 1 },
+            TabulateTotalsKind::Columns { start: 0, count: 1 },
+            TabulateTotalsKind::Grand,
+        ] {
+            let totals = harness
+                .service
+                .query_totals(&totals_request(&status, kind))
+                .unwrap();
+            let values = totals
+                .row_totals
+                .into_iter()
+                .chain(totals.column_totals)
+                .map(|cell| cell.value)
+                .chain(totals.grand_totals)
+                .collect::<Vec<_>>();
+            assert_eq!(&values[..3], &[Some(0.0); 3]);
+            assert_eq!(&values[3..], &[None; 12]);
+        }
+    }
+
+    #[test]
+    fn tabulate_totals_numeric_budget_empty_edges_and_fingerprint_separation() {
+        let harness = totals_fixture();
+        let definition = totals_definition(&harness);
+        let status = harness.ready(&definition);
+        for kind in [
+            TabulateTotalsKind::Rows { start: 4, count: 1 },
+            TabulateTotalsKind::Columns { start: 3, count: 1 },
+        ] {
+            let result = harness
+                .service
+                .query_totals(&totals_request(&status, kind))
+                .unwrap();
+            assert!(
+                result.row_totals.is_empty()
+                    && result.column_totals.is_empty()
+                    && result.grand_totals.is_empty()
+            );
+        }
+        let mut other = definition.clone();
+        other.statistics[0].kind = StatisticKind::Count;
+        let other_status = harness.ready(&other);
+        assert_ne!(status.fingerprint, other_status.fingerprint);
+        let result = harness
+            .service
+            .query_totals(&totals_request(&other_status, TabulateTotalsKind::Grand))
+            .unwrap();
+        assert_eq!(result.fingerprint, other_status.fingerprint);
+        assert_eq!(result.grand_totals, vec![Some(5.0), Some(1.0), Some(1.0)]);
+        harness.service.release(&other_status.session_id).unwrap();
+        let mut many = definition;
+        many.statistics = (0..129)
+            .map(|index| TabulateStatistic {
+                id: format!("count-{index}"),
+                field: "sales".into(),
+                kind: StatisticKind::Count,
+                quantile: None,
+            })
+            .collect();
+        let many_status = harness.ready(&many);
+        assert_window_error(
+            harness.service.query_totals(&totals_request(
+                &many_status,
+                TabulateTotalsKind::Rows {
+                    start: 0,
+                    count: 128,
+                },
+            )),
+            "tabulate_invalid_bounds",
+        );
+        assert!(harness
+            .service
+            .inner
+            .active_requests
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn tabulate_totals_running_and_queued_cancellation_share_window_registry() {
+        for kind in [
+            TabulateTotalsKind::Rows { start: 0, count: 1 },
+            TabulateTotalsKind::Columns { start: 0, count: 1 },
+            TabulateTotalsKind::Grand,
+        ] {
+            let harness = SessionHarness::new(256 * 1024 * 1024);
+            let status = harness.ready(&harness.request());
+            harness
+                .source
+                .conn()
+                .execute_batch(
+                    "DROP TABLE dataset_session_test;
+                 CREATE VIEW dataset_session_test AS SELECT 'East'::VARCHAR AS region,
+                 'A'::VARCHAR AS product, sin(range::DOUBLE) AS sales FROM range(1000000000);",
+                )
+                .unwrap();
+            let request = totals_request(&status, kind);
+            let service = harness.service.clone();
+            let worker_request = request.clone();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                sender.send(service.query_totals(&worker_request)).unwrap()
+            });
+            await_active(&harness.service, &request.request_id, true);
+            harness.service.cancel_request("unrelated").unwrap();
+            assert_window_error(
+                harness.service.query_window(&TabulateWindowRequest {
+                    request_id: request.request_id.clone(),
+                    ..window_request(&status)
+                }),
+                "tabulate_request_active",
+            );
+            let queued_request = totals_request(&status, TabulateTotalsKind::Grand);
+            let queued_id = queued_request.request_id.clone();
+            let service = harness.service.clone();
+            let queued = std::thread::spawn(move || service.query_totals(&queued_request));
+            await_active(&harness.service, &queued_id, false);
+            harness.service.cancel_request(&queued_id).unwrap();
+            assert!(matches!(
+                receiver.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            harness.service.cancel_request(&request.request_id).unwrap();
+            assert_window_error(
+                receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+                "tabulate_cancelled",
+            );
+            worker.join().unwrap();
+            assert_window_error(queued.join().unwrap(), "tabulate_cancelled");
+            assert!(harness
+                .service
+                .inner
+                .active_requests
+                .lock()
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                harness.service.inner.registry.lock().unwrap().sessions[&status.session_id]
+                    .active_queries,
+                0
+            );
+            harness
+                .source
+                .conn()
+                .execute_batch(
+                    "DROP VIEW dataset_session_test;
+                 CREATE TABLE dataset_session_test AS SELECT 'East'::VARCHAR AS region,
+                 'A'::VARCHAR AS product, 7.0::DOUBLE AS sales;",
+                )
+                .unwrap();
+            let result = harness
+                .service
+                .query_totals(&totals_request(&status, TabulateTotalsKind::Grand))
+                .unwrap();
+            assert_eq!(result.grand_totals, vec![Some(7.0)]);
+        }
+    }
+
+    #[test]
+    fn tabulate_totals_queued_source_change_and_release_cannot_publish() {
+        for release in [false, true] {
+            let harness = totals_fixture();
+            let status = harness.ready(&totals_definition(&harness));
+            let entry = harness.service.entry(&status.session_id).unwrap();
+            let engine = entry.engine.lock().unwrap();
+            let request = totals_request(&status, TabulateTotalsKind::Grand);
+            let service = harness.service.clone();
+            let request_id = request.request_id.clone();
+            let worker = std::thread::spawn(move || service.query_totals(&request));
+            await_active(&harness.service, &request_id, false);
+            let releaser = if release {
+                let service = harness.service.clone();
+                let session_id = status.session_id.clone();
+                let worker = std::thread::spawn(move || service.release(&session_id));
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !entry.released.load(Ordering::Acquire) {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                Some(worker)
+            } else {
+                harness
+                    .source
+                    .bump_dataset_generation("session-test")
+                    .unwrap();
+                None
+            };
+            drop(engine);
+            assert_window_error(
+                worker.join().unwrap(),
+                if release {
+                    "tabulate_session_unavailable"
+                } else {
+                    "tabulate_stale_source"
+                },
+            );
+            if let Some(worker) = releaser {
+                worker.join().unwrap().unwrap();
+            }
+            assert!(harness
+                .service
+                .inner
+                .active_requests
+                .lock()
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[test]
