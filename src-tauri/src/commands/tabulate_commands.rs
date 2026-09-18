@@ -2,12 +2,25 @@ use tauri::State;
 
 use crate::error::AppError;
 use crate::models::tabulate::{
-    TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateSessionStatus,
+    TabulateMaterializeRequest, TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateSessionStatus,
     TabulateTotalsRequest, TabulateTotalsResult,
     TabulateWindowRequest, TabulateWindowResult,
 };
 use crate::services::tabulate_service::TabulateService;
 use crate::state::AppState;
+
+#[tauri::command(async)]
+pub fn materialize_tabulate_table(
+    state: State<'_, AppState>,
+    request: TabulateMaterializeRequest,
+) -> Result<crate::models::table::DatasetMeta, AppError> {
+    let service = state
+        .tabulate_sessions
+        .read()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .clone();
+    service.materialize_table(&request)
+}
 
 #[tauri::command]
 pub fn tabulate(
@@ -193,10 +206,14 @@ mod tests {
             source_generation: 7,
             fingerprint: "fingerprint-1".into(),
             destination_name: "Sales Summary".into(),
+            missing_label: "Missing".into(),
+            statistic_labels: vec!["Mean".into()],
         };
         let materialize_json =
             serde_json::to_value(materialize).expect("serialize materialize request");
         assert_eq!(materialize_json["destinationName"], "Sales Summary");
+        assert_eq!(materialize_json["missingLabel"], "Missing");
+        assert_eq!(materialize_json["statisticLabels"], serde_json::json!(["Mean"]));
     }
 
     #[test]

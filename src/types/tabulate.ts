@@ -140,6 +140,8 @@ export interface TabulateMaterializeRequest {
   sourceGeneration: number;
   fingerprint: string;
   destinationName: string;
+  missingLabel: string;
+  statisticLabels: string[];
 }
 
 export interface TabulateResult {

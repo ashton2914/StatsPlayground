@@ -172,8 +172,9 @@ export interface TabulateRunResult {
 
 export interface TabulateExportTableInput {
   tabulateId: string;
-  request: import("@/types/tabulate").TabulateRequest;
+  request: Omit<import("@/types/tabulate").TabulateRequest, "maxResultCells">;
   tableName: string;
+  session?: Pick<import("@/types/tabulate").TabulateSessionStatus, "sessionId" | "fingerprint" | "sourceGeneration">;
 }
 
 export interface TabulateExportTableResult {

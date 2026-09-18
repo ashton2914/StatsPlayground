@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
+import type { TabulateExportTableInput } from "@/applicationCommands/types";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import type { ColumnDisplayProps, DatasetMeta } from "@/types/data";
-import type { TabulateItem, TabulateRequest, TabulateStatistic } from "@/types/tabulate";
+import type { TabulateItem, TabulateStatistic } from "@/types/tabulate";
 import { resolveProjectBasenameForKind } from "@/utils/projectFileNaming";
 
 import {
@@ -175,7 +176,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
     };
   }, [dataset]);
 
-  const fullQueryRequest = useMemo<TabulateRequest | null>(() => {
+  const fullQueryRequest = useMemo<TabulateExportTableInput["request"] | null>(() => {
     if (!dataset || item.statistics.length === 0) {
       return null;
     }
@@ -187,7 +188,6 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
       statistics: item.statistics,
       includeRowTotals: item.includeRowTotals,
       includeColumnTotals: item.includeColumnTotals,
-      maxResultCells: 10000,
     };
   }, [dataset, item]);
 
@@ -285,6 +285,11 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
             tabulateId: item.id,
             request: fullQueryRequest,
             tableName: resolved.basename,
+            session: session.status ? {
+              sessionId: session.status.sessionId,
+              fingerprint: session.status.fingerprint,
+              sourceGeneration: session.status.sourceGeneration,
+            } : undefined,
           },
         },
         { kind: "ui" },

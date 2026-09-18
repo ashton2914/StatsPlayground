@@ -147,6 +147,7 @@ pub fn run() {
             commands::tabulate_commands::release_tabulate_session,
             commands::tabulate_commands::query_tabulate_window,
             commands::tabulate_commands::query_tabulate_totals,
+            commands::tabulate_commands::materialize_tabulate_table,
             commands::tabulate_commands::cancel_tabulate_request,
             commands::io_commands::export_csv,
             commands::io_commands::authorize_csv_export_root,

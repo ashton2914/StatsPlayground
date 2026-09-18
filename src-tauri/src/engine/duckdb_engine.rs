@@ -1402,6 +1402,148 @@ impl DuckDbEngine {
         })
     }
 
+    pub(crate) fn materialize_tabulate_table(
+        &self,
+        definition: &TabulateSessionRequest,
+        session_id: &uuid::Uuid,
+        request: &crate::models::tabulate::TabulateMaterializeRequest,
+        before_commit: impl FnOnce(&Self) -> Result<(), AppError>,
+    ) -> Result<DatasetMeta, AppError> {
+        if request.session_id != session_id.to_string()
+            || request.source_generation != definition.source_generation
+            || request.statistic_labels.len() != definition.statistics.len()
+            || request.statistic_labels.iter().any(|label| label.trim().is_empty())
+        {
+            return Err(AppError::InvalidParam("tabulate_invalid_materialization".into()));
+        }
+        crate::services::spprj_archive::validate_portable_basename(&request.destination_name, "Dataset name")
+            .map_err(AppError::InvalidParam)?;
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let outcome = (|| {
+            self.validate_tabulate_session(definition)?;
+            self.validate_dataset_name(&request.destination_name, None)?;
+            let (source_table, column_types) = self.validate_tabulate_fields(
+                &definition.dataset_id, &definition.row_fields, &definition.column_fields, &definition.statistics,
+            )?;
+            let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
+            let mut names = Vec::new();
+            let mut used = HashSet::from(["_row_id".to_string()]);
+            let mut unique_name = |base: String| {
+                let mut name = base.clone();
+                let mut suffix = 2;
+                while !used.insert(name.to_ascii_lowercase()) {
+                    name = format!("{base} ({suffix})");
+                    suffix += 1;
+                }
+                name
+            };
+            let mut parameters = Vec::<Value>::new();
+            let mut projection = vec!["(members.ordinal + 1)::BIGINT AS \"_row_id\"".to_string()];
+            for (index, field) in definition.row_fields.iter().enumerate() {
+                let name = unique_name(field.clone());
+                let types = HashMap::from([(format!("dimension_{index}"), column_types[field].clone())]);
+                let expression = dimension_select_expression(&format!("dimension_{index}"), &types)?;
+                let label = tabulate_dimension_sql_label(&expression, &column_types[field]);
+                projection.push(format!("COALESCE({label}, ?) AS {}", Self::quote_identifier(&name)));
+                parameters.push(Value::Text(request.missing_label.clone()));
+                names.push((name, "VARCHAR"));
+            }
+            let member_types = definition.column_fields.iter().enumerate()
+                .map(|(index, field)| (format!("dimension_{index}"), column_types[field].clone()))
+                .collect::<HashMap<_, _>>();
+            let member_projection = (0..definition.column_fields.len())
+                .map(|index| dimension_select_expression(&format!("dimension_{index}"), &member_types).map(|value| format!(", {value}")))
+                .collect::<Result<Vec<_>, _>>()?.join("");
+            let mut statement = self.conn.prepare(&format!("SELECT ordinal{member_projection} FROM {} ORDER BY ordinal", Self::quote_identifier(&column_table)))?;
+            let mut members = statement.query([])?;
+            while let Some(member) = members.next()? {
+                let ordinal: u64 = member.get(0)?;
+                let labels = (0..definition.column_fields.len()).map(|index| {
+                    member
+                        .get::<_, Value>(index + 1)
+                        .map(json_dimension_value)
+                        .map(|value| tabulate_dimension_label(value, &request.missing_label))
+                }).collect::<Result<Vec<_>, _>>()?;
+                for (index, statistic) in definition.statistics.iter().enumerate() {
+                    let mut parts = labels.clone();
+                    parts.push(request.statistic_labels[index].clone());
+                    parts.push(statistic.field.clone());
+                    let name = unique_name(parts.join(" - "));
+                    let raw = format!("MAX(cells.stat_{index}) FILTER (WHERE cells.column_ordinal = {ordinal})");
+                    let value = if is_tabulate_percentage(&statistic.kind) {
+                        let denominator = match statistic.kind {
+                            StatisticKind::RowPercentage => format!("MAX(cells.row_total_{index})"),
+                            StatisticKind::ColumnPercentage => format!("(SELECT MAX(column_total_{index}) FROM cells WHERE column_ordinal = {ordinal})"),
+                            _ => format!("(SELECT MAX(grand_total_{index}) FROM cells)"),
+                        };
+                        format!("COALESCE({raw}, 0)::DOUBLE / NULLIF({denominator}, 0)")
+                    } else if default_missing_value(&statistic.kind).is_some() {
+                        format!("COALESCE({raw}, 0)::DOUBLE")
+                    } else {
+                        format!("CASE WHEN isfinite({raw}::DOUBLE) THEN {raw}::DOUBLE ELSE NULL END")
+                    };
+                    projection.push(format!("{value} AS {}", Self::quote_identifier(&name)));
+                    names.push((name, "DOUBLE"));
+                }
+            }
+            drop(members);
+            drop(statement);
+            let aggregates = definition.statistics.iter().enumerate().map(|(index, statistic)| {
+                aggregate_sql_for_field(statistic, &format!("source.{}", Self::quote_identifier(&statistic.field)))
+                    .map(|value| format!("{value} AS stat_{index}"))
+            }).collect::<Result<Vec<_>, _>>()?.join(", ");
+            let mut totals = Vec::new();
+            for (index, statistic) in definition.statistics.iter().enumerate() {
+                if is_tabulate_percentage(&statistic.kind) {
+                    totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY row_ordinal) AS row_total_{index}"));
+                    totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY column_ordinal) AS column_total_{index}"));
+                    totals.push(format!("SUM(stat_{index}) OVER () AS grand_total_{index}"));
+                }
+            }
+            let totals = if totals.is_empty() { String::new() } else { format!(", {}", totals.join(", ")) };
+            let id = uuid::Uuid::new_v4().to_string();
+            let output = Self::quote_identifier(&Self::internal_table_name(&id));
+            let group_by = std::iter::once("members.ordinal".to_string())
+                .chain((0..definition.row_fields.len()).map(|index| format!("members.dimension_{index}")))
+                .collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "CREATE TABLE {output} AS WITH grouped AS (
+                 SELECT row_members.ordinal AS row_ordinal, column_members.ordinal AS column_ordinal, {aggregates}
+                 FROM {} AS source JOIN {} AS row_members ON {} JOIN {} AS column_members ON {}
+                 GROUP BY row_members.ordinal, column_members.ordinal),
+                 cells AS (SELECT *{totals} FROM grouped)
+                 SELECT {} FROM {} AS members LEFT JOIN cells ON members.ordinal = cells.row_ordinal
+                 GROUP BY {group_by} ORDER BY members.ordinal",
+                Self::quote_identifier(&source_table), Self::quote_identifier(&row_table),
+                Self::tabulate_member_join(&definition.row_fields, "row_members"),
+                Self::quote_identifier(&column_table), Self::tabulate_member_join(&definition.column_fields, "column_members"),
+                projection.join(", "), Self::quote_identifier(&row_table),
+            );
+            self.conn.execute(&sql, params_from_iter(parameters))?;
+            for (index, (name, sql_type)) in names.iter().enumerate() {
+                self.conn.execute("INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
+                    params![id, index as i32, name, sql_type])?;
+            }
+            self.conn.execute(&format!("INSERT INTO _meta_datasets (id, name, source_type, row_count, col_count) SELECT ?, ?, 'manual', count(*), ? FROM {output}"),
+                params![id, request.destination_name, names.len() as i32])?;
+            self.rebuild_natural_anchors(&id, 0)?;
+            let meta = self.get_dataset_meta(&id)?;
+            before_commit(self)?;
+            let changed = self.conn.execute("UPDATE _meta_datasets SET generation = generation WHERE id = ? AND generation = ?",
+                params![definition.dataset_id, definition.source_generation])
+                .map_err(|_| AppError::InvalidParam("tabulate_stale_source".into()))?;
+            if changed != 1 {
+                return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+            }
+            self.conn.execute_batch("COMMIT")?;
+            Ok(meta)
+        })();
+        if outcome.is_err() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+        outcome
+    }
+
     pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {
         let (table_name, column_types) = self.validate_tabulate_fields(
             &request.dataset_id, &request.row_fields, &request.column_fields, &request.statistics,
@@ -11352,6 +11494,34 @@ fn json_dimension_value(value: Value) -> serde_json::Value {
     }
 }
 
+fn tabulate_dimension_label(value: serde_json::Value, missing_label: &str) -> String {
+    match value {
+        serde_json::Value::Null => missing_label.to_string(),
+        serde_json::Value::String(text) => text,
+        serde_json::Value::Number(number) => {
+            if number.as_f64() == Some(0.0) {
+                return "0".to_string();
+            }
+            let text = number.to_string();
+            text.strip_suffix(".0")
+                .unwrap_or(&text)
+                .replace("e-0", "e-")
+                .replace("e+0", "e+")
+        }
+        value => value.to_string(),
+    }
+}
+
+fn tabulate_dimension_sql_label(expression: &str, data_type: &str) -> String {
+    if is_numeric_type(data_type) {
+        format!(
+            "CASE WHEN {expression} = 0 THEN '0' ELSE replace(replace(regexp_replace(CAST({expression} AS VARCHAR), '\\.0$', ''), 'e-0', 'e-'), 'e+0', 'e+') END"
+        )
+    } else {
+        format!("CAST({expression} AS VARCHAR)")
+    }
+}
+
 fn numeric_cell_value(value: Value) -> Result<Option<f64>, AppError> {
     match value {
         Value::Null => Ok(None),
@@ -11832,6 +12002,28 @@ mod tests {
     use crate::services::data_service::DataService;
     use crate::state::AppState;
     use duckdb::types::Decimal;
+
+    #[test]
+    fn tabulate_dimension_labels_match_javascript_scalar_strings() {
+        assert_eq!(tabulate_dimension_label(serde_json::json!(1.0), "Missing"), "1");
+        assert_eq!(tabulate_dimension_label(serde_json::json!(1.25), "Missing"), "1.25");
+        assert_eq!(tabulate_dimension_label(serde_json::json!(-0.0), "Missing"), "0");
+        assert_eq!(tabulate_dimension_label(serde_json::json!(1e-7), "Missing"), "1e-7");
+        assert_eq!(tabulate_dimension_label(serde_json::Value::Null, "Missing"), "Missing");
+
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        let expression = tabulate_dimension_sql_label("value", "DOUBLE");
+        let mut statement = engine
+            .conn()
+            .prepare(&format!("SELECT {expression} FROM (VALUES (1.0), (-0.0), (1e-7)) AS source(value)"))
+            .expect("prepare labels");
+        let labels = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query labels")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect labels");
+        assert_eq!(labels, ["1", "0", "1e-7"]);
+    }
 
     #[test]
     fn secondary_connection_shares_the_open_database() {

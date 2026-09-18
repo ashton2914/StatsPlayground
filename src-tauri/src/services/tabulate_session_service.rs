@@ -414,6 +414,34 @@ impl TabulateSessionService {
         AppError::InvalidParam("tabulate_session_unavailable".into())
     }
 
+    pub fn materialize_table(
+        &self,
+        request: &crate::models::tabulate::TabulateMaterializeRequest,
+    ) -> Result<crate::models::table::DatasetMeta, AppError> {
+        self.materialize_table_with_check(request, |_| Ok(()))
+    }
+
+    fn materialize_table_with_check(
+        &self,
+        request: &crate::models::tabulate::TabulateMaterializeRequest,
+        before_commit: impl FnOnce(&DuckDbEngine) -> Result<(), AppError>,
+    ) -> Result<crate::models::table::DatasetMeta, AppError> {
+        let query = self.begin_query(&request.session_id, request.source_generation, &request.fingerprint)?;
+        let entry = &query.entry;
+        let engine = lock(&entry.engine)?;
+        self.validate_window_identity(entry)?;
+        engine.materialize_tabulate_table(&entry.request, &entry.uuid, request, |engine| {
+            before_commit(engine)?;
+            self.validate_window_identity(entry)?;
+            if lock(&self.inner.source)?.get_dataset_generation(&entry.request.dataset_id).ok()
+                != Some(entry.request.source_generation)
+            {
+                return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+            }
+            Ok(())
+        })
+    }
+
     pub fn query_totals(
         &self,
         request: &TabulateTotalsRequest,
@@ -916,9 +944,212 @@ mod tests {
         }
     }
 
+    fn materialize_request(status: &TabulateSessionStatus) -> crate::models::tabulate::TabulateMaterializeRequest {
+        serde_json::from_value(serde_json::json!({
+            "sessionId": status.session_id,
+            "sourceGeneration": status.source_generation,
+            "fingerprint": status.fingerprint,
+            "destinationName": "Exported summary",
+            "missingLabel": "Missing",
+            "statisticLabels": ["Average", "Average", "Count"]
+        })).unwrap()
+    }
+
+    fn materialize_fixture() -> (SessionHarness, TabulateSessionStatus) {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        harness.source.conn().execute_batch(
+            "ALTER TABLE dataset_session_test ADD COLUMN detail VARCHAR;
+             ALTER TABLE dataset_session_test ADD COLUMN channel VARCHAR;
+             DELETE FROM dataset_session_test;
+             INSERT INTO dataset_session_test VALUES
+               ('West', 'A', NULL, 'two', 'web'),
+               ('East', 'A', 2, 'one', 'web'),
+               ('East', 'A', 4, 'one', 'web'),
+               (NULL, NULL, 8, 'one', 'web'),
+               ('East', 'Missing', 6, 'one', 'web');"
+        ).unwrap();
+        let mut definition = harness.request();
+        definition.row_fields.push("detail".into());
+        definition.column_fields.push("channel".into());
+        definition.statistics.push(TabulateStatistic { id: "mean-2".into(), ..definition.statistics[0].clone() });
+        definition.statistics.push(TabulateStatistic { id: "count".into(), kind: StatisticKind::Count, ..definition.statistics[0].clone() });
+        let status = harness.ready(&definition);
+        (harness, status)
+    }
+
+    fn assert_no_materialized_output(harness: &SessionHarness) {
+        for sql in [
+            "SELECT count(*) FROM _meta_datasets WHERE id <> 'session-test'",
+            "SELECT count(*) FROM _meta_columns WHERE dataset_id <> 'session-test'",
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE 'dataset_%' AND table_name <> 'dataset_session_test'",
+            "SELECT count(*) FROM _table_navigation_anchors WHERE dataset_id <> 'session-test'",
+        ] {
+            let count: i64 = harness.source.conn().query_row(sql, [], |row| row.get(0)).unwrap();
+            assert_eq!(count, 0, "{sql}");
+        }
+    }
+
+    #[test]
+    fn materialize_tabulate_table_exact_sparse_nested_names_types_and_metadata() {
+        use serde_json::json;
+        let (harness, status) = materialize_fixture();
+        let meta = harness.service.materialize_table(&materialize_request(&status)).unwrap();
+        assert_eq!(meta.name, "Exported summary");
+        assert_eq!(meta.source_type, "manual");
+        assert_eq!((meta.row_count, meta.col_count), (3, 11));
+        let table = harness.source.query_table(&meta.id, 0, 10, None, None).unwrap();
+        assert_eq!(table.columns, vec!["_row_id", "region", "detail",
+            "A - web - Average - sales", "A - web - Average - sales (2)", "A - web - Count - sales",
+            "Missing - web - Average - sales", "Missing - web - Average - sales (2)", "Missing - web - Count - sales",
+            "Missing - web - Average - sales (3)", "Missing - web - Average - sales (4)", "Missing - web - Count - sales (2)"]);
+        assert_eq!(&table.column_types[1..3], &["VARCHAR", "VARCHAR"]);
+        assert!(table.column_types[3..].iter().all(|value| value == "DOUBLE"));
+        assert_eq!(table.rows, vec![
+            vec![json!(1),json!("East"),json!("one"),json!(3.0),json!(3.0),json!(2.0),json!(6.0),json!(6.0),json!(1.0),json!(null),json!(null),json!(0.0)],
+            vec![json!(2),json!("West"),json!("two"),json!(null),json!(null),json!(0.0),json!(null),json!(null),json!(0.0),json!(null),json!(null),json!(0.0)],
+            vec![json!(3),json!("Missing"),json!("one"),json!(null),json!(null),json!(0.0),json!(null),json!(null),json!(0.0),json!(8.0),json!(8.0),json!(1.0)],
+        ]);
+        let columns = harness.source.get_user_column_descriptors(&meta.id).unwrap();
+        assert_eq!(columns.len(), 11);
+        assert!(columns.iter().all(|column| !column.column_id.is_empty()));
+        assert_eq!(harness.source.get_dataset_generation(&meta.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn materialize_tabulate_table_rolls_back_physical_metadata_and_anchors_on_failure() {
+        let (harness, status) = materialize_fixture();
+        let error = harness.service.materialize_table_with_check(&materialize_request(&status), |engine| {
+            let count: i64 = engine.conn().query_row("SELECT count(*) FROM _meta_datasets WHERE name = 'Exported summary'", [], |row| row.get(0))?;
+            assert_eq!(count, 1);
+            Err(AppError::Database("injected_after_creation".into()))
+        }).unwrap_err();
+        assert!(error.to_string().contains("injected_after_creation"));
+        assert_no_materialized_output(&harness);
+    }
+
+    #[test]
+    fn materialize_tabulate_table_generation_change_before_commit_rolls_back() {
+        let (harness, status) = materialize_fixture();
+        let error = harness.service.materialize_table_with_check(&materialize_request(&status), |_| {
+            harness.source.bump_dataset_generation("session-test")
+        }).unwrap_err();
+        assert!(error.to_string().contains("tabulate_stale_source"), "{error}");
+        assert_no_materialized_output(&harness);
+        assert_eq!(harness.source.get_dataset_generation("session-test").unwrap(), status.source_generation + 1);
+    }
+
+    #[test]
+    fn materialize_tabulate_table_rejects_wrong_identity_not_ready_and_released() {
+        let (harness, status) = materialize_fixture();
+        let mut request = materialize_request(&status);
+        request.fingerprint.push_str("wrong");
+        assert!(harness.service.materialize_table(&request).is_err());
+        request = materialize_request(&status);
+        request.source_generation += 1;
+        assert!(harness.service.materialize_table(&request).is_err());
+        harness.service.release(&status.session_id).unwrap();
+        assert!(harness.service.materialize_table(&materialize_request(&status)).is_err());
+        let entry = harness.paused(&harness.request());
+        let preparing = harness.service.status(&entry.session_id).unwrap();
+        assert!(harness.service.materialize_table(&materialize_request(&preparing)).is_err());
+        assert_no_materialized_output(&harness);
+    }
+
+    #[test]
+    fn materialize_tabulate_table_exact_percentages_and_no_dimension_empty_source() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let mut definition = harness.request();
+        definition.statistics = [StatisticKind::RowPercentage, StatisticKind::ColumnPercentage, StatisticKind::TotalPercentage]
+            .into_iter().enumerate().map(|(index, kind)| TabulateStatistic { id: index.to_string(), kind, ..definition.statistics[0].clone() }).collect();
+        let status = harness.ready(&definition);
+        let meta = harness.service.materialize_table(&materialize_request(&status)).unwrap();
+        let table = harness.source.query_table(&meta.id, 0, 10, None, None).unwrap();
+        assert_eq!(&table.rows[0][2..5], &[serde_json::json!(1.0), serde_json::json!(0.5), serde_json::json!(1.0 / 3.0)]);
+        assert_eq!(&table.rows[0][5..8], &[serde_json::json!(0.0), serde_json::json!(0.0), serde_json::json!(0.0)]);
+        harness.source.conn().execute_batch("DELETE FROM dataset_session_test").unwrap();
+        harness.source.bump_dataset_generation("session-test").unwrap();
+        definition.source_generation += 1;
+        definition.row_fields.clear();
+        definition.column_fields.clear();
+        definition.statistics = vec![TabulateStatistic { id: "count".into(), kind: StatisticKind::Count, ..definition.statistics[0].clone() }];
+        let empty = harness.ready(&definition);
+        let mut request = materialize_request(&empty);
+        request.destination_name = "Empty summary".into();
+        request.statistic_labels = vec!["Count".into()];
+        let meta = harness.service.materialize_table(&request).unwrap();
+        let table = harness.source.query_table(&meta.id, 0, 10, None, None).unwrap();
+        assert_eq!(table.rows, vec![vec![serde_json::json!(1), serde_json::json!(0.0)]]);
+    }
+
     fn assert_window_error<T: std::fmt::Debug>(result: Result<T, AppError>, code: &str) {
         let error = result.expect_err(code);
         assert!(error.to_string().contains(code), "{error}");
+    }
+
+    #[test]
+    fn materialize_tabulate_table_invalid_contract_and_name_leave_no_output() {
+        let (harness, status) = materialize_fixture();
+        let original = materialize_request(&status);
+        let mut request = original.clone();
+        request.statistic_labels.pop();
+        assert!(harness.service.materialize_table(&request).is_err());
+        request = original.clone();
+        request.statistic_labels[0] = " ".into();
+        assert!(harness.service.materialize_table(&request).is_err());
+        for name in ["", "../escape", "CON.txt", "trailing.", "Session test"] {
+            request = original.clone();
+            request.destination_name = name.into();
+            assert!(harness.service.materialize_table(&request).is_err(), "{name}");
+        }
+        assert_no_materialized_output(&harness);
+    }
+
+    #[test]
+    fn materialize_tabulate_table_quoted_labels_are_literal_values_and_identifiers() {
+        let (harness, status) = materialize_fixture();
+        let mut request = materialize_request(&status);
+        request.missing_label = "missing' ; DROP TABLE dataset_session_test; --".into();
+        request.statistic_labels[0] = "Mean\"; DROP TABLE dataset_session_test; --".into();
+        let meta = harness.service.materialize_table(&request).unwrap();
+        let columns = harness.source.get_user_column_descriptors(&meta.id).unwrap();
+        let expected = format!("A - web - {} - sales", request.statistic_labels[0]);
+        assert_eq!(columns[2].name, expected);
+        let output_table = format!("dataset_{}", meta.id.replace('-', "_"));
+        let missing: String = harness.source.conn().query_row(
+            &format!("SELECT region FROM \"{output_table}\" WHERE _row_id = 3"),
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(missing, request.missing_label);
+        let value: f64 = harness.source.conn().query_row(
+            &format!("SELECT \"{}\" FROM \"{output_table}\" WHERE _row_id = 1", expected.replace('"', "\"\"")),
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(value, 3.0);
+        let source_rows: i64 = harness.source.conn().query_row(
+            "SELECT count(*) FROM dataset_session_test", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(source_rows, 5);
+    }
+
+    #[test]
+    fn materialize_tabulate_table_exceeds_legacy_cell_limit_without_window_queries() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        harness.source.conn().execute_batch(
+            "DELETE FROM dataset_session_test;
+             INSERT INTO dataset_session_test
+             SELECT printf('row%03d', value), printf('col%03d', value % 100), value::DOUBLE
+             FROM range(101) AS generated(value);"
+        ).unwrap();
+        let status = harness.ready(&harness.request());
+        assert_eq!(status.logical_cell_count, 10100);
+        let mut request = materialize_request(&status);
+        request.statistic_labels = vec!["Mean".into()];
+        let meta = harness.service.materialize_table(&request).unwrap();
+        assert_eq!((meta.row_count, meta.col_count), (101, 101));
+        let table = harness.source.query_table(&meta.id, 100, 1, None, None).unwrap();
+        assert_eq!(table.rows[0][1], serde_json::json!("row100"));
+        assert_eq!(table.rows[0][2], serde_json::json!(100.0));
+        assert!(table.rows[0][3..].iter().all(serde_json::Value::is_null));
     }
 
     #[test]

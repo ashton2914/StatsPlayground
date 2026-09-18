@@ -168,6 +168,8 @@ pub struct TabulateMaterializeRequest {
     pub source_generation: u64,
     pub fingerprint: String,
     pub destination_name: String,
+    pub missing_label: String,
+    pub statistic_labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

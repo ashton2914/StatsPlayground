@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { applicationRuntime } from "../src/applicationCommands/applicationRuntime";
+import type { TabulateExportTableInput } from "../src/applicationCommands/types";
 import { TabulateView } from "../src/components/tabulate/TabulateView";
 import i18n from "../src/i18n";
 import { tabulateService } from "../src/services/tabulateService";
@@ -29,6 +30,7 @@ export interface VirtualEvidence {
   legacy: number;
   activeTotals: number;
   maximumActiveTotals: number;
+  exports: TabulateExportTableInput[];
 }
 
 export function TabulateVirtualHarness({
@@ -40,7 +42,7 @@ export function TabulateVirtualHarness({
   const [dataset, setDataset] = useState(DATASET);
   const [revision, setRevision] = useState(0);
   const pending = useRef<Array<() => void>>([]);
-  const evidence = useRef<VirtualEvidence>({ prepares: [], windows: [], totals: [], cancelled: [], released: [], legacy: 0, activeTotals: 0, maximumActiveTotals: 0 });
+  const evidence = useRef<VirtualEvidence>({ prepares: [], windows: [], totals: [], cancelled: [], released: [], legacy: 0, activeTotals: 0, maximumActiveTotals: 0, exports: [] });
   const item = useTabulateStore((state) => state.items[0]);
 
   useEffect(() => {
@@ -59,8 +61,13 @@ export function TabulateVirtualHarness({
     useProjectStore.setState({ readOnly: false, dirty: false });
     useTabulateStore.getState().loadFromProject([structuredClone(ITEM)]);
     useProjectStore.setState({ readOnly });
-    applicationRuntime.execute = (async (command: { type: string }) => {
+    applicationRuntime.execute = (async (command: { type: string; input: TabulateExportTableInput }) => {
       if (command.type === "table.describe") return { data: { columns: ["Region", "Store", "Category", "Product", "Sales"].map((colName, colIndex) => ({ colName, colIndex, colType: colName === "Sales" ? "DOUBLE" : "VARCHAR", format: { decimals: 2 } })) }, warnings: [] };
+      if (command.type === "tabulate.exportTable") {
+        evidence.current.exports.push(structuredClone(command.input));
+        changed();
+        return { data: { outputTable: null, reran: false }, warnings: [] };
+      }
       evidence.current.legacy += 1;
       changed();
       return { data: { result: { rowMembers: [["Old"]], columnMembers: [["Old"]], statistics: ITEM.statistics, cells: [1, 1], rowTotals: [], columnTotals: [], grandTotals: [], cellCount: 2, limit: 10000 } }, warnings: [] };

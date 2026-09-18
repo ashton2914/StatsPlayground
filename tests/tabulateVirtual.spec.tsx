@@ -163,6 +163,24 @@ test("read-only navigation preserves definitions and disables export", async ({ 
   await expect.poll(async () => (await evidence(page)).prepares.at(-1)?.rowFields).toEqual(["Region"]);
 });
 
+test("export sends full definition and session identity without legacy cell limits", async ({ mount, page }) => {
+  await mount(<TabulateVirtualHarness />);
+  await ready(page);
+  await page.getByRole("combobox", { name: "Visible rows", exact: true }).selectOption("1");
+  await expect.poll(async () => (await evidence(page)).prepares.at(-1)?.rowFields).toEqual(["Region"]);
+  const button = page.getByRole("button", { name: "Export to Data Table", exact: true });
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect.poll(async () => (await evidence(page)).exports.length).toBe(1);
+  const exported = (await evidence(page)).exports[0];
+  expect(exported.request.rowFields).toEqual(["Region", "Store"]);
+  expect(exported.request.columnFields).toEqual(["Category", "Product"]);
+  expect(exported.request).not.toHaveProperty("maxResultCells");
+  expect(exported.request).not.toHaveProperty("cells");
+  expect(exported.session).toEqual({ sessionId: "session-2", fingerprint: "fp-2", sourceGeneration: 7 });
+  expect((await evidence(page)).legacy).toBe(0);
+});
+
 test("preparation polls and narrow layout stays bounded", async ({ mount, page }, testInfo) => {
   await page.setViewportSize({ width: 760, height: 800 });
   await mount(<TabulateVirtualHarness mode="prepare" />);
