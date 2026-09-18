@@ -5,7 +5,7 @@ import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import type { ColumnDisplayProps, DatasetMeta } from "@/types/data";
-import type { TabulateItem, TabulateRequest, TabulateResult, TabulateStatistic } from "@/types/tabulate";
+import type { TabulateItem, TabulateRequest, TabulateStatistic } from "@/types/tabulate";
 import { resolveProjectBasenameForKind } from "@/utils/projectFileNaming";
 
 import {
@@ -27,13 +27,12 @@ import {
 } from "./TabulateStatisticEditor";
 import {
   canExportTabulateResult,
-  canShowReadyResult,
   canAssignTabulateField,
-  isLatestSequence,
   isNumericDuckDbType,
   reorderForDrop,
 } from "./tabulateResult";
 import { TabulateLayout } from "./TabulateLayout";
+import { useTabulateSession } from "./useTabulateSession";
 
 interface TabulateViewProps {
   item: TabulateItem;
@@ -44,7 +43,6 @@ interface TabulateViewProps {
 export function TabulateView({ item, dataset, existingDatasetNames }: TabulateViewProps) {
   const { t } = useTranslation();
   const updateItemRaw = useTabulateStore((state) => state.updateItem);
-  const latestResultById = useTabulateStore((state) => state.latestResultsById[item.id] ?? null);
   const markDirtyRaw = useProjectStore((state) => state.markDirty);
   const readOnly = useProjectStore((state) => state.readOnly);
   const updateItem = (id: string, patch: Partial<TabulateItem>) => {
@@ -62,10 +60,6 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
   );
   const [fieldsLoading, setFieldsLoading] = useState(false);
   const [fieldLoadError, setFieldLoadError] = useState<string | null>(null);
-  const [result, setResult] = useState<TabulateResult | null>(latestResultById?.result ?? null);
-  const [completedQueryRequest, setCompletedQueryRequest] = useState<TabulateRequest | null>(latestResultById ? null : null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [visibleRowDepth, setVisibleRowDepth] = useState(item.rowFields.length);
@@ -76,25 +70,16 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
 
   const previousRowDepthRef = useRef(item.rowFields.length);
   const previousColumnDepthRef = useRef(item.columnFields.length);
-  const requestSequence = useRef(0);
+  const session = useTabulateSession(dataset ? item : null, dataset?.generation, { visibleRowDepth, visibleColumnDepth });
 
   useEffect(() => {
-    requestSequence.current += 1;
-    setResult(useTabulateStore.getState().getLatestResult(item.id)?.result ?? null);
-    setCompletedQueryRequest(null);
-    setError(null);
     setExportError(null);
     setExporting(false);
-    setLoading(false);
     setVisibleRowDepth(item.rowFields.length);
     setVisibleColumnDepth(item.columnFields.length);
     previousRowDepthRef.current = item.rowFields.length;
     previousColumnDepthRef.current = item.columnFields.length;
   }, [item.id]);
-
-  useEffect(() => {
-    setResult(latestResultById?.result ?? null);
-  }, [latestResultById]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 1100px)");
@@ -190,22 +175,6 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
     };
   }, [dataset]);
 
-  const queryRequest = useMemo<TabulateRequest | null>(() => {
-    if (!dataset || item.statistics.length === 0) {
-      return null;
-    }
-
-    return {
-      datasetId: dataset.id,
-      rowFields: item.rowFields.slice(0, visibleRowDepth),
-      columnFields: item.columnFields.slice(0, visibleColumnDepth),
-      statistics: item.statistics,
-      includeRowTotals: item.includeRowTotals,
-      includeColumnTotals: item.includeColumnTotals,
-      maxResultCells: 10000,
-    };
-  }, [dataset, item, visibleColumnDepth, visibleRowDepth]);
-
   const fullQueryRequest = useMemo<TabulateRequest | null>(() => {
     if (!dataset || item.statistics.length === 0) {
       return null;
@@ -221,59 +190,6 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
       maxResultCells: 10000,
     };
   }, [dataset, item]);
-
-  useEffect(() => {
-    if (!queryRequest) {
-      requestSequence.current += 1;
-      setResult(null);
-      setCompletedQueryRequest(null);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-
-    const sequence = ++requestSequence.current;
-    setCompletedQueryRequest(null);
-    setLoading(true);
-    const timer = window.setTimeout(async () => {
-      try {
-        const runResult = await applicationRuntime.execute(
-          {
-            type: "tabulate.run",
-            input: {
-              tabulateId: item.id,
-              request: queryRequest,
-            },
-          },
-          { kind: "ui" },
-        );
-        const next = runResult.data.result;
-        if (isLatestSequence(sequence, requestSequence.current)) {
-          setResult(next);
-          setCompletedQueryRequest(queryRequest);
-          if (runResult.warnings.some((warning) => warning.code === "tabulate_run_source_changed")) {
-            setError(t("tabulate.refreshingAggregate"));
-          } else {
-            setError(null);
-          }
-        }
-      } catch (reason: unknown) {
-        if (isLatestSequence(sequence, requestSequence.current)) {
-          setCompletedQueryRequest(null);
-          setError(String(reason));
-        }
-      } finally {
-        if (isLatestSequence(sequence, requestSequence.current)) {
-          setLoading(false);
-        }
-      }
-    }, 250);
-
-    return () => {
-      requestSequence.current += 1;
-      window.clearTimeout(timer);
-    };
-  }, [queryRequest]);
 
   const fieldsByName = useMemo(() => {
     return new Map(fields.map((field) => [field.name, field]));
@@ -308,19 +224,14 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
   }, [fieldsByName, item.statistics]);
 
   const fieldsCollapsed = isNarrow && !showFieldsOnNarrow;
-  const tooLargeError = error != null && /limit is 10000/i.test(error) && /cells/i.test(error);
   const showSourceUnavailable = dataset == null;
   const showUnconfigured = !showSourceUnavailable && item.statistics.length === 0;
-  const showEmpty = !showSourceUnavailable && !showUnconfigured && !loading && error == null && result?.cellCount === 0;
-  const showStandaloneError = !result && error != null && !tooLargeError;
-  const showStandaloneTooLarge = !result && tooLargeError;
-  const showStandaloneLoading = !result && loading;
-  const showReadyTable = result != null
-    && canShowReadyResult(result.cellCount, dataset != null, item.statistics.length);
+  const showEmpty = session.phase === "ready" && session.status?.logicalCellCount === 0;
+  const showReadyTable = !showSourceUnavailable && !showUnconfigured && !showEmpty;
   const canExport = canExportTabulateResult(
-    showReadyTable,
-    completedQueryRequest === queryRequest,
-    loading,
+    session.tile != null,
+    session.phase === "ready",
+    session.phase !== "ready",
     readOnly,
     exporting,
   );
@@ -482,15 +393,9 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
     ? { title: t("tabulate.sourceUnavailableTitle"), detail: t("tabulate.sourceUnavailableDetail") }
     : showUnconfigured
       ? { title: t("tabulate.configureStatisticsTitle"), detail: t("tabulate.configureStatisticsDetail") }
-      : showStandaloneLoading
-        ? { title: t("tabulate.runningTitle"), detail: t("tabulate.runningDetail") }
-        : showEmpty
-          ? { title: t("tabulate.emptyTitle"), detail: t("tabulate.emptyDetail") }
-          : showStandaloneTooLarge
-            ? { title: t("tabulate.resultTooLargeTitle"), detail: error ?? t("tabulate.resultTooLargeDetail") }
-            : showStandaloneError
-              ? { title: t("tabulate.errorTitle"), detail: error ?? t("tabulate.errorDetail") }
-              : null;
+      : showEmpty
+        ? { title: t("tabulate.emptyTitle"), detail: t("tabulate.emptyDetail") }
+        : null;
   const columnsToggleLabel = fieldsCollapsed
     ? t("tabulate.expandColumns")
     : t("tabulate.collapseColumns");
@@ -621,8 +526,8 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
         <div className="sp-panel-header">
           <span className="sp-panel-header-title">{t("tabulate.results")}</span>
           <span className="sp-tabulate-header-hint">
-            {queryRequest
-              ? t("tabulate.visibleFieldsHint", { rows: queryRequest.rowFields.length, columns: queryRequest.columnFields.length })
+            {dataset && item.statistics.length > 0
+              ? t("tabulate.visibleFieldsHint", { rows: visibleRowDepth, columns: visibleColumnDepth })
               : t("tabulate.waiting")}
           </span>
         </div>
@@ -632,7 +537,7 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
             <>
               <TabulateResultTable
                 item={item}
-                result={result}
+                session={session}
                 fieldsByName={fieldsByName}
                 displayPropsByField={displayPropsByField}
                 visibleRowDepth={visibleRowDepth}
@@ -643,9 +548,6 @@ export function TabulateView({ item, dataset, existingDatasetNames }: TabulateVi
                 exporting={exporting}
                 exportDisabled={!canExport}
               />
-              {loading ? <ResultBanner tone="info" message={t("tabulate.refreshingAggregate")} /> : null}
-              {tooLargeError ? <ResultBanner tone="warning" message={error ?? t("tabulate.resultTooLargeTitle")} /> : null}
-              {error != null && !tooLargeError ? <ResultBanner tone="error" message={error} /> : null}
               {exportError ? <ResultBanner tone="error" message={exportError} /> : null}
             </>
           ) : resultsState ? (

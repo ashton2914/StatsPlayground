@@ -141,7 +141,10 @@ assert.match(
 );
 assert.match(tabulateResultTableSource, /style=\{\{ left: rowLabelIndex \* ROW_LABEL_WIDTH \}\}/);
 assert.match(tabulateViewSource, /applicationRuntime\.execute\(/);
-assert.match(tabulateViewSource, /type: "tabulate\.run"/);
+assert.doesNotMatch(tabulateViewSource, /type: "tabulate\.run"|useState<TabulateResult|latestResultsById/);
+assert.match(tabulateViewSource, /useTabulateSession\(/);
+assert.match(tabulateResultTableSource, /buildVisibleHeaderSpans\(/);
+assert.match(tabulateResultTableSource, /role="grid"/);
 assert.match(tabulateViewSource, /type: "tabulate\.exportTable"/);
 assert.match(tabulateViewSource, /resolveProjectBasenameForKind\(/);
 assert.match(tabulateViewSource, /invalidName\.wrongExtension/);
@@ -274,7 +277,8 @@ useTabulateStore.getState().setLatestResult("tab-2", {
     limit: 10000,
   },
 });
-assert.equal(useTabulateStore.getState().getLatestResult("tab-2")?.requestFingerprint, "fp-1");
+assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null, "legacy results must not be retained in durable state");
+assert.equal("latestResultsById" in useTabulateStore.getState(), false);
 
 useTabulateStore.getState().updateItem("tab-2", { rowFields: ["Build"] });
 assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null);
@@ -327,7 +331,7 @@ assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null);
 useTabulateStore.getState().reset();
 assert.deepEqual(useTabulateStore.getState().items, []);
 assert.equal(useTabulateStore.getState().counter, 0);
-assert.deepEqual(useTabulateStore.getState().latestResultsById, {});
+assert.equal("latestResultsById" in useTabulateStore.getState(), false);
 
 console.log("tabulateResult helpers OK");
 
