@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { inferFieldType } from "@/graphCore";
 import { dataService } from "@/services/dataService";
 import { graphNewService } from "@/services/graphNewService";
 import { useGraphBuilderNewStore } from "@/stores/useGraphBuilderNewStore";
 import type { ColumnDescriptor, DatasetMeta } from "@/types/data";
+import type { GraphNewRawMode, GraphNewXMode } from "@/types/graphBuilderNew";
 import { GraphNewCanvas } from "./GraphNewCanvas";
 
 import "./GraphBuilderNewView.css";
@@ -30,11 +32,18 @@ export function GraphBuilderNewView({
   dataset,
   onClose,
 }: GraphBuilderNewViewProps) {
+  const { t } = useTranslation();
   const session = useGraphBuilderNewStore((state) => (
     state.sessions.find((candidate) => candidate.id === sessionId)
   ));
   const setColumns = useGraphBuilderNewStore((state) => state.setColumns);
-  const [numericColumns, setNumericColumns] = useState<ColumnDescriptor[]>([]);
+  const setMean = useGraphBuilderNewStore((state) => state.setMean);
+  const setModes = useGraphBuilderNewStore((state) => state.setModes);
+  const [columnMetadata, setColumnMetadata] = useState<{
+    dataset: DatasetMeta;
+    sessionId: string;
+    descriptors: ColumnDescriptor[];
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const datasetId = session?.datasetId;
@@ -45,6 +54,12 @@ export function GraphBuilderNewView({
       && dataset
       && (dataset.id !== datasetId || dataset.generation !== datasetGeneration),
   );
+  const columns = !missingDataset && !stale
+    && columnMetadata?.dataset === dataset && columnMetadata?.sessionId === sessionId
+    ? columnMetadata.descriptors : [];
+  const numericColumns = columns.filter(({ sqlType }) => inferFieldType(sqlType) === "continuous");
+  const numericColumnIds = new Set(numericColumns.map(({ columnId }) => columnId));
+  const xColumnIds = new Set(columns.map(({ columnId }) => columnId));
 
   useEffect(() => {
     if ((missingDataset || stale) && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -54,10 +69,10 @@ export function GraphBuilderNewView({
 
   useEffect(() => {
     let cancelled = false;
-    setNumericColumns([]);
+    setColumnMetadata(null);
     setError(null);
 
-    if (!datasetId || missingDataset || stale) {
+    if (!datasetId || !dataset || missingDataset || stale) {
       setLoading(false);
       return () => {
         cancelled = true;
@@ -71,15 +86,16 @@ export function GraphBuilderNewView({
           const nextNumericColumns = descriptors.filter(({ sqlType }) => (
             inferFieldType(sqlType) === "continuous"
           ));
-          setNumericColumns(nextNumericColumns);
+          setColumnMetadata({ dataset, sessionId, descriptors });
           const validColumnIds = new Set(nextNumericColumns.map(({ columnId }) => columnId));
+          const validXIds = new Set(descriptors.map(({ columnId }) => columnId));
           const currentSession = useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === sessionId);
           if (currentSession
-            && (!validColumnIds.has(currentSession.xColumnId ?? "")
+            && (!validXIds.has(currentSession.xColumnId ?? "")
               || !validColumnIds.has(currentSession.yColumnId ?? ""))) {
             setColumns(
               sessionId,
-              validColumnIds.has(currentSession.xColumnId ?? "") ? currentSession.xColumnId : null,
+              validXIds.has(currentSession.xColumnId ?? "") ? currentSession.xColumnId : null,
               validColumnIds.has(currentSession.yColumnId ?? "") ? currentSession.yColumnId : null,
             );
           }
@@ -109,6 +125,7 @@ export function GraphBuilderNewView({
 
   const transportAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const updateX = (xColumnId: string) => {
+    if (xColumnId && !xColumnIds.has(xColumnId)) return;
     setColumns(session.id, xColumnId || null, session.yColumnId);
   };
   const updateY = (yColumnId: string) => {
@@ -140,13 +157,21 @@ export function GraphBuilderNewView({
             <select
               aria-label="X field"
               value={session.xColumnId ?? ""}
-              disabled={loading || stale || Boolean(error) || numericColumns.length === 0}
+              disabled={loading || stale || Boolean(error) || columns.length === 0}
               onChange={(event) => updateX(event.target.value)}
             >
               <option value="">Select a field</option>
-              {numericColumns.map((column) => (
-                <option key={column.columnId} value={column.columnId}>{column.name}</option>
-              ))}
+              {columns.map((column) => {
+                const eligible = numericColumnIds.has(column.columnId);
+                const type = /CHAR|TEXT|STRING/i.test(column.sqlType)
+                  ? t("graphNew.textFieldType")
+                  : /TIMESTAMP/i.test(column.sqlType) ? t("graphNew.timestampFieldType") : column.sqlType;
+                return (
+                  <option key={column.columnId} value={column.columnId}>
+                    {eligible ? column.name : `${column.name} (${type})`}
+                  </option>
+                );
+              })}
             </select>
           </label>
           <label>
@@ -163,6 +188,22 @@ export function GraphBuilderNewView({
               ))}
             </select>
           </label>
+          <label>
+            <span>{t("graphNew.xInterpretation", { defaultValue: "X interpretation" })}</span>
+            <select aria-label={t("graphNew.xInterpretation", { defaultValue: "X interpretation" })} value={session.xMode ?? "auto"}
+              onChange={(event) => setModes(session.id, event.target.value as GraphNewXMode, session.rawMode ?? "scatter")}>
+              {(["auto", "numeric", "time", "duration", "category"] as const).map((mode) =>
+                <option key={mode} value={mode}>{t(`graphNew.xMode.${mode}`, { defaultValue: mode })}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>{t("graphNew.rawSeries", { defaultValue: "Raw series" })}</span>
+            <select aria-label={t("graphNew.rawSeries", { defaultValue: "Raw series" })} value={session.rawMode ?? "scatter"}
+              onChange={(event) => setModes(session.id, session.xMode ?? "auto", event.target.value as GraphNewRawMode)}>
+              {(["scatter", "line", "pointsLine"] as const).map((mode) =>
+                <option key={mode} value={mode}>{t(`graphNew.rawMode.${mode}`, { defaultValue: mode })}</option>)}
+            </select>
+          </label>
         </aside>
 
         <section className="graph-builder-new-stage" aria-label="Point plot">
@@ -176,15 +217,20 @@ export function GraphBuilderNewView({
             <p role="alert">{error}</p>
           ) : numericColumns.length === 0 ? (
             <p role="status">This table has no numeric columns.</p>
-          ) : transportAvailable && session.xColumnId && session.yColumnId ? (
+          ) : transportAvailable && session.xColumnId && session.yColumnId
+            && xColumnIds.has(session.xColumnId) && numericColumnIds.has(session.yColumnId) ? (
             <GraphNewCanvas
-              key={JSON.stringify([session.id, datasetId, datasetGeneration, session.xColumnId, session.yColumnId])}
+              key={JSON.stringify([session.id, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.xMode ?? "auto"])}
               sessionId={session.id}
               datasetId={session.datasetId}
               datasetGeneration={session.datasetGeneration}
               xColumnId={session.xColumnId}
               yColumnId={session.yColumnId}
-              xTitle={numericColumns.find((column) => column.columnId === session.xColumnId)?.name ?? ""}
+              showMean={session.showMean ?? true}
+              xMode={session.xMode ?? "auto"}
+              rawMode={session.rawMode ?? "scatter"}
+              onMeanChange={(enabled) => setMean(session.id, enabled)}
+              xTitle={columns.find((column) => column.columnId === session.xColumnId)?.name ?? ""}
               yTitle={numericColumns.find((column) => column.columnId === session.yColumnId)?.name ?? ""}
             />
           ) : (

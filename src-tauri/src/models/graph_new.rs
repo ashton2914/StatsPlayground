@@ -6,6 +6,36 @@ const MAX_FRAME_WIDTH: u32 = 3840;
 const MAX_FRAME_HEIGHT: u32 = 2160;
 const PROBE_FRAMES: u32 = 1;
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphNewXMode { #[default] Auto, Numeric, Time, Duration, Category }
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GraphNewRawMode { #[default] Scatter, Line, PointsLine }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphNewTimeOrigin { pub epoch_nanos: String, pub unit_nanos: u32 }
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphNewAxisData {
+    pub kind: GraphNewXMode,
+    pub utc: bool,
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub origin: Option<GraphNewTimeOrigin>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNewAxisTick { pub value: f64, pub position: f64, pub label: Option<String> }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNewAxis { pub kind: GraphNewXMode, pub utc: bool, pub ticks: Vec<GraphNewAxisTick>, pub origin: Option<GraphNewTimeOrigin> }
+
 #[cfg(test)]
 mod camera_tests {
     use super::GraphNewCameraDomain;
@@ -65,6 +95,12 @@ pub struct GraphNewRenderRequest {
     pub camera_generation: u64,
     #[serde(default)]
     pub camera_domain: Option<GraphNewCameraDomain>,
+    #[serde(default)]
+    pub show_mean: bool,
+    #[serde(default)]
+    pub x_mode: GraphNewXMode,
+    #[serde(default)]
+    pub raw_mode: GraphNewRawMode,
 }
 
 impl GraphNewRenderRequest {
@@ -105,16 +141,25 @@ pub struct GraphNewGpuCacheStats {
     pub geometry_capacity_bytes: u64,
     pub geometry_uploads: u64,
     pub geometry_hits: u64,
+    pub mean_geometry_uploads: u64,
+    pub mean_geometry_hits: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphNewRenderCompletion {
     pub request_id: String,
+    pub x_axis: GraphNewAxis,
+    pub raw_line_available: bool,
+    pub raw_line_segments: usize,
+    pub raw_mode: GraphNewRawMode,
     pub processed_rows: u64,
     pub finite_rows: u64,
     pub excluded_non_finite_rows: u64,
     pub selected_marks: usize,
+    pub mean_available: bool,
+    pub mean_groups: Option<usize>,
+    pub mean_visible: bool,
     pub exact_visible: bool,
     pub visible_rows: Option<u64>,
     pub raw_index_entries_inspected: u64,

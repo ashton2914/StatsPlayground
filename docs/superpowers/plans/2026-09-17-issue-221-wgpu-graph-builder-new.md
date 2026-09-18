@@ -1,5 +1,110 @@
 # Issue 221 Graph Builder-new wgpu Point Plot Implementation Plan
 
+## Revised Phase-One Scope (2026-09-18)
+
+The user's latest instruction supersedes the numeric-X-only MVP scope and the
+priority of optional interactions below. Preserve existing work and implement
+these vertical slices in order:
+
+- [x] Implement bounded owned-cache orphan retirement, corrupt-cache fallback,
+  and a single typed GPU-device-loss retry with cancellation fencing. Unix uses
+  handle-relative filesystem operations; Windows/non-Unix disk caching fails
+  closed to memory-only. Native Windows/Linux validation remains open, and
+  malicious concurrent same-user filesystem writers are outside the cleanup
+  guarantee (leaf identity-check/unlink is not atomic).
+- [x] Accept all X column types with explicit numeric, temporal, duration, or
+  categorical semantics. Text-stored dates/durations must not silently become
+  arbitrary numbers; ambiguous text can remain categorical or require an
+  explicit interpretation. Keep Y numeric.
+- [x] Provide points, raw connecting lines, and points-plus-lines. Order numeric
+  and temporal X numerically and categoricals deterministically, retain stable
+  source ordering for duplicate X, and distinguish raw lines from grouped Mean.
+  Missing values must not create invented connections across gaps.
+- [x] Verify native backend and frontend contract/component paths for the real
+  2,032,293-row Duration/Time point-line workflow; retain complete source pairs.
+- [ ] Finish native desktop manual acceptance and production WebView/P95
+  measurement. Existing benchmark preflight confirms synthetic-frame transport
+  coverage only; no new P95 run is claimed. Do not redesign or repeatedly
+  optimize solely to satisfy an old threshold.
+
+Overscan, hover/tooltip and table-selection linkage are deferred enhancements,
+not blockers for this revised phase. Maintain existing resource budgets and
+generation/cancellation checks. Platform-independent tests and actual native
+platform verification must be reported separately; macOS success is not proof
+of Windows/Linux behavior. Checkpoints and source data must be preserved.
+
+## Current Status (2026-09-18)
+
+Five reviewed corrections have focused RED/GREEN evidence: raw deep-zoom
+clipping, exact relative-time coordinates/labels, inactive raw GPU reclamation,
+bounded pre-projection category admission, and finite extreme-domain completion
+ticks. Final checks pass: 166 serial Rust tests, five TS suites, 48 isolated CTs,
+TypeScript/Vite, Cargo build and standard Clippy (129 warnings). Fresh actual-CSV
+release runs follow the last production change, retaining 2,032,293 observations
+on both Duration and Time, with zero post-cold source projections. All 18 native
+frames pass production frontend replay; PNG curves and DOM labels were inspected.
+Source hashes, unchanged-CSV checks, counts, timings and warning summaries live
+under `.cache/issue221-phase1/review-final/`. CT output uses `ct-reviewed/` only.
+See the latest `docs/performance.md` section for results and limitations.
+Independent actual-source review found no blocking Critical/Important issues.
+Native desktop acceptance, production WebView/P95 and Windows/Linux verification
+remain pending. The updated native app was launched on port 3132 with the title
+`StatsPlayground - Issue 221 Time Series`. Latest backend release single samples:
+Duration cold/warm/camera 3345/339/273 ms; Time 2773/334/277 ms. Import and WebView
+presentation are excluded; these are not P95 measurements. Resource limits and
+explicit unsupported-precision/category-cap diagnostics remain intentional.
+HEAD and all earlier evidence remain unchanged; no commit or push was made.
+
+### Previous Typed-X Snapshot
+
+Typed-X/raw-line phase: 161 serial Rust tests, five TS suites, 40 isolated CTs,
+TypeScript/Vite, Cargo build and standard Clippy pass (warnings remain).
+`.cache/issue221-phase1/` retains one actual CSV release round for Test Time and
+DPT: all 2,032,293 rows, 2,032,292 raw segments, zero warm/camera/disk/mode SQL,
+18 lossless PNGs and production-validator replays. This round predates the final
+native-time projection/mixed-zone guard; it is not a final-source timing claim.
+See `docs/performance.md` for formats, resource limits and measured values.
+Independent review, native desktop acceptance and WebView/P95 remain unverified.
+
+This snapshot supersedes historical progress notes below, not their original
+requirements or missing verification evidence. Recovery checkpoints are
+`7bd1d37` and `98e89c6`; subsequent exact-rendering, Mean, and field-list changes
+remain uncommitted. The user accepted the Mean overlay on 2026-09-18; this is
+not acceptance of the complete MVP.
+
+| Task | Status | Remaining acceptance |
+| --- | --- | --- |
+| 1 Transport contract | Implemented | Included in final integration gate |
+| 2 Offscreen producer | Implemented | Included in final integration gate |
+| 3 WebView transport gate | Partial | Strict 4K gate still fails; approved exception permits continuation |
+| 4 Independent session shell | Implemented | All X fields selectable; explicit interpretation and raw modes; Y numeric |
+| 5 Full-source LOD | Partial | Budget-permitting exact rendering up to 2.1M finite pairs; larger data remains approximate; 10M early overview target open |
+| 6 Point scene and axes | Implemented | Shared point/indexed raw-line buffers; typed tick overlay; native desktop acceptance pending |
+| 7 Interaction and identity | Partial | Overscan, hover/tooltip, row hit testing and table selection outstanding |
+| 8 Cache budgets | Partial | CPU/GPU reuse, pressure admission, owned-orphan cleanup and bounded GPU recovery implemented; native Windows/Linux validation and adversarial same-user path races remain outside verified scope |
+| 9 Integrated performance gate | Partial | Backend harnesses exist; production WebView/P95 and unified failure-policy gate outstanding |
+| 10 Final hardening | Partial | Complete repository gate and full MVP manual acceptance outstanding |
+
+The accepted additional Mean layer groups all finite Y values by identical X,
+sorts X, and draws a switchable line. It is unavailable when complete source
+points are not retained; it is not a general overlay engine. The real CSV has
+2,032,293 finite pairs and 729,286 Mean groups. Latest Mean backend release
+single samples: cold 1,687.46 ms, warm 268.31 ms, camera 248.60 ms, disk restore
+1,229.36 ms. Import is separate; these are not WebView latency or P95 results.
+Evidence is under `.cache/issue221-mean/native-reviewed-final/` and documented
+in `docs/performance.md`.
+
+Latest scoped checks: 140 Rust tests, five TS scripts, 37 component tests,
+TypeScript and frontend/backend builds passed across the applicable slices.
+Field-list changes were frontend-only. Ordinary Clippy warnings remain; the
+strict final Clippy gate is not claimed passed. Historical missing RED evidence
+and earlier failed budgets below remain unchanged.
+
+Categorical/time axes, configurable axes/reference lines, drag-and-drop,
+themes, general multi-layer charts, project persistence and other mark types
+are separate feature-parity work, not completed by the original numeric-point
+MVP or the Mean addition.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a separate, session-only, light-theme point-plot path that represents at least 10,000,000 source rows while proving the 4K Rust-to-WebView frame boundary before investing in DuckDB, LOD, and product UI.

@@ -39,8 +39,12 @@ try {
     datasetGeneration: 17,
     xColumnId: null,
     yColumnId: null,
+    showMean: true,
+    xMode: "auto",
+    rawMode: "scatter",
   }]);
 
+  useGraphBuilderNewStore.getState().setMean(sessionId, false);
   useGraphBuilderNewStore.getState().setColumns(sessionId, "column-x", "column-y");
   assert.deepEqual(useGraphBuilderNewStore.getState().sessions[0], {
     id: sessionId,
@@ -48,8 +52,18 @@ try {
     datasetGeneration: 17,
     xColumnId: "column-x",
     yColumnId: "column-y",
+    showMean: false,
+    xMode: "auto",
+    rawMode: "scatter",
   });
 
+  useGraphBuilderNewStore.getState().setModes(sessionId, "duration", "pointsLine");
+  assert.equal(useGraphBuilderNewStore.getState().sessions[0].xMode, "duration");
+  assert.equal(useGraphBuilderNewStore.getState().sessions[0].rawMode, "pointsLine");
+  assert.equal(useGraphBuilderNewStore.getState().sessions[0].showMean, false);
+
+  useGraphBuilderNewStore.getState().setMean("missing-session", true);
+  assert.equal(useGraphBuilderNewStore.getState().sessions[0].showMean, false);
   useGraphBuilderNewStore.getState().setColumns("missing-session", "other-x", "other-y");
   assert.equal(useGraphBuilderNewStore.getState().sessions.length, 1);
 
@@ -62,6 +76,9 @@ try {
     datasetGeneration: 4,
     xColumnId: null,
     yColumnId: null,
+    showMean: true,
+    xMode: "auto",
+    rawMode: "scatter",
   }]);
 
   assert.strictEqual(useGraphBuilderStore.getState().items, graphBuildersBefore);

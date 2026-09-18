@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
-import { graphNewService, type GraphNewRenderController, type GraphNewRenderRequest } from "@/services/graphNewService";
+import { graphNewService, type GraphNewAxis, type GraphNewRenderController, type GraphNewRenderRequest } from "@/services/graphNewService";
 import type { GraphNewFrame } from "@/types/graphNew";
 import { cameraTransform, createCameraScheduler, isCameraDomain, panCamera, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
 
@@ -24,12 +25,50 @@ function enqueue(job: RenderJob) {
   pump();
 }
 
-type Props = Pick<GraphNewRenderRequest, "sessionId" | "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId"> & {
+type Props = Pick<GraphNewRenderRequest, "sessionId" | "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode"> & {
   xTitle: string;
   yTitle: string;
+  showMean: boolean;
+  onMeanChange: (enabled: boolean) => void;
 };
 
-export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xTitle, yTitle }: Props) {
+export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks"][number]): string {
+  if (axis.kind === "category") return tick.label ?? "";
+  const unit = axis.origin?.unitNanos ?? 1_000_000_000;
+  const interval = axis.ticks.slice(1).reduce((minimum, current, index) =>
+    Math.min(minimum, Math.abs(current.value - axis.ticks[index].value) * unit / 1_000_000_000), Infinity);
+  const precision = Math.min(9, Math.max(3, -Math.floor(Math.log10(interval) + 0.0001)));
+  if (axis.kind === "time") {
+    if (axis.origin) {
+      const whole = Math.trunc(tick.value);
+      const nanos = BigInt(axis.origin.epochNanos) + BigInt(whole) * BigInt(unit)
+        + BigInt(Math.round((tick.value - whole) * unit));
+      const fraction = ((nanos % 1_000_000_000n) + 1_000_000_000n) % 1_000_000_000n;
+      const date = new Date(Number((nanos - fraction) / 1_000_000_000n) * 1000);
+      if (!Number.isFinite(date.valueOf())) return "";
+      const digits = fraction.toString().padStart(9, "0").replace(/0+$/, "");
+      const suffix = digits ? `.${digits.padEnd(precision, "0")}` : "";
+      return `${date.toISOString().replace("T", " ").replace(/\.000Z$/, "")}${suffix}${axis.utc ? " UTC" : ""}`;
+    }
+    const date = new Date(tick.value * 1000);
+    return Number.isFinite(date.valueOf()) ? `${date.toISOString().replace("T", " ").replace(/\.000Z$/, "").replace(/Z$/, "")}${axis.utc ? " UTC" : ""}` : "";
+  }
+  if (axis.kind === "duration") {
+    const [integer, fraction] = Math.abs(tick.value).toFixed(precision).split(".");
+    const totalSeconds = Number(integer);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor(totalSeconds / 60) % 60;
+    const seconds = totalSeconds % 60;
+    return `${tick.value < 0 ? "-" : ""}${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}${Number(fraction) ? `.${fraction}` : ""}`;
+  }
+  return String(tick.value);
+}
+
+export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xTitle, yTitle, showMean, onMeanChange, xMode = "auto", rawMode = "scatter" }: Props) {
+  const { t } = useTranslation();
+  const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
+  const [rawAvailable, setRawAvailable] = useState(true);
+  const [axisLabels, setAxisLabels] = useState<{ label: string; left: number; top: number; width: number }[]>([]);
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const plotHost = useRef<HTMLDivElement>(null);
@@ -78,7 +117,7 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
     const element = host.current;
     const plotElement = plotHost.current;
     if (!element || !plotElement) return;
-    const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId]);
+    const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xMode]);
     if (cameraState.current?.identity !== identity) {
       cameraState.current = { identity, full: null, desired: null, resetPending: false };
     }
@@ -187,7 +226,7 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
         setReason(null);
         const generation = ++rendererGeneration;
         const request: GraphNewRenderRequest = {
-          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, ...size,
+          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, showMean, xMode, rawMode, ...size,
           requestId: `${sessionId}:${generation}`, rendererGeneration: generation, cameraGeneration, cameraDomain,
         };
         let bitmap: ImageBitmap | null = null;
@@ -227,6 +266,18 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
           retained.full = full;
           retained.desired = current;
           const { scale, left, top } = geometry();
+          const axis = completion.xAxis;
+          context.font = `11px ${getComputedStyle(element).fontFamily}`;
+          let previousEnd = -Infinity;
+          setAxisLabels(axis && axis.kind !== "numeric" ? axis.ticks.flatMap((tick) => {
+            const label = formatGraphNewTick(axis, tick);
+            const width = Math.min(axis.kind === "category" ? 170 : Infinity, Math.ceil(context.measureText(label).width) + 8, element.clientWidth);
+            const position = Math.max(0, Math.min(element.clientWidth - width, left + (plot!.x + tick.position * plot!.width) * scale - width / 2));
+            if (!label || position < previousEnd + 8) return [];
+            previousEnd = position + width;
+            return [{ label, left: position, top: top + (plot!.y + plot!.height) * scale + 5, width }];
+          }) : []);
+          setRawAvailable(completion.rawLineAvailable !== false);
           plotElement.style.left = `${left + plot.x * scale}px`;
           plotElement.style.top = `${top + plot.y * scale}px`;
           plotElement.style.width = `${plot.width * scale}px`;
@@ -241,15 +292,18 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
           setProvisional(false); setCameraAvailable(current !== null);
           controller.markPresented(frame.header, performance.now());
           setHasFrame(true);
+          setMeanFrame({ available: completion.meanAvailable === true, visible: completion.meanVisible === true, groups: completion.meanGroups ?? null });
           const visibleStatus = completion.visibleRows === null
-            ? `${completion.selectedMarks.toLocaleString()} displayed; visible count unknown`
-            : `${completion.selectedMarks.toLocaleString()} of ${completion.visibleRows.toLocaleString()} visible`;
+            ? `${completion.selectedMarks.toLocaleString()} submitted; visible count unknown`
+            : `${completion.visibleRows.toLocaleString()} visible; ${completion.selectedMarks.toLocaleString()} submitted`;
           setStatus(`${completion.exactVisible ? "Exact" : "Approximate LOD"}: ${visibleStatus}; ${completion.excludedNonFiniteRows.toLocaleString()} excluded`);
         } catch (error) {
           if (!cancelled) {
             const missing = error instanceof Error && error.message === "graph_new_missing_cache";
-            setReason(missing ? "graph_new_missing_cache" : "graph_new_render_failed");
-            setStatus(missing ? "Camera cache unavailable. Reset view to rebuild." : "Plot could not be rendered.");
+            const unrepresentable = error instanceof Error && error.message === "graph_new_x_unrepresentable";
+            setReason(missing ? "graph_new_missing_cache" : unrepresentable ? "graph_new_x_unrepresentable" : "graph_new_render_failed");
+            setStatus(missing ? "Camera cache unavailable. Reset view to rebuild." : unrepresentable
+              ? t("graphNew.xUnrepresentable", { defaultValue: "X values exceed the bounded categorical axis capacity." }) : "Plot could not be rendered.");
           }
         } finally {
           clearTimeout(timer);
@@ -272,13 +326,33 @@ export function GraphNewCanvas({ sessionId, datasetId, datasetGeneration, xColum
       plotElement.removeEventListener("lostpointercapture", end); plotElement.removeEventListener("wheel", wheel);
       resetView.current = () => {};
     };
-  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, size]);
+  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, size, showMean, xMode, rawMode, t]);
 
   return (
     <div className="graph-new-chart">
+      <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
+        <label className="graph-new-mean-toggle">
+          <input type="checkbox" checked={showMean} disabled={meanFrame?.available === false}
+            onChange={(event) => onMeanChange(event.target.checked)} />
+          {t("graphNew.mean")}
+        </label>
+        {rawMode !== "line" && <span className="graph-new-legend-item"><span className="graph-new-point-swatch" aria-hidden="true" />{t("graphNew.points")}</span>}
+        {rawMode !== "scatter" && <span className="graph-new-legend-item"><span className="graph-new-line-swatch" aria-hidden="true" />{t("graphNew.rawLine", { defaultValue: "Raw line" })}</span>}
+        {rawMode !== "scatter" && !rawAvailable && <span role="status" data-testid="raw-line-unavailable">{t("graphNew.rawUnavailable", { defaultValue: "Raw line unavailable: complete data was not retained." })}</span>}
+        {meanFrame?.visible && <span className="graph-new-legend-item" data-testid="mean-legend">
+          <span className="graph-new-mean-swatch" aria-hidden="true" />{t("graphNew.mean")}
+        </span>}
+        {meanFrame?.available === false && <span className="graph-new-mean-reason" data-testid="mean-unavailable">{t("graphNew.meanUnavailable")}</span>}
+        {showMean && meanFrame?.available && meanFrame.groups !== null && meanFrame.groups < 2
+          && <span className="graph-new-mean-reason">{t("graphNew.meanNeedsGroups")}</span>}
+      </div>
       <span className="graph-new-y-title" data-testid="y-axis-title">{yTitle}</span>
       <div className="graph-new-canvas-host" ref={host}>
         <canvas ref={canvas} role="img" aria-label="Point plot frame" style={{ visibility: hasFrame ? "visible" : "hidden" }} />
+        <div className="graph-new-axis-ticks" data-testid="x-axis-ticks" style={{ visibility: provisional ? "hidden" : "visible" }}>
+          {axisLabels.map((tick) => <span key={`${tick.left}:${tick.label}`} title={tick.label}
+            style={{ left: tick.left, top: tick.top, width: tick.width }}>{tick.label}</span>)}
+        </div>
         <div ref={plotHost} className="graph-new-camera-plot" data-testid="camera-plot">
           <canvas ref={preview} className="graph-new-camera-preview" data-testid="camera-preview" aria-hidden="true" />
         </div>

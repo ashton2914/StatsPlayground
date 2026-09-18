@@ -1,13 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { GraphBuilderNewView } from "../src/components/graphBuilderNew/GraphBuilderNewView";
+import i18n from "../src/i18n";
 import { dataService } from "../src/services/dataService";
 import { graphNewService, type GraphNewRenderRequest } from "../src/services/graphNewService";
 import { useGraphBuilderNewStore } from "../src/stores/useGraphBuilderNewStore";
-import type { DatasetMeta } from "../src/types/data";
+import type { ColumnDescriptor, DatasetMeta } from "../src/types/data";
 
 interface GraphBuilderNewHarnessProps {
-  mode?: "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "slow" | "renderError" | "unknownCount";
+  locale?: "en" | "zh-CN";
+  axisFixture?: "nanoTime" | "microTime" | "microDuration" | "unicode";
+  mode?: "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "slow" | "renderError" | "unknownCount" | "largeExact" | "mixedFields" | "unsupportedFields" | "deferredFields";
 }
 
 const SESSION_ID = "graph-builder-new-session";
@@ -23,8 +26,20 @@ const DATASET: DatasetMeta = {
   updatedAt: "2026-09-17T00:00:00.000Z",
 };
 const CHANGED_DATASET = { ...DATASET, generation: DATASET.generation + 1 };
+const MIXED_FIELDS: ColumnDescriptor[] = [
+  { columnId: "text-test-time", name: "TestTime", sqlType: "VARCHAR" },
+  { columnId: "column-x", name: "TestTime", sqlType: "DOUBLE" },
+  { columnId: "timestamp-dpt", name: "DPT", sqlType: "TIMESTAMP" },
+  { columnId: "text-step-time", name: "StepTime", sqlType: "VARCHAR" },
+  { columnId: "column-y", name: "Voltage", sqlType: "INTEGER" },
+  { columnId: "duplicate-x", name: "TestTime", sqlType: "DOUBLE" },
+];
+const REPLACEMENT_FIELDS: ColumnDescriptor[] = [
+  { columnId: "new-x", name: "New X", sqlType: "DOUBLE" },
+  { columnId: "new-text", name: "New text", sqlType: "VARCHAR" },
+];
 
-export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarnessProps) {
+export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture }: GraphBuilderNewHarnessProps) {
   const [ready, setReady] = useState(false);
   const [descriptorCalls, setDescriptorCalls] = useState(0);
   const [closeCount, setCloseCount] = useState(0);
@@ -35,7 +50,16 @@ export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarness
   const [width, setWidth] = useState(960);
   const [invalidated, setInvalidated] = useState(false);
   const [visible, setVisible] = useState(true);
+  const [fieldDataset, setFieldDataset] = useState(DATASET);
+  const refreshedFields = useRef(false);
+  const pendingFields = useRef<{ resolve: (fields: ColumnDescriptor[]) => void; reject: (error: Error) => void } | null>(null);
   const selectedSession = useGraphBuilderNewStore((state) => state.sessions[0] ?? null);
+
+  useEffect(() => {
+    const previous = i18n.language;
+    void i18n.changeLanguage(locale);
+    return () => { void i18n.changeLanguage(previous); };
+  }, [locale]);
 
   useEffect(() => {
     const previousGetColumnDescriptors = dataService.getColumnDescriptors;
@@ -45,7 +69,7 @@ export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarness
     const previousInternals = (window as any).__TAURI_INTERNALS__;
     let active = 0;
     const closedSessions = new Set<string>();
-    if (["render", "slow", "renderError", "unknownCount"].includes(mode)) {
+    if (["render", "slow", "renderError", "unknownCount", "largeExact", "mixedFields", "unsupportedFields", "deferredFields"].includes(mode)) {
       (window as any).__TAURI_INTERNALS__ = {};
       graphNewService.close = async (sessionId) => {
         closedSessions.add(sessionId);
@@ -75,13 +99,33 @@ export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarness
             }
           }
           handlers.onFrame({ header, payload: pixels.buffer });
-          resolve({ requestId: request.requestId, processedRows: 4, finiteRows: 3, excludedNonFiniteRows: 1,
-            selectedMarks: request.cameraDomain ? (mode === "unknownCount" ? 0 : 1) : 2,
-            exactVisible: Boolean(request.cameraDomain) && mode !== "unknownCount",
-            visibleRows: request.cameraDomain ? (mode === "unknownCount" ? null : 1) : 3,
+          const typedDomain = request.xMode === "duration" ? { xMin: 0, xMax: 180000, yMin: 0, yMax: 100 }
+            : request.xMode === "time" ? { xMin: 1766389600, xMax: 1766476000, yMin: 0, yMax: 100 }
+              : request.xMode === "category" ? { xMin: 0, xMax: 4, yMin: 0, yMax: 100 }
+                : { xMin: 0, xMax: 100, yMin: 0, yMax: 100 };
+          const fixtureAxis = axisFixture === "nanoTime" || axisFixture === "microTime"
+            ? { kind: "time", utc: true, origin: { epochNanos: axisFixture === "nanoTime" ? "1789689600000000001" : "1789689600000001000", unitNanos: axisFixture === "nanoTime" ? 1 : 1000 },
+              ticks: [{ value: 0, position: 0, label: null }, { value: 1, position: 1, label: null }] }
+            : axisFixture === "microDuration" ? { kind: "duration", utc: false,
+              ticks: [{ value: 90000.000001, position: 0, label: null }, { value: 90000.000002, position: 1, label: null }] }
+              : axisFixture === "unicode" ? { kind: "category", utc: false,
+                ticks: [{ value: 0, position: 0, label: "\u6e29\u5ea6" }, { value: 1, position: 1, label: "\u00e9\u0394" }] } : null;
+          const domain = request.cameraDomain ?? (fixtureAxis ? { xMin: fixtureAxis.ticks[0].value, xMax: fixtureAxis.ticks[1].value, yMin: 0, yMax: 100 } : typedDomain);
+          resolve({ requestId: request.requestId, processedRows: mode === "largeExact" ? 2_032_294 : 4,
+            rawMode: request.rawMode ?? "scatter", rawLineAvailable: mode !== "unknownCount", rawLineSegments: request.rawMode === "scatter" ? 0 : 2,
+            xAxis: fixtureAxis ?? (["duration", "time", "category"].includes(request.xMode ?? "") ? { kind: request.xMode, utc: request.xMode === "time",
+              ticks: [0, 0.25, 0.5, 0.75, 1].map((position, index) => ({ value: domain.xMin + position * (domain.xMax - domain.xMin), position,
+                label: request.xMode === "category" ? `Category ${index + 1} with a deliberately long descriptive label` : null })) }
+              : { kind: "numeric", utc: false, ticks: [] }),
+            finiteRows: mode === "largeExact" ? 2_032_293 : 3, excludedNonFiniteRows: 1,
+            meanAvailable: mode === "largeExact", meanGroups: mode === "largeExact" && request.showMean ? 2 : null,
+            meanVisible: mode === "largeExact" && request.showMean === true,
+            selectedMarks: mode === "largeExact" ? 2_032_293 : request.cameraDomain ? (mode === "unknownCount" ? 0 : 1) : 2,
+            exactVisible: mode === "largeExact" || (Boolean(request.cameraDomain) && mode !== "unknownCount"),
+            visibleRows: mode === "largeExact" ? (request.cameraDomain ? 7 : 2_032_293) : request.cameraDomain ? (mode === "unknownCount" ? null : 1) : 3,
             rawIndexEntriesInspected: 0, rawBlocksInspected: 0, rawPointsInspected: 0,
             buildMs: 1, renderMs: 1, readbackMs: 1, width: frameWidth, height: frameHeight,
-            cameraDomain: request.cameraDomain ?? { xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
+            cameraDomain: domain,
             plotRect: { x: Math.ceil(64 * request.devicePixelRatio), y: Math.ceil(16 * request.devicePixelRatio),
               width: Math.floor((request.width - 16) * request.devicePixelRatio) - Math.ceil(64 * request.devicePixelRatio),
               height: Math.floor((request.height - 32) * request.devicePixelRatio) - Math.ceil(16 * request.devicePixelRatio) },
@@ -107,10 +151,20 @@ export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarness
         yColumnId: mode === "invalid" ? "column-label" : null,
       }],
     });
-    dataService.getColumnDescriptors = async () => {
+    dataService.getColumnDescriptors = async (datasetId) => {
       setDescriptorCalls((count) => count + 1);
       if (mode === "error") throw new Error("descriptor lookup failed");
       if (mode === "empty") return [];
+      if (datasetId === "dataset-2") return REPLACEMENT_FIELDS;
+      if (mode === "deferredFields") return new Promise<ColumnDescriptor[]>((resolve, reject) => {
+        pendingFields.current = { resolve, reject };
+      });
+      if (mode === "unsupportedFields") return MIXED_FIELDS.filter(({ sqlType }) => sqlType === "VARCHAR" || sqlType === "TIMESTAMP");
+      if (mode === "mixedFields") return refreshedFields.current
+        ? MIXED_FIELDS.filter(({ columnId }) => columnId !== "duplicate-x").map((column) => (
+          column.columnId === "column-x" ? { ...column, sqlType: "VARCHAR" } : column
+        ))
+        : MIXED_FIELDS;
       return [
         { columnId: "column-x", name: "Diameter", sqlType: "DOUBLE" },
         { columnId: "column-y", name: "Height", sqlType: "INTEGER" },
@@ -127,7 +181,7 @@ export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarness
       else (window as any).__TAURI_INTERNALS__ = previousInternals;
       useGraphBuilderNewStore.setState(previousStoreState, true);
     };
-  }, [mode]);
+  }, [mode, axisFixture]);
 
   if (!ready) return null;
 
@@ -135,7 +189,7 @@ export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarness
     <div style={{ width, maxWidth: "100%", height: 600 }}>
       {visible && <GraphBuilderNewView
         sessionId={SESSION_ID}
-        dataset={mode === "missing" ? undefined : invalidated ? CHANGED_DATASET : DATASET}
+        dataset={mode === "missing" ? undefined : invalidated ? CHANGED_DATASET : fieldDataset}
         onClose={() => {
           useGraphBuilderNewStore.getState().close(SESSION_ID);
           setCloseCount((count) => count + 1);
@@ -151,6 +205,19 @@ export function GraphBuilderNewHarness({ mode = "live" }: GraphBuilderNewHarness
       <button onClick={() => setInvalidated(true)}>Invalidate source</button>
       <button onClick={() => setVisible(false)}>Unmount view</button>
       <button onClick={() => setVisible(true)}>Remount view</button>
+      {["mixedFields", "unsupportedFields", "deferredFields"].includes(mode) && <>
+        <button onClick={() => {
+          const replacement = { ...DATASET, id: "dataset-2", name: "Replacement" };
+          useGraphBuilderNewStore.setState({ sessions: [{ id: SESSION_ID, datasetId: replacement.id, datasetGeneration: replacement.generation, xColumnId: null, yColumnId: null }] });
+          setFieldDataset(replacement);
+        }}>Replace field source</button>
+        <button onClick={() => {
+          refreshedFields.current = true;
+          setFieldDataset({ ...DATASET, updatedAt: "2026-09-18T00:00:00.000Z" });
+        }}>Refresh field metadata</button>
+        <button onClick={() => pendingFields.current?.resolve(MIXED_FIELDS)}>Resolve old fields</button>
+        <button onClick={() => pendingFields.current?.reject(new Error("old descriptor failure"))}>Reject old fields</button>
+      </>}
       <button onClick={() => useGraphBuilderNewStore.getState().close(SESSION_ID)}>Close retained session</button>
       <output data-testid="selected-columns">
         {JSON.stringify(selectedSession)}

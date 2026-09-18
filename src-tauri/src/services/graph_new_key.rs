@@ -129,7 +129,7 @@ impl GraphKey {
         };
         let canonical_id = serde_json::to_string(&CanonicalGraphKey {
             key_version: match retention_policy {
-                RetentionPolicy::Bounded => "graph-new-v4-bounded-lod",
+                RetentionPolicy::Bounded => "graph-new-v6-compact-exact-2100000",
                 RetentionPolicy::Lossless => "graph-new-v4-lossless-research",
             },
             dataset_id: &dataset_id,
@@ -294,7 +294,7 @@ mod tests {
             let quoted = serde_json::to_string(hostile).expect("quoted identity");
             let digest = super::hex_digest(hostile.as_bytes());
             let expected = format!(
-                "{{\"keyVersion\":\"graph-new-v4-bounded-lod\",\"datasetId\":{quoted},\"datasetGeneration\":7,\"xColumnId\":{quoted},\"yColumnId\":{quoted},\"filterIdentity\":{{\"kind\":\"hashed\",\"sha256\":\"{digest}\"}},\"rendererContractVersion\":1,\"tileFormatVersion\":1,\"domainPolicy\":{quoted},\"levels\":4,\"maxTilePoints\":256}}"
+                "{{\"keyVersion\":\"graph-new-v6-compact-exact-2100000\",\"datasetId\":{quoted},\"datasetGeneration\":7,\"xColumnId\":{quoted},\"yColumnId\":{quoted},\"filterIdentity\":{{\"kind\":\"hashed\",\"sha256\":\"{digest}\"}},\"rendererContractVersion\":1,\"tileFormatVersion\":1,\"domainPolicy\":{quoted},\"levels\":4,\"maxTilePoints\":256}}"
             );
             assert_eq!(key.canonical_id, expected);
             assert_eq!(key.hash_hex, super::hex_digest(expected.as_bytes()));

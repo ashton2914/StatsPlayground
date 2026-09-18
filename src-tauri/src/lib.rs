@@ -34,13 +34,16 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .manage(app_state)
         .setup(|app| {
-            if let Err(reason) = initialize_graph_new_cache(
-                &app.state::<AppState>(), app.path().app_cache_dir(),
-            ) {
-                eprintln!("{}", serde_json::json!({
-                    "event": "graph_new_cache_disabled", "mode": "memory_only", "reason": reason,
-                }));
-            }
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(reason) = initialize_graph_new_cache(
+                    &handle.state::<AppState>(), handle.path().app_cache_dir(),
+                ) {
+                    eprintln!("{}", serde_json::json!({
+                        "event": "graph_new_cache_disabled", "mode": "memory_only", "reason": reason,
+                    }));
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

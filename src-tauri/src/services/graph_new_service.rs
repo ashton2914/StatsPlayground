@@ -14,6 +14,7 @@ use crate::models::graph_new_data::{
 use crate::state::AppState;
 use crate::models::graph_new::{GraphNewRenderRequest, GraphNewRenderCompletion, GraphNewFrameHeader, GraphNewFrameFormat};
 use tauri::ipc::{Channel, InvokeResponseBody};
+use crate::models::graph_new::{GraphNewXMode, GraphNewAxisData, GraphNewAxis, GraphNewAxisTick};
 
 use super::graph_new_key::{
     GraphKey, GraphKeyParts, GRAPH_NEW_RENDERER_CONTRACT_VERSION, GRAPH_NEW_TILE_FORMAT_VERSION,
@@ -168,7 +169,8 @@ impl<'a> GraphNewService<'a> {
     }
 
     pub fn render(&self, request: &GraphNewRenderRequest, channel: &Channel<InvokeResponseBody>) -> Result<GraphNewRenderCompletion, AppError> {
-        self.render_with(request, GraphNewRenderer::render, &mut |header, rgba| {
+        self.render_with(request, |scene| GraphNewRenderer::render_current(scene,
+            || self.state.graph_new.is_current(request)), &mut |header, rgba| {
             let envelope = serde_json::json!({ "messageType": "header", "header": header });
             channel.send(InvokeResponseBody::from(envelope.to_string()))
                 .map_err(|_| AppError::Stats("graph_new_channel_closed".into()))?;
@@ -210,7 +212,7 @@ impl<'a> GraphNewService<'a> {
                 x_column_id: request.x_column_id.clone(), y_column_id: request.y_column_id.clone(),
                 filter_identity: None, renderer_contract_version: GRAPH_NEW_RENDERER_CONTRACT_VERSION,
                 tile_format_version: GRAPH_NEW_TILE_FORMAT_VERSION,
-                domain_policy: GRAPH_NEW_DEFAULT_DOMAIN_POLICY.into(), levels: build_request.levels,
+                domain_policy: axis_policy(request.x_mode), levels: build_request.levels,
                 max_tile_points: build_request.max_tile_points,
             })?;
             let mut build_ms = 0.0;
@@ -226,13 +228,14 @@ impl<'a> GraphNewService<'a> {
                 if !disk_hit {
                     let started = Instant::now();
                     let required_disk = self.construction_disk_requirement(&build_request)?;
-                    let (construction, disk_limit) = cache.admit_construction(
+                    let (mut construction, disk_limit) = cache.admit_construction(
                         build_request.construction_memory_limit_bytes,
                         required_disk,
                     )?;
-                    let built = self.build_with_disk_limit(&build_request, &mut |_| {}, &is_current, disk_limit)?;
+                    let built = self.build_with_disk_limit(&build_request, &mut |_| {}, &is_current, disk_limit, request.x_mode)?;
                     source_projection_query_count = built.query_count;
                     build_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    construction.retain_completed_build(&built)?;
                     cache.prepare_admission(&built)?;
                     drop(construction);
                     pending = Some(built);
@@ -247,6 +250,9 @@ impl<'a> GraphNewService<'a> {
             let domain = request.camera_domain.map_or(built.pyramid.domain, |camera| super::graph_new_lod::GraphDomain {
                 x_min: camera.x_min, x_max: camera.x_max, y_min: camera.y_min, y_max: camera.y_max,
             });
+            let mean = if request.show_mean { built.pyramid.mean_line(&|| {
+                if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) }
+            })? } else { None };
             let selection = built.pyramid.select_with_control(&GraphCamera {
                 x_min: domain.x_min, x_max: domain.x_max, y_min: domain.y_min, y_max: domain.y_max,
                 viewport_width: request.width, viewport_height: request.height,
@@ -270,8 +276,16 @@ impl<'a> GraphNewService<'a> {
                     points.push(SourcePoint::new(row_id, x, y));
                 }
             }
+            let raw_line = if request.raw_mode != crate::models::graph_new::GraphNewRawMode::Scatter && built.pyramid.mean_available() {
+                built.pyramid.raw_line(&points, &|| if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) })?
+            } else { None };
+            let x_axis = axis_ticks(&built.pyramid.x_axis, domain, request.width)?;
             let scene = GraphNewScene { width: request.width, height: request.height,
-                device_pixel_ratio: request.device_pixel_ratio, domain, points };
+                device_pixel_ratio: request.device_pixel_ratio, domain, points, mean,
+                presentation: super::graph_new_renderer::ScenePresentation {
+                    raw_line: raw_line.clone(), show_points: request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line,
+                    x_axis: (x_axis.kind != GraphNewXMode::Numeric).then_some(x_axis.clone()),
+                } };
             let (width, height) = scene.physical_size()?;
             ensure_current()?;
             let frame = render(&scene)?;
@@ -287,6 +301,11 @@ impl<'a> GraphNewService<'a> {
                     .map_err(|_| AppError::Stats("graph_new_render_failed".into()))?.as_micros() as u64,
             };
             let mut completion = GraphNewRenderCompletion { request_id: request.request_id.clone(),
+                x_axis,
+                raw_mode: request.raw_mode, raw_line_available: built.pyramid.mean_available(),
+                raw_line_segments: raw_line.as_ref().map_or(0, |segments| segments.len()),
+                mean_available: built.pyramid.mean_available(), mean_groups: scene.mean.as_ref().map(|mean| mean.len()),
+                mean_visible: scene.mean.as_ref().is_some_and(|mean| mean.len() >= 2),
                 exact_visible: selection.exact, visible_rows: selection.visible_rows,
                 raw_index_entries_inspected: selection.query_work.index_entries_inspected,
                 raw_blocks_inspected: selection.query_work.raw_blocks_inspected,
@@ -374,7 +393,7 @@ impl<'a> GraphNewService<'a> {
             let mut cache = self.state.graph_new.cache.try_lock().map_err(|_| AppError::Busy("graph_new_busy".into()))?;
             cache.admit_construction(request.construction_memory_limit_bytes, required_disk)?
         };
-        let result = self.build_with_disk_limit(request, progress_sink, is_current, disk_limit);
+        let result = self.build_with_disk_limit(request, progress_sink, is_current, disk_limit, GraphNewXMode::Auto);
         drop(construction);
         result
     }
@@ -392,7 +411,7 @@ impl<'a> GraphNewService<'a> {
 
     fn build_with_disk_limit(
         &self, request: &GraphNewBuildRequest, progress_sink: &mut dyn FnMut(GraphBuildProgress),
-        is_current: &dyn Fn() -> bool, disk_limit: u64,
+        is_current: &dyn Fn() -> bool, disk_limit: u64, x_mode: GraphNewXMode,
     ) -> Result<GraphNewBuildResult, AppError> {
         request.validate()?;
         self.ensure_current(request, is_current, "before scan")?;
@@ -433,11 +452,6 @@ impl<'a> GraphNewService<'a> {
                 db.open_secondary_connection()?,
             )
         };
-        if !is_numeric_type(&x_column.sql_type) {
-            return Err(AppError::InvalidParam(
-                "graph-new xColumnId must resolve to a supported numeric column".to_string(),
-            ));
-        }
         if !is_numeric_type(&y_column.sql_type) {
             return Err(AppError::InvalidParam(
                 "graph-new yColumnId must resolve to a supported numeric column".to_string(),
@@ -452,19 +466,31 @@ impl<'a> GraphNewService<'a> {
             filter_identity: None,
             renderer_contract_version: GRAPH_NEW_RENDERER_CONTRACT_VERSION,
             tile_format_version: GRAPH_NEW_TILE_FORMAT_VERSION,
-            domain_policy: GRAPH_NEW_DEFAULT_DOMAIN_POLICY.to_string(),
+            domain_policy: axis_policy(x_mode),
             levels: request.levels,
             max_tile_points: request.max_tile_points,
         })?;
 
-        let sql = format!(
-            "SELECT \"_row_id\", TRY_CAST({x_column} AS DOUBLE), TRY_CAST({y_column} AS DOUBLE) FROM {table_name}",
-            x_column = quote_identifier(&x_column.name),
-            y_column = quote_identifier(&y_column.name),
-            table_name = quote_identifier(&internal_table_name(&request.dataset_id)),
-        );
+        let resolved_mode = if x_mode == GraphNewXMode::Auto && !is_numeric_type(&x_column.sql_type) && !is_native_time(&x_column) {
+            let parsed = parsed_x_sql(&x_column, &y_column, &request.dataset_id);
+            let (duration, time): (bool, bool) = read_conn.query_row(&format!(r#"{parsed}
+                SELECT coalesce(bool_and(label IS NULL OR duration IS NOT NULL), false),
+                    coalesce(bool_and(label IS NULL OR time IS NOT NULL OR mdy IS NOT NULL)
+                    AND (bool_and(label IS NULL OR time IS NOT NULL) OR bool_or(mdy IS NOT NULL AND mdy_hint))
+                    AND NOT (coalesce(bool_or(has_offset), false) AND coalesce(bool_or((time IS NOT NULL OR mdy IS NOT NULL) AND NOT coalesce(has_offset, false)), false)), false)
+                FROM parsed"#), [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            if duration { GraphNewXMode::Duration } else if time { GraphNewXMode::Time } else { GraphNewXMode::Category }
+        } else { x_mode };
+        let categories = if resolved_mode == GraphNewXMode::Category {
+            Some(bounded_categories(&read_conn, &x_column, &request.dataset_id,
+                &|| self.ensure_current(request, is_current, "during category admission"))?)
+        } else { None };
+        let sql = if let Some(categories) = &categories { category_projection_sql(&x_column, &y_column, &request.dataset_id, categories.len()) }
+            else { x_projection_sql(&x_column, &y_column, &request.dataset_id, resolved_mode) };
         let mut statement = read_conn.prepare(&sql)?;
-        let mut rows = statement.query([])?;
+        let mut rows = statement.query(duckdb::params_from_iter(categories.iter().flatten()))?;
+        let mut axis = GraphNewAxisData { kind: GraphNewXMode::Numeric, categories: categories.clone().unwrap_or_default(), ..Default::default() };
+        let mut label_bytes = 0usize;
         let mut builder = TilePyramidBuilder::with_memory_limit(
             request.levels,
             request.max_tile_points,
@@ -499,6 +525,27 @@ impl<'a> GraphNewService<'a> {
             let row_id: i64 = row.get(0)?;
             let x: Option<f64> = row.get(1)?;
             let y: Option<f64> = row.get(2)?;
+            let kind: String = row.get(3)?;
+            if kind == "mixedTime" { return Err(AppError::InvalidParam("graph_new_x_unrepresentable".into())); }
+            axis.kind = match kind.as_str() { "duration" => GraphNewXMode::Duration, "time" => GraphNewXMode::Time,
+                "category" => GraphNewXMode::Category, _ => GraphNewXMode::Numeric };
+            axis.utc = row.get(5)?;
+            if axis.kind == GraphNewXMode::Time {
+                axis.origin = Some(crate::models::graph_new::GraphNewTimeOrigin {
+                    epoch_nanos: row.get(6)?, unit_nanos: row.get(7)?,
+                });
+            }
+            if axis.kind == GraphNewXMode::Category {
+                if let (Some(value), Some(label)) = (x, row.get::<_, Option<String>>(4)?) {
+                    if value as usize == axis.categories.len() {
+                        label_bytes += label.len() + 24;
+                        if axis.categories.len() >= 16384 || label.len() > 512 || label_bytes > 1024 * 1024 {
+                            return Err(AppError::InvalidParam("graph_new_x_unrepresentable".into()));
+                        }
+                        axis.categories.push(label);
+                    }
+                }
+            }
             batch.push(SourcePoint::new(
                 row_id,
                 x.unwrap_or(f64::NAN),
@@ -568,9 +615,10 @@ impl<'a> GraphNewService<'a> {
             },
         )?;
 
-        let pyramid = builder.finish_with_control(&|| {
+        let mut pyramid = builder.finish_with_control(&|| {
             self.ensure_current(request, is_current, "during pyramid")
         })?;
+        pyramid.x_axis = axis;
         let finished_ms = started.elapsed().as_millis();
         let summary = GraphNewBuildSummary {
             processed_rows: pyramid.total_processed_rows,
@@ -689,6 +737,177 @@ impl<'a> GraphNewService<'a> {
     }
 }
 
+pub(super) fn raw_line_indices(points: &[SourcePoint], control: &dyn Fn() -> Result<(), AppError>) -> Result<Vec<[u32; 2]>, AppError> {
+    let mut order = Vec::with_capacity(points.len());
+    let mut run = 0u32;
+    for (index, point) in points.iter().enumerate() {
+        if index % 4096 == 0 { control()?; }
+        if index > 0 && points[index - 1].row_id.checked_add(1) != Some(point.row_id) { run += 1; }
+        order.push([index as u32, run]);
+    }
+    order.sort_unstable_by(|left, right| left[1].cmp(&right[1])
+        .then_with(|| points[left[0] as usize].x.total_cmp(&points[right[0] as usize].x))
+        .then_with(|| points[left[0] as usize].row_id.cmp(&points[right[0] as usize].row_id)));
+    control()?;
+    let mut segments = Vec::with_capacity(order.len().saturating_sub(1));
+    for pair in order.windows(2) { if pair[0][1] == pair[1][1] { segments.push([pair[0][0], pair[1][0]]); } }
+    Ok(segments)
+}
+
+fn axis_policy(mode: GraphNewXMode) -> String {
+    if mode == GraphNewXMode::Auto { GRAPH_NEW_DEFAULT_DOMAIN_POLICY.into() }
+    else { format!("{GRAPH_NEW_DEFAULT_DOMAIN_POLICY}-{mode:?}") }
+}
+
+fn axis_ticks(axis: &GraphNewAxisData, domain: super::graph_new_lod::GraphDomain, width: u32) -> Result<GraphNewAxis, AppError> {
+    let ticks = if axis.kind == GraphNewXMode::Category {
+        let start = domain.x_min.ceil().max(0.0) as usize;
+        let end = (domain.x_max.floor().max(0.0) as usize + 1).min(axis.categories.len());
+        let step = (end.saturating_sub(start) as f64 / ((width.saturating_sub(80) / 140).max(1).min(6)) as f64).ceil().max(1.0) as usize;
+        (start..end).step_by(step).map(|index| GraphNewAxisTick { value: index as f64,
+            position: super::graph_new_ticks::normalized(index as f64, domain.x_min, domain.x_max), label: Some(axis.categories[index].clone()) }).collect()
+    } else {
+        super::graph_new_ticks::numeric_ticks(domain.x_min, domain.x_max)?.into_iter()
+            .filter(|tick| axis.origin.as_ref().is_none_or(|origin| {
+                let nanos = tick.value * f64::from(origin.unit_nanos);
+                (nanos - nanos.round()).abs() < 1e-6
+            })).map(|tick| GraphNewAxisTick {
+            value: tick.value, position: tick.position, label: None,
+        }).collect()
+    };
+    Ok(GraphNewAxis { kind: axis.kind, utc: axis.utc, ticks, origin: axis.origin.clone() })
+}
+
+fn relative_time_projection(source: String) -> String {
+    format!(r#"WITH time_source AS ({source}), origins AS (
+        SELECT *, min(epoch_nanos) OVER () AS origin FROM time_source
+    ), units AS (
+        SELECT *, CASE WHEN bool_and((epoch_nanos - origin) % 1000000000 = 0) OVER () THEN 1000000000
+            WHEN bool_and((epoch_nanos - origin) % 1000000 = 0) OVER () THEN 1000000
+            WHEN bool_and((epoch_nanos - origin) % 1000 = 0) OVER () THEN 1000 ELSE 1 END AS unit FROM origins
+    ), checked AS (
+        SELECT *, max((epoch_nanos - origin) // unit) OVER () > 9007199254740991 AS unsupported FROM units
+    ) SELECT _row_id, CASE WHEN kind = 'time' THEN CAST((epoch_nanos - origin) // unit AS DOUBLE) ELSE x END,
+        y, CASE WHEN kind = 'time' AND unsupported THEN 'mixedTime' ELSE kind END, label, utc,
+        CAST(coalesce(origin, 0) AS VARCHAR), unit FROM checked ORDER BY _row_id"#)
+}
+
+fn bounded_categories(connection: &duckdb::Connection, column: &ColumnBinding, dataset_id: &str,
+    current: &dyn Fn() -> Result<(), AppError>) -> Result<Vec<String>, AppError> {
+    let table = quote_identifier(&internal_table_name(dataset_id));
+    let column = quote_identifier(&column.name);
+    let (minimum, maximum): (Option<i64>, Option<i64>) = connection.query_row(
+        &format!("SELECT min(_row_id), max(_row_id) FROM {table}"), [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let mut labels = BTreeMap::<String, i64>::new();
+    let mut bytes = 0usize;
+    if let (Some(mut start), Some(maximum)) = (minimum, maximum) {
+        let mut statement = connection.prepare(&format!("SELECT _row_id, CASE WHEN octet_length(encode(TRY_CAST({column} AS VARCHAR))) <= 512 THEN TRY_CAST({column} AS VARCHAR) END, coalesce(octet_length(encode(TRY_CAST({column} AS VARCHAR))) > 512, false) FROM {table} WHERE _row_id >= $1 AND _row_id <= $2"))?;
+        loop {
+            current()?;
+            let end = start.saturating_add(4095).min(maximum);
+            let mut rows = statement.query(params![start, end])?;
+            while let Some(row) = rows.next()? {
+                if row.get::<_, bool>(2)? { return Err(AppError::InvalidParam("graph_new_x_unrepresentable".into())); }
+                if let Some(label) = row.get::<_, Option<String>>(1)? {
+                    let row_id: i64 = row.get(0)?;
+                    if let Some(first) = labels.get_mut(&label) { *first = (*first).min(row_id); }
+                    else {
+                        bytes += label.len() + 128;
+                        if labels.len() >= 16384 || bytes > 1024 * 1024 { return Err(AppError::InvalidParam("graph_new_x_unrepresentable".into())); }
+                        labels.insert(label, row_id);
+                    }
+                }
+            }
+            if end == maximum { break; }
+            start = end + 1;
+        }
+    }
+    let mut labels: Vec<_> = labels.into_iter().collect();
+    labels.sort_unstable_by_key(|(_, first)| *first);
+    Ok(labels.into_iter().map(|(label, _)| label).collect())
+}
+
+fn category_projection_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_id: &str, count: usize) -> String {
+    let x_column = quote_identifier(&x_column.name);
+    let y_column = quote_identifier(&y_column.name);
+    let table = quote_identifier(&internal_table_name(dataset_id));
+    let dictionary = if count == 0 { "SELECT NULL::VARCHAR AS label, NULL::DOUBLE AS ordinal WHERE false".into() }
+        else { format!("SELECT * FROM (VALUES {}) AS entries(label, ordinal)", (0..count).map(|index| format!("(?::VARCHAR, {index}::DOUBLE)")).collect::<Vec<_>>().join(",")) };
+    format!("WITH dictionary AS ({dictionary}) SELECT source._row_id, dictionary.ordinal, TRY_CAST(source.{y_column} AS DOUBLE), 'category', NULL::VARCHAR, false FROM {table} AS source LEFT JOIN dictionary ON TRY_CAST(source.{x_column} AS VARCHAR) = dictionary.label ORDER BY source._row_id")
+}
+
+fn x_projection_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_id: &str, mode: GraphNewXMode) -> String {
+    let x_column_sql = quote_identifier(&x_column.name);
+    let y_column_sql = quote_identifier(&y_column.name);
+    let table = quote_identifier(&internal_table_name(dataset_id));
+    if mode == GraphNewXMode::Numeric || (mode == GraphNewXMode::Auto && is_numeric_type(&x_column.sql_type)) {
+        return format!("SELECT _row_id, TRY_CAST({x_column_sql} AS DOUBLE), TRY_CAST({y_column_sql} AS DOUBLE), 'numeric', NULL::VARCHAR, false FROM {table} ORDER BY _row_id");
+    }
+    let interpretation = match mode { GraphNewXMode::Category => "'category'", GraphNewXMode::Duration => "'duration'",
+        GraphNewXMode::Time => "CASE WHEN utc AND has_naive THEN 'mixedTime' ELSE 'time' END",
+        _ => "CASE WHEN all_duration THEN 'duration' WHEN all_time AND NOT (utc AND has_naive) THEN 'time' ELSE 'category' END" };
+    let native_time = is_native_time(x_column);
+    let native_utc = x_column.sql_type.to_ascii_uppercase().contains("TIME ZONE") || x_column.sql_type.eq_ignore_ascii_case("TIMESTAMPTZ");
+    if native_time && matches!(mode, GraphNewXMode::Auto | GraphNewXMode::Time) {
+        let epoch = if x_column.sql_type.eq_ignore_ascii_case("TIMESTAMP_NS") { format!("CAST(epoch_ns({x_column_sql}) AS HUGEINT)") }
+            else { format!("CAST(epoch_us({x_column_sql}) AS HUGEINT) * 1000") };
+        return relative_time_projection(format!("SELECT _row_id, NULL::DOUBLE AS x, TRY_CAST({y_column_sql} AS DOUBLE) AS y, 'time' AS kind, NULL::VARCHAR AS label, {native_utc} AS utc, {epoch} AS epoch_nanos FROM {table}"));
+    }
+    let parsed = parsed_x_sql(x_column, y_column, dataset_id);
+    relative_time_projection(format!(r#"{parsed}, interpreted AS (
+            SELECT *, bool_and(label IS NULL OR duration IS NOT NULL) OVER () AS all_duration,
+                (bool_and(label IS NULL OR time IS NOT NULL OR mdy IS NOT NULL) OVER ()
+                    AND (bool_and(label IS NULL OR time IS NOT NULL) OVER () OR bool_or(mdy IS NOT NULL AND mdy_hint) OVER ())) AS all_time,
+                coalesce(bool_or(has_offset) OVER (), false) AS utc,
+                coalesce(bool_or((time IS NOT NULL OR mdy IS NOT NULL) AND NOT coalesce(has_offset, false)) OVER (), false) AS has_naive
+                FROM parsed
+        ), chosen AS (SELECT *, {interpretation} AS kind FROM interpreted)
+        SELECT _row_id, CASE WHEN label IS NULL THEN NULL WHEN kind = 'duration' THEN duration ELSE NULL END AS x,
+            y, kind, NULL::VARCHAR AS label, utc,
+            CASE WHEN kind = 'time' THEN coalesce(time, mdy) END AS epoch_nanos FROM chosen
+    "#))
+}
+
+fn is_native_time(column: &ColumnBinding) -> bool {
+    column.sql_type.to_ascii_uppercase().starts_with("TIMESTAMP") || column.sql_type.eq_ignore_ascii_case("DATE")
+}
+
+fn parsed_x_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_id: &str) -> String {
+    let x_column_sql = quote_identifier(&x_column.name);
+    let y_column_sql = quote_identifier(&y_column.name);
+    let table = quote_identifier(&internal_table_name(dataset_id));
+    let native = if is_native_time(x_column) { format!("CAST(epoch_us({x_column_sql}) AS HUGEINT) * 1000") } else { "NULL::HUGEINT".into() };
+    let native_utc = x_column.sql_type.to_ascii_uppercase().contains("TIME ZONE") || x_column.sql_type.eq_ignore_ascii_case("TIMESTAMPTZ");
+    format!(r#"
+        WITH source AS (
+            SELECT _row_id, CASE WHEN octet_length(encode(TRY_CAST({x_column_sql} AS VARCHAR))) > 512 THEN 'unrepresentable' ELSE TRY_CAST({x_column_sql} AS VARCHAR) END AS label,
+                TRY_CAST({y_column_sql} AS DOUBLE) AS y, {native} AS native_time FROM {table}
+        ), parsed AS (
+            SELECT *,
+                CASE WHEN regexp_full_match(label, '[0-9]+:[0-5][0-9]:[0-5][0-9](\.[0-9]+)?')
+                    THEN TRY_CAST(split_part(label, ':', 1) AS DOUBLE) * 3600
+                        + TRY_CAST(split_part(label, ':', 2) AS DOUBLE) * 60
+                        + TRY_CAST(split_part(label, ':', 3) AS DOUBLE)
+                    WHEN regexp_full_match(label, ':[0-9]+:[0-9]+:[0-5][0-9]:[0-5][0-9](\.[0-9]+)?')
+                    THEN TRY_CAST(split_part(label, ':', 2) AS DOUBLE) * 86400
+                        + TRY_CAST(split_part(label, ':', 3) AS DOUBLE) * 3600
+                        + TRY_CAST(split_part(label, ':', 4) AS DOUBLE) * 60
+                        + TRY_CAST(split_part(label, ':', 5) AS DOUBLE) END AS duration,
+                CASE WHEN native_time IS NOT NULL THEN native_time
+                    WHEN regexp_full_match(label, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[ T][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(\.[0-9]{{1,9}})?')
+                    THEN CAST(epoch_us(TRY_CAST(regexp_replace(label, '\.[0-9]+', '') AS TIMESTAMP)) AS HUGEINT) * 1000
+                        + CAST(rpad(split_part(regexp_extract(label, '\.[0-9]+'), '.', 2), 9, '0') AS BIGINT)
+                    WHEN regexp_full_match(label, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[ T][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}(\.[0-9]{{1,9}})?(Z|[+-][0-9]{{2}}:[0-9]{{2}})')
+                    THEN CAST(epoch_us(TRY_CAST(regexp_replace(label, '\.[0-9]+', '') AS TIMESTAMPTZ)) AS HUGEINT) * 1000
+                        + CAST(rpad(split_part(regexp_extract(label, '\.[0-9]+'), '.', 2), 9, '0') AS BIGINT) END AS time,
+                CASE WHEN regexp_full_match(label, '[0-9]{{1,2}}/[0-9]{{1,2}}/[0-9]{{4}} [0-9]{{1,2}}:[0-9]{{2}}:[0-9]{{2}} (AM|PM)')
+                    THEN CAST(epoch_us(try_strptime(label, '%m/%d/%Y %I:%M:%S %p')) AS HUGEINT) * 1000 END AS mdy,
+                TRY_CAST(split_part(label, '/', 2) AS INTEGER) > 12 AS mdy_hint,
+                ({native_utc} OR regexp_matches(label, '(Z|[+-][0-9]{{2}}:[0-9]{{2}})$')) AS has_offset FROM source
+        )
+    "#)
+}
+
 fn resolve_columns(
     db: &DuckDbEngine,
     dataset_id: &str,
@@ -735,6 +954,7 @@ fn safe_render_error(error: AppError) -> AppError {
         AppError::Cancelled(_) => AppError::Cancelled("graph_new_cancelled".into()),
         AppError::Busy(_) => AppError::Busy("graph_new_busy".into()),
         AppError::InvalidParam(message) if message.contains("stale") => AppError::InvalidParam("graph_new_stale_dataset".into()),
+        AppError::InvalidParam(message) if message == "graph_new_x_unrepresentable" => AppError::InvalidParam(message),
         AppError::InvalidParam(_) => AppError::InvalidParam("graph_new_invalid_request".into()),
         AppError::Stats(message) if message == "graph_new_channel_closed" || message == "graph_new_missing_cache"
             || message == "graph_new_cache_pressure" => AppError::Stats(message),
@@ -777,6 +997,340 @@ mod tests {
 
     use crate::services::graph_new_service::{GraphBuildProgress, GraphNewService};
     use crate::state::AppState;
+
+    #[test]
+    fn graph_new_review_extreme_completion_is_finite() {
+        let state = AppState::new().unwrap();
+        let (x_id, y_id) = seed_dense_dataset(&state, "extreme", 3);
+        state.db.lock().unwrap().conn().execute("UPDATE dataset_extreme SET x_value=CASE _row_id WHEN 1 THEN -1e308 WHEN 2 THEN 0 ELSE 1e308 END", []).unwrap();
+        let request = serde_json::from_value(serde_json::json!({
+            "requestId":"extreme","sessionId":"extreme","datasetId":"extreme","datasetGeneration":0,
+            "xColumnId":x_id,"yColumnId":y_id,"width":640,"height":360,"devicePixelRatio":1,
+            "rendererGeneration":1,"cameraGeneration":0,"xMode":"numeric"
+        })).unwrap();
+        let completion = GraphNewService::new(&state).render_with(&request, super::GraphNewRenderer::render, &mut |_, _| Ok(())).unwrap();
+        assert_eq!(completion.x_axis.ticks.iter().map(|tick| tick.value).collect::<Vec<_>>(), vec![-1e308, -5e307, 0.0, 5e307, 1e308]);
+        assert_eq!(completion.x_axis.ticks.iter().map(|tick| tick.position).collect::<Vec<_>>(), vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+        if let Ok(directory) = std::env::var("GRAPH_NEW_REVIEW_EVIDENCE") {
+            std::fs::write(std::path::Path::new(&directory).join("extreme.json"), serde_json::to_vec(&serde_json::json!({"request":request,"completion":completion})).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn graph_new_review_category_admission_precedes_materialization() {
+        for mode in [crate::models::graph_new::GraphNewXMode::Category, crate::models::graph_new::GraphNewXMode::Auto] {
+        for oversized in [false, true] {
+            let state = AppState::new().unwrap();
+            let (x_id, y_id) = seed_dense_dataset(&state, "categorylimit", 20_000);
+            {
+                let db = state.db.lock().unwrap();
+                db.conn().execute_batch("ALTER TABLE dataset_categorylimit ALTER x_value TYPE VARCHAR USING CAST(_row_id AS VARCHAR)").unwrap();
+                if oversized {
+                    db.conn().execute("UPDATE dataset_categorylimit SET x_value = repeat('wide', 200000) WHERE _row_id=1", []).unwrap();
+                }
+                db.conn().execute("UPDATE _meta_columns SET col_type='VARCHAR' WHERE dataset_id='categorylimit' AND column_id=$1", params![x_id]).unwrap();
+            }
+            let request = crate::models::graph_new_data::GraphNewBuildRequest {
+                request_id: "categorylimit".into(), dataset_id: "categorylimit".into(), dataset_generation: 0,
+                x_column_id: x_id, y_column_id: y_id, levels: 1, max_tile_points: 4096, batch_rows: 1024,
+                overdraw_factor: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+                construction_memory_limit_bytes: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+            };
+            let scans = std::cell::Cell::new(0);
+            let error = GraphNewService::new(&state).build_with_disk_limit(&request,
+                &mut |_| scans.set(scans.get() + 1), &|| true, u64::MAX,
+                mode).unwrap_err();
+            assert!(error.to_string().contains("graph_new_x_unrepresentable"));
+            assert_eq!(scans.get(), 0, "category admission must fail before ordered projection/pyramid materialization");
+        }
+        }
+    }
+
+    #[test]
+    fn graph_new_review_nanosecond_identity_completion() {
+        for (case, sql_type, later, earlier) in [
+            ("native", "TIMESTAMP_NS", "2026-09-18 00:00:00.000000002", "2026-09-18 00:00:00.000000001"),
+            ("text", "VARCHAR", "2026-09-18 00:00:00.000000002", "2026-09-18 00:00:00.000000001"),
+            ("offset", "VARCHAR", "2026-09-18T08:00:00.000000002+08:00", "2026-09-18T00:00:00.000000001Z"),
+            ("wide", "TIMESTAMP_NS", "2026-09-18 00:00:00.000000002", "2025-09-18 00:00:00.000000001"),
+            ("wide-coarse", "TIMESTAMP_NS", "2026-09-18 00:00:00.000000001", "2025-09-18 00:00:00.000000001"),
+        ] {
+            let state = AppState::new().unwrap();
+            let (x_id, y_id) = seed_dense_dataset(&state, "nano", 2);
+            {
+                let db = state.db.lock().unwrap();
+                db.conn().execute_batch(&format!("ALTER TABLE dataset_nano ALTER x_value TYPE {sql_type} USING CAST(CASE _row_id WHEN 1 THEN '{later}' ELSE '{earlier}' END AS {sql_type})")).unwrap();
+                db.conn().execute("UPDATE _meta_columns SET col_type=$1 WHERE dataset_id='nano' AND column_id=$2", params![sql_type, x_id]).unwrap();
+            }
+            let request = serde_json::from_value(serde_json::json!({
+                "requestId":case,"sessionId":case,"datasetId":"nano","datasetGeneration":0,
+                "xColumnId":x_id,"yColumnId":y_id,"width":640,"height":360,"devicePixelRatio":1,
+                "rendererGeneration":1,"cameraGeneration":0,"rawMode":"pointsLine","showMean":true
+            })).unwrap();
+            if case == "wide" {
+                let error = GraphNewService::new(&state).render_with(&request, |_| panic!("unsupported precision must not render"), &mut |_, _| Ok(())).unwrap_err();
+                assert!(error.to_string().contains("graph_new_x_unrepresentable"));
+                continue;
+            }
+            let completion = GraphNewService::new(&state).render_with(&request, |scene| {
+                assert_eq!(scene.mean.as_ref().unwrap().len(), 2, "{case}: distinct nanoseconds must not merge");
+                let indices = scene.presentation.raw_line.as_ref().unwrap();
+                assert_eq!(indices.len(), 1);
+                assert_eq!([scene.points[indices[0][0] as usize].row_id, scene.points[indices[0][1] as usize].row_id], [2, 1]);
+                assert_eq!(scene.points.iter().map(|point| point.x).collect::<Vec<_>>(), vec![if case == "wide-coarse" { 31536000.0 } else { 1.0 }, 0.0]);
+                super::GraphNewRenderer::render(scene)
+            }, &mut |_, _| Ok(())).unwrap();
+            let json = serde_json::to_value(&completion).unwrap();
+            assert_eq!(json["xAxis"]["origin"]["epochNanos"], if case == "wide-coarse" { "1758153600000000001" } else { "1789689600000000001" });
+            assert_eq!(json["xAxis"]["origin"]["unitNanos"], if case == "wide-coarse" { 1000000000 } else { 1 });
+            if let Ok(directory) = std::env::var("GRAPH_NEW_REVIEW_EVIDENCE") {
+                std::fs::write(std::path::Path::new(&directory).join(format!("nano-{case}.json")), serde_json::to_vec(&serde_json::json!({"request":request,"completion":completion})).unwrap()).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn graph_new_phase1_native_raw_line_draws_blue_between_points_without_mean() {
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id) = seed_dense_dataset(&state, "linepixels", 2);
+        let request = serde_json::from_value(serde_json::json!({
+            "requestId":"pixels", "sessionId":"pixels", "datasetId":"linepixels", "datasetGeneration":0,
+            "xColumnId":x_column_id, "yColumnId":y_column_id, "width":640, "height":360,
+            "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0, "rawMode":"line", "showMean":false
+        })).expect("request");
+        GraphNewService::new(&state).render_with(&request, |scene| {
+            let frame = super::GraphNewRenderer::render(scene)?;
+            let plot = scene.plot_rect();
+            let center_x = plot.x + plot.width / 2;
+            let center_y = plot.y + plot.height / 2;
+            let blue = (center_y - 2..=center_y + 2).flat_map(|vertical| (center_x - 2..=center_x + 2).map(move |horizontal| (vertical * 640 + horizontal) as usize * 4))
+                .any(|offset| frame.rgba[offset + 2] > 180 && frame.rgba[offset] < 80);
+            assert!(blue, "raw line must connect the two observations without a Mean overlay");
+            Ok(frame)
+        }, &mut |_, _| Ok(())).expect("native raw line");
+    }
+
+    #[test]
+    fn graph_new_phase1_raw_line_orders_x_ties_and_keeps_source_gaps() {
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id) = seed_dense_dataset(&state, "raw", 6);
+        state.db.lock().expect("db").conn().execute(
+            "UPDATE dataset_raw SET x_value = CASE _row_id WHEN 1 THEN 3 WHEN 2 THEN 1 WHEN 3 THEN 1 WHEN 4 THEN 2 WHEN 5 THEN 0 ELSE 4 END, y_value = CASE WHEN _row_id = 4 THEN NULL ELSE _row_id END", [],
+        ).expect("unsorted data with gap");
+        let mut request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"raw", "sessionId":"raw", "datasetId":"raw", "datasetGeneration":0,
+            "xColumnId":x_column_id, "yColumnId":y_column_id, "width":640, "height":360,
+            "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0, "rawMode":"line", "showMean":true
+        })).expect("raw line mode");
+        let service = GraphNewService::new(&state);
+        let retained = std::cell::RefCell::new(None);
+        let render = |scene: &super::GraphNewScene| {
+            assert!(scene.mean.is_some(), "Mean remains independent");
+            let indices = scene.presentation.raw_line.as_ref().expect("production raw ordering");
+            if let Some(previous) = retained.borrow().as_ref() {
+                assert!(std::sync::Arc::ptr_eq(previous, indices), "mode switches reuse the raw index cache");
+            }
+            *retained.borrow_mut() = Some(indices.clone());
+            let rows: Vec<_> = indices.iter().map(|pair| [scene.points[pair[0] as usize].row_id, scene.points[pair[1] as usize].row_id]).collect();
+            assert_eq!(rows, vec![[2, 3], [3, 1], [5, 6]]);
+            Ok(super::SyntheticFrame { rgba: vec![255; 640 * 360 * 4], padded_bytes_per_row: 640 * 4, render_ms: 0.0, readback_ms: 0.0 })
+        };
+        let cold = service.render_with(&request, render, &mut |_, _| Ok(())).expect("cold");
+        assert_eq!((cold.processed_rows, cold.finite_rows, cold.excluded_non_finite_rows), (6, 5, 1));
+        assert_eq!(serde_json::to_value(cold).expect("completion")["rawLineSegments"], 3);
+        request.renderer_generation = 2;
+        request.raw_mode = crate::models::graph_new::GraphNewRawMode::PointsLine;
+        let warm = service.render_with(&request, render, &mut |_, _| Ok(())).expect("warm");
+        assert_eq!(warm.source_projection_query_count, 0);
+        assert_eq!(warm.raw_line_segments, 3);
+    }
+
+    #[test]
+    fn graph_new_phase1_explicit_x_mode_and_axis_metadata_survive_disk_restore() {
+        let state = AppState::new().expect("state");
+        let directory = tempfile::tempdir().expect("cache");
+        state.set_graph_cache_directory(&directory.path().canonicalize().expect("canonical")).expect("cache");
+        let (x_column_id, y_column_id) = seed_dense_dataset(&state, "mode", 3);
+        let service = GraphNewService::new(&state);
+        let mut request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"mode", "sessionId":"mode", "datasetId":"mode", "datasetGeneration":0,
+            "xColumnId":x_column_id, "yColumnId":y_column_id, "width":640, "height":360,
+            "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0, "xMode":"category"
+        })).expect("explicit X interpretation");
+        let render = |scene: &super::GraphNewScene| {
+            assert!(scene.points.iter().all(|point| point.x >= 0.0 && point.x <= 2.0));
+            Ok(super::SyntheticFrame { rgba: vec![255; 640 * 360 * 4],
+                padded_bytes_per_row: 640 * 4, render_ms: 0.0, readback_ms: 0.0 })
+        };
+        let cold = service.render_with(&request, render, &mut |_, _| Ok(())).expect("cold");
+        let json = serde_json::to_value(&cold).expect("completion");
+        assert_eq!(json["xAxis"]["kind"], "category");
+        assert_eq!(json["xAxis"]["ticks"].as_array().expect("ticks").len(), 3);
+        state.graph_new.close_session("mode", 1).expect("close");
+        state.graph_new.release_idle_cache().expect("release");
+        request.session_id = "restored".into(); request.renderer_generation = 2;
+        let restored = service.render_with(&request, render, &mut |_, _| Ok(())).expect("restored");
+        assert!(restored.persistent_cache_hit);
+        assert_eq!(restored.source_projection_query_count, 0);
+        assert_eq!(serde_json::to_value(restored).expect("json")["xAxis"], json["xAxis"]);
+    }
+
+    #[test]
+    fn graph_new_phase1_native_scalars_and_explicit_invalid_gaps() {
+        use crate::models::graph_new::GraphNewXMode;
+        for (sql_type, expression, mode, expected, kind, utc) in [
+            ("BOOLEAN", "_row_id != 2", GraphNewXMode::Auto, [Some(0.0), Some(1.0), Some(0.0)], "category", false),
+            ("DATE", "DATE '2025-12-22' + CAST(_row_id - 1 AS INTEGER)", GraphNewXMode::Auto, [Some(1766361600.0), Some(1766448000.0), Some(1766534400.0)], "time", false),
+            ("TIMESTAMPTZ", "CAST(CASE _row_id WHEN 1 THEN '2025-12-22 08:00:00+08' WHEN 2 THEN '2025-12-22 08:00:01+08' ELSE '2025-12-22 08:00:02+08' END AS TIMESTAMPTZ)", GraphNewXMode::Auto, [Some(1766361600.0), Some(1766361601.0), Some(1766361602.0)], "time", true),
+            ("VARCHAR", "CASE _row_id WHEN 1 THEN '25:00:00' WHEN 2 THEN 'invalid' ELSE '49:00:00' END", GraphNewXMode::Duration, [Some(90000.0), None, Some(176400.0)], "duration", false),
+            ("VARCHAR", "CASE _row_id WHEN 1 THEN '2' WHEN 2 THEN 'invalid' ELSE '1' END", GraphNewXMode::Numeric, [Some(2.0), None, Some(1.0)], "numeric", false),
+        ] {
+            let state = AppState::new().expect("state");
+            let (x_id, y_id) = seed_dense_dataset(&state, "scalars", 3);
+            let db = state.db.lock().expect("db");
+            db.conn().execute_batch(&format!("ALTER TABLE dataset_scalars ALTER x_value TYPE {sql_type} USING {expression}")).expect("typed fixture");
+            db.conn().execute("UPDATE _meta_columns SET col_type=$1 WHERE dataset_id='scalars' AND column_id=$2", params![sql_type, x_id]).expect("metadata");
+            let columns = super::resolve_columns(&db, "scalars").expect("bindings");
+            let categories = if kind == "category" { Some(super::bounded_categories(db.conn(), &columns[&x_id], "scalars", &|| Ok(())).unwrap()) } else { None };
+            let sql = if let Some(labels) = &categories { super::category_projection_sql(&columns[&x_id], &columns[&y_id], "scalars", labels.len()) }
+                else { super::x_projection_sql(&columns[&x_id], &columns[&y_id], "scalars", mode) };
+            let mut statement = db.conn().prepare(&sql).expect("projection");
+            let rows = statement.query_map(duckdb::params_from_iter(categories.iter().flatten()), |row| {
+                let kind: String = row.get(3)?;
+                let mut value: Option<f64> = row.get(1)?;
+                if kind == "time" {
+                    let origin: String = row.get(6)?;
+                    let unit: u32 = row.get(7)?;
+                    value = value.map(|value| origin.parse::<f64>().unwrap() / 1e9 + value * f64::from(unit) / 1e9);
+                }
+                Ok((value, kind, row.get::<_, bool>(5)?))
+            })
+                .expect("query").collect::<Result<Vec<_>, _>>().expect("rows");
+            assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), expected);
+            assert!(rows.iter().all(|row| row.1 == kind && row.2 == utc));
+        }
+    }
+
+    #[test]
+    fn graph_new_phase1_auto_x_preserves_duration_time_and_first_seen_categories() {
+        for (values, expected) in [
+            (["\u{6e29}\u{5ea6}", "\u{00e9}\u{0394}", "\u{6e29}\u{5ea6}"], [0.0, 1.0, 0.0]),
+            ([":0:25:00:00", ":1:01:00:00", ":0:49:30:00"], [90000.0, 90000.0, 178200.0]),
+            (["12/22/2025 7:47:16 AM", "12/22/2025 7:47:17 AM", "12/23/2025 7:47:16 AM"], [1766389636.0, 1766389637.0, 1766476036.0]),
+            (["2026-09-18T08:00:00+08:00", "2026-09-18T00:00:01Z", "2026-09-19T00:00:00Z"], [1789689600.0, 1789689601.0, 1789776000.0]),
+            (["25:00:00", "00:00:01", "49:30:00"], [90000.0, 1.0, 178200.0]),
+            (["2026-09-18 00:00:00", "2026-09-18 00:00:01", "2026-09-19 00:00:00"], [1789689600.0, 1789689601.0, 1789776000.0]),
+            (["03/04/2026", "01/02/2026", "03/04/2026"], [0.0, 1.0, 0.0]),
+            (["03/04/2026 7:47:16 AM", "01/02/2026 7:47:16 AM", "03/04/2026 7:47:16 AM"], [0.0, 1.0, 0.0]),
+            (["2026-09-18 00:00:00", "2026-09-18T00:00:01Z", "2026-09-19 00:00:00"], [0.0, 1.0, 2.0]),
+        ] {
+            let state = AppState::new().expect("state");
+            let (x_column_id, y_column_id) = seed_dense_dataset(&state, "typed", 3);
+            {
+                let db = state.db.lock().expect("db");
+                db.conn().execute("ALTER TABLE dataset_typed ALTER x_value TYPE VARCHAR", []).expect("text x");
+                db.conn().execute("UPDATE _meta_columns SET col_type = 'VARCHAR' WHERE dataset_id = 'typed' AND col_name = 'x_value'", []).expect("metadata");
+                for (index, value) in values.iter().enumerate() {
+                    db.conn().execute("UPDATE dataset_typed SET x_value = $1 WHERE _row_id = $2", params![value, index as i64 + 1]).expect("value");
+                }
+            }
+            let request = serde_json::from_value(serde_json::json!({
+                "requestId":"typed", "sessionId":"typed", "datasetId":"typed", "datasetGeneration":0,
+                "xColumnId":x_column_id, "yColumnId":y_column_id, "width":640, "height":360,
+                "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0
+            })).expect("request");
+            let result = GraphNewService::new(&state).render_with(&request, |scene| {
+                let mut points = scene.points.clone();
+                points.sort_by_key(|point| point.row_id);
+                let origin = scene.presentation.x_axis.as_ref().and_then(|axis| axis.origin.as_ref());
+                assert_eq!(points.iter().map(|point| origin.map_or(point.x, |origin|
+                    origin.epoch_nanos.parse::<f64>().unwrap() / 1e9 + point.x * f64::from(origin.unit_nanos) / 1e9)).collect::<Vec<_>>(), expected);
+                Ok(super::SyntheticFrame { rgba: vec![255; 640 * 360 * 4],
+                    padded_bytes_per_row: 640 * 4, render_ms: 0.0, readback_ms: 0.0 })
+            }, &mut |_, _| Ok(())).expect("all scalar X types must render");
+            assert_eq!((result.processed_rows, result.finite_rows, result.excluded_non_finite_rows), (3, 3, 0));
+            if values[0] == "\u{6e29}\u{5ea6}" {
+                assert_eq!(result.x_axis.ticks.iter().filter_map(|tick| tick.label.as_deref()).collect::<Vec<_>>(), vec!["\u{6e29}\u{5ea6}", "\u{00e9}\u{0394}"]);
+                let db = state.db.lock().unwrap();
+                let bindings = super::resolve_columns(&db, "typed").unwrap();
+                let sql = super::category_projection_sql(&bindings[&request.x_column_id], &bindings[&request.y_column_id], "typed", 2);
+                let plan: String = db.conn().query_row(&format!("EXPLAIN {sql}"), params![values[0], values[1]], |row| row.get(1)).unwrap();
+                assert!(!plan.contains("WINDOW"), "category projection must not rank full text: {plan}");
+            }
+            if values[0] == "2026-09-18 00:00:00" && values[1].ends_with('Z') {
+                let mut explicit = request.clone();
+                explicit.x_mode = crate::models::graph_new::GraphNewXMode::Time;
+                explicit.renderer_generation += 1;
+                let error = GraphNewService::new(&state).render_with(&explicit, |_| panic!("mixed zones cannot render as one time axis"), &mut |_, _| Ok(())).expect_err("mixed time rejected");
+                assert!(error.to_string().contains("graph_new_x_unrepresentable"));
+            }
+        }
+    }
+
+    #[test]
+    fn graph_new_completed_construction_replaces_pinned_graph_without_double_reservation() {
+        use super::super::graph_new_cache::GraphNewCacheCoordinator;
+
+        for fail_frame in [false, true] {
+            let state = AppState::new().expect("state");
+            let (x_column_id, y_column_id) = seed_dataset(&state, "completed-construction");
+            let request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+                "requestId":"replacement", "sessionId":"session", "datasetId":"completed-construction", "datasetGeneration":0,
+                "xColumnId":x_column_id, "yColumnId":y_column_id, "width":320, "height":200,
+                "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0
+            })).expect("request");
+            let service = GraphNewService::new(&state);
+            let mut original_request = request.clone();
+            original_request.y_column_id = original_request.x_column_id.clone();
+            let original = service.build(&original_request.build_request(), &mut |_| {}).expect("original");
+            let original_key = original.key.hash_hex.clone();
+            let original_bytes = original.pyramid.cache_reservation_bytes() + 4096;
+            let construction_bytes = request.build_request().construction_memory_limit_bytes;
+            let pool_limit = original_bytes + construction_bytes + 1024 * 1024;
+            let directory = tempfile::tempdir().expect("directory");
+            let mut cache = GraphNewCacheCoordinator::new(pool_limit, 0);
+            cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("directory");
+            cache.insert(original).expect("insert original");
+            cache.persist(&original_key).expect("persist original");
+            cache.pin(&original_key);
+            let original_path = directory.path().join("graph-new-derived-v1").read_dir().expect("cache root")
+                .next().expect("namespace").expect("namespace entry").path().join(format!("{original_key}.gnd"));
+            assert!(cache.process_cpu_reserved_bytes() + construction_bytes <= pool_limit);
+            let before = cache.process_cpu_reserved_bytes();
+            *state.graph_new.cache.lock().expect("cache") = cache;
+            let rendered = std::cell::Cell::new(false);
+            let result = service.render_with(&request, |scene| {
+                rendered.set(true);
+                assert!(original_path.is_file(), "previous frame disk survives through replacement rendering");
+                if fail_frame { return Err(crate::error::AppError::Stats("graph_new_render_failed".into())); }
+                let (width, height) = scene.physical_size()?;
+                Ok(super::SyntheticFrame { rgba: vec![255; width as usize * height as usize * 4],
+                    padded_bytes_per_row: width * 4, render_ms: 0.0, readback_ms: 0.0 })
+            }, &mut |_, _| {
+                assert!(!fail_frame);
+                assert!(original_path.is_file(), "previous frame survives until replacement is sent");
+                Ok(())
+            });
+            assert!(rendered.get(), "completed result must not retain the full construction reservation: {result:?}");
+            let mut cache = state.graph_new.cache.lock().expect("cache");
+            assert!(cache.get(&original_key).is_some());
+            assert!(original_path.is_file());
+            assert_eq!((cache.evictions, cache.disk_evictions), (0, 0));
+            assert!(cache.process_cpu_reserved_bytes() <= pool_limit);
+            if fail_frame {
+                assert!(result.is_err());
+                assert_eq!(cache.process_cpu_reserved_bytes(), before, "failed pending reservation is released");
+                cache.evict_unpinned();
+                assert!(cache.get(&original_key).is_some(), "failed replacement does not unpin previous graph");
+            } else {
+                assert_eq!(result.expect("replacement").source_projection_query_count, 1);
+                assert!(cache.process_cpu_reserved_bytes() > before);
+                assert!(cache.process_cpu_reserved_bytes() < construction_bytes, "construction headroom was released");
+                cache.evict_unpinned();
+                assert!(cache.get(&original_key).is_none(), "previous graph becomes evictable only after successful replacement");
+            }
+        }
+    }
 
     #[test]
     fn graph_new_construction_pressure_service_paths_preserve_original_on_abort() {
@@ -983,7 +1537,41 @@ mod tests {
     }
 
     #[test]
-    fn graph_new_performance_first_completion_reports_unknown_camera_count_without_projection() {
+    fn graph_new_compact_exact_above_million_preserves_every_source_point() {
+        let state = AppState::new().expect("state");
+        let rows = 1_000_001;
+        let (x_column_id, y_column_id) = seed_dense_dataset(&state, "lossless", rows);
+        state.db.lock().expect("db").conn().execute(
+            "UPDATE dataset_lossless SET x_value = _row_id % 1025, y_value = _row_id % 257", [],
+        ).expect("exactly representable bounds");
+        let request: crate::models::graph_new::GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"above-million", "sessionId":"above-million", "datasetId":"lossless", "datasetGeneration":0,
+            "xColumnId":x_column_id, "yColumnId":y_column_id, "width":320, "height":200,
+            "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0
+        })).expect("request");
+        let built = GraphNewService::new(&state).build_with_cancel(
+            &request.build_request(), &mut |_| {}, &|| true,
+        ).expect("build");
+        assert_eq!(built.pyramid.levels.len(), 1, "exact source must skip the deep pyramid");
+        assert_eq!(built.pyramid.levels[0].retained_marks, rows);
+        drop(built);
+        let completion = GraphNewService::new(&state).render_with(&request, |scene| {
+            assert_eq!(scene.points.len(), rows as usize, "all finite points must reach the renderer");
+            scene.physical_size().expect("valid exact scene");
+            assert_eq!(scene.points.first().expect("first").row_id, 1);
+            assert_eq!(scene.points.last().expect("last").row_id, rows as i64);
+            Ok(super::SyntheticFrame {
+                rgba: vec![255; scene.width as usize * scene.height as usize * 4],
+                padded_bytes_per_row: scene.width * 4, render_ms: 0.0, readback_ms: 0.0,
+            })
+        }, &mut |_, _| Ok(())).expect("exact render");
+        assert_eq!(completion.selected_marks, rows as usize);
+        assert!(completion.exact_visible);
+        assert_eq!(completion.source_projection_query_count, 1);
+    }
+
+    #[test]
+    fn graph_new_compact_exact_completion_recovers_anomaly_without_projection() {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dense_dataset(&state, "lossless", 8194);
         state.db.lock().expect("db").conn().execute(
@@ -1000,7 +1588,7 @@ mod tests {
         let service = GraphNewService::new(&state);
         let cold = service.render_with(&request, render, &mut |_, _| Ok(())).expect("cold");
         let metadata = serde_json::to_value(&cold).expect("metadata");
-        assert_eq!(metadata["exactVisible"], false);
+        assert_eq!(metadata["exactVisible"], true);
         assert_eq!(metadata["visibleRows"], 8194);
         assert_eq!(metadata["rawIndexEntriesInspected"], 0);
         assert_eq!(metadata["rawBlocksInspected"], 0);
@@ -1012,13 +1600,14 @@ mod tests {
             x_min: 0.09, x_max: 0.11, y_min: 0.09, y_max: 0.11,
         });
         let zoomed = service.render_with(&request, |scene| {
-            assert!(scene.points.is_empty(), "bounded representatives do not prove anomaly recovery");
+            assert_eq!(scene.points.len(), 8194, "full source slots survive camera changes");
+            assert!(scene.points.iter().any(|point| point.row_id == 8193 && point.x == 0.1 && point.y == 0.1));
             render(scene)
         }, &mut |_, _| Ok(())).expect("bounded camera");
         let metadata = serde_json::to_value(&zoomed).expect("metadata");
-        assert_eq!(metadata["exactVisible"], false);
-        assert!(metadata["visibleRows"].is_null(), "intersecting tile population is not an exact viewport count");
-        assert_eq!(metadata["selectedMarks"], 0);
+        assert_eq!(metadata["exactVisible"], true);
+        assert_eq!(metadata["visibleRows"], 1);
+        assert_eq!(metadata["selectedMarks"], 8194);
         assert_eq!(metadata["rawPointsInspected"], 0);
         assert_eq!(metadata["rawBlocksInspected"], 0);
         assert_eq!(metadata["rawIndexEntriesInspected"], 0);
@@ -1265,7 +1854,7 @@ mod tests {
         let completion = service.render_with(&camera, |scene| {
             assert_eq!(scene.domain.x_min, 2000.0);
             assert_eq!(scene.domain.y_max, 4000.0);
-            assert!(!scene.points.is_empty() && scene.points.len() < 10_000);
+            assert_eq!(scene.points.len(), 10_000);
             render(scene)
         }, &mut |_, _| Ok(())).expect("cached camera");
         let completion = serde_json::to_value(completion).expect("completion");
@@ -1324,7 +1913,9 @@ mod tests {
             dataset_id: "dataset".into(), dataset_generation: 0,
             x_column_id: "x".into(), y_column_id: "y".into(),
             width: 320, height: 200, device_pixel_ratio: 2.0,
-            renderer_generation: generation, camera_generation: 0, camera_domain: None,
+            renderer_generation: generation, camera_generation: 0, camera_domain: None, show_mean: false,
+            x_mode: Default::default(),
+            raw_mode: Default::default(),
         };
         let first = make("first", 1);
         let second = make("second", 2);
@@ -1371,6 +1962,47 @@ mod tests {
     }
 
     #[test]
+    fn graph_new_mean_service_toggle_camera_and_binding_reuse_exact_cache() {
+        let state = AppState::new().unwrap();
+        let (x_column_id, y_column_id) = seed_dataset(&state, "mean-fixture");
+        let service = GraphNewService::new(&state);
+        let mut value = serde_json::json!({"requestId":"mean-1", "sessionId":"mean-session", "datasetId":"mean-fixture",
+            "datasetGeneration":0, "xColumnId":x_column_id, "yColumnId":y_column_id, "width":320,
+            "height":200, "devicePixelRatio":1, "rendererGeneration":1, "cameraGeneration":0, "showMean":true});
+        let mut captured = None;
+        let mut first_domain = None;
+        for (generation, enabled) in [(1, true), (2, false), (3, true)] {
+            value["rendererGeneration"] = generation.into();
+            value["requestId"] = format!("mean-{generation}").into();
+            value["showMean"] = enabled.into();
+            if generation > 1 { value["cameraDomain"] = serde_json::to_value(first_domain).unwrap(); }
+            let request = serde_json::from_value(value.clone()).expect("mean request must cross the real IPC contract");
+            let completion = service.render_with(&request, |scene| {
+                if enabled {
+                    let mean = scene.mean.as_ref().expect("full mean passed to renderer");
+                    if let Some(previous) = &captured { assert!(std::sync::Arc::ptr_eq(previous, mean)); }
+                    else { captured = Some(mean.clone()); }
+                } else { assert!(scene.mean.is_none()); }
+                Ok(super::SyntheticFrame { rgba: vec![255; 320 * 200 * 4], padded_bytes_per_row: 1280, render_ms: 0.0, readback_ms: 0.0 })
+            }, &mut |_, _| Ok(())).unwrap();
+            first_domain = Some(completion.camera_domain);
+            assert_eq!(completion.source_projection_query_count, u64::from(generation == 1));
+            let completion_json = serde_json::to_value(completion).unwrap();
+            assert_eq!(completion_json["meanAvailable"], true);
+            assert_eq!(completion_json["meanVisible"], enabled);
+            if enabled { assert_eq!(completion_json["meanGroups"], 3); }
+        }
+        value["rendererGeneration"] = 4.into(); value["requestId"] = "mean-swapped".into();
+        value["cameraDomain"] = serde_json::Value::Null;
+        value["xColumnId"] = y_column_id.into(); value["yColumnId"] = x_column_id.into();
+        let swapped = service.render_with(&serde_json::from_value(value).unwrap(), |scene| {
+            assert!(!std::sync::Arc::ptr_eq(captured.as_ref().unwrap(), scene.mean.as_ref().unwrap()));
+            Ok(super::SyntheticFrame { rgba: vec![255; 320 * 200 * 4], padded_bytes_per_row: 1280, render_ms: 0.0, readback_ms: 0.0 })
+        }, &mut |_, _| Ok(())).unwrap();
+        assert_eq!(swapped.source_projection_query_count, 1);
+    }
+
+    #[test]
     fn graph_new_render_binary_cache_and_pre_send_fences() {
         use crate::models::graph_new::GraphNewRenderRequest;
         use super::super::graph_new_transport_service::SyntheticFrame;
@@ -1378,8 +2010,10 @@ mod tests {
         let (x_column_id, y_column_id) = seed_dataset(&state, "render-fixture");
         let service = GraphNewService::new(&state);
         let mut request = GraphNewRenderRequest { request_id: "r1".into(), session_id: "s1".into(),
+            x_mode: Default::default(),
+            raw_mode: Default::default(),
             dataset_id: "render-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None };
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false };
         let render = |scene: &super::super::graph_new_renderer::GraphNewScene| {
             assert!(state.db.try_lock().is_ok(), "render must not hold DB lock");
             assert_eq!(scene.points.len(), 3);
@@ -1420,8 +2054,10 @@ mod tests {
         let (x_column_id, y_column_id) = seed_dataset(&state, "error-fixture");
         let service = GraphNewService::new(&state);
         let mut request = GraphNewRenderRequest { request_id: "error-1".into(), session_id: "error-session".into(),
+            x_mode: Default::default(),
+            raw_mode: Default::default(),
             dataset_id: "error-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None };
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false };
         let error = service.render_with(&request, |_| Err(AppError::FileIO("/private/secret.db".into())),
             &mut |_, _| panic!("failed rendering must not send")).expect_err("failure");
         assert_eq!(serde_json::to_value(error).expect("error json"), "Stats error: graph_new_render_failed");
@@ -1459,8 +2095,10 @@ mod tests {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id) = seed_dataset(&state, "concurrent-fixture");
         let request = GraphNewRenderRequest { request_id: "first".into(), session_id: "session".into(),
+            x_mode: Default::default(),
+            raw_mode: Default::default(),
             dataset_id: "concurrent-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None };
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false };
         let (ready_send, ready_receive) = std::sync::mpsc::channel();
         let (release_send, release_receive) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
@@ -1592,6 +2230,29 @@ mod tests {
         };
         let result = GraphNewService::new(&state).build(&request, &mut |_| {});
         assert!(matches!(result, Err(crate::error::AppError::Busy(_))));
+    }
+
+    #[test]
+    fn graph_new_scan_counts_source_rows_not_metadata_and_excludes_nonfinite_pairs() {
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id) = seed_dataset(&state, "scan-counts");
+        {
+            let db = state.db.lock().expect("db");
+            db.conn().execute("INSERT INTO dataset_scan_counts (_row_id, x_value, y_value) VALUES (5, $1, 1), (6, 1, $2), (7, $3, 1)",
+                params![f64::NAN, f64::INFINITY, f64::NEG_INFINITY]).expect("nonfinite rows");
+        }
+        for metadata_rows in [1u64, 1000] {
+            state.db.lock().expect("db").conn().execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2", params![metadata_rows, "scan-counts"]
+            ).expect("stale metadata fixture");
+            let result = GraphNewService::new(&state).build_for_test(
+                "scan", "scan-counts", 0, &x_column_id, &y_column_id, 2, 4, 4,
+                &mut |_| {}, &|| true,
+            ).expect("scan actual source");
+            assert_eq!((result.summary.processed_rows, result.summary.finite_rows, result.summary.excluded_non_finite_rows), (7, 3, 4));
+            assert_eq!(result.query_count, 1);
+            assert_eq!(result.pyramid.total_finite_rows, 3);
+        }
     }
 
     #[test]

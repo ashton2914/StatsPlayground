@@ -1,5 +1,448 @@
 # Performance Baselines
 
+## Typed-X Review Corrections (2026-09-18)
+
+Five reviewed issues now have focused regression evidence:
+
+1. Raw lines use f64 segment clipping before f32 conversion when the camera
+  precision check requires rebasing. Offscreen/re-entry pixels are checked
+  against an independent analytic crossing. Normal cameras retain indexed
+  point-buffer reuse; the fallback reserves 16 bytes/segment instead of 8.
+2. Time coordinates subtract an exact integer epoch origin before conversion,
+  choosing an exact seconds/milliseconds/microseconds/nanoseconds unit.
+  Native TIMESTAMP_NS and strict ISO text retain distinct nanosecond instants
+  and duplicate ordering. Ranges exceeding exact relative integer coordinates
+  are diagnosed, not silently merged. Cache policy is `typed-x-v3-relative-time`.
+  Frontend labels reconstruct integer time and measure text widths, preserving
+  submillisecond digits. Eight DOM cases cover nanoseconds, microsecond time,
+  microsecond duration and Unicode categories at 960/390px, including alignment.
+3. Admission may reclaim an inactive raw GPU buffer under pressure, resetting
+  only its reuse metadata. Scatter/Mean remain present, and re-enabling raw
+  lines restores identical pixels. Normal toggles retain reusable buffers.
+4. Category admission uses bounded row-ID pages and a bounded first-seen
+  dictionary before projection. Oversized/high-cardinality inputs fail before
+  full materialization; no full-text category window sort remains. Auto has a
+  cold scalar classification query; projection counters are not total SQL
+  counters. Unicode labels and stable first-seen ordering have regression tests.
+5. Completion ticks retain the finite values produced by `numeric_ticks`.
+  TypeScript uses overflow-safe normalization, with real Rust completion replay
+  for `[-1e308, 1e308]` and rejection of misplaced/nonfinite ticks.
+
+Final-source release measurements below supersede the earlier round for these
+changes. CSV bytes, modification time and SHA-256 remained unchanged; production
+and test source hashes are recorded before/after the run. The CSV was not copied.
+Both axes retain all 2,032,293 observations, with zero exclusions, 2,032,292 raw
+segments (zero in Scatter), and 1,674,063 / 1,727,165 Mean groups respectively.
+
+| X | Import/metadata ms | Cold ms | Warm ms | Camera ms | Disk ms | Scatter/Line/Points+line ms |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Test Time (Duration) | 7743.88 | 3345.30 | 339.19 | 273.25 | 1274.28 | 274.90 / 289.65 / 328.10 |
+| DPT (Time) | 7790.17 | 2772.88 | 334.43 | 277.27 | 1280.23 | 265.87 / 284.53 / 316.37 |
+
+Every post-cold run has zero source projections. Cold/warm/disk RGBA are
+identical per axis. All 18 native PNGs round-trip losslessly; all 18 saved
+completions and RGBA payloads pass the real frontend parser/receiver with mocked
+invoke and stale-frame fencing. Mean toggles change 162,744 / 162,713 pixels,
+all inside the plot; disabled frames have zero red pixels. Native curves and
+frontend typed-label screenshots were visually inspected. Native PNGs do not
+include the separately rendered HTML X labels; CT uses synthetic frame pixels.
+
+Retained GPU allocation peaks at 131,709,472 / 132,559,104 bytes under the
+unchanged 256 MiB admission cap. Whole-process maximum RSS is 1,550,041,088 /
+1,592,213,504 bytes, including import, DuckDB and harness memory. These RSS
+measurements are not graph-only budgets or evidence of a memory optimization.
+
+Final checks: 166 serial Rust `graph_new` tests, five TS suites, 48 isolated CTs,
+`tsc -b`, Vite, Cargo build and standard Clippy pass. Cargo build reports 72
+warnings, Clippy 129 and release build 68; Vite reports its large-chunk warning.
+Evidence is under `.cache/issue221-phase1/review-final/`; CT output is isolated
+under `.cache/issue221-phase1/ct-reviewed/`. Prior evidence remains intact.
+These are single macOS backend samples, not P95 or production WebView timings.
+Independent controller review, native desktop acceptance and Windows/Linux
+verification remain pending. Mean defaults and source-cache retention policies
+are unchanged; no commit, push, CSV mutation or dependency additions were made.
+
+## Typed X And Raw Lines (2026-09-18)
+
+Historical pre-review implementation and measurement snapshot follows.
+
+Graph Builder-new accepts every schema descriptor for X; Y remains numeric.
+Session-only interpretation modes are Auto, Numeric, Time, Duration and Category.
+Auto preserves SQL numeric values, projects native DATE/TIMESTAMP epochs, and
+recognizes strict ISO timestamps, `hours:mm:ss[.fraction]` and
+`:days:hours:mm:ss[.fraction]` elapsed values. Hours need not wrap at 24.
+Text DPT uses DuckDB's month/day 12-hour parser only when a valid day above 12
+disambiguates the column. Other or ambiguous text becomes first-seen categories.
+Offset timestamps use UTC; naive timestamps retain wall-clock values without
+local timezone conversion. Mixed naive/offset text is categorical in Auto and
+diagnosed as unrepresentable in explicit Time. Explicit parsing excludes invalid
+pairs, preserving source gaps. Categories are bounded to 16,384 labels, 512 bytes
+per label and about 1 MiB total; overflow produces a diagnostic, not truncation.
+
+Scatter, Line and Points + line share the complete exact point geometry.
+Raw segments sort each contiguous valid source run by interpreted X, then row ID;
+missing/invalid source rows break runs. Lines never connect sampled LOD points.
+Above 2.1M finite pairs raw lines are unavailable; scatter can remain approximate.
+Mean remains a separate default-on grouped layer. Mode/Mean switches preserve
+the camera and use cached data without SQL; interpretation changes invalidate
+the graph key and reset the camera. No old Graph Builder/project state is changed.
+
+Raw indices occupy 8 bytes per segment and reuse the existing GPU point buffer.
+The exact CPU working allowance is now 100 bytes/point (previously 84), including
+raw ordering/index storage. The disk restore admission ceiling is 320 MiB within
+the unchanged shared 768 MiB CPU budget. GPU admission still includes retained,
+replacement and staging allocations under 256 MiB. Typed axis metadata is part
+of the checksummed cache, keyed by the `typed-x-v2` interpretation policy.
+Only bounded tick metadata crosses IPC; frontend labels use the same positions
+and plot rectangle as the Rust grid. Native RGBA exports omit those HTML labels.
+
+One macOS release measurement round used the immutable 702,927,046-byte CSV,
+SHA-256 `879a7eee206a7e780bd666a4bd2e36f973a2fe35b0b10b647f700769d4014886`.
+Both axes retained 2,032,293/2,032,293 rows with no exclusions and 2,032,292 raw
+segments at 1280 x 720. The importer resolved Test Time/Step Time as VARCHAR and
+DPT as TIMESTAMP. Raw lines and Mean were enabled except the named toggle runs.
+
+| X | Import/metadata ms | Cold ms | Warm ms | Camera ms | Disk ms | Scatter/Line/Points+line ms |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Test Time | 7644.25 | 3102.96 | 312.05 | 243.37 | 1236.64 | 258.14 / 256.37 / 280.82 |
+| DPT | 7814.89 | 2498.99 | 286.93 | 255.62 | 1248.94 | 264.49 / 245.17 / 271.70 |
+
+Mean groups were 1,674,063 and 1,727,165 respectively. Every non-cold run used zero
+source projections. Retained GPU allocations peaked at 131,709,472 / 132,559,104
+bytes. Whole-process maximum RSS was 1,115,226,112 / 1,208,516,608 bytes, including
+DuckDB/import/harness memory; these are not graph-only memory peaks. Source hash,
+size and modification time remained unchanged. Cold/warm/disk RGBA were identical
+per axis; all 18 PNGs round-trip losslessly, and all 18 saved completions/payloads
+pass the production TypeScript validator with the recorded modes and stale fence.
+
+Evidence: `.cache/issue221-phase1/native-manifest.json`, `native-duration/`,
+`native-time/`, `replay-*.json`, and isolated CT output under `ct/final/`.
+Important timing caveat: this single release round preceded the final direct
+native-epoch projection and mixed-timezone guard. Final source passes 161 serial
+`graph_new` tests (including native typed CSV fixtures), five TS suites, 40 CTs,
+TypeScript/Vite, Cargo build and standard Clippy (warnings remain). The recorded
+release timings are not measurements of those last changes. No second actual
+CSV round was run. No production WebView timing, P95, native desktop acceptance,
+independent code review or Windows/Linux certification is claimed.
+
+## Graph Builder-new Recovery (2026-09-18)
+
+Derived-cache namespaces remain unique to each AppState lifetime. Restart never
+restores old dataset IDs. New Unix namespaces contain a locked `owner-v1` marker
+and a bounded generated-file identity journal; startup can retire abandoned
+namespaces only after acquiring that marker's nonblocking OS lock. Live parallel
+processes are retained without PID heuristics. Legacy namespaces without a
+verifiable marker are deliberately left alone.
+
+Cleanup inspects at most 64 root entries, 1,024 journal records and 128 KiB of
+marker data per namespace, and retires at most 1 GiB per initialization. Unknown,
+corrupt, linked, replaced and oversized entries fail closed. Unix operations use
+`rustix` directory-relative no-follow handles and private lifetime directories.
+This dependency already existed transitively; the manifest now declares it.
+POSIX does not provide an atomic inode-conditional unlink: the final leaf
+identity check and unlink remain separate operations. Protection against a
+malicious concurrent writer running under the same user identity is not claimed.
+
+Disk initialization runs on a blocking worker, not the UI setup thread; failure
+leaves the memory cache usable. Windows/non-Unix disk caching is intentionally
+disabled until equivalent handle-relative ownership/deletion is implemented and
+verified. Common path validation also rejects Windows reparse attributes.
+Windows and Linux native validation remain pending; macOS evidence is not
+cross-platform certification. Do not manually clean existing user caches as an
+installation step.
+
+The shared scene/probe renderer latches typed device-loss, validation, internal,
+readback and out-of-memory failures without exposing driver messages. Confirmed
+device loss gets at most one recreation per request, after releasing the old
+renderer. Invalid requests, resource pressure and OOM do not retry. Cancellation
+is checked before recreation and before returning a frame. Poll waits are bounded
+to five seconds, callback waits to one second, and staging buffers unmap on every
+exit path. Failed frames are not published; subsequent requests can create a new
+renderer. No frontend frame-clearing behavior was changed.
+
+Evidence is retained under `.cache/issue221-recovery/`. Deterministic injected
+faults test recovery policy and readback cleanup without killing a device. Native
+macOS tests additionally exercise real GPU pixels and both production entry
+points. These are correctness checks, not WebView/P95 performance measurements.
+Strict Clippy remains a failing repository gate; unrelated existing warnings are
+not repaired by this slice. Independent controller review is still required.
+
+## Graph Builder-new Mean Overlay (2026-09-18)
+
+Mean is the arithmetic mean of every finite Y for each identical finite X,
+connected in ascending X order. Signed zero groups together; nonfinite pairs
+are excluded. This is neither a global horizontal mean nor a moving average.
+The default-on checkbox is session-only. The red two-logical-pixel line and
+frame-bound legend preserve blue scatter, axis titles and the desired camera.
+English and Simplified Chinese availability messages are included. Fewer than
+two X groups produce no segment; incomplete/approximate retained data disables
+Mean instead of reporting a representative-point mean as complete.
+
+Rust lazily caches the sorted full mean per resident exact graph key (up to
+2,100,000 finite pairs). A Kulisch-style integer superaccumulator sums finite
+values exactly in units of 2^-1074 using two 34-limb magnitudes. Integer division
+precedes the single round-to-nearest-even conversion, including subnormal ties;
+the sum may exceed f64 range without overflowing the mean. All six permutations
+of [1e300, 1e-24, -1e300] yield 3.333333333333333e-25.
+Toggle/camera reuse performs no aggregation or source projection.
+Disk restore reconstructs the mean from the complete retained tile, not the CSV.
+Normal camera changes reuse GPU line geometry; deep zoom uses clipped f64
+endpoints before f32 conversion when the precision bound requires replacement.
+No point or mean arrays cross the frontend IPC boundary.
+
+Mean vector capacity is charged as resident memory within the existing exact
+working reservation: mean 16 B/point + scene 24 B/point + maximum simultaneous
+renderer scratch 40 B/point fits its 84 B/point allowance. Reservation stays
+stable after lazy computation. The existing sort/compaction retains O(N) vector
+capacity; accumulator storage is 544 bytes of stack scratch reused per group,
+within the fixed 4096-byte allowance, not allocated for each of the 729,286 groups.
+GPU admission includes retained resources,
+replacement buffers, bounded upload staging, and replacement render/readback
+targets under the unchanged 256 MiB cap. Under pressure only, Mean-off reclaims
+the inactive line buffer and clears only its reuse metadata/draw count before
+recalculating admission. The native 2M-group Mean-on to 2.1M-point Mean-off test
+reclaims 31,999,968 bytes, preserves points, then reuploads the correct line on
+re-enable. Requested lines are never dropped; toggles/cameras retain reuse when
+the allocation fits. The shared graph CPU cap stays 768 MiB.
+
+Final isolated macOS release run, 1280 x 720, Rec# / Voltage (V):
+2,032,293 finite pairs, 729,286 X groups; import/metadata 7832.23 ms excluded below.
+
+| Native Scenario | Wall ms | Source Projections |
+| --- | ---: | ---: |
+| Cold Mean on | 1687.46 | 1 |
+| Warm Mean on | 268.31 | 0 |
+| Camera Mean on | 248.60 | 0 |
+| Disk restore Mean on | 1229.36 | 0 |
+| Full-domain Mean off | 253.57 | 0 |
+| Full-domain Mean on again | 260.72 | 0 |
+| Comparison Mean on | 252.00 | 0 |
+| Comparison Mean off | 246.43 | 0 |
+
+Comparison uses a renderer-only anisotropic override X=[0,120000], Y=[3,4.5],
+not the IPC camera policy. Point uploads remain one; Mean uploads remain one
+through warm/camera and rise to two only after disk restore, not on toggles.
+Shared graph CPU reservation peaks at 227,627,568 bytes; retained GPU allocation
+is 100,335,904 bytes. Whole-process maximum RSS is 928,415,744 bytes, including
+DuckDB import and the benchmark, not a graph-cache-only measurement.
+
+Fresh evidence is under `.cache/issue221-mean/native-reviewed-final/`: report, eight
+native RGBA/PNG pairs, SHA-256 source check, pixel audit and production parser
+replay. Full/comparison on-off differences are exactly 85,057/438,387 red pixels;
+disabled frames have zero red pixels and no changes occur outside the plot.
+All remaining pixels are unchanged. Both disabled images match the preserved
+`native-budget-final` Mean-off images byte-for-byte after PNG decode.
+Saved native cold/camera frames pass the
+real Channel, header parser, receiver and completion validator with mocked
+invoke. These are single-run backend timings, not WebView latency or P95.
+The existing no-watch application was neither stopped nor replaced.
+
+Review-fix TDD: two numeric tests failed then passed; the native pressure
+transition failed with cache pressure then passed. All 10 mean-focused tests and
+140 serial `graph_new` Rust tests pass, including every finite exponent, both
+signs, all cancellation permutations, carry, subnormal rounding and checkpoints.
+Fresh Vite, Cargo, release build and production-parser replay passed. Standard
+Clippy passed with 127 existing warnings; not warning-free. The prior five TS
+contracts, 28 scoped component cases and tsc evidence remain preserved; frontend
+sources were unchanged, so CT was not rerun. Review logs use the `review-` prefix
+under `.cache/issue221-mean/`. A post-run wrapper initially expected a non-null
+Mean-off group count; the saved successful native run passed the corrected audit
+without reimporting the CSV.
+Independent controller review and live application inspection remain separate.
+HEAD and all earlier exact-scatter edits are preserved; no commit or push.
+
+## Graph Builder-new Last Two Review Fixes (2026-09-18)
+
+The production `graphNewService` completion validator now accepts up to
+2,100,000 submitted marks. Exact whole geometry is identified by
+`selectedMarks === finiteRows`, independently of the viewport's `visibleRows`.
+Non-whole exact selections still require submitted/visible equality; approximate
+selections cannot exceed known visibility. Safe-integer, nonnegative, finite,
+source-total, inspection-count, camera and frame-bound checks remain enforced.
+No renderer count is trimmed and no other geometry consumer is changed.
+
+Construction admission now performs a nonmutating CPU/disk feasibility check,
+then atomically acquires only the additional shared-pool bytes while transferring
+the minimum unpinned CPU LRU prefix into its construction reservation. Existing
+claims are not released into a race window; surplus is released only after the
+victims are dropped. Disk reclamation follows CPU reservation. Pinned entries,
+external coordinator claims and pending reservations remain charged. Tests use
+three distinct compact-exact keys with representative 227,627,328-byte resident
+claims, avoiding large duplicate allocations: two warm claims plus 512 MiB
+construction fit the unchanged 768 MiB pool after one unpinned eviction.
+Oversized, pinned, external-held and pending failures preserve warm entries,
+disk contents and counters; 16 shared-pool contention rounds admit exactly one
+winner, retain the losing entry and release claims exactly once.
+
+TDD evidence from main-workspace tasks: the real-service regression failed with
+`graph_new_render_failed` (exit 1), then passed; the construction group failed
+only the feasible third-key admission (6 passed / 1 failed, exit 101), then all
+7 passed. The additional contention check raises that focused group to 8.
+Final gates passed 130 serial `graph_new` Rust tests, five TS contract scripts,
+24 existing component cases, `tsc -b`, Vite and Cargo builds. Standard Clippy
+completed with 126 existing warnings, not a strict warning-free gate.
+
+`tests/graphNewService.test.ts` exercises the real Tauri Channel, header parser,
+binary receiver, completion validator and stale camera fence, mocking only the
+native invoke boundary. A first replay passed with the saved native cold/camera
+RGBA and unchanged completions. **Evidence-loss incident:** the subsequent CT
+run used Playwright's default `test-results` output and cleared that shared
+directory, deleting prior native reports/images and initial RED/GREEN/replay
+logs. Those original pixel artifacts are not restored; historical artifact links
+below are unavailable, and historical timings are not new qualification evidence.
+Always use a dedicated CT output, e.g. `--output=test-results/issue221-last2-ct`.
+
+The native cold/camera completion objects read before cleanup are retained in
+the existing service test. Reproducible `--recorded-native` mode replays these
+unchanged objects (2,032,293 submitted, 2,032,293/7 visible) with an explicitly
+synthetic valid one-pixel header/RGBA. This proves production parser acceptance,
+not live Canvas/WebView presentation or restored native pixel evidence:
+
+```bash
+node_modules/.bin/tsx --tsconfig tsconfig.app.json tests/graphNewService.test.ts --recorded-native test-results/issue221-last2-native-parser.json
+```
+
+Saved results: `test-results/issue221-last2-native-parser.json`,
+`test-results/issue221-last2-gates.json`, and `test-results/issue221-last2-*.log`.
+Independent repository rereview remains **pending controller review**: the
+delegate could not inspect files with its available tools and issued no verdict.
+HEAD remains `98e89c6ee16f46bd8ab32de8c85008209b32e4b6`; all pre-existing dirty
+source edits remain. No commit, push, dependencies, source CSV edit, extra source
+query, release benchmark rerun or existing-app termination was performed.
+Status localization is deferred because the nearby Graph Builder-new view has
+no localization integration; no unrelated UI scope was added.
+
+## Graph Builder-new Compact Exact Slice (2026-09-17)
+
+Status: **Exact native scatter verified for all 2,032,293 finite pairs in
+the supplied real CSV. Internal cap: 2,100,000, subject to existing budgets.**
+
+The waveform regression reproduced representative loss: only 417 of 8,193
+finite source points were selected. A fitting bounded-policy source now uses
+one complete level-zero tile, skipping deeper pyramid/bucket construction.
+Camera requests retain the same point slots and count visible rows separately;
+`selectedMarks` therefore includes offscreen points. The existing renderer
+clips them and can reuse its point buffer. Research raw-index mode and the
+above-cap approximate pyramid remain available without policy substitution.
+Insufficient construction budgets also retain the approximate fallback.
+
+Binary persistence uses the existing format, with strict complete-source
+validation for the larger tile and bounded identity
+`graph-new-v6-compact-exact-2100000`, invalidating older sampled caches. Decoded-cache
+and working-copy reservations account for the complete tile rather than a
+fixed 8 MiB decoded limit. The above-million regression, cap+1 fallback, memory refusal,
+cancellation, exact disk round-trip, camera reuse and old approximate path
+are covered by the serial tests. The above-million RED produced eight levels
+instead of one; GREEN preserves every source point through the renderer.
+
+Four review repairs are now covered by focused RED/GREEN checks. Decoders
+preallocate validated counts instead of using fallible `collect()`, whose excess
+capacity prevented the complete tile from staying in the decoded cache. Tests
+at 2,032,293 and 2,100,000 points account actual vector capacities and prove warm
+decodes survive corruption/truncation of their own backing file until eviction.
+Tile classification now follows the same interpolated boundaries as persistence,
+preserving exact outer endpoints, including subnormal and adjacent-large values.
+The -6..7 midpoint fixture round-trips below and above the exact cap under an
+8 MiB construction budget without relaxing corruption validation. Status now
+distinguishes `7 visible; 2,032,293 submitted`. After construction buffers are
+dropped, the service shrinks its construction reservation to retained memory
+before cache admission; success/failure tests preserve the previous pinned graph
+through replacement. Metadata under/overcounts and nonfinite exclusions are
+also covered through the actual scan path.
+
+The 40-byte GPU mark layout is unchanged. Two 4M geometry buffers alone would
+exceed 256 MiB, so the cap is conservatively 2.1M instead. At this cap, existing
+112-byte-per-point construction accounting plus scratch stays below 256 MiB;
+retained/replacement GPU geometry and two 1280x720 targets also fit. Maximum
+4K retained/replacement targets can still trigger `graph_new_cache_pressure`;
+this is a safe refusal, not a promise of exact rendering at every viewport.
+No CPU/GPU budget was raised. These reservations are not overall process RSS:
+the existing shared graph CPU pool is 768 MiB and DuckDB has its own budget.
+Large scenes above 50,000 marks use a 1px logical radius (2px diameter), passed
+through the existing camera uniform; smaller scenes retain a 3px radius.
+Native DPR-1/2 pixel tests preserve geometry-upload reuse.
+
+The release harness accepts a read-only CSV and a new artifact directory:
+
+```bash
+cargo run --release --manifest-path src-tauri/Cargo.toml --features perf-harness --example performance_baseline -- --graph-new-csv "$CSV_SOURCE" "$ARTIFACT_DIRECTORY"
+```
+
+It imports with the existing DuckDB importer (1 GB database memory limit,
+four threads), resolves `Rec#` and `Voltage (V)` by metadata identity, and
+audits finite pairs. Sources above the cap produce `scopeExceeded: true`
+without rendering or silently sampling. Within-cap runs measure cold, warm,
+isotropic camera and disk restore through the native renderer, retaining raw
+RGBA frames. A separately labelled renderer-only comparison pass uses
+X=0..120000 and Y=3..4.5 without changing the IPC equal-ratio camera policy.
+Times exclude WebView presentation and there is no Mean overlay.
+
+The supplied 702,927,046-byte CSV has 52 columns and **2,032,293 rows, all
+finite in the selected pair**. `Rec#` is BIGINT, range 1 to 729,286;
+`Voltage (V)` is DOUBLE, range 2.682 to 10. The X maximum is not the row
+count. Import plus metadata/finite-domain auditing took **7,994.08 ms** in the
+final release run. Source length and modification time were unchanged.
+
+Already-loaded native backend timings, one run each, at 1280x720 DPR 1:
+
+| Pass | Wall ms | Source build ms | Native call ms | Prepare/submit ms | Readback ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cold full domain | 1440.90 | 536.17 | 333.14 | 244.00 | 65.55 |
+| Warm full domain | 283.97 | 0 | 275.71 | 224.43 | 49.61 |
+| Isotropic camera | 243.39 | 0 | 236.08 | 227.28 | 6.98 |
+| Disk restore | 1055.24 | 0 | 252.29 | 223.49 | 27.11 |
+| Comparison domain | 243.92 | 0 | 234.45 | 222.48 | 10.17 |
+
+`renderMs` is CPU preparation plus queue submission, including content hashing
+and affine validation, not GPU-only execution time. Readback includes GPU wait.
+`nativeOuterOverheadMs` is the residual outside these phases, including initial
+renderer setup. Wall time additionally includes service selection, decoding,
+scene materialization and cache work. Comparison wall time also includes its
+bounded harness-only point clone and visible-row count.
+
+Every pass submitted 2,032,293 marks, with source projection counts 1/0/0/0/0
+and only one geometry upload across all five frames. Full-domain visible rows
+were 2,032,293; comparison visible rows were 391,538. The isotropic middle-half
+camera has Y=4.5115..8.1705 and contains only seven points, explaining its sparse
+image. Retained graph CPU allocation is 56,910,620 bytes for cold/warm/camera,
+and 56,910,860 after disk restore, including the now-retained decoded tile.
+The largest post-frame CPU reservation is 227,627,568 bytes, not a construction
+peak. Retained GPU allocation reaches 88,667,328 bytes; the exact persistent
+packet occupies 56,904,504 bytes. macOS `/usr/bin/time -l` measured **847,151,104
+bytes maximum resident set size** and **1,232,717,120 bytes peak memory footprint**
+for the whole release process, including CSV import, DuckDB, native rendering
+and harness buffers. These OS metrics are distinct from graph reservations and
+do not imply a 768 MiB whole-process limit or a measured graph-only RSS peak.
+Raw resource evidence is `test-results/review4-release-csv-rss.log`.
+
+Evidence is local and ignored under `test-results/issue221-real-csv-review4917/`:
+`report.json`, `cold.png`, `warm.png`, `disk.png`, `comparison.png`, `camera.png`, corresponding raw
+`.rgba` files, and `image-evidence.json` with raw hashes. PNG conversion is
+lossless; all five decode at 1280x720. Cold/warm/disk RGBA hashes are identical.
+The comparison frame contains 588,788
+blue pixels, with visible fine structure instead of the 6px-dot saturated fill.
+Its top-level domain/visible count describe the renderer-only override; nested
+`completion` retains the service full-domain count and cache metrics.
+No Mean overlay, JMP parity, desktop presentation timing or P95 is claimed.
+Compared with the preserved pre-review run in `test-results/issue221-real-csv-final917/`,
+warm wall time fell from 582.50 to 283.97 ms, camera from 563.78 to 243.39 ms,
+and comparison from 566.56 to 243.92 ms. These single warm/camera samples meet
+300 ms; they are not a percentile qualification or controlled speedup benchmark.
+Cold and disk wall time still exceed one second. O(N) hashing, affine validation
+and materialization remain; cache reuse does not make them free.
+
+Final checks: **127 related Rust tests passed serially**, four targeted TS scripts,
+24 component tests, Cargo/Vite builds and TypeScript checking passed. Clippy
+completed with existing warnings. Release build completed in 143.04 seconds.
+Statuses are in `test-results/review4-verified-status.json` and
+`test-results/review4-release-status.json`; logs use `test-results/review4-*.log`.
+An independent review of supplied current code excerpts reported no actionable
+Critical/Important findings. Full repository review remains unverified because
+the delegate lacked the permitted filesystem/task tools; this is not a full
+review clearance. Native UI acceptance remains pending. No app restart,
+dependency installation, staging, commit or push was performed. Earlier measurements below are
+historical, not measurements of this compact-exact implementation.
+
 ## Graph Builder-new Camera And Cache (2026-09-17)
 
 The user confirmed native point plotting, then prioritized pan/zoom and caches

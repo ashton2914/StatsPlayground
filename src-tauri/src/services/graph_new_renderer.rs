@@ -7,19 +7,32 @@ use super::graph_new_transport_service::{
 use crate::error::AppError;
 use sha2::{Digest, Sha256};
 use crate::models::graph_new::GraphNewGpuCacheStats;
+use std::sync::{Arc, Weak};
 
-pub(crate) const MAX_SCENE_POINTS: usize = 1_000_000;
+pub(crate) const MAX_SCENE_POINTS: usize = 2_100_000;
 const GRID: [f32; 4] = [226.0 / 255.0, 232.0 / 255.0, 240.0 / 255.0, 1.0];
 const INK: [f32; 4] = [71.0 / 255.0, 85.0 / 255.0, 105.0 / 255.0, 1.0];
 const BLUE: [f32; 4] = [31.0 / 255.0, 111.0 / 255.0, 235.0 / 255.0, 1.0];
 
 /// Logical dimensions; output is ceil(width * DPR) by ceil(height * DPR) RGBA8.
 pub(crate) struct GraphNewScene {
+    pub(crate) presentation: ScenePresentation,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) device_pixel_ratio: f64,
     pub(crate) domain: GraphDomain,
     pub(crate) points: Vec<SourcePoint>,
+    pub(crate) mean: Option<Arc<Vec<[f64; 2]>>>,
+}
+
+pub(crate) struct ScenePresentation {
+    pub(crate) raw_line: Option<Arc<Vec<[u32; 2]>>>,
+    pub(crate) show_points: bool,
+    pub(crate) x_axis: Option<crate::models::graph_new::GraphNewAxis>,
+}
+
+impl Default for ScenePresentation {
+    fn default() -> Self { Self { raw_line: None, show_points: true, x_axis: None } }
 }
 
 impl GraphNewScene {
@@ -40,7 +53,11 @@ impl GraphNewScene {
         }
         validate_domain(self.domain.x_min, self.domain.x_max)?;
         validate_domain(self.domain.y_min, self.domain.y_max)?;
-        if self.points.len() > MAX_SCENE_POINTS
+        if self.presentation.raw_line.as_ref().is_some_and(|segments| segments.len() > MAX_SCENE_POINTS
+            || segments.iter().flatten().any(|index| *index as usize >= self.points.len())) {
+            return Err(AppError::InvalidParam("graph-new invalid raw line indices".into()));
+        }
+        if self.points.len() > MAX_SCENE_POINTS || self.mean.as_ref().is_some_and(|mean| mean.len() > MAX_SCENE_POINTS)
             || self
                 .points
                 .iter()
@@ -56,6 +73,12 @@ impl GraphNewScene {
     pub(crate) fn plot_rect(&self) -> crate::models::graph_new::GraphNewPlotRect {
         let [x, y, width, height] = self.plot().map(|value| value as u32);
         crate::models::graph_new::GraphNewPlotRect { x, y, width, height }
+    }
+
+    pub(crate) fn raw_upload_bytes(&self) -> u64 {
+        self.presentation.raw_line.as_ref().map_or(8, |indices| {
+            indices.len().max(1) as u64 * if PointBasis::reference(self).camera(self).is_none() { 16 } else { 8 }
+        })
     }
 
     fn plot(&self) -> [f32; 4] {
@@ -80,18 +103,19 @@ impl GraphNewRenderer {
         session_renderer().lock().ok()?.as_ref().map(SyntheticFrameRenderer::cache_stats)
     }
 
+    #[cfg(any(test, feature = "perf-harness"))]
     pub(crate) fn render(scene: &GraphNewScene) -> Result<SyntheticFrame, AppError> {
+        Self::render_current(scene, || true)
+    }
+
+    pub(crate) fn render_current(scene: &GraphNewScene, current: impl FnMut() -> bool) -> Result<SyntheticFrame, AppError> {
         scene.physical_size()?;
         let mut guard = session_renderer()
             .lock()
             .map_err(|_| AppError::Stats("graph-new renderer lock poisoned".into()))?;
-        if guard.is_none() {
-            *guard = Some(pollster::block_on(SyntheticFrameRenderer::new())?);
-        }
-        let renderer = guard
-            .as_mut()
-            .ok_or_else(|| AppError::Stats("graph-new session renderer unavailable".into()))?;
-        pollster::block_on(renderer.render_scene(scene))
+        super::graph_new_transport_service::recover_renderer(&mut guard, &mut false,
+            || pollster::block_on(SyntheticFrameRenderer::new()),
+            |renderer| pollster::block_on(renderer.render_scene(scene)), current)
     }
 }
 
@@ -126,8 +150,8 @@ impl PointBasis {
     }
 
     fn position(&self, point: &SourcePoint) -> [f32; 2] {
-        [normalized(point.x, self.domain.x_min, self.domain.x_max).clamp(-1.0, 2.0) as f32,
-            normalized(point.y, self.domain.y_min, self.domain.y_max).clamp(-1.0, 2.0) as f32]
+        [normalized(point.x, self.domain.x_min, self.domain.x_max) as f32,
+            normalized(point.y, self.domain.y_min, self.domain.y_max) as f32]
     }
 
     fn camera(&self, scene: &GraphNewScene) -> Option<[f32; 4]> {
@@ -175,7 +199,22 @@ impl PointBasis {
 }
 
 pub(crate) struct ScenePipeline {
+    raw_pipeline: wgpu::RenderPipeline,
+    raw_clipped_pipeline: wgpu::RenderPipeline,
+    raw_indices: wgpu::Buffer,
+    raw_capacity: u64,
+    raw_source: Weak<Vec<[u32; 2]>>,
+    raw_basis: Option<PointBasis>,
+    raw_count: u32,
     pipeline: wgpu::RenderPipeline,
+    mean_pipeline: wgpu::RenderPipeline,
+    mean_instances: wgpu::Buffer,
+    mean_capacity: u64,
+    mean_source: Weak<Vec<[f64; 2]>>,
+    mean_basis: Option<PointBasis>,
+    mean_segments: u32,
+    mean_uploads: u64,
+    mean_hits: u64,
     bindings: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     instances: wgpu::Buffer,
@@ -202,7 +241,7 @@ impl ScenePipeline {
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("graph-new camera uniform"),
-            size: 48,
+            size: 64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -297,8 +336,39 @@ impl ScenePipeline {
             multiview_mask: None, cache: None,
         });
         let instances = Self::buffer(device, 40);
+        let [raw_pipeline, raw_clipped_pipeline] = [40, 8].map(|stride| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("graph-new indexed raw line"), layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_raw"), compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: stride, step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2] })] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::LineList, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        }));
+        let mean_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("graph-new mean pipeline"), layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_mean"), compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 16,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2] })] },
+            primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        });
         Self {
             pipeline,
+            raw_pipeline, raw_clipped_pipeline, raw_indices: Self::index_buffer(device, 8), raw_capacity: 8, raw_source: Weak::new(), raw_basis: None, raw_count: 0,
+            mean_pipeline,
+            mean_instances: Self::buffer(device, 16),
+            mean_capacity: 16,
+            mean_source: Weak::new(),
+            mean_basis: None,
+            mean_segments: 0,
+            mean_uploads: 0,
+            mean_hits: 0,
             bindings,
             uniform,
             instances,
@@ -313,6 +383,11 @@ impl ScenePipeline {
             uploads: 0,
             hits: 0,
         }
+    }
+
+    fn index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor { label: Some("graph-new raw indices"), size,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
     }
 
     fn buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -355,8 +430,12 @@ impl ScenePipeline {
         let plot = scene.plot();
         let ratio = scene.device_pixel_ratio as f32;
         let mut marks = Vec::with_capacity(1024);
-        for tick in numeric_ticks(scene.domain.x_min, scene.domain.x_max)? {
-            let horizontal = plot[0] + tick.position as f32 * plot[2];
+        let x_positions: Vec<f64> = match &scene.presentation.x_axis {
+            Some(axis) => axis.ticks.iter().map(|tick| tick.position).collect(),
+            None => numeric_ticks(scene.domain.x_min, scene.domain.x_max)?.into_iter().map(|tick| tick.position).collect(),
+        };
+        for position in x_positions {
+            let horizontal = plot[0] + position as f32 * plot[2];
             marks.push(rect([horizontal, plot[1]], [ratio, plot[3]], GRID));
         }
         for tick in numeric_ticks(scene.domain.y_min, scene.domain.y_max)? {
@@ -364,6 +443,7 @@ impl ScenePipeline {
             marks.push(rect([plot[0], vertical], [plot[2], ratio], GRID));
         }
         for horizontal in [true, false] {
+            if horizontal && scene.presentation.x_axis.is_some() { continue; }
             for (label, position) in axis_labels(scene, horizontal)? {
                 text(&mut marks, &label, position, (2.0 * ratio).max(1.0));
             }
@@ -379,7 +459,7 @@ impl ScenePipeline {
             INK,
         ));
         self.decorations = marks.len() as u32;
-        self.total = scene.points.len() as u32;
+        self.total = if scene.presentation.show_points { scene.points.len() as u32 } else { 0 };
         if marks.len() > 1024 { return Err(AppError::Stats("graph_new_cache_pressure".into())); }
         self.plot = plot.map(|value| value as u32);
         let bytes = bytemuck::cast_slice(&marks);
@@ -406,6 +486,36 @@ impl ScenePipeline {
         } else {
             self.hits += 1;
         }
+        let mean_camera = self.prepare_mean(device, queue, scene)?;
+        self.raw_count = 0;
+        if let Some(indices) = &scene.presentation.raw_line {
+            let clipped = basis.is_some_and(|basis| basis.camera_relative);
+            let same_basis = self.raw_basis.is_some_and(|previous| previous.camera_relative == clipped
+                && (!clipped || (previous.domain == scene.domain && reused_camera.is_some())));
+            if !same_basis || !self.raw_source.upgrade().is_some_and(|source| Arc::ptr_eq(&source, indices)) {
+                let vertices: Vec<[[f32; 2]; 2]> = if clipped {
+                    indices.iter().map(|pair| {
+                        let start = &scene.points[pair[0] as usize];
+                        let end = &scene.points[pair[1] as usize];
+                        clip_mean_segment([start.x, start.y], [end.x, end.y], scene.domain)
+                            .map(|endpoints| endpoints.map(|point| [
+                                normalized(point[0], scene.domain.x_min, scene.domain.x_max) as f32,
+                                normalized(point[1], scene.domain.y_min, scene.domain.y_max) as f32,
+                            ])).unwrap_or([[-1.0; 2]; 2])
+                    }).collect()
+                } else { Vec::new() };
+                let bytes = if clipped { bytemuck::cast_slice(vertices.as_slice()) }
+                    else { bytemuck::cast_slice(indices.as_slice()) };
+                if bytes.len() as u64 > self.raw_capacity {
+                    self.raw_capacity = bytes.len() as u64;
+                    self.raw_indices = Self::index_buffer(device, self.raw_capacity);
+                }
+                if !bytes.is_empty() { queue.write_buffer(&self.raw_indices, 0, bytes); }
+                self.raw_source = Arc::downgrade(indices);
+                self.raw_basis = basis;
+            }
+            self.raw_count = indices.len() as u32 * 2;
+        }
         queue.write_buffer(
             &self.uniform,
             0,
@@ -417,19 +527,97 @@ impl ScenePipeline {
                 width as f32,
                 height as f32,
                 ratio,
-                0.0,
+                if scene.points.len() > 50_000 { 1.0 } else { 3.0 },
                 camera[0],
                 camera[1],
                 camera[2],
                 camera[3],
+                mean_camera[0], mean_camera[1], mean_camera[2], mean_camera[3],
             ]),
         );
         Ok(())
     }
 
     pub(crate) fn cache_stats(&self) -> GraphNewGpuCacheStats {
-        GraphNewGpuCacheStats { allocated_bytes: self.capacity + self.decoration_capacity + 48 + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT),
-            geometry_capacity_bytes: self.capacity + self.decoration_capacity, geometry_uploads: self.uploads, geometry_hits: self.hits }
+        GraphNewGpuCacheStats { allocated_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity + 64 + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT),
+            geometry_capacity_bytes: self.capacity + self.decoration_capacity + self.mean_capacity + self.raw_capacity,
+            geometry_uploads: self.uploads, geometry_hits: self.hits,
+            mean_geometry_uploads: self.mean_uploads, mean_geometry_hits: self.mean_hits }
+    }
+
+    pub(crate) fn replacement_bytes(&self, scene: &GraphNewScene) -> u64 {
+        let points = scene.points.len().max(1) as u64 * 40;
+        let mean = scene.mean.as_ref().map_or(16, |mean| mean.len().saturating_sub(1).max(1) as u64 * 16);
+        let clipped = scene.presentation.raw_line.is_some() && (
+            self.point_basis.is_some_and(|basis| basis.camera_relative && basis.domain == scene.domain)
+            || PointBasis::reference(scene).camera(scene).is_none());
+        let raw = scene.presentation.raw_line.as_ref().map_or(8, |indices| indices.len().max(1) as u64 * if clipped { 16 } else { 8 });
+        (if points > self.capacity { points } else { 0 })
+            + (if raw > self.raw_capacity { raw } else { 0 })
+            + (if mean > self.mean_capacity { mean } else { 0 })
+            + (if 1024 * 40 > self.decoration_capacity { 1024 * 40 } else { 0 })
+    }
+
+    pub(crate) fn reclaim_inactive_mean(&mut self, device: &wgpu::Device) {
+        if self.mean_capacity <= 16 { return; }
+        self.mean_instances.destroy();
+        self.mean_capacity = 16;
+        self.mean_instances = Self::buffer(device, self.mean_capacity);
+        self.mean_source = std::sync::Weak::new();
+        self.mean_basis = None;
+        self.mean_segments = 0;
+    }
+
+    pub(crate) fn reclaim_inactive_raw(&mut self, device: &wgpu::Device) {
+        if self.raw_capacity <= 8 { return; }
+        self.raw_indices.destroy();
+        self.raw_capacity = 8;
+        self.raw_indices = Self::index_buffer(device, self.raw_capacity);
+        self.raw_source = Weak::new();
+        self.raw_basis = None;
+        self.raw_count = 0;
+    }
+
+    fn prepare_mean(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &GraphNewScene) -> Result<[f32; 4], AppError> {
+        self.mean_segments = 0;
+        let Some(mean) = scene.mean.as_ref().filter(|mean| mean.len() >= 2) else { return Ok([1.0, 1.0, 0.0, 0.0]); };
+        let same = self.mean_source.upgrade().is_some_and(|source| Arc::ptr_eq(&source, mean));
+        if let Some(camera) = self.mean_basis.filter(|_| same).and_then(|basis| mean_camera(basis, scene)) {
+            self.mean_segments = mean.len().saturating_sub(1) as u32;
+            self.mean_hits += 1;
+            return Ok(camera);
+        }
+        let mut domain = GraphDomain { x_min: mean[0][0], x_max: mean[0][0], y_min: mean[0][1], y_max: mean[0][1] };
+        for point in mean.iter() {
+            if point.iter().any(|value| !value.is_finite()) { return Err(AppError::InvalidParam("graph-new invalid mean points".into())); }
+            domain.x_min = domain.x_min.min(point[0]); domain.x_max = domain.x_max.max(point[0]);
+            domain.y_min = domain.y_min.min(point[1]); domain.y_max = domain.y_max.max(point[1]);
+        }
+        let reference = PointBasis { domain, camera_relative: false };
+        let (basis, camera) = match mean_camera(reference, scene) {
+            Some(camera) => (reference, camera),
+            None => (PointBasis { domain: scene.domain, camera_relative: true }, [1.0, 1.0, 0.0, 0.0]),
+        };
+        let segments: Vec<[f32; 4]> = mean.windows(2).map(|pair| {
+            let endpoints = if basis.camera_relative {
+                clip_mean_segment(pair[0], pair[1], basis.domain).unwrap_or([[basis.domain.x_min, basis.domain.y_min]; 2])
+            } else { [pair[0], pair[1]] };
+            [normalized(endpoints[0][0], basis.domain.x_min, basis.domain.x_max) as f32,
+                normalized(endpoints[0][1], basis.domain.y_min, basis.domain.y_max) as f32,
+                normalized(endpoints[1][0], basis.domain.x_min, basis.domain.x_max) as f32,
+                normalized(endpoints[1][1], basis.domain.y_min, basis.domain.y_max) as f32]
+        }).collect();
+        let bytes = bytemuck::cast_slice(&segments);
+        if bytes.len() as u64 > self.mean_capacity {
+            self.mean_capacity = bytes.len() as u64;
+            self.mean_instances = Self::buffer(device, self.mean_capacity);
+        }
+        queue.write_buffer(&self.mean_instances, 0, bytes);
+        self.mean_segments = segments.len() as u32;
+        self.mean_source = Arc::downgrade(mean);
+        self.mean_basis = Some(basis);
+        self.mean_uploads += 1;
+        Ok(camera)
     }
 
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -440,7 +628,58 @@ impl ScenePipeline {
         pass.set_scissor_rect(self.plot[0], self.plot[1], self.plot[2], self.plot[3]);
         pass.set_vertex_buffer(0, self.instances.slice(..));
         pass.draw(0..6, 0..self.total);
+        if self.raw_count > 0 {
+            if self.raw_basis.is_some_and(|basis| basis.camera_relative) {
+                pass.set_pipeline(&self.raw_clipped_pipeline);
+                pass.set_vertex_buffer(0, self.raw_indices.slice(..));
+                pass.draw(0..self.raw_count, 0..1);
+            } else {
+                pass.set_pipeline(&self.raw_pipeline);
+                pass.set_index_buffer(self.raw_indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.raw_count, 0, 0..1);
+            }
+        }
+        pass.set_pipeline(&self.mean_pipeline);
+        pass.set_vertex_buffer(0, self.mean_instances.slice(..));
+        pass.draw(0..6, 0..self.mean_segments);
     }
+}
+
+fn mean_camera(basis: PointBasis, scene: &GraphNewScene) -> Option<[f32; 4]> {
+    if basis.camera_relative {
+        return (basis.domain == scene.domain).then_some([1.0, 1.0, 0.0, 0.0]);
+    }
+    let mut affine = [0.0f32; 4];
+    for (axis, min, max, camera_min, camera_max) in [
+        (0, basis.domain.x_min, basis.domain.x_max, scene.domain.x_min, scene.domain.x_max),
+        (1, basis.domain.y_min, basis.domain.y_max, scene.domain.y_min, scene.domain.y_max),
+    ] {
+        let offset = normalized(min, camera_min, camera_max);
+        let scale = if min == max { 0.0 } else { normalized(max, camera_min, camera_max) - offset };
+        affine[axis] = scale as f32; affine[axis + 2] = offset as f32;
+        let error = 8.0 * f64::from(f32::EPSILON) * (scale.abs() + offset.abs() + 1.0);
+        if !error.is_finite() || error * f64::from(scene.plot()[axis + 2]) > 0.125 { return None; }
+    }
+    affine.iter().all(|value| value.is_finite()).then_some(affine)
+}
+
+fn clip_mean_segment(mut start: [f64; 2], mut end: [f64; 2], domain: GraphDomain) -> Option<[[f64; 2]; 2]> {
+    for (axis, boundary, lower) in [(0, domain.x_min, true), (0, domain.x_max, false),
+        (1, domain.y_min, true), (1, domain.y_max, false)] {
+        let start_out = if lower { start[axis] < boundary } else { start[axis] > boundary };
+        let end_out = if lower { end[axis] < boundary } else { end[axis] > boundary };
+        if start_out && end_out { return None; }
+        if start_out != end_out {
+            let fraction = normalized(boundary, start[axis], end[axis]);
+            let other = 1 - axis;
+            let span = end[other] - start[other];
+            let value = if span.is_finite() { start[other] + span * fraction }
+                else { start[other] * (1.0 - fraction) + end[other] * fraction };
+            let endpoint = if start_out { &mut start } else { &mut end };
+            endpoint[axis] = boundary; endpoint[other] = value;
+        }
+    }
+    Some([start, end])
 }
 
 fn axis_labels(scene: &GraphNewScene, horizontal: bool) -> Result<Vec<(String, [f32; 2])>, AppError> {
@@ -508,7 +747,7 @@ fn text(marks: &mut Vec<Mark>, label: &str, position: [f32; 2], scale: f32) {
 }
 
 const SHADER: &str = r#"
-struct Camera { plot: vec4<f32>, viewport: vec4<f32>, affine: vec4<f32> };
+struct Camera { plot: vec4<f32>, viewport: vec4<f32>, affine: vec4<f32>, mean_affine: vec4<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 struct Output {
@@ -517,6 +756,14 @@ struct Output {
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) kind_glyph: vec2<f32>,
 };
+@vertex fn vs_raw(@location(0) position: vec2<f32>) -> Output {
+    let projected = position * camera.affine.xy + camera.affine.zw;
+    let pixel = camera.plot.xy + vec2(projected.x, 1.0 - projected.y) * camera.plot.zw;
+    var output: Output;
+    output.position = vec4(pixel.x / camera.viewport.x * 2.0 - 1.0, 1.0 - pixel.y / camera.viewport.y * 2.0, 0.0, 1.0);
+    output.local = vec2(0.0); output.color = vec4(31.0 / 255.0, 111.0 / 255.0, 235.0 / 255.0, 1.0);
+    output.kind_glyph = vec2(3.0, 0.0); return output;
+}
 @vertex fn vs_main(@builtin(vertex_index) index: u32,
     @location(0) position: vec2<f32>, @location(1) size: vec2<f32>,
     @location(2) color: vec4<f32>, @location(3) kind_glyph: vec2<f32>) -> Output {
@@ -526,13 +773,47 @@ struct Output {
     if kind_glyph.x == 1.0 {
         let projected = clamp(position * camera.affine.xy + camera.affine.zw, vec2(-1.0), vec2(2.0));
         pixel = camera.plot.xy + vec2(projected.x, 1.0 - projected.y) * camera.plot.zw
-            + (local * 2.0 - 1.0) * 3.0 * camera.viewport.z;
+            + (local * 2.0 - 1.0) * camera.viewport.w * camera.viewport.z;
     }
     var output: Output;
     output.position = vec4(pixel.x / camera.viewport.x * 2.0 - 1.0, 1.0 - pixel.y / camera.viewport.y * 2.0, 0.0, 1.0);
     output.local = local;
     output.color = color;
     output.kind_glyph = kind_glyph;
+    return output;
+}
+@vertex fn vs_mean(@builtin(vertex_index) index: u32,
+    @location(0) start: vec2<f32>, @location(1) end: vec2<f32>) -> Output {
+    var first = start * camera.mean_affine.xy + camera.mean_affine.zw;
+    var last = end * camera.mean_affine.xy + camera.mean_affine.zw;
+    var visible = true;
+    for (var edge = 0u; edge < 4u; edge++) {
+        let axis = edge / 2u;
+        let lower = edge % 2u == 0u;
+        let boundary = select(1.0, 0.0, lower);
+        let first_out = select(first[axis] > boundary, first[axis] < boundary, lower);
+        let last_out = select(last[axis] > boundary, last[axis] < boundary, lower);
+        if first_out && last_out { visible = false; }
+        if first_out != last_out {
+            let fraction = (boundary - first[axis]) / (last[axis] - first[axis]);
+            var clipped = mix(first, last, fraction);
+            clipped[axis] = boundary;
+            if first_out { first = clipped; } else { last = clipped; }
+        }
+    }
+    first = camera.plot.xy + vec2(first.x, 1.0 - first.y) * camera.plot.zw;
+    last = camera.plot.xy + vec2(last.x, 1.0 - last.y) * camera.plot.zw;
+    let delta = last - first;
+    let distance = length(delta);
+    let normal = vec2(-delta.y, delta.x) / max(distance, 0.0001) * camera.viewport.z;
+    let corners = array<vec2<f32>, 6>(vec2(0.,-1.), vec2(1.,-1.), vec2(1.,1.), vec2(0.,-1.), vec2(1.,1.), vec2(0.,1.));
+    var pixel = mix(first, last, corners[index].x) + normal * corners[index].y;
+    if !visible || distance < 0.0001 { pixel = vec2(-10.0); }
+    var output: Output;
+    output.position = vec4(pixel.x / camera.viewport.x * 2.0 - 1.0, 1.0 - pixel.y / camera.viewport.y * 2.0, 0.0, 1.0);
+    output.local = vec2(0.0);
+    output.color = vec4(220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0);
+    output.kind_glyph = vec2(3.0, 0.0);
     return output;
 }
 @fragment fn fs_main(input: Output) -> @location(0) vec4<f32> {
@@ -551,6 +832,7 @@ mod tests {
 
     fn scene() -> GraphNewScene {
         GraphNewScene {
+            presentation: Default::default(),
             width: 240,
             height: 160,
             device_pixel_ratio: 1.0,
@@ -561,7 +843,49 @@ mod tests {
                 y_max: 1.0,
             },
             points: vec![],
+            mean: None,
         }
+    }
+
+    #[test]
+    fn graph_new_phase1_raw_line_camera_basis_preserves_offscreen_slope() {
+        let basis = PointBasis { domain: GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 }, camera_relative: true };
+        assert_eq!(basis.position(&SourcePoint::new(1, -10.0, 0.0)), [-10.0, 0.0]);
+        assert_eq!(basis.position(&SourcePoint::new(2, 10.0, 1.0)), [10.0, 1.0]);
+    }
+
+    #[test]
+    fn graph_new_review_raw_crossing_precision_and_reentry() {
+        let mut input = scene();
+        input.width = 1000;
+        input.height = 800;
+        input.points = vec![SourcePoint::new(1, 0.0, 0.0), SourcePoint::new(2, 1.0, 1.0)];
+        input.presentation.raw_line = Some(Arc::new(vec![[0, 1]]));
+        input.presentation.show_points = false;
+        input.domain = GraphDomain { x_min: 0.5, x_max: 0.500001, y_min: 0.50000001, y_max: 0.50000101 };
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).unwrap();
+        let frame = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        let mut checked = 0;
+        for horizontal in 164..884 {
+            let expected = 768.0 - (((horizontal as f64 + 0.5 - 64.0) / 920.0) - 0.01) * 752.0;
+            for vertical in 16..768 {
+                if pixel(&frame, 1000, horizontal, vertical) == [31, 111, 235, 255] {
+                    assert!((vertical as f64 + 0.5 - expected).abs() <= 1.5,
+                        "crossing shifted at {horizontal},{vertical}; expected {expected}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 600, "crossing missing: {checked}");
+        let original = input.domain;
+        input.domain.y_min = 0.6;
+        input.domain.y_max = 0.600001;
+        let hidden = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        assert!(!(16..768).any(|vertical| (64..984).any(|horizontal|
+            pixel(&hidden, 1000, horizontal, vertical) == [31, 111, 235, 255])));
+        input.domain = original;
+        let restored = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        assert_eq!(restored.rgba, frame.rgba);
     }
 
     #[test]
@@ -606,6 +930,53 @@ mod tests {
     }
 
     #[test]
+    fn graph_new_mean_native_pixels_toggle_camera_dpr_and_cache() {
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).unwrap();
+        let mut input = scene();
+        input.points = vec![SourcePoint::new(1, 0.0, 0.0), SourcePoint::new(2, 1.0, 1.0),
+            SourcePoint::new(3, 0.5, 0.5)];
+        let mean = std::sync::Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
+        input.mean = Some(mean.clone());
+        for ratio in [1, 2] {
+            input.device_pixel_ratio = ratio as f64;
+            let frame = pollster::block_on(renderer.render_scene(&input)).unwrap();
+            assert_eq!(pixel(&frame, 240 * ratio, 144 * ratio, 72 * ratio), [220, 38, 38, 255]);
+            assert_ne!(pixel(&frame, 240 * ratio, 62 * ratio, 72 * ratio), [220, 38, 38, 255]);
+        }
+        let uploads = renderer.cache_stats().geometry_uploads;
+        assert_eq!(renderer.cache_stats().mean_geometry_uploads, 1);
+        input.mean = None;
+        let off = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        assert!(!off.rgba.chunks_exact(4).any(|value| value == [220, 38, 38, 255]));
+        input.mean = Some(mean);
+        input.domain.x_min = 0.25;
+        input.domain.x_max = 1.25;
+        let panned = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        assert_eq!(pixel(&panned, 480, 208, 144), [220, 38, 38, 255]);
+        assert_eq!(renderer.cache_stats().geometry_uploads, uploads);
+        assert_eq!(renderer.cache_stats().mean_geometry_uploads, 1);
+        input.mean = Some(std::sync::Arc::new(vec![[0.5, 0.5]]));
+        let singleton = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        assert!(!singleton.rgba.chunks_exact(4).any(|value| value == [220, 38, 38, 255]));
+    }
+
+    #[test]
+    fn graph_new_mean_deep_zoom_clips_crossing_segments_before_float_conversion() {
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).unwrap();
+        let mut input = scene();
+        input.mean = Some(std::sync::Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]));
+        pollster::block_on(renderer.render_scene(&input)).unwrap();
+        input.domain = GraphDomain { x_min: 0.5, x_max: 0.5 + 1e-9,
+            y_min: 0.5 + 0.25e-9, y_max: 0.5 + 1.25e-9 };
+        let frame = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        assert_eq!(pixel(&frame, 240, 144, 100), [220, 38, 38, 255]);
+        assert_ne!(pixel(&frame, 240, 144, 72), [220, 38, 38, 255]);
+        let repeated = pollster::block_on(renderer.render_scene(&input)).unwrap();
+        assert_eq!(frame.rgba, repeated.rgba);
+        assert_eq!(renderer.cache_stats().mean_geometry_uploads, 2);
+    }
+
+    #[test]
     fn camera_pan_zoom_moves_native_pixels_without_point_uploads() {
         let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("renderer");
         let mut input = scene();
@@ -626,6 +997,21 @@ mod tests {
         let zoomed = pollster::block_on(renderer.render_scene(&input)).expect("zoom");
         assert_eq!(pixel(&zoomed, 240, 96, 83), [31, 111, 235, 255]);
         assert_eq!(renderer.cache_stats().geometry_uploads, uploads, "zoom must reuse points");
+    }
+
+    #[test]
+    fn graph_new_dense_points_use_one_pixel_radius_without_camera_uploads() {
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("renderer");
+        let mut input = scene();
+        input.points = (1..=50_001).map(|row_id| SourcePoint::new(row_id, 0.3, 0.7)).collect();
+        for ratio in [1, 2] {
+            input.device_pixel_ratio = ratio as f64;
+            let frame = pollster::block_on(renderer.render_scene(&input)).expect("dense frame");
+            assert_eq!(pixel(&frame, 240 * ratio, 112 * ratio, 49 * ratio), [31, 111, 235, 255]);
+            assert_ne!(pixel(&frame, 240 * ratio, 114 * ratio, 49 * ratio), [31, 111, 235, 255],
+                "large point sets must not use the three-pixel radius");
+            assert_eq!(renderer.cache_stats().geometry_uploads, 1);
+        }
     }
 
     #[test]
@@ -681,7 +1067,7 @@ mod tests {
         assert_eq!(renderer.cache_stats().geometry_uploads, uploads + 3);
         let stats = renderer.cache_stats();
         assert!(stats.geometry_capacity_bytes >= 2 * std::mem::size_of::<Mark>() as u64);
-        assert_eq!(stats.allocated_bytes, stats.geometry_capacity_bytes + 48
+        assert_eq!(stats.allocated_bytes, stats.geometry_capacity_bytes + 64
             + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT) + 800 * 480 * 4 + 3328 * 480);
     }
 
@@ -745,6 +1131,21 @@ mod tests {
             assert_eq!(renderer.cache_stats().geometry_uploads, uploads);
         }
         assert!(check_gpu_budget(u64::MAX, 1, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn graph_new_exact_cap_respects_replacement_and_target_budget() {
+        assert_eq!(std::mem::size_of::<Mark>(), 40);
+        let geometry = (MAX_SCENE_POINTS as u64 + 1024) * 40 + 48
+            + u64::from(ATLAS_WIDTH) * u64::from(ATLAS_HEIGHT);
+        let target = 1280 * 720 * 8;
+        let limit = super::super::graph_new_cache::DEFAULT_GPU_BYTES;
+        assert!(check_gpu_budget(geometry + target, geometry + target, limit).is_ok());
+        let maximum_target = 3840 * 2160 * 8;
+        assert!(check_gpu_budget(geometry + maximum_target, geometry + maximum_target, limit).is_err());
+        let four_million_geometry = (4_000_000 + 1024) * 40;
+        assert!(check_gpu_budget(four_million_geometry, four_million_geometry + target, limit).is_err());
+        assert!(MAX_SCENE_POINTS as u64 * 112 + 8 * 1024 * 1024 + 65536 + 8192 < 256 * 1024 * 1024);
     }
 
     #[test]

@@ -1,4 +1,21 @@
 {
+  "graphNew": {
+    "xInterpretation": "X 解析方式",
+    "rawSeries": "原始数据系列",
+    "xMode": { "auto": "自动", "numeric": "数值", "time": "时间", "duration": "时长", "category": "类别" },
+    "rawMode": { "scatter": "散点", "line": "折线", "pointsLine": "散点 + 折线" },
+    "rawLine": "原始折线",
+    "rawUnavailable": "原始折线不可用：未保留完整数据。",
+    "xUnrepresentable": "此 X 字段超出坐标轴可表示范围。",
+    "layers": "图层",
+    "mean": "均值",
+    "points": "散点",
+    "meanUnavailable": "均值不可用：未保留完整数据。",
+    "meanNeedsGroups": "均值线需要至少两个不同的 X 值。",
+    "textFieldType": "文本",
+    "timestampFieldType": "时间戳",
+    "unsupportedField": "{{type}} - 不支持：仅支持数值字段"
+  },
   "capability": { "nestedSubgroupMissingLabels": { "v1": "子组标签缺失的行保留在整体结果中，但不参与组内移动极差计算。" } },
   "hypothesisTest": {
     "title": "假设检验",

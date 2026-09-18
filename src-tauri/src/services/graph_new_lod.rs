@@ -115,6 +115,7 @@ pub struct TileSelection {
 
 #[derive(Clone)]
 pub struct TilePyramid {
+    pub x_axis: crate::models::graph_new::GraphNewAxisData,
     pub domain: GraphDomain,
     pub levels: Vec<TileLevel>,
     pub total_processed_rows: u64,
@@ -150,7 +151,70 @@ impl fmt::Debug for TilePyramid {
 
 impl TilePyramid {
     pub fn cache_reservation_bytes(&self) -> u64 {
-        self.resident_bytes() + DECODED_CACHE_BYTES + if self.raw_store.is_some() { QUERY_SCRATCH_BYTES } else { 0 }
+        self.resident_bytes() - self.mean_bytes() - self.raw_line_bytes() + self.tile_store.decoded_limit()
+            + if self.is_compact_exact() { self.total_finite_rows * 100 + 4096 } else { 0 }
+            + if self.raw_store.is_some() { QUERY_SCRATCH_BYTES } else { 0 }
+    }
+
+    pub(crate) fn mean_available(&self) -> bool {
+        self.total_finite_rows == 0 || self.is_compact_exact()
+    }
+
+    fn mean_bytes(&self) -> u64 {
+        self.tile_store.mean.lock().map_or(0, |mean|
+            mean.as_ref().map_or(0, |points| points.capacity() as u64 * 16))
+    }
+
+    fn raw_line_bytes(&self) -> u64 {
+        self.tile_store.raw_line.lock().map_or(0, |indices| indices.as_ref().map_or(0, |indices| indices.capacity() as u64 * 8))
+    }
+
+    pub(crate) fn raw_line(&self, points: &[SourcePoint], control: &dyn Fn() -> Result<(), AppError>) -> Result<Option<Arc<Vec<[u32; 2]>>>, AppError> {
+        if !self.mean_available() { return Ok(None); }
+        let mut cached = self.tile_store.raw_line.lock().map_err(|_| cache_format_error())?;
+        if cached.is_none() { *cached = Some(Arc::new(super::graph_new_service::raw_line_indices(points, control)?)); }
+        Ok(cached.clone())
+    }
+
+    pub(crate) fn mean_line(&self, control: &dyn Fn() -> Result<(), AppError>) -> Result<Option<Arc<Vec<[f64; 2]>>>, AppError> {
+        if !self.mean_available() { return Ok(None); }
+        let mut cached = self.tile_store.mean.lock().map_err(|_| cache_format_error())?;
+        if let Some(mean) = cached.as_ref() { return Ok(Some(mean.clone())); }
+        control()?;
+        let mut points = Vec::with_capacity(self.total_finite_rows as usize);
+        if let Some(level) = self.levels.first() {
+            for entry in &level.tiles {
+                let tile = self.tile_store.decode(&entry.address)?;
+                for (position, (&x, &y)) in tile.xs.iter().zip(&tile.ys).enumerate() {
+                    if position % CONTROL_CHECK_BATCH_POINTS == 0 { control()?; }
+                    points.push([if x == 0.0 { 0.0 } else { x }, y]);
+                }
+            }
+        }
+        points.sort_unstable_by(|left, right| left[0].total_cmp(&right[0]));
+        control()?;
+        let mut start = 0;
+        let mut groups = 0;
+        while start < points.len() {
+            control()?;
+            let mut end = start + 1;
+            while end < points.len() && points[end][0] == points[start][0] { end += 1; }
+            let mean = finite_group_mean(&points[start..end], control)?;
+            points[groups] = [points[start][0], mean];
+            groups += 1;
+            start = end;
+        }
+        points.truncate(groups);
+        control()?;
+        let mean = Arc::new(points);
+        *cached = Some(mean.clone());
+        Ok(Some(mean))
+    }
+
+    fn is_compact_exact(&self) -> bool {
+        self.raw_store.is_none() && self.levels.len() == 1 && self.levels[0].level == 0
+            && self.levels[0].retained_marks == self.total_finite_rows
+            && self.total_finite_rows <= super::graph_new_renderer::MAX_SCENE_POINTS as u64
     }
 
     pub fn decoded_bytes(&self) -> u64 {
@@ -162,12 +226,15 @@ impl TilePyramid {
     }
 
     pub fn persisted_bytes(&self) -> u64 {
-        192 + self.tile_store.index.len() as u64 * 8 + self.levels.iter().map(|level| level.tile_bytes).sum::<u64>()
+        200 + serde_json::to_vec(&self.x_axis).map_or(0, |bytes| bytes.len() as u64) + self.tile_store.index.len() as u64 * 8 + self.levels.iter().map(|level| level.tile_bytes).sum::<u64>()
             + self.raw_store.as_ref().map_or(0, |raw| raw.persisted_bytes())
     }
 
     pub fn resident_bytes(&self) -> u64 {
         std::mem::size_of::<Self>() as u64
+            + self.x_axis.categories.capacity() as u64 * 24 + self.x_axis.categories.iter().map(|label| label.capacity() as u64).sum::<u64>()
+            + self.mean_bytes()
+            + self.raw_line_bytes()
             + self.raw_store.as_ref().map_or(0, |raw| raw.resident_bytes())
             + self.levels.capacity() as u64 * std::mem::size_of::<TileLevel>() as u64
             + self.levels.iter().map(|level| level.tiles.capacity() as u64 * std::mem::size_of::<TileEntry>() as u64
@@ -189,6 +256,9 @@ impl TilePyramid {
             file.write_all(&value.to_le_bytes())?;
         }
         let mut source = self.tile_store.file.lock().map_err(|_| cache_format_error())?;
+        let axis = serde_json::to_vec(&self.x_axis).map_err(|_| cache_format_error())?;
+        file.write_all(&(axis.len() as u64).to_le_bytes())?;
+        file.write_all(&axis)?;
         for stored in self.tile_store.index.values() {
             file.write_all(&stored.encoded_bytes.to_le_bytes())?;
             source.seek(SeekFrom::Start(stored.offset))?;
@@ -229,7 +299,7 @@ impl TilePyramid {
         if ![domain.x_min, domain.x_max, domain.y_min, domain.y_max].iter().all(|value| value.is_finite())
             || domain.x_min >= domain.x_max || domain.y_min >= domain.y_max
             || values[5].checked_add(values[6]) != Some(values[4])
-            || values[7] == 0 || values[7] > u64::from(GRAPH_NEW_MAX_TILE_POINTS)
+            || values[7] == 0 || values[7] > super::graph_new_renderer::MAX_SCENE_POINTS as u64
             || !overdraw_factor.is_finite() || !(0.0..=4.0).contains(&overdraw_factor) || overdraw_factor == 0.0
             || values[9] > u64::from(GRAPH_NEW_MAX_LEVELS)
             || values[10] > (length - 192) / 108 {
@@ -238,9 +308,20 @@ impl TilePyramid {
         if values[10] > memory_limit.saturating_sub(DECODED_CACHE_BYTES + 4096) / 1024 {
             return Err(AppError::Stats("graph_new_cache_pressure".into()));
         }
+        if values[7] > u64::from(GRAPH_NEW_MAX_TILE_POINTS)
+            && (values[9] != 1 || values[10] != 1 || values[5] != values[7]
+                || values[7] * 112 + DECODED_CACHE_BYTES + 8192 > memory_limit) {
+            return Err(AppError::Stats("graph_new_cache_pressure".into()));
+        }
         let mut levels: Vec<TileLevel> = (0..values[9]).map(|level| TileLevel {
             level: level as u8, tiles: Vec::new(), tile_bytes: 0, retained_marks: 0, total_source_count: 0,
         }).collect();
+        let axis_length = read_cache_u64(&mut file)?;
+        if axis_length > 2 * 1024 * 1024 || axis_length > memory_limit / 4 { return Err(cache_format_error()); }
+        let mut axis_bytes = vec![0; axis_length as usize];
+        file.read_exact(&mut axis_bytes)?;
+        let x_axis: crate::models::graph_new::GraphNewAxisData = serde_json::from_slice(&axis_bytes).map_err(|_| cache_format_error())?;
+        if x_axis.categories.len() > 16384 || x_axis.categories.iter().any(|label| label.len() > 512) { return Err(cache_format_error()); }
         let mut index = BTreeMap::new();
         for _ in 0..values[10] {
             let encoded_bytes = read_cache_u64(&mut file)?;
@@ -280,7 +361,7 @@ impl TilePyramid {
             raw.validate_domain(domain)?;
             Some(raw)
         } else { None };
-        let result = Self { domain, levels, total_processed_rows: values[4], total_finite_rows: values[5],
+        let result = Self { x_axis, domain, levels, total_processed_rows: values[4], total_finite_rows: values[5],
             total_excluded_non_finite_rows: values[6], max_tile_points: values[7] as u32, overdraw_factor,
             spool_bytes: 0, accounted_memory_bytes: 0, tile_store, raw_store };
         if result.cache_reservation_bytes() > memory_limit { return Err(AppError::Stats("graph_new_cache_pressure".into())); }
@@ -294,6 +375,20 @@ impl TilePyramid {
     pub fn select_with_control(&self, camera: &GraphCamera, control: &dyn Fn() -> Result<(), AppError>) -> Result<TileSelection, AppError> {
         validate_camera(camera)?;
         control()?;
+        if self.is_compact_exact() {
+            let level = &self.levels[0];
+            let mut selection = self.decode_selection(0, level.tiles.iter().collect(), level.retained_marks, self.total_finite_rows)?;
+            let mut visible = 0;
+            for selected in &selection.tiles {
+                for (position, (&x, &y)) in selected.tile.xs.iter().zip(&selected.tile.ys).enumerate() {
+                    if position % CONTROL_CHECK_BATCH_POINTS == 0 { control()?; }
+                    if super::graph_new_raw::contains(camera, SourcePoint::new(1, x, y)) { visible += 1; }
+                }
+            }
+            selection.exact = true;
+            selection.visible_rows = Some(visible);
+            return Ok(selection);
+        }
         let budget = selection_budget(camera, self.max_tile_points, self.overdraw_factor)?
             .min(super::graph_new_renderer::MAX_SCENE_POINTS);
         let raw = self.raw_store.as_ref().map(|store| store.query(camera, budget, control)).transpose()?;
@@ -688,6 +783,7 @@ impl TilePyramidBuilder {
             Some(domain) => normalized_domain(domain),
             None => {
                 return Ok(TilePyramid {
+                    x_axis: Default::default(),
                     domain: GraphDomain {
                         x_min: 0.0,
                         x_max: 1.0,
@@ -707,6 +803,16 @@ impl TilePyramidBuilder {
                 })
             }
         };
+
+        let exact_memory = self.total_finite_rows.saturating_mul(112)
+            .saturating_add(DECODED_CACHE_BYTES + SPOOL_WRITE_BUFFER_BYTES as u64 + 8192);
+        let exact_disk = self.raw_spool_bytes.saturating_add(self.total_finite_rows * 28 + 100);
+        if self.raw_writer.is_none()
+            && self.total_finite_rows <= super::graph_new_renderer::MAX_SCENE_POINTS as u64
+            && exact_memory <= self.construction_memory_limit_bytes
+            && exact_disk <= self.disk_limit {
+            return self.finish_compact_exact(domain, exact_memory, control);
+        }
 
         let finest_level = self.levels - 1;
         let bucket_count = bucket_count_for(self.levels);
@@ -1090,6 +1196,7 @@ impl TilePyramidBuilder {
 
         control()?;
         Ok(TilePyramid {
+            x_axis: Default::default(),
             domain,
             levels,
             total_processed_rows: self.total_processed_rows,
@@ -1127,6 +1234,44 @@ impl TilePyramidBuilder {
                 });
             }
         }
+    }
+
+    fn finish_compact_exact(
+        mut self, domain: GraphDomain, memory: u64, control: &dyn Fn() -> Result<(), AppError>,
+    ) -> Result<TilePyramid, AppError> {
+        self.update_peak_memory(memory)?;
+        self.raw_spool.flush()?;
+        let mut spool = self.raw_spool.get_ref().try_clone()?;
+        spool.seek(SeekFrom::Start(0))?;
+        let mut reader = BufReader::with_capacity(SPOOL_READ_BUFFER_BYTES, spool);
+        let count = self.total_finite_rows as usize;
+        let mut tile = GraphNewTile {
+            header: build_tile_header(&domain, 0, 0, 0, count as u32, count as u64),
+            row_ids: Vec::with_capacity(count), xs: Vec::with_capacity(count),
+            ys: Vec::with_capacity(count), counts: vec![1; count],
+        };
+        for position in 0..count {
+            if position % CONTROL_CHECK_BATCH_POINTS == 0 { control()?; }
+            let point = read_raw_point(&mut reader)?.ok_or_else(cache_format_error)?;
+            tile.row_ids.push(point.row_id);
+            tile.xs.push(point.x);
+            tile.ys.push(point.y);
+        }
+        control()?;
+        let mut file = tempfile()?;
+        let mut index = BTreeMap::new();
+        let stored = append_tile(&mut file, &mut index, tile)?;
+        control()?;
+        Ok(TilePyramid {
+            x_axis: Default::default(),
+            domain, levels: vec![TileLevel { level: 0, tiles: vec![stored.entry],
+                tile_bytes: stored.encoded_bytes, retained_marks: count as u64, total_source_count: count as u64 }],
+            total_processed_rows: self.total_processed_rows, total_finite_rows: self.total_finite_rows,
+            total_excluded_non_finite_rows: self.total_excluded_non_finite_rows,
+            max_tile_points: self.max_tile_points.max(count as u32), overdraw_factor: self.overdraw_factor,
+            spool_bytes: self.raw_spool_bytes, accounted_memory_bytes: self.peak_accounted_memory_bytes,
+            raw_store: None, tile_store: Arc::new(TileStore::new(file, index)),
+        })
     }
 
     fn write_raw_point(&mut self, point: &SourcePoint) -> Result<(), AppError> {
@@ -1202,6 +1347,8 @@ struct TileStore {
     file: Arc<Mutex<File>>,
     index: Arc<BTreeMap<TileAddress, StoredTile>>,
     decoded: Arc<Mutex<DecodedTiles>>,
+    mean: Arc<Mutex<Option<Arc<Vec<[f64; 2]>>>>>,
+    raw_line: Arc<Mutex<Option<Arc<Vec<[u32; 2]>>>>>,
 }
 
 #[derive(Default)]
@@ -1231,11 +1378,18 @@ fn cache_checksum(file: &mut File, length: u64) -> Result<[u8; 32], AppError> {
 }
 
 impl TileStore {
+    fn decoded_limit(&self) -> u64 {
+        self.index.values().map(|stored| u64::from(stored.entry.retained_mark_count) * 28 + 512)
+            .max().unwrap_or(0).max(DECODED_CACHE_BYTES)
+    }
+
     fn new(file: File, index: BTreeMap<TileAddress, StoredTile>) -> Self {
         Self {
             file: Arc::new(Mutex::new(file)),
             index: Arc::new(index),
             decoded: Arc::new(Mutex::new(DecodedTiles::default())),
+            mean: Arc::new(Mutex::new(None)),
+            raw_line: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1269,8 +1423,9 @@ impl TileStore {
         let tile = GraphNewTileHeader::decode(&bytes)?;
         let retained = (tile.row_ids.capacity() + tile.xs.capacity() + tile.ys.capacity()) as u64 * 8
             + tile.counts.capacity() as u64 * 4 + 512;
-        if retained <= DECODED_CACHE_BYTES {
-            while cache.bytes + retained > DECODED_CACHE_BYTES {
+        let limit = self.decoded_limit();
+        if retained <= limit {
+            while cache.bytes + retained > limit {
                 let victim = cache.entries.iter().min_by_key(|(key, (_, _, touched))| (*touched, **key))
                     .map(|(key, _)| *key);
                 if let Some(victim) = victim {
@@ -1482,12 +1637,24 @@ fn tile_index(
     let tiles_per_axis = 1u32
         .checked_shl(u32::from(level))
         .ok_or_else(|| AppError::InvalidParam("graph-new tile level overflow".to_string()))?;
-    let x = normalized_position(point.x, domain.x_min, domain.x_max);
-    let y = normalized_position(point.y, domain.y_min, domain.y_max);
     Ok((
-        ((x * f64::from(tiles_per_axis)).floor() as u32).min(tiles_per_axis - 1),
-        ((y * f64::from(tiles_per_axis)).floor() as u32).min(tiles_per_axis - 1),
+        axis_tile_index(point.x, domain.x_min, domain.x_max, tiles_per_axis),
+        axis_tile_index(point.y, domain.y_min, domain.y_max, tiles_per_axis),
     ))
+}
+
+fn axis_tile_index(value: f64, min: f64, max: f64, tiles_per_axis: u32) -> u32 {
+    if value <= min { return 0; }
+    if value >= max { return tiles_per_axis - 1; }
+    let normalized = normalized_position(value, min, max);
+    let mut index = ((normalized * f64::from(tiles_per_axis)).floor() as u32).min(tiles_per_axis - 1);
+    while index > 0 && value < axis_tile_bounds(min, max, index, tiles_per_axis).0 {
+        index -= 1;
+    }
+    while index + 1 < tiles_per_axis && value >= axis_tile_bounds(min, max, index, tiles_per_axis).1 {
+        index += 1;
+    }
+    index
 }
 
 fn normalized_position(value: f64, min: f64, max: f64) -> f64 {
@@ -1517,20 +1684,25 @@ fn tile_bounds(domain: &GraphDomain, level: u8, tile_x: u32, tile_y: u32) -> (f6
 }
 
 fn axis_tile_bounds(min: f64, max: f64, tile_index: u32, tiles_per_axis: u32) -> (f64, f64) {
-    let scale = min.abs().max(max.abs()).max(1.0);
-    let scaled_min = min / scale;
-    let scaled_max = max / scale;
+    let interpolate = |fraction: f64| {
+        let span = max - min;
+        if span.is_finite() {
+            min + span * fraction
+        } else {
+            min * (1.0 - fraction) + max * fraction
+        }
+    };
     let start = f64::from(tile_index) / f64::from(tiles_per_axis);
     let end = f64::from(tile_index + 1) / f64::from(tiles_per_axis);
     let lower = if tile_index == 0 {
         min
     } else {
-        (scaled_min * (1.0 - start) + scaled_max * start) * scale
+        interpolate(start)
     };
     let upper = if tile_index + 1 == tiles_per_axis {
         max
     } else {
-        (scaled_min * (1.0 - end) + scaled_max * end) * scale
+        interpolate(end)
     };
     (lower, upper)
 }
@@ -1705,6 +1877,75 @@ fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, Ap
     })
 }
 
+const MEAN_SUM_LIMBS: usize = 34;
+
+fn finite_group_mean(points: &[[f64; 2]], control: &dyn Fn() -> Result<(), AppError>) -> Result<f64, AppError> {
+    if points.len() == 1 {
+        return Ok(if points[0][1] == 0.0 { 0.0 } else { points[0][1] });
+    }
+    let mut positive = [0u64; MEAN_SUM_LIMBS];
+    let mut negative = [0u64; MEAN_SUM_LIMBS];
+    for (position, point) in points.iter().enumerate() {
+        if position % CONTROL_CHECK_BATCH_POINTS == 0 { control()?; }
+        let bits = point[1].to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as usize;
+        let significand = (bits & ((1u64 << 52) - 1)) | if exponent > 0 { 1u64 << 52 } else { 0 };
+        let shift = exponent.saturating_sub(1);
+        let limbs = if bits >> 63 == 0 { &mut positive } else { &mut negative };
+        let mut carry = u128::from(significand) << (shift % 64);
+        let mut index = shift / 64;
+        while carry != 0 {
+            let sum = u128::from(limbs[index]) + (carry & u128::from(u64::MAX));
+            limbs[index] = sum as u64;
+            carry = (carry >> 64) + (sum >> 64);
+            index += 1;
+        }
+    }
+    let sign = if positive.iter().rev().cmp(negative.iter().rev()) == Ordering::Less {
+        std::mem::swap(&mut positive, &mut negative);
+        1u64 << 63
+    } else { 0 };
+    let mut borrow = false;
+    for (magnitude, subtraction) in positive.iter_mut().zip(negative) {
+        let (difference, first_borrow) = magnitude.overflowing_sub(subtraction);
+        let (difference, second_borrow) = difference.overflowing_sub(u64::from(borrow));
+        *magnitude = difference;
+        borrow = first_borrow || second_borrow;
+    }
+    let Some(highest) = positive.iter().rposition(|limb| *limb != 0) else { return Ok(0.0); };
+    let divisor = points.len() as u128;
+    let mut remainder = 0u128;
+    for limb in positive[..=highest].iter_mut().rev() {
+        let dividend = (remainder << 64) | u128::from(*limb);
+        *limb = (dividend / divisor) as u64;
+        remainder = dividend % divisor;
+    }
+    let highest_bit = positive.iter().rposition(|limb| *limb != 0)
+        .map_or(0, |index| index * 64 + 63 - positive[index].leading_zeros() as usize);
+    let mut shift = highest_bit.saturating_sub(52);
+    let mut significand = positive[shift / 64] >> (shift % 64);
+    if shift % 64 != 0 && shift / 64 + 1 < MEAN_SUM_LIMBS {
+        significand |= positive[shift / 64 + 1] << (64 - shift % 64);
+    }
+    let round_up = if shift == 0 {
+        remainder * 2 > divisor || (remainder * 2 == divisor && significand & 1 != 0)
+    } else {
+        let halfway = shift - 1;
+        let half_set = positive[halfway / 64] & (1u64 << (halfway % 64)) != 0;
+        let sticky = remainder != 0 || positive[..halfway / 64].iter().any(|limb| *limb != 0)
+            || positive[halfway / 64] & ((1u64 << (halfway % 64)) - 1) != 0;
+        half_set && (sticky || significand & 1 != 0)
+    };
+    significand += u64::from(round_up);
+    if significand == 1u64 << 53 {
+        significand >>= 1;
+        shift += 1;
+    }
+    let magnitude = if significand < 1u64 << 52 { significand }
+        else { ((shift as u64 + 1) << 52) | (significand - (1u64 << 52)) };
+    Ok(f64::from_bits(sign | magnitude))
+}
+
 fn estimate_bucket_bytes(bucket_tiles: &BTreeMap<(u32, u32), FineTileAccumulator>) -> u64 {
     bucket_tiles
         .values()
@@ -1740,9 +1981,310 @@ mod tests {
 
     use super::{GraphCamera, SourcePoint, TilePyramidBuilder};
 
+    fn bounded_builder(levels: u8, cap: u32, overdraw: f64) -> TilePyramidBuilder {
+        TilePyramidBuilder::with_memory_limit(levels, cap, overdraw, 8 * 1024 * 1024).expect("bounded builder")
+    }
+
+    #[test]
+    fn graph_new_mean_groups_all_finite_pairs_once_in_numeric_x_order() {
+        let mut builder = TilePyramidBuilder::new(8, 4096, 1.5).unwrap();
+        builder.push_batch(&[
+            SourcePoint::new(1, 2.0, 10.0), SourcePoint::new(2, -0.0, 2.0),
+            SourcePoint::new(3, 1.0, 7.0), SourcePoint::new(4, 2.0, 20.0),
+            SourcePoint::new(5, 0.0, 4.0), SourcePoint::new(6, f64::NAN, 8.0),
+            SourcePoint::new(7, 1.0, f64::INFINITY),
+        ]).unwrap();
+        let pyramid = builder.finish().unwrap();
+        let reserved = pyramid.cache_reservation_bytes();
+        let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
+        assert_eq!(mean.as_slice(), &[[0.0, 3.0], [1.0, 7.0], [2.0, 15.0]]);
+        assert_eq!(mean[0][0].to_bits(), 0.0f64.to_bits());
+        let repeated = pyramid.mean_line(&|| panic!("cached mean must not aggregate again")).unwrap().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&mean, &repeated));
+        assert!(pyramid.resident_bytes() >= mean.capacity() as u64 * 16);
+        assert_eq!(pyramid.cache_reservation_bytes(), reserved);
+        assert!(pyramid.resident_bytes() + pyramid.decoded_bytes() + pyramid.total_finite_rows * (24 + 40) <= reserved);
+    }
+
+    #[test]
+    fn graph_new_mean_full_exponent_cancellation_permutations() {
+        for values in [
+            [1e300, 1e-24, -1e300], [1e300, -1e300, 1e-24],
+            [1e-24, 1e300, -1e300], [1e-24, -1e300, 1e300],
+            [-1e300, 1e300, 1e-24], [-1e300, 1e-24, 1e300],
+        ] {
+            let mut builder = TilePyramidBuilder::new(1, 4096, 1.5).unwrap();
+            builder.push_batch(&values.iter().enumerate().map(|(index, value)|
+                SourcePoint::new(index as i64 + 1, 0.0, *value)).collect::<Vec<_>>()).unwrap();
+            let pyramid = builder.finish().unwrap();
+            let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
+            assert_eq!(mean[0][1], 3.333333333333333e-25, "{values:?}");
+        }
+    }
+
+    #[test]
+    fn graph_new_mean_full_exponent_rounding_and_overflow() {
+        let tiny = f64::from_bits(1);
+        for (values, expected) in [
+            (vec![f64::MAX; 17], f64::MAX),
+            (vec![-f64::MAX; 17], -f64::MAX),
+            (vec![f64::MAX, f64::MAX, -f64::MAX], f64::MAX / 3.0),
+            (vec![f64::MAX, f64::MIN, tiny, tiny, tiny], tiny),
+            (vec![f64::MAX, f64::MIN, -tiny, -tiny, -tiny], -tiny),
+            (vec![f64::MAX, f64::MIN, f64::MIN_POSITIVE], f64::MIN_POSITIVE / 3.0),
+            (vec![tiny; 17], tiny),
+            (vec![tiny, 0.0], 0.0),
+            (vec![-tiny, 0.0], -0.0),
+            (vec![tiny, tiny, 0.0], tiny),
+            (vec![tiny, tiny * 2.0], tiny * 2.0),
+            (vec![tiny * 2.0, tiny * 3.0], tiny * 2.0),
+            (vec![1.0, f64::from_bits(1.0f64.to_bits() + 1)], 1.0),
+            (vec![1.0, f64::from_bits(1.0f64.to_bits() + 1), tiny], f64::from_bits(0x3fe5555555555556)),
+            (vec![f64::MAX, f64::MIN, 0.0, -0.0], 0.0),
+            (vec![0.0, -0.0], 0.0),
+            (vec![-0.0], 0.0),
+        ] {
+            let mut builder = TilePyramidBuilder::new(1, 4096, 1.5).unwrap();
+            builder.push_batch(&values.iter().enumerate().map(|(index, value)|
+                SourcePoint::new(index as i64 + 1, 0.0, *value)).collect::<Vec<_>>()).unwrap();
+            let pyramid = builder.finish().unwrap();
+            let reserved = pyramid.cache_reservation_bytes();
+            let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
+            assert_eq!(mean[0][1].to_bits(), expected.to_bits(), "{values:?}");
+            assert!(mean[0][1].is_finite());
+            assert_eq!(pyramid.cache_reservation_bytes(), reserved);
+            assert!(pyramid.resident_bytes() + pyramid.decoded_bytes() + pyramid.total_finite_rows * 64 <= reserved);
+        }
+    }
+
+    #[test]
+    fn graph_new_mean_full_exponent_sweep_and_carry() {
+        for exponent in 0..2047u64 {
+            for fraction in [0, 1, (1u64 << 52) - 1] {
+                let value = f64::from_bits((exponent << 52) | fraction);
+                for sign in [1.0, -1.0] {
+                    let residue = value * sign;
+                    for values in [
+                        [f64::MAX, residue, -f64::MAX],
+                        [f64::MAX, -f64::MAX, residue],
+                        [residue, f64::MAX, -f64::MAX],
+                        [residue, -f64::MAX, f64::MAX],
+                        [-f64::MAX, f64::MAX, residue],
+                        [-f64::MAX, residue, f64::MAX],
+                    ] {
+                        let points = values.map(|value| [0.0, value]);
+                        let result = super::finite_group_mean(&points, &|| Ok(())).unwrap();
+                        let expected = if residue == 0.0 { 0.0 } else { residue / 3.0 };
+                        assert_eq!(result.to_bits(), expected.to_bits(), "{values:?}");
+                    }
+                    let points = [[0.0, residue]; 17];
+                    let expected = if residue == 0.0 { 0.0 } else { residue };
+                    assert_eq!(super::finite_group_mean(&points, &|| Ok(())).unwrap().to_bits(), expected.to_bits());
+                }
+            }
+        }
+        let mut points = vec![[0.0, f64::MAX]; 4097];
+        points.extend(vec![[0.0, -f64::MAX]; 4096]);
+        assert_eq!(super::finite_group_mean(&points, &|| Ok(())).unwrap(), f64::MAX / 8193.0);
+        let calls = std::cell::Cell::new(0);
+        assert!(super::finite_group_mean(&points, &|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 { Err(crate::error::AppError::Stats("cancelled".into())) } else { Ok(()) }
+        }).is_err());
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn graph_new_mean_handles_overflow_cancellation_empty_singleton_and_incomplete_cache() {
+        for (values, expected) in [
+            (vec![f64::MAX, f64::MAX], f64::MAX),
+            (vec![f64::MAX, 1.0, -f64::MAX], 1.0 / 3.0),
+            (vec![1e16, 1.0, -1e16], 1.0 / 3.0),
+            (vec![f64::from_bits(1); 3], f64::from_bits(1)),
+        ] {
+            let mut builder = TilePyramidBuilder::new(1, 4096, 1.5).unwrap();
+            builder.push_batch(&values.iter().enumerate().map(|(index, value)|
+                SourcePoint::new(index as i64 + 1, 0.0, *value)).collect::<Vec<_>>()).unwrap();
+            let pyramid = builder.finish().unwrap();
+            let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
+            assert_eq!(mean.len(), 1);
+            assert!((mean[0][1] - expected).abs() <= expected.abs() * 1e-14);
+            assert!(mean[0][1].is_finite());
+        }
+        let empty = TilePyramidBuilder::new(1, 4096, 1.5).unwrap().finish().unwrap();
+        assert!(empty.mean_line(&|| Ok(())).unwrap().unwrap().is_empty());
+        let mut builder = bounded_builder(1, 2, 1.5);
+        builder.push_batch(&[SourcePoint::new(1, 0.0, 2.0), SourcePoint::new(2, 1.0, 3.0),
+            SourcePoint::new(3, 0.0, 100.0)]).unwrap();
+        let incomplete = builder.finish().unwrap();
+        assert!(incomplete.mean_line(&|| Ok(())).unwrap().is_none(), "no mean of representatives");
+    }
+
+    #[test]
+    fn graph_new_large_exact_decode_retains_actual_allocations_without_warm_io() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        for count in [2_032_293usize, 2_100_000] {
+            let tile = super::GraphNewTile {
+                header: super::GraphNewTileHeader::new_for_test(0, 0, 0, count as u32, count as u64),
+                row_ids: (1..=count as i64).collect(),
+                xs: vec![0.5; count],
+                ys: vec![0.5; count],
+                counts: vec![1; count],
+            };
+            let mut file = tempfile::tempfile().expect("temporary tile file");
+            let mut index = std::collections::BTreeMap::new();
+            let stored = super::append_tile(&mut file, &mut index, tile).expect("encode exact tile");
+            let store = super::TileStore::new(file, index);
+            let decoded = store.decode(&stored.entry.address).expect("cold decode");
+            let allocated = (decoded.row_ids.capacity() + decoded.xs.capacity() + decoded.ys.capacity()) as u64 * 8
+                + decoded.counts.capacity() as u64 * 4 + 512;
+            assert!(allocated <= store.decoded_limit(), "{count}: actual allocation {allocated} exceeds cache limit {}", store.decoded_limit());
+            assert_eq!(store.decoded.lock().expect("cache").bytes, allocated);
+            drop(decoded);
+            {
+                let mut file = store.file.lock().expect("file");
+                file.seek(SeekFrom::End(-1)).expect("checksum position");
+                file.write_all(&[0xff]).expect("invalidate checksum");
+            }
+            assert_eq!(store.decode(&stored.entry.address).expect("warm decode must not checksum").row_ids.len(), count);
+            store.file.lock().expect("file").set_len(0).expect("empty temporary backing file");
+            assert_eq!(store.decode(&stored.entry.address).expect("camera decode must not reread").row_ids.len(), count);
+            store.decoded.lock().expect("cache").entries.clear();
+            assert!(store.decode(&stored.entry.address).is_err(), "a cache miss still validates its backing file");
+        }
+    }
+
+    #[test]
+    fn graph_new_fallback_midpoint_round_trips_below_and_above_exact_cap() {
+        for count in [3usize, super::super::graph_new_renderer::MAX_SCENE_POINTS + 1] {
+            let mut builder = bounded_builder(2, 4096, 1.5);
+            builder.push_batch(&[SourcePoint::new(1, -6.0, -6.0), SourcePoint::new(2, 7.0, 7.0)]).expect("outer bounds");
+            for start in (2..count).step_by(4096) {
+                let batch: Vec<_> = (start..(start + 4096).min(count))
+                    .map(|index| SourcePoint::new(index as i64 + 1, 0.5, 0.5)).collect();
+                builder.push_batch(&batch).expect("midpoint batch");
+            }
+            let pyramid = builder.finish().expect("midpoint must encode within its classified tile");
+            assert_eq!((pyramid.domain.x_min, pyramid.domain.x_max), (-6.0, 7.0));
+            assert_eq!(pyramid.total_finite_rows, count as u64);
+            assert_eq!(pyramid.levels.len(), 2);
+            let mut file = tempfile::tempfile().expect("cache");
+            let key = "c".repeat(64);
+            pyramid.write_cache(&mut file, &key).expect("persist fallback");
+            let restored = super::TilePyramid::read_cache(file, &key, 32 * 1024 * 1024, 32 * 1024 * 1024).expect("restore fallback");
+            let selection = restored.select(&GraphCamera {
+                x_min: -6.0, x_max: 7.0, y_min: -6.0, y_max: 7.0,
+                viewport_width: 1920, viewport_height: 1080, device_pixel_ratio: 1.0,
+            }).expect("select fallback");
+            assert_eq!(selection.total_source_count, count as u64);
+            assert_eq!(selection.exact, count == 3);
+        }
+    }
+
+    #[test]
+    fn graph_new_tile_classification_agrees_with_extreme_and_adjacent_bounds() {
+        for (min, max) in [(-6.0, 7.0), (-f64::MAX, f64::MAX), (1e-300, 2e-300), (1.0, 1.0f64.next_up())] {
+            let domain = super::GraphDomain { x_min: min, x_max: max, y_min: min, y_max: max };
+            for level in 1..=8 {
+                let tiles = 1 << level;
+                assert_eq!(super::axis_tile_bounds(min, max, 0, tiles).0, min);
+                assert_eq!(super::axis_tile_bounds(min, max, tiles - 1, tiles).1, max);
+                for tile in 0..tiles {
+                    let (lower, upper) = super::axis_tile_bounds(min, max, tile, tiles);
+                    for value in [lower.next_down(), lower, lower.next_up(), upper, min, max] {
+                        if !value.is_finite() || value < min || value > max { continue; }
+                        let (tile_x, tile_y) = super::tile_index(&domain, level, &SourcePoint::new(1, value, value)).expect("classify");
+                        let (x_min, x_max, y_min, y_max) = super::tile_bounds(&domain, level, tile_x, tile_y);
+                        assert!(value >= x_min && value <= x_max && value >= y_min && value <= y_max,
+                            "{min}..{max} level {level}: {value} outside {x_min}..{x_max}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn graph_new_compact_exact_waveform_preserves_every_finite_point() {
+        let mut points: Vec<_> = (1..=8192).map(|row_id| {
+            SourcePoint::new(row_id, row_id as f64, (row_id as f64 * 1.731).sin())
+        }).collect();
+        points.push(SourcePoint::new(8193, 4096.5, 4.0));
+        let mut builder = TilePyramidBuilder::new(8, 4096, 1.5).expect("builder");
+        builder.push_batch(&points).expect("waveform");
+        builder.push_batch(&[SourcePoint::new(8194, f64::NAN, 0.0)]).expect("nonfinite");
+        let pyramid = builder.finish().expect("pyramid");
+        let camera = GraphCamera { x_min: 0.0, x_max: 8194.0, y_min: -1.1, y_max: 4.1,
+            viewport_width: 160, viewport_height: 120, device_pixel_ratio: 1.0 };
+        let selected = pyramid.select(&camera).expect("select");
+        assert_eq!(selected.selected_mark_count, points.len(), "screen LOD must not erase a source that fits");
+        assert!(selected.exact);
+        assert_eq!(selected.visible_rows, Some(8193));
+        let mut actual: Vec<_> = selected.tiles.iter().flat_map(|selected| {
+            selected.tile.row_ids.iter().zip(&selected.tile.xs).zip(&selected.tile.ys)
+                .map(|((&row_id, &x), &y)| (row_id, x.to_bits(), y.to_bits()))
+        }).collect();
+        actual.sort_unstable_by_key(|point| point.0);
+        assert_eq!(actual, points.iter().map(|point| (point.row_id, point.x.to_bits(), point.y.to_bits())).collect::<Vec<_>>());
+        assert_eq!(pyramid.levels.len(), 1, "no deep pyramid for an exact scene");
+        assert!(pyramid.raw_store.is_none(), "research raw index stays opt-in");
+        assert_eq!(pyramid.spool_bytes, 8193 * 24, "no bucket replay spool");
+        let key = "e".repeat(64);
+        let mut file = tempfile::tempfile().expect("cache file");
+        pyramid.write_cache(&mut file, &key).expect("persist");
+        assert_eq!(file.metadata().expect("metadata").len(), pyramid.persisted_bytes());
+        assert!(super::TilePyramid::read_cache(file.try_clone().expect("clone"), &"f".repeat(64), 32 * 1024 * 1024, 1024 * 1024).is_err());
+        let restored = super::TilePyramid::read_cache(file, &key, 32 * 1024 * 1024, 1024 * 1024).expect("restore");
+        let zoom = GraphCamera { x_min: 4096.25, x_max: 4096.75, y_min: 3.9, y_max: 4.1, ..camera };
+        let selected = restored.select(&zoom).expect("zoom");
+        assert!(selected.exact);
+        assert_eq!(selected.visible_rows, Some(1));
+        assert_eq!(selected.selected_mark_count, 8193, "camera retains source slots for GPU reuse");
+        assert_eq!(selected.query_work.raw_points_inspected, 0);
+        assert!(restored.select_with_control(&camera, &|| Err(crate::error::AppError::Cancelled("test".into()))).is_err());
+    }
+
+    #[test]
+    fn graph_new_compact_exact_cap_and_memory_fallback() {
+        let cap = super::super::graph_new_renderer::MAX_SCENE_POINTS;
+        for count in [cap, cap + 1] {
+            let mut builder = TilePyramidBuilder::new(1, 4096, 1.5).expect("builder");
+            for start in (0..count).step_by(4096) {
+                let batch: Vec<_> = (start..(start + 4096).min(count))
+                    .map(|index| SourcePoint::new(index as i64 + 1, index as f64, 0.5)).collect();
+                builder.push_batch(&batch).expect("batch");
+            }
+            let pyramid = builder.finish().expect("finish");
+            let selected = pyramid.select(&GraphCamera { x_min: 0.0, x_max: count as f64,
+                y_min: 0.0, y_max: 1.0, viewport_width: 320, viewport_height: 200, device_pixel_ratio: 1.0 }).expect("select");
+            assert_eq!(selected.exact, count == cap);
+            assert_eq!(pyramid.total_finite_rows, count as u64);
+            assert!(selected.selected_mark_count <= cap);
+            if count == cap {
+                assert_eq!(selected.selected_mark_count, cap);
+                let mut file = tempfile::tempfile().expect("file");
+                let key = "a".repeat(64);
+                pyramid.write_cache(&mut file, &key).expect("write large exact tile");
+                assert!(super::TilePyramid::read_cache(file.try_clone().expect("clone"), &key, 16 * 1024 * 1024, 64 * 1024 * 1024).is_err());
+                let restored = super::TilePyramid::read_cache(file, &key, 320 * 1024 * 1024, 64 * 1024 * 1024).expect("restore large exact tile with raw-index scratch reservation");
+                assert!(restored.is_compact_exact());
+            } else {
+                assert!(selected.selected_mark_count < count);
+                assert!(pyramid.raw_line(&[], &|| Ok(())).expect("raw availability").is_none(), "never connect sampled geometry as a raw line");
+            }
+        }
+        let mut builder = TilePyramidBuilder::new(8, 4096, 1.5).expect("builder");
+        builder.push_batch(&[SourcePoint::new(1, 0.0, 1.0)]).expect("point");
+        let calls = std::cell::Cell::new(0);
+        assert!(builder.finish_with_control(&|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 4 { Err(crate::error::AppError::Cancelled("final exact check".into())) } else { Ok(()) }
+        }).is_err());
+    }
+
     #[test]
     fn graph_new_performance_first_default_retains_only_bounded_lod() {
-        let mut builder = TilePyramidBuilder::new(1, 4096, 1.5).expect("builder");
+        let mut builder = bounded_builder(1, 4096, 1.5);
         assert!(builder.raw_writer.is_none(), "no raw files or index buffers are constructed");
         for row_id in 1..=8192 {
             builder.push_batch(&[SourcePoint::new(row_id, 0.0, 0.0)]).expect("point");
@@ -1805,7 +2347,7 @@ mod tests {
         }).expect("exact retained viewport");
         assert!(selection.exact);
         assert_eq!(selection.visible_rows, Some(1));
-        assert_eq!(selection.tiles[0].tile.row_ids, vec![2]);
+        assert_eq!(selection.tiles[0].tile.row_ids, vec![1, 2, 3]);
         assert_eq!(selection.query_work.raw_points_inspected, 0);
     }
 
@@ -1925,13 +2467,13 @@ mod tests {
     fn pyramid_is_deterministic_across_batch_sizes_and_preserves_all_source_counts() {
         let points = source_points();
 
-        let mut one = TilePyramidBuilder::new(4, 8, 2.0).expect("builder one");
+        let mut one = bounded_builder(4, 8, 2.0);
         one.push_batch(&points[..2]).expect("batch one");
         one.push_batch(&points[2..4]).expect("batch two");
         one.push_batch(&points[4..]).expect("batch three");
         let one = one.finish().expect("pyramid one");
 
-        let mut two = TilePyramidBuilder::new(4, 8, 2.0).expect("builder two");
+        let mut two = bounded_builder(4, 8, 2.0);
         let mut reversed = points.clone();
         reversed.reverse();
         two.push_batch(&reversed).expect("batch four");
@@ -1954,7 +2496,7 @@ mod tests {
 
     #[test]
     fn selection_is_bounded_for_a_fixed_viewport() {
-        let mut builder = TilePyramidBuilder::new(5, 4, 1.5).expect("builder");
+        let mut builder = bounded_builder(5, 4, 1.5);
         builder.push_batch(&source_points()).expect("push points");
         let pyramid = builder.finish().expect("finish pyramid");
 
@@ -1993,7 +2535,7 @@ mod tests {
             SourcePoint::new(13, 0.16, 0.14),
             SourcePoint::new(14, 0.85, 0.85),
         ];
-        let mut builder = TilePyramidBuilder::new(4, 4, 1.5).expect("builder");
+        let mut builder = bounded_builder(4, 4, 1.5);
         builder.push_batch(&points).expect("push points");
         let pyramid = builder.finish().expect("finish pyramid");
 
@@ -2029,11 +2571,11 @@ mod tests {
             SourcePoint::new(8, 0.100, 0.100),
         ];
 
-        let mut ascending = TilePyramidBuilder::new(3, 4, 2.0).expect("ascending builder");
+        let mut ascending = bounded_builder(3, 4, 2.0);
         ascending.push_batch(&points).expect("ascending points");
         let ascending = ascending.finish().expect("ascending pyramid");
 
-        let mut descending = TilePyramidBuilder::new(3, 4, 2.0).expect("descending builder");
+        let mut descending = bounded_builder(3, 4, 2.0);
         let mut reversed = points.clone();
         reversed.reverse();
         descending.push_batch(&reversed).expect("descending points");
@@ -2093,7 +2635,7 @@ mod tests {
         let points = (1..=20)
             .map(|row_id| SourcePoint::new(row_id, 0.25 + f64::from(row_id as i32) * 0.0001, 0.5))
             .collect::<Vec<_>>();
-        let mut builder = TilePyramidBuilder::new(1, 16, 1.0).expect("builder");
+        let mut builder = bounded_builder(1, 16, 1.0);
         builder.push_batch(&points).expect("push points");
         let pyramid = builder.finish().expect("finish pyramid");
 
@@ -2215,7 +2757,7 @@ mod tests {
     #[test]
     fn fine_emission_accounts_remaining_heaps_and_overlapping_buffers() {
         let cap = 1024;
-        let mut builder = TilePyramidBuilder::new(5, cap, 1.0).expect("builder");
+        let mut builder = bounded_builder(5, cap, 1.0);
         builder
             .push_batch(&colliding_fine_points(cap))
             .expect("push");
@@ -2232,7 +2774,7 @@ mod tests {
     fn fine_emission_rejects_cap_before_overlapping_allocations() {
         let cap = 1024;
         let points = colliding_fine_points(cap);
-        let mut reference = TilePyramidBuilder::new(5, cap, 1.0).expect("reference");
+        let mut reference = bounded_builder(5, cap, 1.0);
         reference.push_batch(&points).expect("push");
         let reference = reference.finish().expect("reference finish");
         let limit = fine_emission_minimum(&reference, cap) - 1;
@@ -2258,7 +2800,7 @@ mod tests {
             }
         }
         assert_eq!(points.len(), 256);
-        let mut builder = TilePyramidBuilder::new(7, 1, 1.0).expect("builder");
+        let mut builder = bounded_builder(7, 1, 1.0);
         builder.push_batch(&points).expect("push");
         let calls = std::cell::Cell::new(0);
         let cancel_checkpoint = 2 + 6 + 2 * super::bucket_count_for(7) + 2;
@@ -2284,7 +2826,7 @@ mod tests {
 
     #[test]
     fn cancellation_is_checked_before_returning_finished_pyramid() {
-        let mut builder = TilePyramidBuilder::new(1, 4, 1.0).expect("builder");
+        let mut builder = bounded_builder(1, 4, 1.0);
         builder
             .push_batch(&[SourcePoint::new(1, 0.0, 0.0)])
             .expect("push");
@@ -2345,7 +2887,7 @@ mod tests {
             (-f64::from_bits(2), f64::from_bits(2)),
             (f64::MAX.next_down(), f64::MAX),
         ] {
-            let mut builder = TilePyramidBuilder::new(4, 4, 1.0).expect("builder");
+            let mut builder = bounded_builder(4, 4, 1.0);
             builder
                 .push_batch(&[SourcePoint::new(1, min, min), SourcePoint::new(2, max, max)])
                 .expect("endpoints");

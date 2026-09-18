@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { GraphNewRawMode, GraphNewXMode } from "../types/graphBuilderNew";
 
-import { isCameraDomain, type CameraDomain, type PlotRect } from "../components/graphBuilderNew/graphNewCamera";
+import { isCameraDomain, normalizedAxisValue, type CameraDomain, type PlotRect } from "../components/graphBuilderNew/graphNewCamera";
 import {
   createGraphNewFrameReceiver,
   type GraphNewFrameReceiverSnapshot,
@@ -57,14 +58,31 @@ export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   height: number;
   devicePixelRatio: number;
   cameraDomain?: CameraDomain | null;
+  showMean?: boolean;
+  xMode?: GraphNewXMode;
+  rawMode?: GraphNewRawMode;
+}
+
+export interface GraphNewAxis {
+  kind: Exclude<GraphNewXMode, "auto">;
+  utc: boolean;
+  origin?: { epochNanos: string; unitNanos: number } | null;
+  ticks: { value: number; position: number; label: string | null }[];
 }
 
 export interface GraphNewRenderCompletion {
   requestId: string;
+  xAxis?: GraphNewAxis;
+  rawMode?: GraphNewRawMode;
+  rawLineAvailable?: boolean;
+  rawLineSegments?: number;
   processedRows: number;
   finiteRows: number;
   excludedNonFiniteRows: number;
   selectedMarks: number;
+  meanAvailable?: boolean;
+  meanGroups?: number | null;
+  meanVisible?: boolean;
   exactVisible: boolean;
   visibleRows: number | null;
   rawIndexEntriesInspected: number;
@@ -88,11 +106,14 @@ export interface GraphNewRenderController extends Omit<GraphNewProbeController, 
 
 function safeReason(error: unknown): string {
   const message = describeError(error);
-  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache))$/.exec(message);
+  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|cache_pressure))$/.exec(message);
   return match?.[1] ?? "graph_new_render_failed";
 }
 
 function validateRenderRequest(request: GraphNewRenderRequest): void {
+  if (request.xMode !== undefined && !["auto", "numeric", "time", "duration", "category"].includes(request.xMode)) throw new Error("graph_new_invalid_request");
+  if (request.rawMode !== undefined && !["scatter", "line", "pointsLine"].includes(request.rawMode)) throw new Error("graph_new_invalid_request");
+  if (request.showMean !== undefined && typeof request.showMean !== "boolean") throw new Error("graph_new_invalid_request");
   if (request.cameraDomain != null && !isCameraDomain(request.cameraDomain)) throw new Error("graph_new_invalid_request");
   const identifiers = [request.requestId, request.sessionId, request.datasetId, request.xColumnId, request.yColumnId];
   const generations = [request.datasetGeneration, request.rendererGeneration, request.cameraGeneration];
@@ -109,6 +130,43 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
 }
 
 function validateCompletion(completion: GraphNewRenderCompletion, request: GraphNewRenderRequest): void {
+  if (request.xMode !== undefined || completion?.xAxis !== undefined) {
+    const axis = completion?.xAxis;
+    if (!axis || !["numeric", "time", "duration", "category"].includes(axis.kind) || typeof axis.utc !== "boolean"
+      || (axis.origin != null && (axis.kind !== "time" || typeof axis.origin.epochNanos !== "string"
+        || !/^-?\d{1,25}$/.test(axis.origin.epochNanos) || ![1, 1000, 1000000, 1000000000].includes(axis.origin.unitNanos)))
+      || (request.xMode && request.xMode !== "auto" && axis.kind !== request.xMode)
+      || !Array.isArray(axis.ticks) || axis.ticks.length > 12
+      || axis.ticks.some((tick, index) => !tick || !Number.isFinite(tick.value) || !Number.isFinite(tick.position)
+        || tick.position < 0 || tick.position > 1 || (index > 0 && tick.position <= axis.ticks[index - 1].position)
+        || (axis.kind === "category" ? typeof tick.label !== "string" || new TextEncoder().encode(tick.label).length > 512 : tick.label !== null)
+        || !completion.cameraDomain || !(Math.abs(normalizedAxisValue(tick.value, completion.cameraDomain.xMin, completion.cameraDomain.xMax) - tick.position) <= 1e-6))) {
+      throw new Error("graph_new_render_failed");
+    }
+  }
+  if (request.rawMode !== undefined || completion?.rawMode !== undefined) {
+    if (completion?.rawMode !== (request.rawMode ?? "scatter") || typeof completion.rawLineAvailable !== "boolean"
+      || !Number.isSafeInteger(completion.rawLineSegments) || completion.rawLineSegments! < 0
+      || completion.rawLineSegments! > Math.max(0, completion.finiteRows - 1)
+      || ((!completion.rawLineAvailable || completion.rawMode === "scatter") && completion.rawLineSegments !== 0)
+      || (completion.rawLineAvailable && completion.finiteRows > 0 && (!completion.exactVisible || completion.selectedMarks !== completion.finiteRows))) {
+      throw new Error("graph_new_render_failed");
+    }
+  }
+  if (request.showMean || completion?.meanAvailable !== undefined || completion?.meanGroups !== undefined || completion?.meanVisible !== undefined) {
+    const groups = completion?.meanGroups;
+    const computed = request.showMean === true && completion?.meanAvailable === true;
+    if (typeof completion?.meanAvailable !== "boolean" || typeof completion?.meanVisible !== "boolean"
+      || (completion.meanAvailable && completion.finiteRows > 0
+        && (!completion.exactVisible || completion.selectedMarks !== completion.finiteRows))
+      || (computed ? (typeof groups !== "number" || !Number.isSafeInteger(groups) || groups < 0
+        || groups > completion.finiteRows || (completion.finiteRows > 0 && groups === 0)) : groups !== null)
+      || completion.meanVisible !== (computed && typeof groups === "number" && groups >= 2)) {
+      throw new Error("graph_new_render_failed");
+    }
+  }
+  const submitsWholeGeometry = completion?.exactVisible === true
+    && completion.selectedMarks === completion.finiteRows;
   if (!completion || completion.requestId !== request.requestId
     || completion.width !== Math.ceil(request.width * request.devicePixelRatio)
     || completion.height !== Math.ceil(request.height * request.devicePixelRatio)
@@ -119,11 +177,12 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
     || typeof completion.exactVisible !== "boolean"
     || (completion.visibleRows !== null && (!Number.isSafeInteger(completion.visibleRows)
       || completion.visibleRows < 0 || completion.visibleRows > completion.finiteRows
-      || completion.selectedMarks > completion.visibleRows))
-    || (completion.exactVisible && completion.selectedMarks !== completion.visibleRows)
+      || (!submitsWholeGeometry && completion.selectedMarks > completion.visibleRows)))
+    || (completion.exactVisible && (completion.visibleRows === null
+      || (!submitsWholeGeometry && completion.selectedMarks !== completion.visibleRows)))
     || completion.rawBlocksInspected > completion.rawIndexEntriesInspected
     || completion.rawPointsInspected > completion.finiteRows
-    || completion.selectedMarks > completion.finiteRows || completion.selectedMarks > 1_000_000
+    || completion.selectedMarks > completion.finiteRows || completion.selectedMarks > 2_100_000
     || [completion.buildMs, completion.renderMs, completion.readbackMs].some((value) => !Number.isFinite(value) || value < 0)
     || !completion.cameraDomain || !completion.plotRect
     || [completion.cameraDomain.xMin, completion.cameraDomain.xMax, completion.cameraDomain.yMin, completion.cameraDomain.yMax].some((value) => !Number.isFinite(value))

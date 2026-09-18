@@ -1,4 +1,21 @@
 {
+  "graphNew": {
+    "xInterpretation": "X interpretation",
+    "rawSeries": "Raw series",
+    "xMode": { "auto": "Auto", "numeric": "Numeric", "time": "Time", "duration": "Duration", "category": "Category" },
+    "rawMode": { "scatter": "Scatter", "line": "Line", "pointsLine": "Points + line" },
+    "rawLine": "Raw line",
+    "rawUnavailable": "Raw line unavailable: complete data is not retained.",
+    "xUnrepresentable": "This X field cannot be represented within the axis limits.",
+    "layers": "Plot layers",
+    "mean": "Mean",
+    "points": "Points",
+    "meanUnavailable": "Mean unavailable: complete data is not retained.",
+    "meanNeedsGroups": "Mean line requires at least two distinct X values.",
+    "textFieldType": "Text",
+    "timestampFieldType": "Timestamp",
+    "unsupportedField": "{{type}} - unsupported: numeric fields only"
+  },
   "capability": {
     "nestedSubgroupMissingLabels": {
       "v1": "Rows with missing subgroup labels remain in Overall results but do not contribute to Within moving ranges."

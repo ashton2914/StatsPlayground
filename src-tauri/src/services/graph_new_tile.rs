@@ -283,7 +283,10 @@ fn validate_header_fields(
             "graph-new tile must retain at least one point".to_string(),
         ));
     }
-    if point_count > GRAPH_NEW_MAX_TILE_POINTS {
+    let compact_exact = level == 0 && tile_x == 0 && tile_y == 0
+        && u64::from(point_count) == total_source_count
+        && point_count as usize <= super::graph_new_renderer::MAX_SCENE_POINTS;
+    if point_count > GRAPH_NEW_MAX_TILE_POINTS && !compact_exact {
         return Err(AppError::InvalidParam(format!(
             "graph-new tile point count exceeds {GRAPH_NEW_MAX_TILE_POINTS}"
         )));
@@ -459,19 +462,41 @@ fn read_f64(bytes: &[u8], offset: &mut usize) -> Result<f64, AppError> {
 }
 
 fn read_i64_vec(bytes: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i64>, AppError> {
-    (0..count).map(|_| read_i64(bytes, offset)).collect()
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(read_i64(bytes, offset)?);
+    }
+    Ok(values)
 }
 
 fn read_f64_vec(bytes: &[u8], offset: &mut usize, count: usize) -> Result<Vec<f64>, AppError> {
-    (0..count).map(|_| read_f64(bytes, offset)).collect()
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(read_f64(bytes, offset)?);
+    }
+    Ok(values)
 }
 
 fn read_u32_vec(bytes: &[u8], offset: &mut usize, count: usize) -> Result<Vec<u32>, AppError> {
-    (0..count).map(|_| read_u32(bytes, offset)).collect()
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(read_u32(bytes, offset)?);
+    }
+    Ok(values)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn graph_new_exact_packet_cap_and_layout_are_bounded() {
+        let cap = super::super::graph_new_renderer::MAX_SCENE_POINTS as u32;
+        assert_eq!(cap, 2_100_000);
+        assert!(super::validate_header_fields(0, 0, 0, cap, u64::from(cap)).is_ok());
+        assert!(super::validate_header_fields(0, 0, 0, cap + 1, u64::from(cap) + 1).is_err());
+        assert!(super::validate_header_fields(1, 0, 0, cap, u64::from(cap)).is_err());
+        assert!(super::validate_header_fields(0, 0, 0, cap, u64::from(cap) + 1).is_err());
+    }
+
     use super::{
         push_f64, push_i64, push_u16, push_u32, push_u64, GraphNewTile, GraphNewTileHeader,
         GRAPH_NEW_TILE_CHECKSUM_BYTES, GRAPH_NEW_TILE_MAGIC,

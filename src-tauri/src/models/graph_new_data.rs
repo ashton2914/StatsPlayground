@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-pub const GRAPH_NEW_DEFAULT_DOMAIN_POLICY: &str = "finite-domain-v1";
+pub const GRAPH_NEW_DEFAULT_DOMAIN_POLICY: &str = "typed-x-v3-relative-time";
 pub const GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR: f64 = 1.5;
 pub const GRAPH_NEW_MAX_OVERDRAW_FACTOR: f64 = 4.0;
 pub const GRAPH_NEW_MAX_LEVELS: u8 = 12;

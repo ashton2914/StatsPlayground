@@ -124,12 +124,14 @@
   min-height: 0;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) 22px 30px;
+  grid-template-rows: auto minmax(0, 1fr) 22px 30px;
   color: var(--gbn-text);
   font-size: 12px;
 }
 
 .graph-new-canvas-host {
+  grid-column: 2;
+  grid-row: 2;
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -174,6 +176,7 @@
 .graph-new-reset:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
 
 .graph-new-y-title {
+  grid-row: 2;
   writing-mode: vertical-rl;
   transform: rotate(180deg);
   align-self: center;
@@ -183,6 +186,16 @@
 
 .graph-new-x-title { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-new-frame-status { grid-column: 1 / -1; color: var(--gbn-muted); align-self: center; font-size: 11px; }
+
+.graph-new-layers { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 0 0 8px; min-height: 28px; text-align: left; }
+.graph-new-mean-toggle, .graph-new-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.graph-new-mean-toggle input { margin: 0; accent-color: #dc2626; }
+.graph-new-point-swatch { width: 7px; height: 7px; border-radius: 50%; background-color: #1f6feb; }
+.graph-new-mean-swatch { width: 20px; height: 0; border-top: 2px solid #dc2626; }
+.graph-new-line-swatch { width: 20px; height: 0; border-top: 1px solid #1f6feb; }
+.graph-new-axis-ticks { position: absolute; inset: 0; pointer-events: none; }
+.graph-new-axis-ticks span { position: absolute; font-size: 11px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.graph-new-mean-reason { color: var(--gbn-muted); font-size: 11px; overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {
   .graph-builder-new-stage { padding: 8px; }

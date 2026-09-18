@@ -32,6 +32,17 @@ impl MemoryReservation {
             .map_err(|_| cache_pressure())?;
         Ok(Self { pool, bytes })
     }
+
+    pub(super) fn retain_completed_build(&mut self, built: &GraphNewBuildResult) -> Result<(), AppError> {
+        let bytes = built.pyramid.resident_bytes()
+            .checked_add(built.pyramid.decoded_bytes())
+            .and_then(|bytes| bytes.checked_add(4096))
+            .ok_or_else(cache_pressure)?;
+        let released = self.bytes.checked_sub(bytes).ok_or_else(cache_pressure)?;
+        self.pool.used.fetch_sub(released, Ordering::AcqRel);
+        self.bytes = bytes;
+        Ok(())
+    }
 }
 
 impl Drop for MemoryReservation {
@@ -64,6 +75,7 @@ pub struct GraphNewCacheCoordinator {
     pub misses: u64,
     pub evictions: u64,
     directory: Option<PathBuf>,
+    owner: Option<CacheOwner>,
     disk: BTreeMap<String, DiskGraph>,
     disk_limit: u64,
     pub disk_bytes: u64,
@@ -104,6 +116,7 @@ impl GraphNewCacheCoordinator {
             misses: 0,
             evictions: 0,
             directory: None,
+            owner: None,
             disk: BTreeMap::new(),
             disk_limit: DEFAULT_DISK_BYTES,
             disk_bytes: 0,
@@ -145,7 +158,47 @@ impl GraphNewCacheCoordinator {
         if cpu_bytes > self.cpu_limit {
             return Err(cache_pressure());
         }
-        let reservation = MemoryReservation::new(self.pool.clone(), cpu_bytes)?;
+        let local_used = self.reserved_cpu_bytes()
+            .checked_add(self.pending.as_ref().map_or(0, |(_, reservation)| reservation.bytes))
+            .ok_or_else(cache_pressure)?;
+        let mut candidates = self.entries.iter()
+            .filter(|(key, _)| self.pinned.as_ref() != Some(key))
+            .map(|(key, entry)| (key.clone(), entry._reservation.bytes, entry.touched))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| (left.2, &left.0).cmp(&(right.2, &right.0)));
+        let (victim_count, additional) = loop {
+            let used = self.pool.used.load(Ordering::Acquire);
+            let mut reclaimed = 0u64;
+            let mut victim_count = 0;
+            while used.checked_sub(reclaimed).and_then(|bytes| bytes.checked_add(cpu_bytes))
+                .is_none_or(|bytes| bytes > self.pool.limit)
+                || local_used.checked_sub(reclaimed).and_then(|bytes| bytes.checked_add(cpu_bytes))
+                    .is_none_or(|bytes| bytes > self.cpu_limit)
+            {
+                let Some((_, bytes, _)) = candidates.get(victim_count) else {
+                    return Err(cache_pressure());
+                };
+                reclaimed = reclaimed.checked_add(*bytes).ok_or_else(cache_pressure)?;
+                victim_count += 1;
+            }
+            let additional = cpu_bytes.saturating_sub(reclaimed);
+            let reserved = used.checked_add(additional).ok_or_else(cache_pressure)?;
+            if self.pool.used.compare_exchange(used, reserved, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                break (victim_count, additional);
+            }
+        };
+        let mut reservation = MemoryReservation { pool: self.pool.clone(), bytes: additional };
+        for (key, _, _) in candidates.iter().take(victim_count) {
+            if let Some(mut entry) = self.entries.remove(key) {
+                self.cpu_bytes -= entry.bytes;
+                reservation.bytes += entry._reservation.bytes;
+                entry._reservation.bytes = 0;
+                self.evictions += 1;
+            }
+        }
+        let surplus = reservation.bytes - cpu_bytes;
+        self.pool.used.fetch_sub(surplus, Ordering::AcqRel);
+        reservation.bytes = cpu_bytes;
         let disk_limit = self.construction_disk_budget(required_disk)?;
         Ok((reservation, disk_limit))
     }
@@ -349,17 +402,21 @@ impl GraphNewCacheCoordinator {
     }
 
     pub fn set_directory(&mut self, base: &Path) -> Result<(), AppError> {
-        if self.directory.is_some() {
+        if !cfg!(unix) || self.directory.is_some() {
             return Err(cache_path_error());
         }
         ensure_directory(base)?;
         let root = base.join("graph-new-derived-v1");
         ensure_directory(&root)?;
+        let root_handle = anchored_directory(&root)?;
+        retire_orphans(&root_handle);
         let directory = tempfile::Builder::new()
             .prefix("lifetime-")
             .tempdir_in(&root)
             .map_err(|_| cache_path_error())?
             .keep();
+        let owner = CacheOwner::new(root_handle, &directory)?;
+        self.owner = Some(owner);
         self.directory = Some(directory);
         Ok(())
     }
@@ -374,6 +431,7 @@ impl GraphNewCacheCoordinator {
         }
         let directory = self.directory.as_ref().ok_or_else(cache_path_error)?;
         validate_directory(directory)?;
+        self.owner.as_ref().ok_or_else(cache_path_error)?.validate_path(directory)?;
         Ok(directory.join(format!("{key}.gnd")))
     }
 
@@ -382,7 +440,7 @@ impl GraphNewCacheCoordinator {
             return Ok(());
         }
         if let Some(entry) = self.disk.get(key) {
-            if self.disk_path(key).and_then(|path| open_owned(&path, &entry.identity)).is_ok() {
+            if self.disk_path(key).and_then(|_| self.owner.as_ref().ok_or_else(cache_path_error)?.open(key, &entry.identity)).is_ok() {
                 return Ok(());
             }
             self.retire_disk(key);
@@ -399,21 +457,21 @@ impl GraphNewCacheCoordinator {
             self.remove_disk(&victim)?;
             self.disk_evictions += 1;
         }
-        let destination = self.disk_path(key)?;
+        self.disk_path(key)?;
         let reservation = MemoryReservation::new(self.pool.clone(), 1024)?;
-        let directory = self.directory.as_ref().ok_or_else(cache_path_error)?;
-        let mut pending =
-            tempfile::NamedTempFile::new_in(directory).map_err(|_| cache_path_error())?;
-        self.entries
+        let owner = self.owner.as_mut().ok_or_else(cache_path_error)?;
+        let mut file = owner.create(key)?;
+        let identity = file.metadata().map_err(|_| cache_path_error())?;
+        let result = self.entries
             .get(key)
             .ok_or_else(cache_path_error)?
             .built
             .pyramid
-            .write_cache(pending.as_file_mut(), key)?;
-        validate_directory(directory)?;
-        let file = pending
-            .persist_noclobber(&destination)
-            .map_err(|_| cache_path_error())?;
+            .write_cache(&mut file, key);
+        if let Err(error) = result {
+            let _ = owner.remove(key, &identity);
+            return Err(error);
+        }
         let identity = file.metadata().map_err(|_| cache_path_error())?;
         self.disk_bytes += identity.len();
         self.disk.insert(
@@ -432,14 +490,14 @@ impl GraphNewCacheCoordinator {
         let Some(entry) = self.disk.get(&key.hash_hex) else {
             return Ok(false);
         };
-        let path = match self.disk_path(&key.hash_hex) {
-            Ok(path) => path,
+        match self.disk_path(&key.hash_hex) {
+            Ok(_) => {},
             Err(_) => {
                 self.retire_disk(&key.hash_hex);
                 return Ok(false);
             }
         };
-        let file = match open_owned(&path, &entry.identity) {
+        let file = match self.owner.as_ref().ok_or_else(cache_path_error)?.open(&key.hash_hex, &entry.identity) {
             Ok(file) => file,
             Err(_) => {
                 self.retire_disk(&key.hash_hex);
@@ -452,7 +510,7 @@ impl GraphNewCacheCoordinator {
             return Ok(false);
         }
         let available = available.min(self.pool.limit.saturating_sub(self.pool.used.load(Ordering::Acquire)));
-        let restore_limit = (available / 2).min(256 * 1024 * 1024);
+        let restore_limit = (available / 2).min(320 * 1024 * 1024);
         let validation = match MemoryReservation::new(self.pool.clone(), restore_limit) {
             Ok(reservation) => reservation,
             Err(_) => return Ok(false),
@@ -513,14 +571,14 @@ impl GraphNewCacheCoordinator {
 
     fn remove_disk(&mut self, key: &str) -> Result<(), AppError> {
         if let Some(entry) = self.disk.get(key) {
-            let owned = self.disk_path(key).and_then(|path| {
-                open_owned(&path, &entry.identity).map(|_| path)
+            let owned = self.disk_path(key).and_then(|_| {
+                self.owner.as_ref().ok_or_else(cache_path_error)?.open(key, &entry.identity)
             });
-            let Ok(path) = owned else {
+            let Ok(_file) = owned else {
                 self.retire_disk(key);
                 return Ok(());
             };
-            fs::remove_file(path).map_err(|_| cache_path_error())?;
+            self.owner.as_ref().ok_or_else(cache_path_error)?.remove(key, &entry.identity)?;
         }
         self.retire_disk(key);
         Ok(())
@@ -563,12 +621,209 @@ impl GraphNewCacheCoordinator {
 impl Drop for GraphNewCacheCoordinator {
     fn drop(&mut self) {
         self.invalidate();
-        if let Some(directory) = &self.directory {
-            if validate_directory(directory).is_ok() {
-                let _ = fs::remove_dir(directory);
-            }
+        if let Some(owner) = self.owner.take() {
+            owner.retire();
         }
     }
+}
+
+#[cfg(unix)]
+struct CacheOwner {
+    root: File,
+    directory: File,
+    marker: File,
+    name: std::ffi::OsString,
+    records: usize,
+}
+
+#[cfg(not(unix))]
+struct CacheOwner;
+
+#[cfg(unix)]
+fn anchored_directory(path: &Path) -> Result<File, AppError> {
+    use rustix::fs::{openat, Mode, OFlags};
+    validate_directory(path)?;
+    let mut current = File::open("/").map_err(|_| cache_path_error())?;
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            current = openat(&current, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty()).map(File::from).map_err(|_| cache_path_error())?;
+        }
+    }
+    Ok(current)
+}
+
+#[cfg(unix)]
+impl CacheOwner {
+    fn new(root: File, path: &Path) -> Result<Self, AppError> {
+        use rustix::fs::{openat, Mode, OFlags};
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+        let name = path.file_name().ok_or_else(cache_path_error)?.to_owned();
+        let directory = openat(&root, &name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty()).map(File::from).map_err(|_| cache_path_error())?;
+        rustix::fs::fchmod(&directory, Mode::RUSR | Mode::WUSR | Mode::XUSR)
+            .map_err(|_| cache_path_error())?;
+        let identity = directory.metadata().map_err(|_| cache_path_error())?;
+        let mut marker = openat(&directory, "owner-v1", OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR).map(File::from).map_err(|_| cache_path_error())?;
+        marker.try_lock().map_err(|_| cache_path_error())?;
+        writeln!(marker, "graph-new-owner-v1 {} {}", identity.dev(), identity.ino()).map_err(|_| cache_path_error())?;
+        marker.sync_all().map_err(|_| cache_path_error())?;
+        Ok(Self { root, directory, marker, name, records: 0 })
+    }
+
+    fn validate_path(&self, path: &Path) -> Result<(), AppError> {
+        use std::os::unix::fs::MetadataExt;
+        let current = anchored_directory(path)?.metadata().map_err(|_| cache_path_error())?;
+        let owned = self.directory.metadata().map_err(|_| cache_path_error())?;
+        if current.dev() != owned.dev() || current.ino() != owned.ino() { return Err(cache_path_error()); }
+        Ok(())
+    }
+
+    fn create(&mut self, key: &str) -> Result<File, AppError> {
+        use rustix::fs::{openat, Mode, OFlags};
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+        if self.records >= 1024 { return Err(cache_pressure()); }
+        let marker_identity = self.marker.metadata().map_err(|_| cache_path_error())?;
+        let _marker = open_anchored_owned(&self.directory, "owner-v1", &marker_identity)?;
+        let file = openat(&self.directory, format!("{key}.gnd"), OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR).map(File::from).map_err(|_| cache_path_error())?;
+        let identity = file.metadata().map_err(|_| cache_path_error())?;
+        writeln!(self.marker, "{key} {} {}", identity.dev(), identity.ino()).map_err(|_| cache_path_error())?;
+        self.marker.sync_all().map_err(|_| cache_path_error())?;
+        self.records += 1;
+        Ok(file)
+    }
+
+    fn open(&self, key: &str, identity: &Metadata) -> Result<File, AppError> {
+        open_anchored_owned(&self.directory, &format!("{key}.gnd"), identity)
+    }
+
+    fn remove(&self, key: &str, identity: &Metadata) -> Result<(), AppError> {
+        let _file = self.open(key, identity)?;
+        rustix::fs::unlinkat(&self.directory, format!("{key}.gnd"), rustix::fs::AtFlags::empty())
+            .map_err(|_| cache_path_error())
+    }
+
+    fn retire(self) {
+        let Self { root, directory, marker, name, .. } = self;
+        drop(marker);
+        drop(directory);
+        let mut remaining_bytes = DEFAULT_DISK_BYTES;
+        let _ = retire_namespace(&root, &name, &mut remaining_bytes);
+    }
+}
+
+#[cfg(unix)]
+fn retire_orphans(root: &File) {
+    let mut remaining_bytes = DEFAULT_DISK_BYTES;
+    let Ok(entries) = rustix::fs::Dir::read_from(root) else { return; };
+    for entry in entries.take(64).flatten() {
+        let name = entry.file_name().to_bytes();
+        if name.starts_with(b"lifetime-") {
+            let _ = retire_namespace(root, entry.file_name(), &mut remaining_bytes);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn retire_namespace(root: &File, name: impl rustix::path::Arg + Copy, remaining_bytes: &mut u64) -> Result<(), AppError> {
+    use rustix::fs::{openat, statat, unlinkat, AtFlags, Mode, OFlags};
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let directory = openat(root, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty()).map(File::from).map_err(|_| cache_path_error())?;
+    let identity = directory.metadata().map_err(|_| cache_path_error())?;
+    let marker = openat(&directory, "owner-v1", OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty()).map(File::from).map_err(|_| cache_path_error())?;
+    let marker_identity = marker.metadata().map_err(|_| cache_path_error())?;
+    if !marker_identity.is_file() || marker_identity.nlink() != 1 || identity.mode() & 0o077 != 0 {
+        return Err(cache_path_error());
+    }
+    marker.try_lock().map_err(|_| cache_path_error())?;
+    let mut content = String::new();
+    (&marker).take(128 * 1024 + 1).read_to_string(&mut content).map_err(|_| cache_path_error())?;
+    let mut lines = content.lines();
+    if content.len() > 128 * 1024 || !content.ends_with('\n')
+        || lines.next() != Some(format!("graph-new-owner-v1 {} {}", identity.dev(), identity.ino()).as_str()) {
+        return Err(cache_path_error());
+    }
+    let mut records = BTreeMap::new();
+    for (index, line) in lines.enumerate() {
+        let parts = line.split(' ').collect::<Vec<_>>();
+        if index >= 1024 || parts.len() != 3 || parts[0].len() != 64
+            || !parts[0].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+            return Err(cache_path_error());
+        }
+        let device = parts[1].parse::<u64>().map_err(|_| cache_path_error())?;
+        let inode = parts[2].parse::<u64>().map_err(|_| cache_path_error())?;
+        records.insert(format!("{}.gnd", parts[0]), (device, inode));
+    }
+    let mut owned_files = Vec::new();
+    let mut bytes = 0u64;
+    let entries = rustix::fs::Dir::read_from(&directory).map_err(|_| cache_path_error())?;
+    for (index, entry) in entries.take(1028).enumerate() {
+        let entry = entry.map_err(|_| cache_path_error())?;
+        if index >= 1027 { return Err(cache_path_error()); }
+        if matches!(entry.file_name().to_bytes(), b"." | b".." | b"owner-v1") { continue; }
+        let filename = entry.file_name().to_str().map_err(|_| cache_path_error())?;
+        let (device, inode) = records.get(filename).ok_or_else(cache_path_error)?;
+        let file = openat(&directory, entry.file_name(), OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty()).map(File::from).map_err(|_| cache_path_error())?;
+        let metadata = file.metadata().map_err(|_| cache_path_error())?;
+        if !metadata.is_file() || metadata.nlink() != 1 || metadata.dev() != *device || metadata.ino() != *inode {
+            return Err(cache_path_error());
+        }
+        bytes = bytes.checked_add(metadata.len()).ok_or_else(cache_path_error)?;
+        if bytes > *remaining_bytes { return Err(cache_pressure()); }
+        owned_files.push((filename.to_owned(), metadata));
+    }
+    for (filename, metadata) in &owned_files {
+        let _file = open_anchored_owned(&directory, filename, metadata)?;
+        unlinkat(&directory, filename, AtFlags::empty()).map_err(|_| cache_path_error())?;
+        *remaining_bytes -= metadata.len();
+    }
+    let current = statat(root, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| cache_path_error())?;
+    let current_marker = statat(&directory, "owner-v1", AtFlags::SYMLINK_NOFOLLOW).map_err(|_| cache_path_error())?;
+    if current.st_ino != identity.ino() || current.st_dev as u64 != identity.dev()
+        || current_marker.st_ino != marker_identity.ino() || current_marker.st_dev as u64 != marker_identity.dev()
+        || current_marker.st_nlink != 1 {
+        return Err(cache_path_error());
+    }
+    unlinkat(&directory, "owner-v1", AtFlags::empty()).map_err(|_| cache_path_error())?;
+    unlinkat(root, name, AtFlags::REMOVEDIR).map_err(|_| cache_path_error())
+}
+
+#[cfg(not(unix))]
+fn anchored_directory(_: &Path) -> Result<File, AppError> { Err(cache_path_error()) }
+#[cfg(not(unix))]
+fn retire_orphans(_: &File) {}
+#[cfg(not(unix))]
+impl CacheOwner {
+    fn new(_: File, _: &Path) -> Result<Self, AppError> { Err(cache_path_error()) }
+    fn validate_path(&self, _: &Path) -> Result<(), AppError> { Err(cache_path_error()) }
+    fn create(&mut self, _: &str) -> Result<File, AppError> { Err(cache_path_error()) }
+    fn open(&self, _: &str, _: &Metadata) -> Result<File, AppError> { Err(cache_path_error()) }
+    fn remove(&self, _: &str, _: &Metadata) -> Result<(), AppError> { Err(cache_path_error()) }
+    fn retire(self) {}
+}
+
+#[cfg(unix)]
+fn open_anchored_owned(directory: &File, name: &str, identity: &Metadata) -> Result<File, AppError> {
+    use rustix::fs::{openat, statat, AtFlags, Mode, OFlags};
+    use std::os::unix::fs::MetadataExt;
+    let file = openat(directory, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty()).map(File::from).map_err(|_| cache_path_error())?;
+    let opened = file.metadata().map_err(|_| cache_path_error())?;
+    let current = statat(directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|_| cache_path_error())?;
+    if !opened.is_file() || opened.nlink() != 1 || current.st_nlink != 1
+        || opened.dev() != identity.dev() || opened.ino() != identity.ino()
+        || current.st_ino != opened.ino() || current.st_dev as u64 != opened.dev() {
+        return Err(cache_path_error());
+    }
+    Ok(file)
 }
 
 fn cache_path_error() -> AppError {
@@ -616,7 +871,7 @@ fn validate_directory(path: &Path) -> Result<(), AppError> {
         }
         current.push(component);
         let metadata = fs::symlink_metadata(&current).map_err(|_| cache_path_error())?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        if redirected(&metadata) || !metadata.is_dir() {
             return Err(cache_path_error());
         }
     }
@@ -634,7 +889,7 @@ fn ensure_directory(path: &Path) -> Result<(), AppError> {
         }
         current.push(component);
         match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(metadata) if metadata.is_dir() && !redirected(&metadata) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir(&current).map_err(|_| cache_path_error())?
             }
@@ -644,31 +899,13 @@ fn ensure_directory(path: &Path) -> Result<(), AppError> {
     validate_directory(path)
 }
 
-fn open_owned(path: &Path, identity: &Metadata) -> Result<File, AppError> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| cache_path_error())?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(cache_path_error());
-    }
-    let file = File::open(path).map_err(|_| cache_path_error())?;
-    let opened = file.metadata().map_err(|_| cache_path_error())?;
-    #[cfg(unix)]
+fn redirected(metadata: &Metadata) -> bool {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1
-            || opened.nlink() != 1
-            || opened.ino() != identity.ino()
-            || opened.dev() != identity.dev()
-            || opened.ino() != metadata.ino()
-            || opened.dev() != metadata.dev()
-        {
-            return Err(cache_path_error());
-        }
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 { return true; }
     }
-    #[cfg(not(unix))]
-    if opened.created().ok() != identity.created().ok() {
-        return Err(cache_path_error());
-    }
-    Ok(file)
+    metadata.file_type().is_symlink()
 }
 
 #[cfg(test)]
@@ -677,8 +914,130 @@ pub(super) mod tests {
     use super::super::graph_new_lod::{SourcePoint, TilePyramidBuilder};
     use super::*;
 
+    #[test]
+    fn graph_new_recovery_crashed_namespace_is_retired_without_touching_live_owner() {
+        const CHILD_ROOT: &str = "GRAPH_NEW_RECOVERY_CHILD_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let mut cache = GraphNewCacheCoordinator::default();
+            cache.set_directory(Path::new(&root)).expect("child directory");
+            let graph = built(0);
+            let key = graph.key.hash_hex.clone();
+            cache.insert(graph).expect("child graph");
+            cache.persist(&key).expect("child derived file");
+            std::process::exit(0);
+        }
+        let temporary = tempfile::tempdir().expect("temporary");
+        let root = temporary.path().canonicalize().expect("canonical");
+        let mut live = GraphNewCacheCoordinator::new(1024 * 1024, 0);
+        live.set_directory(&root).expect("live directory");
+        let live_path = live.directory.clone().expect("live path");
+        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "services::graph_new_cache::tests::graph_new_recovery_crashed_namespace_is_retired_without_touching_live_owner", "--nocapture"])
+            .env(CHILD_ROOT, &root)
+            .status().expect("child");
+        assert!(status.success());
+        let namespaces = || fs::read_dir(root.join("graph-new-derived-v1")).expect("root")
+            .filter_map(Result::ok).filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .count();
+        assert_eq!(namespaces(), 2);
+        let mut restarted = GraphNewCacheCoordinator::new(1024 * 1024, 0);
+        restarted.set_directory(&root).expect("restart directory");
+        assert!(live_path.is_dir(), "live owner must survive another process startup");
+        assert_eq!(namespaces(), 2, "retire the crashed namespace, never reuse its IDs");
+    }
+
     pub(in crate::services) fn set_disk_limit(cache: &mut GraphNewCacheCoordinator, bytes: u64) {
         cache.disk_limit = bytes;
+    }
+
+    #[test]
+    fn graph_new_recovery_drop_skips_replaced_directory() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        let root = temporary.path().canonicalize().expect("canonical");
+        let mut cache = GraphNewCacheCoordinator::default();
+        cache.set_directory(&root).expect("directory");
+        let namespace = cache.directory.clone().expect("namespace");
+        fs::rename(&namespace, root.join("moved")).expect("move original");
+        fs::create_dir(&namespace).expect("replacement");
+        drop(cache);
+        assert!(namespace.is_dir(), "replacement is not owned");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graph_new_recovery_orphan_rejects_unknown_linked_replaced_and_oversized_entries() {
+        use std::os::unix::fs::symlink;
+        for mode in ["unknown", "symlink", "hardlink", "replaced", "oversized", "marker"] {
+            let temporary = tempfile::tempdir().expect("temporary");
+            let root = temporary.path().canonicalize().expect("canonical");
+            let mut cache = GraphNewCacheCoordinator::default();
+            cache.set_directory(&root).expect("directory");
+            let graph = built(0);
+            let key = graph.key.hash_hex.clone();
+            cache.insert(graph).expect("graph");
+            cache.persist(&key).expect("file");
+            let path = cache.disk_path(&key).expect("path");
+            let namespace = cache.directory.take().expect("namespace");
+            let owner = cache.owner.take().expect("owner");
+            drop(owner);
+            cache.disk.clear();
+            cache.disk_bytes = 0;
+            match mode {
+                "unknown" => fs::write(namespace.join("notes.txt"), b"keep").expect("unknown"),
+                "symlink" => {
+                    fs::rename(&path, root.join("original")).expect("move");
+                    symlink(root.join("original"), &path).expect("link");
+                }
+                "hardlink" => fs::hard_link(&path, root.join("external")).expect("hardlink"),
+                "replaced" => {
+                    fs::rename(&path, root.join("original")).expect("move");
+                    fs::write(&path, b"keep replacement").expect("replacement");
+                }
+                "oversized" => File::options().write(true).open(&path).expect("file")
+                    .set_len(DEFAULT_DISK_BYTES + 1).expect("sparse length"),
+                _ => fs::write(namespace.join("owner-v1"), b"broken marker").expect("marker"),
+            }
+            let before = fs::symlink_metadata(&path).expect("before");
+            let mut restarted = GraphNewCacheCoordinator::default();
+            restarted.set_directory(&root).expect("memory remains usable");
+            assert!(namespace.exists() && path.symlink_metadata().is_ok(), "{mode}");
+            assert_eq!(fs::symlink_metadata(&path).expect("after").len(), before.len(), "{mode}");
+        }
+    }
+
+    #[test]
+    fn graph_new_recovery_initialization_failure_keeps_memory_cache_usable() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        let blocked = temporary.path().join("file");
+        fs::write(&blocked, b"not a directory").expect("blocked");
+        let mut cache = GraphNewCacheCoordinator::default();
+        assert!(cache.set_directory(&blocked).is_err());
+        let graph = built(0);
+        let key = graph.key.hash_hex.clone();
+        cache.insert(graph).expect("memory insert");
+        cache.persist(&key).expect("optional persistence");
+        assert!(cache.get(&key).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graph_new_recovery_startup_bounds_namespace_metadata_work() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        let root = temporary.path().canonicalize().expect("canonical");
+        let mut owners = Vec::new();
+        for _ in 0..70 {
+            let mut cache = GraphNewCacheCoordinator::default();
+            cache.set_directory(&root).expect("live namespace");
+            owners.push(cache);
+        }
+        for mut cache in owners {
+            drop(cache.owner.take());
+            cache.directory = None;
+        }
+        let mut restarted = GraphNewCacheCoordinator::default();
+        restarted.set_directory(&root).expect("bounded restart");
+        let remaining = fs::read_dir(root.join("graph-new-derived-v1")).expect("root").count();
+        assert!((7..71).contains(&remaining), "at most 64 old namespace entries per initialization: {remaining}");
     }
 
     pub(in crate::services) fn reserve_process_cpu(
@@ -725,6 +1084,144 @@ pub(super) mod tests {
             processed_rows: 2,
             excluded_non_finite_rows: 0,
             query_count: 1,
+        }
+    }
+
+    fn reserve_representative_exact(cache: &mut GraphNewCacheCoordinator, key: &str) {
+        let entry = cache.entries.get_mut(key).expect("resident exact key");
+        let bytes = 227_627_328;
+        let extra = bytes - entry.bytes;
+        let mut reservation = MemoryReservation::new(cache.pool.clone(), extra).expect("representative exact reservation");
+        entry._reservation.bytes += extra;
+        reservation.bytes = 0;
+        entry.bytes = bytes;
+        cache.cpu_bytes += extra;
+    }
+
+    #[test]
+    fn graph_new_cache_construction_replaces_minimal_exact_lru_at_default_limit() {
+        for pin_oldest in [false, true] {
+            let directory = tempfile::tempdir().expect("directory");
+            let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+            cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("directory");
+            let mut keys = Vec::new();
+            for generation in 0..2 {
+                let graph = built(generation);
+                let key = graph.key.hash_hex.clone();
+                cache.insert(graph).expect("warm exact graph");
+                reserve_representative_exact(&mut cache, &key);
+                cache.persist(&key).expect("warm disk graph");
+                keys.push(key);
+            }
+            if pin_oldest { cache.pin(&keys[0]); }
+            let replacement = built(2);
+            let replacement_key = replacement.key.hash_hex.clone();
+            assert!(!keys.contains(&replacement_key));
+            let required = construction_disk_requirement(2, 2, 16, RetentionPolicy::Bounded).expect("disk bound");
+            let disk_bytes = cache.disk_bytes;
+            let (mut construction, _) = cache.admit_construction(512 * 1024 * 1024, required)
+                .expect("third exact key fits by transferring one unpinned CPU reservation");
+            let victim = usize::from(pin_oldest);
+            assert!(cache.get(&keys[victim]).is_none());
+            assert!(cache.get(&keys[1 - victim]).is_some());
+            assert_eq!(cache.evictions, 1);
+            assert_eq!(cache.disk_evictions, 0);
+            assert_eq!(cache.disk_bytes, disk_bytes);
+            assert_eq!(cache.process_cpu_reserved_bytes(), cache.reserved_cpu_bytes() + construction.bytes);
+            assert!(cache.process_cpu_reserved_bytes() <= 768 * 1024 * 1024);
+            for key in &keys { assert!(cache.disk_path(key).expect("path").is_file()); }
+            construction.retain_completed_build(&replacement).expect("completed build");
+            cache.insert(replacement).expect("retain third exact key");
+            drop(construction);
+            reserve_representative_exact(&mut cache, &replacement_key);
+            assert_eq!(cache.entries.len(), 2);
+            assert!(cache.get(&replacement_key).is_some());
+            if pin_oldest { assert_eq!(cache.pinned.as_deref(), Some(keys[0].as_str())); }
+            assert_eq!(cache.process_cpu_reserved_bytes(), cache.reserved_cpu_bytes());
+            cache.invalidate();
+            assert_eq!(cache.process_cpu_reserved_bytes(), 0);
+        }
+    }
+
+    #[test]
+    fn graph_new_cache_construction_impossible_cpu_keeps_all_warm_state() {
+        for pressure in ["oversized", "external", "pending", "pinned"] {
+            let directory = tempfile::tempdir().expect("directory");
+            let mut cache = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+            cache.set_directory(&directory.path().canonicalize().expect("canonical")).expect("directory");
+            let mut keys = Vec::new();
+            for generation in 0..2 {
+                let graph = built(generation);
+                let key = graph.key.hash_hex.clone();
+                cache.insert(graph).expect("warm graph");
+                reserve_representative_exact(&mut cache, &key);
+                cache.persist(&key).expect("warm disk");
+                keys.push(key);
+            }
+            cache.pin(&keys[0]);
+            let mut other = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+            other.pool = cache.pool.clone();
+            let held_bytes = if matches!(pressure, "external" | "pending") { 64 * 1024 * 1024 } else { 0 };
+            let held = MemoryReservation::new(cache.pool.clone(), held_bytes).expect("held CPU");
+            if pressure == "pending" {
+                cache.pending = Some(("pending-key".into(), held));
+            } else {
+                other.pending = Some(("external-key".into(), held));
+            }
+            let before = (cache.cpu_bytes, cache.disk_bytes, cache.process_cpu_reserved_bytes(),
+                cache.evictions, cache.disk_evictions, cache.hits, cache.misses, cache.clock);
+            let files = keys.iter().map(|key| fs::read(cache.disk_path(key).expect("path")).expect("file")).collect::<Vec<_>>();
+            cache.disk_limit = cache.live_file_bytes() + cache.disk_bytes;
+            let requested = match pressure {
+                "oversized" => u64::MAX,
+                "pinned" => 600 * 1024 * 1024,
+                _ => 512 * 1024 * 1024,
+            };
+            assert!(matches!(cache.admit_construction(requested, 1), Err(AppError::Stats(message)) if message == "graph_new_cache_pressure"));
+            assert_eq!(before, (cache.cpu_bytes, cache.disk_bytes, cache.process_cpu_reserved_bytes(),
+                cache.evictions, cache.disk_evictions, cache.hits, cache.misses, cache.clock), "{pressure}");
+            assert_eq!(cache.pinned.as_deref(), Some(keys[0].as_str()));
+            assert_eq!(cache.pending.is_some(), pressure == "pending");
+            for (key, bytes) in keys.iter().zip(files) {
+                assert!(cache.get(key).is_some(), "{pressure}");
+                assert_eq!(fs::read(cache.disk_path(key).expect("path")).expect("file"), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn graph_new_cache_construction_shared_pool_transfer_does_not_overcommit() {
+        for _ in 0..16 {
+            let mut first = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+            let mut second = GraphNewCacheCoordinator::new(DEFAULT_PROCESS_BYTES, DEFAULT_GPU_BYTES);
+            second.pool = first.pool.clone();
+            let pool = first.pool.clone();
+            let first_key = built(0).key.hash_hex;
+            let second_key = built(1).key.hash_hex;
+            first.insert(built(0)).expect("first");
+            second.insert(built(1)).expect("second");
+            reserve_representative_exact(&mut first, &first_key);
+            reserve_representative_exact(&mut second, &second_key);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let results = std::thread::scope(|scope| {
+                let handles = [(first, first_key), (second, second_key)].into_iter().map(|(mut cache, key)| {
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let admission = cache.admit_construction(512 * 1024 * 1024, 0);
+                        barrier.wait();
+                        assert!(cache.process_cpu_reserved_bytes() <= cache.pool.limit);
+                        assert_eq!(cache.get(&key).is_some(), admission.is_err());
+                        assert_eq!(cache.evictions, u64::from(admission.is_ok()));
+                        let succeeded = admission.is_ok();
+                        drop(admission);
+                        succeeded
+                    })
+                }).collect::<Vec<_>>();
+                handles.into_iter().map(|handle| handle.join().expect("admission worker")).collect::<Vec<_>>()
+            });
+            assert_eq!(results.iter().filter(|succeeded| **succeeded).count(), 1);
+            assert_eq!(pool.used.load(Ordering::Acquire), 0, "all transferred claims released exactly once");
         }
     }
 

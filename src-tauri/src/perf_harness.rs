@@ -43,6 +43,8 @@ struct Options {
     columns: usize,
     operation: Operation,
     graph_new_rows: Option<Vec<usize>>,
+    graph_new_csv: Option<(String, String)>,
+    graph_new_axis: Option<(String, crate::models::graph_new::GraphNewXMode, crate::models::graph_new::GraphNewRawMode)>,
 }
 
 #[derive(Serialize)]
@@ -152,7 +154,7 @@ fn measure_graph_new_cache(state: &AppState, build: &GraphNewBuildRequest) -> Re
     let mut request = GraphNewRenderRequest {
         request_id: "cache-cold".into(), session_id: "cache-first".into(), dataset_id: build.dataset_id.clone(),
         dataset_generation: build.dataset_generation, x_column_id: build.x_column_id.clone(), y_column_id: build.y_column_id.clone(),
-        width: 1920, height: 1080, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None,
+        width: 1920, height: 1080, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false, x_mode: Default::default(), raw_mode: Default::default(),
     };
     let render = |request: &GraphNewRenderRequest| {
         let started = Instant::now();
@@ -384,10 +386,25 @@ where
         columns: 20,
         operation: Operation::Query,
         graph_new_rows: None,
+        graph_new_csv: None,
+        graph_new_axis: None,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--graph-new-axis" => {
+                let column = args.next().ok_or_else(|| AppError::InvalidParam("missing X column".into()))?;
+                let mode = args.next().ok_or_else(|| AppError::InvalidParam("missing X mode".into()))?;
+                let raw = args.next().ok_or_else(|| AppError::InvalidParam("missing raw mode".into()))?;
+                options.graph_new_axis = Some((column,
+                    serde_json::from_value(serde_json::Value::String(mode)).map_err(|_| AppError::InvalidParam("invalid X mode".into()))?,
+                    serde_json::from_value(serde_json::Value::String(raw)).map_err(|_| AppError::InvalidParam("invalid raw mode".into()))?));
+            }
+            "--graph-new-csv" => {
+                let source = args.next().ok_or_else(|| AppError::InvalidParam("missing CSV source".into()))?;
+                let artifacts = args.next().ok_or_else(|| AppError::InvalidParam("missing CSV artifact directory".into()))?;
+                options.graph_new_csv = Some((source, artifacts));
+            }
             "--rows" => options.rows = parse_positive_usize(&flag, args.next())?,
             "--columns" => options.columns = parse_positive_usize(&flag, args.next())?,
             "--operation" => {
@@ -1227,10 +1244,179 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 
 pub fn run_cli() -> Result<(), String> {
     let options = parse_args(std::env::args().skip(1)).map_err(|error| error.to_string())?;
+    if let Some((source, artifacts)) = &options.graph_new_csv {
+        let report = execute_graph_new_csv(source, artifacts, options.graph_new_axis.as_ref()).map_err(|error| error.to_string())?;
+        println!("{report}");
+        return Ok(());
+    }
     let report = execute(options).map_err(|error| error.to_string())?;
     let json = serde_json::to_string(&report).map_err(|error| error.to_string())?;
     println!("{json}");
     Ok(())
+}
+
+fn execute_graph_new_csv(source: &str, artifacts: &str, axis: Option<&(String, crate::models::graph_new::GraphNewXMode, crate::models::graph_new::GraphNewRawMode)>) -> Result<serde_json::Value, AppError> {
+    use crate::models::graph_new::{GraphNewCameraDomain, GraphNewRenderRequest};
+    use crate::services::graph_new_renderer::{GraphNewRenderer, MAX_SCENE_POINTS};
+    let defaults = ("Rec#".to_string(), Default::default(), Default::default());
+    let (x_name, x_mode, raw_mode) = axis.unwrap_or(&defaults);
+    let source = std::path::Path::new(source).canonicalize()?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() || source.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("csv")) {
+        return Err(AppError::InvalidParam("expected a local CSV file".into()));
+    }
+    let artifacts = std::path::Path::new(artifacts);
+    std::fs::create_dir(artifacts)?;
+    let artifacts = artifacts.canonicalize()?;
+    let state = AppState::new()?;
+    let cache = tempfile::tempdir()?;
+    state.set_graph_cache_directory(&cache.path().canonicalize()?)?;
+    let ingest_started = Instant::now();
+    let (dataset, columns, x_column_id, y_column_id) = {
+        let db = state.db.lock().map_err(|_| AppError::Database("benchmark DB lock".into()))?;
+        db.conn().execute_batch("SET memory_limit='1GB'; SET threads=4")?;
+        let source_text = source.to_str().ok_or_else(|| AppError::InvalidParam("CSV path must be UTF-8".into()))?;
+        let dataset = db.import_csv("graph-new-csv", "Graph New CSV", source_text)?;
+        let mut statement = db.conn().prepare("SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index")?;
+        let columns = statement.query_map(params!["graph-new-csv"], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let column_id = |name: &str| -> Result<String, AppError> {
+            Ok(db.conn().query_row("SELECT column_id FROM _meta_columns WHERE dataset_id = $1 AND col_name = $2",
+                params!["graph-new-csv", name], |row| row.get(0))?)
+        };
+        let x_column_id = column_id(x_name)?;
+        let y_column_id = column_id("Voltage (V)")?;
+        (dataset, columns, x_column_id, y_column_id)
+    };
+    let ingest_ms = ingest_started.elapsed().as_secs_f64() * 1000.0;
+    let mut report = serde_json::json!({
+        "metric": "native_backend_rgba_readback_no_webview_with_cached_mean",
+        "sourceBytes": metadata.len(), "rows": dataset.row_count, "columns": columns,
+        "csvImportAndMetadataMs": ingest_ms,
+        "releaseBuild": !cfg!(debug_assertions), "exactPointCap": MAX_SCENE_POINTS,
+        "xColumn": x_name, "xMode": x_mode, "rawMode": raw_mode, "yColumn": "Voltage (V)",
+        "scopeExceeded": dataset.row_count > MAX_SCENE_POINTS as i64,
+    });
+    if dataset.row_count <= MAX_SCENE_POINTS as i64 {
+        let service = GraphNewService::new(&state);
+        let mut request = GraphNewRenderRequest { request_id: "csv-cold".into(), session_id: "csv".into(),
+            dataset_id: "graph-new-csv".into(), dataset_generation: dataset.generation as u64,
+            x_column_id, y_column_id, width: 1280, height: 720, device_pixel_ratio: 1.0,
+            renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: true, x_mode: *x_mode, raw_mode: *raw_mode };
+        let mut runs = Vec::new();
+        let mut domain = GraphNewCameraDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 };
+        for label in ["cold", "warm", "camera", "disk", "mean-off", "mean-on", "scatter", "line", "points-line"] {
+            request.request_id = format!("csv-{label}");
+            request.show_mean = label != "mean-off";
+            request.raw_mode = match label {
+                "scatter" => crate::models::graph_new::GraphNewRawMode::Scatter,
+                "line" => crate::models::graph_new::GraphNewRawMode::Line,
+                "points-line" => crate::models::graph_new::GraphNewRawMode::PointsLine,
+                _ => *raw_mode,
+            };
+            if label == "camera" {
+                request.camera_generation = 1;
+                request.camera_domain = Some(GraphNewCameraDomain {
+                    x_min: domain.x_min + (domain.x_max - domain.x_min) * 0.25,
+                    x_max: domain.x_min + (domain.x_max - domain.x_min) * 0.75,
+                    y_min: domain.y_min + (domain.y_max - domain.y_min) * 0.25,
+                    y_max: domain.y_min + (domain.y_max - domain.y_min) * 0.75 });
+            }
+            if label == "disk" {
+                state.graph_new.close_session("csv", request.renderer_generation - 1)?;
+                state.graph_new.release_idle_cache()?;
+                request.session_id = "csv-disk".into();
+                request.camera_domain = None;
+            }
+            let mut pixels = Vec::new();
+            let mut native_call_ms = 0.0;
+            let started = Instant::now();
+            let completion = service.render_with(&request, |scene| {
+                let native_started = Instant::now();
+                let frame = GraphNewRenderer::render(scene);
+                native_call_ms = native_started.elapsed().as_secs_f64() * 1000.0;
+                frame
+            }, &mut |_, rgba| { pixels = rgba; Ok(()) })?;
+            let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if label == "cold" {
+                domain = completion.camera_domain;
+                report["dataDomain"] = serde_json::to_value(domain).map_err(|error| AppError::Stats(error.to_string()))?;
+                report["finiteRows"] = completion.finite_rows.into();
+            }
+            if !completion.exact_visible || completion.selected_marks as u64 != completion.finite_rows {
+                return Err(AppError::Stats("CSV native audit requires every finite source point".into()));
+            }
+            let mut blue_pixels = 0u64;
+            let mut dense_columns = 0u64;
+            let rect = completion.plot_rect;
+            for column in rect.x..rect.x + rect.width {
+                let mut occupied = 0;
+                for row in rect.y..rect.y + rect.height {
+                    let offset = (row as usize * completion.width as usize + column as usize) * 4;
+                    let pixel = &pixels[offset..offset + 4];
+                    if pixel[0] < 100 && pixel[1] < 170 && pixel[2] > 160 { occupied += 1; }
+                }
+                blue_pixels += occupied;
+                if occupied >= 20 { dense_columns += 1; }
+            }
+            std::fs::write(artifacts.join(format!("{label}.rgba")), &pixels)?;
+            runs.push(serde_json::json!({ "label": label, "wallMs": wall_ms,
+                "nativeCallMs": native_call_ms,
+                "nativeOuterOverheadMs": (native_call_ms - completion.render_ms - completion.readback_ms).max(0.0),
+                "bluePixels": blue_pixels, "columnsWithAtLeast20BluePixels": dense_columns, "completion": completion }));
+            request.renderer_generation += 1;
+        }
+        report["runs"] = runs.into();
+        if axis.is_none() {
+        let comparison_domain = crate::services::graph_new_lod::GraphDomain {
+            x_min: 0.0, x_max: 120000.0, y_min: 3.0, y_max: 4.5,
+        };
+        for (label, field, enabled) in [("comparison", "comparison", true), ("comparison-off", "comparisonOff", false)] {
+        request.request_id = format!("csv-{label}");
+        request.show_mean = enabled;
+        let mut comparison_pixels = Vec::new();
+        let mut comparison_native_ms = 0.0;
+        let mut comparison_visible = 0usize;
+        let started = Instant::now();
+        let comparison = service.render_with(&request, |scene| {
+            let harness_bytes = scene.points.len() as u64 * 148
+                + scene.mean.as_ref().map_or(0, |mean| mean.capacity() as u64 * 16) + 16 * 1024 * 1024;
+            if harness_bytes > 384 * 1024 * 1024 {
+                return Err(AppError::Stats("graph_new_cache_pressure".into()));
+            }
+            comparison_visible = scene.points.iter().filter(|point| point.x >= 0.0 && point.x <= 120000.0
+                && point.y >= 3.0 && point.y <= 4.5).count();
+            let comparison_scene = crate::services::graph_new_renderer::GraphNewScene {
+                presentation: Default::default(),
+                width: scene.width, height: scene.height, device_pixel_ratio: scene.device_pixel_ratio,
+                domain: comparison_domain, points: scene.points.clone(), mean: scene.mean.clone(),
+            };
+            let native_started = Instant::now();
+            let frame = GraphNewRenderer::render(&comparison_scene);
+            comparison_native_ms = native_started.elapsed().as_secs_f64() * 1000.0;
+            frame
+        }, &mut |_, rgba| { comparison_pixels = rgba; Ok(()) })?;
+        let comparison_wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+        std::fs::write(artifacts.join(format!("{label}.rgba")), &comparison_pixels)?;
+        report[field] = serde_json::json!({
+            "metric": "renderer_only_anisotropic_domain_override_not_IPC_camera_policy",
+            "cameraDomain": { "xMin": 0.0, "xMax": 120000.0, "yMin": 3.0, "yMax": 4.5 },
+            "selectedMarks": comparison.selected_marks, "visibleRows": comparison_visible,
+            "wallMs": comparison_wall_ms, "nativeCallMs": comparison_native_ms,
+            "renderMs": comparison.render_ms, "readbackMs": comparison.readback_ms,
+            "sourceProjectionQueryCount": comparison.source_projection_query_count,
+            "gpuCache": comparison.gpu_cache,
+            "completion": comparison,
+        });
+        request.renderer_generation += 1;
+        }
+        }
+    }
+    if source.metadata()?.len() != metadata.len() || source.metadata()?.modified()? != metadata.modified()? {
+        return Err(AppError::InvalidParam("CSV changed during benchmark".into()));
+    }
+    std::fs::write(artifacts.join("report.json"), serde_json::to_vec_pretty(&report).map_err(|error| AppError::Stats(error.to_string()))?)?;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -1290,6 +1476,75 @@ mod tests {
     }
 
     #[test]
+    fn graph_new_csv_cli_accepts_local_source_and_artifact_directory() {
+        assert!(parse_args(["--graph-new-csv", "local.csv", "artifacts"].map(String::from)).is_ok());
+        assert!(parse_args(["--graph-new-csv", "local.csv"].map(String::from)).is_err());
+        assert!(parse_args(["--graph-new-csv", "local.csv", "artifacts", "--graph-new-axis", "Test Time", "auto", "pointsLine"].map(String::from)).is_ok());
+        assert!(parse_args(["--graph-new-axis", "DPT", "guess", "line"].map(String::from)).is_err());
+    }
+
+    #[test]
+    fn graph_new_csv_cli_measures_typed_axes_and_raw_modes() {
+        let directory = tempfile::tempdir().expect("directory");
+        let source = directory.path().join("typed.csv");
+        std::fs::write(&source, b"Test Time,DPT,Voltage (V)\n:0:25:00:00,12/22/2025 7:47:16 AM,3.2\n:1:02:00:00,12/22/2025 7:47:17 AM,3.3\n:1:03:00:00,12/22/2025 7:47:18 AM,3.4\n").expect("fixture");
+        for (column, kind) in [("Test Time", "duration"), ("DPT", "time")] {
+            let output = directory.path().join(kind);
+            let axis = (column.to_string(), crate::models::graph_new::GraphNewXMode::Auto, crate::models::graph_new::GraphNewRawMode::PointsLine);
+            let report = execute_graph_new_csv(source.to_str().expect("source"), output.to_str().expect("output"), Some(&axis)).expect("typed native CSV");
+            assert_eq!(report["finiteRows"], 3);
+            for (index, run) in report["runs"].as_array().expect("runs").iter().enumerate() {
+                assert_eq!(run["completion"]["xAxis"]["kind"], kind);
+                assert_eq!(run["completion"]["xAxis"]["utc"], false);
+                assert_eq!(run["completion"]["sourceProjectionQueryCount"], if index == 0 { 1 } else { 0 });
+                assert_eq!(run["completion"]["rawLineSegments"], if run["label"] == "scatter" { 0 } else { 2 });
+            }
+        }
+    }
+
+    #[test]
+    fn graph_new_csv_cli_measures_native_frames_from_quoted_csv() {
+        let directory = tempfile::tempdir().expect("directory");
+        let source = directory.path().join("input.csv");
+        let csv = b"Rec#,Voltage (V),Note\n1,1.5,\"quoted, note\"\n2,2.5,plain\n3,4.0,spike\n4,,missing\n";
+        std::fs::write(&source, csv).expect("fixture");
+        let output = directory.path().join("artifacts");
+        let report = execute_graph_new_csv(source.to_str().expect("source"), output.to_str().expect("output"), None).expect("native CSV report");
+        assert_eq!(report["rows"], 4);
+        assert_eq!(report["finiteRows"], 3);
+        assert_eq!(report["scopeExceeded"], false);
+        assert_eq!(report["runs"][0]["completion"]["selectedMarks"], 3);
+        assert_eq!(report["runs"][0]["completion"]["exactVisible"], true);
+        assert_eq!(report["runs"][0]["completion"]["sourceProjectionQueryCount"], 1);
+        assert_eq!(report["runs"][2]["completion"]["sourceProjectionQueryCount"], 0);
+        assert_eq!(report["runs"][2]["completion"]["visibleRows"], 1);
+        assert_eq!(report["runs"][3]["completion"]["persistentCacheHit"], true);
+        for index in [0, 1, 2, 3, 5] {
+            assert_eq!(report["runs"][index]["completion"]["meanAvailable"], true);
+            assert_eq!(report["runs"][index]["completion"]["meanGroups"], 3);
+            assert_eq!(report["runs"][index]["completion"]["meanVisible"], true);
+        }
+        assert_eq!(report["runs"][4]["label"], "mean-off");
+        assert_eq!(report["runs"][4]["completion"]["meanVisible"], false);
+        assert_eq!(report["runs"][4]["completion"]["sourceProjectionQueryCount"], 0);
+        assert_eq!(report["runs"][5]["completion"]["sourceProjectionQueryCount"], 0);
+        assert_eq!(report["comparisonOff"]["completion"]["meanVisible"], false);
+        assert_eq!(report["comparison"]["completion"]["meanVisible"], true);
+        assert_eq!(report["comparison"]["selectedMarks"], 3);
+        assert_eq!(report["comparison"]["cameraDomain"]["xMax"], 120000.0);
+        assert_eq!(report["comparison"]["cameraDomain"]["yMax"], 4.5);
+        assert!(report["comparison"]["completion"]["cpuCacheBytes"].as_u64().expect("comparison cache allocation") > 0);
+        for label in ["cold", "warm", "camera", "disk", "mean-off", "mean-on", "comparison", "comparison-off"] {
+            assert_eq!(std::fs::metadata(output.join(format!("{label}.rgba"))).expect("every scenario has a native frame").len(), 1280 * 720 * 4);
+        }
+        assert!(report["runs"][0]["nativeCallMs"].as_f64().expect("native timing") > 0.0);
+        assert_eq!(std::fs::metadata(output.join("comparison.rgba")).expect("comparison frame").len(), 1280 * 720 * 4);
+        assert_eq!(std::fs::read(&source).expect("unchanged source"), csv);
+        assert_eq!(std::fs::metadata(output.join("cold.rgba")).expect("native frame").len(), 1280 * 720 * 4);
+        assert!(report["runs"][0]["bluePixels"].as_u64().expect("blue pixels") > 0);
+    }
+
+    #[test]
     fn performance_cli_executes_each_operation() {
         for operation in [
             Operation::Query,
@@ -1304,6 +1559,8 @@ mod tests {
                 columns: 4,
                 operation,
                 graph_new_rows: None,
+                graph_new_csv: None,
+                graph_new_axis: None,
             })
             .unwrap();
 
@@ -1352,6 +1609,8 @@ mod tests {
             columns: 20,
             operation: Operation::Graph,
             graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
         })
         .unwrap();
 
@@ -1367,6 +1626,8 @@ mod tests {
             columns: 20,
             operation: Operation::Graph,
             graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
         })
         .unwrap();
 
@@ -1549,6 +1810,8 @@ mod tests {
             columns: 1,
             operation: Operation::Graph,
             graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
         });
 
         match result {
@@ -1593,6 +1856,8 @@ mod tests {
             columns: 1,
             operation: Operation::Query,
             graph_new_rows: Some(vec![100, 1_000]),
+            graph_new_csv: None,
+            graph_new_axis: None,
         })
         .unwrap();
 
@@ -1652,6 +1917,8 @@ mod tests {
             columns: 20,
             operation: Operation::Save,
             graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
         })
         .unwrap();
 

@@ -1,6 +1,13 @@
 export interface CameraDomain { xMin: number; xMax: number; yMin: number; yMax: number }
 export interface PlotRect { x: number; y: number; width: number; height: number }
 
+export function normalizedAxisValue(value: number, minimum: number, maximum: number): number {
+  if (minimum === maximum) return value === minimum ? 0.5 : value < minimum ? -1 : 2;
+  const span = maximum - minimum;
+  return Number.isFinite(span) ? (value - minimum) / span
+    : (value * 0.5 - minimum * 0.5) / (maximum * 0.5 - minimum * 0.5);
+}
+
 export function isCameraDomain(domain: CameraDomain): boolean {
   return !!domain && [domain.xMin, domain.xMax, domain.yMin, domain.yMax].every(Number.isFinite)
     && domain.xMax > domain.xMin && domain.yMax > domain.yMin
