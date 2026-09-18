@@ -37,7 +37,7 @@ use crate::models::table::{
     TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule, TableWindowRequest,
     TableWindowResult,
 };
-use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
+use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
@@ -217,6 +217,14 @@ pub(crate) struct TableQuerySessionPlan {
 pub(crate) struct PreparedTableQuerySessionInfo {
     pub projection: Vec<(String, String)>,
     pub total_rows: i64,
+    pub measured_bytes_estimate: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedTabulateSessionInfo {
+    pub row_member_count: u64,
+    pub column_member_count: u64,
+    pub logical_cell_count: u64,
     pub measured_bytes_estimate: usize,
 }
 type GroupedStatisticValues = std::collections::HashMap<(String, String), Vec<Option<f64>>>;
@@ -686,23 +694,29 @@ impl DuckDbEngine {
         Ok(())
     }
 
-    pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {
+    fn validate_tabulate_fields(
+        &self,
+        dataset_id: &str,
+        row_fields: &[String],
+        column_fields: &[String],
+        statistics: &[TabulateStatistic],
+    ) -> Result<(String, std::collections::HashMap<String, String>), AppError> {
         let dataset_exists: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM _meta_datasets WHERE id = $1",
-            params![&request.dataset_id],
+            params![dataset_id],
             |row| row.get(0),
         )?;
         if dataset_exists == 0 {
             return Err(AppError::InvalidParam(format!(
                 "Unknown dataset: {}",
-                request.dataset_id
+                dataset_id
             )));
         }
 
-        validate_unique_fields("row", &request.row_fields)?;
-        validate_unique_fields("column", &request.column_fields)?;
+        validate_unique_fields("row", row_fields)?;
+        validate_unique_fields("column", column_fields)?;
 
-        let table_name = format!("dataset_{}", request.dataset_id.replace('-', "_"));
+        let table_name = Self::internal_table_name(dataset_id);
         let mut columns_stmt = self.conn.prepare(
             "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position",
         )?;
@@ -714,23 +728,19 @@ impl DuckDbEngine {
         if columns.is_empty() {
             return Err(AppError::InvalidParam(format!(
                 "Unknown dataset: {}",
-                request.dataset_id
+                dataset_id
             )));
         }
 
         let column_types: std::collections::HashMap<String, String> = columns.into_iter().collect();
 
-        for field in request
-            .row_fields
-            .iter()
-            .chain(request.column_fields.iter())
-        {
+        for field in row_fields.iter().chain(column_fields.iter()) {
             if !column_types.contains_key(field) {
                 return Err(AppError::InvalidParam(format!("Unknown field: {field}",)));
             }
         }
 
-        for statistic in &request.statistics {
+        for statistic in statistics {
             let data_type = column_types.get(&statistic.field).ok_or_else(|| {
                 AppError::InvalidParam(format!("Unknown field: {}", statistic.field))
             })?;
@@ -757,6 +767,165 @@ impl DuckDbEngine {
             }
         }
 
+        Ok((table_name, column_types))
+    }
+
+    pub(crate) fn validate_tabulate_session(
+        &self,
+        request: &TabulateSessionRequest,
+    ) -> Result<(), AppError> {
+        crate::services::tabulate_service::validate_definition(
+            &request.dataset_id,
+            &request.row_fields,
+            &request.column_fields,
+            &request.statistics,
+        )?;
+        if self.get_dataset_generation(&request.dataset_id)? != request.source_generation {
+            return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+        }
+        self.validate_tabulate_fields(
+            &request.dataset_id,
+            &request.row_fields,
+            &request.column_fields,
+            &request.statistics,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn tabulate_member_table_names(session_id: &uuid::Uuid) -> (String, String) {
+        let suffix = session_id.simple();
+        (
+            format!("__sp_tabulate_{suffix}_rows"),
+            format!("__sp_tabulate_{suffix}_columns"),
+        )
+    }
+
+    fn tabulate_member_select(table_name: &str, fields: &[String]) -> String {
+        if fields.is_empty() {
+            return "SELECT 0::BIGINT AS ordinal".into();
+        }
+        let projection = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| format!("{} AS dimension_{index}", Self::quote_identifier(field)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let order = (0..fields.len())
+            .map(|index| format!("dimension_{index} ASC NULLS LAST"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("SELECT CAST(row_number() OVER (ORDER BY {order}) - 1 AS BIGINT) AS ordinal, members.* FROM (SELECT DISTINCT {projection} FROM {}) AS members", Self::quote_identifier(table_name))
+    }
+
+    pub(crate) fn measure_tabulate_member_indexes(
+        &self,
+        request: &TabulateSessionRequest,
+    ) -> Result<PreparedTabulateSessionInfo, AppError> {
+        self.validate_tabulate_session(request)?;
+        let table = Self::internal_table_name(&request.dataset_id);
+        let mut counts = Vec::with_capacity(2);
+        let mut measured_bytes = 0usize;
+        for fields in [&request.row_fields, &request.column_fields] {
+            let members = Self::tabulate_member_select(&table, fields);
+            // Conservative encoded-width accounting: 512 KiB per table/ordinal index,
+            // 128 bytes per member, plus 4x (32-byte value slot + measured UTF-8 payload).
+            // Only distinct keys are charged, never source rows or a Cartesian matrix.
+            let widths = (0..fields.len()).map(|index| {
+                format!(" + 4 * (32::HUGEINT + COALESCE(octet_length(encode(CAST(dimension_{index} AS VARCHAR))), 0))")
+            }).collect::<String>();
+            let sql = format!("SELECT count(*), CAST(COALESCE(SUM(128::HUGEINT{widths}), 0) AS BIGINT) FROM ({members}) AS measured_members");
+            let (count, bytes): (i64, i64) = self
+                .conn
+                .query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            counts.push(
+                u64::try_from(count)
+                    .map_err(|_| AppError::InvalidParam("tabulate_member_index_budget".into()))?,
+            );
+            let bytes = usize::try_from(bytes)
+                .map_err(|_| AppError::InvalidParam("tabulate_member_index_budget".into()))?;
+            measured_bytes = measured_bytes
+                .checked_add(bytes)
+                .and_then(|total| total.checked_add(512 * 1024))
+                .ok_or_else(|| AppError::InvalidParam("tabulate_member_index_budget".into()))?;
+        }
+        let logical_cell_count = counts[0]
+            .checked_mul(counts[1])
+            .and_then(|count| count.checked_mul(request.statistics.len() as u64))
+            .ok_or_else(|| AppError::InvalidParam("tabulate_logical_size_overflow".into()))?;
+        Ok(PreparedTabulateSessionInfo {
+            row_member_count: counts[0],
+            column_member_count: counts[1],
+            logical_cell_count,
+            measured_bytes_estimate: measured_bytes,
+        })
+    }
+
+    pub(crate) fn prepare_tabulate_member_indexes(
+        &self,
+        request: &TabulateSessionRequest,
+        session_id: &uuid::Uuid,
+        max_bytes: usize,
+    ) -> Result<PreparedTabulateSessionInfo, AppError> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| {
+            let info = self.measure_tabulate_member_indexes(request)?;
+            if info.measured_bytes_estimate > max_bytes {
+                return Err(AppError::InvalidParam(
+                    "tabulate_member_index_budget".into(),
+                ));
+            }
+            let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
+            for (name, fields) in [
+                (&row_table, &request.row_fields),
+                (&column_table, &request.column_fields),
+            ] {
+                let select = Self::tabulate_member_select(
+                    &Self::internal_table_name(&request.dataset_id),
+                    fields,
+                );
+                self.conn.execute(
+                    &format!(
+                        "CREATE TEMP TABLE {} AS {select}",
+                        Self::quote_identifier(name)
+                    ),
+                    [],
+                )?;
+                self.conn.execute(
+                    &format!(
+                        "CREATE INDEX {} ON {} (ordinal)",
+                        Self::quote_identifier(&format!("{name}_ordinal_idx")),
+                        Self::quote_identifier(name)
+                    ),
+                    [],
+                )?;
+            }
+            self.conn.execute_batch("COMMIT")?;
+            Ok(info)
+        })();
+        if result.is_err() {
+            self.conn.execute_batch("ROLLBACK")?;
+        }
+        result
+    }
+
+    pub(crate) fn drop_tabulate_member_indexes(
+        &self,
+        session_id: &uuid::Uuid,
+    ) -> Result<(), AppError> {
+        let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
+        for name in [row_table, column_table] {
+            self.conn.execute(
+                &format!("DROP TABLE IF EXISTS {}", Self::quote_identifier(&name)),
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {
+        let (table_name, column_types) = self.validate_tabulate_fields(
+            &request.dataset_id, &request.row_fields, &request.column_fields, &request.statistics,
+        )?;
         let row_count = grouped_cardinality(&self.conn, &table_name, &request.row_fields)?;
         let column_count = grouped_cardinality(&self.conn, &table_name, &request.column_fields)?;
         let cell_count = row_count
@@ -19350,6 +19519,184 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap()
+    }
+
+    fn tabulate_member_fixture() -> (
+        DuckDbEngine,
+        crate::models::tabulate::TabulateSessionRequest,
+    ) {
+        let engine = DuckDbEngine::new_in_memory().expect("engine");
+        engine.conn().execute_batch(
+            "CREATE TABLE dataset_members (region VARCHAR, product BIGINT, sales DOUBLE);
+             INSERT INTO dataset_members VALUES ('West', 2, 1), ('East', 1, 2), ('East', 1, 3), (NULL, NULL, 4);
+             INSERT INTO _meta_datasets (id, name, source_type, row_count, col_count)
+             VALUES ('members', 'Members', 'test', 4, 3);"
+        ).expect("fixture");
+        let request = crate::models::tabulate::TabulateSessionRequest {
+            dataset_id: "members".into(),
+            source_generation: engine
+                .get_dataset_generation("members")
+                .expect("generation"),
+            row_fields: vec!["region".into(), "product".into()],
+            column_fields: vec!["product".into()],
+            statistics: vec![make_statistic("mean", "sales", StatisticKind::Mean)],
+            include_row_totals: false,
+            include_column_totals: false,
+        };
+        (engine, request)
+    }
+
+    #[test]
+    fn tabulate_member_indexes_are_distinct_typed_zero_based_and_nulls_last() {
+        let (engine, request) = tabulate_member_fixture();
+        let session = uuid::Uuid::new_v4();
+        let info = engine
+            .prepare_tabulate_member_indexes(&request, &session, usize::MAX)
+            .expect("prepare");
+        assert_eq!(
+            (
+                info.row_member_count,
+                info.column_member_count,
+                info.logical_cell_count
+            ),
+            (3, 3, 9)
+        );
+        let (row_table, column_table) = DuckDbEngine::tabulate_member_table_names(&session);
+        let rows = engine
+            .conn()
+            .prepare(&format!(
+                "SELECT ordinal, dimension_0, dimension_1 FROM \"{row_table}\" ORDER BY ordinal"
+            ))
+            .expect("query")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })
+            .expect("rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(
+            rows,
+            vec![
+                (0, Some("East".into()), Some(1)),
+                (1, Some("West".into()), Some(2)),
+                (2, None, None)
+            ]
+        );
+        engine.drop_tabulate_member_indexes(&session).expect("drop");
+        engine
+            .drop_tabulate_member_indexes(&session)
+            .expect("idempotent");
+        for table in [row_table, column_table] {
+            let count: i64 = engine
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM duckdb_tables() WHERE table_name = ?",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .expect("tables");
+            assert_eq!(count, 0);
+        }
+    }
+
+    #[test]
+    fn tabulate_member_missing_roles_have_one_member_even_on_empty_source() {
+        let (engine, mut request) = tabulate_member_fixture();
+        engine
+            .conn()
+            .execute("DELETE FROM dataset_members", [])
+            .expect("empty");
+        request.row_fields.clear();
+        request.column_fields.clear();
+        let info = engine
+            .prepare_tabulate_member_indexes(&request, &uuid::Uuid::new_v4(), usize::MAX)
+            .expect("prepare");
+        assert_eq!(
+            (
+                info.row_member_count,
+                info.column_member_count,
+                info.logical_cell_count
+            ),
+            (1, 1, 1)
+        );
+        request.row_fields.push("region".into());
+        let info = engine
+            .prepare_tabulate_member_indexes(&request, &uuid::Uuid::new_v4(), usize::MAX)
+            .expect("prepare empty");
+        assert_eq!(
+            (
+                info.row_member_count,
+                info.column_member_count,
+                info.logical_cell_count
+            ),
+            (0, 1, 0)
+        );
+    }
+
+    #[test]
+    fn tabulate_member_bytes_measure_distinct_keys_not_source_size() {
+        let (engine, request) = tabulate_member_fixture();
+        let first = engine
+            .prepare_tabulate_member_indexes(&request, &uuid::Uuid::new_v4(), usize::MAX)
+            .expect("prepare");
+        engine
+            .conn()
+            .execute(
+                "INSERT INTO dataset_members SELECT 'East', 1, 10 FROM range(10000)",
+                [],
+            )
+            .expect("duplicates");
+        let repeated = engine
+            .prepare_tabulate_member_indexes(&request, &uuid::Uuid::new_v4(), usize::MAX)
+            .expect("repeat");
+        assert_eq!(
+            repeated.measured_bytes_estimate,
+            first.measured_bytes_estimate
+        );
+        engine
+            .conn()
+            .execute(
+                "INSERT INTO dataset_members VALUES (repeat('x', 10000), 5, 1)",
+                [],
+            )
+            .expect("wide key");
+        let wide = engine
+            .prepare_tabulate_member_indexes(&request, &uuid::Uuid::new_v4(), usize::MAX)
+            .expect("wide");
+        assert!(wide.measured_bytes_estimate >= first.measured_bytes_estimate + 10000);
+        let refused = uuid::Uuid::new_v4();
+        assert!(engine
+            .prepare_tabulate_member_indexes(&request, &refused, first.measured_bytes_estimate)
+            .is_err());
+        let (row_table, column_table) = DuckDbEngine::tabulate_member_table_names(&refused);
+        let count: i64 = engine
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name IN (?, ?)",
+                params![row_table, column_table],
+                |row| row.get(0),
+            )
+            .expect("tables");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn tabulate_member_preparation_has_no_legacy_logical_cell_cap() {
+        let (engine, mut request) = tabulate_member_fixture();
+        engine.conn().execute("INSERT INTO dataset_members SELECT CAST(range AS VARCHAR), range, 1 FROM range(200)", []).expect("many members");
+        request.row_fields = vec!["region".into()];
+        let info = engine
+            .prepare_tabulate_member_indexes(&request, &uuid::Uuid::new_v4(), usize::MAX)
+            .expect("prepare");
+        assert!(info.logical_cell_count > 10000);
+        request.source_generation += 1;
+        assert!(engine
+            .prepare_tabulate_member_indexes(&request, &uuid::Uuid::new_v4(), usize::MAX)
+            .is_err());
     }
 
     #[test]

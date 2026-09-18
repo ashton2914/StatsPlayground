@@ -11,6 +11,7 @@ use crate::models::table::ColumnDisplayProps;
 use crate::services::path_authorization_service::PathAuthorizationService;
 use crate::services::save_coordinator::SaveCoordinator;
 use crate::services::table_navigation_service::TableNavigationService;
+use crate::services::tabulate_session_service::TabulateSessionService;
 use crate::services::workflow_executor::WorkflowRunCommitPacket;
 
 const TABLE_NAVIGATION_READER_COUNT: usize = 2;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub graph_new_epoch: AtomicU64,
     pub db: Mutex<DuckDbEngine>,
     pub table_navigation: RwLock<Arc<TableNavigationService>>,
+    pub tabulate_sessions: RwLock<Arc<TabulateSessionService>>,
     pub project: RwLock<Option<ProjectInfo>>,
     /// Per-dataset column display properties (dataset_id → vec of props)
     pub column_display: Mutex<HashMap<String, Vec<ColumnDisplayProps>>>,
@@ -41,11 +43,13 @@ impl AppState {
     pub fn new() -> Result<Self, AppError> {
         let engine = DuckDbEngine::new_in_memory()?;
         let table_navigation = TableNavigationService::new(&engine, TABLE_NAVIGATION_READER_COUNT)?;
+        let tabulate_sessions = TabulateSessionService::new(&engine)?;
         Ok(Self {
             graph_new: Default::default(),
             graph_new_epoch: AtomicU64::new(0),
             db: Mutex::new(engine),
             table_navigation: RwLock::new(Arc::new(table_navigation)),
+            tabulate_sessions: RwLock::new(Arc::new(tabulate_sessions)),
             project: RwLock::new(None),
             column_display: Mutex::new(HashMap::new()),
             path_authorization: Mutex::new(PathAuthorizationService::default()),
@@ -65,6 +69,7 @@ impl AppState {
         let replacement_engine = DuckDbEngine::new_in_memory()?;
         let replacement_navigation =
             TableNavigationService::new(&replacement_engine, TABLE_NAVIGATION_READER_COUNT)?;
+        let replacement_tabulate = TabulateSessionService::new(&replacement_engine)?;
         let mut db = self
             .db
             .lock()
@@ -73,8 +78,14 @@ impl AppState {
             .table_navigation
             .write()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        let mut tabulate_sessions = self
+            .tabulate_sessions
+            .write()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tabulate_sessions.shutdown()?;
         *db = replacement_engine;
         *table_navigation = Arc::new(replacement_navigation);
+        *tabulate_sessions = Arc::new(replacement_tabulate);
         self.graph_new_epoch.fetch_add(1, Ordering::AcqRel);
         // Clear column display props
         let mut display = self

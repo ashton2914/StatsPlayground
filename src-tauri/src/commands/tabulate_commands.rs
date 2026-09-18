@@ -1,7 +1,9 @@
 use tauri::State;
 
 use crate::error::AppError;
-use crate::models::tabulate::{TabulateRequest, TabulateResult};
+use crate::models::tabulate::{
+    TabulateRequest, TabulateResult, TabulateSessionRequest, TabulateSessionStatus,
+};
 use crate::services::tabulate_service::TabulateService;
 use crate::state::AppState;
 
@@ -11,6 +13,45 @@ pub fn tabulate(
     request: TabulateRequest,
 ) -> Result<TabulateResult, AppError> {
     TabulateService::new(&state).run(request)
+}
+
+#[tauri::command]
+pub fn prepare_tabulate_session(
+    state: State<'_, AppState>,
+    request: TabulateSessionRequest,
+) -> Result<TabulateSessionStatus, AppError> {
+    let service = state
+        .tabulate_sessions
+        .read()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .clone();
+    service.prepare(&request)
+}
+
+#[tauri::command]
+pub fn get_tabulate_session_status(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<TabulateSessionStatus, AppError> {
+    let service = state
+        .tabulate_sessions
+        .read()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .clone();
+    service.status(&session_id)
+}
+
+#[tauri::command]
+pub fn release_tabulate_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), AppError> {
+    let service = state
+        .tabulate_sessions
+        .read()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .clone();
+    service.release(&session_id)
 }
 
 #[cfg(test)]

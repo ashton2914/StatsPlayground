@@ -1,0 +1,1190 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use duckdb::InterruptHandle;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::engine::duckdb_engine::{DuckDbEngine, PreparedTabulateSessionInfo};
+use crate::error::AppError;
+use crate::models::tabulate::{
+    TabulateSessionRequest, TabulateSessionState, TabulateSessionStatus,
+};
+
+struct TabulateSessionPolicy {
+    max_sessions_per_dataset: usize,
+    max_measured_bytes: usize,
+    idle_ttl: Duration,
+}
+
+impl Default for TabulateSessionPolicy {
+    fn default() -> Self {
+        Self {
+            max_sessions_per_dataset: 2,
+            max_measured_bytes: 256 * 1024 * 1024,
+            idle_ttl: Duration::from_secs(300),
+        }
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, AppError> {
+    mutex
+        .lock()
+        .map_err(|_| AppError::Database("tabulate_session_lock_failed".into()))
+}
+
+pub(crate) struct TabulateSessionEntry {
+    pub(crate) session_id: String,
+    uuid: Uuid,
+    pub(crate) request: TabulateSessionRequest,
+    pub(crate) fingerprint: String,
+    pub(crate) engine: Mutex<DuckDbEngine>,
+    pub(crate) interrupt_handle: Arc<InterruptHandle>,
+    released: AtomicBool,
+    charged_bytes: AtomicUsize,
+}
+
+impl TabulateSessionEntry {
+    pub(crate) fn row_table_name(&self) -> String {
+        DuckDbEngine::tabulate_member_table_names(&self.uuid).0
+    }
+    pub(crate) fn column_table_name(&self) -> String {
+        DuckDbEngine::tabulate_member_table_names(&self.uuid).1
+    }
+}
+
+struct SessionRecord {
+    entry: Arc<TabulateSessionEntry>,
+    state: TabulateSessionState,
+    info: Option<PreparedTabulateSessionInfo>,
+    failure_code: Option<String>,
+    leases: usize,
+    active_queries: usize,
+    last_used: Duration,
+}
+
+impl SessionRecord {
+    fn evictable(&self) -> bool {
+        self.leases == 0
+            && self.active_queries == 0
+            && self.state != TabulateSessionState::Preparing
+    }
+
+    fn status(&self) -> TabulateSessionStatus {
+        TabulateSessionStatus {
+            session_id: self.entry.session_id.clone(),
+            fingerprint: self.entry.fingerprint.clone(),
+            source_generation: self.entry.request.source_generation,
+            state: self.state.clone(),
+            row_member_count: self.info.as_ref().map_or(0, |info| info.row_member_count),
+            column_member_count: self
+                .info
+                .as_ref()
+                .map_or(0, |info| info.column_member_count),
+            logical_cell_count: self.info.as_ref().map_or(0, |info| info.logical_cell_count),
+            measured_member_index_bytes: self
+                .info
+                .as_ref()
+                .map_or(0, |info| info.measured_bytes_estimate as u64),
+            failure_code: self.failure_code.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TabulateSessionRegistry {
+    sessions: HashMap<String, SessionRecord>,
+    signatures: HashMap<String, String>,
+}
+
+struct SessionInner {
+    source: Mutex<DuckDbEngine>,
+    registry: Mutex<TabulateSessionRegistry>,
+    preparation: Mutex<()>,
+    measured_bytes: AtomicUsize,
+    closed: AtomicBool,
+    policy: TabulateSessionPolicy,
+    clock: Arc<dyn Fn() -> Duration + Send + Sync>,
+}
+
+#[derive(Clone)]
+pub struct TabulateSessionService {
+    inner: Arc<SessionInner>,
+}
+
+pub(crate) struct TabulateSessionLease {
+    inner: Arc<SessionInner>,
+    session_id: String,
+}
+
+pub(crate) struct TabulateActiveQueryGuard {
+    inner: Arc<SessionInner>,
+    pub(crate) entry: Arc<TabulateSessionEntry>,
+}
+
+impl Drop for TabulateSessionLease {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.inner.registry.lock() {
+            if let Some(record) = registry.sessions.get_mut(&self.session_id) {
+                record.leases = record.leases.saturating_sub(1);
+                if record.leases == 0 {
+                    record.last_used = (self.inner.clock)();
+                }
+            }
+        }
+    }
+}
+
+impl Drop for TabulateActiveQueryGuard {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.inner.registry.lock() {
+            if let Some(record) = registry.sessions.get_mut(&self.entry.session_id) {
+                record.active_queries = record.active_queries.saturating_sub(1);
+                record.last_used = (self.inner.clock)();
+            }
+        }
+    }
+}
+
+impl TabulateSessionService {
+    pub fn new(engine: &DuckDbEngine) -> Result<Self, AppError> {
+        let start = Instant::now();
+        Self::with_policy_and_clock(
+            engine,
+            TabulateSessionPolicy::default(),
+            Arc::new(move || start.elapsed()),
+        )
+    }
+
+    fn with_policy_and_clock(
+        engine: &DuckDbEngine,
+        policy: TabulateSessionPolicy,
+        clock: Arc<dyn Fn() -> Duration + Send + Sync>,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            inner: Arc::new(SessionInner {
+                source: Mutex::new(engine.try_clone()?),
+                registry: Mutex::new(TabulateSessionRegistry::default()),
+                preparation: Mutex::new(()),
+                measured_bytes: AtomicUsize::new(0),
+                closed: AtomicBool::new(false),
+                policy,
+                clock,
+            }),
+        })
+    }
+
+    pub fn prepare(
+        &self,
+        request: &TabulateSessionRequest,
+    ) -> Result<TabulateSessionStatus, AppError> {
+        let (entry, fresh) = self.begin_prepare(request)?;
+        {
+            let mut registry = lock(&self.inner.registry)?;
+            let record = registry
+                .sessions
+                .get_mut(&entry.session_id)
+                .ok_or_else(Self::unavailable)?;
+            record.leases = record
+                .leases
+                .checked_add(1)
+                .ok_or_else(|| AppError::Busy("tabulate_session_quota".into()))?;
+            record.last_used = (self.inner.clock)();
+        }
+        let status = self.status(&entry.session_id)?;
+        if fresh {
+            let service = self.clone();
+            let worker_entry = Arc::clone(&entry);
+            if std::thread::Builder::new()
+                .name("tabulate-prepare".into())
+                .spawn(move || service.complete_prepare(&worker_entry))
+                .is_err()
+            {
+                self.release(&entry.session_id)?;
+                return Err(AppError::Database("tabulate_prepare_failed".into()));
+            }
+        }
+        Ok(status)
+    }
+
+    fn begin_prepare(
+        &self,
+        request: &TabulateSessionRequest,
+    ) -> Result<(Arc<TabulateSessionEntry>, bool), AppError> {
+        self.sweep()?;
+        let source = lock(&self.inner.source)?;
+        source.validate_tabulate_session(request)?;
+        let stale = {
+            let mut registry = lock(&self.inner.registry)?;
+            let ids = registry
+                .sessions
+                .values()
+                .filter(|record| {
+                    record.entry.request.dataset_id == request.dataset_id
+                        && record.entry.request.source_generation != request.source_generation
+                })
+                .map(|record| record.entry.session_id.clone())
+                .collect::<Vec<_>>();
+            ids.iter()
+                .filter_map(|id| Self::remove(&mut registry, id))
+                .collect::<Vec<_>>()
+        };
+        drop(source);
+        for entry in stale {
+            self.cleanup(&entry)?;
+        }
+        let source = lock(&self.inner.source)?;
+        source.validate_tabulate_session(request)?;
+        let encoded = serde_json::to_vec(request)
+            .map_err(|_| AppError::InvalidParam("tabulate_invalid_definition".into()))?;
+        let fingerprint = format!("tabulate-v1:{:x}", Sha256::digest(encoded));
+        let mut registry = lock(&self.inner.registry)?;
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(Self::unavailable());
+        }
+        let existing_id = registry.signatures.get(&fingerprint).cloned();
+        if let Some(record) = existing_id.and_then(|id| registry.sessions.get_mut(&id)) {
+            if matches!(
+                record.state,
+                TabulateSessionState::Preparing | TabulateSessionState::Ready
+            ) {
+                record.last_used = (self.inner.clock)();
+                return Ok((Arc::clone(&record.entry), false));
+            }
+        }
+        let engine = source.try_clone()?;
+        let count = registry
+            .sessions
+            .values()
+            .filter(|record| record.entry.request.dataset_id == request.dataset_id)
+            .count();
+        let victim = if count >= self.inner.policy.max_sessions_per_dataset {
+            let victim_id = registry
+                .sessions
+                .values()
+                .filter(|record| {
+                    record.entry.request.dataset_id == request.dataset_id && record.evictable()
+                })
+                .min_by_key(|record| (record.last_used, record.entry.session_id.clone()))
+                .map(|record| record.entry.session_id.clone())
+                .ok_or_else(|| AppError::Busy("tabulate_session_quota".into()))?;
+            Self::remove(&mut registry, &victim_id)
+        } else {
+            None
+        };
+        let uuid = Uuid::new_v4();
+        let session_id = uuid.to_string();
+        let entry = Arc::new(TabulateSessionEntry {
+            session_id: session_id.clone(),
+            uuid,
+            request: request.clone(),
+            fingerprint: fingerprint.clone(),
+            interrupt_handle: engine.conn().interrupt_handle(),
+            engine: Mutex::new(engine),
+            released: AtomicBool::new(false),
+            charged_bytes: AtomicUsize::new(0),
+        });
+        registry.signatures.insert(fingerprint, session_id.clone());
+        registry.sessions.insert(
+            session_id,
+            SessionRecord {
+                entry: Arc::clone(&entry),
+                state: TabulateSessionState::Preparing,
+                info: None,
+                failure_code: None,
+                leases: 0,
+                active_queries: 0,
+                last_used: (self.inner.clock)(),
+            },
+        );
+        drop(registry);
+        drop(source);
+        if let Some(victim) = victim {
+            self.cleanup(&victim)?;
+        }
+        Ok((entry, true))
+    }
+
+    fn remove(
+        registry: &mut TabulateSessionRegistry,
+        session_id: &str,
+    ) -> Option<Arc<TabulateSessionEntry>> {
+        let entry = Arc::clone(&registry.sessions.get(session_id)?.entry);
+        entry.released.store(true, Ordering::Release);
+        entry.interrupt_handle.interrupt();
+        registry.sessions.remove(session_id);
+        if registry
+            .signatures
+            .get(&entry.fingerprint)
+            .is_some_and(|id| id == session_id)
+        {
+            registry.signatures.remove(&entry.fingerprint);
+        }
+        Some(entry)
+    }
+
+    fn cleanup(&self, entry: &TabulateSessionEntry) -> Result<(), AppError> {
+        let bytes = entry.charged_bytes.swap(0, Ordering::AcqRel);
+        self.inner.measured_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        lock(&entry.engine)?.drop_tabulate_member_indexes(&entry.uuid)
+    }
+
+    fn sweep(&self) -> Result<(), AppError> {
+        let now = (self.inner.clock)();
+        let victims = {
+            let mut registry = lock(&self.inner.registry)?;
+            let ids = registry
+                .sessions
+                .values()
+                .filter(|record| {
+                    record.evictable()
+                        && now.saturating_sub(record.last_used) >= self.inner.policy.idle_ttl
+                })
+                .map(|record| record.entry.session_id.clone())
+                .collect::<Vec<_>>();
+            ids.iter()
+                .filter_map(|id| Self::remove(&mut registry, id))
+                .collect::<Vec<_>>()
+        };
+        for entry in victims {
+            self.cleanup(&entry)?;
+        }
+        Ok(())
+    }
+
+    pub fn status(&self, session_id: &str) -> Result<TabulateSessionStatus, AppError> {
+        self.sweep()?;
+        let entry = self.entry(session_id)?;
+        if lock(&self.inner.source)?
+            .get_dataset_generation(&entry.request.dataset_id)
+            .ok()
+            != Some(entry.request.source_generation)
+        {
+            self.force_release(session_id)?;
+            return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+        }
+        let registry = lock(&self.inner.registry)?;
+        Ok(registry
+            .sessions
+            .get(session_id)
+            .ok_or_else(Self::unavailable)?
+            .status())
+    }
+
+    fn entry(&self, session_id: &str) -> Result<Arc<TabulateSessionEntry>, AppError> {
+        lock(&self.inner.registry)?
+            .sessions
+            .get(session_id)
+            .map(|record| Arc::clone(&record.entry))
+            .ok_or_else(Self::unavailable)
+    }
+
+    fn unavailable() -> AppError {
+        AppError::InvalidParam("tabulate_session_unavailable".into())
+    }
+
+    pub fn release(&self, session_id: &str) -> Result<(), AppError> {
+        let entry = {
+            let mut registry = lock(&self.inner.registry)?;
+            match registry.sessions.get_mut(session_id) {
+                Some(record) if record.leases > 1 => {
+                    record.leases -= 1;
+                    record.last_used = (self.inner.clock)();
+                    None
+                }
+                Some(_) => Self::remove(&mut registry, session_id),
+                None => None,
+            }
+        };
+        if let Some(entry) = entry {
+            self.cleanup(&entry)?;
+        }
+        Ok(())
+    }
+
+    fn force_release(&self, session_id: &str) -> Result<(), AppError> {
+        let entry = {
+            let mut registry = lock(&self.inner.registry)?;
+            Self::remove(&mut registry, session_id)
+        };
+        if let Some(entry) = entry {
+            self.cleanup(&entry)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn acquire_lease(&self, session_id: &str) -> Result<TabulateSessionLease, AppError> {
+        self.status(session_id)?;
+        let mut registry = lock(&self.inner.registry)?;
+        let record = registry
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(Self::unavailable)?;
+        record.leases = record
+            .leases
+            .checked_add(1)
+            .ok_or_else(|| AppError::Busy("tabulate_session_quota".into()))?;
+        record.last_used = (self.inner.clock)();
+        Ok(TabulateSessionLease {
+            inner: Arc::clone(&self.inner),
+            session_id: session_id.into(),
+        })
+    }
+
+    pub(crate) fn begin_query(
+        &self,
+        session_id: &str,
+        generation: u64,
+        fingerprint: &str,
+    ) -> Result<TabulateActiveQueryGuard, AppError> {
+        self.status(session_id)?;
+        let mut registry = lock(&self.inner.registry)?;
+        let record = registry
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(Self::unavailable)?;
+        if generation != record.entry.request.source_generation
+            || fingerprint != record.entry.fingerprint
+        {
+            return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+        }
+        if record.state != TabulateSessionState::Ready {
+            return Err(AppError::Busy("tabulate_session_not_ready".into()));
+        }
+        record.active_queries = record
+            .active_queries
+            .checked_add(1)
+            .ok_or_else(|| AppError::Busy("tabulate_session_quota".into()))?;
+        record.last_used = (self.inner.clock)();
+        Ok(TabulateActiveQueryGuard {
+            inner: Arc::clone(&self.inner),
+            entry: Arc::clone(&record.entry),
+        })
+    }
+
+    pub(crate) fn shutdown(&self) -> Result<(), AppError> {
+        let entries = {
+            let mut registry = lock(&self.inner.registry)?;
+            self.inner.closed.store(true, Ordering::Release);
+            let ids = registry.sessions.keys().cloned().collect::<Vec<_>>();
+            ids.iter()
+                .filter_map(|id| Self::remove(&mut registry, id))
+                .collect::<Vec<_>>()
+        };
+        for entry in entries {
+            self.cleanup(&entry)?;
+        }
+        Ok(())
+    }
+
+    fn admit_bytes(&self, entry: &TabulateSessionEntry, bytes: usize) -> Result<(), AppError> {
+        if bytes > self.inner.policy.max_measured_bytes {
+            return Err(AppError::InvalidParam(
+                "tabulate_member_index_budget".into(),
+            ));
+        }
+        let victims = {
+            let mut registry = lock(&self.inner.registry)?;
+            if entry.released.load(Ordering::Acquire) {
+                return Err(Self::unavailable());
+            }
+            let available = self
+                .inner
+                .policy
+                .max_measured_bytes
+                .saturating_sub(self.inner.measured_bytes.load(Ordering::Acquire));
+            let mut candidates = registry
+                .sessions
+                .values()
+                .filter(|record| record.evictable() && record.entry.session_id != entry.session_id)
+                .map(|record| (record.last_used, Arc::clone(&record.entry)))
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|(last_used, entry)| (*last_used, entry.session_id.clone()));
+            let mut needed = bytes.saturating_sub(available);
+            let mut ids = Vec::new();
+            for (_, candidate) in candidates {
+                if needed == 0 {
+                    break;
+                }
+                needed = needed.saturating_sub(candidate.charged_bytes.load(Ordering::Acquire));
+                ids.push(candidate.session_id.clone());
+            }
+            if needed > 0 {
+                return Err(AppError::InvalidParam(
+                    "tabulate_member_index_budget".into(),
+                ));
+            }
+            ids.iter()
+                .filter_map(|id| Self::remove(&mut registry, id))
+                .collect::<Vec<_>>()
+        };
+        for victim in victims {
+            self.cleanup(&victim)?;
+        }
+        let _registry = lock(&self.inner.registry)?;
+        if entry.released.load(Ordering::Acquire) {
+            return Err(Self::unavailable());
+        }
+        self.inner.measured_bytes.fetch_add(bytes, Ordering::AcqRel);
+        entry.charged_bytes.store(bytes, Ordering::Release);
+        Ok(())
+    }
+
+    fn complete_prepare(&self, entry: &Arc<TabulateSessionEntry>) {
+        let result = (|| -> Result<PreparedTabulateSessionInfo, AppError> {
+            let _preparation = lock(&self.inner.preparation)?;
+            if entry.released.load(Ordering::Acquire) {
+                return Err(Self::unavailable());
+            }
+            let measured = lock(&entry.engine)?.measure_tabulate_member_indexes(&entry.request)?;
+            self.admit_bytes(entry, measured.measured_bytes_estimate)?;
+            let engine = lock(&entry.engine)?;
+            if entry.released.load(Ordering::Acquire) {
+                return Err(Self::unavailable());
+            }
+            engine.prepare_tabulate_member_indexes(
+                &entry.request,
+                &entry.uuid,
+                measured.measured_bytes_estimate,
+            )
+        })();
+        let result = result.and_then(|info| {
+            if lock(&self.inner.source)?.get_dataset_generation(&entry.request.dataset_id)?
+                != entry.request.source_generation
+            {
+                return Err(AppError::InvalidParam("tabulate_stale_source".into()));
+            }
+            Ok(info)
+        });
+        self.publish_preparation(entry, result);
+    }
+
+    fn publish_preparation(
+        &self,
+        entry: &Arc<TabulateSessionEntry>,
+        result: Result<PreparedTabulateSessionInfo, AppError>,
+    ) {
+        match result {
+            Ok(info) => {
+                if let Ok(mut registry) = self.inner.registry.lock() {
+                    if let Some(record) = registry.sessions.get_mut(&entry.session_id) {
+                        if !entry.released.load(Ordering::Acquire) {
+                            record.state = TabulateSessionState::Ready;
+                            record.info = Some(info);
+                            record.last_used = (self.inner.clock)();
+                            return;
+                        }
+                    }
+                }
+                let _ = self.cleanup(entry);
+            }
+            Err(error) => {
+                let cleanup = self.cleanup(entry);
+                if let Ok(mut registry) = self.inner.registry.lock() {
+                    if let Some(record) = registry.sessions.get_mut(&entry.session_id) {
+                        let code = match error {
+                            AppError::InvalidParam(ref message)
+                                if message.starts_with("tabulate_") =>
+                            {
+                                message.as_str()
+                            }
+                            AppError::Database(ref message)
+                                if message.to_ascii_uppercase().contains("INTERRUPT") =>
+                            {
+                                "tabulate_cancelled"
+                            }
+                            AppError::Cancelled(_) => "tabulate_cancelled",
+                            _ => "tabulate_prepare_failed",
+                        };
+                        record.state = if code == "tabulate_cancelled" {
+                            TabulateSessionState::Cancelled
+                        } else {
+                            TabulateSessionState::Failed
+                        };
+                        record.failure_code = Some(
+                            if cleanup.is_err() {
+                                "tabulate_cleanup_failed"
+                            } else {
+                                code
+                            }
+                            .into(),
+                        );
+                        record.last_used = (self.inner.clock)();
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::tabulate::{StatisticKind, TabulateStatistic};
+    use std::sync::atomic::AtomicU64;
+
+    struct SessionHarness {
+        source: DuckDbEngine,
+        service: TabulateSessionService,
+        milliseconds: Arc<AtomicU64>,
+    }
+
+    impl SessionHarness {
+        fn new(budget: usize) -> Self {
+            let source = DuckDbEngine::new_in_memory().expect("engine");
+            source.conn().execute_batch(
+                "CREATE TABLE dataset_session_test (region VARCHAR, product VARCHAR, sales DOUBLE);
+                 INSERT INTO dataset_session_test VALUES ('East', 'A', 1), ('West', 'B', 2), (NULL, 'A', 3);
+                 INSERT INTO _meta_datasets (id, name, source_type, row_count, col_count)
+                 VALUES ('session-test', 'Session test', 'test', 3, 3);"
+            ).expect("fixture");
+            let milliseconds = Arc::new(AtomicU64::new(0));
+            let clock_value = Arc::clone(&milliseconds);
+            let service = TabulateSessionService::with_policy_and_clock(
+                &source,
+                TabulateSessionPolicy {
+                    max_measured_bytes: budget,
+                    ..Default::default()
+                },
+                Arc::new(move || Duration::from_millis(clock_value.load(Ordering::SeqCst))),
+            )
+            .expect("service");
+            Self {
+                source,
+                service,
+                milliseconds,
+            }
+        }
+
+        fn request(&self) -> TabulateSessionRequest {
+            TabulateSessionRequest {
+                dataset_id: "session-test".into(),
+                source_generation: self
+                    .source
+                    .get_dataset_generation("session-test")
+                    .expect("generation"),
+                row_fields: vec!["region".into()],
+                column_fields: vec!["product".into()],
+                statistics: vec![TabulateStatistic {
+                    id: "mean".into(),
+                    field: "sales".into(),
+                    kind: StatisticKind::Mean,
+                    quantile: None,
+                }],
+                include_row_totals: true,
+                include_column_totals: true,
+            }
+        }
+
+        fn paused(&self, request: &TabulateSessionRequest) -> Arc<TabulateSessionEntry> {
+            self.service.begin_prepare(request).expect("begin").0
+        }
+
+        fn ready(&self, request: &TabulateSessionRequest) -> TabulateSessionStatus {
+            let (entry, fresh) = self.service.begin_prepare(request).expect("begin");
+            if fresh {
+                self.service.complete_prepare(&entry);
+            }
+            let status = self.service.status(&entry.session_id).expect("status");
+            assert_eq!(status.state, TabulateSessionState::Ready, "{status:?}");
+            status
+        }
+
+        fn advance(&self, milliseconds: u64) {
+            self.milliseconds.fetch_add(milliseconds, Ordering::SeqCst);
+        }
+
+        fn assert_dropped(&self, entry: &TabulateSessionEntry) {
+            let engine = entry.engine.lock().expect("engine");
+            let count: i64 = engine
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM duckdb_tables() WHERE table_name IN (?, ?)",
+                    duckdb::params![entry.row_table_name(), entry.column_table_name()],
+                    |row| row.get(0),
+                )
+                .expect("tables");
+            assert_eq!(count, 0);
+        }
+    }
+
+    #[test]
+    fn reuses_complete_fingerprint_and_does_not_reuse_changed_definition() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let first = harness.ready(&request);
+        let reused = harness.ready(&request);
+        assert_eq!(first.session_id, reused.session_id);
+        assert_eq!(
+            (
+                first.row_member_count,
+                first.column_member_count,
+                first.logical_cell_count
+            ),
+            (3, 2, 6)
+        );
+        assert!(first.measured_member_index_bytes > 0);
+        let mut variants = Vec::new();
+        let mut changed = request.clone();
+        changed.include_row_totals = false;
+        variants.push(changed);
+        let mut changed = request.clone();
+        changed.include_column_totals = false;
+        variants.push(changed);
+        let mut changed = request.clone();
+        changed.statistics[0].kind = StatisticKind::Sum;
+        variants.push(changed);
+        let mut changed = request.clone();
+        changed.statistics[0].id = "other".into();
+        variants.push(changed);
+        let mut changed = request.clone();
+        changed.row_fields = vec!["product".into()];
+        variants.push(changed);
+        let mut changed = request.clone();
+        changed.column_fields.clear();
+        variants.push(changed);
+        let mut changed = request.clone();
+        changed.statistics[0].quantile = Some(0.25);
+        variants.push(changed);
+        for changed in variants {
+            assert_ne!(harness.ready(&changed).fingerprint, first.fingerprint);
+        }
+    }
+
+    #[test]
+    fn generation_mismatch_rejects_and_invalidates_existing_session() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let first = harness.ready(&request);
+        harness
+            .source
+            .bump_dataset_generation("session-test")
+            .expect("bump");
+        assert!(harness.service.prepare(&request).is_err());
+        assert!(harness.service.status(&first.session_id).is_err());
+        let next = harness.ready(&harness.request());
+        assert_ne!(first.fingerprint, next.fingerprint);
+    }
+
+    #[test]
+    fn generation_mismatch_revokes_all_client_leases() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let first = harness.service.prepare(&request).expect("first prepare");
+        let second = harness.service.prepare(&request).expect("second prepare");
+        assert_eq!(first.session_id, second.session_id);
+        harness
+            .source
+            .bump_dataset_generation("session-test")
+            .expect("bump");
+
+        assert!(harness.service.status(&first.session_id).is_err());
+        assert!(harness.service.entry(&first.session_id).is_err());
+    }
+
+    #[test]
+    fn evicts_lru_at_two_sessions_and_preserves_leases() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let mut request = harness.request();
+        let first = harness.ready(&request);
+        let lease = harness
+            .service
+            .acquire_lease(&first.session_id)
+            .expect("lease");
+        harness.advance(1);
+        request.include_row_totals = false;
+        let second_entry = harness.paused(&request);
+        harness.service.complete_prepare(&second_entry);
+        harness.advance(1);
+        request.include_column_totals = false;
+        let third = harness.ready(&request);
+        assert!(harness.service.status(&second_entry.session_id).is_err());
+        harness.assert_dropped(&second_entry);
+        assert!(harness.service.status(&first.session_id).is_ok());
+        let other_lease = harness
+            .service
+            .acquire_lease(&third.session_id)
+            .expect("lease");
+        request.statistics[0].id = "fourth".into();
+        assert!(harness.service.prepare(&request).is_err());
+        drop((lease, other_lease));
+    }
+
+    #[test]
+    fn measured_byte_pressure_evicts_unleased_but_refuses_pinned_overflow() {
+        let probe = SessionHarness::new(usize::MAX);
+        let bytes = probe.ready(&probe.request()).measured_member_index_bytes as usize;
+        let harness = SessionHarness::new(bytes);
+        let mut request = harness.request();
+        let first_entry = harness.paused(&request);
+        harness.service.complete_prepare(&first_entry);
+        request.include_row_totals = false;
+        let second = harness.ready(&request);
+        assert!(harness.service.status(&first_entry.session_id).is_err());
+        harness.assert_dropped(&first_entry);
+        let _lease = harness
+            .service
+            .acquire_lease(&second.session_id)
+            .expect("lease");
+        request.include_column_totals = false;
+        let refused = harness.paused(&request);
+        harness.service.complete_prepare(&refused);
+        let status = harness
+            .service
+            .status(&refused.session_id)
+            .expect("failed status");
+        assert_eq!(status.state, TabulateSessionState::Failed);
+        assert_eq!(
+            status.failure_code.as_deref(),
+            Some("tabulate_member_index_budget")
+        );
+        assert_eq!(status.measured_member_index_bytes, 0);
+        harness.assert_dropped(&refused);
+        assert_eq!(
+            harness
+                .service
+                .status(&second.session_id)
+                .expect("pinned")
+                .state,
+            TabulateSessionState::Ready
+        );
+    }
+
+    #[test]
+    fn oversized_single_index_is_never_ready() {
+        let harness = SessionHarness::new(1);
+        let entry = harness.paused(&harness.request());
+        harness.service.complete_prepare(&entry);
+        let status = harness.service.status(&entry.session_id).expect("failed");
+        assert_eq!(
+            status.failure_code.as_deref(),
+            Some("tabulate_member_index_budget")
+        );
+        assert_eq!(status.state, TabulateSessionState::Failed);
+        harness.assert_dropped(&entry);
+    }
+
+    #[test]
+    fn cleanup_failure_releases_measured_byte_charge() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let entry = harness.paused(&request);
+        harness.service.complete_prepare(&entry);
+        assert!(harness.service.inner.measured_bytes.load(Ordering::Acquire) > 0);
+        let poison_entry = Arc::clone(&entry);
+        let poison = std::thread::spawn(move || {
+            let _engine = poison_entry.engine.lock().expect("engine");
+            panic!("poison engine lock");
+        });
+        assert!(poison.join().is_err());
+
+        assert!(harness.service.cleanup(&entry).is_err());
+        assert_eq!(
+            harness.service.inner.measured_bytes.load(Ordering::Acquire),
+            0
+        );
+    }
+
+    #[test]
+    fn expires_at_exactly_five_minutes_and_status_polling_does_not_extend_idle() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let entry = harness.paused(&harness.request());
+        harness.service.complete_prepare(&entry);
+        harness.advance(299_999);
+        assert!(harness.service.status(&entry.session_id).is_ok());
+        harness.advance(1);
+        assert!(harness.service.status(&entry.session_id).is_err());
+        harness.assert_dropped(&entry);
+    }
+
+    #[test]
+    fn last_lease_drop_starts_idle_timer_and_reacquire_protects_again() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let ready = harness.ready(&harness.request());
+        let first = harness
+            .service
+            .acquire_lease(&ready.session_id)
+            .expect("lease");
+        let second = harness
+            .service
+            .acquire_lease(&ready.session_id)
+            .expect("lease");
+        harness.advance(600_000);
+        drop(first);
+        assert!(harness.service.status(&ready.session_id).is_ok());
+        drop(second);
+        harness.advance(299_999);
+        let third = harness
+            .service
+            .acquire_lease(&ready.session_id)
+            .expect("reacquire");
+        harness.advance(600_000);
+        assert!(harness.service.status(&ready.session_id).is_ok());
+        drop(third);
+        harness.advance(300_000);
+        assert!(harness.service.status(&ready.session_id).is_err());
+    }
+
+    #[test]
+    fn active_query_survives_expiry_and_checks_identity() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let ready = harness.ready(&harness.request());
+        assert!(harness
+            .service
+            .begin_query(
+                &ready.session_id,
+                ready.source_generation + 1,
+                &ready.fingerprint
+            )
+            .is_err());
+        assert!(harness
+            .service
+            .begin_query(&ready.session_id, ready.source_generation, "wrong")
+            .is_err());
+        let query = harness
+            .service
+            .begin_query(
+                &ready.session_id,
+                ready.source_generation,
+                &ready.fingerprint,
+            )
+            .expect("query");
+        harness.advance(600_000);
+        assert!(harness.service.status(&ready.session_id).is_ok());
+        drop(query);
+        harness.advance(299_999);
+        assert!(harness.service.status(&ready.session_id).is_ok());
+        harness.advance(1);
+        assert!(harness.service.status(&ready.session_id).is_err());
+    }
+
+    #[test]
+    fn explicit_release_drops_tables_and_identity_even_with_a_lease() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let entry = harness.paused(&request);
+        harness.service.complete_prepare(&entry);
+        let lease = harness
+            .service
+            .acquire_lease(&entry.session_id)
+            .expect("lease");
+        harness.service.release(&entry.session_id).expect("release");
+        harness
+            .service
+            .release(&entry.session_id)
+            .expect("idempotent release");
+        assert!(harness.service.status(&entry.session_id).is_err());
+        harness.assert_dropped(&entry);
+        drop(lease);
+        assert_ne!(harness.ready(&request).session_id, entry.session_id);
+    }
+
+    #[test]
+    fn repeated_public_prepare_requires_matching_releases() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let first = harness.service.prepare(&request).expect("first prepare");
+        let second = harness.service.prepare(&request).expect("second prepare");
+        assert_eq!(first.session_id, second.session_id);
+
+        harness
+            .service
+            .release(&first.session_id)
+            .expect("first release");
+        assert!(harness.service.status(&first.session_id).is_ok());
+
+        harness
+            .service
+            .release(&first.session_id)
+            .expect("last release");
+        assert!(harness.service.status(&first.session_id).is_err());
+    }
+
+    #[test]
+    fn release_during_prepare_cannot_resurrect_session() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let entry = harness.paused(&request);
+        harness.service.release(&entry.session_id).expect("release");
+        harness.service.complete_prepare(&entry);
+        assert!(harness.service.status(&entry.session_id).is_err());
+        harness.assert_dropped(&entry);
+        assert_ne!(harness.ready(&request).session_id, entry.session_id);
+    }
+
+    #[test]
+    fn invalid_definition_is_rejected_before_registry_admission() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let mut request = harness.request();
+        request.statistics.clear();
+        assert!(harness.service.prepare(&request).is_err());
+        request = harness.request();
+        request.row_fields.push("region".into());
+        assert!(harness.service.prepare(&request).is_err());
+        request = harness.request();
+        request.statistics[0].field = "region".into();
+        assert!(harness.service.prepare(&request).is_err());
+        request = harness.request();
+        request.row_fields = vec!["region\"; DROP TABLE _meta_datasets; --".into()];
+        assert!(harness.service.prepare(&request).is_err());
+        assert!(harness
+            .source
+            .get_dataset_generation("session-test")
+            .is_ok());
+    }
+
+    #[test]
+    fn late_publication_after_materialization_cannot_resurrect_or_erase_replacement() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let request = harness.request();
+        let entry = harness.paused(&request);
+        let info = entry
+            .engine
+            .lock()
+            .expect("engine")
+            .prepare_tabulate_member_indexes(&request, &entry.uuid, usize::MAX)
+            .expect("materialize");
+        harness.service.release(&entry.session_id).expect("release");
+        let replacement = harness.ready(&request);
+        harness.service.publish_preparation(&entry, Ok(info));
+        assert!(harness.service.status(&entry.session_id).is_err());
+        harness.assert_dropped(&entry);
+        assert_eq!(harness.ready(&request).session_id, replacement.session_id);
+    }
+
+    #[test]
+    fn app_state_reset_revokes_old_registry_and_preserves_navigation_independence() {
+        let state = crate::state::AppState::new().expect("state");
+        let old_service = Arc::clone(&state.tabulate_sessions.read().expect("service"));
+        let old_navigation = Arc::clone(&state.table_navigation.read().expect("navigation"));
+        state.reset_db().expect("reset");
+        let new_service = Arc::clone(&state.tabulate_sessions.read().expect("service"));
+        assert!(!Arc::ptr_eq(&old_service, &new_service));
+        assert!(old_service.inner.closed.load(Ordering::Acquire));
+        assert!(!new_service.inner.closed.load(Ordering::Acquire));
+        assert!(!Arc::ptr_eq(
+            &old_navigation,
+            &state.table_navigation.read().expect("navigation")
+        ));
+    }
+
+    #[test]
+    fn concurrent_prepare_reserves_one_identity() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let workers = (0..8)
+            .map(|_| {
+                let service = harness.service.clone();
+                let request = harness.request();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    service.begin_prepare(&request).expect("prepare")
+                })
+            })
+            .collect::<Vec<_>>();
+        let entries = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join"))
+            .collect::<Vec<_>>();
+        assert_eq!(entries.iter().filter(|(_, fresh)| *fresh).count(), 1);
+        assert!(entries
+            .iter()
+            .all(|(entry, _)| entry.session_id == entries[0].0.session_id));
+        harness.service.complete_prepare(&entries[0].0);
+        assert_eq!(
+            harness
+                .service
+                .status(&entries[0].0.session_id)
+                .expect("status")
+                .state,
+            TabulateSessionState::Ready
+        );
+    }
+
+    #[test]
+    fn public_prepare_worker_publishes_ready_and_shutdown_reclaims_all() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let preparing = harness
+            .service
+            .prepare(&harness.request())
+            .expect("prepare");
+        assert_eq!(preparing.state, TabulateSessionState::Preparing);
+        let entry = harness.service.entry(&preparing.session_id).expect("entry");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = harness
+                .service
+                .status(&preparing.session_id)
+                .expect("status");
+            if status.state == TabulateSessionState::Ready {
+                break;
+            }
+            assert_eq!(status.state, TabulateSessionState::Preparing, "{status:?}");
+            assert!(Instant::now() < deadline, "preparation timed out");
+            std::thread::yield_now();
+        }
+        harness.service.shutdown().expect("shutdown");
+        assert!(harness.service.status(&entry.session_id).is_err());
+        assert!(harness.service.prepare(&harness.request()).is_err());
+        harness.assert_dropped(&entry);
+        assert_eq!(
+            harness.service.inner.measured_bytes.load(Ordering::Acquire),
+            0
+        );
+    }
+
+    #[test]
+    fn new_generation_reclaims_stale_leased_sessions_before_quota_admission() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let mut request = harness.request();
+        let first = harness.ready(&request);
+        let _first_lease = harness
+            .service
+            .acquire_lease(&first.session_id)
+            .expect("lease");
+        request.include_row_totals = false;
+        let second = harness.ready(&request);
+        let _second_lease = harness
+            .service
+            .acquire_lease(&second.session_id)
+            .expect("lease");
+        harness
+            .source
+            .bump_dataset_generation("session-test")
+            .expect("bump");
+        let replacement = harness.ready(&harness.request());
+        assert_ne!(replacement.source_generation, first.source_generation);
+        assert!(harness.service.entry(&first.session_id).is_err());
+        assert!(harness.service.entry(&second.session_id).is_err());
+    }
+
+    #[test]
+    fn release_removes_identity_before_waiting_for_engine_and_late_worker() {
+        let harness = SessionHarness::new(256 * 1024 * 1024);
+        let entry = harness.paused(&harness.request());
+        let engine = entry.engine.lock().expect("hold engine");
+        let releasing_service = harness.service.clone();
+        let session_id = entry.session_id.clone();
+        let release = std::thread::spawn(move || releasing_service.release(&session_id));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !entry.released.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "release waited before invalidating"
+            );
+            std::thread::yield_now();
+        }
+        assert!(harness.service.entry(&entry.session_id).is_err());
+        let worker_service = harness.service.clone();
+        let worker_entry = Arc::clone(&entry);
+        let worker = std::thread::spawn(move || worker_service.complete_prepare(&worker_entry));
+        drop(engine);
+        release.join().expect("release join").expect("release");
+        worker.join().expect("worker join");
+        harness.assert_dropped(&entry);
+        assert!(harness.service.status(&entry.session_id).is_err());
+    }
+}
