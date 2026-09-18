@@ -16,6 +16,10 @@ pub struct SaveProjectRequest {
     pub snapshots: Vec<serde_json::Value>,
     pub graph_builders: Vec<serde_json::Value>,
     #[serde(default)]
+    pub graph_builders_new: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub graph_new_folders: HashMap<String, String>,
+    #[serde(default)]
     pub fit_y_by_x: Vec<serde_json::Value>,
     #[serde(default)]
     pub fit_models: Vec<serde_json::Value>,

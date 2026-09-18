@@ -4,6 +4,8 @@ pub mod distribution;
 pub mod fit_model;
 pub mod fit_y_by_x;
 pub mod graph_data;
+pub mod graph_new;
+pub mod graph_new_data;
 pub mod hypothesis_test;
 pub mod mcp;
 pub mod project;

@@ -54,7 +54,7 @@ assertSourceIncludes(workspaceSource, "getRetainedActiveAnalysisIdAfterDatasetDe
 assertSourceIncludes(workspaceSource, "history.newFitModel", "Creation must record Fit Model history");
 assertSourceIncludes(workspaceSource, "<AnalysisView item={item}", "Main pane must dispatch Fit Model through AnalysisView");
 assertSourceIncludes(workspaceSource, "initialDefinition={editorItem}", "Fit Model input editing must initialize from the persisted Analysis definition");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Folder prune must preserve Fit Model IDs alongside Analysis IDs");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds,", "Folder prune must preserve Fit Model IDs alongside Analysis IDs");
 
 const fitModelCssSource = readSource("../src/components/fitModel/fitModel.css");
 assertSourceIncludes(fitModelCssSource, ".sp-fit-model-dialog", "Fit Model CSS must style dialog sizing");

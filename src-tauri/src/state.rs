@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::engine::duckdb_engine::DuckDbEngine;
@@ -22,6 +23,8 @@ pub struct WorkflowRunJournalEntry {
 }
 
 pub struct AppState {
+    pub graph_new: crate::services::graph_new_service::GraphNewRuntime,
+    pub graph_new_epoch: AtomicU64,
     pub db: Mutex<DuckDbEngine>,
     pub table_navigation: RwLock<Arc<TableNavigationService>>,
     pub project: RwLock<Option<ProjectInfo>>,
@@ -39,6 +42,8 @@ impl AppState {
         let engine = DuckDbEngine::new_in_memory()?;
         let table_navigation = TableNavigationService::new(&engine, TABLE_NAVIGATION_READER_COUNT)?;
         Ok(Self {
+            graph_new: Default::default(),
+            graph_new_epoch: AtomicU64::new(0),
             db: Mutex::new(engine),
             table_navigation: RwLock::new(Arc::new(table_navigation)),
             project: RwLock::new(None),
@@ -49,6 +54,10 @@ impl AppState {
             mcp_command_broker: McpCommandBroker::new(),
             mcp_server: McpServerRuntime::new(),
         })
+    }
+
+    pub fn set_graph_cache_directory(&self, directory: &std::path::Path) -> Result<(), AppError> {
+        self.graph_new.set_cache_directory(directory)
     }
 
     /// Reset DuckDB engine (for opening a new/different project)
@@ -66,6 +75,7 @@ impl AppState {
             .map_err(|e| AppError::Database(e.to_string()))?;
         *db = replacement_engine;
         *table_navigation = Arc::new(replacement_navigation);
+        self.graph_new_epoch.fetch_add(1, Ordering::AcqRel);
         // Clear column display props
         let mut display = self
             .column_display

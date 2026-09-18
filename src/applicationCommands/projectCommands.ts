@@ -18,11 +18,12 @@ import type {
   TableListResult,
 } from "@/applicationCommands/types";
 import { dataService } from "@/services/dataService";
-import { projectService, type SaveProjectRequest } from "@/services/projectService";
+import type { SaveProjectRequest } from "@/services/projectService";
 import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
 import { useFolderStore } from "@/stores/useFolderStore";
+import { useGraphBuilderNewStore } from "@/stores/useGraphBuilderNewStore";
 import { useGraphBuilderStore } from "@/stores/useGraphBuilderStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useProjectStore } from "@/stores/useProjectStore";
@@ -147,6 +148,7 @@ export function buildSaveProjectRequest(filePath?: string): SaveProjectRequest {
     snapshots: historyStore.snapshots,
     datasetFilters: useDatasetFilterStore.getState().toProjectPayload(),
     graphBuilders: useGraphBuilderStore.getState().items,
+    graphBuildersNew: useGraphBuilderNewStore.getState().items,
     fitYByX: [],
     tabulates: useTabulateStore.getState().items,
     distributions: [],
@@ -154,6 +156,7 @@ export function buildSaveProjectRequest(filePath?: string): SaveProjectRequest {
     folders: folderStore.folders,
     tableFolders: folderStore.tableFolders,
     graphFolders: folderStore.graphFolders,
+    graphNewFolders: folderStore.graphNewFolders,
     fitYByXFolders: {},
     tabulateFolders: folderStore.tabulateFolders,
     reportFolders: folderStore.reportFolders,
@@ -286,7 +289,7 @@ export function createProjectCommandHandlers(
     buildSaveProjectRequest,
     flushPendingHistory: () => undefined,
     saveProjectCommand: async (request) => {
-      await projectService.saveProject(request);
+      await useProjectStore.getState().saveProject(request);
       return summarizeProjectForSave(useProjectStore.getState().project);
     },
     ...dependencyOverrides,

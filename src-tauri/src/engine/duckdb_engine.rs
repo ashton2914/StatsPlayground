@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem;
+use std::sync::Arc;
 use std::time::Instant;
 
 use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
 use duckdb::{
     appender_params_from_iter, params, params_from_iter, Config, Connection, OptionalExt,
 };
+use tempfile::TempDir;
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
 use crate::engine::correlation::{correlate, CorrelationFailure, StatisticalMethod};
@@ -48,6 +50,7 @@ use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprint
 /// DuckDB engine wrapper
 pub struct DuckDbEngine {
     conn: Connection,
+    _shared_db_dir: Arc<TempDir>,
 }
 
 pub const NATURAL_ANCHOR_STRIDE: usize = 4096;
@@ -298,6 +301,10 @@ impl DuckDbEngine {
         &self.conn
     }
 
+    pub fn open_secondary_connection(&self) -> Result<Connection, AppError> {
+        self.conn.try_clone().map_err(AppError::from)
+    }
+
     pub(crate) fn bump_dataset_generation(&self, dataset_id: &str) -> Result<(), AppError> {
         let generation = self.get_dataset_generation(dataset_id)?;
         let next_generation = generation
@@ -499,7 +506,9 @@ impl DuckDbEngine {
 
     /// Create a new in-memory DuckDB engine and initialize metadata tables
     pub fn new_in_memory() -> Result<Self, AppError> {
-        let conn = Connection::open_in_memory()?;
+        let shared_db_dir = Arc::new(tempfile::tempdir()?);
+        let shared_db_path = shared_db_dir.path().join("stats_playground.duckdb");
+        let conn = Connection::open(&shared_db_path)?;
 
         conn.execute_batch(
             "
@@ -623,12 +632,16 @@ impl DuckDbEngine {
             [],
         )?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            _shared_db_dir: shared_db_dir,
+        })
     }
 
     pub fn try_clone(&self) -> Result<DuckDbEngine, AppError> {
         Ok(Self {
             conn: self.conn.try_clone()?,
+            _shared_db_dir: Arc::clone(&self._shared_db_dir),
         })
     }
 
@@ -11149,6 +11162,19 @@ mod tests {
     use crate::services::data_service::DataService;
     use crate::state::AppState;
     use duckdb::types::Decimal;
+
+    #[test]
+    fn secondary_connection_shares_the_open_database() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        engine.conn().execute_batch("CREATE TABLE secondary_probe(value BIGINT); INSERT INTO secondary_probe VALUES (42);")
+            .expect("seed primary connection");
+
+        let secondary = engine.open_secondary_connection().expect("secondary connection");
+        let value: i64 = secondary.query_row("SELECT value FROM secondary_probe", [], |row| row.get(0))
+            .expect("read through secondary connection");
+
+        assert_eq!(value, 42);
+    }
 
     fn mutation_fixture_with_chain() -> (AppState, String) {
         let state = AppState::new().expect("state");

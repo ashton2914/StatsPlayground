@@ -1,0 +1,246 @@
+.graph-builder-new {
+  --gbn-bg: #f7fafb;
+  --gbn-panel: #ffffff;
+  --gbn-panel-soft: #eef3f4;
+  --gbn-text: #25333d;
+  --gbn-muted: #63717a;
+  --gbn-placeholder: #7d898f;
+  --gbn-border: #cdd6da;
+  --gbn-hover: #e5ecef;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--gbn-text);
+  background:
+    linear-gradient(rgba(37, 54, 71, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 54, 71, 0.045) 1px, transparent 1px),
+    var(--gbn-bg);
+  background-size: 24px 24px;
+}
+
+.graph-builder-new-header {
+  min-height: 58px;
+  padding: 10px 14px 9px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--gbn-border);
+  background: color-mix(in srgb, var(--gbn-bg) 94%, #dbe6ec);
+}
+
+.graph-builder-new-header h1 {
+  margin: 0;
+  font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.graph-builder-new-source {
+  display: block;
+  margin-top: 2px;
+  color: var(--gbn-muted);
+  font-size: 12px;
+}
+
+.graph-builder-new-close {
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--gbn-muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.graph-builder-new-close:hover {
+  border-color: var(--gbn-border);
+  background: var(--gbn-hover);
+  color: var(--gbn-text);
+}
+
+.graph-builder-new-body {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(210px, 250px) minmax(0, 1fr);
+}
+
+.graph-builder-new-fields {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-right: 1px solid var(--gbn-border);
+  background: color-mix(in srgb, var(--gbn-panel) 96%, #edf3f5);
+}
+
+.graph-builder-new-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--gbn-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.graph-builder-new-fields select {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--gbn-border);
+  border-radius: 4px;
+  color: var(--gbn-text);
+  background: var(--gbn-panel);
+  font: inherit;
+  font-weight: 400;
+}
+
+.graph-builder-new-stage {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--gbn-placeholder);
+  font-size: 13px;
+  text-align: center;
+}
+
+.graph-builder-new-plot-placeholder {
+  width: min(78%, 760px);
+  aspect-ratio: 16 / 10;
+  border-left: 1px solid var(--gbn-placeholder);
+  border-bottom: 1px solid var(--gbn-placeholder);
+}
+
+.graph-new-chart {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) 22px 30px;
+  color: var(--gbn-text);
+  font-size: 12px;
+}
+
+.graph-new-canvas-host {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: white;
+}
+
+.graph-new-canvas-host canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.graph-new-camera-plot {
+  position: absolute;
+  overflow: hidden;
+  visibility: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+.graph-new-camera-plot:active { cursor: grabbing; }
+.graph-new-camera-preview { transform-origin: 0 0; opacity: 0; pointer-events: none; }
+.graph-new-canvas-host[data-provisional] > canvas { opacity: 0.25; }
+.graph-new-canvas-host[data-provisional] .graph-new-camera-plot {
+  background: repeating-linear-gradient(135deg, #edf1f2 0, #edf1f2 4px, #d8e0e3 4px, #d8e0e3 5px);
+}
+.graph-new-canvas-host[data-provisional] .graph-new-camera-preview { opacity: 1; will-change: transform; }
+.graph-new-reset {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--gbn-border);
+  border-radius: 4px;
+  background: var(--gbn-panel);
+  color: var(--gbn-text);
+  cursor: pointer;
+}
+.graph-new-reset:disabled { opacity: 0.4; cursor: default; }
+.graph-new-reset:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
+
+.graph-new-y-title {
+  grid-row: 2;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  align-self: center;
+  overflow: hidden;
+  max-height: 100%;
+}
+
+.graph-new-x-title { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-new-frame-status { grid-column: 1 / -1; color: var(--gbn-muted); align-self: center; font-size: 11px; }
+
+.graph-new-layers { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 0 0 8px; min-height: 28px; text-align: left; }
+.graph-new-mean-toggle, .graph-new-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.graph-new-mean-toggle input { margin: 0; accent-color: #dc2626; }
+.graph-new-point-swatch { width: 7px; height: 7px; border-radius: 50%; background-color: #1f6feb; }
+.graph-new-mean-swatch { width: 20px; height: 0; border-top: 2px solid #dc2626; }
+.graph-new-line-swatch { width: 20px; height: 0; border-top: 1px solid #1f6feb; }
+.graph-new-axis-ticks { position: absolute; inset: 0; pointer-events: none; }
+.graph-new-axis-ticks span { position: absolute; font-size: 11px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.graph-new-mean-reason { color: var(--gbn-muted); font-size: 11px; overflow-wrap: anywhere; }
+
+@media (max-width: 720px) {
+  .graph-builder-new-stage { padding: 8px; }
+}
+
+.graph-builder-new-status {
+  min-height: 28px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-top: 1px solid var(--gbn-border);
+  background: var(--gbn-panel);
+  color: var(--gbn-muted);
+  font-size: 11px;
+}
+
+.graph-builder-new-status > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b45f45;
+}
+
+.graph-builder-new-status > span.available {
+  background: #2f7d67;
+}
+
+.graph-builder-new-state {
+  align-items: center;
+  justify-content: center;
+  color: var(--gbn-placeholder);
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .graph-builder-new-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .graph-builder-new-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-right: 0;
+    border-bottom: 1px solid var(--gbn-border);
+  }
+}

@@ -56,6 +56,10 @@ pub struct OpenProjectResult {
     #[serde(default)]
     pub graph_builders: Vec<serde_json::Value>,
     #[serde(default)]
+    pub graph_builders_new: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub graph_new_folders: std::collections::HashMap<String, String>,
+    #[serde(default)]
     pub fit_y_by_x: Vec<serde_json::Value>,
     #[serde(default)]
     pub fit_models: Vec<serde_json::Value>,
@@ -113,6 +117,58 @@ pub struct OpenProjectResult {
     pub table_transform_bindings: Vec<TableTransformProjectBinding>,
     #[serde(default)]
     pub recovered_workflow_packets: Vec<WorkflowRunCommitPacket>,
+}
+
+#[cfg(test)]
+mod native_graph_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn native_graph_persistence_roundtrip_preserves_two_documents_and_legacy_graph() {
+        let state = AppState::new().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "native_graph_persistence_{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let service = ProjectService::new(&state);
+        service.create_project("Native Graphs", path.to_str().unwrap()).unwrap();
+        let documents = serde_json::json!([
+            {
+                "version": 1, "id": "native-1", "name": "Native Trend",
+                "datasetId": "missing-dataset", "xColumnId": "column-x", "yColumnId": "column-y",
+                "showMean": true, "xMode": "time", "rawMode": "pointsLine",
+                "camera": { "xMin": 1.0, "xMax": 3.0, "yMin": -2.0, "yMax": 4.0 }
+            },
+            {
+                "version": 1, "id": "native-2", "name": "Native Scatter",
+                "datasetId": "missing-dataset", "xColumnId": null, "yColumnId": null,
+                "showMean": false, "xMode": "auto", "rawMode": "scatter", "camera": null
+            }
+        ]);
+        let folders = serde_json::json!({"native-1": "Graphs", "native-2": "Graphs/Nested"});
+        let legacy = serde_json::json!([{"id": "legacy-1", "name": "Legacy Graph", "graphType": "line", "custom": {"retained": true}}]);
+        let request: SaveProjectRequest = serde_json::from_value(serde_json::json!({
+            "history": [{"kind": "edit"}], "snapshots": [], "reports": [], "tabulates": [],
+            "graphBuilders": legacy, "graphBuildersNew": documents, "graphNewFolders": folders,
+            "folders": ["Graphs", "Graphs/Nested"], "tableFolders": {}, "graphFolders": {},
+            "reportFolders": {}, "tabulateFolders": {}
+        })).unwrap();
+        service.save_project(request.clone(), None).unwrap();
+        let saved_bytes = std::fs::read(&path).unwrap();
+        let mut invalid_request = request;
+        invalid_request.graph_builders_new[0]["version"] = serde_json::json!(2);
+        assert!(service.save_project(invalid_request, None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), saved_bytes);
+        let reopened_state = AppState::new().unwrap();
+        let reopened = ProjectService::new(&reopened_state)
+            .open_project(path.to_str().unwrap(), None).unwrap();
+        let result = serde_json::to_value(reopened).unwrap();
+        assert_eq!(result["graphBuildersNew"], documents);
+        assert_eq!(result["graphNewFolders"], folders);
+        assert_eq!(result["graphBuilders"], legacy);
+        assert_eq!(result["history"], serde_json::json!([{"kind": "edit"}]));
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 const SPPRJ_VERSION: &str = "4.0.0";
@@ -415,6 +471,8 @@ impl<'a> ProjectService<'a> {
             history: bundle.history,
             snapshots: bundle.snapshots,
             graph_builders,
+            graph_builders_new: bundle.graph_builders_new,
+            graph_new_folders: bundle.manifest.graph_new_folders,
             fit_y_by_x: bundle.fit_y_by_x,
             fit_models: bundle.fit_models,
             reports: bundle.reports,
@@ -1763,6 +1821,8 @@ mod tests {
     ) -> SaveProjectRequest {
         SaveProjectRequest {
             file_path,
+            graph_builders_new: Vec::new(),
+            graph_new_folders: HashMap::new(),
             history,
             snapshots,
             graph_builders,
@@ -3809,6 +3869,8 @@ mod tests {
 
         let manifest = ProjectManifest {
             name: "Legacy Incoming".into(),
+            graph_builders_new: Vec::new(),
+            graph_new_folders: HashMap::new(),
             version: "3.0.0".into(),
             created_at: "after".into(),
             tables: vec![
@@ -4066,6 +4128,8 @@ mod tests {
         ));
         let manifest = ProjectManifest {
             name: "Incoming V4".into(),
+            graph_builders_new: Vec::new(),
+            graph_new_folders: HashMap::new(),
             version: "4.0.0".into(),
             created_at: "after".into(),
             tables: vec![TableEntryRef {
@@ -4281,6 +4345,8 @@ mod tests {
             std::env::temp_dir().join(format!("sp_future_format_{}.spprj", uuid::Uuid::new_v4()));
         let manifest = ProjectManifest {
             name: "Future Project".into(),
+            graph_builders_new: Vec::new(),
+            graph_new_folders: HashMap::new(),
             version: "5.0.0".into(),
             created_at: "after".into(),
             tables: vec![],

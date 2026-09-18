@@ -284,7 +284,7 @@ assertSourceIncludes(workspaceSource, "reportFolders", "Project save/open payloa
 assertSourceIncludes(workspaceSource, "fsSetReportFolder", "Drop handling must assign reports into folders");
 assertSourceIncludes(workspaceSource, "loadReportsFromProject((result.reports ?? [])", "Project open must load saved reports");
 assertSourceIncludes(workspaceSource, "resetReports()", "Project close/open reset must clear the report store");
-assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds)", "Prune must include live report ids");
+assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds,", "Prune must include live Analysis and report ids");
 
 assertSourceIncludes(workspaceSource, "reportUpdateQueueRef", "Workspace must queue report updates so document revisions are read at execution time");
 assertSourceIncludes(workspaceSource, 'type: "report.update"', "Workspace report edits must execute the shared report.update command");
@@ -298,7 +298,7 @@ const renameReportSource = sourceBetween("const report = useReportStore.getState
 assertSourceOrder(renameReportSource, ["await flushPendingReportHistory();", "renameReport(id, basename);", "history.renameReport"], "Report rename history order");
 const deleteReportSource = sourceBetween("const handleDeleteReport", "const handleDeleteAnalysis");
 assertSourceOrder(deleteReportSource, ["await flushPendingReportHistory();", "deleteReport(id);", "history.deleteReport"], "Report delete history order");
-assertSourceIncludes(sourceBetween("const handleSave = async () => {", "handleSaveRef.current = handleSave;"), "await flushPendingReportHistory();", "Saving must flush pending report updates/history before buildSaveProjectRequest reads live stores");
+assertSourceIncludes(sourceBetween("const handleSave = async (saveAs = false) => {", "handleSaveRef.current = handleSave;"), "await flushPendingReportHistory();", "Saving must flush pending report updates/history before buildSaveProjectRequest reads live stores");
 assertSourceIncludes(sourceBetween("const handleCloseProject", "const handleOpenAnother"), "await flushPendingReportHistory();", "Closing a project must flush pending report history before reset");
 assertSourceIncludes(sourceBetween("const handleOpenAnother", "const singleExportBaseName"), "await flushPendingReportHistory();", "Opening another project must flush pending report history before reset");
 

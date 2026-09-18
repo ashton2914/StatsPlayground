@@ -1,4 +1,26 @@
 {
+  "graphNew": {
+    "sourceUnavailable": "The source table is no longer available.",
+    "sourceChanged": "The source table changed. Close this session and open a new one.",
+    "fieldUnavailable": "{{field}} (unavailable)",
+    "fieldsUnavailable": "Saved fields are unavailable or incompatible: {{fields}}. The graph definition is preserved.",
+    "cameraUnavailable": "The saved view is incompatible with the current source domain. The saved view is preserved.",
+    "xInterpretation": "X interpretation",
+    "rawSeries": "Raw series",
+    "xMode": { "auto": "Auto", "numeric": "Numeric", "time": "Time", "duration": "Duration", "category": "Category" },
+    "rawMode": { "scatter": "Scatter", "line": "Line", "pointsLine": "Points + line" },
+    "rawLine": "Raw line",
+    "rawUnavailable": "Raw line unavailable: complete data is not retained.",
+    "xUnrepresentable": "This X field cannot be represented within the axis limits.",
+    "layers": "Plot layers",
+    "mean": "Mean",
+    "points": "Points",
+    "meanUnavailable": "Mean unavailable: complete data is not retained.",
+    "meanNeedsGroups": "Mean line requires at least two distinct X values.",
+    "textFieldType": "Text",
+    "timestampFieldType": "Timestamp",
+    "unsupportedField": "{{type}} - unsupported: numeric fields only"
+  },
   "capability": {
     "nestedSubgroupMissingLabels": {
       "v1": "Rows with missing subgroup labels remain in Overall results but do not contribute to Within moving ranges."
@@ -89,6 +111,7 @@
     "preferences": "Preferences",
     "openProject": "Open Project",
     "closeProject": "Close Project",
+    "saveAs": "Save As...",
     "table": "Table",
     "newTable": "New Data Table",
     "transform": "Transform...",
@@ -173,7 +196,11 @@
     "invalidName": {
       "empty": "Name cannot be empty.",
       "invalidChars": "Name contains invalid characters: / \\ : * ? \" < > |",
-      "edgeDots": "Name cannot start or end with a dot or space."
+      "edgeDots": "Name cannot start or end with a dot or space.",
+      "controlChars": "Remove control characters from the name.",
+      "reserved": "This name is reserved by Windows. Choose another name or rename the destination folder.",
+      "tooLong": "Shorten the graph name to at most 255 UTF-8 bytes, including any collision suffix.",
+      "pathTooLong": "Shorten the folder path to at most 4096 UTF-8 bytes, including nested folders."
     }
   },
   "dataLink": {
@@ -353,6 +380,7 @@
     "noLineage": "No workflow lineage is available yet."
   },
   "workspace": {
+    "discardUnsavedChanges": "Discard unsaved changes to this project?",
     "directory": "Directory",
     "datasourceLabel": "Source: {{name}}",
     "datasourceDeleted": "Source deleted",
