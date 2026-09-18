@@ -1,4 +1,9 @@
 import { useEffect, useState } from "react";
+import { TabulateReportEmbed } from "../src/components/report/TabulateReportEmbed";
+import type { TabulateReportEmbedRuntime } from "../src/components/report/TabulateReportEmbed";
+import type { TabulateSessionStatus } from "../src/types/tabulate";
+import { tabulateService } from "../src/services/tabulateService";
+import "../src/components/tabulate/tabulate.css";
 
 import { createDistributionItem } from "../src/components/distribution/distributionConfig.ts";
 import {
@@ -131,6 +136,64 @@ const defaultTabulate: TabulateItem = {
   createdAt: "2026-09-02T10:00:00.000Z",
 };
 
+export function TabulateReportLifecycleHarness({ late = false }: { late?: boolean }) {
+  const [visible, setVisible] = useState(true);
+  const [generation, setGeneration] = useState(11);
+  const [, refresh] = useState(0);
+  const [evidence] = useState(() => ({ prepared: [] as string[], released: [] as string[], windows: [] as number[][], legacy: 0 }));
+  const [pending] = useState(() => [] as Array<() => void>);
+  const [runtime] = useState(() => {
+    const statuses = new Map<string, TabulateSessionStatus>();
+    const changed = () => refresh((value) => value + 1);
+    return {
+      getColumns: async () => [["supplier", "VARCHAR"], ["phase", "VARCHAR"], ["strength", "DOUBLE"]],
+      getColumnDisplayProps: async () => [],
+      session: {
+        prepare: async (request) => {
+          const status: TabulateSessionStatus = { sessionId: `report-${evidence.prepared.length}`, fingerprint: `fp-${request.sourceGeneration}`,
+            sourceGeneration: request.sourceGeneration, state: "ready", rowMemberCount: 1000000,
+            columnMemberCount: 100000, logicalCellCount: 100000000000, measuredMemberIndexBytes: 1024 };
+          statuses.set(status.sessionId, status);
+          evidence.prepared.push(status.sessionId); changed();
+          if (late) await new Promise<void>((resolve) => pending.push(resolve));
+          return status;
+        },
+        getStatus: async (id) => statuses.get(id)!,
+        queryWindow: async (request) => {
+          evidence.windows.push([request.rowStart, request.columnStart, request.rowCount, request.columnCount]); changed();
+          return { ...request, fingerprint: statuses.get(request.sessionId)!.fingerprint,
+            rowMembers: Array.from({ length: request.rowCount }, (_, index) => [`Row ${request.rowStart + index}`]),
+            columnMembers: Array.from({ length: request.columnCount }, (_, index) => [`Column ${request.columnStart + index}`]),
+            rowMemberBefore: request.rowStart ? [`Row ${request.rowStart - 1}`] : null,
+            rowMemberAfter: request.rowStart + request.rowCount < 1000000 ? [`Row ${request.rowStart + request.rowCount}`] : null,
+            columnMemberBefore: request.columnStart ? [`Column ${request.columnStart - 1}`] : null,
+            columnMemberAfter: request.columnStart + request.columnCount < 100000 ? [`Column ${request.columnStart + request.columnCount}`] : null,
+            statistics: defaultTabulate.statistics, cells: [{ rowIndex: 0, columnIndex: 0, statisticIndex: 0, value: request.rowStart + request.columnStart + 4 }],
+            rowTotalsReady: false, columnTotalsReady: false, rowMemberCount: 1000000, columnMemberCount: 100000 };
+        },
+        queryTotals: async (request) => ({ ...request, fingerprint: statuses.get(request.sessionId)!.fingerprint, rowTotals: [], columnTotals: [], grandTotals: [] }),
+        cancelRequest: async () => {},
+        release: async (id) => { evidence.released.push(id); changed(); },
+      },
+    } satisfies TabulateReportEmbedRuntime;
+  });
+  useEffect(() => {
+    const readOnly = useProjectStore.getState().readOnly;
+    const run = tabulateService.run;
+    tabulateService.run = async () => { evidence.legacy += 1; throw new Error("report requested full result"); };
+    useProjectStore.setState({ readOnly: true });
+    return () => { useProjectStore.setState({ readOnly }); tabulateService.run = run; };
+  }, []);
+  return <div style={{ width: "100%" }}>
+    <button onClick={() => setVisible(false)}>Unmount Tabulate</button>
+    <button onClick={() => setGeneration((value) => value + 1)}>Change generation</button>
+    <button onClick={() => pending.splice(0).forEach((resolve) => resolve())}>Finish prepare</button>
+    <output data-testid="tabulate-report-evidence" hidden>{JSON.stringify(evidence)}</output>
+    {visible ? <TabulateReportEmbed runtime={runtime} source={{ kind: "tabulate", name: defaultTabulate.name,
+      item: { ...defaultTabulate, includeRowTotals: false, includeColumnTotals: false }, dataset: { ...defaultDataset, generation } }} /> : null}
+  </div>;
+}
+
 const distributionResponse = { name: "strength", type: "continuous" as const };
 const defaultDistribution: DistributionItem = createDistributionItem({
   id: "distribution-1",
@@ -193,17 +256,21 @@ const LIVE_EMBED_RUNTIME: ReportEmbedRuntime = {
   tabulate: {
     getColumns: async () => [["supplier", "VARCHAR"], ["phase", "VARCHAR"], ["strength", "DOUBLE"]],
     getColumnDisplayProps: async () => [],
-    run: async () => ({
-      rowMembers: [["A"]],
-      columnMembers: [["EV"]],
-      statistics: [{ id: "count", field: "strength", kind: "count" }],
-      cells: [4],
-      rowTotals: [4],
-      columnTotals: [4],
-      grandTotals: [4],
-      cellCount: 1,
-      limit: 10000,
-    }),
+    session: {
+      prepare: async (request) => ({ sessionId: "live-report", fingerprint: "live-report-fp", sourceGeneration: request.sourceGeneration,
+        state: "ready", rowMemberCount: 1, columnMemberCount: 1, logicalCellCount: 1, measuredMemberIndexBytes: 128 }),
+      getStatus: async () => { throw new Error("ready session must not poll"); },
+      queryWindow: async (request) => ({ ...request, fingerprint: "live-report-fp", rowMembers: [["A"]], columnMembers: [["EV"]],
+        rowMemberBefore: null, rowMemberAfter: null, columnMemberBefore: null, columnMemberAfter: null,
+        statistics: defaultTabulate.statistics, cells: [{ rowIndex: 0, columnIndex: 0, statisticIndex: 0, value: 4 }],
+        rowMemberCount: 1, columnMemberCount: 1, rowTotalsReady: false, columnTotalsReady: false }),
+      queryTotals: async (request) => ({ ...request, fingerprint: "live-report-fp",
+        rowTotals: request.totals.kind === "rows" ? [{ memberIndex: 0, statisticIndex: 0, value: 4 }] : [],
+        columnTotals: request.totals.kind === "columns" ? [{ memberIndex: 0, statisticIndex: 0, value: 4 }] : [],
+        grandTotals: request.totals.kind === "grand" ? [4] : [] }),
+      cancelRequest: async () => {},
+      release: async () => {},
+    },
   },
   distribution: {
     getDatasetGeneration: async () => 13,

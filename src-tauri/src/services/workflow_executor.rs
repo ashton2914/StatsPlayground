@@ -12,7 +12,7 @@ use crate::models::fit_model::FitModelRequest;
 use crate::models::fit_y_by_x::FitYByXRequest;
 use crate::models::hypothesis_test::HypothesisTestRequest;
 use crate::models::table::DatasetMeta;
-use crate::models::tabulate::TabulateRequest;
+use crate::models::tabulate::TabulateSessionRequest;
 use crate::services::save_coordinator::SaveCoordinator;
 use crate::services::table_transform_domain::TableTransformDefinition;
 use crate::services::table_transform_service::{
@@ -297,6 +297,7 @@ impl<'a> WorkflowExecutor<'a> {
                             stable_id,
                             &declaration.name,
                             &frozen_input.table_document_id,
+                            frozen_input.generation,
                             operation.configuration.as_ref(),
                             &started_at,
                         )?;
@@ -992,20 +993,21 @@ fn tabulate_document_and_request(
     id: &str,
     name: &str,
     source_table_id: &str,
+    source_generation: u64,
     configuration: Option<&Value>,
     created_at: &str,
-) -> Result<(Value, TabulateRequest), AppError> {
+) -> Result<(Value, TabulateSessionRequest), AppError> {
     let configuration = configuration.cloned().ok_or_else(|| {
         AppError::InvalidParam("Workflow Tabulate configuration is required".to_string())
     })?;
-    let request = serde_json::from_value::<TabulateRequest>(json!({
+    let request = serde_json::from_value::<TabulateSessionRequest>(json!({
         "datasetId": source_table_id,
+        "sourceGeneration": source_generation,
         "rowFields": configuration.get("rowFields"),
         "columnFields": configuration.get("columnFields"),
         "statistics": configuration.get("statistics"),
         "includeRowTotals": configuration.get("includeRowTotals"),
-        "includeColumnTotals": configuration.get("includeColumnTotals"),
-        "maxResultCells": crate::services::tabulate_service::MAX_RESULT_CELLS
+        "includeColumnTotals": configuration.get("includeColumnTotals")
     }))
     .map_err(|error| {
         AppError::InvalidParam(format!("invalid Workflow Tabulate request: {error}"))

@@ -10,6 +10,7 @@ import type { TabulateTileRequest, TabulateWindowRange } from "./tabulateViewpor
 
 type Phase = "idle" | "preparing" | "loading" | "ready" | "cancelled" | "error";
 type Totals = Partial<Record<TabulateTotalsKind["kind"], TabulateTotalsResult>>;
+export type TabulateSessionRuntime = Pick<typeof tabulateService, "prepare" | "getStatus" | "queryWindow" | "queryTotals" | "cancelRequest" | "release">;
 interface Snapshot {
   key: string;
   windowKey: string;
@@ -21,6 +22,7 @@ interface Snapshot {
   errorKey: string | null;
 }
 interface Runtime {
+  service: TabulateSessionRuntime;
   epoch: number;
   disposed: boolean;
   cancelled: boolean;
@@ -41,7 +43,7 @@ function cancelTotals(runtime: Runtime): void {
   for (const [requestId, active] of runtime.totalsIds) {
     if (active.cancelling) continue;
     active.cancelling = true;
-    void tabulateService.cancelRequest(requestId).then(() => {
+    void runtime.service.cancelRequest(requestId).then(() => {
       runtime.totalsIds.delete(requestId);
       runtime.pumpTotals();
     }).catch(() => {});
@@ -64,6 +66,7 @@ export function useTabulateSession(
   definition: TabulateItem | null,
   datasetGeneration: number | undefined,
   presentation: { visibleRowDepth: number; visibleColumnDepth: number },
+  service: TabulateSessionRuntime = tabulateService,
 ) {
   const request: TabulateSessionRequest | null = definition && definition.statistics.length && datasetGeneration !== undefined ? {
     datasetId: definition.sourceDatasetId, sourceGeneration: datasetGeneration,
@@ -96,7 +99,7 @@ export function useTabulateSession(
     const release = async () => {
       if (ownedSession && !released) {
         released = true;
-        await tabulateService.release(ownedSession).catch(() => {});
+        await service.release(ownedSession).catch(() => {});
       }
     };
     const current = () => runtimeRef.current === runtime && epochRef.current === epoch && !runtime.disposed && !runtime.cancelled;
@@ -108,6 +111,7 @@ export function useTabulateSession(
       setSnapshot((value) => ({ ...value, phase: errorKey === "cancelled" ? "cancelled" : "error", errorKey, loadingTotals: false }));
     };
     const runtime: Runtime = {
+      service,
       epoch, disposed: false, cancelled: false, failed: false, cache: new TabulateTileCache(), desired: null, totalsEpoch: 0, totalsIds: new Map(), pendingTotals: [],
       pumpTotals: () => {
         while (current() && runtime.totalsIds.size < 3 && runtime.pendingTotals.length) runtime.pendingTotals.shift()?.();
@@ -115,8 +119,8 @@ export function useTabulateSession(
       cancelPreparation: () => { clearTimeout(timer); clearTimeout(pollTimer); void release(); },
       fail,
       scheduler: new TabulateTileScheduler({
-        start: tabulateService.queryWindow,
-        cancelRequest: tabulateService.cancelRequest,
+        start: service.queryWindow,
+        cancelRequest: service.cancelRequest,
         onResult: (tile, tileRequest, priority) => {
           if (!current()) return;
           runtime.cache.putTile(tileRequest, tile);
@@ -147,7 +151,7 @@ export function useTabulateSession(
       if (status.sourceGeneration !== request.sourceGeneration) { fail("tabulate_stale_source"); return; }
       if (status.state === "preparing") {
         pollTimer = setTimeout(() => {
-          void tabulateService.getStatus(status.sessionId).then(acceptStatus).catch(fail);
+          void service.getStatus(status.sessionId).then(acceptStatus).catch(fail);
         }, 250);
       } else if (status.state === "ready") {
         runtime.cache.setIdentity({ ...status, statisticCount: request.statistics.length });
@@ -157,7 +161,7 @@ export function useTabulateSession(
     const timer = setTimeout(() => {
       preparation = releaseBarrier.current.then(async () => {
         if (!current()) return;
-        try { await acceptStatus(await tabulateService.prepare(request)); } catch (reason) { fail(reason); }
+        try { await acceptStatus(await service.prepare(request)); } catch (reason) { fail(reason); }
       });
     }, 250);
     return () => {
@@ -170,7 +174,7 @@ export function useTabulateSession(
       const immediateRelease = release();
       releaseBarrier.current = Promise.all([preparation, immediateRelease]).then(release);
     };
-  }, [key, attempt]);
+  }, [key, attempt, service]);
 
   const status = snapshot.key === key ? snapshot.status : null;
   const range: TabulateWindowRange | null = status ? calculateTabulateWindow({
@@ -211,7 +215,7 @@ export function useTabulateSession(
       };
       runtime.pendingTotals.push(() => {
         runtime.totalsIds.set(totalsRequest.requestId, { cancelling: false });
-        void (cachedTotals ? Promise.resolve(cachedTotals) : tabulateService.queryTotals(totalsRequest)).then(accept).catch((reason: unknown) => {
+        void (cachedTotals ? Promise.resolve(cachedTotals) : runtime.service.queryTotals(totalsRequest)).then(accept).catch((reason: unknown) => {
           if (current()) runtime.fail(reason);
         }).finally(() => {
           runtime.totalsIds.delete(totalsRequest.requestId);

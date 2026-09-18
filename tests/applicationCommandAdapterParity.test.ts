@@ -190,6 +190,12 @@ async function projectThroughMcpBridge(command: Command): Promise<Command> {
 }
 
 const fixture = loadFixture();
+for (const name of ["tabulate.run", "tabulate.exportTable"]) {
+  const entry = findProjectionCase(fixture, name);
+  assert.equal("maxResultCells" in (entry.expectedEnvelope.input.request as object), false);
+  const command = entry.expectedEnvelope as Command;
+  assert.deepEqual(await projectThroughMcpBridge(command), command);
+}
 const saveCase = findProjectionCase(fixture, "project.save");
 const snapshotCase = findProjectionCase(fixture, "snapshot.create");
 const csvCase = findProjectionCase(fixture, "table.exportCsv");

@@ -158,7 +158,7 @@ export interface TabulateCreateResult {
 
 export interface TabulateRunInput {
   tabulateId: string;
-  request: import("@/types/tabulate").TabulateRequest;
+  request: Omit<import("@/types/tabulate").TabulateSessionRequest, "sourceGeneration">;
 }
 
 export interface TabulateRunResult {
@@ -166,13 +166,14 @@ export interface TabulateRunResult {
   requestFingerprint: string;
   sourceGeneration: number;
   completedAt: string;
-  result: import("@/types/tabulate").TabulateResult;
+  session: import("@/types/tabulate").TabulateSessionStatus;
+  leaseReleased: boolean;
   cacheValid: boolean;
 }
 
 export interface TabulateExportTableInput {
   tabulateId: string;
-  request: Omit<import("@/types/tabulate").TabulateRequest, "maxResultCells">;
+  request: TabulateRunInput["request"];
   tableName: string;
   session?: Pick<import("@/types/tabulate").TabulateSessionStatus, "sessionId" | "fingerprint" | "sourceGeneration">;
 }

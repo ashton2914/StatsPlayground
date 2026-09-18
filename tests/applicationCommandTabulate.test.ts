@@ -63,14 +63,13 @@ function tabulateResult(value: number): TabulateResult {
   };
 }
 
-const request: TabulateRequest = {
+const request: Omit<TabulateRequest, "maxResultCells"> = {
   datasetId: "ds-1",
   rowFields: ["region"],
   columnFields: ["channel"],
   statistics: [{ id: "s-1", field: "value", kind: "mean" }],
   includeRowTotals: true,
   includeColumnTotals: true,
-  maxResultCells: 10000,
 };
 
 function readySession(generation = 8): TabulateSessionStatus {
@@ -79,13 +78,98 @@ function readySession(generation = 8): TabulateSessionStatus {
     measuredMemberIndexBytes: 1000 };
 }
 
+await test("run returns a bounded session summary and releases its automation lease", async () => {
+  const released: string[] = [];
+  const handlers = createTabulateCommandHandlers({
+    listTabulates: () => [tabulateItem("tab-1", "ds-1")],
+    getDatasetGeneration: async () => 8,
+    prepareSession: async (definition) => {
+      assert.equal("maxResultCells" in definition, false);
+      assert.equal(definition.sourceGeneration, 8);
+      return readySession();
+    },
+    releaseSession: async (sessionId) => { released.push(sessionId); },
+  });
+  const result = await handlers.run({ tabulateId: "tab-1", request });
+  assert.equal(result.data.session.sessionId, "session-1");
+  assert.equal(result.data.session.state, "ready");
+  assert.equal(result.data.session.fingerprint, "backend-fingerprint");
+  assert.equal(result.data.sourceGeneration, 8);
+  assert.equal(result.data.session.logicalCellCount, 10000000000);
+  assert.equal(result.data.leaseReleased, true);
+  assert.equal("result" in result.data, false);
+  assert.equal(Object.values(result.data).some(Array.isArray), false);
+  assert.equal(Object.values(result.data.session).some(Array.isArray), false);
+  assert.deepEqual(released, ["session-1"]);
+});
+
+for (const stage of ["beforePrepare", "afterPrepare", "poll"] as const) {
+  await test(`run cancellation at ${stage} releases only its acquired lease`, async () => {
+    const controller = new AbortController();
+    const released: string[] = [];
+    let prepares = 0;
+    const handlers = createTabulateCommandHandlers({
+      listTabulates: () => [tabulateItem("tab-1", "ds-1")],
+      getDatasetGeneration: async () => 8,
+      prepareSession: async () => {
+        prepares += 1;
+        if (stage === "afterPrepare") controller.abort();
+        return { ...readySession(), state: stage === "poll" ? "preparing" : "ready" };
+      },
+      getSessionStatus: async () => { controller.abort(); return readySession(); },
+      releaseSession: async (id) => { released.push(id); },
+    });
+    if (stage === "beforePrepare") controller.abort();
+    await assert.rejects(handlers.run({ tabulateId: "tab-1", request }, { signal: controller.signal }),
+      (error: unknown) => error instanceof CommandExecutionError && error.code === "cancelled");
+    assert.equal(prepares, stage === "beforePrepare" ? 0 : 1);
+    assert.deepEqual(released, stage === "beforePrepare" ? [] : ["session-1"]);
+  });
+}
+
+for (const state of ["failed", "cancelled"] as const) {
+  await test(`run ${state} preparation releases its lease`, async () => {
+    const released: string[] = [];
+    const handlers = createTabulateCommandHandlers({
+      listTabulates: () => [tabulateItem("tab-1", "ds-1")], getDatasetGeneration: async () => 8,
+      prepareSession: async () => ({ ...readySession(), state, failureCode: `tabulate_${state}` }),
+      releaseSession: async (id) => { released.push(id); },
+    });
+    await assert.rejects(handlers.run({ tabulateId: "tab-1", request }),
+      (error: unknown) => error instanceof CommandExecutionError && error.code === (state === "cancelled" ? "cancelled" : "execution_failed"));
+    assert.deepEqual(released, ["session-1"]);
+  });
+}
+
+await test("run rejects changed polling identity and releases the original lease", async () => {
+  const released: string[] = [];
+  const handlers = createTabulateCommandHandlers({
+    listTabulates: () => [tabulateItem("tab-1", "ds-1")], getDatasetGeneration: async () => 8,
+    prepareSession: async () => ({ ...readySession(), state: "preparing" }),
+    getSessionStatus: async () => ({ ...readySession(), sessionId: "other-session" }),
+    releaseSession: async (id) => { released.push(id); },
+  });
+  await assert.rejects(handlers.run({ tabulateId: "tab-1", request }), /identity changed/);
+  assert.deepEqual(released, ["session-1"]);
+});
+
+await test("run reports cleanup failure without claiming the lease was released", async () => {
+  const handlers = createTabulateCommandHandlers({
+    listTabulates: () => [tabulateItem("tab-1", "ds-1")], getDatasetGeneration: async () => 8,
+    prepareSession: async () => readySession(),
+    releaseSession: async () => { throw new Error("cleanup unavailable"); },
+  });
+  const result = await handlers.run({ tabulateId: "tab-1", request });
+  assert.equal(result.data.leaseReleased, false);
+  assert.equal(result.warnings[0]?.code, "tabulate_release_failed");
+});
+
 await test("export materializes metadata directly after commit and releases its lease", async () => {
   const events: string[] = [];
   const handlers = createTabulateCommandHandlers({
     listTabulates: () => [tabulateItem("tab-1", "ds-1")],
     listDatasets: () => [dataset("ds-1", "Sales", 8)],
     getDatasetGeneration: async () => 8,
-    runTabulate: async () => { throw new Error("legacy run must never be called by export"); },
     prepareSession: async (definition) => {
       assert.equal("maxResultCells" in definition, false);
       assert.equal(definition.sourceGeneration, 8);
@@ -118,10 +202,12 @@ await test("export materializes metadata directly after commit and releases its 
 await test("legacy run fingerprint includes statistic identity", () => {
   const requestA: TabulateRequest = {
     ...request,
+    maxResultCells: 10000,
     statistics: [{ id: "s-1", field: "value", kind: "mean" }],
   };
   const requestB: TabulateRequest = {
     ...request,
+    maxResultCells: 10000,
     statistics: [{ id: "s-2", field: "value", kind: "mean" }],
   };
 
@@ -132,7 +218,7 @@ await test("legacy run fingerprint includes statistic identity", () => {
   );
 });
 
-await test("legacy run cancellation preserves cache", async () => {
+await test("run cancellation after generation read releases its lease", async () => {
   const datasets = [dataset("ds-1", "Sales", 3)];
   const tabulates = [tabulateItem("tab-1", "ds-1")];
   const cache = new Map<string, {
@@ -142,7 +228,7 @@ await test("legacy run cancellation preserves cache", async () => {
     completedAt: string;
   }>();
   let runCalls = 0;
-  let setLatestResultCalls = 0;
+  const released: string[] = [];
   const postRunGenerationGate = deferred<number>();
   const postRunGenerationReached = deferred<void>();
   let generationReads = 0;
@@ -182,10 +268,11 @@ await test("legacy run cancellation preserves cache", async () => {
       recordAction: () => {},
       activateTabulate: () => {},
       isProjectReadOnly: () => false,
-      runTabulate: async () => {
+      prepareSession: async () => {
         runCalls += 1;
-        return tabulateResult(7);
+        return readySession(3);
       },
+      releaseSession: async (id) => { released.push(id); },
       getDatasetGeneration: async () => {
         generationReads += 1;
         if (generationReads === 1) {
@@ -194,11 +281,6 @@ await test("legacy run cancellation preserves cache", async () => {
         postRunGenerationReached.resolve(undefined);
         return postRunGenerationGate.promise;
       },
-      setLatestResult: (tabulateId, latest) => {
-        setLatestResultCalls += 1;
-        cache.set(tabulateId, latest);
-      },
-      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
     },
   });
 
@@ -225,7 +307,7 @@ await test("legacy run cancellation preserves cache", async () => {
   );
 
   assert.equal(runCalls, 1);
-  assert.equal(setLatestResultCalls, 0, "cancellation after run must not mutate latest runtime cache");
+  assert.deepEqual(released, ["session-1"]);
   assert.equal(cache.size, 0, "cancellation after run must leave latest runtime cache unchanged");
 });
 
@@ -283,10 +365,6 @@ await test("export rejects changing source before commit and leaves revision unc
       },
       releaseSession: async () => {},
       getDatasetGeneration: async () => generations.shift() ?? 9,
-      setLatestResult: (tabulateId, latest) => {
-        cache.set(tabulateId, latest);
-      },
-      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
       materializeTable: async () => {
         createTableCalls += 1;
         beginCommitCalls += 1;
@@ -384,10 +462,7 @@ await test("create retains dirty history and revision semantics", async () => {
         history.push(entry);
       },
       activateTabulate: () => {},
-      runTabulate: async () => tabulateResult(1),
       getDatasetGeneration: async () => 2,
-      setLatestResult: () => {},
-      getLatestResult: () => null,
     },
   });
 
@@ -413,7 +488,7 @@ await test("create retains dirty history and revision semantics", async () => {
   assert.equal(history.length, 1);
 });
 
-await test("legacy run retains its generation fence", async () => {
+await test("run retains its generation fence and source-change warnings", async () => {
   const datasets = [dataset("ds-1", "Sales", 3)];
   const tabulates = [tabulateItem("tab-1", "ds-1")];
   const cache = new Map<string, {
@@ -459,15 +534,12 @@ await test("legacy run retains its generation fence", async () => {
       markDirty: () => {},
       recordAction: () => {},
       activateTabulate: () => {},
-      runTabulate: async () => {
+      prepareSession: async (definition) => {
         runCalls += 1;
-        return tabulateResult(runCalls);
+        return readySession(definition.sourceGeneration);
       },
+      releaseSession: async () => {},
       getDatasetGeneration: async () => generationReadings.shift() ?? 5,
-      setLatestResult: (tabulateId, latest) => {
-        cache.set(tabulateId, latest);
-      },
-      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
     },
   });
 
@@ -485,9 +557,10 @@ await test("legacy run retains its generation fence", async () => {
   assert.equal(firstRun.changed, false);
   assert.equal(firstRun.projectRevision, 7);
   assert.equal(runCalls, 1);
-  assert.equal(cache.get("tab-1")?.sourceGeneration, 3);
+  assert.equal(firstRun.data.session.sourceGeneration, 3);
+  assert.equal(firstRun.data.cacheValid, true);
 
-  await runtime.execute(
+  const changedRun = await runtime.execute(
     {
       type: "tabulate.run",
       input: {
@@ -499,7 +572,10 @@ await test("legacy run retains its generation fence", async () => {
   );
 
   assert.equal(runCalls, 2);
-  assert.equal(cache.get("tab-1")?.sourceGeneration, 4, "cache must keep request start generation so source changes are stale");
+  assert.equal(changedRun.data.session.sourceGeneration, 4);
+  assert.equal(changedRun.data.cacheValid, false);
+  assert.equal(changedRun.warnings[0]?.code, "tabulate_run_source_changed");
+  assert.equal(cache.size, 0);
 });
 
 await test("export retains canonical table coordinator and sqlType contract", async () => {
@@ -589,7 +665,6 @@ await test("export retains canonical table coordinator and sqlType contract", as
       markDirty: () => {},
       recordAction: () => {},
       activateTabulate: () => {},
-      runTabulate: async () => { throw new Error("Export must not run the legacy result API"); },
       prepareSession: async () => { runCalls += 1; return readySession(); },
       releaseSession: async () => {},
       materializeTable: async (input) => {
@@ -599,10 +674,6 @@ await test("export retains canonical table coordinator and sqlType contract", as
         return created;
       },
       getDatasetGeneration: async () => datasets[0]?.generation ?? 1,
-      setLatestResult: (tabulateId, latest) => {
-        cache.set(tabulateId, latest);
-      },
-      getLatestResult: (tabulateId) => cache.get(tabulateId) ?? null,
     },
   });
 

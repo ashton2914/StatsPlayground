@@ -22,7 +22,7 @@ import { useProjectStore } from "@/stores/useProjectStore";
 import { useTabulateStore, type TabulateLatestResult } from "@/stores/useTabulateStore";
 import { useWorkspaceSelectionStore } from "@/stores/useWorkspaceSelectionStore";
 import { allocateProjectBasename, validateProjectBasename } from "@/utils/projectFileNaming";
-import type { TabulateItem, TabulateRequest, TabulateResult, TabulateSessionRequest } from "@/types/tabulate";
+import type { TabulateItem, TabulateRequest, TabulateSessionRequest } from "@/types/tabulate";
 
 const TABULATE_EXTENSION = ".spf";
 
@@ -72,10 +72,7 @@ export interface TabulateCommandDependencies {
   recordAction: (description: string) => void;
   historyCreateMessage: (name: string, sourceName: string) => string;
   isProjectReadOnly: () => boolean;
-  runTabulate: (request: TabulateRequest) => Promise<TabulateResult>;
   getDatasetGeneration: (datasetId: string) => Promise<number>;
-  setLatestResult: (tabulateId: string, latest: TabulateLatestResult) => void;
-  getLatestResult: (tabulateId: string) => TabulateLatestResult | null;
   prepareSession: typeof tabulateService.prepare;
   getSessionStatus: typeof tabulateService.getStatus;
   releaseSession: typeof tabulateService.release;
@@ -115,42 +112,59 @@ async function executeTabulateRun(
     throw new CommandExecutionError("invalid_input", "Tabulate request dataset does not match source table");
   }
 
-  const requestFingerprint = fingerprintTabulateRequest(input.request);
   const sourceGenerationBefore = await dependencies.getDatasetGeneration(input.request.datasetId);
-
   throwIfCommandCancelled(controls?.signal);
-
-  const result = await dependencies.runTabulate(input.request);
-
-  throwIfCommandCancelled(controls?.signal);
-
-  const sourceGenerationAfter = await dependencies.getDatasetGeneration(input.request.datasetId);
-  throwIfCommandCancelled(controls?.signal);
-  const completedAt = dependencies.createNowIso();
-
-  dependencies.setLatestResult(input.tabulateId, {
-    requestFingerprint,
-    sourceGeneration: sourceGenerationBefore,
-    result,
-    completedAt,
+  const prepared = await dependencies.prepareSession({
+    datasetId: input.request.datasetId, sourceGeneration: sourceGenerationBefore,
+    rowFields: [...input.request.rowFields], columnFields: [...input.request.columnFields],
+    statistics: input.request.statistics.map((statistic) => ({ ...statistic })),
+    includeRowTotals: input.request.includeRowTotals, includeColumnTotals: input.request.includeColumnTotals,
   });
-
   const warnings: CommandWarning[] = [];
-  if (sourceGenerationAfter !== sourceGenerationBefore) {
-    warnings.push(TABULATE_RUN_SOURCE_CHANGED_WARNING);
+  let data: TabulateRunResult | undefined;
+  try {
+    let session = prepared;
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      throwIfCommandCancelled(controls?.signal);
+      if (session.sessionId !== prepared.sessionId || session.fingerprint !== prepared.fingerprint
+        || session.sourceGeneration !== sourceGenerationBefore) {
+        throw new CommandExecutionError("execution_failed", "Tabulate session identity changed", true);
+      }
+      if (session.state !== "preparing") break;
+      if (Date.now() >= deadline) {
+        throw new CommandExecutionError("execution_failed", "Tabulate preparation timed out", true);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      throwIfCommandCancelled(controls?.signal);
+      session = await dependencies.getSessionStatus(prepared.sessionId);
+    }
+    if (session.state !== "ready") {
+      throw new CommandExecutionError(session.state === "cancelled" ? "cancelled" : "execution_failed",
+        session.failureCode ?? "Tabulate session unavailable", true);
+    }
+    const sourceGenerationAfter = await dependencies.getDatasetGeneration(input.request.datasetId);
+    throwIfCommandCancelled(controls?.signal);
+    if (sourceGenerationAfter !== sourceGenerationBefore) warnings.push(TABULATE_RUN_SOURCE_CHANGED_WARNING);
+    data = {
+      tabulateId: input.tabulateId, requestFingerprint: session.fingerprint,
+      sourceGeneration: sourceGenerationBefore, completedAt: dependencies.createNowIso(),
+      session: {
+        sessionId: session.sessionId, fingerprint: session.fingerprint, sourceGeneration: session.sourceGeneration,
+        state: session.state, rowMemberCount: session.rowMemberCount, columnMemberCount: session.columnMemberCount,
+        logicalCellCount: session.logicalCellCount, measuredMemberIndexBytes: session.measuredMemberIndexBytes,
+      },
+      cacheValid: sourceGenerationAfter === sourceGenerationBefore, leaseReleased: false,
+    };
+    return { data, warnings };
+  } finally {
+    try {
+      await dependencies.releaseSession(prepared.sessionId);
+      if (data) data.leaseReleased = true;
+    } catch {
+      warnings.push({ code: "tabulate_release_failed", message: "Tabulate session cleanup failed" });
+    }
   }
-
-  return {
-    data: {
-      tabulateId: input.tabulateId,
-      requestFingerprint,
-      sourceGeneration: sourceGenerationBefore,
-      completedAt,
-      result,
-      cacheValid: sourceGenerationAfter === sourceGenerationBefore,
-    },
-    warnings,
-  };
 }
 
 export function createTabulateCommandHandlers(
@@ -181,10 +195,7 @@ export function createTabulateCommandHandlers(
     recordAction: (description) => useHistoryStore.getState().record(description),
     historyCreateMessage: (name, sourceName) => i18n.t("history.newTabulate", { name, source: sourceName }),
     isProjectReadOnly: () => useProjectStore.getState().readOnly,
-    runTabulate: tabulateService.run,
     getDatasetGeneration: dataService.getDatasetGeneration,
-    setLatestResult: (tabulateId, latest) => useTabulateStore.getState().setLatestResult(tabulateId, latest),
-    getLatestResult: (tabulateId) => useTabulateStore.getState().getLatestResult(tabulateId),
     prepareSession: tabulateService.prepare,
     getSessionStatus: tabulateService.getStatus,
     releaseSession: tabulateService.release,
