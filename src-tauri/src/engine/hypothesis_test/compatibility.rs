@@ -54,18 +54,17 @@ pub fn evaluate_method_compatibility(
             }
             _ => Some(CompatibilityReason::RequiresIndependentTwo),
         },
-        HypothesisTestMethodId::PairedT | HypothesisTestMethodId::WilcoxonSignedRank => {
-            match study {
-                NormalizedStudy::PairedTwo(paired) => {
-                    if matches!(method, HypothesisTestMethodId::PairedT) {
-                        paired_t_reason(&paired.pairs)
-                    } else {
-                        None
-                    }
+        HypothesisTestMethodId::PairedT | HypothesisTestMethodId::WilcoxonSignedRank => match study
+        {
+            NormalizedStudy::PairedTwo(paired) => {
+                if matches!(method, HypothesisTestMethodId::PairedT) {
+                    paired_t_reason(&paired.pairs)
+                } else {
+                    None
                 }
-                _ => Some(CompatibilityReason::RequiresPairedTwo),
             }
-        }
+            _ => Some(CompatibilityReason::RequiresPairedTwo),
+        },
         HypothesisTestMethodId::OneWayAnova
         | HypothesisTestMethodId::WelchAnova
         | HypothesisTestMethodId::KruskalWallis => match study {
@@ -80,30 +79,51 @@ pub fn evaluate_method_compatibility(
         }
     };
     match reason {
-        None => MethodCompatibility { state: CompatibilityState::Compatible, reasons: vec![] },
+        None => MethodCompatibility {
+            state: CompatibilityState::Compatible,
+            reasons: vec![],
+        },
         Some(reason) => incompatible(reason),
     }
 }
 
 fn incompatible(reason: CompatibilityReason) -> MethodCompatibility {
-    MethodCompatibility { state: CompatibilityState::Incompatible, reasons: vec![reason] }
+    MethodCompatibility {
+        state: CompatibilityState::Incompatible,
+        reasons: vec![reason],
+    }
 }
 
 fn multi_group_reason(
     groups: &crate::engine::hypothesis_test::normalize::IndependentGroups,
     method: &HypothesisTestMethodId,
 ) -> Option<CompatibilityReason> {
-    let minimum = if matches!(method, HypothesisTestMethodId::KruskalWallis) { 1 } else { 2 };
-    if groups.groups.len() < 3 || groups.groups.iter().any(|group| group.values.len() < minimum) {
+    let minimum = if matches!(method, HypothesisTestMethodId::KruskalWallis) {
+        1
+    } else {
+        2
+    };
+    if groups.groups.len() < 3
+        || groups
+            .groups
+            .iter()
+            .any(|group| group.values.len() < minimum)
+    {
         return Some(CompatibilityReason::InsufficientObservations);
     }
     if matches!(method, HypothesisTestMethodId::KruskalWallis) {
         let first = groups.groups.first()?.values.first()?;
-        return groups.groups.iter().flat_map(|group| &group.values)
+        return groups
+            .groups
+            .iter()
+            .flat_map(|group| &group.values)
             .all(|value| value == first)
             .then_some(CompatibilityReason::AllRanksTied);
     }
-    let variances = groups.groups.iter().map(|group| variance(&group.values))
+    let variances = groups
+        .groups
+        .iter()
+        .map(|group| variance(&group.values))
         .collect::<Option<Vec<_>>>();
     let Some(variances) = variances else {
         return Some(CompatibilityReason::InsufficientObservations);
@@ -111,9 +131,13 @@ fn multi_group_reason(
     let estimable = if matches!(method, HypothesisTestMethodId::WelchAnova) {
         variances.iter().all(|variance| *variance > 0.0)
     } else {
-        groups.groups.iter().zip(variances)
+        groups
+            .groups
+            .iter()
+            .zip(variances)
             .map(|(group, variance)| (group.values.len() - 1) as f64 * variance)
-            .sum::<f64>() > 0.0
+            .sum::<f64>()
+            > 0.0
     };
     (!estimable).then_some(CompatibilityReason::ZeroVariance)
 }
@@ -122,28 +146,53 @@ fn block_reason(
     study: &crate::engine::hypothesis_test::normalize::CompleteBlocks,
     method: &HypothesisTestMethodId,
 ) -> Option<CompatibilityReason> {
-    if study.conditions.len() < 3 || study.blocks.len() < 2
-        || study.blocks.iter().any(|block| block.len() != study.conditions.len())
+    if study.conditions.len() < 3
+        || study.blocks.len() < 2
+        || study
+            .blocks
+            .iter()
+            .any(|block| block.len() != study.conditions.len())
     {
         return Some(CompatibilityReason::InsufficientObservations);
     }
     if matches!(method, HypothesisTestMethodId::Friedman) {
-        return study.blocks.iter().all(|block| {
-            block.iter().skip(1).all(|value| value == &block[0])
-        }).then_some(CompatibilityReason::AllRanksTied);
+        return study
+            .blocks
+            .iter()
+            .all(|block| block.iter().skip(1).all(|value| value == &block[0]))
+            .then_some(CompatibilityReason::AllRanksTied);
     }
     let block_count = study.blocks.len();
     let condition_count = study.conditions.len();
-    let grand_mean = study.blocks.iter().flatten().sum::<f64>() / (block_count * condition_count) as f64;
-    let condition_ss = block_count as f64 * (0..condition_count).map(|condition| {
-        let mean = study.blocks.iter().map(|block| block[condition]).sum::<f64>() / block_count as f64;
-        (mean - grand_mean).powi(2)
-    }).sum::<f64>();
-    let block_ss = condition_count as f64 * study.blocks.iter().map(|block| {
-        let mean = block.iter().sum::<f64>() / condition_count as f64;
-        (mean - grand_mean).powi(2)
-    }).sum::<f64>();
-    let total_ss = study.blocks.iter().flatten().map(|value| (value - grand_mean).powi(2)).sum::<f64>();
+    let grand_mean =
+        study.blocks.iter().flatten().sum::<f64>() / (block_count * condition_count) as f64;
+    let condition_ss = block_count as f64
+        * (0..condition_count)
+            .map(|condition| {
+                let mean = study
+                    .blocks
+                    .iter()
+                    .map(|block| block[condition])
+                    .sum::<f64>()
+                    / block_count as f64;
+                (mean - grand_mean).powi(2)
+            })
+            .sum::<f64>();
+    let block_ss = condition_count as f64
+        * study
+            .blocks
+            .iter()
+            .map(|block| {
+                let mean = block.iter().sum::<f64>() / condition_count as f64;
+                (mean - grand_mean).powi(2)
+            })
+            .sum::<f64>();
+    let total_ss = study
+        .blocks
+        .iter()
+        .flatten()
+        .map(|value| (value - grand_mean).powi(2))
+        .sum::<f64>();
     let residual_ss = total_ss - condition_ss - block_ss;
     (residual_ss <= f64::EPSILON * total_ss.max(1.0)).then_some(CompatibilityReason::ZeroVariance)
 }
@@ -155,10 +204,17 @@ fn parametric_independent_reason(
     if groups.groups.len() != 2 || groups.groups.iter().any(|group| group.values.len() < 2) {
         return Some(CompatibilityReason::InsufficientObservations);
     }
-    let variances = groups.groups.iter().map(|group| variance(&group.values)).collect::<Option<Vec<_>>>()?;
+    let variances = groups
+        .groups
+        .iter()
+        .map(|group| variance(&group.values))
+        .collect::<Option<Vec<_>>>()?;
     let estimable = match method {
         HypothesisTestMethodId::StudentTwoSampleT => {
-            let residual_sum = groups.groups.iter().zip(&variances)
+            let residual_sum = groups
+                .groups
+                .iter()
+                .zip(&variances)
                 .map(|(group, variance)| (group.values.len() - 1) as f64 * variance)
                 .sum::<f64>();
             residual_sum > 0.0
@@ -173,7 +229,10 @@ fn paired_t_reason(pairs: &[[f64; 2]]) -> Option<CompatibilityReason> {
     if pairs.len() < 2 {
         return Some(CompatibilityReason::InsufficientObservations);
     }
-    let differences = pairs.iter().map(|pair| pair[0] - pair[1]).collect::<Vec<_>>();
+    let differences = pairs
+        .iter()
+        .map(|pair| pair[0] - pair[1])
+        .collect::<Vec<_>>();
     match variance(&differences) {
         Some(value) if value > 0.0 => None,
         _ => Some(CompatibilityReason::ZeroVariance),
@@ -185,7 +244,10 @@ fn variance(values: &[f64]) -> Option<f64> {
         return None;
     }
     let mean = values.iter().sum::<f64>() / values.len() as f64;
-    let value = values.iter().map(|value| (value - mean).powi(2)).sum::<f64>()
+    let value = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
         / (values.len() - 1) as f64;
     value.is_finite().then_some(value)
 }
@@ -193,20 +255,31 @@ fn variance(values: &[f64]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::hypothesis_test::normalize::{CompleteBlocks, ConditionValues, IndependentGroups};
+    use crate::engine::hypothesis_test::normalize::{
+        CompleteBlocks, ConditionValues, IndependentGroups,
+    };
 
     #[test]
     fn classifies_structure_and_zero_variance_without_execution_errors() {
-        let study = NormalizedStudy::IndependentTwo(IndependentGroups { groups: vec![
-            ConditionValues { condition: "A".into(), values: vec![1.0, 2.0, 3.0] },
-            ConditionValues { condition: "B".into(), values: vec![2.0, 3.0, 5.0] },
-        ] });
+        let study = NormalizedStudy::IndependentTwo(IndependentGroups {
+            groups: vec![
+                ConditionValues {
+                    condition: "A".into(),
+                    values: vec![1.0, 2.0, 3.0],
+                },
+                ConditionValues {
+                    condition: "B".into(),
+                    values: vec![2.0, 3.0, 5.0],
+                },
+            ],
+        });
         assert_eq!(
             evaluate_method_compatibility(
                 &study,
                 HypothesisTestMethodId::WelchTwoSampleT,
                 HypothesisTestAlternative::TwoSided,
-            ).state,
+            )
+            .state,
             CompatibilityState::Compatible,
         );
         assert_eq!(
@@ -214,37 +287,59 @@ mod tests {
                 &study,
                 HypothesisTestMethodId::PairedT,
                 HypothesisTestAlternative::TwoSided,
-            ).reasons,
+            )
+            .reasons,
             vec![CompatibilityReason::RequiresPairedTwo],
         );
 
-        let constant = NormalizedStudy::IndependentTwo(IndependentGroups { groups: vec![
-            ConditionValues { condition: "A".into(), values: vec![1.0, 1.0] },
-            ConditionValues { condition: "B".into(), values: vec![2.0, 2.0] },
-        ] });
+        let constant = NormalizedStudy::IndependentTwo(IndependentGroups {
+            groups: vec![
+                ConditionValues {
+                    condition: "A".into(),
+                    values: vec![1.0, 1.0],
+                },
+                ConditionValues {
+                    condition: "B".into(),
+                    values: vec![2.0, 2.0],
+                },
+            ],
+        });
         assert_eq!(
             evaluate_method_compatibility(
                 &constant,
                 HypothesisTestMethodId::StudentTwoSampleT,
                 HypothesisTestAlternative::TwoSided,
-            ).reasons,
+            )
+            .reasons,
             vec![CompatibilityReason::ZeroVariance],
         );
     }
 
     #[test]
     fn rejects_one_sided_and_degenerate_multi_group_methods_before_execution() {
-        let singleton = NormalizedStudy::IndependentMulti(IndependentGroups { groups: vec![
-            ConditionValues { condition: "A".into(), values: vec![1.0, 2.0] },
-            ConditionValues { condition: "B".into(), values: vec![2.0] },
-            ConditionValues { condition: "C".into(), values: vec![3.0, 4.0] },
-        ] });
+        let singleton = NormalizedStudy::IndependentMulti(IndependentGroups {
+            groups: vec![
+                ConditionValues {
+                    condition: "A".into(),
+                    values: vec![1.0, 2.0],
+                },
+                ConditionValues {
+                    condition: "B".into(),
+                    values: vec![2.0],
+                },
+                ConditionValues {
+                    condition: "C".into(),
+                    values: vec![3.0, 4.0],
+                },
+            ],
+        });
         assert_eq!(
             evaluate_method_compatibility(
                 &singleton,
                 HypothesisTestMethodId::WelchAnova,
                 HypothesisTestAlternative::TwoSided,
-            ).reasons,
+            )
+            .reasons,
             vec![CompatibilityReason::InsufficientObservations],
         );
         assert_eq!(
@@ -252,21 +347,34 @@ mod tests {
                 &singleton,
                 HypothesisTestMethodId::KruskalWallis,
                 HypothesisTestAlternative::Greater,
-            ).reasons,
+            )
+            .reasons,
             vec![CompatibilityReason::OneSidedOmnibusUnsupported],
         );
 
-        let tied = NormalizedStudy::IndependentMulti(IndependentGroups { groups: vec![
-            ConditionValues { condition: "A".into(), values: vec![1.0] },
-            ConditionValues { condition: "B".into(), values: vec![1.0] },
-            ConditionValues { condition: "C".into(), values: vec![1.0] },
-        ] });
+        let tied = NormalizedStudy::IndependentMulti(IndependentGroups {
+            groups: vec![
+                ConditionValues {
+                    condition: "A".into(),
+                    values: vec![1.0],
+                },
+                ConditionValues {
+                    condition: "B".into(),
+                    values: vec![1.0],
+                },
+                ConditionValues {
+                    condition: "C".into(),
+                    values: vec![1.0],
+                },
+            ],
+        });
         assert_eq!(
             evaluate_method_compatibility(
                 &tied,
                 HypothesisTestMethodId::KruskalWallis,
                 HypothesisTestAlternative::TwoSided,
-            ).reasons,
+            )
+            .reasons,
             vec![CompatibilityReason::AllRanksTied],
         );
     }
@@ -283,7 +391,8 @@ mod tests {
                 &tied,
                 HypothesisTestMethodId::Friedman,
                 HypothesisTestAlternative::TwoSided,
-            ).reasons,
+            )
+            .reasons,
             vec![CompatibilityReason::AllRanksTied],
         );
         assert_eq!(
@@ -291,7 +400,8 @@ mod tests {
                 &tied,
                 HypothesisTestMethodId::RandomizedBlockAnova,
                 HypothesisTestAlternative::TwoSided,
-            ).reasons,
+            )
+            .reasons,
             vec![CompatibilityReason::ZeroVariance],
         );
     }

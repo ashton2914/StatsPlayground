@@ -1031,7 +1031,10 @@ mod tests {
         assert!(ranks.len() <= 2_000);
 
         for required in [1_u64, 2, 3, 2_499, 2_500, 2_501, 4_999, 5_000, 5_001] {
-            assert!(ranks.contains(&required), "missing required priority neighborhood rank {required}");
+            assert!(
+                ranks.contains(&required),
+                "missing required priority neighborhood rank {required}"
+            );
         }
     }
 
@@ -1077,15 +1080,8 @@ mod tests {
             0,
         );
         let legacy = normal_quantile_plot(&sample, false, 0.95, 2_000).expect("legacy");
-        let explicit = normal_quantile_plot_with_priorities(
-            &sample,
-            false,
-            0.95,
-            2_000,
-            &[],
-            &[],
-        )
-        .expect("explicit empty priorities");
+        let explicit = normal_quantile_plot_with_priorities(&sample, false, 0.95, 2_000, &[], &[])
+            .expect("explicit empty priorities");
         assert_eq!(legacy, explicit);
     }
 
@@ -1162,8 +1158,6 @@ mod tests {
         );
         assert!(kernel.points.is_empty());
     }
-
-
 }
 
 #[derive(Debug, Clone, PartialEq)]

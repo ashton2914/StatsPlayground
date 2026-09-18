@@ -403,20 +403,18 @@ fn available_saved_metrics(rows: &[FitModelRowDiagnostic]) -> Vec<FitModelSavedM
         FitModelSavedMetric::Predicted,
         FitModelSavedMetric::Residual,
     ];
-    available.extend(
-        candidates.into_iter().filter(|metric| {
-            rows.iter().all(|row| match metric {
-                FitModelSavedMetric::StudentizedResidual => row.studentized_residual.is_some(),
-                FitModelSavedMetric::Leverage => row.leverage.is_some(),
-                FitModelSavedMetric::CooksDistance => row.cooks_distance.is_some(),
-                FitModelSavedMetric::MeanConfidenceLower => row.mean_confidence_lower.is_some(),
-                FitModelSavedMetric::MeanConfidenceUpper => row.mean_confidence_upper.is_some(),
-                FitModelSavedMetric::PredictionLower => row.prediction_lower.is_some(),
-                FitModelSavedMetric::PredictionUpper => row.prediction_upper.is_some(),
-                FitModelSavedMetric::Predicted | FitModelSavedMetric::Residual => true,
-            })
-        }),
-    );
+    available.extend(candidates.into_iter().filter(|metric| {
+        rows.iter().all(|row| match metric {
+            FitModelSavedMetric::StudentizedResidual => row.studentized_residual.is_some(),
+            FitModelSavedMetric::Leverage => row.leverage.is_some(),
+            FitModelSavedMetric::CooksDistance => row.cooks_distance.is_some(),
+            FitModelSavedMetric::MeanConfidenceLower => row.mean_confidence_lower.is_some(),
+            FitModelSavedMetric::MeanConfidenceUpper => row.mean_confidence_upper.is_some(),
+            FitModelSavedMetric::PredictionLower => row.prediction_lower.is_some(),
+            FitModelSavedMetric::PredictionUpper => row.prediction_upper.is_some(),
+            FitModelSavedMetric::Predicted | FitModelSavedMetric::Residual => true,
+        })
+    }));
     available
 }
 

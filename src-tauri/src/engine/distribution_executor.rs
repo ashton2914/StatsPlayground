@@ -824,9 +824,8 @@ mod tests {
         let engine = fixture_engine();
         let mut request = wire_request(&engine);
         request.fit_all = true;
-        request.fit_distributions = vec![
-            crate::models::distribution::ContinuousDistributionIdV1::Cauchy,
-        ];
+        request.fit_distributions =
+            vec![crate::models::distribution::ContinuousDistributionIdV1::Cauchy];
         request.nested_subgroup_column = Some("region".to_string());
         request.by_columns = vec!["batch".to_string()];
         let resolved = resolve_distribution_requests(&engine, &request).expect("resolve request");
@@ -841,10 +840,7 @@ mod tests {
             resolved[0].frequency_column_id,
             Some(column_id(&engine, "freq"))
         );
-        assert_eq!(
-            resolved[0].by_column_ids,
-            vec![column_id(&engine, "batch")]
-        );
+        assert_eq!(resolved[0].by_column_ids, vec![column_id(&engine, "batch")]);
         assert_eq!(
             resolved[0].nested_subgroup_column_id,
             Some(column_id(&engine, "region"))
@@ -956,7 +952,10 @@ mod tests {
             .expect("prepare groups");
 
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].key, vec![DistributionGroupValueV1::Number { value: 1.0 }]);
+        assert_eq!(
+            groups[0].key,
+            vec![DistributionGroupValueV1::Number { value: 1.0 }]
+        );
         assert_eq!(
             groups[0]
                 .observations
@@ -964,7 +963,9 @@ mod tests {
                 .map(|observation| observation.nested_subgroup.clone())
                 .collect::<Vec<_>>(),
             vec![
-                Some(DistributionGroupValueV1::Text { value: "A".to_string() }),
+                Some(DistributionGroupValueV1::Text {
+                    value: "A".to_string()
+                }),
                 None,
             ]
         );

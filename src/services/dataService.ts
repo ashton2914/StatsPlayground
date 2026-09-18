@@ -2,22 +2,38 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnDisplayProps,
   ColumnDescriptor,
+  CalculatedColumnMutationResult,
+  CalculatedColumnValidation,
   CellPosition,
   CellUpdate,
+  CreateManagedTableRequest,
+  ManagedTableCreateResult,
   DatasetMeta,
   CreateTableFromRowsRequest,
   SqlQueryResult,
   TableFilterValue,
+  TableNavigationBenchmarkFixture,
+  TableNavigationBenchmarkRequest,
+  TableNavigationRequest,
+  TableNavigationResult,
+  TableQuerySessionRequest,
+  TableQuerySessionStatus,
   TableQueryParams,
   TableQueryResult,
   TableWindowRequest,
   TableWindowResult,
+  UpsertCalculatedColumnRequest,
+  ValidateCalculatedColumnRequest,
 } from "@/types/data";
 
 export const dataService = {
   /** 执行 SQL 查询（分页） */
   executeSqlQuery: (sql: string, page: number, pageSize = 200) =>
     invoke<SqlQueryResult>("execute_sql_query", { sql, page, pageSize }),
+
+  /** 根据 SQL 查询创建数据表 */
+  preflightCreateTableFromSqlQuery: (sql: string, name: string) =>
+    invoke<void>("preflight_create_table_from_sql_query", { sql, name }),
 
   /** 根据 SQL 查询创建数据表 */
   createTableFromSqlQuery: (sql: string, name: string) =>
@@ -30,6 +46,30 @@ export const dataService = {
   /** 查询数据表的有界行窗口 */
   queryTableWindow: (request: TableWindowRequest) =>
     invoke<TableWindowResult>("query_table_window", { request }),
+
+  /** 按稳定列 ID 查询数据表的可见列窗口 */
+  queryTableNavigationWindow: (request: TableNavigationRequest) =>
+    invoke<TableNavigationResult>("query_table_navigation_window", { request }),
+
+  /** 准备仅供本地基准使用的确定性大表导航数据集 */
+  prepareTableNavigationBenchmark: (request: TableNavigationBenchmarkRequest) =>
+    invoke<TableNavigationBenchmarkFixture>("prepare_table_navigation_benchmark", { request }),
+
+  /** 为筛选/排序签名准备或复用后端窗口查询会话 */
+  prepareTableQuerySession: (request: TableQuerySessionRequest) =>
+    invoke<TableQuerySessionStatus>("prepare_table_query_session", { request }),
+
+  /** 查询后端窗口查询会话状态 */
+  getTableQuerySessionStatus: (sessionId: string) =>
+    invoke<TableQuerySessionStatus>("get_table_query_session_status", { sessionId }),
+
+  /** 释放后端窗口查询会话 */
+  releaseTableQuerySession: (sessionId: string) =>
+    invoke<void>("release_table_query_session", { sessionId }),
+
+  /** 取消指定的可见列窗口导航请求 */
+  cancelTableNavigationRequest: (requestId: string) =>
+    invoke<void>("cancel_table_navigation_request", { requestId }),
 
   /** 获取数据表当前版本，用于窗口缓存失效 */
   getDatasetGeneration: (datasetId: string) =>
@@ -76,6 +116,10 @@ export const dataService = {
   /** 通过类型化行数据原子创建数据表 */
   createTableFromRows: (request: CreateTableFromRowsRequest) =>
     invoke<DatasetMeta>("create_table_from_rows", { request }),
+
+  /** 原子创建数据表并持久化完整列显示属性 */
+  createManagedTable: (request: CreateManagedTableRequest) =>
+    invoke<ManagedTableCreateResult>("create_managed_table", { request }),
 
   /** 添加空行 */
   addRow: (datasetId: string) => invoke<number>("add_row", { datasetId }),
@@ -257,6 +301,19 @@ export const dataService = {
   /** 获取带稳定 ID 的列描述符 */
   getColumnDescriptors: (datasetId: string) =>
     invoke<ColumnDescriptor[]>("get_column_descriptors", { datasetId }),
+
+  validateCalculatedColumn: (request: ValidateCalculatedColumnRequest) =>
+    invoke<CalculatedColumnValidation>("validate_calculated_column", { request }),
+
+  upsertCalculatedColumn: (request: UpsertCalculatedColumnRequest) =>
+    invoke<CalculatedColumnMutationResult>("upsert_calculated_column", { request }),
+
+  convertCalculatedColumnToValues: (datasetId: string, columnId: string, expectedGeneration: number) =>
+    invoke<CalculatedColumnMutationResult>("convert_calculated_column_to_values", {
+      datasetId,
+      columnId,
+      expectedGeneration,
+    }),
 
   /** 排序 */
   sortTable: (sourceId: string, sortCols: string[], sortOrders: string[], newName: string) =>

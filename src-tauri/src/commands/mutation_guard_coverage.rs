@@ -4,7 +4,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::error::AppError;
-    use crate::models::table::TableWindowRequest;
+    use crate::models::table::{TableNavigationRequest, TableWindowRequest};
     use crate::services::data_service::DataService;
     use crate::services::spprj_archive::{self, GraphDoc};
     use crate::state::AppState;
@@ -37,6 +37,46 @@ mod tests {
 
     fn command_classes() -> HashMap<&'static str, CommandClass> {
         HashMap::from([
+            (
+                "commands::calculated_column_commands::validate_calculated_column",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::calculated_column_commands::upsert_calculated_column",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::calculated_column_commands::convert_calculated_column_to_values",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::start_mcp_server",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::stop_mcp_server",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::get_mcp_server_status",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::mcp_commands::list_mcp_audit_entries",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::mcp_commands::register_application_command_dispatcher",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::complete_application_command",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::mcp_commands::unregister_application_command_dispatcher",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::data_link_commands::test_server_connection",
                 CommandClass::ReadOnly,
@@ -114,6 +154,30 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::data_commands::query_table_navigation_window",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::prepare_table_navigation_benchmark",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::prepare_table_query_session",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::get_table_query_session_status",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::release_table_query_session",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::data_commands::cancel_table_navigation_request",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::data_commands::get_dataset_generation",
                 CommandClass::ReadOnly,
             ),
@@ -142,7 +206,15 @@ mod tests {
                 CommandClass::Mutation,
             ),
             (
+                "commands::data_commands::preflight_create_table_from_sql_query",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::data_commands::create_table_from_rows",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::data_commands::create_managed_table",
                 CommandClass::Mutation,
             ),
             (
@@ -279,8 +351,27 @@ mod tests {
                 "commands::hypothesis_test_commands::run_hypothesis_test",
                 CommandClass::ReadOnly,
             ),
-            ("commands::tabulate_commands::tabulate", CommandClass::ReadOnly),
+            (
+                "commands::tabulate_commands::tabulate",
+                CommandClass::ReadOnly,
+            ),
             ("commands::io_commands::export_csv", CommandClass::ReadOnly),
+            (
+                "commands::io_commands::authorize_csv_export_root",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::io_commands::revoke_csv_export_root",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::io_commands::inspect_authorized_csv_target",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::io_commands::export_csv_authorized",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::io_commands::import_sqlite",
                 CommandClass::Mutation,
@@ -357,15 +448,29 @@ mod tests {
                 "commands::project_commands::export_tables_sptb_zip",
                 CommandClass::ReadOnly,
             ),
-            ("commands::project_commands::import_table", CommandClass::Mutation),
-            ("commands::project_commands::import_graph", CommandClass::ReadOnly),
+            (
+                "commands::project_commands::import_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::import_graph",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::project_commands::create_table_transform",
                 CommandClass::Mutation,
             ),
             (
+                "commands::project_commands::preflight_create_table_transform",
+                CommandClass::ReadOnly,
+            ),
+            (
                 "commands::project_commands::run_table_transform",
                 CommandClass::Mutation,
+            ),
+            (
+                "commands::project_commands::preflight_run_table_transform",
+                CommandClass::ReadOnly,
             ),
             (
                 "commands::project_commands::rebind_table_transform",
@@ -379,13 +484,22 @@ mod tests {
                 "commands::project_commands::import_table_transform",
                 CommandClass::Mutation,
             ),
-            ("commands::table_commands::get_columns", CommandClass::ReadOnly),
+            (
+                "commands::table_commands::get_columns",
+                CommandClass::ReadOnly,
+            ),
             (
                 "commands::table_commands::get_column_descriptors",
                 CommandClass::ReadOnly,
             ),
-            ("commands::table_commands::sort_table", CommandClass::Mutation),
-            ("commands::table_commands::subset_table", CommandClass::Mutation),
+            (
+                "commands::table_commands::sort_table",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::table_commands::subset_table",
+                CommandClass::Mutation,
+            ),
             (
                 "commands::table_commands::transpose_table",
                 CommandClass::Mutation,
@@ -417,12 +531,18 @@ mod tests {
         ])
     }
 
-    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 49] {
+    fn functions_requiring_mutation_permit() -> [(&'static str, &'static str); 52] {
         [
+            ("calculated_column_commands.rs", "upsert_calculated_column"),
+            (
+                "calculated_column_commands.rs",
+                "convert_calculated_column_to_values",
+            ),
             ("data_commands.rs", "import_file"),
             ("data_commands.rs", "delete_dataset"),
             ("data_commands.rs", "create_table_from_sql_query"),
             ("data_commands.rs", "create_table_from_rows"),
+            ("data_commands.rs", "create_managed_table"),
             ("data_commands.rs", "create_table"),
             ("data_commands.rs", "add_row"),
             ("data_commands.rs", "add_rows"),
@@ -611,7 +731,27 @@ mod tests {
     }
 
     #[test]
+    fn query_table_navigation_window_registration_is_read_only() {
+        let lib_source = include_str!("../lib.rs");
+        let registered = parse_registered_commands(lib_source);
+        let classifications = command_classes();
+
+        assert!(
+            registered
+                .iter()
+                .any(|command| command == "commands::data_commands::query_table_navigation_window"),
+            "query_table_navigation_window must be registered in generate_handler"
+        );
+        assert_eq!(
+            classifications.get("commands::data_commands::query_table_navigation_window"),
+            Some(&CommandClass::ReadOnly),
+            "query_table_navigation_window must be classified as read-only"
+        );
+    }
+
+    #[test]
     fn mutating_commands_in_guarded_families_require_permit_acquisition() {
+        let calculated_column_source = include_str!("calculated_column_commands.rs");
         let data_source = include_str!("data_commands.rs");
         let table_source = include_str!("table_commands.rs");
         let io_source = include_str!("io_commands.rs");
@@ -628,6 +768,7 @@ mod tests {
 
         for (file_name, function_name) in functions_requiring_mutation_permit() {
             let source = match file_name {
+                "calculated_column_commands.rs" => calculated_column_source,
                 "data_commands.rs" => data_source,
                 "table_commands.rs" => table_source,
                 "io_commands.rs" => io_source,
@@ -745,6 +886,35 @@ mod tests {
         .expect("table-window command path should succeed during save");
         assert_eq!(table_window.total_rows, 1);
 
+        let descriptors = crate::services::data_service::DataService::new(&state)
+            .get_column_descriptors(&dataset_id)
+            .expect("column descriptors should be readable during save");
+        let table_navigation = crate::commands::data_commands::query_table_navigation_window_entry(
+            &state,
+            &TableNavigationRequest {
+                version: 1,
+                request_id: "req-save".to_string(),
+                dataset_id: dataset_id.clone(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: descriptors
+                    .into_iter()
+                    .map(|descriptor| descriptor.column_id)
+                    .collect(),
+                sort: None,
+                filters: vec![],
+                session_id: Some("session-save".to_string()),
+                include_transport_diagnostics: false,
+            },
+        )
+        .expect("table-navigation command path should succeed during save");
+        assert_eq!(table_navigation.total_rows, 1);
+        assert_eq!(
+            table_navigation.columns.first().map(String::as_str),
+            Some("_row_id")
+        );
+
         let graph = crate::commands::project_commands::import_graph_entry(&state, &graph_path)
             .expect("graph read path should succeed during save");
         assert_eq!(
@@ -771,5 +941,43 @@ mod tests {
 
         let _ = std::fs::remove_file(export_path);
         let _ = std::fs::remove_file(graph_path);
+    }
+
+    #[test]
+    fn query_table_navigation_window_entry_allows_save_guard_reads() {
+        let state = AppState::new().expect("app state should initialize");
+        let (dataset_id, generation) = seed_numeric_dataset(&state);
+        let descriptors = crate::services::data_service::DataService::new(&state)
+            .get_column_descriptors(&dataset_id)
+            .expect("column descriptors should be readable during save");
+
+        let _save_guard = state
+            .save_coordinator
+            .begin_save()
+            .expect("save guard should start");
+
+        let result = crate::commands::data_commands::query_table_navigation_window_entry(
+            &state,
+            &TableNavigationRequest {
+                version: 1,
+                request_id: "req-save-only".to_string(),
+                dataset_id,
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: descriptors
+                    .into_iter()
+                    .map(|descriptor| descriptor.column_id)
+                    .collect(),
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            },
+        )
+        .expect("table navigation read path should succeed during save");
+
+        assert_eq!(result.total_rows, 1);
+        assert_eq!(result.columns.first().map(String::as_str), Some("_row_id"));
     }
 }

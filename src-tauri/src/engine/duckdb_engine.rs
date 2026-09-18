@@ -1,9 +1,12 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem;
+use std::sync::Arc;
 use std::time::Instant;
 
 use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
-use duckdb::{appender_params_from_iter, params, params_from_iter, Config, Connection};
+use duckdb::{
+    appender_params_from_iter, params, params_from_iter, Config, Connection, OptionalExt,
+};
 use tempfile::TempDir;
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
@@ -13,35 +16,71 @@ use crate::engine::hypothesis_test::normalize::{
 };
 use crate::engine::sql_query::{normalize_identifier, validate_read_only_query};
 use crate::error::AppError;
+use crate::models::calculated_column::{
+    definition_fingerprint, display_formula_text, remap_definition, ArchivedCalculatedColumn,
+    CalculatedColumnDefinitionV1, CalculatedColumnDescriptor, CalculatedColumnStatus,
+    CalculatedOutputTypeV1, PreservedCalculatedColumnDefinition,
+};
 use crate::models::data_link::SourceObjectRef;
 use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRow, FitYByXRows};
-use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::graph_data::{
     BoxPlotEntry, BoxPlotOutlier, BoxPlotPacket, CorrelationMatrixCell, CorrelationMatrixPacket,
     CorrelationMethod, CorrelationUnavailableReason, GraphAggregatePacket, GraphDataRequest,
-    GraphSampling, HeatmapCell, HeatmapPacket, HistogramBin, HistogramPacket, SummaryEntry,
-    SummaryPacket, GRAPH_VIRTUAL_SOURCE_COLUMN, GRAPH_VIRTUAL_VALUE_COLUMN,
+    GraphElementRequest, GraphSampling, GraphTimeSeriesOrder, GraphTimeSeriesRequest, HeatmapCell,
+    HeatmapPacket, HistogramBin, HistogramPacket, SummaryEntry, SummaryPacket,
+    GRAPH_VIRTUAL_SOURCE_COLUMN, GRAPH_VIRTUAL_VALUE_COLUMN,
 };
+use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::table::{
     CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
-    TableFilterValue, TableQueryResult, TableWindowFilterRule, TableWindowRequest,
+    TableFilterValue, TableNavigationRequest, TableNavigationResult, TableNavigationTimings,
+    TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule, TableWindowRequest,
     TableWindowResult,
 };
 use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateResult, TabulateStatistic};
 use crate::services::archive_cell::archive_export_expression;
+use crate::services::calculated_column_expression::{
+    compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
+    TypedCalculatedOutput,
+};
+use crate::services::table_mutation_coordinator::{execute_table_mutation, TableMutationEffects};
+use crate::services::time_series::validate_time_series_x;
 use crate::services::workflow_fingerprint::{table_content_hash, TableFingerprintColumn};
 
 /// DuckDB engine wrapper
 pub struct DuckDbEngine {
     conn: Connection,
-    _shared_db_dir: TempDir,
+    _shared_db_dir: Arc<TempDir>,
 }
+
+pub const NATURAL_ANCHOR_STRIDE: usize = 4096;
 
 pub(crate) struct DatasetReplacement {
     pub stable_id: String,
     pub temporary_id: String,
     pub stable_name: String,
     pub expected_generation: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct ArchiveColumnPlan {
+    pub column_id: String,
+    pub name: String,
+    pub sql_type: String,
+    pub calculated: Option<crate::models::calculated_column::ArchivedCalculatedColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UserColumnDescriptor {
+    pub column_id: String,
+    pub col_index: i32,
+    pub name: String,
+    pub sql_type: String,
+}
+
+enum ReplayedColumnIdentity<'a> {
+    Exact(&'a str),
+    LegacyGenerated,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,12 +118,106 @@ struct GraphQueryPlan {
     projection_select_items: Vec<String>,
     projected_columns: Vec<String>,
     projected_column_types: Vec<String>,
+    order_by_sql: String,
 }
 
 struct MaterializedQuery {
     columns: Vec<String>,
     column_types: Vec<String>,
     rows: Vec<Vec<Value>>,
+}
+
+fn calculated_output_sql_type(output_type: &CalculatedOutputTypeV1) -> Option<&'static str> {
+    match output_type {
+        CalculatedOutputTypeV1::Boolean => Some("BOOLEAN"),
+        CalculatedOutputTypeV1::Continuous => Some("DOUBLE"),
+        CalculatedOutputTypeV1::Integer => Some("BIGINT"),
+        CalculatedOutputTypeV1::Null
+        | CalculatedOutputTypeV1::Text
+        | CalculatedOutputTypeV1::Unknown => None,
+    }
+}
+
+fn derived_calculated_status(
+    calculated: &ArchivedCalculatedColumn,
+    output_column_id: &str,
+    physical_type: &str,
+    present_column_ids: &HashSet<String>,
+) -> CalculatedColumnStatus {
+    match calculated {
+        ArchivedCalculatedColumn::Preserved { .. } => CalculatedColumnStatus::Unsupported,
+        ArchivedCalculatedColumn::Ready { definition, state } => {
+            if state.status != CalculatedColumnStatus::Ready
+                || definition.output_column_id != output_column_id
+                || definition_fingerprint(definition) != definition.fingerprint
+                || definition
+                    .dependency_column_ids
+                    .iter()
+                    .any(|dependency| !present_column_ids.contains(dependency))
+            {
+                return CalculatedColumnStatus::Broken;
+            }
+            if let Some(expected_type) =
+                calculated_output_sql_type(&definition.inferred_output_type)
+            {
+                if !expected_type.eq_ignore_ascii_case(physical_type) {
+                    return CalculatedColumnStatus::Broken;
+                }
+            }
+            CalculatedColumnStatus::Ready
+        }
+    }
+}
+
+fn build_calculated_descriptor(
+    calculated: &ArchivedCalculatedColumn,
+    output_column_id: &str,
+    physical_type: &str,
+    present_column_ids: &HashSet<String>,
+    column_names_by_id: &HashMap<String, String>,
+) -> CalculatedColumnDescriptor {
+    match calculated {
+        ArchivedCalculatedColumn::Ready { definition, .. } => CalculatedColumnDescriptor {
+            formula_id: definition.formula_id.clone(),
+            schema_version: definition.schema_version.clone(),
+            output_column_id: definition.output_column_id.clone(),
+            display_formula_text: display_formula_text(&definition.expression, &|column_id| {
+                column_names_by_id.get(column_id).cloned()
+            }),
+            status: derived_calculated_status(
+                calculated,
+                output_column_id,
+                physical_type,
+                present_column_ids,
+            ),
+            dependency_column_ids: definition.dependency_column_ids.clone(),
+            inferred_output_type: definition.inferred_output_type.clone(),
+            fingerprint: definition.fingerprint.clone(),
+        },
+        ArchivedCalculatedColumn::Preserved { definition } => CalculatedColumnDescriptor {
+            formula_id: definition.formula_id.clone(),
+            schema_version: definition.schema_version.clone(),
+            output_column_id: definition.output_column_id.clone(),
+            display_formula_text: String::new(),
+            status: CalculatedColumnStatus::Unsupported,
+            dependency_column_ids: Vec::new(),
+            inferred_output_type: CalculatedOutputTypeV1::Unknown,
+            fingerprint: String::new(),
+        },
+    }
+}
+
+pub(crate) struct TableQuerySessionPlan {
+    pub projection: Vec<(String, String)>,
+    pub where_clause: String,
+    pub filter_values: Vec<Value>,
+    pub order_clause: String,
+}
+
+pub(crate) struct PreparedTableQuerySessionInfo {
+    pub projection: Vec<(String, String)>,
+    pub total_rows: i64,
+    pub measured_bytes_estimate: usize,
 }
 type GroupedStatisticValues = std::collections::HashMap<(String, String), Vec<Option<f64>>>;
 
@@ -133,9 +266,22 @@ fn is_sampling_strata_role(role: &str) -> bool {
         || role.starts_with("multiy")
 }
 
+fn time_series_request<'a>(
+    elements: &'a [GraphElementRequest],
+) -> Result<Option<&'a GraphTimeSeriesRequest>, AppError> {
+    let Some(element) = elements
+        .iter()
+        .find(|element| element.kind.eq_ignore_ascii_case("timeSeries"))
+    else {
+        return Ok(None);
+    };
+
+    Ok(element.time_series.as_ref())
+}
+
 pub(crate) struct ArchiveKeysetReadPlan {
     select_sql: String,
-    pub columns: Vec<(String, String, String)>,
+    pub columns: Vec<ArchiveColumnPlan>,
 }
 
 pub(crate) struct ArchiveBatchRow {
@@ -159,16 +305,45 @@ impl DuckDbEngine {
         self.conn.try_clone().map_err(AppError::from)
     }
 
-    fn bump_dataset_generation(&self, dataset_id: &str) -> Result<(), AppError> {
+    pub(crate) fn bump_dataset_generation(&self, dataset_id: &str) -> Result<(), AppError> {
+        let generation = self.get_dataset_generation(dataset_id)?;
+        let next_generation = generation
+            .checked_add(1)
+            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
+        self.copy_natural_anchors_between_generations(dataset_id, generation, next_generation)?;
         let changed = self.conn.execute(
-            "UPDATE _meta_datasets SET generation = generation + 1 WHERE id = ?",
-            params![dataset_id],
+            "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
+            params![next_generation, dataset_id],
         )?;
         if changed == 0 {
             return Err(AppError::InvalidParam(format!(
                 "unknown dataset: {dataset_id}"
             )));
         }
+        Ok(())
+    }
+
+    fn copy_natural_anchors_between_generations(
+        &self,
+        dataset_id: &str,
+        source_generation: u64,
+        target_generation: u64,
+    ) -> Result<(), AppError> {
+        let source_generation_i64 = i64::try_from(source_generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let target_generation_i64 = i64::try_from(target_generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, target_generation_i64],
+        )?;
+        self.conn.execute(
+            "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
+             SELECT dataset_id, ?, ordinal, row_id
+             FROM _table_navigation_anchors
+             WHERE dataset_id = ? AND generation = ?",
+            params![target_generation_i64, dataset_id, source_generation_i64],
+        )?;
         Ok(())
     }
 
@@ -257,6 +432,8 @@ impl DuckDbEngine {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = operation().and_then(|value| {
             self.bump_dataset_generation(dataset_id)?;
+            let generation = self.get_dataset_generation(dataset_id)?;
+            self.rebuild_natural_anchors(dataset_id, generation)?;
             Ok(value)
         });
         match result {
@@ -321,13 +498,15 @@ impl DuckDbEngine {
             "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
             params![row_count as i64, id],
         )?;
+        let generation = self.get_dataset_generation(id)?;
+        self.rebuild_natural_anchors(id, generation)?;
 
         Ok(())
     }
 
     /// Create a new in-memory DuckDB engine and initialize metadata tables
     pub fn new_in_memory() -> Result<Self, AppError> {
-        let shared_db_dir = tempfile::tempdir()?;
+        let shared_db_dir = Arc::new(tempfile::tempdir()?);
         let shared_db_path = shared_db_dir.path().join("stats_playground.duckdb");
         let conn = Connection::open(&shared_db_path)?;
 
@@ -357,6 +536,20 @@ impl DuckDbEngine {
                 UNIQUE (column_id)
             );
 
+            CREATE TABLE IF NOT EXISTS _meta_calculated_columns (
+                dataset_id  TEXT NOT NULL,
+                column_id   TEXT NOT NULL,
+                formula_id  TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                expression_json TEXT,
+                dependency_column_ids_json TEXT,
+                inferred_output_type TEXT,
+                fingerprint TEXT,
+                archived_definition_json TEXT NOT NULL,
+                PRIMARY KEY (dataset_id, column_id),
+                UNIQUE (formula_id)
+            );
+
             CREATE TABLE IF NOT EXISTS _history_change_sets (
                 id          TEXT PRIMARY KEY,
                 dataset_id  TEXT NOT NULL,
@@ -369,14 +562,66 @@ impl DuckDbEngine {
                 change_set_id TEXT NOT NULL,
                 ordinal       INTEGER NOT NULL,
                 column_index  INTEGER NOT NULL,
+                before_column_id TEXT,
                 before_name   TEXT,
                 before_type   TEXT,
+                before_calculated_definition_json TEXT,
+                after_column_id TEXT,
                 after_name    TEXT NOT NULL,
                 after_type    TEXT NOT NULL,
+                after_calculated_definition_json TEXT,
                 after_present BOOLEAN NOT NULL DEFAULT TRUE,
                 PRIMARY KEY (change_set_id, ordinal)
             );
+
+            CREATE TABLE IF NOT EXISTS _table_navigation_anchors (
+                dataset_id TEXT NOT NULL,
+                generation BIGINT NOT NULL,
+                ordinal    BIGINT NOT NULL,
+                row_id     BIGINT NOT NULL,
+                PRIMARY KEY (dataset_id, generation, ordinal)
+            );
             ",
+        )?;
+        conn.execute(
+            "ALTER TABLE _meta_calculated_columns ADD COLUMN IF NOT EXISTS schema_version TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _meta_calculated_columns ADD COLUMN IF NOT EXISTS expression_json TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _meta_calculated_columns ADD COLUMN IF NOT EXISTS dependency_column_ids_json TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _meta_calculated_columns ADD COLUMN IF NOT EXISTS inferred_output_type TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _meta_calculated_columns ADD COLUMN IF NOT EXISTS fingerprint TEXT",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE _meta_calculated_columns SET schema_version = COALESCE(NULLIF(schema_version, ''), '1')",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_set_columns ADD COLUMN IF NOT EXISTS before_column_id TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_set_columns ADD COLUMN IF NOT EXISTS after_column_id TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_set_columns ADD COLUMN IF NOT EXISTS before_calculated_definition_json TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_set_columns ADD COLUMN IF NOT EXISTS after_calculated_definition_json TEXT",
+            [],
         )?;
         conn.execute(
             "ALTER TABLE _history_change_set_columns ADD COLUMN IF NOT EXISTS after_present BOOLEAN DEFAULT TRUE",
@@ -391,6 +636,54 @@ impl DuckDbEngine {
             conn,
             _shared_db_dir: shared_db_dir,
         })
+    }
+
+    pub fn try_clone(&self) -> Result<DuckDbEngine, AppError> {
+        Ok(Self {
+            conn: self.conn.try_clone()?,
+            _shared_db_dir: Arc::clone(&self._shared_db_dir),
+        })
+    }
+
+    pub fn rebuild_natural_anchors(
+        &self,
+        dataset_id: &str,
+        generation: u64,
+    ) -> Result<(), AppError> {
+        let current_generation = self.get_dataset_generation(dataset_id)?;
+        if current_generation != generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {generation}"
+            )));
+        }
+        let generation_i64 = i64::try_from(generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let stride_i64 = i64::try_from(NATURAL_ANCHOR_STRIDE)
+            .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation <> ?",
+            params![dataset_id, generation_i64],
+        )?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, generation_i64],
+        )?;
+        self.conn.execute(
+            &format!(
+                "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
+                 SELECT ?, ?, ordinal, \"_row_id\"
+                 FROM (
+                     SELECT \"_row_id\", row_number() OVER (ORDER BY \"_row_id\" ASC) - 1 AS ordinal
+                     FROM {table_name}
+                 ) AS ordered_rows
+                 WHERE ordinal % ? = 0"
+            ),
+            params![dataset_id, generation_i64, stride_i64],
+        )?;
+
+        Ok(())
     }
 
     pub fn tabulate(&self, request: &TabulateRequest) -> Result<TabulateResult, AppError> {
@@ -768,50 +1061,66 @@ impl DuckDbEngine {
         self.validate_dataset_name(name, None)?;
         let table_name = format!("dataset_{}", id.replace('-', "_"));
 
-        // Create table from CSV with the stable row identity required by
-        // bounded windows, edits, history, and project serialization.
-        let create_sql = format!(
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<DatasetMeta, AppError> {
+            // Create table from CSV with the stable row identity required by
+            // bounded windows, edits, history, and project serialization.
+            let create_sql = format!(
             "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __csv__.* FROM read_csv($1, auto_detect=true) AS __csv__",
             table_name
         );
-        self.conn.execute(&create_sql, params![file_path])?;
+            self.conn.execute(&create_sql, params![file_path])?;
 
-        // Get row count
-        let row_count: i64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
-            [],
-            |row| row.get(0),
-        )?;
+            // Get row count
+            let row_count: i64 = self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+                [],
+                |row| row.get(0),
+            )?;
 
-        // Get column info
-        let mut col_stmt = self.conn.prepare(
+            // Get column info
+            let mut col_stmt = self.conn.prepare(
             "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
         )?;
 
-        let col_count: i32 = {
-            let mut rows = col_stmt.query(params![table_name])?;
-            let mut count = 0i32;
-            let mut col_index = 0i32;
-            while let Some(row) = rows.next()? {
-                let col_name: String = row.get(0)?;
-                let col_type: String = row.get(1)?;
-                self.conn.execute(
+            let col_count: i32 = {
+                let mut rows = col_stmt.query(params![table_name])?;
+                let mut count = 0i32;
+                let mut col_index = 0i32;
+                while let Some(row) = rows.next()? {
+                    let col_name: String = row.get(0)?;
+                    let col_type: String = row.get(1)?;
+                    self.conn.execute(
                     "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
                     params![id, col_index, col_name, col_type],
                 )?;
-                col_index += 1;
-                count += 1;
-            }
-            count
-        };
+                    col_index += 1;
+                    count += 1;
+                }
+                count
+            };
 
-        // Insert dataset metadata
-        self.conn.execute(
+            // Insert dataset metadata
+            self.conn.execute(
             "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'csv', $4, $5)",
             params![id, name, file_path, row_count, col_count],
         )?;
 
-        self.get_dataset_meta(id)
+            self.rebuild_natural_anchors(id, 0)?;
+
+            self.get_dataset_meta(id)
+        })();
+
+        match result {
+            Ok(meta) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(meta)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Get metadata for a single dataset
@@ -874,6 +1183,14 @@ impl DuckDbEngine {
             .execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])?;
         self.conn.execute(
             "DELETE FROM _meta_columns WHERE dataset_id = $1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
             params![id],
         )?;
         self.conn
@@ -992,6 +1309,8 @@ impl DuckDbEngine {
                 "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, NULL, 'query', $3, $4)",
                 params![id, name, materialized.rows.len() as i64, materialized.columns.len() as i32],
             )?;
+
+            self.rebuild_natural_anchors(id, 0)?;
 
             self.get_dataset_meta(id)
         })();
@@ -1168,6 +1487,8 @@ impl DuckDbEngine {
                 params![request.rows.len() as i64, id],
             )?;
 
+            self.rebuild_natural_anchors(id, 0)?;
+
             self.get_dataset_meta(id)
         })();
 
@@ -1250,23 +1571,7 @@ impl DuckDbEngine {
         let (where_clause, filter_values) =
             Self::compile_table_window_filters(&request.filters, &allowed_columns)?;
 
-        let order_clause = if let Some(sort) = &request.sort {
-            if sort.column != "_row_id" && !allowed_columns.contains_key(sort.column.as_str()) {
-                return Err(AppError::InvalidParam(format!(
-                    "unknown sort column: {}",
-                    sort.column
-                )));
-            }
-            let direction = if sort.descending { "DESC" } else { "ASC" };
-            let sort_column = Self::quote_identifier(&sort.column);
-            if sort.column == "_row_id" {
-                format!("ORDER BY {sort_column} {direction}")
-            } else {
-                format!("ORDER BY {sort_column} {direction}, \"_row_id\" ASC")
-            }
-        } else {
-            "ORDER BY \"_row_id\" ASC".to_string()
-        };
+        let order_clause = Self::build_table_window_order_clause(&request.sort, &allowed_columns)?;
 
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
         let count_sql = format!("SELECT COUNT(*) FROM {table_name} {where_clause}");
@@ -1326,6 +1631,568 @@ impl DuckDbEngine {
             start: request.start,
             generation,
         })
+    }
+
+    pub fn preflight_create_table_from_sql_query(
+        &self,
+        sql: &str,
+        name: &str,
+    ) -> Result<(), AppError> {
+        let sql = self.validate_query_against_visible_tables(sql)?;
+        let snapshot = self.build_isolated_snapshot_connection()?;
+        let _ = self.collect_sql_query_schema(&snapshot, &sql)?;
+        self.validate_dataset_name(name, None)?;
+        Ok(())
+    }
+
+    pub fn query_table_navigation_window(
+        &self,
+        request: &TableNavigationRequest,
+    ) -> Result<TableNavigationResult, AppError> {
+        let started_at = Instant::now();
+        if !(1..=2_000).contains(&request.count) {
+            return Err(AppError::InvalidParam(
+                "window count must be between 1 and 2000".into(),
+            ));
+        }
+        let offset = i64::try_from(request.start)
+            .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
+        let limit = i64::try_from(request.count)
+            .map_err(|_| AppError::InvalidParam("window count is too large".into()))?;
+
+        let generation = self.get_dataset_generation(&request.dataset_id)?;
+        if generation != request.generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let actual_user_columns = self.get_storage_user_columns(&request.dataset_id)?;
+        let allowed_columns = actual_user_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let (where_clause, filter_values) =
+            Self::compile_table_window_filters(&request.filters, &allowed_columns)?;
+
+        let order_clause = Self::build_table_window_order_clause(&request.sort, &allowed_columns)?;
+
+        let navigation_columns =
+            self.resolve_navigation_projection(&request.dataset_id, &request.column_ids)?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let count_sql = format!("SELECT COUNT(*) FROM {table_name} {where_clause}");
+        let total_rows: i64 =
+            self.conn
+                .query_row(&count_sql, params_from_iter(filter_values.iter()), |row| {
+                    row.get(0)
+                })?;
+
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(navigation_columns.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            navigation_columns
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({quoted} AS VARCHAR) AS {quoted}")
+                } else {
+                    quoted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query_sql = format!(
+            "SELECT {select_columns} FROM {table_name} {where_clause} {order_clause} LIMIT ? OFFSET ?"
+        );
+        let mut query_values = filter_values;
+        query_values.push(Value::BigInt(limit));
+        query_values.push(Value::BigInt(offset));
+        let mut stmt = self.conn.prepare(&query_sql)?;
+        let mut result_rows = stmt.query(params_from_iter(query_values.iter()))?;
+        let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
+        while let Some(row) = result_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        let total_ms = u64::try_from(started_at.elapsed().as_millis())
+            .map_err(|_| AppError::Database("table navigation timing overflowed".into()))?;
+
+        Ok(TableNavigationResult {
+            version: 1,
+            request_id: request.request_id.clone(),
+            dataset_id: request.dataset_id.clone(),
+            generation,
+            start: request.start,
+            total_rows,
+            total_rows_exact: true,
+            session_id: request.session_id.clone(),
+            columns,
+            column_types,
+            rows,
+            timings: TableNavigationTimings {
+                total_ms,
+                diagnostic_json_encode_ms: None,
+                diagnostic_json_bytes: None,
+                diagnostic_response_ready_at_epoch_ms: None,
+            },
+        })
+    }
+
+    pub(crate) fn build_table_query_session_plan_on_connection(
+        connection: &Connection,
+        request: &TableQuerySessionRequest,
+    ) -> Result<TableQuerySessionPlan, AppError> {
+        let actual_user_columns =
+            Self::storage_user_columns_on_connection(connection, &request.dataset_id)?;
+        let allowed_columns = actual_user_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let projection = Self::resolve_navigation_projection_on_connection(
+            connection,
+            &request.dataset_id,
+            &request.column_ids,
+        )?;
+        let (where_clause, filter_values) =
+            Self::compile_table_window_filters(&request.filters, &allowed_columns)?;
+        let order_clause = Self::build_table_window_order_clause(&request.sort, &allowed_columns)?;
+        Ok(TableQuerySessionPlan {
+            projection,
+            where_clause,
+            filter_values,
+            order_clause,
+        })
+    }
+
+    pub(crate) fn prepare_table_query_session_on_connection(
+        connection: &Connection,
+        request: &TableQuerySessionRequest,
+        mapping_table_name: &str,
+        mapping_index_name: &str,
+    ) -> Result<PreparedTableQuerySessionInfo, AppError> {
+        let current_generation: i64 = connection
+            .query_row(
+                "SELECT generation FROM _meta_datasets WHERE id = ?",
+                params![&request.dataset_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                duckdb::Error::QueryReturnedNoRows => {
+                    AppError::InvalidParam(format!("unknown dataset: {}", request.dataset_id))
+                }
+                other => AppError::from(other),
+            })?;
+        let requested_generation = i64::try_from(request.generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        if current_generation != requested_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let plan = Self::build_table_query_session_plan_on_connection(connection, request)?;
+        Self::release_table_query_session_on_connection(
+            connection,
+            mapping_table_name,
+            mapping_index_name,
+        )?;
+        let baseline_memory_bytes = Self::table_query_session_memory_bytes(connection);
+
+        let materialize_result = (|| -> Result<PreparedTableQuerySessionInfo, AppError> {
+            let mapping_table = Self::quote_identifier(mapping_table_name);
+            let table_name =
+                Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+            let create_sql = format!(
+                "CREATE TEMP TABLE {mapping_table} AS
+                 SELECT CAST(row_number() OVER ({order_clause}) - 1 AS BIGINT) AS ordinal,
+                        CAST(\"_row_id\" AS BIGINT) AS row_id
+                 FROM {table_name} {where_clause}",
+                order_clause = plan.order_clause,
+                where_clause = plan.where_clause,
+            );
+            connection.execute(&create_sql, params_from_iter(plan.filter_values.iter()))?;
+
+            let total_rows: i64 = connection.query_row(
+                &format!("SELECT COUNT(*) FROM {mapping_table}"),
+                [],
+                |row| row.get(0),
+            )?;
+            let mapping_index = Self::quote_identifier(mapping_index_name);
+            connection.execute(
+                &format!("CREATE INDEX {mapping_index} ON {mapping_table} (ordinal)"),
+                [],
+            )?;
+
+            let logical_bytes_floor = Self::table_query_session_logical_bytes_floor(total_rows);
+            let measured_bytes_estimate = match (
+                baseline_memory_bytes,
+                Self::table_query_session_memory_bytes(connection),
+            ) {
+                (Some(before_bytes), Some(after_bytes)) if after_bytes >= before_bytes => {
+                    usize::try_from(after_bytes - before_bytes)
+                        .ok()
+                        .map(|delta| delta.max(logical_bytes_floor))
+                        .unwrap_or(usize::MAX)
+                }
+                _ => logical_bytes_floor,
+            };
+            Ok(PreparedTableQuerySessionInfo {
+                projection: plan.projection,
+                total_rows,
+                measured_bytes_estimate,
+            })
+        })();
+
+        match materialize_result {
+            Ok(info) => Ok(info),
+            Err(error) => {
+                let _ = Self::release_table_query_session_on_connection(
+                    connection,
+                    mapping_table_name,
+                    mapping_index_name,
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn table_query_session_memory_bytes(connection: &Connection) -> Option<u64> {
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(memory_usage_bytes + temporary_storage_bytes), 0) FROM duckdb_memory()",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .and_then(|bytes| u64::try_from(bytes).ok())
+    }
+
+    fn table_query_session_logical_bytes_floor(total_rows: i64) -> usize {
+        usize::try_from(total_rows.max(0))
+            .ok()
+            .and_then(|row_count| row_count.checked_mul(std::mem::size_of::<i64>() * 2))
+            .unwrap_or(usize::MAX)
+    }
+
+    pub(crate) fn query_prepared_table_navigation_window_on_connection(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+        mapping_table_name: &str,
+        projection: &[(String, String)],
+        total_rows: i64,
+    ) -> Result<TableNavigationResult, AppError> {
+        let started_at = Instant::now();
+        if !(1..=2_000).contains(&request.count) {
+            return Err(AppError::InvalidParam(
+                "window count must be between 1 and 2000".into(),
+            ));
+        }
+
+        let current_generation: i64 = connection
+            .query_row(
+                "SELECT generation FROM _meta_datasets WHERE id = ?",
+                params![&request.dataset_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                duckdb::Error::QueryReturnedNoRows => {
+                    AppError::InvalidParam(format!("unknown dataset: {}", request.dataset_id))
+                }
+                other => AppError::from(other),
+            })?;
+        let requested_generation = i64::try_from(request.generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        if current_generation != requested_generation {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let start = request.start.min(total_rows.max(0) as usize);
+        let start_i64 = i64::try_from(start)
+            .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
+        let count_i64 = i64::try_from(request.count)
+            .map_err(|_| AppError::InvalidParam("window count is too large".into()))?;
+        let end_i64 = start_i64
+            .checked_add(count_i64)
+            .ok_or_else(|| AppError::InvalidParam("window end is too large".into()))?;
+
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(projection.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            projection
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+
+        let mapping_table = Self::quote_identifier(mapping_table_name);
+        let source_alias = "source";
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let qualified = format!("{source_alias}.{quoted}");
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({qualified} AS VARCHAR) AS {quoted}")
+                } else {
+                    format!("{qualified} AS {quoted}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let query_sql = format!(
+            "SELECT {select_columns}
+             FROM {mapping_table} AS mapping
+             JOIN {table_name} AS {source_alias} ON {source_alias}.\"_row_id\" = mapping.row_id
+             WHERE mapping.ordinal >= ? AND mapping.ordinal < ?
+             ORDER BY mapping.ordinal ASC"
+        );
+        let mut stmt = connection.prepare(&query_sql)?;
+        let mut result_rows = stmt.query(params![start_i64, end_i64])?;
+        let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
+        while let Some(row) = result_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        let total_ms = u64::try_from(started_at.elapsed().as_millis())
+            .map_err(|_| AppError::Database("table navigation timing overflowed".into()))?;
+        Ok(TableNavigationResult {
+            version: 1,
+            request_id: request.request_id.clone(),
+            dataset_id: request.dataset_id.clone(),
+            generation: request.generation,
+            start,
+            total_rows,
+            total_rows_exact: true,
+            session_id: request.session_id.clone(),
+            columns,
+            column_types,
+            rows,
+            timings: TableNavigationTimings {
+                total_ms,
+                diagnostic_json_encode_ms: None,
+                diagnostic_json_bytes: None,
+                diagnostic_response_ready_at_epoch_ms: None,
+            },
+        })
+    }
+
+    pub(crate) fn release_table_query_session_on_connection(
+        connection: &Connection,
+        mapping_table_name: &str,
+        mapping_index_name: &str,
+    ) -> Result<(), AppError> {
+        connection.execute(
+            &format!(
+                "DROP INDEX IF EXISTS {}",
+                Self::quote_identifier(mapping_index_name)
+            ),
+            [],
+        )?;
+        connection.execute(
+            &format!(
+                "DROP TABLE IF EXISTS {}",
+                Self::quote_identifier(mapping_table_name)
+            ),
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn query_natural_navigation_window(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+    ) -> Result<TableNavigationResult, AppError> {
+        let started_at = Instant::now();
+        let (result, _) = Self::query_natural_navigation_window_inner(connection, request)?;
+        let total_ms = u64::try_from(started_at.elapsed().as_millis())
+            .map_err(|_| AppError::Database("table navigation timing overflowed".into()))?;
+        Ok(TableNavigationResult {
+            timings: TableNavigationTimings {
+                total_ms,
+                diagnostic_json_encode_ms: None,
+                diagnostic_json_bytes: None,
+                diagnostic_response_ready_at_epoch_ms: None,
+            },
+            ..result
+        })
+    }
+
+    fn query_natural_navigation_window_inner(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+    ) -> Result<(TableNavigationResult, usize), AppError> {
+        if !(1..=2_000).contains(&request.count) {
+            return Err(AppError::InvalidParam(
+                "window count must be between 1 and 2000".into(),
+            ));
+        }
+        if request.sort.is_some() || !request.filters.is_empty() {
+            return Err(AppError::InvalidParam(
+                "natural navigation supports only unsorted, unfiltered requests".into(),
+            ));
+        }
+
+        let generation_i64 = i64::try_from(request.generation)
+            .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let (total_rows, current_generation): (i64, i64) = connection
+            .query_row(
+                "SELECT row_count, generation FROM _meta_datasets WHERE id = ?",
+                params![&request.dataset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| match error {
+                duckdb::Error::QueryReturnedNoRows => {
+                    AppError::InvalidParam(format!("unknown dataset: {}", request.dataset_id))
+                }
+                other => AppError::from(other),
+            })?;
+        if current_generation != generation_i64 {
+            return Err(AppError::InvalidParam(format!(
+                "stale dataset generation: expected {current_generation}, received {}",
+                request.generation
+            )));
+        }
+
+        let navigation_columns = Self::resolve_navigation_projection_on_connection(
+            connection,
+            &request.dataset_id,
+            &request.column_ids,
+        )?;
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(navigation_columns.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            navigation_columns
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+
+        let clamped_start = request.start.min(total_rows.max(0) as usize);
+        let start_i64 = i64::try_from(clamped_start)
+            .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
+        let anchor: Option<(i64, i64)> = connection
+            .query_row(
+                "SELECT ordinal, row_id
+                 FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ? AND ordinal <= ?
+                 ORDER BY ordinal DESC
+                 LIMIT 1",
+                params![&request.dataset_id, generation_i64, start_i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (anchor_ordinal, anchor_row_id) = match anchor {
+            Some(anchor) => anchor,
+            None if total_rows <= 0 => (0, i64::MAX),
+            None => {
+                return Err(AppError::Database(format!(
+                    "natural navigation anchors are not ready for dataset {} generation {}",
+                    request.dataset_id, request.generation
+                )));
+            }
+        };
+        let local_offset = usize::try_from(start_i64 - anchor_ordinal).map_err(|_| {
+            AppError::Database("natural navigation local offset is negative".into())
+        })?;
+        if local_offset >= NATURAL_ANCHOR_STRIDE {
+            return Err(AppError::Database(
+                "natural navigation local offset exceeded anchor stride".into(),
+            ));
+        }
+
+        let limit = i64::try_from(request.count)
+            .map_err(|_| AppError::InvalidParam("window count is too large".into()))?;
+        let offset = i64::try_from(local_offset)
+            .map_err(|_| AppError::InvalidParam("window offset is too large".into()))?;
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({quoted} AS VARCHAR) AS {quoted}")
+                } else {
+                    quoted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query_sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
+        let mut stmt = connection.prepare(&query_sql)?;
+        let mut result_rows = stmt.query(params![anchor_row_id, limit, offset])?;
+        let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
+        while let Some(row) = result_rows.next()? {
+            let mut values = Vec::with_capacity(columns.len());
+            for column_index in 0..columns.len() {
+                values.push(Self::duckdb_value_to_json(row.get(column_index)?));
+            }
+            rows.push(values);
+        }
+
+        Ok((
+            TableNavigationResult {
+                version: 1,
+                request_id: request.request_id.clone(),
+                dataset_id: request.dataset_id.clone(),
+                generation: request.generation,
+                start: request.start,
+                total_rows,
+                total_rows_exact: true,
+                session_id: request.session_id.clone(),
+                columns,
+                column_types,
+                rows,
+                timings: TableNavigationTimings {
+                    total_ms: 0,
+                    diagnostic_json_encode_ms: None,
+                    diagnostic_json_bytes: None,
+                    diagnostic_response_ready_at_epoch_ms: None,
+                },
+            },
+            local_offset,
+        ))
+    }
+
+    fn natural_navigation_viewport_sql(table_name: &str, select_columns: &str) -> String {
+        format!(
+            "SELECT {select_columns} FROM {table_name} WHERE \"_row_id\" >= ? ORDER BY \"_row_id\" ASC LIMIT ? OFFSET ?"
+        )
     }
 
     pub fn locate_table_row(
@@ -1502,8 +2369,9 @@ impl DuckDbEngine {
     ) -> String {
         let row_id_select = if include_row_id { "\"_row_id\", " } else { "" };
         format!(
-            "SELECT {row_id_select}{projection} FROM ({}) AS __sp_graph_projection ORDER BY \"_row_id\" ASC",
+            "SELECT {row_id_select}{projection} FROM ({}) AS __sp_graph_projection ORDER BY {}",
             plan.projection_sql,
+            plan.order_by_sql,
             projection = plan.projection_select_items.join(", ")
         )
     }
@@ -1534,6 +2402,7 @@ impl DuckDbEngine {
         let group_y_column = role_to_column.get("groupy").cloned();
         let group_z_column = role_to_column.get("groupz").cloned();
         let wrap_column = role_to_column.get("wrap").cloned();
+        let time_series = time_series_request(&request.elements)?;
 
         let mut multi_x_columns = request
             .fields
@@ -1662,10 +2531,30 @@ impl DuckDbEngine {
             Self::compile_table_window_filters(&request.filters, allowed_columns)?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
 
-        let x_expr = x_column
-            .as_ref()
-            .map(|column| Self::quote_identifier(column))
-            .unwrap_or_else(|| "NULL".to_string());
+        let time_series_projection = if let Some(time_series_request) = time_series {
+            let x_name = x_column.as_ref().ok_or_else(|| {
+                AppError::InvalidParam("graph request is missing role x for time series".into())
+            })?;
+            let sql_type = allowed_columns
+                .get(x_name.as_str())
+                .copied()
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown graph column: {x_name}")))?;
+            Some(validate_time_series_x(
+                sql_type,
+                &time_series_request.x_interpretation,
+            )?)
+        } else {
+            None
+        };
+
+        let x_expr = if let (Some(column), Some(validated)) = (&x_column, time_series_projection) {
+            validated.projection_sql(&Self::quote_identifier(column))
+        } else {
+            x_column
+                .as_ref()
+                .map(|column| Self::quote_identifier(column))
+                .unwrap_or_else(|| "NULL".to_string())
+        };
         let group_expr = group_column
             .as_ref()
             .map(|column| Self::quote_identifier(column))
@@ -1810,6 +2699,7 @@ impl DuckDbEngine {
         let multi_x_merge_mode = multi_x_active && y_column.is_some();
         let multi_y_active = !multi_y_columns.is_empty();
         let melt_active = multi_x_active || multi_y_active;
+        let time_series_active = time_series.is_some();
         let mut projection_select_items = Vec::new();
         let mut projected_columns = Vec::new();
         let mut projected_column_types = Vec::new();
@@ -1823,7 +2713,9 @@ impl DuckDbEngine {
             projected_column_types.push(column_type);
         };
 
-        let x_public = if multi_x_axis_mode {
+        let x_public = if time_series_active {
+            x_column.clone().unwrap_or_else(|| "__sp_x".to_string())
+        } else if multi_x_axis_mode {
             GRAPH_VIRTUAL_SOURCE_COLUMN.to_string()
         } else if multi_x_merge_mode {
             GRAPH_VIRTUAL_VALUE_COLUMN.to_string()
@@ -1833,7 +2725,9 @@ impl DuckDbEngine {
         push_projected(
             format!("__sp_x AS {}", Self::quote_identifier(&x_public)),
             x_public,
-            if multi_x_axis_mode {
+            if time_series_active {
+                "DOUBLE".to_string()
+            } else if multi_x_axis_mode {
                 "VARCHAR".to_string()
             } else if multi_x_merge_mode {
                 "DOUBLE".to_string()
@@ -1955,6 +2849,13 @@ impl DuckDbEngine {
             );
         }
 
+        let order_by_sql = match time_series.map(|request| request.order) {
+            Some(GraphTimeSeriesOrder::TimeAscending) => {
+                "\"__sp_x\" ASC NULLS LAST, \"_row_id\" ASC".to_string()
+            }
+            _ => "\"_row_id\" ASC".to_string(),
+        };
+
         Ok(GraphQueryPlan {
             source_sql,
             source_values,
@@ -1963,6 +2864,7 @@ impl DuckDbEngine {
             projection_select_items,
             projected_columns,
             projected_column_types,
+            order_by_sql,
         })
     }
 
@@ -2946,7 +3848,7 @@ impl DuckDbEngine {
         })
     }
 
-    fn compile_table_window_filters(
+    pub(crate) fn compile_table_window_filters(
         filters: &[crate::models::table::TableWindowFilter],
         allowed_columns: &std::collections::HashMap<&str, &str>,
     ) -> Result<(String, Vec<Value>), AppError> {
@@ -3077,6 +3979,31 @@ impl DuckDbEngine {
             format!("WHERE {expression}")
         };
         Ok((clause, values))
+    }
+
+    fn build_table_window_order_clause(
+        sort: &Option<crate::models::table::TableWindowSort>,
+        allowed_columns: &std::collections::HashMap<&str, &str>,
+    ) -> Result<String, AppError> {
+        if let Some(sort) = sort {
+            if sort.column != "_row_id" && !allowed_columns.contains_key(sort.column.as_str()) {
+                return Err(AppError::InvalidParam(format!(
+                    "unknown sort column: {}",
+                    sort.column
+                )));
+            }
+            let direction = if sort.descending { "DESC" } else { "ASC" };
+            let sort_column = Self::quote_identifier(&sort.column);
+            if sort.column == "_row_id" {
+                Ok(format!("ORDER BY {sort_column} {direction}"))
+            } else {
+                Ok(format!(
+                    "ORDER BY {sort_column} {direction}, \"_row_id\" ASC"
+                ))
+            }
+        } else {
+            Ok("ORDER BY \"_row_id\" ASC".to_string())
+        }
     }
 
     /// Query a dataset table with pagination
@@ -3367,7 +4294,7 @@ impl DuckDbEngine {
         validate_read_only_query(sql, &allowed_tables)
     }
 
-    fn quote_identifier(name: &str) -> String {
+    pub(crate) fn quote_identifier(name: &str) -> String {
         format!("\"{}\"", name.replace('"', "\"\""))
     }
 
@@ -3395,6 +4322,13 @@ impl DuckDbEngine {
             .into_iter()
             .next()
             .ok_or_else(|| AppError::InvalidParam("column type produced no schema".into()))
+    }
+
+    pub fn canonicalize_column_type_for_create(
+        &self,
+        column_type: &str,
+    ) -> Result<String, AppError> {
+        self.canonicalize_column_type(column_type)
     }
 
     fn collect_sql_query_schema(
@@ -3447,6 +4381,78 @@ impl DuckDbEngine {
         Ok(())
     }
 
+    pub(crate) fn resolve_navigation_projection_on_connection(
+        connection: &Connection,
+        dataset_id: &str,
+        column_ids: &[String],
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let mut metadata_stmt = connection.prepare(
+            "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = ? ORDER BY col_index",
+        )?;
+        let descriptors = metadata_stmt
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut by_id = descriptors
+            .iter()
+            .map(|(column_id, name, column_type)| {
+                (column_id.as_str(), (name.clone(), column_type.clone()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut selected = Vec::with_capacity(column_ids.len());
+        let mut seen = HashSet::new();
+        for column_id in column_ids {
+            if !seen.insert(column_id.as_str()) {
+                return Err(AppError::InvalidParam(format!(
+                    "duplicate navigation column id: {column_id}"
+                )));
+            }
+            let column = by_id.remove(column_id.as_str()).ok_or_else(|| {
+                AppError::InvalidParam(format!("unknown navigation column id: {column_id}"))
+            })?;
+            selected.push(column);
+        }
+        let table_name = Self::internal_table_name(dataset_id);
+        let storage_columns = Self::storage_user_columns_on_connection(connection, dataset_id)?;
+        let storage_by_name = storage_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        for (column_name, column_type) in &selected {
+            let actual_type = storage_by_name.get(column_name.as_str()).ok_or_else(|| {
+                AppError::InvalidParam(format!(
+                    "navigation projection column not found in storage table {table_name}: {column_name}"
+                ))
+            })?;
+            if !actual_type.eq_ignore_ascii_case(column_type) {
+                return Err(AppError::InvalidParam(format!(
+                    "navigation projection column type mismatch for {column_name}: metadata {column_type}, storage {actual_type}"
+                )));
+            }
+        }
+        Ok(selected)
+    }
+
+    pub(crate) fn storage_user_columns_on_connection(
+        connection: &Connection,
+        dataset_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let table_name = Self::internal_table_name(dataset_id);
+        let mut stmt = connection.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
+        )?;
+        Ok(stmt
+            .query_map(params![table_name], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
     fn finalize_transaction<T, Commit, Rollback>(
         commit: Commit,
         rollback: Rollback,
@@ -3464,8 +4470,79 @@ impl DuckDbEngine {
         }
     }
 
-    fn internal_table_name(id: &str) -> String {
+    pub(crate) fn internal_table_name(id: &str) -> String {
         format!("dataset_{}", id.replace('-', "_"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn natural_navigation_local_offset_for_test(
+        &self,
+        dataset_id: &str,
+        generation: u64,
+        start: usize,
+    ) -> Result<usize, AppError> {
+        let request = TableNavigationRequest {
+            version: 1,
+            request_id: "offset-test".to_string(),
+            dataset_id: dataset_id.to_string(),
+            generation,
+            start,
+            count: 1,
+            column_ids: vec![],
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        };
+        let (_, local_offset) = Self::query_natural_navigation_window_inner(&self.conn, &request)?;
+        Ok(local_offset)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn explain_natural_navigation_window_for_test(
+        connection: &Connection,
+        request: &TableNavigationRequest,
+    ) -> Result<String, AppError> {
+        let navigation_columns = Self::resolve_navigation_projection_on_connection(
+            connection,
+            &request.dataset_id,
+            &request.column_ids,
+        )?;
+        let mut columns = vec!["_row_id".to_string()];
+        let mut column_types = vec!["BIGINT".to_string()];
+        columns.extend(navigation_columns.iter().map(|(name, _)| name.clone()));
+        column_types.extend(
+            navigation_columns
+                .iter()
+                .map(|(_, column_type)| column_type.clone()),
+        );
+        let select_columns = columns
+            .iter()
+            .zip(column_types.iter())
+            .map(|(column, column_type)| {
+                let quoted = Self::quote_identifier(column);
+                let normalized_type = column_type.to_ascii_uppercase();
+                if normalized_type.starts_with("DATE")
+                    || normalized_type.starts_with("TIME")
+                    || normalized_type.starts_with("INTERVAL")
+                {
+                    format!("CAST({quoted} AS VARCHAR) AS {quoted}")
+                } else {
+                    quoted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
+        let sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
+        let mut statement = connection.prepare(&format!("EXPLAIN {sql}"))?;
+        let mut rows = statement.query(params![0_i64, 1_i64, 0_i64])?;
+        let mut lines = Vec::new();
+        while let Some(row) = rows.next()? {
+            let value: String = row.get(1)?;
+            lines.push(value);
+        }
+        Ok(lines.join("\n"))
     }
 
     fn duckdb_value_to_json(value: Value) -> serde_json::Value {
@@ -3946,6 +5023,8 @@ impl DuckDbEngine {
                     params![row_count, id],
                 )?;
                     self.bump_dataset_generation(&id)?;
+                    let generation = self.get_dataset_generation(&id)?;
+                    self.rebuild_natural_anchors(&id, generation)?;
                 } else {
                     let col_count_i32 = columns.len() as i32;
                     for (col_index, (col_name, sqlite_type)) in columns.iter().enumerate() {
@@ -3959,6 +5038,7 @@ impl DuckDbEngine {
                     "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, 'sqlite', $4, $5)",
                     params![id, target_name, source_description, row_count, col_count_i32],
                 )?;
+                    self.rebuild_natural_anchors(&id, 0)?;
                 }
 
                 let meta = self.get_dataset_meta(&id)?;
@@ -4055,9 +5135,7 @@ impl DuckDbEngine {
                             ));
                         }
                         let row_id = i64::try_from(row.source_index).map_err(|_| {
-                            AppError::InvalidParam(
-                                "Database row index is out of range".to_string(),
-                            )
+                            AppError::InvalidParam("Database row index is out of range".to_string())
                         })?;
                         let mut values = Vec::with_capacity(columns.len() + 1);
                         values.push(Value::BigInt(row_id));
@@ -4103,6 +5181,7 @@ impl DuckDbEngine {
                 "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, $3, $4, $5, $6)",
                 params![id, target_name, source_description, connector.source_type(), row_count, column_count],
             )?;
+            self.rebuild_natural_anchors(&id, 0)?;
             Ok((self.get_dataset_meta(&id)?, rows_done))
         })();
 
@@ -4131,9 +5210,13 @@ impl DuckDbEngine {
         let base = source_type.split(['(', ' ']).next().unwrap_or("");
         match base {
             "bigint" if source_type.contains("unsigned") => "VARCHAR",
-            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => "BIGINT",
+            "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year" => {
+                "BIGINT"
+            }
             "float" | "double" | "real" => "DOUBLE",
-            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => "BLOB",
+            "tinyblob" | "blob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "bit" => {
+                "BLOB"
+            }
             _ => "VARCHAR",
         }
     }
@@ -4577,38 +5660,22 @@ impl DuckDbEngine {
             "INSERT INTO _meta_datasets (id, name, source_path, source_type, row_count, col_count) VALUES ($1, $2, NULL, 'manual', 0, $3)",
             params![id, name, col_count],
         )?;
+        self.rebuild_natural_anchors(id, 0)?;
 
         self.get_dataset_meta(id)
     }
 
     /// Add an empty row to a dataset, returns the new row_id
     pub fn add_row(&self, dataset_id: &str) -> Result<i64, AppError> {
-        self.with_row_mutation(dataset_id, || {
-            let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
-            let max_id: Option<i64> = self
-                .conn
-                .query_row(
-                    &format!("SELECT MAX(\"_row_id\") FROM \"{}\"", table_name),
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(None);
-            let new_id = max_id.unwrap_or(0) + 1;
-
-            self.conn.execute(
-                &format!("INSERT INTO \"{}\" (\"_row_id\") VALUES ($1)", table_name),
-                params![new_id],
-            )?;
-            let row_count: i64 = self.conn.query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
-                [],
-                |row| row.get(0),
-            )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
-                params![row_count, dataset_id],
-            )?;
-            Ok(new_id)
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            let row_id = engine.add_row_inner(dataset_id)?;
+            Ok(TableMutationEffects {
+                value: row_id,
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
         })
     }
 
@@ -4621,36 +5688,78 @@ impl DuckDbEngine {
         }
         let count_i64 = i64::try_from(count)
             .map_err(|_| AppError::InvalidParam("row count is too large".into()))?;
-        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            let row_ids = engine.add_rows_inner(dataset_id, count_i64)?;
+            Ok(TableMutationEffects {
+                value: row_ids,
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
+        })
+    }
 
-        self.with_row_mutation(dataset_id, || {
-            let max_id: Option<i64> = self.conn.query_row(
-                &format!("SELECT MAX(\"_row_id\") FROM {table}"),
+    pub(crate) fn add_row_inner(&self, dataset_id: &str) -> Result<i64, AppError> {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let max_id: Option<i64> = self
+            .conn
+            .query_row(
+                &format!("SELECT MAX(\"_row_id\") FROM \"{}\"", table_name),
                 [],
                 |row| row.get(0),
-            )?;
-            let first_id = max_id
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
-            let final_id = first_id
-                .checked_add(count_i64 - 1)
-                .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
-            self.conn.execute(
-                &format!("INSERT INTO {table} (\"_row_id\") SELECT ? + range FROM range(?)"),
-                params![first_id, count_i64],
-            )?;
-            let row_count: i64 =
-                self.conn
-                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                        row.get(0)
-                    })?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET row_count = ? WHERE id = ?",
-                params![row_count, dataset_id],
-            )?;
-            Ok((first_id..=final_id).collect())
-        })
+            )
+            .unwrap_or(None);
+        let new_id = max_id.unwrap_or(0) + 1;
+
+        self.conn.execute(
+            &format!("INSERT INTO \"{}\" (\"_row_id\") VALUES ($1)", table_name),
+            params![new_id],
+        )?;
+        let row_count: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![row_count, dataset_id],
+        )?;
+        Ok(new_id)
+    }
+
+    pub(crate) fn add_rows_inner(
+        &self,
+        dataset_id: &str,
+        count_i64: i64,
+    ) -> Result<Vec<i64>, AppError> {
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let max_id: Option<i64> = self.conn.query_row(
+            &format!("SELECT MAX(\"_row_id\") FROM {table}"),
+            [],
+            |row| row.get(0),
+        )?;
+        let first_id = max_id
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
+        let final_id = first_id
+            .checked_add(count_i64 - 1)
+            .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
+        self.conn.execute(
+            &format!("INSERT INTO {table} (\"_row_id\") SELECT ? + range FROM range(?)"),
+            params![first_id, count_i64],
+        )?;
+        let row_count: i64 =
+            self.conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = ? WHERE id = ?",
+            params![row_count, dataset_id],
+        )?;
+        Ok((first_id..=final_id).collect())
     }
 
     pub fn apply_added_rows(
@@ -4674,72 +5783,69 @@ impl DuckDbEngine {
                 "row IDs must be unique positive integers".into(),
             ));
         }
-        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, Some(expected_generation), |engine| {
+            engine.apply_added_rows_inner(dataset_id, &unique_ids, undo)?;
+            let next_generation = engine
+                .get_dataset_generation(dataset_id)?
+                .checked_add(1)
+                .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
+            Ok(TableMutationEffects {
+                value: next_generation,
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
+        })
+    }
 
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
-        let result = (|| -> Result<u64, AppError> {
-            let generation = self.get_dataset_generation(dataset_id)?;
-            if generation != expected_generation {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected_generation}"
-                )));
-            }
-            for chunk in unique_ids.chunks(1_000) {
-                let placeholders = std::iter::repeat_n("?", chunk.len())
+    pub(crate) fn apply_added_rows_inner(
+        &self,
+        dataset_id: &str,
+        row_ids: &[i64],
+        undo: bool,
+    ) -> Result<(), AppError> {
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        for chunk in row_ids.chunks(1_000) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if undo {
+                self.conn.execute(
+                    &format!("DELETE FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
+                    params_from_iter(chunk.iter()),
+                )?;
+            } else {
+                let collisions: i64 = self.conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
+                    params_from_iter(chunk.iter()),
+                    |row| row.get(0),
+                )?;
+                if collisions != 0 {
+                    return Err(AppError::InvalidParam(
+                        "cannot redo added rows because row IDs already exist".into(),
+                    ));
+                }
+                let value_rows = (0..chunk.len())
+                    .map(|_| "(?)")
                     .collect::<Vec<_>>()
                     .join(", ");
-                if undo {
-                    self.conn.execute(
-                        &format!("DELETE FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
-                        params_from_iter(chunk.iter()),
-                    )?;
-                } else {
-                    let collisions: i64 = self.conn.query_row(
-                        &format!(
-                            "SELECT COUNT(*) FROM {table} WHERE \"_row_id\" IN ({placeholders})"
-                        ),
-                        params_from_iter(chunk.iter()),
-                        |row| row.get(0),
-                    )?;
-                    if collisions != 0 {
-                        return Err(AppError::InvalidParam(
-                            "cannot redo added rows because row IDs already exist".into(),
-                        ));
-                    }
-                    let value_rows = (0..chunk.len())
-                        .map(|_| "(?)")
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.conn.execute(
-                        &format!("INSERT INTO {table} (\"_row_id\") VALUES {value_rows}"),
-                        params_from_iter(chunk.iter()),
-                    )?;
-                }
-            }
-            let row_count: i64 =
-                self.conn
-                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                        row.get(0)
-                    })?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET row_count = ? WHERE id = ?",
-                params![row_count, dataset_id],
-            )?;
-            self.bump_dataset_generation(dataset_id)?;
-            generation
-                .checked_add(1)
-                .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))
-        })();
-        match result {
-            Ok(generation) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(generation)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(error)
+                self.conn.execute(
+                    &format!("INSERT INTO {table} (\"_row_id\") VALUES {value_rows}"),
+                    params_from_iter(chunk.iter()),
+                )?;
             }
         }
+        let row_count: i64 =
+            self.conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = ? WHERE id = ?",
+            params![row_count, dataset_id],
+        )?;
+        Ok(())
     }
 
     /// Update a cell value
@@ -4750,26 +5856,129 @@ impl DuckDbEngine {
         column_name: &str,
         value: &str,
     ) -> Result<(), AppError> {
-        self.with_row_mutation(dataset_id, || {
-            let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
-            if value.is_empty() {
-                let update_sql = format!(
-                    "UPDATE \"{}\" SET \"{}\" = NULL WHERE \"_row_id\" = $1",
-                    table_name, column_name
-                );
-                self.conn.execute(&update_sql, params![row_id])?;
-            } else {
-                let update_sql = format!(
-                    "UPDATE \"{}\" SET \"{}\" = $1 WHERE \"_row_id\" = $2",
-                    table_name, column_name
-                );
-                self.conn.execute(&update_sql, params![value, row_id])?;
+        self.update_cells_if_generation(
+            dataset_id,
+            &[CellUpdate {
+                row_id,
+                column_name: column_name.to_string(),
+                value: if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                },
+            }],
+            None,
+        )
+        .map(|_| ())
+    }
+
+    pub(crate) fn apply_cell_updates_inner(
+        &self,
+        dataset_id: &str,
+        updates: &[CellUpdate],
+    ) -> Result<(), AppError> {
+        const MAX_CELLS: usize = 100_000;
+        if updates.is_empty() {
+            return Ok(());
+        }
+        if updates.len() > MAX_CELLS {
+            return Err(AppError::InvalidParam(format!(
+                "cannot update more than {MAX_CELLS} cells at once"
+            )));
+        }
+
+        let allowed_columns = self
+            .get_user_columns(dataset_id)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<HashSet<_>>();
+        for update in updates {
+            if !allowed_columns.contains(&update.column_name) {
+                return Err(AppError::InvalidParam(format!(
+                    "unknown column: {}",
+                    update.column_name
+                )));
             }
-            Ok(())
-        })
+        }
+
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        for update in updates {
+            let column = Self::quote_identifier(&update.column_name);
+            match &update.value {
+                Some(value) => {
+                    self.conn.execute(
+                        &format!("UPDATE {table} SET {column} = $1 WHERE \"_row_id\" = $2"),
+                        params![value, update.row_id],
+                    )?;
+                }
+                None => {
+                    self.conn.execute(
+                        &format!("UPDATE {table} SET {column} = NULL WHERE \"_row_id\" = $1"),
+                        params![update.row_id],
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn clear_cells(&self, dataset_id: &str, cells: &[CellPosition]) -> Result<(), AppError> {
+        if cells.is_empty() {
+            return Ok(());
+        }
+        let changed_column_ids = self.resolve_column_ids_by_name(
+            dataset_id,
+            cells.iter().map(|cell| cell.column_name.as_str()),
+        )?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            engine.clear_cells_inner(dataset_id, cells)?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
+        })
+    }
+
+    pub fn update_cells(&self, dataset_id: &str, updates: &[CellUpdate]) -> Result<(), AppError> {
+        self.update_cells_if_generation(dataset_id, updates, None)
+            .map(|_| ())
+    }
+
+    pub fn update_cells_if_generation(
+        &self,
+        dataset_id: &str,
+        updates: &[CellUpdate],
+        expected_generation: Option<u64>,
+    ) -> Result<u64, AppError> {
+        if updates.is_empty() {
+            return self.get_dataset_generation(dataset_id);
+        }
+        let changed_column_ids = self.resolve_column_ids_by_name(
+            dataset_id,
+            updates.iter().map(|update| update.column_name.as_str()),
+        )?;
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            engine.apply_cell_updates_inner(dataset_id, updates)?;
+            let next_generation = engine
+                .get_dataset_generation(dataset_id)?
+                .checked_add(1)
+                .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
+            Ok(TableMutationEffects {
+                value: next_generation,
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
+        })
+    }
+
+    pub(crate) fn clear_cells_inner(
+        &self,
+        dataset_id: &str,
+        cells: &[CellPosition],
+    ) -> Result<(), AppError> {
         const MAX_CELLS: usize = 100_000;
         const ROW_IDS_PER_UPDATE: usize = 1_000;
         if cells.is_empty() {
@@ -4800,122 +6009,55 @@ impl DuckDbEngine {
                 .push(cell.row_id);
         }
 
-        self.with_row_mutation(dataset_id, || {
-            let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
-            for (column_name, mut row_ids) in row_ids_by_column {
-                row_ids.sort_unstable();
-                row_ids.dedup();
-                let column = Self::quote_identifier(&column_name);
-                for chunk in row_ids.chunks(ROW_IDS_PER_UPDATE) {
-                    let placeholders = std::iter::repeat_n("?", chunk.len())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let sql = format!(
-                        "UPDATE {table} SET {column} = NULL WHERE \"_row_id\" IN ({placeholders})"
-                    );
-                    self.conn.execute(&sql, params_from_iter(chunk.iter()))?;
-                }
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        for (column_name, mut row_ids) in row_ids_by_column {
+            row_ids.sort_unstable();
+            row_ids.dedup();
+            let column = Self::quote_identifier(&column_name);
+            for chunk in row_ids.chunks(ROW_IDS_PER_UPDATE) {
+                let placeholders = std::iter::repeat_n("?", chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "UPDATE {table} SET {column} = NULL WHERE \"_row_id\" IN ({placeholders})"
+                );
+                self.conn.execute(&sql, params_from_iter(chunk.iter()))?;
             }
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
-    pub fn update_cells(&self, dataset_id: &str, updates: &[CellUpdate]) -> Result<(), AppError> {
-        self.update_cells_if_generation(dataset_id, updates, None)
-            .map(|_| ())
-    }
-
-    pub fn update_cells_if_generation(
+    pub(crate) fn resolve_column_ids_by_name<'a>(
         &self,
         dataset_id: &str,
-        updates: &[CellUpdate],
-        expected_generation: Option<u64>,
-    ) -> Result<u64, AppError> {
-        const MAX_CELLS: usize = 100_000;
-        if updates.is_empty() {
-            return self.get_dataset_generation(dataset_id);
-        }
-        if updates.len() > MAX_CELLS {
-            return Err(AppError::InvalidParam(format!(
-                "cannot update more than {MAX_CELLS} cells at once"
-            )));
-        }
-        let allowed_columns = self
-            .get_user_columns(dataset_id)?
+        column_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<BTreeSet<String>, AppError> {
+        let descriptors = self.get_user_column_descriptors(dataset_id)?;
+        let ids_by_name = descriptors
             .into_iter()
-            .map(|(name, _)| name)
-            .collect::<HashSet<_>>();
-        for update in updates {
-            if !allowed_columns.contains(&update.column_name) {
-                return Err(AppError::InvalidParam(format!(
-                    "unknown column: {}",
-                    update.column_name
-                )));
-            }
+            .map(|column| (column.name, column.column_id))
+            .collect::<BTreeMap<_, _>>();
+        let mut changed_column_ids = BTreeSet::new();
+        for column_name in column_names {
+            let column_id = ids_by_name
+                .get(column_name)
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown column: {column_name}")))?;
+            changed_column_ids.insert(column_id.clone());
         }
-
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
-        let result = (|| -> Result<u64, AppError> {
-            let generation = self.get_dataset_generation(dataset_id)?;
-            if expected_generation.is_some_and(|expected| expected != generation) {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {}",
-                    expected_generation.unwrap_or(generation)
-                )));
-            }
-            let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
-            for update in updates {
-                let column = Self::quote_identifier(&update.column_name);
-                match &update.value {
-                    Some(value) => {
-                        self.conn.execute(
-                            &format!("UPDATE {table} SET {column} = $1 WHERE \"_row_id\" = $2"),
-                            params![value, update.row_id],
-                        )?;
-                    }
-                    None => {
-                        self.conn.execute(
-                            &format!("UPDATE {table} SET {column} = NULL WHERE \"_row_id\" = $1"),
-                            params![update.row_id],
-                        )?;
-                    }
-                }
-            }
-            self.bump_dataset_generation(dataset_id)?;
-            generation
-                .checked_add(1)
-                .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))
-        })();
-        match result {
-            Ok(generation) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(generation)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
+        Ok(changed_column_ids)
     }
 
     /// Delete a row by row_id
     pub fn delete_row(&self, dataset_id: &str, row_id: i64) -> Result<(), AppError> {
-        self.with_row_mutation(dataset_id, || {
-            let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
-            self.conn.execute(
-                &format!("DELETE FROM \"{}\" WHERE \"_row_id\" = $1", table_name),
-                params![row_id],
-            )?;
-            let row_count: i64 = self.conn.query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
-                [],
-                |row| row.get(0),
-            )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
-                params![row_count, dataset_id],
-            )?;
-            Ok(())
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            engine.delete_rows_inner(dataset_id, &[row_id])?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
         })
     }
 
@@ -4932,27 +6074,174 @@ impl DuckDbEngine {
         let mut unique_row_ids = row_ids.to_vec();
         unique_row_ids.sort_unstable();
         unique_row_ids.dedup();
-
-        self.with_row_mutation(dataset_id, || {
-            let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
-            let placeholders = std::iter::repeat_n("?", unique_row_ids.len())
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.conn.execute(
-                &format!("DELETE FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
-                params_from_iter(unique_row_ids.iter()),
-            )?;
-            let row_count: i64 =
-                self.conn
-                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                        row.get(0)
-                    })?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
-                params![row_count, dataset_id],
-            )?;
-            Ok(())
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            engine.delete_rows_inner(dataset_id, &unique_row_ids)?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
         })
+    }
+
+    pub(crate) fn delete_rows_inner(
+        &self,
+        dataset_id: &str,
+        row_ids: &[i64],
+    ) -> Result<(), AppError> {
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let placeholders = std::iter::repeat_n("?", row_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!("DELETE FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
+            params_from_iter(row_ids.iter()),
+        )?;
+        let row_count: i64 =
+            self.conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?;
+        self.conn.execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![row_count, dataset_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn all_user_column_ids(
+        &self,
+        dataset_id: &str,
+    ) -> Result<BTreeSet<String>, AppError> {
+        self.get_user_column_descriptors(dataset_id).map(|columns| {
+            columns
+                .into_iter()
+                .map(|column| column.column_id)
+                .collect::<BTreeSet<_>>()
+        })
+    }
+
+    pub(crate) fn reject_calculated_column_writes<'a>(
+        &self,
+        dataset_id: &str,
+        column_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), AppError> {
+        let calculated_names = self.calculated_column_names(dataset_id)?;
+        if let Some(column_name) = column_names
+            .into_iter()
+            .find(|column_name| calculated_names.contains(*column_name))
+        {
+            return Err(AppError::InvalidParam(format!(
+                "calculated output column is read-only until convert to values: {column_name}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reject_calculated_dependency_removals<'a>(
+        &self,
+        dataset_id: &str,
+        column_names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), AppError> {
+        let requested_names = column_names
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let descriptors_by_name = self
+            .get_user_column_descriptors(dataset_id)?
+            .into_iter()
+            .map(|column| (column.name.clone(), column))
+            .collect::<BTreeMap<_, _>>();
+        let requested_ids = requested_names
+            .iter()
+            .filter_map(|name| {
+                descriptors_by_name
+                    .get(name)
+                    .map(|column| (name.as_str(), column.column_id.as_str()))
+            })
+            .collect::<Vec<_>>();
+        if requested_ids.is_empty() {
+            return Ok(());
+        }
+        let requested_id_set = requested_ids
+            .iter()
+            .map(|(_, column_id)| *column_id)
+            .collect::<BTreeSet<_>>();
+
+        for calculated in self
+            .get_archived_calculated_columns_by_id(dataset_id)?
+            .values()
+        {
+            let ArchivedCalculatedColumn::Ready { definition, .. } = calculated else {
+                continue;
+            };
+            if requested_id_set.contains(definition.output_column_id.as_str()) {
+                continue;
+            }
+            if let Some((column_name, _)) = requested_ids.iter().find(|(_, column_id)| {
+                definition
+                    .dependency_column_ids
+                    .iter()
+                    .any(|dependency| dependency == *column_id)
+            }) {
+                let dependent_name = descriptors_by_name
+                    .values()
+                    .find(|column| column.column_id == definition.output_column_id)
+                    .map(|column| column.name.as_str())
+                    .unwrap_or(definition.output_column_id.as_str());
+                return Err(AppError::InvalidParam(format!(
+                    "cannot delete column {column_name} because calculated dependency {dependent_name} depends on it"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn reject_calculated_column_range_writes(
+        &self,
+        dataset_id: &str,
+        start_col: usize,
+        width: usize,
+    ) -> Result<(), AppError> {
+        if width == 0 {
+            return Ok(());
+        }
+        let descriptors = self.get_user_column_descriptors(dataset_id)?;
+        let end = start_col
+            .checked_add(width)
+            .ok_or_else(|| AppError::InvalidParam("column range is too large".into()))?;
+        let target_names = descriptors
+            .get(start_col..end.min(descriptors.len()))
+            .into_iter()
+            .flatten()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        self.reject_calculated_column_writes(dataset_id, target_names)
+    }
+
+    pub(crate) fn column_ids_in_range(
+        &self,
+        dataset_id: &str,
+        start_col: usize,
+        width: usize,
+    ) -> Result<BTreeSet<String>, AppError> {
+        if width == 0 {
+            return Ok(BTreeSet::new());
+        }
+        let descriptors = self.get_user_column_descriptors(dataset_id)?;
+        let end = start_col
+            .checked_add(width)
+            .ok_or_else(|| AppError::InvalidParam("column range is too large".into()))?;
+        let slice = descriptors
+            .get(start_col..end)
+            .ok_or_else(|| AppError::Database("paste column allocation was incomplete".into()))?;
+        Ok(slice
+            .iter()
+            .map(|column| column.column_id.clone())
+            .collect())
     }
 
     /// Rename a dataset
@@ -4968,6 +6257,17 @@ impl DuckDbEngine {
 
     /// Add a column to a dataset
     pub fn add_column(
+        &self,
+        dataset_id: &str,
+        col_name: &str,
+        col_type: &str,
+    ) -> Result<(), AppError> {
+        self.add_column_inner(dataset_id, col_name, col_type)?;
+        self.bump_dataset_generation(dataset_id)?;
+        Ok(())
+    }
+
+    pub(crate) fn add_column_inner(
         &self,
         dataset_id: &str,
         col_name: &str,
@@ -5005,8 +6305,6 @@ impl DuckDbEngine {
             "UPDATE _meta_datasets SET col_count = col_count + 1 WHERE id = $1",
             params![dataset_id],
         )?;
-
-        self.bump_dataset_generation(dataset_id)?;
         Ok(())
     }
 
@@ -5073,7 +6371,7 @@ impl DuckDbEngine {
     /// indices are clamped to the valid range; a no-op move returns `Ok`.
     pub fn reorder_column(&self, dataset_id: &str, from: i32, to: i32) -> Result<(), AppError> {
         // Read the current column order.
-        let mut names: Vec<String> = {
+        let names: Vec<String> = {
             let mut stmt = self.conn.prepare(
                 "SELECT col_name FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
             )?;
@@ -5092,6 +6390,34 @@ impl DuckDbEngine {
             return Ok(());
         }
 
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            engine.reorder_column_inner(dataset_id, from, to)?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: Some(BTreeSet::new()),
+            })
+        })
+    }
+
+    pub(crate) fn reorder_column_inner(
+        &self,
+        dataset_id: &str,
+        from: i32,
+        to: i32,
+    ) -> Result<(), AppError> {
+        let mut names: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT col_name FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+            )?;
+            stmt.query_map(params![dataset_id], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        let n = names.len() as i32;
+
         // Apply the move within the ordered name list.
         let moved = names.remove(from as usize);
         names.insert(to as usize, moved);
@@ -5108,8 +6434,6 @@ impl DuckDbEngine {
                 params![i as i32, dataset_id, name],
             )?;
         }
-
-        self.bump_dataset_generation(dataset_id)?;
         Ok(())
     }
 
@@ -5136,34 +6460,41 @@ impl DuckDbEngine {
             ));
         }
 
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<u64, AppError> {
-            let generation = self.get_dataset_generation(dataset_id)?;
-            if generation != expected_generation {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected_generation}"
-                )));
-            }
-            self.reorder_column(dataset_id, from, to)?;
-            self.get_dataset_generation(dataset_id)
-        })();
-        match result {
-            Ok(generation) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(generation)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, Some(expected_generation), |engine| {
+            engine.reorder_column_inner(dataset_id, from, to)?;
+            let generation = engine.get_dataset_generation(dataset_id)? + 1;
+            Ok(TableMutationEffects {
+                value: generation,
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: Some(BTreeSet::new()),
+            })
+        })
     }
 
     /// Delete a column from a dataset
     pub fn delete_column(&self, dataset_id: &str, col_name: &str) -> Result<(), AppError> {
+        self.reject_calculated_dependency_removals(dataset_id, [col_name])?;
+        let changed_column_ids = self.resolve_column_ids_by_name(dataset_id, [col_name])?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            engine.delete_column_inner(dataset_id, col_name)?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
+        })
+    }
+
+    pub(crate) fn delete_column_inner(
+        &self,
+        dataset_id: &str,
+        col_name: &str,
+    ) -> Result<(), AppError> {
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
 
-        // ALTER TABLE to drop column
         self.conn.execute(
             &format!(
                 "ALTER TABLE \"{}\" DROP COLUMN \"{}\"",
@@ -5172,37 +6503,50 @@ impl DuckDbEngine {
             [],
         )?;
 
-        // Get the index of the deleted column
         let del_idx: i32 = self.conn.query_row(
             "SELECT col_index FROM _meta_columns WHERE dataset_id = $1 AND col_name = $2",
             params![dataset_id, col_name],
             |row| row.get(0),
         )?;
 
-        // Delete column metadata
         self.conn.execute(
             "DELETE FROM _meta_columns WHERE dataset_id = $1 AND col_name = $2",
             params![dataset_id, col_name],
         )?;
 
-        // Re-index remaining columns
         self.conn.execute(
             "UPDATE _meta_columns SET col_index = col_index - 1 WHERE dataset_id = $1 AND col_index > $2",
             params![dataset_id, del_idx],
         )?;
 
-        // Update col_count
         self.conn.execute(
             "UPDATE _meta_datasets SET col_count = col_count - 1 WHERE id = $1",
             params![dataset_id],
         )?;
 
-        self.bump_dataset_generation(dataset_id)?;
         Ok(())
     }
 
     /// Rename a column
     pub fn rename_column(
+        &self,
+        dataset_id: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), AppError> {
+        let changed_column_ids = self.resolve_column_ids_by_name(dataset_id, [old_name])?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            engine.rename_column_inner(dataset_id, old_name, new_name)?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: Some(BTreeSet::new()),
+            })
+        })
+    }
+
+    pub(crate) fn rename_column_inner(
         &self,
         dataset_id: &str,
         old_name: &str,
@@ -5221,12 +6565,29 @@ impl DuckDbEngine {
             "UPDATE _meta_columns SET col_name = $1 WHERE dataset_id = $2 AND col_name = $3",
             params![new_name, dataset_id, old_name],
         )?;
-
-        self.bump_dataset_generation(dataset_id)?;
         Ok(())
     }
 
     pub fn change_column_type(
+        &self,
+        dataset_id: &str,
+        col_name: &str,
+        new_type: &str,
+    ) -> Result<(), AppError> {
+        self.reject_calculated_column_writes(dataset_id, [col_name])?;
+        let changed_column_ids = self.resolve_column_ids_by_name(dataset_id, [col_name])?;
+        execute_table_mutation(self, dataset_id, None, |engine| {
+            engine.change_column_type_inner(dataset_id, col_name, new_type)?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
+        })
+    }
+
+    pub(crate) fn change_column_type_inner(
         &self,
         dataset_id: &str,
         col_name: &str,
@@ -5263,8 +6624,6 @@ impl DuckDbEngine {
             "UPDATE _meta_columns SET col_type = $1 WHERE dataset_id = $2 AND col_name = $3",
             params![&new_type, dataset_id, col_name],
         )?;
-
-        self.bump_dataset_generation(dataset_id)?;
         Ok(())
     }
 
@@ -5309,20 +6668,13 @@ impl DuckDbEngine {
         expected_generation: Option<u64>,
     ) -> Result<(), AppError> {
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
-
-        // Wrap the entire operation in a transaction so we get a single commit
-        // (instead of one auto-commit per statement) and atomic rollback on error.
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| {
-            if let Some(expected) = expected_generation {
-                let current = self.get_dataset_generation(dataset_id)?;
-                if current != expected {
-                    return Err(AppError::InvalidParam(format!(
-                        "stale dataset generation: expected {current}, received {expected}"
-                    )));
-                }
-            }
-            self.paste_at_position_inner(
+        self.reject_calculated_column_range_writes(
+            dataset_id,
+            start_col,
+            rows.iter().map(Vec::len).max().unwrap_or(0),
+        )?;
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            engine.paste_at_position_inner(
                 dataset_id,
                 &table_name,
                 start_row,
@@ -5330,20 +6682,19 @@ impl DuckDbEngine {
                 rows,
                 header_names,
                 new_col_types,
-            )
-        })()
-        .and_then(|()| self.bump_dataset_generation(dataset_id));
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(())
-            }
-            Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                let _ = self.conn.execute("DROP TABLE IF EXISTS _paste_patch", []);
-                Err(e)
-            }
-        }
+            )?;
+            let changed_column_ids = engine.column_ids_in_range(
+                dataset_id,
+                start_col,
+                rows.iter().map(Vec::len).max().unwrap_or(0),
+            )?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids,
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn paste_at_position_with_change_set(
@@ -5356,134 +6707,32 @@ impl DuckDbEngine {
         new_col_types: &[String],
         expected_generation: Option<u64>,
     ) -> Result<String, AppError> {
-        let existing_columns = self.get_user_columns(dataset_id)?;
         let paste_column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
         start_col
             .checked_add(paste_column_count)
             .ok_or_else(|| AppError::InvalidParam("Paste column range is too large".into()))?;
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if let Some(expected) = expected_generation {
-            if generation != expected {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected}"
-                )));
-            }
-        }
-
+        self.reject_calculated_column_range_writes(dataset_id, start_col, paste_column_count)?;
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
-        let before_columns = (0..paste_column_count)
-            .map(|ordinal| existing_columns.get(start_col + ordinal).cloned())
-            .collect::<Vec<_>>();
-        let snapshot_columns = before_columns
-            .iter()
-            .enumerate()
-            .map(|(ordinal, column)| match column {
-                Some((name, _)) => format!(
-                    "{} AS {}",
-                    Self::quote_identifier(name),
-                    Self::quote_identifier(&format!("c{ordinal}"))
-                ),
-                None => format!("CAST(NULL AS VARCHAR) AS \"c{ordinal}\""),
-            })
-            .collect::<Vec<_>>();
-        let snapshot_select = std::iter::once("\"_row_id\"".to_string())
-            .chain(snapshot_columns.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let limit = i64::try_from(rows.len())
-            .map_err(|_| AppError::InvalidParam("Paste row count is too large".into()))?;
-        let offset = i64::try_from(start_row)
-            .map_err(|_| AppError::InvalidParam("Paste row offset is too large".into()))?;
-        let original_max_row_id: Option<i64> = self.conn.query_row(
-            &format!("SELECT MAX(\"_row_id\") FROM {dataset_table}"),
-            [],
-            |row| row.get(0),
-        )?;
-        let original_max_row_id = original_max_row_id.unwrap_or(0);
-
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT {snapshot_select} FROM {dataset_table} ORDER BY \"_row_id\" LIMIT ? OFFSET ?"
-                ),
-                params![limit, offset],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, generation + 1],
-            )?;
-            self.paste_at_position_inner(
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            engine.paste_at_position_inner(
                 dataset_id,
-                &Self::internal_table_name(dataset_id),
+                &table_name,
                 start_row,
                 start_col,
                 rows,
                 header_names,
                 new_col_types,
             )?;
-            let after_columns = self.get_user_columns(dataset_id)?;
-            for ordinal in 0..paste_column_count {
-                let (after_name, after_type) =
-                    after_columns.get(start_col + ordinal).ok_or_else(|| {
-                        AppError::Database("Paste column allocation was incomplete".into())
-                    })?;
-                let (before_name, before_type) = before_columns[ordinal]
-                    .as_ref()
-                    .map(|(name, column_type)| (Some(name.as_str()), Some(column_type.as_str())))
-                    .unwrap_or((None, None));
-                self.conn.execute(
-                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    params![
-                        &change_set_id,
-                        ordinal as i32,
-                        (start_col + ordinal) as i32,
-                        before_name,
-                        before_type,
-                        after_name,
-                        after_type,
-                    ],
-                )?;
-            }
-            let after_snapshot_select = std::iter::once("\"_row_id\"".to_string())
-                .chain((0..paste_column_count).map(|ordinal| {
-                    let column = Self::quote_identifier(&after_columns[start_col + ordinal].0);
-                    format!("{column} AS \"c{ordinal}\"")
-                }))
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {after_table} AS SELECT {after_snapshot_select} FROM {dataset_table} WHERE \"_row_id\" IN (SELECT \"_row_id\" FROM {before_table}) OR \"_row_id\" > ?"
-                ),
-                params![original_max_row_id],
-            )?;
-            let changed = self.conn.execute(
-                "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
-                params![generation + 1, dataset_id],
-            )?;
-            if changed != 1 {
-                return Err(AppError::InvalidParam(format!(
-                    "Unknown dataset: {dataset_id}"
-                )));
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(change_set_id)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                let _ = self.conn.execute("DROP TABLE IF EXISTS _paste_patch", []);
-                Err(error)
-            }
-        }
+            let changed_column_ids =
+                engine.column_ids_in_range(dataset_id, start_col, paste_column_count)?;
+            Ok(TableMutationEffects {
+                value: change_set_id.clone(),
+                changed_column_ids,
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn delete_rows_with_change_set(
@@ -5506,103 +6755,17 @@ impl DuckDbEngine {
                 "row IDs must be unique positive integers".into(),
             ));
         }
-
-        let columns = self.get_user_columns(dataset_id)?;
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if expected_generation.is_some_and(|expected| expected != generation) {
-            return Err(AppError::InvalidParam(format!(
-                "stale dataset generation: expected {generation}, received {}",
-                expected_generation.unwrap_or_default()
-            )));
-        }
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
-        let snapshot_select = std::iter::once("\"_row_id\"".to_string())
-            .chain(columns.iter().enumerate().map(|(ordinal, (name, _))| {
-                format!(
-                    "{} AS {}",
-                    Self::quote_identifier(name),
-                    Self::quote_identifier(&format!("c{ordinal}"))
-                )
-            }))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let placeholders = std::iter::repeat_n("?", unique_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            let matched_rows: i64 = self.conn.query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM {dataset_table} WHERE \"_row_id\" IN ({placeholders})"
-                ),
-                params_from_iter(unique_ids.iter()),
-                |row| row.get(0),
-            )?;
-            if matched_rows != unique_ids.len() as i64 {
-                return Err(AppError::InvalidParam(
-                    "one or more rows no longer exist".into(),
-                ));
-            }
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT {snapshot_select} FROM {dataset_table} WHERE \"_row_id\" IN ({placeholders})"
-                ),
-                params_from_iter(unique_ids.iter()),
-            )?;
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {after_table} AS SELECT {snapshot_select} FROM {dataset_table} WHERE FALSE"
-                ),
-                [],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, generation + 1],
-            )?;
-            for (ordinal, (name, column_type)) in columns.iter().enumerate() {
-                self.conn.execute(
-                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    params![
-                        &change_set_id,
-                        ordinal as i32,
-                        ordinal as i32,
-                        name,
-                        column_type,
-                        name,
-                        column_type,
-                    ],
-                )?;
-            }
-            self.conn.execute(
-                &format!("DELETE FROM {dataset_table} WHERE \"_row_id\" IN ({placeholders})"),
-                params_from_iter(unique_ids.iter()),
-            )?;
-            let row_count: i64 = self.conn.query_row(
-                &format!("SELECT COUNT(*) FROM {dataset_table}"),
-                [],
-                |row| row.get(0),
-            )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET row_count = ?, generation = ? WHERE id = ?",
-                params![row_count, generation + 1, dataset_id],
-            )?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(change_set_id)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+        let changed_column_ids = self.all_user_column_ids(dataset_id)?;
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            engine.delete_rows_inner(dataset_id, &unique_ids)?;
+            Ok(TableMutationEffects {
+                value: change_set_id.clone(),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn add_column_with_change_set(
@@ -5614,82 +6777,46 @@ impl DuckDbEngine {
         expected_generation: Option<u64>,
     ) -> Result<String, AppError> {
         let column_type = self.canonicalize_column_type(col_type)?;
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if let Some(expected) = expected_generation {
-            if expected != generation {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected}"
-                )));
-            }
-        }
-        let next_generation = generation
-            .checked_add(1)
-            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
-        let column_count: i32 = self.conn.query_row(
-            "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
-            params![dataset_id],
-            |row| row.get(0),
-        )?;
-        let column_index = at_index.unwrap_or(column_count).clamp(0, column_count);
-        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
-        let column_identifier = Self::quote_identifier(col_name);
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT \"_row_id\" FROM {dataset_table} WHERE FALSE"
-                ),
-                [],
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            let column_count: i32 = engine.conn.query_row(
+                "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
+                params![dataset_id],
+                |row| row.get(0),
             )?;
-            self.conn.execute(
+            let column_index = at_index.unwrap_or(column_count).clamp(0, column_count);
+            let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+            let column_identifier = Self::quote_identifier(col_name);
+            engine.conn.execute(
                 &format!(
                     "ALTER TABLE {dataset_table} ADD COLUMN {column_identifier} {column_type}"
                 ),
                 [],
             )?;
-            self.conn.execute(
+            engine.conn.execute(
                 "UPDATE _meta_columns SET col_index = col_index + 1 WHERE dataset_id = ? AND col_index >= ?",
                 params![dataset_id, column_index],
             )?;
-            self.conn.execute(
+            engine.conn.execute(
                 "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
                 params![dataset_id, column_index, col_name, &column_type],
             )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET col_count = col_count + 1, generation = ? WHERE id = ?",
-                params![next_generation, dataset_id],
+            engine.conn.execute(
+                "UPDATE _meta_datasets SET col_count = col_count + 1 WHERE id = ?",
+                params![dataset_id],
             )?;
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {after_table} AS SELECT \"_row_id\", {column_identifier} AS \"c0\" FROM {dataset_table} WHERE FALSE"
-                ),
-                [],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, next_generation],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, 0, ?, NULL, NULL, ?, ?)",
-                params![&change_set_id, column_index, col_name, &column_type],
-            )?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(change_set_id)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+            let inserted_column = engine
+                .get_user_column_descriptors(dataset_id)?
+                .into_iter()
+                .find(|column| column.col_index == column_index && column.name == col_name)
+                .ok_or_else(|| AppError::Database("added column metadata is missing".into()))?;
+            Ok(TableMutationEffects {
+                value: change_set_id.clone(),
+                changed_column_ids: BTreeSet::from([inserted_column.column_id]),
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn add_columns_with_change_set(
@@ -5712,105 +6839,54 @@ impl DuckDbEngine {
                     .map(|canonical_type| (name, canonical_type))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if let Some(expected) = expected_generation {
-            if expected != generation {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected}"
-                )));
-            }
-        }
-        let next_generation = generation
-            .checked_add(1)
-            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
-        let existing_count: i32 = self.conn.query_row(
-            "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
-            params![dataset_id],
-            |row| row.get(0),
-        )?;
-        let first_index = at_index.unwrap_or(existing_count).clamp(0, existing_count);
         let added_count = i32::try_from(canonical_columns.len())
             .map_err(|_| AppError::InvalidParam("too many columns".into()))?;
-        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT \"_row_id\" FROM {dataset_table} WHERE FALSE"
-                ),
-                [],
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            let existing_count: i32 = engine.conn.query_row(
+                "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
+                params![dataset_id],
+                |row| row.get(0),
             )?;
+            let first_index = at_index.unwrap_or(existing_count).clamp(0, existing_count);
+            let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
             for (ordinal, (name, column_type)) in canonical_columns.iter().enumerate() {
                 let column_index = first_index + ordinal as i32;
                 let column_identifier = Self::quote_identifier(name);
-                self.conn.execute(
+                engine.conn.execute(
                     &format!(
                         "ALTER TABLE {dataset_table} ADD COLUMN {column_identifier} {column_type}"
                     ),
                     [],
                 )?;
-                self.conn.execute(
+                engine.conn.execute(
                     "UPDATE _meta_columns SET col_index = col_index + 1 WHERE dataset_id = ? AND col_index >= ?",
                     params![dataset_id, column_index],
                 )?;
-                self.conn.execute(
+                engine.conn.execute(
                     "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
                     params![dataset_id, column_index, name, column_type],
                 )?;
             }
-            self.conn.execute(
-                "UPDATE _meta_datasets SET col_count = col_count + ?, generation = ? WHERE id = ?",
-                params![added_count, next_generation, dataset_id],
+            engine.conn.execute(
+                "UPDATE _meta_datasets SET col_count = col_count + ? WHERE id = ?",
+                params![added_count, dataset_id],
             )?;
-            let after_select = std::iter::once("\"_row_id\"".to_string())
-                .chain(
-                    canonical_columns
-                        .iter()
-                        .enumerate()
-                        .map(|(ordinal, (name, _))| {
-                            format!(
-                                "{} AS {}",
-                                Self::quote_identifier(name),
-                                Self::quote_identifier(&format!("c{ordinal}"))
-                            )
-                        }),
-                )
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {after_table} AS SELECT {after_select} FROM {dataset_table} WHERE FALSE"
-                ),
-                [],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, next_generation],
-            )?;
-            for (ordinal, (name, column_type)) in canonical_columns.iter().enumerate() {
-                let column_index = first_index + ordinal as i32;
-                self.conn.execute(
-                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, ?, ?, NULL, NULL, ?, ?)",
-                    params![&change_set_id, ordinal as i32, column_index, name, column_type],
-                )?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(change_set_id)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+            let inserted_columns = engine.get_user_column_descriptors(dataset_id)?;
+            let changed_column_ids = inserted_columns
+                .into_iter()
+                .filter(|column| {
+                    column.col_index >= first_index && column.col_index < first_index + added_count
+                })
+                .map(|column| column.column_id)
+                .collect::<BTreeSet<_>>();
+            Ok(TableMutationEffects {
+                value: change_set_id.clone(),
+                changed_column_ids,
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn add_valued_columns_with_change_set(
@@ -5862,38 +6938,19 @@ impl DuckDbEngine {
                 .map(|column| column.name.clone())
                 .collect::<Vec<_>>(),
         )?;
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if generation != expected_generation {
-            return Err(AppError::InvalidParam(format!(
-                "stale dataset generation: expected {generation}, received {expected_generation}"
-            )));
-        }
-        let next_generation = generation
-            .checked_add(1)
-            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
-        let first_index: i32 = self.conn.query_row(
-            "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
-            params![dataset_id],
-            |row| row.get(0),
-        )?;
         let added_count = i32::try_from(canonical_columns.len())
             .map_err(|_| AppError::InvalidParam("too many columns".into()))?;
-        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-        let replacement_name = format!("_valued_columns_{suffix}");
-        let replacement_table = Self::quote_identifier(&replacement_name);
+        let replacement_name = format!("_valued_columns_{}", change_set_id.replace('-', "_"));
 
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT \"_row_id\" FROM {dataset_table} WHERE FALSE"
-                ),
-                [],
+        execute_table_mutation(self, dataset_id, Some(expected_generation), |engine| {
+            let first_index: i32 = engine.conn.query_row(
+                "SELECT COUNT(*) FROM _meta_columns WHERE dataset_id = ?",
+                params![dataset_id],
+                |row| row.get(0),
             )?;
+            let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+            let replacement_table = Self::quote_identifier(&replacement_name);
             let added_select = canonical_columns
                 .iter()
                 .enumerate()
@@ -5905,7 +6962,7 @@ impl DuckDbEngine {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            self.conn.execute(
+            engine.conn.execute(
                 &format!(
                     "CREATE TABLE {replacement_table} AS SELECT *, {added_select} FROM {dataset_table}"
                 ),
@@ -5915,11 +6972,11 @@ impl DuckDbEngine {
                 let column_index = first_index + ordinal as i32;
                 let resolved_name = &resolved_names[ordinal];
                 let column_identifier = Self::quote_identifier(resolved_name);
-                self.conn.execute(
+                engine.conn.execute(
                     "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
                     params![dataset_id, column_index, resolved_name, column_type],
                 )?;
-                let mut update = self.conn.prepare(&format!(
+                let mut update = engine.conn.prepare(&format!(
                     "UPDATE {replacement_table} SET {column_identifier} = ? WHERE \"_row_id\" = ?"
                 ))?;
                 for (row_id, value) in &column.values {
@@ -5930,61 +6987,39 @@ impl DuckDbEngine {
                     }
                 }
             }
-            let after_select = std::iter::once("\"_row_id\"".to_string())
-                .chain(canonical_columns.iter().enumerate().map(|(ordinal, _)| {
-                    format!(
-                        "{} AS {}",
-                        Self::quote_identifier(&resolved_names[ordinal]),
-                        Self::quote_identifier(&format!("c{ordinal}"))
-                    )
-                }))
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {after_table} AS SELECT {after_select} FROM {replacement_table}"
-                ),
-                [],
-            )?;
-            self.conn
+            engine
+                .conn
                 .execute(&format!("DROP TABLE {dataset_table}"), [])?;
-            self.conn.execute(
+            engine.conn.execute(
                 &format!(
                     "ALTER TABLE {replacement_table} RENAME TO {}",
                     Self::quote_identifier(&Self::internal_table_name(dataset_id))
                 ),
                 [],
             )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET col_count = col_count + ?, generation = ? WHERE id = ?",
-                params![added_count, next_generation, dataset_id],
+            engine.conn.execute(
+                "UPDATE _meta_datasets SET col_count = col_count + ? WHERE id = ?",
+                params![added_count, dataset_id],
             )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, next_generation],
-            )?;
-            for (ordinal, (_, column_type)) in canonical_columns.iter().enumerate() {
-                let column_index = first_index + ordinal as i32;
-                self.conn.execute(
-                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, ?, ?, NULL, NULL, ?, ?)",
-                    params![&change_set_id, ordinal as i32, column_index, &resolved_names[ordinal], column_type],
-                )?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => match self.conn.execute_batch("COMMIT;") {
-                Ok(()) => Ok((change_set_id, next_generation)),
-                Err(error) => {
-                    let _ = self.conn.execute_batch("ROLLBACK;");
-                    Err(error.into())
-                }
-            },
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+            let inserted_columns = engine.get_user_column_descriptors(dataset_id)?;
+            let changed_column_ids = inserted_columns
+                .into_iter()
+                .filter(|column| {
+                    column.col_index >= first_index && column.col_index < first_index + added_count
+                })
+                .map(|column| column.column_id)
+                .collect::<BTreeSet<_>>();
+            let next_generation = engine
+                .get_dataset_generation(dataset_id)?
+                .checked_add(1)
+                .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
+            Ok(TableMutationEffects {
+                value: (change_set_id.clone(), next_generation),
+                changed_column_ids,
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn resolve_valued_column_names(
@@ -6044,7 +7079,7 @@ impl DuckDbEngine {
         if requested.len() != column_names.len() {
             return Err(AppError::InvalidParam("column names must be unique".into()));
         }
-        let existing_columns = self.get_user_columns(dataset_id)?;
+        let existing_columns = self.get_user_column_descriptors(dataset_id)?;
         if requested.len() >= existing_columns.len() {
             return Err(AppError::InvalidParam(
                 "cannot delete every user column".into(),
@@ -6055,110 +7090,57 @@ impl DuckDbEngine {
             .collect::<std::collections::HashSet<_>>();
         let deleted_columns = existing_columns
             .iter()
-            .enumerate()
-            .filter(|(_, (name, _))| requested_set.contains(name))
-            .map(|(index, (name, column_type))| (index as i32, name.clone(), column_type.clone()))
+            .filter(|column| requested_set.contains(&column.name))
+            .cloned()
             .collect::<Vec<_>>();
         if deleted_columns.len() != column_names.len() {
             return Err(AppError::InvalidParam(
                 "one or more columns do not exist".into(),
             ));
         }
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if let Some(expected) = expected_generation {
-            if expected != generation {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected}"
-                )));
-            }
-        }
-        let next_generation = generation
-            .checked_add(1)
-            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
-        let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        self.reject_calculated_dependency_removals(
+            dataset_id,
+            deleted_columns.iter().map(|column| column.name.as_str()),
+        )?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-        let before_select = std::iter::once("\"_row_id\"".to_string())
-            .chain(
-                deleted_columns
-                    .iter()
-                    .enumerate()
-                    .map(|(ordinal, (_, name, _))| {
-                        format!(
-                            "{} AS {}",
-                            Self::quote_identifier(name),
-                            Self::quote_identifier(&format!("c{ordinal}"))
-                        )
-                    }),
-            )
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT {before_select} FROM {dataset_table}"
-                ),
-                [],
-            )?;
-            for (column_index, name, _) in deleted_columns.iter().rev() {
-                self.conn.execute(
+        let deleted_column_ids = deleted_columns
+            .iter()
+            .map(|column| column.column_id.clone())
+            .collect::<BTreeSet<_>>();
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+            for column in deleted_columns.iter().rev() {
+                engine.conn.execute(
                     &format!(
                         "ALTER TABLE {dataset_table} DROP COLUMN {}",
-                        Self::quote_identifier(name)
+                        Self::quote_identifier(&column.name)
                     ),
                     [],
                 )?;
-                self.conn.execute(
+                engine.conn.execute(
                     "DELETE FROM _meta_columns WHERE dataset_id = ? AND col_name = ?",
-                    params![dataset_id, name],
+                    params![dataset_id, &column.name],
                 )?;
-                self.conn.execute(
+                engine.conn.execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ? AND column_id = ?",
+                    params![dataset_id, &column.column_id],
+                )?;
+                engine.conn.execute(
                     "UPDATE _meta_columns SET col_index = col_index - 1 WHERE dataset_id = ? AND col_index > ?",
-                    params![dataset_id, column_index],
+                    params![dataset_id, column.col_index],
                 )?;
             }
-            self.conn.execute(
-                &format!("CREATE TABLE {after_table} AS SELECT \"_row_id\" FROM {dataset_table}"),
-                [],
+            engine.conn.execute(
+                "UPDATE _meta_datasets SET col_count = col_count - ? WHERE id = ?",
+                params![deleted_columns.len() as i32, dataset_id],
             )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET col_count = col_count - ?, generation = ? WHERE id = ?",
-                params![deleted_columns.len() as i32, next_generation, dataset_id],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, next_generation],
-            )?;
-            for (ordinal, (column_index, name, column_type)) in deleted_columns.iter().enumerate() {
-                self.conn.execute(
-                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type, after_present) VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)",
-                    params![
-                        &change_set_id,
-                        ordinal as i32,
-                        column_index,
-                        name,
-                        column_type,
-                        name,
-                        column_type,
-                    ],
-                )?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(change_set_id)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+            Ok(TableMutationEffects {
+                value: change_set_id.clone(),
+                changed_column_ids: deleted_column_ids.clone(),
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn alter_column_with_change_set(
@@ -6169,29 +7151,33 @@ impl DuckDbEngine {
         new_type: &str,
         expected_generation: Option<u64>,
     ) -> Result<String, AppError> {
-        let existing_columns = self.get_user_columns(dataset_id)?;
-        let (column_index, old_type) = existing_columns
+        let existing_columns = self.get_user_column_descriptors(dataset_id)?;
+        let existing_column = existing_columns
             .iter()
-            .enumerate()
-            .find(|(_, (name, _))| name == old_name)
-            .map(|(index, (_, column_type))| (index as i32, column_type.clone()))
+            .find(|column| column.name == old_name)
+            .cloned()
             .ok_or_else(|| AppError::InvalidParam(format!("unknown column: {old_name}")))?;
-        if new_name != old_name && existing_columns.iter().any(|(name, _)| name == new_name) {
+        if new_name != old_name
+            && existing_columns
+                .iter()
+                .any(|column| column.name == new_name)
+        {
             return Err(AppError::InvalidParam(format!(
                 "column already exists: {new_name}"
             )));
         }
         let new_type = self.canonicalize_column_type(new_type)?;
+        let old_type = existing_column.sql_type.clone();
+        let is_calculated_output = self
+            .get_archived_calculated_columns_by_id(dataset_id)?
+            .contains_key(&existing_column.column_id);
+        if is_calculated_output && new_type != old_type {
+            return Err(AppError::InvalidParam(format!(
+                "calculated output column is read-only until convert to values: {old_name}"
+            )));
+        }
         if new_name == old_name && new_type == old_type {
             return Err(AppError::InvalidParam("column change has no effect".into()));
-        }
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if let Some(expected) = expected_generation {
-            if expected != generation {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected}"
-                )));
-            }
         }
         let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let old_identifier = Self::quote_identifier(old_name);
@@ -6210,24 +7196,10 @@ impl DuckDbEngine {
                 )));
             }
         }
-        let next_generation = generation
-            .checked_add(1)
-            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT \"_row_id\", {old_identifier} AS \"c0\" FROM {dataset_table}"
-                ),
-                [],
-            )?;
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
             if new_type != old_type {
-                self.conn.execute(
+                engine.conn.execute(
                     &format!(
                         "ALTER TABLE {dataset_table} ALTER COLUMN {old_identifier} SET DATA TYPE {new_type} USING {old_identifier}::{new_type}"
                     ),
@@ -6235,54 +7207,24 @@ impl DuckDbEngine {
                 )?;
             }
             if new_name != old_name {
-                self.conn.execute(
+                engine.conn.execute(
                     &format!(
                         "ALTER TABLE {dataset_table} RENAME COLUMN {old_identifier} TO {new_identifier}"
                     ),
                     [],
                 )?;
             }
-            self.conn.execute(
+            engine.conn.execute(
                 "UPDATE _meta_columns SET col_name = ?, col_type = ? WHERE dataset_id = ? AND col_name = ?",
                 params![new_name, &new_type, dataset_id, old_name],
             )?;
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {after_table} AS SELECT \"_row_id\", {new_identifier} AS \"c0\" FROM {dataset_table}"
-                ),
-                [],
-            )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
-                params![next_generation, dataset_id],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, next_generation],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, 0, ?, ?, ?, ?, ?)",
-                params![
-                    &change_set_id,
-                    column_index,
-                    old_name,
-                    old_type,
-                    new_name,
-                    &new_type,
-                ],
-            )?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(change_set_id)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+            Ok(TableMutationEffects {
+                value: change_set_id.clone(),
+                changed_column_ids: BTreeSet::from([existing_column.column_id.clone()]),
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn alter_columns_type_with_change_set(
@@ -6305,12 +7247,11 @@ impl DuckDbEngine {
         if requested.len() != column_names.len() {
             return Err(AppError::InvalidParam("column names must be unique".into()));
         }
-        let existing_columns = self.get_user_columns(dataset_id)?;
+        let existing_columns = self.get_user_column_descriptors(dataset_id)?;
         let changed_columns = existing_columns
             .iter()
-            .enumerate()
-            .filter(|(_, (name, _))| requested.contains(name))
-            .map(|(index, (name, column_type))| (index as i32, name.clone(), column_type.clone()))
+            .filter(|column| requested.contains(&column.name))
+            .cloned()
             .collect::<Vec<_>>();
         if changed_columns.len() != column_names.len() {
             return Err(AppError::InvalidParam(
@@ -6320,23 +7261,19 @@ impl DuckDbEngine {
         let new_type = self.canonicalize_column_type(new_type)?;
         if changed_columns
             .iter()
-            .any(|(_, _, old_type)| old_type == &new_type)
+            .any(|column| column.sql_type == new_type)
         {
             return Err(AppError::InvalidParam(
                 "one or more column changes have no effect".into(),
             ));
         }
-        let generation = self.get_dataset_generation(dataset_id)?;
-        if let Some(expected) = expected_generation {
-            if expected != generation {
-                return Err(AppError::InvalidParam(format!(
-                    "stale dataset generation: expected {generation}, received {expected}"
-                )));
-            }
-        }
+        self.reject_calculated_column_writes(
+            dataset_id,
+            changed_columns.iter().map(|column| column.name.as_str()),
+        )?;
         let dataset_table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
-        for (_, name, _) in &changed_columns {
-            let identifier = Self::quote_identifier(name);
+        for column in &changed_columns {
+            let identifier = Self::quote_identifier(&column.name);
             let failed_casts: i64 = self.conn.query_row(
                 &format!(
                     "SELECT COUNT(*) FROM {dataset_table} WHERE {identifier} IS NOT NULL AND TRY_CAST({identifier} AS {new_type}) IS NULL"
@@ -6346,93 +7283,37 @@ impl DuckDbEngine {
             )?;
             if failed_casts != 0 {
                 return Err(AppError::InvalidParam(format!(
-                    "cannot convert {failed_casts} values in column {name} to {new_type}"
+                    "cannot convert {failed_casts} values in column {} to {new_type}",
+                    column.name
                 )));
             }
         }
-        let next_generation = generation
-            .checked_add(1)
-            .ok_or_else(|| AppError::InvalidParam("dataset generation is exhausted".into()))?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let suffix = change_set_id.replace('-', "_");
-        let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
-        let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
-        let snapshot_select = |columns: &[(i32, String, String)]| {
-            std::iter::once("\"_row_id\"".to_string())
-                .chain(columns.iter().enumerate().map(|(ordinal, (_, name, _))| {
-                    format!(
-                        "{} AS {}",
-                        Self::quote_identifier(name),
-                        Self::quote_identifier(&format!("c{ordinal}"))
-                    )
-                }))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let before_select = snapshot_select(&changed_columns);
-
-        self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        let result = (|| -> Result<(), AppError> {
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {before_table} AS SELECT {before_select} FROM {dataset_table}"
-                ),
-                [],
-            )?;
-            for (_, name, _) in &changed_columns {
-                let identifier = Self::quote_identifier(name);
-                self.conn.execute(
+        let changed_column_ids = changed_columns
+            .iter()
+            .map(|column| column.column_id.clone())
+            .collect::<BTreeSet<_>>();
+        execute_table_mutation(self, dataset_id, expected_generation, |engine| {
+            for column in &changed_columns {
+                let identifier = Self::quote_identifier(&column.name);
+                engine.conn.execute(
                     &format!(
                         "ALTER TABLE {dataset_table} ALTER COLUMN {identifier} SET DATA TYPE {new_type} USING {identifier}::{new_type}"
                     ),
                     [],
                 )?;
-                self.conn.execute(
+                engine.conn.execute(
                     "UPDATE _meta_columns SET col_type = ? WHERE dataset_id = ? AND col_name = ?",
-                    params![&new_type, dataset_id, name],
+                    params![&new_type, dataset_id, &column.name],
                 )?;
             }
-            let after_select = snapshot_select(&changed_columns);
-            self.conn.execute(
-                &format!(
-                    "CREATE TABLE {after_table} AS SELECT {after_select} FROM {dataset_table}"
-                ),
-                [],
-            )?;
-            self.conn.execute(
-                "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
-                params![next_generation, dataset_id],
-            )?;
-            self.conn.execute(
-                "INSERT INTO _history_change_sets (id, dataset_id, generation) VALUES (?, ?, ?)",
-                params![&change_set_id, dataset_id, next_generation],
-            )?;
-            for (ordinal, (column_index, name, old_type)) in changed_columns.iter().enumerate() {
-                self.conn.execute(
-                    "INSERT INTO _history_change_set_columns (change_set_id, ordinal, column_index, before_name, before_type, after_name, after_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    params![
-                        &change_set_id,
-                        ordinal as i32,
-                        column_index,
-                        name,
-                        old_type,
-                        name,
-                        &new_type,
-                    ],
-                )?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT;")?;
-                Ok(change_set_id)
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        }
+            Ok(TableMutationEffects {
+                value: change_set_id.clone(),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: Some(change_set_id.clone()),
+                recompute_column_ids: None,
+            })
+        })
     }
 
     pub fn apply_change_set(&self, change_set_id: &str, undo: bool) -> Result<(), AppError> {
@@ -6445,69 +7326,87 @@ impl DuckDbEngine {
             "_history_{}_{suffix}",
             if undo { "before" } else { "after" }
         ));
-        let (dataset_id, applied, expected_generation): (String, bool, u64) = self
-            .conn
-            .query_row(
-                "SELECT dataset_id, applied, generation FROM _history_change_sets WHERE id = ?",
-                params![change_set_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .map_err(|_| AppError::InvalidParam("Unknown change set ID".into()))?;
-        if applied != undo {
-            return Err(AppError::InvalidParam(if undo {
-                "Change set is already undone".into()
-            } else {
-                "Change set is already applied".into()
-            }));
-        }
-        let generation = self.get_dataset_generation(&dataset_id)?;
-        if generation != expected_generation {
-            return Err(AppError::InvalidParam(format!(
-                "stale change set generation: expected {expected_generation}, received {generation}"
-            )));
-        }
-        let mut statement = self.conn.prepare(
-            "SELECT ordinal, column_index, before_name, before_type, after_name, after_type, after_present FROM _history_change_set_columns WHERE change_set_id = ? ORDER BY ordinal",
-        )?;
-        let columns = statement
-            .query_map(params![change_set_id], |row| {
-                Ok((
-                    row.get::<_, i32>(0)?,
-                    row.get::<_, i32>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, bool>(6)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
-        let dataset_table = Self::quote_identifier(&Self::internal_table_name(&dataset_id));
-        let assignments = columns
-            .iter()
-            .filter_map(
-                |(ordinal, _, before_name, _, after_name, _, after_present)| {
-                    let target_name = if undo {
-                        before_name.as_ref()
-                    } else if *after_present {
-                        Some(after_name)
-                    } else {
-                        None
-                    }?;
-                    Some(format!(
-                        "{} = snapshot.{}",
-                        Self::quote_identifier(target_name),
-                        Self::quote_identifier(&format!("c{ordinal}"))
-                    ))
-                },
-            )
-            .collect::<Vec<_>>()
-            .join(", ");
         self.conn.execute_batch("BEGIN TRANSACTION;")?;
         let result = (|| -> Result<(), AppError> {
+            let (dataset_id, applied, expected_generation): (String, bool, u64) = self
+                .conn
+                .query_row(
+                    "SELECT dataset_id, applied, generation FROM _history_change_sets WHERE id = ?",
+                    params![change_set_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|_| AppError::InvalidParam("Unknown change set ID".into()))?;
+            if applied != undo {
+                return Err(AppError::InvalidParam(if undo {
+                    "Change set is already undone".into()
+                } else {
+                    "Change set is already applied".into()
+                }));
+            }
+            let generation = self.get_dataset_generation(&dataset_id)?;
+            if generation != expected_generation {
+                return Err(AppError::InvalidParam(format!(
+                    "stale change set generation: expected {expected_generation}, received {generation}"
+                )));
+            }
+            let mut statement = self.conn.prepare(
+                "SELECT ordinal, column_index, before_column_id, before_name, before_type, before_calculated_definition_json, after_column_id, after_name, after_type, after_calculated_definition_json, after_present FROM _history_change_set_columns WHERE change_set_id = ? ORDER BY ordinal",
+            )?;
+            let columns = statement
+                .query_map(params![change_set_id], |row| {
+                    Ok((
+                        row.get::<_, i32>(0)?,
+                        row.get::<_, i32>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, bool>(10)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            let dataset_table = Self::quote_identifier(&Self::internal_table_name(&dataset_id));
+            let assignments = columns
+                .iter()
+                .filter_map(
+                    |(ordinal, _, _, before_name, _, _, _, after_name, _, _, after_present)| {
+                        let target_name = if undo {
+                            before_name.as_ref()
+                        } else if *after_present {
+                            Some(after_name)
+                        } else {
+                            None
+                        }?;
+                        Some(format!(
+                            "{} = snapshot.{}",
+                            Self::quote_identifier(target_name),
+                            Self::quote_identifier(&format!("c{ordinal}"))
+                        ))
+                    },
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
+
             if undo {
-                for (_, column_index, before_name, before_type, _, _, after_present) in &columns {
+                for (
+                    _,
+                    column_index,
+                    before_column_id,
+                    before_name,
+                    before_type,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    after_present,
+                ) in &columns
+                {
                     if !after_present {
                         let before_name = before_name.as_ref().ok_or_else(|| {
                             AppError::Database("deleted column is missing its before name".into())
@@ -6526,14 +7425,31 @@ impl DuckDbEngine {
                             ),
                             [],
                         )?;
-                        self.conn.execute(
-                            "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
-                            params![&dataset_id, column_index, before_name, before_type],
+                        self.insert_replayed_meta_column(
+                            &dataset_id,
+                            *column_index,
+                            before_name,
+                            before_type,
+                            match before_column_id.as_deref() {
+                                Some(column_id) => ReplayedColumnIdentity::Exact(column_id),
+                                None => ReplayedColumnIdentity::LegacyGenerated,
+                            },
                         )?;
                     }
                 }
-                for (_, _, before_name, before_type, after_name, after_type, after_present) in
-                    &columns
+                for (
+                    _,
+                    _,
+                    _,
+                    before_name,
+                    before_type,
+                    _,
+                    _,
+                    after_name,
+                    after_type,
+                    _,
+                    after_present,
+                ) in &columns
                 {
                     if !after_present {
                         continue;
@@ -6554,7 +7470,9 @@ impl DuckDbEngine {
                         }
                     }
                 }
-                for (ordinal, _, before_name, _, after_name, _, after_present) in &columns {
+                for (ordinal, _, _, before_name, _, _, _, after_name, _, _, after_present) in
+                    &columns
+                {
                     if !after_present {
                         continue;
                     }
@@ -6574,7 +7492,9 @@ impl DuckDbEngine {
                         )?;
                     }
                 }
-                for (ordinal, _, before_name, _, after_name, _, after_present) in &columns {
+                for (ordinal, _, _, before_name, _, _, _, after_name, _, _, after_present) in
+                    &columns
+                {
                     if !after_present {
                         continue;
                     }
@@ -6596,7 +7516,7 @@ impl DuckDbEngine {
                         }
                     }
                 }
-                for (_, column_index, before_name, _, after_name, _, after_present) in
+                for (_, column_index, _, before_name, _, _, _, after_name, _, _, after_present) in
                     columns.iter().rev()
                 {
                     if !after_present {
@@ -6647,8 +7567,19 @@ impl DuckDbEngine {
                     ),
                     [],
                 )?;
-                for (_, column_index, before_name, _, after_name, after_type, after_present) in
-                    &columns
+                for (
+                    _,
+                    column_index,
+                    _,
+                    before_name,
+                    _,
+                    _,
+                    after_column_id,
+                    after_name,
+                    after_type,
+                    _,
+                    after_present,
+                ) in &columns
                 {
                     if !after_present {
                         continue;
@@ -6665,13 +7596,21 @@ impl DuckDbEngine {
                             ),
                             [],
                         )?;
-                        self.conn.execute(
-                            "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
-                            params![&dataset_id, column_index, after_name, after_type],
+                        self.insert_replayed_meta_column(
+                            &dataset_id,
+                            *column_index,
+                            after_name,
+                            after_type,
+                            match after_column_id.as_deref() {
+                                Some(column_id) => ReplayedColumnIdentity::Exact(column_id),
+                                None => ReplayedColumnIdentity::LegacyGenerated,
+                            },
                         )?;
                     }
                 }
-                for (_, _, before_name, before_type, _, after_type, after_present) in &columns {
+                for (_, _, _, before_name, before_type, _, _, _, after_type, _, after_present) in
+                    &columns
+                {
                     if !after_present {
                         continue;
                     }
@@ -6691,7 +7630,9 @@ impl DuckDbEngine {
                         }
                     }
                 }
-                for (ordinal, _, before_name, _, after_name, _, after_present) in &columns {
+                for (ordinal, _, _, before_name, _, _, _, after_name, _, _, after_present) in
+                    &columns
+                {
                     if !after_present {
                         continue;
                     }
@@ -6713,7 +7654,9 @@ impl DuckDbEngine {
                         }
                     }
                 }
-                for (ordinal, _, before_name, _, after_name, _, after_present) in &columns {
+                for (ordinal, _, _, before_name, _, _, _, after_name, _, _, after_present) in
+                    &columns
+                {
                     if !after_present {
                         continue;
                     }
@@ -6733,21 +7676,9 @@ impl DuckDbEngine {
                         )?;
                     }
                 }
-                self.conn.execute(
-                    &format!(
-                        "INSERT INTO {dataset_table} (\"_row_id\") SELECT snapshot.\"_row_id\" FROM {after_table} snapshot LEFT JOIN {dataset_table} current_rows ON current_rows.\"_row_id\" = snapshot.\"_row_id\" WHERE current_rows.\"_row_id\" IS NULL"
-                    ),
-                    [],
-                )?;
-                if !assignments.is_empty() {
-                    self.conn.execute(
-                        &format!(
-                            "UPDATE {dataset_table} SET {assignments} FROM {snapshot_table} snapshot WHERE {dataset_table}.\"_row_id\" = snapshot.\"_row_id\""
-                        ),
-                        [],
-                    )?;
-                }
-                for (_, column_index, before_name, _, _, _, after_present) in columns.iter().rev() {
+                for (_, column_index, _, before_name, _, _, _, _, _, _, after_present) in
+                    columns.iter().rev()
+                {
                     if *after_present {
                         continue;
                     }
@@ -6770,7 +7701,23 @@ impl DuckDbEngine {
                         params![&dataset_id, column_index],
                     )?;
                 }
+                self.conn.execute(
+                    &format!(
+                        "INSERT INTO {dataset_table} (\"_row_id\") SELECT snapshot.\"_row_id\" FROM {after_table} snapshot LEFT JOIN {dataset_table} current_rows ON current_rows.\"_row_id\" = snapshot.\"_row_id\" WHERE current_rows.\"_row_id\" IS NULL"
+                    ),
+                    [],
+                )?;
+                if !assignments.is_empty() {
+                    self.conn.execute(
+                        &format!(
+                            "UPDATE {dataset_table} SET {assignments} FROM {snapshot_table} snapshot WHERE {dataset_table}.\"_row_id\" = snapshot.\"_row_id\""
+                        ),
+                        [],
+                    )?;
+                }
             }
+            self.replay_column_order(&dataset_id, &columns, undo)?;
+            self.replay_calculated_history_columns(&dataset_id, &columns, undo)?;
             let row_count: i64 = self.conn.query_row(
                 &format!("SELECT COUNT(*) FROM {dataset_table}"),
                 [],
@@ -6789,6 +7736,7 @@ impl DuckDbEngine {
                 "UPDATE _history_change_sets SET applied = ?, generation = ? WHERE id = ?",
                 params![!undo, generation + 1, change_set_id],
             )?;
+            self.rebuild_natural_anchors(&dataset_id, generation + 1)?;
             Ok(())
         })();
         match result {
@@ -6798,6 +7746,163 @@ impl DuckDbEngine {
                 Err(error)
             }
         }
+    }
+
+    fn replay_calculated_history_columns(
+        &self,
+        dataset_id: &str,
+        columns: &[(
+            i32,
+            i32,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            bool,
+        )],
+        undo: bool,
+    ) -> Result<(), AppError> {
+        for (_, _, before_column_id, _, _, _, after_column_id, _, _, _, _) in columns {
+            if let Some(column_id) = before_column_id {
+                self.conn.execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ? AND column_id = ?",
+                    params![dataset_id, column_id],
+                )?;
+            }
+            if let Some(column_id) = after_column_id {
+                self.conn.execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ? AND column_id = ?",
+                    params![dataset_id, column_id],
+                )?;
+            }
+        }
+
+        for (
+            _,
+            _,
+            before_column_id,
+            _,
+            _,
+            before_calculated_definition_json,
+            after_column_id,
+            _,
+            _,
+            after_calculated_definition_json,
+            after_present,
+        ) in columns
+        {
+            let (target_column_id, calculated_json) = if undo {
+                (
+                    before_column_id.as_deref(),
+                    before_calculated_definition_json.as_deref(),
+                )
+            } else if *after_present {
+                (
+                    after_column_id.as_deref(),
+                    after_calculated_definition_json.as_deref(),
+                )
+            } else {
+                (None, None)
+            };
+
+            let (Some(target_column_id), Some(calculated_json)) =
+                (target_column_id, calculated_json)
+            else {
+                continue;
+            };
+
+            let calculated: ArchivedCalculatedColumn = serde_json::from_str(calculated_json)
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            self.upsert_archived_calculated_column(dataset_id, target_column_id, &calculated)?;
+        }
+
+        Ok(())
+    }
+
+    fn replay_column_order(
+        &self,
+        dataset_id: &str,
+        columns: &[(
+            i32,
+            i32,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            bool,
+        )],
+        undo: bool,
+    ) -> Result<(), AppError> {
+        let target_columns = columns
+            .iter()
+            .filter_map(
+                |(
+                    ordinal,
+                    column_index,
+                    _,
+                    before_name,
+                    _,
+                    _,
+                    _,
+                    after_name,
+                    _,
+                    _,
+                    after_present,
+                )| {
+                    if undo {
+                        before_name.as_ref().map(|name| (name.clone(), *ordinal))
+                    } else if *after_present {
+                        Some((after_name.clone(), *column_index))
+                    } else {
+                        None
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        if target_columns.is_empty() {
+            return Ok(());
+        }
+
+        let current_columns = self
+            .get_user_column_descriptors(dataset_id)?
+            .into_iter()
+            .collect::<Vec<_>>();
+        if target_columns.len() != current_columns.len() {
+            return Ok(());
+        }
+        let current_max_index = current_columns
+            .iter()
+            .map(|column| column.col_index)
+            .max()
+            .unwrap_or(-1);
+        for (ordinal, column) in current_columns.iter().enumerate() {
+            let temporary_index = current_max_index
+                .checked_add(1)
+                .and_then(|base| base.checked_add(i32::try_from(ordinal).ok()?))
+                .ok_or_else(|| {
+                    AppError::InvalidParam("replayed column order is too large".into())
+                })?;
+            self.conn.execute(
+                "UPDATE _meta_columns SET col_index = ? WHERE dataset_id = ? AND col_name = ?",
+                params![temporary_index, dataset_id, &column.name],
+            )?;
+        }
+        for (name, target_index) in target_columns {
+            self.conn.execute(
+                "UPDATE _meta_columns SET col_index = ? WHERE dataset_id = ? AND col_name = ?",
+                params![target_index, dataset_id, name],
+            )?;
+        }
+
+        Ok(())
     }
 
     pub fn drop_change_set(&self, change_set_id: &str) -> Result<(), AppError> {
@@ -6891,7 +7996,7 @@ impl DuckDbEngine {
                 } else {
                     Self::generate_col_name(&all_col_names)
                 };
-                self.add_column(dataset_id, &col_name, col_type)?;
+                self.add_column_inner(dataset_id, &col_name, col_type)?;
                 all_col_names.push(col_name.clone());
                 paste_col_names.push(col_name);
                 paste_col_types.push(col_type.to_string());
@@ -6918,7 +8023,7 @@ impl DuckDbEngine {
                     )?;
                     if has_data == 0 {
                         if self
-                            .change_column_type(dataset_id, col_name, detected_type)
+                            .change_column_type_inner(dataset_id, col_name, detected_type)
                             .is_ok()
                         {
                             paste_col_types[c] = detected_type.to_string();
@@ -6943,7 +8048,7 @@ impl DuckDbEngine {
                         let unique =
                             Self::unique_col_name(trimmed, &all_col_names, Some(target_idx));
                         let unique_owned = unique.clone();
-                        self.rename_column(dataset_id, old_name, &unique_owned)?;
+                        self.rename_column_inner(dataset_id, old_name, &unique_owned)?;
                         all_col_names[target_idx] = unique_owned.clone();
                         paste_col_names[c] = unique_owned;
                     }
@@ -7155,97 +8260,131 @@ impl DuckDbEngine {
         rows: &[Vec<serde_json::Value>],
     ) -> Result<(), AppError> {
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
-
-        // Drop and recreate the table
-        self.conn
-            .execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])?;
-
-        let col_defs: Vec<String> = col_names
+        let existing_columns = self.get_user_column_descriptors(dataset_id)?;
+        let archived_columns = self.get_archive_column_plans(dataset_id)?;
+        let has_calculated_columns = archived_columns
             .iter()
-            .zip(col_types.iter())
-            .map(|(name, typ)| format!("\"{}\" {}", name, typ))
-            .collect();
-
-        let create_sql = if col_defs.is_empty() {
-            format!(
-                "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0)",
-                table_name
-            )
-        } else {
-            format!(
-                "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0, {})",
-                table_name,
-                col_defs.join(", ")
-            )
-        };
-        self.conn.execute(&create_sql, [])?;
-
-        // Rebuild _meta_columns
-        self.conn.execute(
-            "DELETE FROM _meta_columns WHERE dataset_id = $1",
-            params![dataset_id],
-        )?;
-        for (i, (col_name, col_type)) in col_names.iter().zip(col_types.iter()).enumerate() {
-            self.conn.execute(
-                "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
-                params![dataset_id, i as i32, col_name, col_type],
-            )?;
+            .any(|column| column.calculated.is_some());
+        let schema_is_compatible = existing_columns.len() == col_names.len()
+            && existing_columns
+                .iter()
+                .zip(col_names.iter().zip(col_types.iter()))
+                .all(|(existing, (incoming_name, incoming_type))| {
+                    existing.name == *incoming_name && existing.sql_type == *incoming_type
+                });
+        if has_calculated_columns && !schema_is_compatible {
+            return Err(AppError::InvalidParam(
+                "cannot restore snapshot with a UUID-incompatible calculated schema".into(),
+            ));
         }
 
-        // Insert rows — each row includes _row_id as first element followed by column values
-        for row_data in rows {
-            if row_data.is_empty() {
-                continue;
-            }
-            // First element is _row_id
-            let row_id = match &row_data[0] {
-                serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
-                _ => 0,
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<(), AppError> {
+            self.conn
+                .execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])?;
+
+            let col_defs: Vec<String> = col_names
+                .iter()
+                .zip(col_types.iter())
+                .map(|(name, typ)| format!("\"{}\" {}", name, typ))
+                .collect();
+
+            let create_sql = if col_defs.is_empty() {
+                format!(
+                    "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0)",
+                    table_name
+                )
+            } else {
+                format!(
+                    "CREATE TABLE \"{}\" (\"_row_id\" INTEGER DEFAULT 0, {})",
+                    table_name,
+                    col_defs.join(", ")
+                )
             };
+            self.conn.execute(&create_sql, [])?;
 
-            // Build column list and values for non-null columns
-            let mut insert_cols = vec!["\"_row_id\"".to_string()];
-            let mut insert_vals = vec![row_id.to_string()];
+            self.conn.execute(
+                "DELETE FROM _meta_columns WHERE dataset_id = $1",
+                params![dataset_id],
+            )?;
+            if schema_is_compatible {
+                for existing in &existing_columns {
+                    self.insert_meta_column_with_id(dataset_id, existing)?;
+                }
+            } else {
+                for (i, (col_name, col_type)) in col_names.iter().zip(col_types.iter()).enumerate()
+                {
+                    self.conn.execute(
+                        "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES ($1, $2, $3, $4)",
+                        params![dataset_id, i as i32, col_name, col_type],
+                    )?;
+                }
+            }
 
-            for (i, col_name) in col_names.iter().enumerate() {
-                let val = row_data.get(i + 1).unwrap_or(&serde_json::Value::Null);
-                if val.is_null() {
+            for row_data in rows {
+                if row_data.is_empty() {
                     continue;
                 }
-                insert_cols.push(format!("\"{}\"", col_name));
-                match val {
-                    serde_json::Value::Bool(b) => insert_vals.push(b.to_string()),
-                    serde_json::Value::Number(n) => insert_vals.push(n.to_string()),
-                    serde_json::Value::String(s) => {
-                        insert_vals.push(format!("'{}'", s.replace('\'', "''")));
+                let row_id = match &row_data[0] {
+                    serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
+                    _ => 0,
+                };
+
+                let mut insert_cols = vec!["\"_row_id\"".to_string()];
+                let mut insert_vals = vec![row_id.to_string()];
+
+                for (i, col_name) in col_names.iter().enumerate() {
+                    let val = row_data.get(i + 1).unwrap_or(&serde_json::Value::Null);
+                    if val.is_null() {
+                        continue;
                     }
-                    _ => insert_vals.push(format!("'{}'", val.to_string().replace('\'', "''"))),
+                    insert_cols.push(format!("\"{}\"", col_name));
+                    match val {
+                        serde_json::Value::Bool(b) => insert_vals.push(b.to_string()),
+                        serde_json::Value::Number(n) => insert_vals.push(n.to_string()),
+                        serde_json::Value::String(s) => {
+                            insert_vals.push(format!("'{}'", s.replace('\'', "''")));
+                        }
+                        _ => insert_vals.push(format!("'{}'", val.to_string().replace('\'', "''"))),
+                    }
                 }
+
+                let sql = format!(
+                    "INSERT INTO \"{}\" ({}) VALUES ({})",
+                    table_name,
+                    insert_cols.join(", "),
+                    insert_vals.join(", ")
+                );
+                self.conn.execute(&sql, [])?;
             }
 
-            let sql = format!(
-                "INSERT INTO \"{}\" ({}) VALUES ({})",
-                table_name,
-                insert_cols.join(", "),
-                insert_vals.join(", ")
-            );
-            self.conn.execute(&sql, [])?;
+            if has_calculated_columns {
+                self.rematerialize_all_calculated_outputs(dataset_id)?;
+            }
+
+            let row_count: i64 = self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
+                [],
+                |row| row.get(0),
+            )?;
+            let col_count = col_names.len() as i32;
+            self.conn.execute(
+                "UPDATE _meta_datasets SET row_count = $1, col_count = $2, generation = generation + 1 WHERE id = $3",
+                params![row_count, col_count, dataset_id],
+            )?;
+            let generation = self.get_dataset_generation(dataset_id)?;
+            self.rebuild_natural_anchors(dataset_id, generation)?;
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT").map_err(Into::into),
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
         }
-
-        // Update metadata counts
-        let row_count: i64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM \"{}\"", table_name),
-            [],
-            |row| row.get(0),
-        )?;
-        let col_count = col_names.len() as i32;
-        self.conn.execute(
-            "UPDATE _meta_datasets SET row_count = $1, col_count = $2 WHERE id = $3",
-            params![row_count, col_count, dataset_id],
-        )?;
-
-        self.bump_dataset_generation(dataset_id)?;
-        Ok(())
     }
 
     // ───────────────────────────────────────────────────────────────
@@ -7304,6 +8443,7 @@ impl DuckDbEngine {
              VALUES ($1, $2, NULL, $3, $4, $5)",
             params![new_id, new_name, source_type, row_count, col_index],
         )?;
+        self.rebuild_natural_anchors(new_id, 0)?;
 
         self.get_dataset_meta(new_id)
     }
@@ -7487,6 +8627,7 @@ impl DuckDbEngine {
              VALUES ($1, $2, NULL, 'transpose', $3, $4)",
             params![new_id, new_name, user_cols.len() as i64, n_new_cols as i32],
         )?;
+        self.rebuild_natural_anchors(new_id, 0)?;
         self.get_dataset_meta(new_id)
     }
 
@@ -7744,7 +8885,10 @@ impl DuckDbEngine {
         match_col: &str,
         update_cols: &[String], // columns to update from right into left
     ) -> Result<(), AppError> {
-        self.with_row_mutation(left_id, || {
+        self.reject_calculated_column_writes(left_id, update_cols.iter().map(String::as_str))?;
+        let changed_column_ids =
+            self.resolve_column_ids_by_name(left_id, update_cols.iter().map(String::as_str))?;
+        execute_table_mutation(self, left_id, None, |engine| {
             let left_table = format!("dataset_{}", left_id.replace('-', "_"));
             let right_table = format!("dataset_{}", right_id.replace('-', "_"));
 
@@ -7754,19 +8898,24 @@ impl DuckDbEngine {
                      WHERE \"{}\".\"{}\" = R.\"{}\"",
                     left_table, col, col, right_table, left_table, match_col, match_col
                 );
-                self.conn.execute(&sql, [])?;
+                engine.conn.execute(&sql, [])?;
             }
 
-            let row_count: i64 = self.conn.query_row(
+            let row_count: i64 = engine.conn.query_row(
                 &format!("SELECT COUNT(*) FROM \"{}\"", left_table),
                 [],
                 |row| row.get(0),
             )?;
-            self.conn.execute(
+            engine.conn.execute(
                 "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
                 params![row_count, left_id],
             )?;
-            Ok(())
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
         })
     }
 
@@ -7796,6 +8945,7 @@ impl DuckDbEngine {
                 "at least one non-blank update column is required".into(),
             ));
         }
+        self.reject_calculated_column_writes(left_id, update_columns.iter().map(String::as_str))?;
         let unique_update_columns = update_columns.iter().collect::<HashSet<_>>();
         if unique_update_columns.len() != update_columns.len() {
             return Err(AppError::InvalidParam(
@@ -7843,10 +8993,18 @@ impl DuckDbEngine {
         let output_table = Self::quote_identifier(&Self::internal_table_name(new_id));
         let right_table = Self::quote_identifier(&Self::internal_table_name(right_id));
         let match_identifier = Self::quote_identifier(match_column);
-        let update_result = self.with_row_mutation(new_id, || {
+        if let Some(source_columns) = self.compatible_calculated_source_columns(left_id, new_id)? {
+            if let Err(error) = self.clone_calculated_schema_with_new_ids(new_id, &source_columns) {
+                let _ = self.delete_dataset(new_id);
+                return Err(error);
+            }
+        }
+        let changed_column_ids =
+            self.resolve_column_ids_by_name(new_id, update_columns.iter().map(String::as_str))?;
+        let update_result = execute_table_mutation(self, new_id, None, |engine| {
             for column in update_columns {
                 let column_identifier = Self::quote_identifier(column);
-                self.conn.execute(
+                engine.conn.execute(
                     &format!(
                         "UPDATE {output_table} SET {column_identifier} = source.{column_identifier} \
                          FROM {right_table} AS source \
@@ -7855,7 +9013,21 @@ impl DuckDbEngine {
                     [],
                 )?;
             }
-            Ok(())
+            let row_count: i64 = engine.conn.query_row(
+                &format!("SELECT COUNT(*) FROM {output_table}"),
+                [],
+                |row| row.get(0),
+            )?;
+            engine.conn.execute(
+                "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+                params![row_count, new_id],
+            )?;
+            Ok(TableMutationEffects {
+                value: (),
+                changed_column_ids: changed_column_ids.clone(),
+                change_set_id: None,
+                recompute_column_ids: None,
+            })
         });
         if let Err(error) = update_result {
             let _ = self.delete_dataset(new_id);
@@ -7905,6 +9077,13 @@ impl DuckDbEngine {
                 _ => {}
             }
 
+            let preserved_calculated_columns = if stable_generation.is_some() {
+                self.compatible_calculated_source_columns(stable_id, temporary_id)?
+            } else {
+                None
+            };
+            let rematerialize_calculated = preserved_calculated_columns.is_some();
+
             if let Some(generation) = stable_generation {
                 let next_generation = generation.checked_add(1).ok_or_else(|| {
                     AppError::InvalidParam("dataset generation is exhausted".into())
@@ -7915,6 +9094,13 @@ impl DuckDbEngine {
                     "DELETE FROM _meta_columns WHERE dataset_id = $1",
                     params![stable_id],
                 )?;
+                self.conn.execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+                    params![stable_id],
+                )?;
+                if let Some(source_columns) = preserved_calculated_columns.as_ref() {
+                    self.adopt_calculated_schema_with_exact_ids(temporary_id, source_columns)?;
+                }
                 self.conn.execute(
                     "UPDATE _meta_columns SET dataset_id = $1 WHERE dataset_id = $2",
                     params![stable_id, temporary_id],
@@ -7948,10 +9134,27 @@ impl DuckDbEngine {
                     params![stable_id, stable_name, temporary_id],
                 )?;
             }
+            self.conn.execute(
+                "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+                params![stable_id],
+            )?;
+            self.conn.execute(
+                "UPDATE _meta_calculated_columns SET dataset_id = $1 WHERE dataset_id = $2",
+                params![stable_id, temporary_id],
+            )?;
 
             self.conn.execute(
                 &format!("ALTER TABLE {temporary_table} RENAME TO {stable_table}"),
                 [],
+            )?;
+            if rematerialize_calculated {
+                self.rematerialize_all_calculated_outputs(stable_id)?;
+            }
+            let generation = self.get_dataset_generation(stable_id)?;
+            self.rebuild_natural_anchors(stable_id, generation)?;
+            self.conn.execute(
+                "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+                params![temporary_id],
             )?;
             Ok(())
         })();
@@ -8024,6 +9227,15 @@ impl DuckDbEngine {
                     Self::quote_identifier(&Self::internal_table_name(&replacement.stable_id));
                 let temporary_table =
                     Self::quote_identifier(&Self::internal_table_name(&replacement.temporary_id));
+                let preserved_calculated_columns = if stable_generation.is_some() {
+                    self.compatible_calculated_source_columns(
+                        &replacement.stable_id,
+                        &replacement.temporary_id,
+                    )?
+                } else {
+                    None
+                };
+                let rematerialize_calculated = preserved_calculated_columns.is_some();
                 if let Some(generation) = stable_generation {
                     let next_generation = generation.checked_add(1).ok_or_else(|| {
                         AppError::InvalidParam("dataset generation is exhausted".into())
@@ -8034,6 +9246,16 @@ impl DuckDbEngine {
                         "DELETE FROM _meta_columns WHERE dataset_id = $1",
                         params![replacement.stable_id],
                     )?;
+                    self.conn.execute(
+                        "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+                        params![replacement.stable_id],
+                    )?;
+                    if let Some(source_columns) = preserved_calculated_columns.as_ref() {
+                        self.adopt_calculated_schema_with_exact_ids(
+                            &replacement.temporary_id,
+                            source_columns,
+                        )?;
+                    }
                     self.conn.execute(
                         "UPDATE _meta_columns SET dataset_id = $1 WHERE dataset_id = $2",
                         params![replacement.stable_id, replacement.temporary_id],
@@ -8072,8 +9294,25 @@ impl DuckDbEngine {
                     )?;
                 }
                 self.conn.execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+                    params![replacement.stable_id],
+                )?;
+                self.conn.execute(
+                    "UPDATE _meta_calculated_columns SET dataset_id = $1 WHERE dataset_id = $2",
+                    params![replacement.stable_id, replacement.temporary_id],
+                )?;
+                self.conn.execute(
                     &format!("ALTER TABLE {temporary_table} RENAME TO {stable_table}"),
                     [],
+                )?;
+                if rematerialize_calculated {
+                    self.rematerialize_all_calculated_outputs(&replacement.stable_id)?;
+                }
+                let generation = self.get_dataset_generation(&replacement.stable_id)?;
+                self.rebuild_natural_anchors(&replacement.stable_id, generation)?;
+                self.conn.execute(
+                    "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+                    params![replacement.temporary_id],
                 )?;
                 Ok(())
             },
@@ -8149,17 +9388,505 @@ impl DuckDbEngine {
         self.create_table_from_query(new_id, new_name, "concatenate", &sql)
     }
 
+    pub(crate) fn get_user_column_descriptors(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<UserColumnDescriptor>, AppError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT column_id, col_index, col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+        )?;
+        stmt.query_map(params![dataset_id], |row| {
+            Ok(UserColumnDescriptor {
+                column_id: row.get(0)?,
+                col_index: row.get(1)?,
+                name: row.get(2)?,
+                sql_type: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::from)
+    }
+
+    pub(crate) fn get_archive_column_plans(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<ArchiveColumnPlan>, AppError> {
+        let mut statement = self.conn.prepare(
+            "SELECT columns.column_id, columns.col_name, columns.col_type, calculated.archived_definition_json
+             FROM _meta_columns AS columns
+             LEFT JOIN _meta_calculated_columns AS calculated
+               ON calculated.dataset_id = columns.dataset_id
+              AND calculated.column_id = columns.column_id
+             WHERE columns.dataset_id = $1
+             ORDER BY columns.col_index",
+        )?;
+        let mut rows = statement.query(params![dataset_id])?;
+        let mut columns = Vec::new();
+        while let Some(row) = rows.next()? {
+            let archived_json: Option<String> = row.get(3)?;
+            let calculated = match archived_json {
+                Some(archived_json) => {
+                    Some(serde_json::from_str(&archived_json).map_err(|error| {
+                        AppError::Database(format!(
+                            "invalid archived calculated column metadata: {error}"
+                        ))
+                    })?)
+                }
+                None => None,
+            };
+            columns.push(ArchiveColumnPlan {
+                column_id: row.get(0)?,
+                name: row.get(1)?,
+                sql_type: row.get(2)?,
+                calculated,
+            });
+        }
+        Ok(columns)
+    }
+
+    pub(crate) fn get_archived_calculated_columns_by_id(
+        &self,
+        dataset_id: &str,
+    ) -> Result<BTreeMap<String, ArchivedCalculatedColumn>, AppError> {
+        self.get_archive_column_plans(dataset_id).map(|columns| {
+            columns
+                .into_iter()
+                .filter_map(|column| {
+                    column
+                        .calculated
+                        .map(|calculated| (column.column_id, calculated))
+                })
+                .collect()
+        })
+    }
+
+    pub(crate) fn get_table_column_descriptors(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<crate::models::table::ColumnDescriptor>, AppError> {
+        let columns = self.get_archive_column_plans(dataset_id)?;
+        let present_column_ids = columns
+            .iter()
+            .map(|column| column.column_id.clone())
+            .collect::<HashSet<_>>();
+        let column_names_by_id = columns
+            .iter()
+            .map(|column| (column.column_id.clone(), column.name.clone()))
+            .collect::<HashMap<_, _>>();
+        Ok(columns
+            .into_iter()
+            .map(|column| crate::models::table::ColumnDescriptor {
+                column_id: column.column_id.clone(),
+                name: column.name.clone(),
+                sql_type: column.sql_type.clone(),
+                calculated: column.calculated.as_ref().map(|calculated| {
+                    build_calculated_descriptor(
+                        calculated,
+                        &column.column_id,
+                        &column.sql_type,
+                        &present_column_ids,
+                        &column_names_by_id,
+                    )
+                }),
+            })
+            .collect())
+    }
+
+    pub(crate) fn replace_archive_column_ids(
+        &self,
+        dataset_id: &str,
+        columns: &[ArchiveColumnPlan],
+    ) -> Result<(), AppError> {
+        let existing_columns = self.get_user_column_descriptors(dataset_id)?;
+        if existing_columns.len() != columns.len() {
+            return Err(AppError::Database(format!(
+                "dataset {dataset_id} column count changed during restore"
+            )));
+        }
+
+        for (existing, column) in existing_columns.iter().zip(columns.iter()) {
+            uuid::Uuid::parse_str(&column.column_id)
+                .map_err(|_| AppError::InvalidParam("invalid column id".into()))?;
+            self.conn.execute(
+                "UPDATE _meta_columns SET column_id = $1 WHERE dataset_id = $2 AND col_index = $3",
+                params![&column.column_id, dataset_id, existing.col_index],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn replace_archived_calculated_columns(
+        &self,
+        dataset_id: &str,
+        columns: &[ArchiveColumnPlan],
+    ) -> Result<(), AppError> {
+        self.conn.execute(
+            "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+            params![dataset_id],
+        )?;
+
+        for column in columns {
+            let Some(calculated) = &column.calculated else {
+                continue;
+            };
+            self.upsert_archived_calculated_column(dataset_id, &column.column_id, calculated)?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn upsert_archived_calculated_column(
+        &self,
+        dataset_id: &str,
+        column_id: &str,
+        calculated: &ArchivedCalculatedColumn,
+    ) -> Result<(), AppError> {
+        let (expression_json, dependency_column_ids_json, inferred_output_type, fingerprint) =
+            match calculated {
+                ArchivedCalculatedColumn::Ready { definition, .. } => (
+                    Some(
+                        serde_json::to_string(&definition.expression)
+                            .map_err(|error| AppError::Database(error.to_string()))?,
+                    ),
+                    Some(
+                        serde_json::to_string(&definition.dependency_column_ids)
+                            .map_err(|error| AppError::Database(error.to_string()))?,
+                    ),
+                    Some(definition.inferred_output_type.as_str().to_string()),
+                    Some(definition.fingerprint.clone()),
+                ),
+                ArchivedCalculatedColumn::Preserved { .. } => (None, None, None, None),
+            };
+        let archived_definition_json = serde_json::to_string(calculated)
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        self.conn.execute(
+            "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1 AND column_id = $2",
+            params![dataset_id, column_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO _meta_calculated_columns (dataset_id, column_id, formula_id, schema_version, expression_json, dependency_column_ids_json, inferred_output_type, fingerprint, archived_definition_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            params![
+                dataset_id,
+                column_id,
+                calculated.formula_id(),
+                calculated.schema_version(),
+                expression_json,
+                dependency_column_ids_json,
+                inferred_output_type,
+                fingerprint,
+                archived_definition_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_calculated_metadata_by_formula_id(
+        &self,
+        dataset_id: &str,
+        formula_id: &str,
+    ) -> Result<bool, AppError> {
+        let deleted = self.conn.execute(
+            "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1 AND formula_id = $2",
+            params![dataset_id, formula_id],
+        )?;
+        Ok(deleted > 0)
+    }
+
+    pub(crate) fn calculated_column_names(
+        &self,
+        dataset_id: &str,
+    ) -> Result<HashSet<String>, AppError> {
+        let mut statement = self.conn.prepare(
+            "SELECT columns.col_name
+             FROM _meta_columns AS columns
+             INNER JOIN _meta_calculated_columns AS calculated
+               ON calculated.dataset_id = columns.dataset_id
+              AND calculated.column_id = columns.column_id
+             WHERE columns.dataset_id = $1",
+        )?;
+        statement
+            .query_map(params![dataset_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(AppError::from)
+    }
+
+    fn ready_calculated_definitions_by_output(
+        &self,
+        dataset_id: &str,
+    ) -> Result<BTreeMap<String, CalculatedColumnDefinitionV1>, AppError> {
+        let archived = self.get_archived_calculated_columns_by_id(dataset_id)?;
+        Ok(archived
+            .into_values()
+            .filter_map(|calculated| match calculated {
+                ArchivedCalculatedColumn::Ready { definition, .. } => {
+                    Some((definition.output_column_id.clone(), definition))
+                }
+                ArchivedCalculatedColumn::Preserved { .. } => None,
+            })
+            .collect())
+    }
+
+    fn typed_expression_from_definition(
+        definition: &CalculatedColumnDefinitionV1,
+    ) -> Result<TypedCalculatedExpression, AppError> {
+        let output_type = match definition.inferred_output_type {
+            CalculatedOutputTypeV1::Boolean => TypedCalculatedOutput::Boolean,
+            CalculatedOutputTypeV1::Continuous => TypedCalculatedOutput::Double,
+            CalculatedOutputTypeV1::Integer => TypedCalculatedOutput::BigInt,
+            CalculatedOutputTypeV1::Null => TypedCalculatedOutput::Null,
+            CalculatedOutputTypeV1::Text | CalculatedOutputTypeV1::Unknown => {
+                return Err(AppError::InvalidParam(
+                    "calculated column output type is unsupported in v1".into(),
+                ));
+            }
+        };
+        Ok(TypedCalculatedExpression {
+            expression: definition.expression.clone(),
+            output_type,
+        })
+    }
+
+    fn rematerialize_all_calculated_outputs(&self, dataset_id: &str) -> Result<(), AppError> {
+        let definitions_by_output = self.ready_calculated_definitions_by_output(dataset_id)?;
+        if definitions_by_output.is_empty() {
+            return Ok(());
+        }
+
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let sql_columns = self
+            .get_user_column_descriptors(dataset_id)?
+            .into_iter()
+            .map(|column| FormulaSqlColumn {
+                column_id: column.column_id,
+                sql_type: column.sql_type,
+                physical_name: column.name,
+            })
+            .collect::<Vec<_>>();
+
+        let mut remaining = definitions_by_output
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut materialized = BTreeSet::new();
+        while !remaining.is_empty() {
+            let mut progressed = false;
+            let ready = remaining
+                .iter()
+                .filter(|output_id| {
+                    definitions_by_output
+                        .get(*output_id)
+                        .into_iter()
+                        .flat_map(|definition| definition.dependency_column_ids.iter())
+                        .all(|dependency| {
+                            !definitions_by_output.contains_key(dependency)
+                                || materialized.contains(dependency)
+                        })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            for output_id in ready {
+                let definition = definitions_by_output.get(&output_id).ok_or_else(|| {
+                    AppError::Database(format!("missing calculated definition for {output_id}"))
+                })?;
+                let compiled = compile_formula_sql(
+                    &Self::typed_expression_from_definition(definition)?,
+                    &sql_columns,
+                )
+                .map_err(Self::map_formula_error)?;
+                let output_column = sql_columns
+                    .iter()
+                    .find(|column| column.column_id == output_id)
+                    .ok_or_else(|| {
+                        AppError::Database(format!("missing SQL column binding for {output_id}"))
+                    })?;
+                let identifier = Self::quote_identifier(&output_column.physical_name);
+                self.conn.execute(
+                    &format!(
+                        "UPDATE {table_name} SET {identifier} = {}",
+                        compiled.value_sql
+                    ),
+                    [],
+                )?;
+                remaining.remove(&output_id);
+                materialized.insert(output_id);
+                progressed = true;
+            }
+
+            if !progressed {
+                return Err(AppError::InvalidParam(
+                    "calculated column graph invalid: unable to resolve dependency order".into(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn map_formula_error(error: FormulaError) -> AppError {
+        match error {
+            FormulaError::Syntax { message }
+            | FormulaError::Unsupported { message }
+            | FormulaError::UnknownIdentifier {
+                identifier: message,
+            }
+            | FormulaError::Type { message }
+            | FormulaError::Limits { message } => AppError::InvalidParam(message),
+            FormulaError::AmbiguousIdentifier {
+                identifier,
+                column_ids,
+            } => AppError::InvalidParam(format!(
+                "ambiguous identifier {identifier}: {}",
+                column_ids.join(",")
+            )),
+            FormulaError::DependencyGraph { message, path } => {
+                AppError::InvalidParam(format!("{message}: {}", path.join(" -> ")))
+            }
+        }
+    }
+
+    fn insert_meta_column_with_id(
+        &self,
+        dataset_id: &str,
+        column: &UserColumnDescriptor,
+    ) -> Result<(), AppError> {
+        uuid::Uuid::parse_str(&column.column_id)
+            .map_err(|_| AppError::InvalidParam("invalid column id".into()))?;
+        self.conn.execute(
+            "INSERT INTO _meta_columns (dataset_id, column_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?, ?)",
+            params![
+                dataset_id,
+                &column.column_id,
+                column.col_index,
+                &column.name,
+                &column.sql_type,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn compatible_calculated_source_columns(
+        &self,
+        source_dataset_id: &str,
+        target_dataset_id: &str,
+    ) -> Result<Option<Vec<ArchiveColumnPlan>>, AppError> {
+        let source_columns = self.get_archive_column_plans(source_dataset_id)?;
+        let has_calculated_columns = source_columns
+            .iter()
+            .any(|column| column.calculated.is_some());
+        if !has_calculated_columns {
+            return Ok(None);
+        }
+
+        let target_columns = self.get_user_column_descriptors(target_dataset_id)?;
+        let schema_matches = source_columns.len() == target_columns.len()
+            && source_columns
+                .iter()
+                .zip(target_columns.iter())
+                .all(|(source, target)| {
+                    source.name == target.name && source.sql_type == target.sql_type
+                });
+        if !schema_matches {
+            return Err(AppError::InvalidParam(
+                "cannot preserve calculated metadata across a UUID-incompatible schema".into(),
+            ));
+        }
+
+        Ok(Some(source_columns))
+    }
+
+    fn adopt_calculated_schema_with_exact_ids(
+        &self,
+        target_dataset_id: &str,
+        source_columns: &[ArchiveColumnPlan],
+    ) -> Result<(), AppError> {
+        self.replace_archive_column_ids(target_dataset_id, source_columns)?;
+        self.replace_archived_calculated_columns(target_dataset_id, source_columns)
+    }
+
+    fn clone_calculated_schema_with_new_ids(
+        &self,
+        target_dataset_id: &str,
+        source_columns: &[ArchiveColumnPlan],
+    ) -> Result<(), AppError> {
+        let target_columns = self.get_user_column_descriptors(target_dataset_id)?;
+        let old_to_new_column_ids = source_columns
+            .iter()
+            .zip(target_columns.iter())
+            .map(|(source, target)| (source.column_id.clone(), target.column_id.clone()))
+            .collect::<HashMap<_, _>>();
+        self.conn.execute(
+            "DELETE FROM _meta_calculated_columns WHERE dataset_id = $1",
+            params![target_dataset_id],
+        )?;
+        for (source, target) in source_columns.iter().zip(target_columns.iter()) {
+            let Some(calculated) = &source.calculated else {
+                continue;
+            };
+            let cloned = match calculated {
+                ArchivedCalculatedColumn::Ready { definition, state } => {
+                    ArchivedCalculatedColumn::Ready {
+                        definition: remap_definition(
+                            definition,
+                            uuid::Uuid::new_v4().to_string(),
+                            target.column_id.clone(),
+                            &old_to_new_column_ids,
+                        )
+                        .map_err(|error| AppError::InvalidParam(error.message))?,
+                        state: state.clone(),
+                    }
+                }
+                ArchivedCalculatedColumn::Preserved { definition } => {
+                    ArchivedCalculatedColumn::Preserved {
+                        definition: PreservedCalculatedColumnDefinition {
+                            formula_id: uuid::Uuid::new_v4().to_string(),
+                            schema_version: definition.schema_version.clone(),
+                            output_column_id: target.column_id.clone(),
+                            archived_definition: definition.archived_definition.clone(),
+                        },
+                    }
+                }
+            };
+            self.upsert_archived_calculated_column(target_dataset_id, &target.column_id, &cloned)?;
+        }
+        Ok(())
+    }
+
+    fn insert_replayed_meta_column(
+        &self,
+        dataset_id: &str,
+        column_index: i32,
+        column_name: &str,
+        column_type: &str,
+        identity: ReplayedColumnIdentity<'_>,
+    ) -> Result<(), AppError> {
+        match identity {
+            ReplayedColumnIdentity::Exact(column_id) => self.insert_meta_column_with_id(
+                dataset_id,
+                &UserColumnDescriptor {
+                    column_id: column_id.to_string(),
+                    col_index: column_index,
+                    name: column_name.to_string(),
+                    sql_type: column_type.to_string(),
+                },
+            ),
+            ReplayedColumnIdentity::LegacyGenerated => {
+                self.conn.execute(
+                    "INSERT INTO _meta_columns (dataset_id, col_index, col_name, col_type) VALUES (?, ?, ?, ?)",
+                    params![dataset_id, column_index, column_name, column_type],
+                )?;
+                Ok(())
+            }
+        }
+    }
+
     /// Helper: get user columns (excluding _row_id) for a dataset (public for service layer)
     pub fn get_user_columns(&self, dataset_id: &str) -> Result<Vec<(String, String)>, AppError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
-        )?;
-        let cols = stmt
-            .query_map(params![dataset_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(cols)
+        self.get_user_column_descriptors(dataset_id)?
+            .into_iter()
+            .map(|column| Ok((column.name, column.sql_type)))
+            .collect::<Result<Vec<_>, AppError>>()
     }
 
     pub fn get_distribution_columns(
@@ -8427,6 +10154,74 @@ impl DuckDbEngine {
         Ok(FitYByXRows { source_rows, rows })
     }
 
+    fn get_storage_user_columns(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        self.get_dataset_meta(dataset_id)?;
+        let internal_table_name = Self::internal_table_name(dataset_id);
+        let mut stmt = self.conn.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ? AND column_name <> '_row_id' ORDER BY ordinal_position",
+        )?;
+        stmt.query_map(params![internal_table_name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::from)
+    }
+
+    fn resolve_navigation_projection(
+        &self,
+        dataset_id: &str,
+        column_ids: &[String],
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let actual_columns = self
+            .get_storage_user_columns(dataset_id)?
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut stmt = self.conn.prepare(
+            "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = ?",
+        )?;
+        let descriptors = stmt
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|(column_id, column_name, column_type)| (column_id, (column_name, column_type)))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut seen = HashSet::new();
+        let mut projection = Vec::with_capacity(column_ids.len());
+        for column_id in column_ids {
+            if !seen.insert(column_id.as_str()) {
+                return Err(AppError::InvalidParam(format!(
+                    "duplicate column id: {column_id}"
+                )));
+            }
+            let (column_name, metadata_type) = descriptors
+                .get(column_id)
+                .cloned()
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown column id: {column_id}")))?;
+            let actual_type = actual_columns.get(&column_name).ok_or_else(|| {
+                AppError::InvalidParam(format!(
+                    "unresolved projection column for id {column_id}: {column_name}"
+                ))
+            })?;
+            if actual_type != &metadata_type {
+                return Err(AppError::InvalidParam(format!(
+                    "unresolved projection type for id {column_id}: metadata {metadata_type}, actual {actual_type}"
+                )));
+            }
+            projection.push((column_name, metadata_type));
+        }
+        Ok(projection)
+    }
+
     pub fn read_hypothesis_test_rows(
         &self,
         dataset_id: &str,
@@ -8439,12 +10234,21 @@ impl DuckDbEngine {
                 .iter()
                 .find(|(name, _)| name == &field.name)
                 .map(|(_, column_type)| column_type.as_str())
-                .ok_or_else(|| AppError::InvalidParam(format!("unknown hypothesis test column: {}", field.name)))
+                .ok_or_else(|| {
+                    AppError::InvalidParam(format!(
+                        "unknown hypothesis test column: {}",
+                        field.name
+                    ))
+                })
         };
         let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
 
         match roles {
-            HypothesisTestRoles::Long { response, condition, subject } => {
+            HypothesisTestRoles::Long {
+                response,
+                condition,
+                subject,
+            } => {
                 if response.name == condition.name
                     || subject.as_ref().is_some_and(|field| {
                         field.name == response.name || field.name == condition.name
@@ -8462,8 +10266,12 @@ impl DuckDbEngine {
                 }
                 let condition_type = column_type(condition)?;
                 if is_numeric_type(condition_type) || is_temporal_type(condition_type) {
-                    let condition_role = self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
-                    if !matches!(condition_role.to_ascii_lowercase().as_str(), "nominal" | "ordinal") {
+                    let condition_role =
+                        self.fit_y_by_x_column_role(dataset_id, &condition.name)?;
+                    if !matches!(
+                        condition_role.to_ascii_lowercase().as_str(),
+                        "nominal" | "ordinal"
+                    ) {
                         return Err(AppError::InvalidParam(format!(
                             "hypothesis test condition must be categorical: {}",
                             condition.name
@@ -8476,7 +10284,8 @@ impl DuckDbEngine {
 
                 let response = Self::quote_identifier(&response.name);
                 let condition = Self::quote_identifier(&condition.name);
-                let subject_projection = subject.as_ref()
+                let subject_projection = subject
+                    .as_ref()
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
@@ -8486,8 +10295,10 @@ impl DuckDbEngine {
                 let mut query_rows = statement.query([])?;
                 let mut rows = Vec::new();
                 while let Some(row) = query_rows.next()? {
-                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
-                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let identity =
+                        fit_y_by_x_display_value(row.get::<_, Value>(0)?).ok_or_else(|| {
+                            AppError::Stats("hypothesis test row identity is missing".into())
+                        })?;
                     rows.push(LongHypothesisTestRow {
                         identity,
                         response: fit_y_by_x_numeric_value(row.get::<_, Value>(1)?),
@@ -8501,7 +10312,10 @@ impl DuckDbEngine {
                 }
                 Ok(HypothesisTestRows::Long(rows))
             }
-            HypothesisTestRoles::Wide { measurements, subject } => {
+            HypothesisTestRoles::Wide {
+                measurements,
+                subject,
+            } => {
                 if measurements.len() < 2 {
                     return Err(AppError::InvalidParam(
                         "wide hypothesis test requires at least two measurement columns".into(),
@@ -8530,11 +10344,13 @@ impl DuckDbEngine {
                     column_type(subject)?;
                 }
 
-                let measurement_projection = measurements.iter()
+                let measurement_projection = measurements
+                    .iter()
                     .map(|field| Self::quote_identifier(&field.name))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let subject_projection = subject.as_ref()
+                let subject_projection = subject
+                    .as_ref()
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
@@ -8544,8 +10360,10 @@ impl DuckDbEngine {
                 let mut query_rows = statement.query([])?;
                 let mut rows = Vec::new();
                 while let Some(row) = query_rows.next()? {
-                    let identity = fit_y_by_x_display_value(row.get::<_, Value>(0)?)
-                        .ok_or_else(|| AppError::Stats("hypothesis test row identity is missing".into()))?;
+                    let identity =
+                        fit_y_by_x_display_value(row.get::<_, Value>(0)?).ok_or_else(|| {
+                            AppError::Stats("hypothesis test row identity is missing".into())
+                        })?;
                     let values = (0..measurements.len())
                         .map(|index| row.get::<_, Value>(index + 1).map(fit_y_by_x_numeric_value))
                         .collect::<Result<Vec<_>, _>>()?;
@@ -8560,7 +10378,10 @@ impl DuckDbEngine {
                     });
                 }
                 Ok(HypothesisTestRows::Wide {
-                    conditions: measurements.iter().map(|field| field.name.clone()).collect(),
+                    conditions: measurements
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
                     explicit_subject: subject.is_some(),
                     rows,
                 })
@@ -8607,18 +10428,7 @@ impl DuckDbEngine {
         dataset_id: &str,
     ) -> Result<ArchiveKeysetReadPlan, AppError> {
         self.get_dataset_meta(dataset_id)?;
-        let mut statement = self.conn.prepare(
-            "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
-        )?;
-        let columns: Vec<(String, String, String)> = statement
-            .query_map(params![dataset_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let columns = self.get_archive_column_plans(dataset_id)?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
 
         let select_projection = if columns.is_empty() {
@@ -8628,7 +10438,7 @@ impl DuckDbEngine {
                 ", {}",
                 columns
                     .iter()
-                    .map(|(_, name, column_type)| archive_export_expression(name, column_type))
+                    .map(|column| archive_export_expression(&column.name, &column.sql_type))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -9340,12 +11150,17 @@ mod tests {
         GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphSampling, GraphViewport,
     };
     use crate::models::table::{
-        CreateTableFromRowsRequest, TableFilterValue, TableWindowFilter, TableWindowFilterRule,
-        TableWindowRequest, TableWindowSort,
+        CellUpdate, CreateTableFromRowsRequest, TableFilterValue, TableNavigationRequest,
+        TableWindowFilter, TableWindowFilterRule, TableWindowRequest, TableWindowSort,
     };
     use crate::services::archive_cell::{
         archive_cell_to_json_call_count, reset_archive_cell_to_json_call_count,
     };
+    use crate::services::calculated_column_service::{
+        CalculatedColumnService, UpsertCalculatedColumnInput,
+    };
+    use crate::services::data_service::DataService;
+    use crate::state::AppState;
     use duckdb::types::Decimal;
 
     #[test]
@@ -9359,6 +11174,277 @@ mod tests {
             .expect("read through secondary connection");
 
         assert_eq!(value, 42);
+    }
+
+    fn mutation_fixture_with_chain() -> (AppState, String) {
+        let state = AppState::new().expect("state");
+        let dataset_id = DataService::new(&state)
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Mutation Fixture".to_string(),
+                column_names: vec!["Length".to_string(), "Width".to_string()],
+                column_types: vec!["DOUBLE".to_string(), "DOUBLE".to_string()],
+                rows: vec![vec![serde_json::json!(2.0), serde_json::json!(3.0)]],
+            })
+            .expect("seed mutation fixture")
+            .id;
+        let calculated = CalculatedColumnService::new(&state);
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.clone(),
+                output_name: "Area".to_string(),
+                formula_text: "Length * Width".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create Area formula");
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.clone(),
+                output_name: "DoubleArea".to_string(),
+                formula_text: "Area * 2".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create DoubleArea formula");
+        (state, dataset_id)
+    }
+
+    fn keyed_update_fixture_with_chain() -> (AppState, String, String) {
+        let state = AppState::new().expect("state");
+        let data = DataService::new(&state);
+        let left_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Left Mutation Fixture".to_string(),
+                column_names: vec!["Key".to_string(), "Length".to_string(), "Width".to_string()],
+                column_types: vec![
+                    "BIGINT".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(1),
+                    serde_json::json!(2.0),
+                    serde_json::json!(3.0),
+                ]],
+            })
+            .expect("seed keyed left fixture")
+            .id;
+        let right_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Right Mutation Fixture".to_string(),
+                column_names: vec![
+                    "Key".to_string(),
+                    "Length".to_string(),
+                    "Width".to_string(),
+                    "Area".to_string(),
+                ],
+                column_types: vec![
+                    "BIGINT".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(1),
+                    serde_json::json!(10.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(999.0),
+                ]],
+            })
+            .expect("seed keyed right fixture")
+            .id;
+        let calculated = CalculatedColumnService::new(&state);
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: left_id.clone(),
+                output_name: "Area".to_string(),
+                formula_text: "Length * Width".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create keyed Area formula");
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: left_id.clone(),
+                output_name: "DoubleArea".to_string(),
+                formula_text: "Area * 2".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create keyed DoubleArea formula");
+        (state, left_id, right_id)
+    }
+
+    fn mutation_fixture_with_chain_and_extra_source() -> (AppState, String) {
+        let state = AppState::new().expect("state");
+        let dataset_id = DataService::new(&state)
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Mutation Fixture Extra Source".to_string(),
+                column_names: vec![
+                    "Length".to_string(),
+                    "Width".to_string(),
+                    "Depth".to_string(),
+                ],
+                column_types: vec![
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(2.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(4.0),
+                ]],
+            })
+            .expect("seed mutation fixture with extra source")
+            .id;
+        let calculated = CalculatedColumnService::new(&state);
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.clone(),
+                output_name: "Area".to_string(),
+                formula_text: "Length * Width".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create Area formula");
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.clone(),
+                output_name: "DoubleArea".to_string(),
+                formula_text: "Area * 2".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create DoubleArea formula");
+        (state, dataset_id)
+    }
+
+    fn create_chain_dataset_in_state(
+        state: &AppState,
+        name: &str,
+        columns: Vec<String>,
+        row: Vec<serde_json::Value>,
+    ) -> String {
+        let dataset_id = DataService::new(state)
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: name.to_string(),
+                column_names: columns,
+                column_types: vec!["DOUBLE".to_string(), "DOUBLE".to_string()],
+                rows: vec![row],
+            })
+            .expect("seed chain dataset")
+            .id;
+        let calculated = CalculatedColumnService::new(state);
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.clone(),
+                output_name: "Area".to_string(),
+                formula_text: "Length * Width".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create Area formula");
+        calculated
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.clone(),
+                output_name: "DoubleArea".to_string(),
+                formula_text: "Area * 2".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create DoubleArea formula");
+        dataset_id
+    }
+
+    fn numeric_column_values(state: &AppState, dataset_id: &str, column_name: &str) -> Vec<f64> {
+        let table = DataService::new(state)
+            .query_table(dataset_id, 0, 100, None, None)
+            .expect("query dataset");
+        let column_index = table
+            .columns
+            .iter()
+            .position(|candidate| candidate == column_name)
+            .unwrap_or_else(|| panic!("missing column {column_name}"));
+        table
+            .rows
+            .into_iter()
+            .map(|row| {
+                row[column_index]
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("expected numeric {column_name}"))
+            })
+            .collect()
+    }
+
+    fn history_entry_count(state: &AppState, dataset_id: &str) -> i64 {
+        let db = state.db.lock().expect("db");
+        db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _history_change_sets WHERE dataset_id = ?",
+                params![dataset_id],
+                |row| row.get(0),
+            )
+            .expect("count history entries")
+    }
+
+    fn archived_calculated_columns(
+        state: &AppState,
+        dataset_id: &str,
+    ) -> BTreeMap<String, ArchivedCalculatedColumn> {
+        state
+            .db
+            .lock()
+            .expect("db")
+            .get_archived_calculated_columns_by_id(dataset_id)
+            .expect("archived calculated metadata")
+    }
+
+    fn archived_calculated_column_by_name(
+        state: &AppState,
+        dataset_id: &str,
+        column_name: &str,
+    ) -> ArchivedCalculatedColumn {
+        let column_id = state
+            .db
+            .lock()
+            .expect("db")
+            .get_user_column_descriptors(dataset_id)
+            .expect("column descriptors")
+            .into_iter()
+            .find(|column| column.name == column_name)
+            .unwrap_or_else(|| panic!("missing calculated column {column_name}"))
+            .column_id;
+        archived_calculated_columns(state, dataset_id)
+            .remove(&column_id)
+            .unwrap_or_else(|| panic!("missing calculated metadata for {column_name}"))
+    }
+
+    fn latest_history_change_set_id(state: &AppState, dataset_id: &str) -> String {
+        let db = state.db.lock().expect("db");
+        db.conn()
+            .query_row(
+                "SELECT id FROM _history_change_sets WHERE dataset_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                params![dataset_id],
+                |row| row.get(0),
+            )
+            .expect("read latest change set id")
     }
 
     fn seed_transform_value_table(engine: &DuckDbEngine, id: &str, name: &str, values: &[i64]) {
@@ -9396,6 +11482,374 @@ mod tests {
         (result.columns, result.rows)
     }
 
+    fn navigation_column_descriptors(
+        engine: &DuckDbEngine,
+        dataset_id: &str,
+    ) -> Vec<(String, String, String)> {
+        let mut statement = engine
+            .conn
+            .prepare(
+                "SELECT column_id, col_name, col_type FROM _meta_columns WHERE dataset_id = ? ORDER BY col_index",
+            )
+            .expect("prepare navigation descriptor query");
+        statement
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query navigation descriptors")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect navigation descriptors")
+    }
+
+    fn seed_navigation_dataset(engine: &DuckDbEngine, dataset_id: &str) -> u64 {
+        engine
+            .create_empty_table(
+                dataset_id,
+                "Navigation",
+                &["value".to_string(), "category".to_string()],
+                &["DOUBLE".to_string(), "VARCHAR".to_string()],
+            )
+            .expect("create navigation fixture");
+
+        for (value, category) in [("1.5", "alpha"), ("2.5", "beta")] {
+            let row_id = engine.add_row(dataset_id).expect("add navigation row");
+            engine
+                .update_cell(dataset_id, row_id, "value", value)
+                .expect("write navigation value");
+            engine
+                .update_cell(dataset_id, row_id, "category", category)
+                .expect("write navigation category");
+        }
+
+        engine
+            .get_dataset_generation(dataset_id)
+            .expect("navigation generation")
+    }
+
+    fn seed_navigation_tie_dataset(engine: &DuckDbEngine, dataset_id: &str) -> u64 {
+        engine
+            .create_empty_table(
+                dataset_id,
+                "Navigation ties",
+                &["value".to_string(), "category".to_string()],
+                &["DOUBLE".to_string(), "VARCHAR".to_string()],
+            )
+            .expect("create navigation tie fixture");
+
+        for (value, category) in [("2.5", "beta"), ("1.5", "alpha"), ("2.5", "gamma")] {
+            let row_id = engine.add_row(dataset_id).expect("add navigation tie row");
+            engine
+                .update_cell(dataset_id, row_id, "value", value)
+                .expect("write navigation tie value");
+            engine
+                .update_cell(dataset_id, row_id, "category", category)
+                .expect("write navigation tie category");
+        }
+
+        engine
+            .get_dataset_generation(dataset_id)
+            .expect("navigation tie generation")
+    }
+
+    fn navigation_request(
+        dataset_id: &str,
+        generation: u64,
+        column_ids: Vec<String>,
+    ) -> TableNavigationRequest {
+        TableNavigationRequest {
+            version: 1,
+            request_id: format!("req-{dataset_id}"),
+            dataset_id: dataset_id.to_string(),
+            generation,
+            start: 0,
+            count: 10,
+            column_ids,
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        }
+    }
+
+    fn seed_natural_navigation_sparse_dataset(engine: &DuckDbEngine, dataset_id: &str) -> u64 {
+        engine
+            .seed_benchmark_table(dataset_id, "Natural navigation", 20_000, 1)
+            .expect("seed natural navigation fixture");
+        let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+        engine
+            .conn
+            .execute(
+                &format!(
+                    "DELETE FROM {table} WHERE _row_id BETWEEN ? AND ? OR _row_id BETWEEN ? AND ? OR _row_id BETWEEN ? AND ?"
+                ),
+                params![4093_i64, 4100_i64, 8191_i64, 8198_i64, 12_287_i64, 12_294_i64],
+            )
+            .expect("delete rows around sparse anchor boundaries");
+        let retained_rows: i64 = engine
+            .conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("retained natural rows");
+        engine
+            .conn
+            .execute(
+                "UPDATE _meta_datasets SET row_count = ?, generation = generation + 1 WHERE id = ?",
+                params![retained_rows, dataset_id],
+            )
+            .expect("publish natural navigation generation");
+        engine
+            .get_dataset_generation(dataset_id)
+            .expect("natural navigation generation")
+    }
+
+    fn natural_navigation_request(
+        dataset_id: &str,
+        generation: u64,
+        start: usize,
+        count: usize,
+    ) -> TableNavigationRequest {
+        TableNavigationRequest {
+            version: 1,
+            request_id: format!("req-natural-{start}"),
+            dataset_id: dataset_id.to_string(),
+            generation,
+            start,
+            count,
+            column_ids: vec![],
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        }
+    }
+
+    #[test]
+    fn natural_navigation_sparse_anchors_match_row_id_order_after_boundary_deletions() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_sparse";
+        let generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        let descriptors = navigation_column_descriptors(&engine, dataset_id);
+        let value_id = descriptors[0].0.clone();
+
+        engine
+            .rebuild_natural_anchors(dataset_id, generation)
+            .expect("rebuild natural anchors");
+
+        for start in [
+            0_usize, 1, 4090, 4095, 4096, 4097, 8188, 8192, 12_280, 19_960,
+        ] {
+            let expected = engine
+                .query_table_window(&TableWindowRequest {
+                    dataset_id: dataset_id.to_string(),
+                    start,
+                    count: 32,
+                    sort: None,
+                    filters: vec![],
+                    generation,
+                })
+                .expect("task 4 natural-order window");
+            let mut request = natural_navigation_request(dataset_id, generation, start, 32);
+            request.column_ids = vec![value_id.clone()];
+
+            let actual = DuckDbEngine::query_natural_navigation_window(engine.conn(), &request)
+                .expect("task 5 anchor-backed natural navigation");
+
+            assert_eq!(actual.total_rows, expected.total_rows);
+            assert_eq!(actual.rows, expected.rows);
+            assert!(
+                engine
+                    .natural_navigation_local_offset_for_test(dataset_id, generation, start)
+                    .expect("local natural offset")
+                    <= NATURAL_ANCHOR_STRIDE - 1
+            );
+        }
+    }
+
+    #[test]
+    fn natural_navigation_uses_generation_row_count_and_has_no_count_in_viewport_plan() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_plan";
+        let generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        let value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        engine
+            .rebuild_natural_anchors(dataset_id, generation)
+            .expect("rebuild natural anchors");
+
+        let mut request = natural_navigation_request(dataset_id, generation, 20_000, 16);
+        request.column_ids = vec![value_id];
+        let result = DuckDbEngine::query_natural_navigation_window(engine.conn(), &request)
+            .expect("past-end natural navigation");
+
+        assert_eq!(result.total_rows, 19_976);
+        assert!(result.rows.is_empty());
+
+        let plan =
+            DuckDbEngine::explain_natural_navigation_window_for_test(engine.conn(), &request)
+                .expect("natural navigation plan");
+        assert!(!plan.to_ascii_uppercase().contains("COUNT(*)"));
+    }
+
+    #[test]
+    fn natural_navigation_batch_cell_edit_publishes_matching_generation_anchors() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_cell_edit";
+        let initial_generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        engine
+            .rebuild_natural_anchors(dataset_id, initial_generation)
+            .expect("initial anchors");
+        let value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+
+        let next_generation = engine
+            .update_cells_if_generation(
+                dataset_id,
+                &[
+                    CellUpdate {
+                        row_id: 4101,
+                        column_name: "value_1".to_string(),
+                        value: Some("111".to_string()),
+                    },
+                    CellUpdate {
+                        row_id: 8199,
+                        column_name: "value_1".to_string(),
+                        value: Some("222".to_string()),
+                    },
+                ],
+                Some(initial_generation),
+            )
+            .expect("batch cell edit");
+
+        let mut request = natural_navigation_request(dataset_id, next_generation, 4092, 4);
+        request.column_ids = vec![value_id];
+        let result = DuckDbEngine::query_natural_navigation_window(engine.conn(), &request)
+            .expect("natural navigation after batch cell edit");
+
+        assert_eq!(result.generation, next_generation);
+        assert_eq!(result.rows[0][0], serde_json::json!(4101));
+        assert_eq!(result.rows[0][1], serde_json::json!(111));
+    }
+
+    #[test]
+    fn natural_navigation_column_only_change_set_publishes_matching_generation_anchors() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let dataset_id = "natural_column_change";
+        let initial_generation = seed_natural_navigation_sparse_dataset(&engine, dataset_id);
+        engine
+            .rebuild_natural_anchors(dataset_id, initial_generation)
+            .expect("initial anchors");
+
+        let add_change_set = engine
+            .add_column_with_change_set(
+                dataset_id,
+                "added",
+                "BIGINT",
+                Some(0),
+                Some(initial_generation),
+            )
+            .expect("add column change set");
+        let after_add_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after add");
+        let added_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        let mut after_add = natural_navigation_request(dataset_id, after_add_generation, 4095, 2);
+        after_add.column_ids = vec![added_id];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_add)
+            .expect("natural navigation after column add");
+
+        engine
+            .apply_change_set(&add_change_set, true)
+            .expect("undo column add");
+        let after_undo_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after undo");
+        let value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        let mut after_undo = natural_navigation_request(dataset_id, after_undo_generation, 4095, 2);
+        after_undo.column_ids = vec![value_id];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_undo)
+            .expect("natural navigation after column-only undo");
+
+        engine
+            .add_column_with_change_set(
+                dataset_id,
+                "spare",
+                "BIGINT",
+                None,
+                Some(after_undo_generation),
+            )
+            .expect("add spare column before delete");
+        let before_delete_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation before delete");
+
+        let delete_change_set = engine
+            .delete_columns_with_change_set(
+                dataset_id,
+                &["value_1".to_string()],
+                Some(before_delete_generation),
+            )
+            .expect("delete column change set");
+        let after_delete_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after delete");
+        let mut after_delete =
+            natural_navigation_request(dataset_id, after_delete_generation, 4095, 2);
+        after_delete.column_ids = vec![];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_delete)
+            .expect("natural navigation after column delete");
+
+        engine
+            .apply_change_set(&delete_change_set, true)
+            .expect("undo column delete");
+        let after_restore_generation = engine
+            .get_dataset_generation(dataset_id)
+            .expect("generation after restore");
+        let restored_value_id = navigation_column_descriptors(&engine, dataset_id)[0]
+            .0
+            .clone();
+        let mut after_restore =
+            natural_navigation_request(dataset_id, after_restore_generation, 4095, 2);
+        after_restore.column_ids = vec![restored_value_id];
+        DuckDbEngine::query_natural_navigation_window(engine.conn(), &after_restore)
+            .expect("natural navigation after column-only restore");
+    }
+
+    #[test]
+    fn natural_navigation_csv_import_rolls_back_visible_metadata_when_anchor_publication_fails() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let csv_path = std::env::temp_dir().join(format!(
+            "statsplayground-natural-navigation-{}.csv",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&csv_path, "value\n1\n2\n").expect("write csv fixture");
+        engine
+            .conn
+            .execute("DROP TABLE _table_navigation_anchors", [])
+            .expect("induce anchor publication failure");
+
+        let result = engine.import_csv(
+            "natural_csv_rollback",
+            "Natural CSV rollback",
+            csv_path.to_str().expect("utf-8 csv fixture path"),
+        );
+        let _ = std::fs::remove_file(csv_path);
+
+        assert!(result.is_err());
+        assert!(engine.get_dataset_meta("natural_csv_rollback").is_err());
+        assert!(engine.list_datasets().expect("list datasets").is_empty());
+    }
+
     #[test]
     fn replace_dataset_atomically_promotes_initial_output() {
         let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
@@ -9410,6 +11864,1914 @@ mod tests {
         assert_eq!(result.generation, 0);
         assert_eq!(read_transform_values(&engine, "stable"), vec![2, 3]);
         assert!(engine.get_dataset_meta("temporary").is_err());
+    }
+
+    #[test]
+    fn batch_source_update_recomputes_chain_and_bumps_generation_once() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let before_history_count = history_entry_count(&state, &dataset_id);
+
+        data.update_cells(
+            &dataset_id,
+            &[CellUpdate {
+                row_id: 1,
+                column_name: "Length".to_string(),
+                value: Some("10".to_string()),
+            }],
+            Some(before_generation),
+        )
+        .expect("update source cell");
+
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![60.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("next dataset generation"),
+            before_generation + 1
+        );
+        assert_eq!(
+            history_entry_count(&state, &dataset_id),
+            before_history_count + 1
+        );
+    }
+
+    #[test]
+    fn ordinary_change_set_replay_restores_calculated_metadata_snapshots() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        data.update_cells(
+            &dataset_id,
+            &[CellUpdate {
+                row_id: 1,
+                column_name: "Length".to_string(),
+                value: Some("10".to_string()),
+            }],
+            Some(before_generation),
+        )
+        .expect("apply ordinary mutation");
+        let change_set_id = latest_history_change_set_id(&state, &dataset_id);
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo ordinary mutation");
+            let restored_before = db
+                .get_archived_calculated_columns_by_id(&dataset_id)
+                .expect("restore before metadata");
+            assert_eq!(restored_before.len(), 2);
+            assert!(restored_before
+                .values()
+                .all(|column| matches!(column, ArchivedCalculatedColumn::Ready { .. })));
+
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo ordinary mutation");
+            let restored_after = db
+                .get_archived_calculated_columns_by_id(&dataset_id)
+                .expect("restore after metadata");
+            assert_eq!(restored_after.len(), 2);
+            assert!(restored_after
+                .values()
+                .all(|column| matches!(column, ArchivedCalculatedColumn::Ready { .. })));
+        }
+
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![60.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_change_set_paste_replay_restores_formula_metadata_and_chain_values() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let change_set_id = {
+            let db = state.db.lock().expect("db");
+            db.paste_at_position_with_change_set(
+                &dataset_id,
+                0,
+                0,
+                &[vec!["10".into()]],
+                None,
+                &["DOUBLE".into()],
+                Some(before_generation),
+            )
+            .expect("apply history paste source mutation")
+        };
+
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![60.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo history paste");
+            let restored_before = db
+                .get_archived_calculated_columns_by_id(&dataset_id)
+                .expect("restore before metadata");
+            assert_eq!(restored_before.len(), 2);
+            assert!(restored_before
+                .values()
+                .all(|column| matches!(column, ArchivedCalculatedColumn::Ready { .. })));
+        }
+
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo history paste");
+            let restored_after = db
+                .get_archived_calculated_columns_by_id(&dataset_id)
+                .expect("restore after metadata");
+            assert_eq!(restored_after.len(), 2);
+            assert!(restored_after
+                .values()
+                .all(|column| matches!(column, ArchivedCalculatedColumn::Ready { .. })));
+        }
+
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![60.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_add_column_change_set_replay_restores_formula_metadata_and_values() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let change_set_id = {
+            let db = state.db.lock().expect("db");
+            db.add_column_with_change_set(&dataset_id, "Depth", "DOUBLE", None, Some(2))
+                .expect("add plain source column")
+        };
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo add column change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo add column change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_add_columns_change_set_replay_restores_formula_metadata_and_values() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let change_set_id = {
+            let db = state.db.lock().expect("db");
+            db.add_columns_with_change_set(
+                &dataset_id,
+                &[
+                    ("Depth".to_string(), "DOUBLE".to_string()),
+                    ("Note".to_string(), "VARCHAR".to_string()),
+                ],
+                None,
+                Some(2),
+            )
+            .expect("add plain source columns")
+        };
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo add columns change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo add columns change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_add_valued_columns_change_set_replay_restores_formula_metadata_and_values(
+    ) {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let change_set_id = {
+            let db = state.db.lock().expect("db");
+            db.add_valued_columns_with_change_set(
+                &dataset_id,
+                &[ValuedColumn {
+                    name: "Depth".into(),
+                    column_type: "DOUBLE".into(),
+                    values: vec![(1, Some(4.0))],
+                }],
+                2,
+            )
+            .expect("add valued source column")
+            .0
+        };
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo valued add change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo valued add change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_delete_columns_change_set_replay_restores_formula_metadata_and_values() {
+        let (state, dataset_id) = mutation_fixture_with_chain_and_extra_source();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let change_set_id = {
+            let db = state.db.lock().expect("db");
+            db.delete_columns_with_change_set(&dataset_id, &["Depth".to_string()], Some(2))
+                .expect("delete unrelated source column")
+        };
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo delete columns change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo delete columns change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_alter_column_change_set_replay_restores_formula_metadata_and_values() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let change_set_id = {
+            let db = state.db.lock().expect("db");
+            db.alter_column_with_change_set(&dataset_id, "Length", "LengthWhole", "BIGINT", Some(2))
+                .expect("alter source column")
+        };
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo alter column change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo alter column change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_alter_columns_type_change_set_replay_restores_formula_metadata_and_values(
+    ) {
+        let (state, dataset_id) = mutation_fixture_with_chain_and_extra_source();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let change_set_id = {
+            let db = state.db.lock().expect("db");
+            db.alter_columns_type_with_change_set(
+                &dataset_id,
+                &["Depth".to_string()],
+                "BIGINT",
+                Some(2),
+            )
+            .expect("alter source column types")
+        };
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo alter column types change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo alter column types change set");
+        }
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_update_table_recomputes_chain_and_bumps_generation_once() {
+        let (state, left_id, right_id) = keyed_update_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&left_id)
+            .expect("left generation");
+
+        data.update_table(&left_id, &right_id, "Key", &["Length".to_string()])
+            .expect("update left source column");
+
+        assert_eq!(numeric_column_values(&state, &left_id, "Area"), vec![30.0]);
+        assert_eq!(
+            numeric_column_values(&state, &left_id, "DoubleArea"),
+            vec![60.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&left_id)
+                .expect("left next generation"),
+            before_generation + 1
+        );
+    }
+
+    #[test]
+    fn mutation_guard_coverage_change_column_type_rejects_calculated_output_before_mutation() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let error = data
+            .change_column_type(&dataset_id, "Area", "VARCHAR")
+            .expect_err("calculated outputs must stay read-only for type changes");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("read-only")));
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after rejected type change"),
+            before_generation
+        );
+    }
+
+    #[test]
+    fn mutation_guard_coverage_update_table_rejects_calculated_output_before_mutation() {
+        let (state, left_id, right_id) = keyed_update_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&left_id)
+            .expect("left generation");
+
+        let error = data
+            .update_table(&left_id, &right_id, "Key", &["Area".to_string()])
+            .expect_err("update_table must reject writes into calculated outputs");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("read-only")));
+        assert_eq!(numeric_column_values(&state, &left_id, "Area"), vec![6.0]);
+        assert_eq!(
+            data.get_dataset_generation(&left_id)
+                .expect("generation after rejected update_table"),
+            before_generation
+        );
+    }
+
+    #[test]
+    fn mutation_guard_coverage_delete_columns_with_change_set_rejects_referenced_dependency_before_mutation(
+    ) {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let error = state
+            .db
+            .lock()
+            .expect("db")
+            .delete_columns_with_change_set(&dataset_id, &["Length".to_string()], Some(2))
+            .expect_err("referenced source column delete must fail before mutation");
+
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("dependency") || message.contains("calculated"))
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation(&dataset_id)
+                .expect("generation after rejected delete"),
+            before_generation
+        );
+    }
+
+    #[test]
+    fn calculated_output_name_only_rename_preserves_formula_identity_and_replays_exactly() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_area = archived_calculated_column_by_name(&state, &dataset_id, "Area");
+        let before_values = numeric_column_values(&state, &dataset_id, "Area");
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let change_set_id = state
+            .db
+            .lock()
+            .expect("db")
+            .alter_column_with_change_set(&dataset_id, "Area", "RenamedArea", "DOUBLE", Some(2))
+            .expect("name-only calculated output rename should be allowed");
+
+        let after_area = archived_calculated_column_by_name(&state, &dataset_id, "RenamedArea");
+        assert_eq!(after_area, before_area);
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "RenamedArea"),
+            before_values
+        );
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation(&dataset_id)
+                .expect("generation after rename"),
+            before_generation + 1
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo calculated output rename");
+        }
+        assert_eq!(
+            archived_calculated_column_by_name(&state, &dataset_id, "Area"),
+            before_area
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            before_values
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo calculated output rename");
+        }
+        assert_eq!(
+            archived_calculated_column_by_name(&state, &dataset_id, "RenamedArea"),
+            before_area
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "RenamedArea"),
+            before_values
+        );
+    }
+
+    #[test]
+    fn terminal_calculated_output_delete_change_set_removes_metadata_and_replays_exactly() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_double_area =
+            archived_calculated_column_by_name(&state, &dataset_id, "DoubleArea");
+        let before_values = numeric_column_values(&state, &dataset_id, "DoubleArea");
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let change_set_id = state
+            .db
+            .lock()
+            .expect("db")
+            .delete_columns_with_change_set(&dataset_id, &["DoubleArea".to_string()], Some(2))
+            .expect("terminal calculated output delete should be allowed");
+
+        let after_delete = archived_calculated_columns(&state, &dataset_id);
+        assert_eq!(after_delete.len(), 1);
+        assert!(DataService::new(&state)
+            .query_table(&dataset_id, 0, 100, None, None)
+            .expect("query after delete")
+            .columns
+            .iter()
+            .all(|name| name != "DoubleArea"));
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation(&dataset_id)
+                .expect("generation after delete"),
+            before_generation + 1
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo terminal calculated delete");
+        }
+        assert_eq!(
+            archived_calculated_column_by_name(&state, &dataset_id, "DoubleArea"),
+            before_double_area
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            before_values
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo terminal calculated delete");
+        }
+        assert_eq!(archived_calculated_columns(&state, &dataset_id).len(), 1);
+        assert!(DataService::new(&state)
+            .query_table(&dataset_id, 0, 100, None, None)
+            .expect("query after redo")
+            .columns
+            .iter()
+            .all(|name| name != "DoubleArea"));
+    }
+
+    #[test]
+    fn calculated_output_delete_blocks_downstream_direct_and_transitive_dependents() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        CalculatedColumnService::new(&state)
+            .upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.clone(),
+                output_name: "QuadArea".to_string(),
+                formula_text: "DoubleArea * 2".to_string(),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })
+            .expect("create transitive dependent formula");
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let error = state
+            .db
+            .lock()
+            .expect("db")
+            .delete_columns_with_change_set(
+                &dataset_id,
+                &["Area".to_string()],
+                Some(before_generation),
+            )
+            .expect_err("calculated output with downstream dependents must be blocked");
+
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("dependency") && message.contains("DoubleArea"))
+        );
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation(&dataset_id)
+                .expect("generation after rejected calculated delete"),
+            before_generation
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+    }
+
+    #[test]
+    fn mutation_guard_coverage_alter_column_with_change_set_rejects_calculated_output_before_mutation(
+    ) {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let error = state
+            .db
+            .lock()
+            .expect("db")
+            .alter_column_with_change_set(&dataset_id, "Area", "Area", "VARCHAR", Some(2))
+            .expect_err("calculated output alter must fail before mutation");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("read-only")));
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation(&dataset_id)
+                .expect("generation after rejected alter"),
+            before_generation
+        );
+    }
+
+    #[test]
+    fn mutation_guard_coverage_alter_columns_type_with_change_set_rejects_calculated_output_before_mutation(
+    ) {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+
+        let error = state
+            .db
+            .lock()
+            .expect("db")
+            .alter_columns_type_with_change_set(
+                &dataset_id,
+                &["Area".to_string()],
+                "VARCHAR",
+                Some(2),
+            )
+            .expect_err("calculated output type change must fail before mutation");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("read-only")));
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation(&dataset_id)
+                .expect("generation after rejected alter type"),
+            before_generation
+        );
+    }
+
+    #[test]
+    fn mutation_guard_coverage_copy_and_update_table_rejects_calculated_output_before_mutation() {
+        let (state, left_id, right_id) = keyed_update_fixture_with_chain();
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&left_id)
+            .expect("left generation");
+
+        let error = state
+            .db
+            .lock()
+            .expect("db")
+            .copy_and_update_table(
+                "copy-guard-id",
+                "Copy Guard",
+                &left_id,
+                &right_id,
+                "Key",
+                &["Area".to_string()],
+            )
+            .expect_err("copy/update must reject writes into calculated outputs");
+
+        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("read-only")));
+        assert_eq!(numeric_column_values(&state, &left_id, "Area"), vec![6.0]);
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation(&left_id)
+                .expect("left generation after rejected copy/update"),
+            before_generation
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_copy_and_update_table_preserves_formula_metadata_and_records_one_history_entry(
+    ) {
+        let (state, left_id, right_id) = keyed_update_fixture_with_chain();
+        let before_archived = archived_calculated_columns(&state, &left_id);
+        let before_formula_ids = before_archived
+            .values()
+            .map(|column| column.formula_id().to_string())
+            .collect::<HashSet<_>>();
+
+        state
+            .db
+            .lock()
+            .expect("db")
+            .copy_and_update_table(
+                "copy-update-id",
+                "Copy Update",
+                &left_id,
+                &right_id,
+                "Key",
+                &["Length".to_string()],
+            )
+            .expect("copy and update calculated dataset");
+
+        assert_eq!(
+            numeric_column_values(&state, "copy-update-id", "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, "copy-update-id", "DoubleArea"),
+            vec![60.0]
+        );
+        let copied_archived = archived_calculated_columns(&state, "copy-update-id");
+        assert_eq!(copied_archived.len(), 2);
+        assert!(copied_archived
+            .values()
+            .all(|column| matches!(column, ArchivedCalculatedColumn::Ready { .. })));
+        assert!(copied_archived
+            .values()
+            .all(|column| !before_formula_ids.contains(column.formula_id())));
+        assert_eq!(history_entry_count(&state, "copy-update-id"), 1);
+        assert_eq!(
+            DataService::new(&state)
+                .get_dataset_generation("copy-update-id")
+                .expect("copy generation"),
+            1
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_replace_datasets_atomically_preserves_formula_metadata_and_recomputes() {
+        let (state, stable_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_archived = archived_calculated_columns(&state, &stable_id);
+        let before_generation = data
+            .get_dataset_generation(&stable_id)
+            .expect("stable generation");
+        let temporary_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Batch Compatible Replacement Fixture".to_string(),
+                column_names: vec![
+                    "Length".to_string(),
+                    "Width".to_string(),
+                    "Area".to_string(),
+                    "DoubleArea".to_string(),
+                ],
+                column_types: vec![
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(10.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(0.0),
+                    serde_json::json!(0.0),
+                ]],
+            })
+            .expect("seed batch replacement fixture")
+            .id;
+
+        state
+            .db
+            .lock()
+            .expect("db")
+            .replace_datasets_atomically(&[DatasetReplacement {
+                stable_id: stable_id.clone(),
+                temporary_id: temporary_id.clone(),
+                stable_name: "Mutation Fixture Replaced In Batch".to_string(),
+                expected_generation: before_generation,
+            }])
+            .expect("replace calculated dataset in batch");
+
+        assert_eq!(
+            numeric_column_values(&state, &stable_id, "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &stable_id, "DoubleArea"),
+            vec![60.0]
+        );
+        assert_eq!(
+            archived_calculated_columns(&state, &stable_id),
+            before_archived
+        );
+        assert_eq!(
+            data.get_dataset_generation(&stable_id)
+                .expect("stable generation after batch replacement"),
+            before_generation + 1
+        );
+        assert!(state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_meta(&temporary_id)
+            .is_err());
+    }
+
+    #[test]
+    fn calculated_mutation_replace_datasets_atomically_rolls_back_all_datasets_on_incompatible_formula_schema(
+    ) {
+        let state = AppState::new().expect("state");
+        let stable_a_id = create_chain_dataset_in_state(
+            &state,
+            "Stable A",
+            vec!["Length".to_string(), "Width".to_string()],
+            vec![serde_json::json!(2.0), serde_json::json!(3.0)],
+        );
+        let stable_b_id = create_chain_dataset_in_state(
+            &state,
+            "Stable B",
+            vec!["Length".to_string(), "Width".to_string()],
+            vec![serde_json::json!(2.0), serde_json::json!(3.0)],
+        );
+        let data = DataService::new(&state);
+        let temp_a_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Batch Rollback Compatible".to_string(),
+                column_names: vec![
+                    "Length".to_string(),
+                    "Width".to_string(),
+                    "Area".to_string(),
+                    "DoubleArea".to_string(),
+                ],
+                column_types: vec![
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(10.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(0.0),
+                    serde_json::json!(0.0),
+                ]],
+            })
+            .expect("seed rollback compatible temp")
+            .id;
+        let temp_b_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Batch Rollback Incompatible".to_string(),
+                column_names: vec![
+                    "Length".to_string(),
+                    "Depth".to_string(),
+                    "Area".to_string(),
+                    "DoubleArea".to_string(),
+                ],
+                column_types: vec![
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(10.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(0.0),
+                    serde_json::json!(0.0),
+                ]],
+            })
+            .expect("seed rollback incompatible temp")
+            .id;
+        let before_archived_a = archived_calculated_columns(&state, &stable_a_id);
+        let before_generation_a = data
+            .get_dataset_generation(&stable_a_id)
+            .expect("stable A generation");
+        let before_archived_b = archived_calculated_columns(&state, &stable_b_id);
+        let before_generation_b = data
+            .get_dataset_generation(&stable_b_id)
+            .expect("stable B generation");
+
+        let error = state
+            .db
+            .lock()
+            .expect("db")
+            .replace_datasets_atomically(&[
+                DatasetReplacement {
+                    stable_id: stable_a_id.clone(),
+                    temporary_id: temp_a_id.clone(),
+                    stable_name: "Stable A Replaced".to_string(),
+                    expected_generation: before_generation_a,
+                },
+                DatasetReplacement {
+                    stable_id: stable_b_id.clone(),
+                    temporary_id: temp_b_id.clone(),
+                    stable_name: "Stable B Replaced".to_string(),
+                    expected_generation: before_generation_b,
+                },
+            ])
+            .expect_err("incompatible batch replacement must roll back fully");
+
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("calculated") || message.contains("column id") || message.contains("UUID"))
+        );
+        assert_eq!(
+            archived_calculated_columns(&state, &stable_a_id),
+            before_archived_a
+        );
+        assert_eq!(
+            archived_calculated_columns(&state, &stable_b_id),
+            before_archived_b
+        );
+        assert_eq!(
+            numeric_column_values(&state, &stable_a_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &stable_b_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&stable_a_id)
+                .expect("stable A generation after rollback"),
+            before_generation_a
+        );
+        assert_eq!(
+            data.get_dataset_generation(&stable_b_id)
+                .expect("stable B generation after rollback"),
+            before_generation_b
+        );
+        assert!(state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_meta(&temp_a_id)
+            .is_ok());
+        assert!(state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_meta(&temp_b_id)
+            .is_ok());
+    }
+
+    #[test]
+    fn calculated_mutation_rename_preserves_formula_fingerprints_and_values_without_recomputation()
+    {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            let table_name =
+                DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&dataset_id));
+            db.conn()
+                .execute(&format!("UPDATE {table_name} SET Area = 777.0, DoubleArea = 888.0 WHERE _row_id = 1"), [])
+                .expect("seed non-recomputed calculated values");
+            db.rename_column(&dataset_id, "Area", "AreaRenamed")
+                .expect("rename calculated output");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "AreaRenamed"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_reorder_preserves_formula_fingerprints_and_values_without_recomputation()
+    {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let before_generation = DataService::new(&state)
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        {
+            let db = state.db.lock().expect("db");
+            let table_name =
+                DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&dataset_id));
+            db.conn()
+                .execute(&format!("UPDATE {table_name} SET Area = 777.0, DoubleArea = 888.0 WHERE _row_id = 1"), [])
+                .expect("seed non-recomputed calculated values");
+            db.reorder_column_if_generation(&dataset_id, 3, 0, before_generation)
+                .expect("reorder calculated output column");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_live_delete_column_rejects_dependency_before_mutation() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let before_history_count = history_entry_count(&state, &dataset_id);
+
+        let error = data
+            .delete_column(&dataset_id, "Length")
+            .expect_err("live delete_column must reject calculated dependencies");
+
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("dependency") || message.contains("calculated"))
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after rejected live delete"),
+            before_generation
+        );
+        assert_eq!(
+            history_entry_count(&state, &dataset_id),
+            before_history_count
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_live_delete_column_records_exact_history_and_one_generation_increment() {
+        let (state, dataset_id) = mutation_fixture_with_chain_and_extra_source();
+        let data = DataService::new(&state);
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let before_history_count = history_entry_count(&state, &dataset_id);
+
+        data.delete_column(&dataset_id, "Depth")
+            .expect("delete unrelated source column");
+
+        assert_eq!(
+            history_entry_count(&state, &dataset_id),
+            before_history_count + 1
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after live delete"),
+            before_generation + 1
+        );
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        let change_set_id = latest_history_change_set_id(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo live delete column");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after undo live delete"),
+            before_generation + 2
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo live delete column");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after redo live delete"),
+            before_generation + 3
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_live_change_column_type_recomputes_chain_and_records_exact_history() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let before_history_count = history_entry_count(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            let table_name =
+                DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&dataset_id));
+            db.conn()
+                .execute(
+                    &format!(
+                        "UPDATE {table_name} SET Area = 777.0, DoubleArea = 888.0 WHERE _row_id = 1"
+                    ),
+                    [],
+                )
+                .expect("seed stale calculated values before type change");
+        }
+
+        data.change_column_type(&dataset_id, "Width", "BIGINT")
+            .expect("change source column type through live path");
+
+        assert_eq!(
+            history_entry_count(&state, &dataset_id),
+            before_history_count + 1
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after live type change"),
+            before_generation + 1
+        );
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+
+        let change_set_id = latest_history_change_set_id(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo live type change");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after undo live type change"),
+            before_generation + 2
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo live type change");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![6.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![12.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after redo live type change"),
+            before_generation + 3
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_live_rename_records_exact_history_without_recomputation() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let before_history_count = history_entry_count(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            let table_name =
+                DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&dataset_id));
+            db.conn()
+                .execute(
+                    &format!(
+                        "UPDATE {table_name} SET Area = 777.0, DoubleArea = 888.0 WHERE _row_id = 1"
+                    ),
+                    [],
+                )
+                .expect("seed non-recomputed calculated values before rename");
+        }
+
+        data.rename_column(&dataset_id, "Area", "AreaRenamed")
+            .expect("rename calculated output through live path");
+
+        assert_eq!(
+            history_entry_count(&state, &dataset_id),
+            before_history_count + 1
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after live rename"),
+            before_generation + 1
+        );
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "AreaRenamed"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+
+        let change_set_id = latest_history_change_set_id(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo live rename");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after undo live rename"),
+            before_generation + 2
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo live rename");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "AreaRenamed"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after redo live rename"),
+            before_generation + 3
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_live_reorder_records_exact_history_without_recomputation() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_archived = archived_calculated_columns(&state, &dataset_id);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let before_history_count = history_entry_count(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            let table_name =
+                DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&dataset_id));
+            db.conn()
+                .execute(
+                    &format!(
+                        "UPDATE {table_name} SET Area = 777.0, DoubleArea = 888.0 WHERE _row_id = 1"
+                    ),
+                    [],
+                )
+                .expect("seed non-recomputed calculated values before reorder");
+        }
+
+        data.reorder_column_if_generation(&dataset_id, 3, 0, before_generation)
+            .expect("reorder calculated output through live path");
+
+        assert_eq!(
+            history_entry_count(&state, &dataset_id),
+            before_history_count + 1
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after live reorder"),
+            before_generation + 1
+        );
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+
+        let change_set_id = latest_history_change_set_id(&state, &dataset_id);
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before undo");
+            db.apply_change_set(&change_set_id, true)
+                .expect("undo live reorder");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+        assert_eq!(
+            state
+                .db
+                .lock()
+                .expect("db")
+                .get_user_columns(&dataset_id)
+                .expect("columns after undo live reorder")
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["Length", "Width", "Area", "DoubleArea"]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after undo live reorder"),
+            before_generation + 2
+        );
+
+        {
+            let db = state.db.lock().expect("db");
+            db.conn()
+                .execute(
+                    "DELETE FROM _meta_calculated_columns WHERE dataset_id = ?",
+                    params![&dataset_id],
+                )
+                .expect("clear calculated metadata before redo");
+            db.apply_change_set(&change_set_id, false)
+                .expect("redo live reorder");
+        }
+
+        assert_eq!(
+            archived_calculated_columns(&state, &dataset_id),
+            before_archived
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![777.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![888.0]
+        );
+        assert_eq!(
+            state
+                .db
+                .lock()
+                .expect("db")
+                .get_user_columns(&dataset_id)
+                .expect("columns after redo live reorder")
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["DoubleArea", "Length", "Width", "Area"]
+        );
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after redo live reorder"),
+            before_generation + 3
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_replace_dataset_atomically_rejects_incompatible_calculated_uuid_schema()
+    {
+        let (state, stable_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let temporary_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Replacement Fixture".to_string(),
+                column_names: vec![
+                    "Length".to_string(),
+                    "Depth".to_string(),
+                    "Area".to_string(),
+                    "DoubleArea".to_string(),
+                ],
+                column_types: vec![
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(10.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(0.0),
+                    serde_json::json!(0.0),
+                ]],
+            })
+            .expect("seed replacement fixture")
+            .id;
+        let before_generation = data
+            .get_dataset_generation(&stable_id)
+            .expect("stable generation");
+
+        let error = {
+            let db = state.db.lock().expect("db");
+            db.replace_dataset_atomically(
+                &stable_id,
+                &temporary_id,
+                "Mutation Fixture Refreshed",
+                before_generation,
+            )
+            .expect_err("uuid-incompatible calculated replacement must fail")
+        };
+
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("calculated") || message.contains("column id") || message.contains("UUID"))
+        );
+        assert_eq!(numeric_column_values(&state, &stable_id, "Area"), vec![6.0]);
+        assert_eq!(
+            data.get_dataset_generation(&stable_id)
+                .expect("stable generation after rejected replacement"),
+            before_generation
+        );
+        assert!(state
+            .db
+            .lock()
+            .expect("db")
+            .get_dataset_meta(&temporary_id)
+            .is_ok());
+    }
+
+    #[test]
+    fn calculated_mutation_replace_dataset_atomically_preserves_compatible_formula_schema_and_recomputes(
+    ) {
+        let (state, stable_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let temporary_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Compatible Replacement Fixture".to_string(),
+                column_names: vec![
+                    "Length".to_string(),
+                    "Width".to_string(),
+                    "Area".to_string(),
+                    "DoubleArea".to_string(),
+                ],
+                column_types: vec![
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                    "DOUBLE".to_string(),
+                ],
+                rows: vec![vec![
+                    serde_json::json!(10.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(0.0),
+                    serde_json::json!(0.0),
+                ]],
+            })
+            .expect("seed compatible replacement fixture")
+            .id;
+        let before_generation = data
+            .get_dataset_generation(&stable_id)
+            .expect("stable generation");
+
+        {
+            let db = state.db.lock().expect("db");
+            db.replace_dataset_atomically(
+                &stable_id,
+                &temporary_id,
+                "Mutation Fixture Refreshed",
+                before_generation,
+            )
+            .expect("replace compatible calculated dataset");
+        }
+
+        assert_eq!(
+            numeric_column_values(&state, &stable_id, "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &stable_id, "DoubleArea"),
+            vec![60.0]
+        );
+        {
+            let db = state.db.lock().expect("db");
+            let restored = db
+                .get_archived_calculated_columns_by_id(&stable_id)
+                .expect("preserved calculated metadata");
+            assert_eq!(restored.len(), 2);
+        }
+        assert_eq!(
+            data.get_dataset_generation(&stable_id)
+                .expect("stable generation after replacement"),
+            before_generation + 1
+        );
+    }
+
+    #[test]
+    fn calculated_mutation_restore_snapshot_preserves_compatible_formula_schema_and_recomputes() {
+        let (state, dataset_id) = mutation_fixture_with_chain();
+        let data = DataService::new(&state);
+        let before_generation = data
+            .get_dataset_generation(&dataset_id)
+            .expect("dataset generation");
+        let (column_names, column_types): (Vec<_>, Vec<_>) = {
+            let db = state.db.lock().expect("db");
+            db.get_user_columns(&dataset_id)
+                .expect("existing columns")
+                .into_iter()
+                .unzip()
+        };
+
+        {
+            let db = state.db.lock().expect("db");
+            db.restore_snapshot(
+                &dataset_id,
+                &column_names,
+                &column_types,
+                &[vec![
+                    serde_json::json!(1),
+                    serde_json::json!(10.0),
+                    serde_json::json!(3.0),
+                    serde_json::json!(0.0),
+                    serde_json::json!(0.0),
+                ]],
+            )
+            .expect("restore compatible snapshot");
+        }
+
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Area"),
+            vec![30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "DoubleArea"),
+            vec![60.0]
+        );
+        {
+            let db = state.db.lock().expect("db");
+            let restored = db
+                .get_archived_calculated_columns_by_id(&dataset_id)
+                .expect("restored calculated metadata");
+            assert_eq!(restored.len(), 2);
+        }
+        assert_eq!(
+            data.get_dataset_generation(&dataset_id)
+                .expect("generation after restore"),
+            before_generation + 1
+        );
     }
 
     #[test]
@@ -9521,6 +13883,249 @@ mod tests {
             .expect("status output column");
         assert_eq!(output_rows[0][status_index], serde_json::json!("new"));
         assert_eq!(output_rows[1][status_index], serde_json::json!("keep"));
+    }
+
+    #[test]
+    fn query_table_navigation_window_returns_only_requested_columns_in_requested_order() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_order");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_order");
+        let value_id = descriptors[0].0.clone();
+        let category_id = descriptors[1].0.clone();
+
+        let result = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-order".to_string(),
+                dataset_id: "navigation_order".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec![category_id, value_id],
+                sort: None,
+                filters: vec![],
+                session_id: Some("session-order".to_string()),
+                include_transport_diagnostics: false,
+            })
+            .expect("navigation query should succeed");
+
+        assert_eq!(result.version, 1);
+        assert_eq!(result.columns, vec!["_row_id", "category", "value"]);
+        assert_eq!(result.column_types, vec!["BIGINT", "VARCHAR", "DOUBLE"]);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].len(), 3);
+        assert_eq!(result.request_id, "req-order");
+        assert_eq!(result.session_id.as_deref(), Some("session-order"));
+    }
+
+    #[test]
+    fn query_table_navigation_window_rejects_duplicate_unknown_and_stale_requests() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_validation");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_validation");
+        let value_id = descriptors[0].0.clone();
+
+        let duplicate_error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-duplicate".to_string(),
+                dataset_id: "navigation_validation".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec![value_id.clone(), value_id.clone()],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("duplicate column ids must be rejected");
+        assert!(
+            matches!(duplicate_error, AppError::InvalidParam(message) if message.contains("duplicate"))
+        );
+
+        let unknown_error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-unknown".to_string(),
+                dataset_id: "navigation_validation".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec!["missing-column".to_string()],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("unknown column ids must be rejected");
+        assert!(
+            matches!(unknown_error, AppError::InvalidParam(message) if message.contains("unknown"))
+        );
+
+        let stale_error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-stale".to_string(),
+                dataset_id: "navigation_validation".to_string(),
+                generation: generation + 1,
+                start: 0,
+                count: 10,
+                column_ids: vec![value_id],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("stale generation must be rejected");
+        assert!(
+            matches!(stale_error, AppError::InvalidParam(message) if message.contains("stale dataset generation"))
+        );
+    }
+
+    #[test]
+    fn query_table_navigation_window_rejects_unresolved_projection_metadata() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_unresolved");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_unresolved");
+        let category_id = descriptors[1].0.clone();
+
+        engine
+            .conn
+            .execute(
+                "UPDATE _meta_columns SET col_name = 'missing_projection' WHERE dataset_id = ? AND column_id = ?",
+                params!["navigation_unresolved", &category_id],
+            )
+            .expect("corrupt projection metadata");
+
+        let error = engine
+            .query_table_navigation_window(&TableNavigationRequest {
+                version: 1,
+                request_id: "req-unresolved".to_string(),
+                dataset_id: "navigation_unresolved".to_string(),
+                generation,
+                start: 0,
+                count: 10,
+                column_ids: vec![category_id],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            })
+            .expect_err("unresolved metadata projection must be rejected");
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("projection") || message.contains("column"))
+        );
+    }
+
+    #[test]
+    fn query_table_navigation_window_rejects_zero_and_oversized_counts() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_count_bounds");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_count_bounds");
+        let value_id = descriptors[0].0.clone();
+
+        for (count, label) in [(0_usize, "zero"), (2_001_usize, "oversized")] {
+            let mut request = navigation_request(
+                "navigation_count_bounds",
+                generation,
+                vec![value_id.clone()],
+            );
+            request.request_id = format!("req-count-{label}");
+            request.count = count;
+
+            let error = engine
+                .query_table_navigation_window(&request)
+                .expect_err("out-of-range count must be rejected");
+            assert!(
+                matches!(error, AppError::InvalidParam(message) if message.contains("between 1 and 2000"))
+            );
+        }
+    }
+
+    #[test]
+    fn query_table_navigation_window_clamps_past_dataset_end_without_error() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_dataset(&engine, "navigation_clamp");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_clamp");
+        let value_id = descriptors[0].0.clone();
+
+        let mut tail_request =
+            navigation_request("navigation_clamp", generation, vec![value_id.clone()]);
+        tail_request.request_id = "req-tail-clamp".to_string();
+        tail_request.start = 1;
+        tail_request.count = 10;
+        let tail_result = engine
+            .query_table_navigation_window(&tail_request)
+            .expect("tail-overflow window should clamp to remaining rows");
+
+        assert_eq!(tail_result.start, 1);
+        assert_eq!(tail_result.total_rows, 2);
+        assert_eq!(tail_result.rows.len(), 1);
+        assert_eq!(tail_result.rows[0][0], serde_json::json!(2));
+
+        let mut past_end_request =
+            navigation_request("navigation_clamp", generation, vec![value_id]);
+        past_end_request.request_id = "req-past-end-clamp".to_string();
+        past_end_request.start = 20;
+        past_end_request.count = 10;
+        let past_end_result = engine
+            .query_table_navigation_window(&past_end_request)
+            .expect("past-end window should return an empty slice");
+
+        assert_eq!(past_end_result.start, 20);
+        assert_eq!(past_end_result.total_rows, 2);
+        assert!(past_end_result.rows.is_empty());
+    }
+
+    #[test]
+    fn query_table_navigation_window_sorts_ties_deterministically_by_row_id() {
+        let engine = DuckDbEngine::new_in_memory().expect("in-memory engine");
+        let generation = seed_navigation_tie_dataset(&engine, "navigation_ties");
+        let descriptors = navigation_column_descriptors(&engine, "navigation_ties");
+        let value_id = descriptors[0].0.clone();
+        let category_id = descriptors[1].0.clone();
+
+        let mut request =
+            navigation_request("navigation_ties", generation, vec![value_id, category_id]);
+        request.request_id = "req-navigation-ties".to_string();
+        request.count = 3;
+        request.sort = Some(TableWindowSort {
+            column: "value".to_string(),
+            descending: true,
+        });
+
+        let result = engine
+            .query_table_navigation_window(&request)
+            .expect("sorted navigation query should succeed");
+
+        let row_ids = result
+            .rows
+            .iter()
+            .map(|row| row[0].clone())
+            .collect::<Vec<_>>();
+        let categories = result
+            .rows
+            .iter()
+            .map(|row| row[2].clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            row_ids,
+            vec![
+                serde_json::json!(1),
+                serde_json::json!(3),
+                serde_json::json!(2)
+            ]
+        );
+        assert_eq!(
+            categories,
+            vec![
+                serde_json::json!("beta"),
+                serde_json::json!("gamma"),
+                serde_json::json!("alpha")
+            ]
+        );
     }
 
     #[test]
@@ -10074,6 +14679,7 @@ mod tests {
                 kind: "normalCurve".into(),
                 summary_stat: "none".into(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -10489,14 +15095,22 @@ mod tests {
             params!["hypothesis-long-reader"],
         ).expect("set condition role");
 
-        let rows = engine.read_hypothesis_test_rows(
-            "hypothesis-long-reader",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
-                subject: None,
-            },
-        ).expect("read hypothesis test rows");
+        let rows = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-long-reader",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "nominal".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect("read hypothesis test rows");
 
         let HypothesisTestRows::Long(rows) = rows else {
             panic!("expected long rows");
@@ -10526,18 +15140,28 @@ mod tests {
             1,
         );
         assert_eq!(
-            engine.fit_y_by_x_column_role("hypothesis-text-condition", "condition").unwrap(),
+            engine
+                .fit_y_by_x_column_role("hypothesis-text-condition", "condition")
+                .unwrap(),
             "continuous"
         );
 
-        let rows = engine.read_hypothesis_test_rows(
-            "hypothesis-text-condition",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
-                subject: None,
-            },
-        ).expect("text condition should not require categorical role metadata");
+        let rows = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-text-condition",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "nominal".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect("text condition should not require categorical role metadata");
 
         let HypothesisTestRows::Long(rows) = rows else {
             panic!("expected long rows");
@@ -10563,14 +15187,22 @@ mod tests {
             1,
         );
 
-        let error = engine.read_hypothesis_test_rows(
-            "hypothesis-temporal-condition",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "datetime".into() },
-                subject: None,
-            },
-        ).expect_err("temporal condition should require categorical role metadata");
+        let error = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-temporal-condition",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "datetime".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect_err("temporal condition should require categorical role metadata");
 
         assert!(matches!(
             error,
@@ -10596,14 +15228,22 @@ mod tests {
             1,
         );
 
-        let error = engine.read_hypothesis_test_rows(
-            "hypothesis-numeric-condition",
-            &HypothesisTestRoles::Long {
-                response: HypothesisTestFieldRef { name: "response".into(), field_type: "continuous".into() },
-                condition: HypothesisTestFieldRef { name: "condition".into(), field_type: "nominal".into() },
-                subject: None,
-            },
-        ).expect_err("numeric condition should require categorical role metadata");
+        let error = engine
+            .read_hypothesis_test_rows(
+                "hypothesis-numeric-condition",
+                &HypothesisTestRoles::Long {
+                    response: HypothesisTestFieldRef {
+                        name: "response".into(),
+                        field_type: "continuous".into(),
+                    },
+                    condition: HypothesisTestFieldRef {
+                        name: "condition".into(),
+                        field_type: "nominal".into(),
+                    },
+                    subject: None,
+                },
+            )
+            .expect_err("numeric condition should require categorical role metadata");
 
         assert!(matches!(
             error,
@@ -10786,6 +15426,7 @@ mod tests {
                 kind: "points".into(),
                 summary_stat: "none".into(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Sample { size: 32, seed: 7 },
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -10872,6 +15513,7 @@ mod tests {
                 kind: "points".into(),
                 summary_stat: "none".into(),
                 correlation_method: None,
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -10901,6 +15543,420 @@ mod tests {
         assert_eq!(seen.len(), 4);
         assert_eq!(seen[0], (1, "North".to_string(), 10.0));
         assert_eq!(seen[3], (4, "West".to_string(), 40.0));
+    }
+
+    #[test]
+    fn graph_projection_time_series_native_date_uses_epoch_projection_and_time_ascending_order() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "graph-time-series-native-date",
+            "Graph Time Series Native Date",
+            &["captured_on".into(), "value".into()],
+            &["DATE".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_graph_time_series_native_date\" (_row_id, captured_on, value)
+                 VALUES (4, DATE '2024-01-03', 40.0),
+                        (1, DATE '2024-01-01', 10.0),
+                        (3, DATE '2024-01-02', 30.0),
+                        (2, DATE '2024-01-02', 20.0)",
+                [],
+            )
+            .unwrap();
+
+        let allowed_columns = db
+            .get_user_columns("graph-time-series-native-date")
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let allowed = allowed_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let request = GraphDataRequest {
+            request_id: "req-time-series-native-date".into(),
+            dataset_id: "graph-time-series-native-date".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "x".into(),
+                    column: "captured_on".into(),
+                },
+                GraphFieldBinding {
+                    role: "y".into(),
+                    column: "value".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "timeSeries".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+                time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                    x_interpretation:
+                        crate::models::graph_data::TimeSeriesXInterpretation::NativeTemporal,
+                    order: crate::models::graph_data::GraphTimeSeriesOrder::TimeAscending,
+                    missing_values: crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                    marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                    connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                }),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+        assert!(plan.source_sql.contains("epoch_ms"));
+        assert!(plan.source_sql.contains("\"captured_on\""));
+
+        let select_sql = db.build_graph_projection_select_sql(&plan, true);
+        assert!(select_sql.ends_with("ORDER BY \"__sp_x\" ASC NULLS LAST, \"_row_id\" ASC"));
+
+        let mut stmt = db.conn().prepare(&select_sql).unwrap();
+        let mut rows = stmt
+            .query(params_from_iter(plan.projection_values.iter()))
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            seen.push((
+                row.get::<_, i64>(0).unwrap(),
+                row.get::<_, f64>(1).unwrap(),
+                row.get::<_, f64>(2).unwrap(),
+            ));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (1, 1_704_067_200_000.0, 10.0),
+                (2, 1_704_153_600_000.0, 20.0),
+                (3, 1_704_153_600_000.0, 30.0),
+                (4, 1_704_240_000_000.0, 40.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_projection_time_series_native_timestamp_variants_execute_epoch_projection() {
+        let cases = [
+            (
+                "graph-time-series-native-timestamp",
+                "dataset_graph_time_series_native_timestamp",
+                "TIMESTAMP",
+                "TIMESTAMP '2024-01-02 03:04:05'",
+                "TIMESTAMP '2024-01-01 00:00:00'",
+                1_704_067_200_000.0,
+                1_704_164_645_000.0,
+            ),
+            (
+                "graph-time-series-native-timestamptz",
+                "dataset_graph_time_series_native_timestamptz",
+                "TIMESTAMPTZ",
+                "TIMESTAMPTZ '2024-01-02 03:04:05+00'",
+                "TIMESTAMPTZ '2024-01-01 00:00:00+00'",
+                1_704_067_200_000.0,
+                1_704_164_645_000.0,
+            ),
+        ];
+
+        for (dataset_id, table_name, sql_type, late_value, early_value, early_epoch, late_epoch) in
+            cases
+        {
+            let db = DuckDbEngine::new_in_memory().unwrap();
+            db.create_empty_table(
+                dataset_id,
+                "Graph Time Series Native Timestamp",
+                &["captured_at".into(), "value".into()],
+                &[sql_type.into(), "DOUBLE".into()],
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    &format!(
+                        "INSERT INTO \"{table_name}\" (_row_id, captured_at, value)
+                         VALUES (3, {late_value}, 30.0),
+                                (1, {early_value}, 10.0),
+                                (2, {late_value}, 20.0)"
+                    ),
+                    [],
+                )
+                .unwrap();
+
+            let allowed_columns = db
+                .get_user_columns(dataset_id)
+                .unwrap()
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>();
+            let allowed = allowed_columns
+                .iter()
+                .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+                .collect::<std::collections::HashMap<_, _>>();
+            let request = GraphDataRequest {
+                request_id: format!("req-{dataset_id}"),
+                dataset_id: dataset_id.into(),
+                generation: 0,
+                fields: vec![
+                    GraphFieldBinding {
+                        role: "x".into(),
+                        column: "captured_at".into(),
+                    },
+                    GraphFieldBinding {
+                        role: "y".into(),
+                        column: "value".into(),
+                    },
+                ],
+                filters: Vec::new(),
+                elements: vec![GraphElementRequest {
+                    kind: "timeSeries".into(),
+                    summary_stat: "none".into(),
+                    correlation_method: None,
+                    time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                        x_interpretation:
+                            crate::models::graph_data::TimeSeriesXInterpretation::NativeTemporal,
+                        order: crate::models::graph_data::GraphTimeSeriesOrder::TimeAscending,
+                        missing_values:
+                            crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                        marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                        connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                    }),
+                }],
+                sampling: GraphSampling::Full,
+                raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+                viewport: GraphViewport {
+                    width: 1280,
+                    height: 720,
+                },
+            };
+
+            let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+            let select_sql = db.build_graph_projection_select_sql(&plan, true);
+            let mut stmt = db.conn().prepare(&select_sql).unwrap();
+            let mut rows = stmt
+                .query(params_from_iter(plan.projection_values.iter()))
+                .unwrap();
+            let mut seen = Vec::new();
+            while let Some(row) = rows.next().unwrap() {
+                seen.push((
+                    row.get::<_, i64>(0).unwrap(),
+                    row.get::<_, f64>(1).unwrap(),
+                    row.get::<_, f64>(2).unwrap(),
+                ));
+            }
+
+            assert_eq!(
+                seen,
+                vec![
+                    (1, early_epoch, 10.0),
+                    (2, late_epoch, 20.0),
+                    (3, late_epoch, 30.0),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn graph_projection_time_series_text_date_uses_static_us_date_pattern_and_source_row_order() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "graph-time-series-text-date",
+            "Graph Time Series Text Date",
+            &["captured_text".into(), "value".into()],
+            &["VARCHAR".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_graph_time_series_text_date\" (_row_id, captured_text, value)
+                 VALUES (3, '01/02/2024', 30.0),
+                        (1, '01/01/2024', 10.0),
+                        (2, '01/02/2024', 20.0),
+                        (4, '01/03/2024', 40.0)",
+                [],
+            )
+            .unwrap();
+
+        let allowed_columns = db
+            .get_user_columns("graph-time-series-text-date")
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let allowed = allowed_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let request = GraphDataRequest {
+            request_id: "req-time-series-text-date".into(),
+            dataset_id: "graph-time-series-text-date".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "x".into(),
+                    column: "captured_text".into(),
+                },
+                GraphFieldBinding {
+                    role: "y".into(),
+                    column: "value".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "timeSeries".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+                time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                    x_interpretation:
+                        crate::models::graph_data::TimeSeriesXInterpretation::TextDate {
+                            format: crate::models::graph_data::TimeSeriesTextDateFormat::UsDate,
+                        },
+                    order: crate::models::graph_data::GraphTimeSeriesOrder::SourceRow,
+                    missing_values: crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                    marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                    connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                }),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+        assert!(plan.source_sql.contains("%m/%d/%Y"));
+        assert!(!plan.source_sql.contains("%Y-%m-%d %H:%M:%S"));
+        assert!(!plan.source_sql.contains("%d/%m/%Y"));
+
+        let select_sql = db.build_graph_projection_select_sql(&plan, true);
+        assert!(select_sql.ends_with("ORDER BY \"_row_id\" ASC"));
+
+        let mut stmt = db.conn().prepare(&select_sql).unwrap();
+        let mut rows = stmt
+            .query(params_from_iter(plan.projection_values.iter()))
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            seen.push((
+                row.get::<_, i64>(0).unwrap(),
+                row.get::<_, f64>(1).unwrap(),
+                row.get::<_, f64>(2).unwrap(),
+            ));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (1, 1_704_067_200_000.0, 10.0),
+                (2, 1_704_153_600_000.0, 20.0),
+                (3, 1_704_153_600_000.0, 30.0),
+                (4, 1_704_240_000_000.0, 40.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_projection_time_series_sequence_executes_numeric_projection_and_alias_order() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "graph-time-series-sequence",
+            "Graph Time Series Sequence",
+            &["sample_index".into(), "value".into()],
+            &["BIGINT".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO \"dataset_graph_time_series_sequence\" (_row_id, sample_index, value)
+                 VALUES (4, 3, 40.0),
+                        (1, 1, 10.0),
+                        (3, 2, 30.0),
+                        (2, 2, 20.0)",
+                [],
+            )
+            .unwrap();
+
+        let allowed_columns = db
+            .get_user_columns("graph-time-series-sequence")
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let allowed = allowed_columns
+            .iter()
+            .map(|(name, column_type)| (name.as_str(), column_type.as_str()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let request = GraphDataRequest {
+            request_id: "req-time-series-sequence".into(),
+            dataset_id: "graph-time-series-sequence".into(),
+            generation: 0,
+            fields: vec![
+                GraphFieldBinding {
+                    role: "x".into(),
+                    column: "sample_index".into(),
+                },
+                GraphFieldBinding {
+                    role: "y".into(),
+                    column: "value".into(),
+                },
+            ],
+            filters: Vec::new(),
+            elements: vec![GraphElementRequest {
+                kind: "timeSeries".into(),
+                summary_stat: "none".into(),
+                correlation_method: None,
+                time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                    x_interpretation:
+                        crate::models::graph_data::TimeSeriesXInterpretation::Sequence,
+                    order: crate::models::graph_data::GraphTimeSeriesOrder::TimeAscending,
+                    missing_values: crate::models::graph_data::GraphTimeSeriesMissingValues::Break,
+                    marker_mode: crate::models::graph_data::GraphTimeSeriesMarkerMode::Auto,
+                    connection: crate::models::graph_data::GraphTimeSeriesConnection::Line,
+                }),
+            }],
+            sampling: GraphSampling::Full,
+            raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+            viewport: GraphViewport {
+                width: 1280,
+                height: 720,
+            },
+        };
+
+        let plan = db.compile_graph_query_plan(&request, &allowed).unwrap();
+        let select_sql = db.build_graph_projection_select_sql(&plan, true);
+        assert!(select_sql.ends_with("ORDER BY \"__sp_x\" ASC NULLS LAST, \"_row_id\" ASC"));
+
+        let mut stmt = db.conn().prepare(&select_sql).unwrap();
+        let mut rows = stmt
+            .query(params_from_iter(plan.projection_values.iter()))
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            seen.push((
+                row.get::<_, i64>(0).unwrap(),
+                row.get::<_, f64>(1).unwrap(),
+                row.get::<_, f64>(2).unwrap(),
+            ));
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                (1, 1.0, 10.0),
+                (2, 2.0, 20.0),
+                (3, 2.0, 30.0),
+                (4, 3.0, 40.0)
+            ]
+        );
     }
 
     #[test]
@@ -10995,6 +16051,7 @@ mod tests {
                 kind: "correlationMatrix".into(),
                 summary_stat: "none".into(),
                 correlation_method: Some(crate::models::graph_data::CorrelationMethod::Pearson),
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -11064,6 +16121,7 @@ mod tests {
                 kind: "correlationMatrix".into(),
                 summary_stat: "none".into(),
                 correlation_method: Some(crate::models::graph_data::CorrelationMethod::Pearson),
+                time_series: None,
             }],
             sampling: GraphSampling::Full,
             raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -11921,6 +16979,319 @@ mod tests {
     }
 
     #[test]
+    fn valued_column_change_set_records_and_replays_exact_column_ids() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "history-valued-identity-id",
+            "History Valued Identity",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO dataset_history_valued_identity_id VALUES (1, 'kept')",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 1 WHERE id = 'history-valued-identity-id'",
+                [],
+            )
+            .unwrap();
+
+        let existing_id = user_column_descriptors(&db, "history-valued-identity-id")[0]
+            .0
+            .clone();
+        let (change_set_id, _) = db
+            .add_valued_columns_with_change_set(
+                "history-valued-identity-id",
+                &[
+                    ValuedColumn {
+                        name: "Predicted".into(),
+                        column_type: "DOUBLE".into(),
+                        values: vec![(1, Some(10.0))],
+                    },
+                    ValuedColumn {
+                        name: "Residual".into(),
+                        column_type: "DOUBLE".into(),
+                        values: vec![(1, Some(0.5))],
+                    },
+                ],
+                0,
+            )
+            .unwrap();
+
+        let added_columns = user_column_descriptors(&db, "history-valued-identity-id");
+        let predicted_id = added_columns
+            .iter()
+            .find(|(_, _, name, _)| name == "Predicted")
+            .unwrap()
+            .0
+            .clone();
+        let residual_id = added_columns
+            .iter()
+            .find(|(_, _, name, _)| name == "Residual")
+            .unwrap()
+            .0
+            .clone();
+        let history_rows = db
+            .conn()
+            .prepare(
+                "SELECT before_column_id, after_column_id, after_name FROM _history_change_set_columns WHERE change_set_id = ? ORDER BY ordinal",
+            )
+            .unwrap()
+            .query_map(params![&change_set_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            history_rows,
+            vec![
+                (None, Some(predicted_id.clone()), "Predicted".into()),
+                (None, Some(residual_id.clone()), "Residual".into()),
+            ]
+        );
+
+        db.apply_change_set(&change_set_id, true).unwrap();
+        let undone_columns = user_column_descriptors(&db, "history-valued-identity-id");
+        assert_eq!(undone_columns.len(), 1);
+        assert_eq!(undone_columns[0].0, existing_id);
+
+        db.apply_change_set(&change_set_id, false).unwrap();
+        let replayed_columns = user_column_descriptors(&db, "history-valued-identity-id");
+        assert_eq!(
+            replayed_columns
+                .iter()
+                .find(|(_, _, name, _)| name == "Predicted")
+                .unwrap()
+                .0,
+            predicted_id
+        );
+        assert_eq!(
+            replayed_columns
+                .iter()
+                .find(|(_, _, name, _)| name == "Residual")
+                .unwrap()
+                .0,
+            residual_id
+        );
+    }
+
+    #[test]
+    fn delete_column_change_set_restores_exact_column_id() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "identity-delete-column-id",
+            "Identity Delete Column",
+            &["A".into(), "B".into()],
+            &["DOUBLE".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        let before = user_column_descriptors(&db, "identity-delete-column-id");
+        let b_id = before
+            .iter()
+            .find(|(_, _, name, _)| name == "B")
+            .unwrap()
+            .0
+            .clone();
+        let generation = db
+            .get_dataset_generation("identity-delete-column-id")
+            .unwrap();
+
+        let change_set_id = db
+            .delete_columns_with_change_set(
+                "identity-delete-column-id",
+                &["B".to_string()],
+                Some(generation),
+            )
+            .unwrap();
+        db.apply_change_set(&change_set_id, true).unwrap();
+
+        let restored = user_column_descriptors(&db, "identity-delete-column-id");
+        assert_eq!(
+            restored
+                .iter()
+                .find(|(_, _, name, _)| name == "B")
+                .unwrap()
+                .0,
+            b_id
+        );
+    }
+
+    #[test]
+    fn add_column_change_set_redo_restores_exact_column_id() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "identity-add-column-id",
+            "Identity Add Column",
+            &["existing".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+
+        let change_set_id = db
+            .add_column_with_change_set(
+                "identity-add-column-id",
+                "amount",
+                "DOUBLE",
+                Some(0),
+                Some(0),
+            )
+            .unwrap();
+        let added_id = user_column_descriptors(&db, "identity-add-column-id")
+            .into_iter()
+            .find(|(_, _, name, _)| name == "amount")
+            .unwrap()
+            .0;
+
+        db.apply_change_set(&change_set_id, true).unwrap();
+        db.apply_change_set(&change_set_id, false).unwrap();
+
+        let restored_id = user_column_descriptors(&db, "identity-add-column-id")
+            .into_iter()
+            .find(|(_, _, name, _)| name == "amount")
+            .unwrap()
+            .0;
+        assert_eq!(restored_id, added_id);
+    }
+
+    #[test]
+    fn alter_column_change_set_preserves_exact_column_id_through_undo_redo() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "identity-alter-column-id",
+            "Identity Alter Column",
+            &["code".into()],
+            &["VARCHAR".into()],
+        )
+        .unwrap();
+        let original_id = user_column_descriptors(&db, "identity-alter-column-id")
+            .into_iter()
+            .find(|(_, _, name, _)| name == "code")
+            .unwrap()
+            .0;
+
+        let change_set_id = db
+            .alter_column_with_change_set(
+                "identity-alter-column-id",
+                "code",
+                "amount",
+                "DOUBLE",
+                Some(0),
+            )
+            .unwrap();
+        let changed_id = user_column_descriptors(&db, "identity-alter-column-id")
+            .into_iter()
+            .find(|(_, _, name, _)| name == "amount")
+            .unwrap()
+            .0;
+        assert_eq!(changed_id, original_id);
+
+        db.apply_change_set(&change_set_id, true).unwrap();
+        let undone_id = user_column_descriptors(&db, "identity-alter-column-id")
+            .into_iter()
+            .find(|(_, _, name, _)| name == "code")
+            .unwrap()
+            .0;
+        assert_eq!(undone_id, original_id);
+
+        db.apply_change_set(&change_set_id, false).unwrap();
+        let redone_id = user_column_descriptors(&db, "identity-alter-column-id")
+            .into_iter()
+            .find(|(_, _, name, _)| name == "amount")
+            .unwrap()
+            .0;
+        assert_eq!(redone_id, original_id);
+    }
+
+    #[test]
+    fn legacy_schema_history_replay_tolerates_missing_column_ids() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "legacy-schema-history-id",
+            "Legacy Schema History",
+            &["existing".into(), "removed".into()],
+            &["VARCHAR".into(), "DOUBLE".into()],
+        )
+        .unwrap();
+
+        let delete_generation = db
+            .get_dataset_generation("legacy-schema-history-id")
+            .unwrap();
+        let delete_change_set_id = db
+            .delete_columns_with_change_set(
+                "legacy-schema-history-id",
+                &["removed".to_string()],
+                Some(delete_generation),
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _history_change_set_columns SET before_column_id = NULL WHERE change_set_id = ?",
+                params![&delete_change_set_id],
+            )
+            .unwrap();
+
+        db.apply_change_set(&delete_change_set_id, true).unwrap();
+        assert_eq!(
+            db.get_user_columns("legacy-schema-history-id").unwrap(),
+            vec![
+                ("existing".into(), "VARCHAR".into()),
+                ("removed".into(), "DOUBLE".into()),
+            ]
+        );
+
+        db.apply_change_set(&delete_change_set_id, false).unwrap();
+        assert_eq!(
+            db.get_user_columns("legacy-schema-history-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+
+        let add_generation = db
+            .get_dataset_generation("legacy-schema-history-id")
+            .unwrap();
+        let add_change_set_id = db
+            .add_column_with_change_set(
+                "legacy-schema-history-id",
+                "added",
+                "BIGINT",
+                None,
+                Some(add_generation),
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _history_change_set_columns SET after_column_id = NULL WHERE change_set_id = ?",
+                params![&add_change_set_id],
+            )
+            .unwrap();
+
+        db.apply_change_set(&add_change_set_id, true).unwrap();
+        assert_eq!(
+            db.get_user_columns("legacy-schema-history-id").unwrap(),
+            vec![("existing".into(), "VARCHAR".into())]
+        );
+
+        db.apply_change_set(&add_change_set_id, false).unwrap();
+        assert_eq!(
+            db.get_user_columns("legacy-schema-history-id").unwrap(),
+            vec![
+                ("existing".into(), "VARCHAR".into()),
+                ("added".into(), "BIGINT".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn deleted_columns_change_set_restores_values_types_and_order() {
         let db = DuckDbEngine::new_in_memory().unwrap();
         db.create_empty_table(
@@ -12216,6 +17587,9 @@ mod tests {
             &["VARCHAR".into()],
         )
         .unwrap();
+        let original_value_id = user_column_descriptors(&db, "history-schema-id")[0]
+            .0
+            .clone();
 
         let change_set_id = db
             .paste_at_position_with_change_set(
@@ -12233,6 +17607,46 @@ mod tests {
             vec![
                 ("amount".into(), "BIGINT".into()),
                 ("label".into(), "VARCHAR".into()),
+            ]
+        );
+        let added_columns = user_column_descriptors(&db, "history-schema-id");
+        let amount_id = added_columns
+            .iter()
+            .find(|(_, _, name, _)| name == "amount")
+            .unwrap()
+            .0
+            .clone();
+        let label_id = added_columns
+            .iter()
+            .find(|(_, _, name, _)| name == "label")
+            .unwrap()
+            .0
+            .clone();
+        let history_ids = db
+            .conn()
+            .prepare(
+                "SELECT before_column_id, after_column_id, after_name FROM _history_change_set_columns WHERE change_set_id = ? ORDER BY ordinal",
+            )
+            .unwrap()
+            .query_map(params![&change_set_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            history_ids,
+            vec![
+                (
+                    Some(original_value_id),
+                    Some(amount_id.clone()),
+                    "amount".into()
+                ),
+                (None, Some(label_id.clone()), "label".into()),
             ]
         );
 
@@ -12263,6 +17677,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row, (42, "alpha".into()));
+        let replayed_columns = user_column_descriptors(&db, "history-schema-id");
+        assert_eq!(
+            replayed_columns
+                .iter()
+                .find(|(_, _, name, _)| name == "amount")
+                .unwrap()
+                .0,
+            amount_id
+        );
+        assert_eq!(
+            replayed_columns
+                .iter()
+                .find(|(_, _, name, _)| name == "label")
+                .unwrap()
+                .0,
+            label_id
+        );
         assert_eq!(db.get_dataset_generation("history-schema-id").unwrap(), 3);
     }
 
@@ -13897,6 +19328,28 @@ mod tests {
             )
             .expect("typed fixture");
         engine
+    }
+
+    fn user_column_descriptors(
+        db: &DuckDbEngine,
+        dataset_id: &str,
+    ) -> Vec<(String, i32, String, String)> {
+        db.conn()
+            .prepare(
+                "SELECT column_id, col_index, col_name, col_type FROM _meta_columns WHERE dataset_id = ? ORDER BY col_index",
+            )
+            .unwrap()
+            .query_map(params![dataset_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i32>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
     }
 
     #[test]

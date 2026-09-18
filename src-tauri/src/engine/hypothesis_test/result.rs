@@ -6,11 +6,19 @@ use crate::engine::hypothesis_test::compatibility::{
 use crate::engine::hypothesis_test::diagnostics::{diagnose, EvidenceGrade};
 use crate::engine::hypothesis_test::effect_size::{hedges_g_av, hedges_g_pooled, paired_d_z};
 use crate::engine::hypothesis_test::methods::block::{friedman, randomized_block_anova};
-use crate::engine::hypothesis_test::methods::omnibus::{kruskal_wallis, one_way_anova, welch_anova};
-use crate::engine::hypothesis_test::methods::parametric::{paired_t, student_two_sample_t, welch_two_sample_t};
-use crate::engine::hypothesis_test::methods::rank::{mann_whitney_u, wilcoxon_signed_rank, InferencePath, RankWarning};
+use crate::engine::hypothesis_test::methods::omnibus::{
+    kruskal_wallis, one_way_anova, welch_anova,
+};
+use crate::engine::hypothesis_test::methods::parametric::{
+    paired_t, student_two_sample_t, welch_two_sample_t,
+};
+use crate::engine::hypothesis_test::methods::rank::{
+    mann_whitney_u, wilcoxon_signed_rank, InferencePath, RankWarning,
+};
 use crate::engine::hypothesis_test::normalize::NormalizedStudy;
-use crate::engine::hypothesis_test::post_hoc::parametric::{games_howell, paired_t_holm, tukey_kramer};
+use crate::engine::hypothesis_test::post_hoc::parametric::{
+    games_howell, paired_t_holm, tukey_kramer,
+};
 use crate::engine::hypothesis_test::post_hoc::rank::{dunn_holm, paired_wilcoxon_holm};
 use crate::engine::hypothesis_test::post_hoc::PostHocResult;
 use crate::engine::hypothesis_test::selector::{select_execution_plan, SelectorCertainty};
@@ -54,42 +62,56 @@ pub fn run_hypothesis_test(
     }
     warnings.sort();
     warnings.dedup();
-    let post_hoc_result = if definition.post_hoc == "automatic"
-        && primary_result.p_value <= definition.alpha
-    {
-        run_post_hoc(&input, &plan.executed_method, definition)?
-            .map(to_post_hoc_result)
-            .transpose()?
-    } else {
-        None
-    };
-    let compatibility = all_methods().into_iter().map(|method_id| {
-        let result = evaluate_method_compatibility(
-            &input,
-            method_id.clone(),
-            definition.alternative.clone(),
-        );
-        HypothesisTestCompatibility {
-            method_id,
-            state: match result.state {
-                CompatibilityState::Compatible => "compatible",
-                CompatibilityState::Incompatible => "incompatible",
-            }.into(),
-            reason_codes: result.reasons.into_iter().map(reason_code).map(str::to_owned).collect(),
-        }
-    }).collect();
-    let diagnostics = diagnostic_summary.evidence.into_iter().map(|item| {
-        HypothesisTestDiagnosticEvidence {
+    let post_hoc_result =
+        if definition.post_hoc == "automatic" && primary_result.p_value <= definition.alpha {
+            run_post_hoc(&input, &plan.executed_method, definition)?
+                .map(to_post_hoc_result)
+                .transpose()?
+        } else {
+            None
+        };
+    let compatibility = all_methods()
+        .into_iter()
+        .map(|method_id| {
+            let result = evaluate_method_compatibility(
+                &input,
+                method_id.clone(),
+                definition.alternative.clone(),
+            );
+            HypothesisTestCompatibility {
+                method_id,
+                state: match result.state {
+                    CompatibilityState::Compatible => "compatible",
+                    CompatibilityState::Incompatible => "incompatible",
+                }
+                .into(),
+                reason_codes: result
+                    .reasons
+                    .into_iter()
+                    .map(reason_code)
+                    .map(str::to_owned)
+                    .collect(),
+            }
+        })
+        .collect();
+    let diagnostics = diagnostic_summary
+        .evidence
+        .into_iter()
+        .map(|item| HypothesisTestDiagnosticEvidence {
             code: item.code.into(),
             grade: match item.grade {
                 EvidenceGrade::Supports => "supports",
                 EvidenceGrade::Opposes => "opposes",
                 EvidenceGrade::Insufficient => "insufficient",
-            }.into(),
-            value: item.value.map(available).unwrap_or_else(|| unavailable("diagnosticNotEstimable")),
+            }
+            .into(),
+            value: item
+                .value
+                .map(available)
+                .unwrap_or_else(|| unavailable("diagnosticNotEstimable")),
             parameters: HashMap::new(),
-        }
-    }).collect();
+        })
+        .collect();
     Ok(HypothesisTestComputation {
         compatibility,
         diagnostics,
@@ -101,7 +123,8 @@ pub fn run_hypothesis_test(
                 SelectorCertainty::High => "high",
                 SelectorCertainty::Medium => "medium",
                 SelectorCertainty::Low => "low",
-            }.into(),
+            }
+            .into(),
             reason_codes: plan.reason_codes.into_iter().map(str::to_owned).collect(),
             overridden: plan.overridden,
         },
@@ -123,34 +146,92 @@ fn execute_method(
         (HypothesisTestMethodId::StudentTwoSampleT, NormalizedStudy::IndependentTwo(groups))
         | (HypothesisTestMethodId::WelchTwoSampleT, NormalizedStudy::IndependentTwo(groups)) => {
             let result = if matches!(method, HypothesisTestMethodId::StudentTwoSampleT) {
-                student_two_sample_t(&groups.groups[0].values, &groups.groups[1].values, definition.alternative.clone(), definition.confidence_level)?
+                student_two_sample_t(
+                    &groups.groups[0].values,
+                    &groups.groups[1].values,
+                    definition.alternative.clone(),
+                    definition.confidence_level,
+                )?
             } else {
-                welch_two_sample_t(&groups.groups[0].values, &groups.groups[1].values, definition.alternative.clone(), definition.confidence_level)?
+                welch_two_sample_t(
+                    &groups.groups[0].values,
+                    &groups.groups[1].values,
+                    definition.alternative.clone(),
+                    definition.confidence_level,
+                )?
             };
             let effect = if matches!(method, HypothesisTestMethodId::StudentTwoSampleT) {
                 hedges_g_pooled(groups)?
             } else {
                 hedges_g_av(groups)?
             };
-            let effect_kind = if matches!(method, HypothesisTestMethodId::StudentTwoSampleT) { "hedgesG" } else { "hedgesGAv" };
-            Ok((method_result(
-                method, "t", result.statistic, vec![result.degrees_of_freedom], result.p_value,
-                "meanDifference", Some(result.estimate), Some(result.lower), Some(result.upper),
-                effect_kind, effect.value, effect.formula_version, definition,
-            )?, "parametric".into(), vec![], vec![]))
+            let effect_kind = if matches!(method, HypothesisTestMethodId::StudentTwoSampleT) {
+                "hedgesG"
+            } else {
+                "hedgesGAv"
+            };
+            Ok((
+                method_result(
+                    method,
+                    "t",
+                    result.statistic,
+                    vec![result.degrees_of_freedom],
+                    result.p_value,
+                    "meanDifference",
+                    Some(result.estimate),
+                    Some(result.lower),
+                    Some(result.upper),
+                    effect_kind,
+                    effect.value,
+                    effect.formula_version,
+                    definition,
+                )?,
+                "parametric".into(),
+                vec![],
+                vec![],
+            ))
         }
         (HypothesisTestMethodId::MannWhitneyU, NormalizedStudy::IndependentTwo(groups)) => {
-            let result = mann_whitney_u(&groups.groups[0].values, &groups.groups[1].values, definition.alternative.clone())?;
-            rank_method_result(method, "U", "relativeStochasticLocation", result, definition)
+            let result = mann_whitney_u(
+                &groups.groups[0].values,
+                &groups.groups[1].values,
+                definition.alternative.clone(),
+            )?;
+            rank_method_result(
+                method,
+                "U",
+                "relativeStochasticLocation",
+                result,
+                definition,
+            )
         }
         (HypothesisTestMethodId::PairedT, NormalizedStudy::PairedTwo(paired)) => {
-            let result = paired_t(&paired.pairs, definition.alternative.clone(), definition.confidence_level)?;
+            let result = paired_t(
+                &paired.pairs,
+                definition.alternative.clone(),
+                definition.confidence_level,
+            )?;
             let effect = paired_d_z(paired)?;
-            Ok((method_result(
-                method, "t", result.statistic, vec![result.degrees_of_freedom], result.p_value,
-                "meanPairedDifference", Some(result.estimate), Some(result.lower), Some(result.upper),
-                "pairedDz", effect.value, effect.formula_version, definition,
-            )?, "parametric".into(), vec![], vec![]))
+            Ok((
+                method_result(
+                    method,
+                    "t",
+                    result.statistic,
+                    vec![result.degrees_of_freedom],
+                    result.p_value,
+                    "meanPairedDifference",
+                    Some(result.estimate),
+                    Some(result.lower),
+                    Some(result.upper),
+                    "pairedDz",
+                    effect.value,
+                    effect.formula_version,
+                    definition,
+                )?,
+                "parametric".into(),
+                vec![],
+                vec![],
+            ))
         }
         (HypothesisTestMethodId::WilcoxonSignedRank, NormalizedStudy::PairedTwo(paired)) => {
             let result = wilcoxon_signed_rank(&paired.pairs, definition.alternative.clone())?;
@@ -166,18 +247,56 @@ fn execute_method(
                 _ => unreachable!(),
             };
             let (statistic_name, estimand, effect_kind, formula) = match method {
-                HypothesisTestMethodId::OneWayAnova => ("F", "groupMeans", "omegaSquared", "anova-v1"),
-                HypothesisTestMethodId::WelchAnova => ("F", "groupMeans", "welchPartialOmegaSquared", "welch-anova-v1"),
-                HypothesisTestMethodId::KruskalWallis => ("H", "rankDistributions", "epsilonSquared", "kruskal-wallis-v1"),
+                HypothesisTestMethodId::OneWayAnova => {
+                    ("F", "groupMeans", "omegaSquared", "anova-v1")
+                }
+                HypothesisTestMethodId::WelchAnova => (
+                    "F",
+                    "groupMeans",
+                    "welchPartialOmegaSquared",
+                    "welch-anova-v1",
+                ),
+                HypothesisTestMethodId::KruskalWallis => (
+                    "H",
+                    "rankDistributions",
+                    "epsilonSquared",
+                    "kruskal-wallis-v1",
+                ),
                 _ => unreachable!(),
             };
             let mut degrees = vec![result.numerator_degrees_of_freedom];
-            if let Some(value) = result.denominator_degrees_of_freedom { degrees.push(value); }
-            Ok((method_result(
-                method, statistic_name, result.statistic, degrees, result.p_value,
-                estimand, None, None, None, effect_kind, result.effect_size, formula, definition,
-            )?, if statistic_name == "H" { "asymptotic" } else { "parametric" }.into(),
-                if statistic_name == "H" { vec!["tieCorrection".into()] } else { vec![] }, vec![]))
+            if let Some(value) = result.denominator_degrees_of_freedom {
+                degrees.push(value);
+            }
+            Ok((
+                method_result(
+                    method,
+                    statistic_name,
+                    result.statistic,
+                    degrees,
+                    result.p_value,
+                    estimand,
+                    None,
+                    None,
+                    None,
+                    effect_kind,
+                    result.effect_size,
+                    formula,
+                    definition,
+                )?,
+                if statistic_name == "H" {
+                    "asymptotic"
+                } else {
+                    "parametric"
+                }
+                .into(),
+                if statistic_name == "H" {
+                    vec!["tieCorrection".into()]
+                } else {
+                    vec![]
+                },
+                vec![],
+            ))
         }
         (HypothesisTestMethodId::RandomizedBlockAnova, NormalizedStudy::CompleteBlock(blocks))
         | (HypothesisTestMethodId::Friedman, NormalizedStudy::CompleteBlock(blocks)) => {
@@ -188,16 +307,54 @@ fn execute_method(
             };
             let is_friedman = matches!(method, HypothesisTestMethodId::Friedman);
             let mut degrees = vec![result.numerator_degrees_of_freedom];
-            if let Some(value) = result.denominator_degrees_of_freedom { degrees.push(value); }
-            Ok((method_result(
-                method, if is_friedman { "Q" } else { "F" }, result.statistic, degrees, result.p_value,
-                if is_friedman { "conditionMeanRanks" } else { "blockAdjustedConditionMeans" },
-                None, None, None, if is_friedman { "kendallsW" } else { "generalizedEtaSquared" },
-                result.effect_size, if is_friedman { "friedman-v1" } else { "randomized-block-anova-v1" }, definition,
-            )?, if is_friedman { "asymptotic" } else { "parametric" }.into(),
-                if is_friedman { vec!["withinBlockTieCorrection".into()] } else { vec![] }, vec![]))
+            if let Some(value) = result.denominator_degrees_of_freedom {
+                degrees.push(value);
+            }
+            Ok((
+                method_result(
+                    method,
+                    if is_friedman { "Q" } else { "F" },
+                    result.statistic,
+                    degrees,
+                    result.p_value,
+                    if is_friedman {
+                        "conditionMeanRanks"
+                    } else {
+                        "blockAdjustedConditionMeans"
+                    },
+                    None,
+                    None,
+                    None,
+                    if is_friedman {
+                        "kendallsW"
+                    } else {
+                        "generalizedEtaSquared"
+                    },
+                    result.effect_size,
+                    if is_friedman {
+                        "friedman-v1"
+                    } else {
+                        "randomized-block-anova-v1"
+                    },
+                    definition,
+                )?,
+                if is_friedman {
+                    "asymptotic"
+                } else {
+                    "parametric"
+                }
+                .into(),
+                if is_friedman {
+                    vec!["withinBlockTieCorrection".into()]
+                } else {
+                    vec![]
+                },
+                vec![],
+            ))
         }
-        _ => Err(AppError::InvalidParam("method and normalized study are incompatible".into())),
+        _ => Err(AppError::InvalidParam(
+            "method and normalized study are incompatible".into(),
+        )),
     }
 }
 
@@ -217,7 +374,9 @@ fn method_result(
     formula_version: &str,
     definition: &HypothesisTestDefinition,
 ) -> Result<HypothesisTestMethodResult, AppError> {
-    if !statistic.is_finite() || !p_value.is_finite() || !effect.is_finite()
+    if !statistic.is_finite()
+        || !p_value.is_finite()
+        || !effect.is_finite()
         || degrees_of_freedom.iter().any(|value| !value.is_finite())
     {
         return Err(AppError::Stats("non-finite hypothesis-test result".into()));
@@ -231,7 +390,12 @@ fn method_result(
         degrees_of_freedom,
         p_value: p_value.clamp(0.0, 1.0),
         direction: direction(direction_value).into(),
-        conclusion: if p_value <= definition.alpha { "difference" } else { "insufficientEvidence" }.into(),
+        conclusion: if p_value <= definition.alpha {
+            "difference"
+        } else {
+            "insufficientEvidence"
+        }
+        .into(),
         estimate: HypothesisTestEstimate {
             estimand: estimand.into(),
             estimate: finite_value(estimate, "omnibusEstimateNotScalar"),
@@ -256,20 +420,47 @@ fn rank_method_result(
     result: crate::engine::hypothesis_test::methods::rank::RankTestResult,
     definition: &HypothesisTestDefinition,
 ) -> Result<(HypothesisTestMethodResult, String, Vec<String>, Vec<String>), AppError> {
-    let inference_path = match result.inference_path { InferencePath::Exact => "exact", InferencePath::Asymptotic => "asymptotic" };
-    let warnings = result.warnings.iter().map(|warning| match warning {
-        RankWarning::ExactUnavailableWithTies => "EXACT_UNAVAILABLE_WITH_TIES",
-        RankWarning::ExactUnavailableWithZeros => "EXACT_UNAVAILABLE_WITH_ZEROS",
-        RankWarning::ExactBudgetExceeded => "EXACT_BUDGET_EXCEEDED",
-    }.to_owned()).collect::<Vec<_>>();
+    let inference_path = match result.inference_path {
+        InferencePath::Exact => "exact",
+        InferencePath::Asymptotic => "asymptotic",
+    };
+    let warnings = result
+        .warnings
+        .iter()
+        .map(|warning| {
+            match warning {
+                RankWarning::ExactUnavailableWithTies => "EXACT_UNAVAILABLE_WITH_TIES",
+                RankWarning::ExactUnavailableWithZeros => "EXACT_UNAVAILABLE_WITH_ZEROS",
+                RankWarning::ExactBudgetExceeded => "EXACT_BUDGET_EXCEEDED",
+            }
+            .to_owned()
+        })
+        .collect::<Vec<_>>();
     let corrections = if matches!(result.inference_path, InferencePath::Asymptotic) {
         vec!["continuityCorrection".into(), "tieCorrection".into()]
-    } else { vec![] };
-    Ok((method_result(
-        method, statistic_name, result.statistic, vec![], result.p_value,
-        estimand, None, None, None, "rankBiserial", result.effect_size,
-        "rank-test-v1", definition,
-    )?, inference_path.into(), corrections, warnings))
+    } else {
+        vec![]
+    };
+    Ok((
+        method_result(
+            method,
+            statistic_name,
+            result.statistic,
+            vec![],
+            result.p_value,
+            estimand,
+            None,
+            None,
+            None,
+            "rankBiserial",
+            result.effect_size,
+            "rank-test-v1",
+            definition,
+        )?,
+        inference_path.into(),
+        corrections,
+        warnings,
+    ))
 }
 
 fn run_post_hoc(
@@ -278,16 +469,21 @@ fn run_post_hoc(
     definition: &HypothesisTestDefinition,
 ) -> Result<Option<PostHocResult>, AppError> {
     match (method, study) {
-        (HypothesisTestMethodId::OneWayAnova, NormalizedStudy::IndependentMulti(groups)) =>
-            tukey_kramer(groups, definition.alpha, definition.confidence_level).map(Some),
-        (HypothesisTestMethodId::WelchAnova, NormalizedStudy::IndependentMulti(groups)) =>
-            games_howell(groups, definition.alpha, definition.confidence_level).map(Some),
-        (HypothesisTestMethodId::KruskalWallis, NormalizedStudy::IndependentMulti(groups)) =>
-            dunn_holm(groups, definition.alpha).map(Some),
-        (HypothesisTestMethodId::RandomizedBlockAnova, NormalizedStudy::CompleteBlock(blocks)) =>
-            paired_t_holm(blocks, definition.alpha, definition.confidence_level).map(Some),
-        (HypothesisTestMethodId::Friedman, NormalizedStudy::CompleteBlock(blocks)) =>
-            paired_wilcoxon_holm(blocks, definition.alpha).map(Some),
+        (HypothesisTestMethodId::OneWayAnova, NormalizedStudy::IndependentMulti(groups)) => {
+            tukey_kramer(groups, definition.alpha, definition.confidence_level).map(Some)
+        }
+        (HypothesisTestMethodId::WelchAnova, NormalizedStudy::IndependentMulti(groups)) => {
+            games_howell(groups, definition.alpha, definition.confidence_level).map(Some)
+        }
+        (HypothesisTestMethodId::KruskalWallis, NormalizedStudy::IndependentMulti(groups)) => {
+            dunn_holm(groups, definition.alpha).map(Some)
+        }
+        (HypothesisTestMethodId::RandomizedBlockAnova, NormalizedStudy::CompleteBlock(blocks)) => {
+            paired_t_holm(blocks, definition.alpha, definition.confidence_level).map(Some)
+        }
+        (HypothesisTestMethodId::Friedman, NormalizedStudy::CompleteBlock(blocks)) => {
+            paired_wilcoxon_holm(blocks, definition.alpha).map(Some)
+        }
         _ => Ok(None),
     }
 }
@@ -296,22 +492,30 @@ fn to_post_hoc_result(result: PostHocResult) -> Result<HypothesisTestPostHocResu
     let adjustment = match result.family.as_str() {
         "tukeyKramer" | "gamesHowell" => "studentizedRange",
         _ => "holm",
-    }.to_owned();
-    let comparisons = result.comparisons.into_iter().map(|item| {
-        if !item.estimate.is_finite() || !item.raw_p_value.is_finite() || !item.adjusted_p_value.is_finite() {
-            return Err(AppError::Stats("non-finite post-hoc result".into()));
-        }
-        Ok(HypothesisTestPostHocComparison {
-            left: item.left,
-            right: item.right,
-            estimate: available(item.estimate),
-            raw_p_value: item.raw_p_value,
-            adjusted_p_value: item.adjusted_p_value,
-            adjustment: adjustment.clone(),
-            lower: finite_value(item.lower, "intervalNotSimultaneous"),
-            upper: finite_value(item.upper, "intervalNotSimultaneous"),
+    }
+    .to_owned();
+    let comparisons = result
+        .comparisons
+        .into_iter()
+        .map(|item| {
+            if !item.estimate.is_finite()
+                || !item.raw_p_value.is_finite()
+                || !item.adjusted_p_value.is_finite()
+            {
+                return Err(AppError::Stats("non-finite post-hoc result".into()));
+            }
+            Ok(HypothesisTestPostHocComparison {
+                left: item.left,
+                right: item.right,
+                estimate: available(item.estimate),
+                raw_p_value: item.raw_p_value,
+                adjusted_p_value: item.adjusted_p_value,
+                adjustment: adjustment.clone(),
+                lower: finite_value(item.lower, "intervalNotSimultaneous"),
+                upper: finite_value(item.upper, "intervalNotSimultaneous"),
+            })
         })
-    }).collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(HypothesisTestPostHocResult {
         state: "computed".into(),
         family: result.family,
@@ -331,7 +535,8 @@ fn robustness(
         "statisticallySensitive"
     } else {
         "stable"
-    }.into()
+    }
+    .into()
 }
 
 fn all_methods() -> Vec<HypothesisTestMethodId> {
@@ -363,7 +568,13 @@ fn reason_code(reason: CompatibilityReason) -> &'static str {
 }
 
 fn direction(value: f64) -> &'static str {
-    if value > 0.0 { "positive" } else if value < 0.0 { "negative" } else { "none" }
+    if value > 0.0 {
+        "positive"
+    } else if value < 0.0 {
+        "negative"
+    } else {
+        "none"
+    }
 }
 
 fn available(value: f64) -> HypothesisTestValue {
@@ -371,11 +582,16 @@ fn available(value: f64) -> HypothesisTestValue {
 }
 
 fn unavailable(reason: &str) -> HypothesisTestValue {
-    HypothesisTestValue::Unavailable { reason: reason.into() }
+    HypothesisTestValue::Unavailable {
+        reason: reason.into(),
+    }
 }
 
 fn finite_value(value: Option<f64>, reason: &str) -> HypothesisTestValue {
-    value.filter(|value| value.is_finite()).map(available).unwrap_or_else(|| unavailable(reason))
+    value
+        .filter(|value| value.is_finite())
+        .map(available)
+        .unwrap_or_else(|| unavailable(reason))
 }
 
 #[cfg(test)]
@@ -390,13 +606,18 @@ mod tests {
 
     #[test]
     fn automatic_two_group_execution_returns_selected_primary_result() {
-        let study = NormalizedStudy::IndependentTwo(IndependentGroups { groups: vec![
-            group("A", 0.0),
-            group("B", 4.0),
-        ] });
+        let study = NormalizedStudy::IndependentTwo(IndependentGroups {
+            groups: vec![group("A", 0.0), group("B", 4.0)],
+        });
         let result = run_hypothesis_test(study, &definition()).expect("computation");
-        assert_eq!(result.selection_decision.executed_method, HypothesisTestMethodId::StudentTwoSampleT);
-        assert_eq!(result.primary_result.method_id, HypothesisTestMethodId::StudentTwoSampleT);
+        assert_eq!(
+            result.selection_decision.executed_method,
+            HypothesisTestMethodId::StudentTwoSampleT
+        );
+        assert_eq!(
+            result.primary_result.method_id,
+            HypothesisTestMethodId::StudentTwoSampleT
+        );
         assert!(result.primary_result.p_value < 0.05);
         assert!(result.post_hoc_result.is_none());
         assert_eq!(result.compatibility.len(), 10);
@@ -404,22 +625,25 @@ mod tests {
 
     #[test]
     fn significant_automatic_anova_dispatches_tukey_kramer() {
-        let study = NormalizedStudy::IndependentMulti(IndependentGroups { groups: vec![
-            group("A", 0.0),
-            group("B", 0.2),
-            group("C", 8.0),
-        ] });
+        let study = NormalizedStudy::IndependentMulti(IndependentGroups {
+            groups: vec![group("A", 0.0), group("B", 0.2), group("C", 8.0)],
+        });
         let result = run_hypothesis_test(study, &definition()).expect("computation");
-        assert_eq!(result.primary_result.method_id, HypothesisTestMethodId::OneWayAnova);
-        assert_eq!(result.post_hoc_result.expect("post-hoc").family, "tukeyKramer");
+        assert_eq!(
+            result.primary_result.method_id,
+            HypothesisTestMethodId::OneWayAnova
+        );
+        assert_eq!(
+            result.post_hoc_result.expect("post-hoc").family,
+            "tukeyKramer"
+        );
     }
 
     #[test]
     fn incompatible_manual_method_fails_before_dispatch() {
-        let study = NormalizedStudy::IndependentTwo(IndependentGroups { groups: vec![
-            group("A", 0.0),
-            group("B", 2.0),
-        ] });
+        let study = NormalizedStudy::IndependentTwo(IndependentGroups {
+            groups: vec![group("A", 0.0), group("B", 2.0)],
+        });
         let mut definition = definition();
         definition.selection_mode = HypothesisTestSelectionMode::Manual;
         definition.manual_selection = Some(HypothesisTestManualSelection {
@@ -436,7 +660,9 @@ mod tests {
         ConditionValues {
             condition: condition.into(),
             values: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
-                .into_iter().map(|value| value + offset).collect(),
+                .into_iter()
+                .map(|value| value + offset)
+                .collect(),
         }
     }
 
@@ -445,8 +671,14 @@ mod tests {
             kind: "hypothesisTest".into(),
             roles: HypothesisTestRoles::Wide {
                 measurements: vec![
-                    HypothesisTestFieldRef { name: "A".into(), field_type: "continuous".into() },
-                    HypothesisTestFieldRef { name: "B".into(), field_type: "continuous".into() },
+                    HypothesisTestFieldRef {
+                        name: "A".into(),
+                        field_type: "continuous".into(),
+                    },
+                    HypothesisTestFieldRef {
+                        name: "B".into(),
+                        field_type: "continuous".into(),
+                    },
                 ],
                 subject: None,
             },

@@ -96,38 +96,44 @@ impl<'a> TableTransformService<'a> {
         inputs: Vec<TableTransformInputBinding>,
         lineage: &mut ProjectLineageGraph,
     ) -> Result<(TableTransformDefinition, TableTransformExecutionResult), AppError> {
-        let source_schemas = inputs
-            .iter()
-            .map(|input| {
-                let columns = self
-                    .engine
-                    .get_user_columns(&input.table_document_id)?
-                    .into_iter()
-                    .map(|(name, col_type)| TableColumn {
-                        name,
-                        col_type,
-                        width: None,
-                        format: None,
-                        extras: None,
-                    })
-                    .collect();
-                Ok((input.role.clone(), columns))
-            })
-            .collect::<Result<HashMap<_, _>, AppError>>()?;
-        let definition = TableTransformDefinition {
-            id: Uuid::new_v4().to_string(),
-            name: draft.name.clone(),
-            format_version: "1".to_string(),
-            revision: 1,
-            operation: draft.operation.clone(),
-            input_slots: derive_input_contracts(&draft.operation, &source_schemas)?,
-            output: TableTransformOutput {
-                table_document_id: Uuid::new_v4().to_string(),
-                name: draft.output_name.clone(),
-            },
-        };
+        let definition = self.build_definition_from_draft(
+            draft,
+            &inputs,
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+        )?;
         let execution = self.create_and_run(&definition, inputs, lineage)?;
         Ok((definition, execution))
+    }
+
+    pub fn preflight_create_from_draft(
+        &self,
+        draft: &TableTransformDraft,
+        inputs: Vec<TableTransformInputBinding>,
+    ) -> Result<(), AppError> {
+        let definition = self.build_definition_from_draft(
+            draft,
+            &inputs,
+            "preflight-definition".to_string(),
+            "preflight-output".to_string(),
+        )?;
+        let binding = TableTransformProjectBinding {
+            definition_id: definition.id.clone(),
+            definition_revision: definition.revision,
+            inputs,
+            output_generation: 0,
+        };
+        let _ = self.validate_run_preconditions(&definition, &binding)?;
+        Ok(())
+    }
+
+    pub fn preflight_run(
+        &self,
+        definition: &TableTransformDefinition,
+        binding: &TableTransformProjectBinding,
+    ) -> Result<(), AppError> {
+        let _ = self.validate_run_preconditions(definition, binding)?;
+        Ok(())
     }
 
     pub fn create_and_run(
@@ -175,14 +181,12 @@ impl<'a> TableTransformService<'a> {
         binding: &TableTransformProjectBinding,
         lineage: &mut ProjectLineageGraph,
     ) -> Result<TableTransformExecutionResult, AppError> {
-        validate_table_transform_definition(definition)?;
-        self.validate_binding(definition, binding)?;
+        let reports = self.validate_run_preconditions(definition, binding)?;
         let inputs = binding
             .inputs
             .iter()
             .map(|input| (input.role.as_str(), input.table_document_id.as_str()))
             .collect::<HashMap<_, _>>();
-        let reports = self.validate_schemas(definition, &inputs)?;
         if reports.iter().any(|item| !compatible(&item.report)) {
             return Ok(self.result(
                 definition,
@@ -312,6 +316,61 @@ impl<'a> TableTransformService<'a> {
         Ok(())
     }
 
+    fn build_definition_from_draft(
+        &self,
+        draft: &TableTransformDraft,
+        inputs: &[TableTransformInputBinding],
+        definition_id: String,
+        output_table_id: String,
+    ) -> Result<TableTransformDefinition, AppError> {
+        let source_schemas = inputs
+            .iter()
+            .map(|input| {
+                let columns = self
+                    .engine
+                    .get_user_columns(&input.table_document_id)?
+                    .into_iter()
+                    .map(|(name, col_type)| TableColumn {
+                        name,
+                        col_type,
+                        width: None,
+                        format: None,
+                        extras: None,
+                        ..Default::default()
+                    })
+                    .collect();
+                Ok((input.role.clone(), columns))
+            })
+            .collect::<Result<HashMap<_, _>, AppError>>()?;
+        Ok(TableTransformDefinition {
+            id: definition_id,
+            name: draft.name.clone(),
+            format_version: "1".to_string(),
+            revision: 1,
+            operation: draft.operation.clone(),
+            input_slots: derive_input_contracts(&draft.operation, &source_schemas)?,
+            output: TableTransformOutput {
+                table_document_id: output_table_id,
+                name: draft.output_name.clone(),
+            },
+        })
+    }
+
+    fn validate_run_preconditions(
+        &self,
+        definition: &TableTransformDefinition,
+        binding: &TableTransformProjectBinding,
+    ) -> Result<Vec<TableTransformRoleSchemaReport>, AppError> {
+        validate_table_transform_definition(definition)?;
+        self.validate_binding(definition, binding)?;
+        let inputs = binding
+            .inputs
+            .iter()
+            .map(|input| (input.role.as_str(), input.table_document_id.as_str()))
+            .collect::<HashMap<_, _>>();
+        self.validate_schemas(definition, &inputs)
+    }
+
     fn validate_schemas(
         &self,
         definition: &TableTransformDefinition,
@@ -334,6 +393,7 @@ impl<'a> TableTransformService<'a> {
                         width: None,
                         format: None,
                         extras: None,
+                        ..Default::default()
                     })
                     .collect::<Vec<_>>();
                 Ok(TableTransformRoleSchemaReport {
@@ -743,6 +803,7 @@ mod tests {
                 width: None,
                 format: None,
                 extras: None,
+                ..Default::default()
             })
             .collect();
         let operation = TableTransformOperation::Sort {
@@ -810,6 +871,7 @@ mod tests {
                         width: None,
                         format: None,
                         extras: None,
+                        ..Default::default()
                     })
                     .collect();
                 ((*role).to_string(), columns)

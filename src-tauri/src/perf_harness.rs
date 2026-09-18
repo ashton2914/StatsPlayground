@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+use std::io::Write;
 use std::time::Instant;
 
 use duckdb::params;
@@ -9,13 +11,20 @@ use crate::error::AppError;
 use crate::models::graph_data::{GraphAggregatePacket, GraphChunkHeader, GraphDataCompletion};
 use crate::models::graph_data::{
     GraphDataRequest, GraphElementRequest, GraphFieldBinding, GraphRawPointDisposition,
-    GraphSampling, GraphViewport,
+    GraphSampling, GraphTimeSeriesConnection, GraphTimeSeriesDisposition,
+    GraphTimeSeriesMarkerMode, GraphTimeSeriesMissingValues, GraphTimeSeriesOrder, GraphViewport,
+    TimeSeriesXInterpretation,
 };
 use crate::models::graph_new_data::{
     GraphNewBuildRequest, GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
     GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
 };
 use crate::models::save::SaveProjectRequest;
+use crate::models::table::TableNavigationRequest;
+use crate::services::calculated_column_service::{
+    CalculatedColumnService, UpsertCalculatedColumnInput,
+};
+use crate::services::data_service::DataService;
 #[cfg(test)]
 use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
@@ -24,7 +33,12 @@ use crate::services::graph_new_service::GraphNewService;
 use crate::services::project_service::{seed_save_project, ProjectService};
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
+use crate::services::table_mutation_coordinator::{execute_table_mutation, TableMutationEffects};
 use crate::state::AppState;
+
+const DEFAULT_CALCULATED_CHAIN_DEPTH: usize = 5;
+const CALCULATED_MEDIAN_THRESHOLD_MS: u128 = 2_000;
+const CALCULATED_MEMORY_GROWTH_BUDGET_MULTIPLIER: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,8 +47,11 @@ enum Operation {
     Paste,
     Restore,
     Graph,
+    TimeSeriesGraph,
     Save,
     Datalink,
+    Calculated,
+    TableNavigation,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,6 +62,10 @@ struct Options {
     graph_new_rows: Option<Vec<usize>>,
     graph_new_csv: Option<(String, String)>,
     graph_new_axis: Option<(String, crate::models::graph_new::GraphNewXMode, crate::models::graph_new::GraphNewRawMode)>,
+    chain_depth: usize,
+    runs: usize,
+    position_percent: Option<u32>,
+    payload_stdout: bool,
 }
 
 #[derive(Serialize)]
@@ -55,15 +76,25 @@ struct PerformanceReport {
     operation: Operation,
     setup_ms: u128,
     operation_ms: u128,
+    position_percent: Option<u32>,
+    target_start: Option<usize>,
+    lock_wait_ms: Option<u128>,
+    count_ms: Option<u128>,
+    anchor_ms: Option<u128>,
     total_ms: u128,
     result_rows: usize,
     selected_columns: usize,
     query_ms: Option<u128>,
     encode_ms: Option<u128>,
+    stdout_write_ms: Option<u128>,
     decode_ms: Option<DesktopOnlyMetric>,
     draw_ms: Option<DesktopOnlyMetric>,
     processed_rows: Option<u64>,
+    source_rows: Option<u64>,
+    chunks: Option<u32>,
     transferred_bytes: Option<u64>,
+    projection_passes: Option<u32>,
+    invalid_x_count: Option<u64>,
     archive_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_retained_batch_bytes: Option<u64>,
@@ -77,6 +108,28 @@ struct PerformanceReport {
     process_memory: Option<ProcessMemoryReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     graph_new: Option<GraphNewPerformanceReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_depth: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runs_ms: Option<Vec<u128>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    median_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    process_memory_method: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physical_input_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    calculated_result_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_budget_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_growth_budget_multiplier: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qualification_passed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qualification_failure: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    machine: Option<MachineReport>,
 }
 
 #[derive(Serialize)]
@@ -186,6 +239,12 @@ fn measure_graph_new_cache(state: &AppState, build: &GraphNewBuildRequest) -> Re
         cold_render_ms, cpu_warm_ms, persistent_warm_ms, settled_camera_ms, cold, cpu_warm, persistent_warm, settled_camera })
 }
 
+impl PerformanceReport {
+    fn qualification_failure(&self) -> Option<&str> {
+        self.qualification_failure.as_deref()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DesktopOnlyMetric {
@@ -240,6 +299,17 @@ struct ProcessMemoryReport {
     delta_working_set_bytes: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MachineReport {
+    os: String,
+    arch: String,
+    cpu: String,
+    physical_memory_bytes: Option<u64>,
+    app_version: String,
+    duckdb_version: String,
+}
+
 #[cfg(windows)]
 #[repr(C)]
 struct ProcessMemoryCounters {
@@ -271,6 +341,56 @@ extern "system" {
     ) -> i32;
 }
 
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct ProcTaskInfo {
+    virtual_size: u64,
+    resident_size: u64,
+    total_user: u64,
+    total_system: u64,
+    threads_user: u64,
+    threads_system: u64,
+    policy: i32,
+    faults: i32,
+    pageins: i32,
+    cow_faults: i32,
+    messages_sent: i32,
+    messages_received: i32,
+    syscalls_mach: i32,
+    syscalls_unix: i32,
+    csw: i32,
+    threadnum: i32,
+    numrunning: i32,
+    priority: i32,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+extern "C" {
+    fn proc_pidinfo(
+        pid: i32,
+        flavor: i32,
+        arg: u64,
+        buffer: *mut core::ffi::c_void,
+        buffersize: i32,
+    ) -> i32;
+}
+
+fn process_memory_method() -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        Some("GetProcessMemoryInfo working_set_size")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Some("proc_pidinfo PROC_PIDTASKINFO resident_size")
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
+}
+
 fn current_working_set_bytes() -> Option<u64> {
     #[cfg(windows)]
     {
@@ -300,7 +420,46 @@ fn current_working_set_bytes() -> Option<u64> {
             Some(counters.working_set_size as u64)
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        const PROC_PIDTASKINFO: i32 = 4;
+        let mut info = ProcTaskInfo {
+            virtual_size: 0,
+            resident_size: 0,
+            total_user: 0,
+            total_system: 0,
+            threads_user: 0,
+            threads_system: 0,
+            policy: 0,
+            faults: 0,
+            pageins: 0,
+            cow_faults: 0,
+            messages_sent: 0,
+            messages_received: 0,
+            syscalls_mach: 0,
+            syscalls_unix: 0,
+            csw: 0,
+            threadnum: 0,
+            numrunning: 0,
+            priority: 0,
+        };
+        let expected_size = std::mem::size_of::<ProcTaskInfo>();
+        let actual_size = unsafe {
+            proc_pidinfo(
+                std::process::id() as i32,
+                PROC_PIDTASKINFO,
+                0,
+                (&mut info as *mut ProcTaskInfo).cast(),
+                expected_size as i32,
+            )
+        };
+        if actual_size == expected_size as i32 {
+            Some(info.resident_size)
+        } else {
+            None
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         None
     }
@@ -377,6 +536,19 @@ fn parse_positive_usize(flag: &str, value: Option<String>) -> Result<usize, AppE
     Ok(parsed)
 }
 
+fn parse_position_percent(flag: &str, value: Option<String>) -> Result<u32, AppError> {
+    let value = value.ok_or_else(|| AppError::InvalidParam(format!("missing value for {flag}")))?;
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| AppError::InvalidParam(format!("invalid value for {flag}: {value}")))?;
+    if parsed > 100 {
+        return Err(AppError::InvalidParam(format!(
+            "{flag} must be between 0 and 100"
+        )));
+    }
+    Ok(parsed)
+}
+
 fn parse_args<I>(args: I) -> Result<Options, AppError>
 where
     I: IntoIterator<Item = String>,
@@ -388,6 +560,10 @@ where
         graph_new_rows: None,
         graph_new_csv: None,
         graph_new_axis: None,
+        chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+        runs: 1,
+        position_percent: None,
+        payload_stdout: false,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -407,6 +583,14 @@ where
             }
             "--rows" => options.rows = parse_positive_usize(&flag, args.next())?,
             "--columns" => options.columns = parse_positive_usize(&flag, args.next())?,
+            "--chain-depth" => options.chain_depth = parse_positive_usize(&flag, args.next())?,
+            "--runs" => options.runs = parse_positive_usize(&flag, args.next())?,
+            "--position-percent" => {
+                options.position_percent = Some(parse_position_percent(&flag, args.next())?);
+            }
+            "--payload-stdout" => {
+                options.payload_stdout = true;
+            }
             "--operation" => {
                 let value = args.next().ok_or_else(|| {
                     AppError::InvalidParam("missing value for --operation".into())
@@ -416,8 +600,11 @@ where
                     "paste" => Operation::Paste,
                     "restore" => Operation::Restore,
                     "graph" => Operation::Graph,
+                    "time-series-graph" | "time_series_graph" => Operation::TimeSeriesGraph,
                     "save" => Operation::Save,
                     "datalink" => Operation::Datalink,
+                    "calculated" => Operation::Calculated,
+                    "table-navigation" => Operation::TableNavigation,
                     _ => {
                         return Err(AppError::InvalidParam(format!(
                             "unknown operation: {value}"
@@ -449,7 +636,166 @@ where
             _ => return Err(AppError::InvalidParam(format!("unknown argument: {flag}"))),
         }
     }
+
+    if options.operation == Operation::TableNavigation && options.position_percent.is_none() {
+        return Err(AppError::InvalidParam(
+            "table-navigation requires --position-percent".into(),
+        ));
+    }
+    if options.operation != Operation::TableNavigation && options.position_percent.is_some() {
+        return Err(AppError::InvalidParam(
+            "--position-percent is only valid with table-navigation".into(),
+        ));
+    }
+    if options.operation != Operation::TableNavigation && options.payload_stdout {
+        return Err(AppError::InvalidParam(
+            "--payload-stdout is only valid with table-navigation".into(),
+        ));
+    }
+
     Ok(options)
+}
+
+fn execute_table_navigation(
+    options: Options,
+    total_started: Instant,
+) -> Result<PerformanceReport, AppError> {
+    let position_percent = options.position_percent.ok_or_else(|| {
+        AppError::InvalidParam("table-navigation requires --position-percent".into())
+    })?;
+    let setup_started = Instant::now();
+    let state = AppState::new()?;
+    let dataset_id = "performance-table-navigation-baseline";
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.seed_benchmark_table(
+            dataset_id,
+            "Performance Table Navigation Baseline",
+            options.rows,
+            options.columns,
+        )?;
+    }
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let operation_started = Instant::now();
+    let lock_started = Instant::now();
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let lock_wait_ms = lock_started.elapsed().as_millis();
+
+    let count_started = Instant::now();
+    let meta = db.get_dataset_meta(dataset_id)?;
+    let count_ms = count_started.elapsed().as_millis();
+    let total_rows = usize::try_from(meta.row_count).map_err(|_| {
+        AppError::InvalidParam("table navigation row count does not fit usize".into())
+    })?;
+    let generation = meta.generation;
+    drop(db);
+
+    let data_service = DataService::new(&state);
+    let column_ids = data_service
+        .get_column_descriptors(dataset_id)?
+        .into_iter()
+        .map(|column| column.column_id)
+        .collect::<Vec<_>>();
+
+    let anchor_started = Instant::now();
+    let visible_rows = 500usize;
+    let max_start = total_rows.saturating_sub(visible_rows);
+    let target_start = if max_start == 0 {
+        0
+    } else {
+        let ratio = position_percent as f64 / 100.0;
+        ((max_start as f64) * ratio)
+            .round()
+            .clamp(0.0, max_start as f64) as usize
+    };
+    let anchor_ms = anchor_started.elapsed().as_millis();
+
+    let query_started = Instant::now();
+    let request = TableNavigationRequest {
+        version: 1,
+        request_id: "performance-table-navigation".to_string(),
+        dataset_id: dataset_id.to_string(),
+        generation,
+        start: target_start,
+        count: visible_rows,
+        column_ids,
+        sort: None,
+        filters: Vec::new(),
+        session_id: None,
+        include_transport_diagnostics: false,
+    };
+    let window = data_service.query_table_navigation_window(&request)?;
+    let query_ms = query_started.elapsed().as_millis();
+
+    let encode_started = Instant::now();
+    let encoded_window =
+        serde_json::to_vec(&window).map_err(|error| AppError::InvalidParam(error.to_string()))?;
+    let encode_ms = encode_started.elapsed().as_millis();
+    let stdout_write_ms = if options.payload_stdout {
+        let stdout_write_started = Instant::now();
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(&encoded_window)
+            .map_err(|error| AppError::FileIO(error.to_string()))?;
+        stdout
+            .flush()
+            .map_err(|error| AppError::FileIO(error.to_string()))?;
+        Some(stdout_write_started.elapsed().as_millis())
+    } else {
+        None
+    };
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: options.columns,
+        operation: options.operation,
+        setup_ms,
+        operation_ms: operation_started.elapsed().as_millis(),
+        position_percent: Some(position_percent),
+        target_start: Some(target_start),
+        lock_wait_ms: Some(lock_wait_ms),
+        count_ms: Some(count_ms),
+        anchor_ms: Some(anchor_ms),
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows: window.rows.len(),
+        selected_columns: window.columns.len(),
+        query_ms: Some(query_ms),
+        encode_ms: Some(encode_ms),
+        stdout_write_ms,
+        decode_ms: None,
+        draw_ms: None,
+        processed_rows: None,
+        source_rows: None,
+        chunks: None,
+        transferred_bytes: Some(encoded_window.len() as u64),
+        projection_passes: None,
+        invalid_x_count: None,
+        archive_bytes: 0,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        process_memory: None,
+        graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: None,
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
+    })
 }
 
 fn seed_graph_new_benchmark_dataset(
@@ -638,15 +984,25 @@ fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError>
         operation: Operation::Graph,
         setup_ms: 0,
         operation_ms: total_started.elapsed().as_millis(),
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows: rows.last().copied().unwrap_or_default(),
         selected_columns: 0,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
         draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
         processed_rows: Some(runs.last().map(|run| run.processed_rows).unwrap_or(0)),
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -660,6 +1016,17 @@ fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError>
             interaction_query_count_metric: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC,
             runs,
         }),
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: None,
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
     })
 }
 
@@ -683,6 +1050,58 @@ fn build_graph_request(dataset_id: &str, generation: u64) -> GraphDataRequest {
             kind: "points".to_string(),
             summary_stat: "none".to_string(),
             correlation_method: None,
+            time_series: None,
+        }],
+        sampling: GraphSampling::Full,
+        raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
+        viewport: GraphViewport {
+            width: 1200,
+            height: 700,
+        },
+    }
+}
+
+fn build_time_series_graph_request(
+    dataset_id: &str,
+    generation: u64,
+    series_count: usize,
+) -> GraphDataRequest {
+    let mut fields = vec![
+        GraphFieldBinding {
+            role: "x".to_string(),
+            column: "captured_at".to_string(),
+        },
+        GraphFieldBinding {
+            role: "y".to_string(),
+            column: "reading_1".to_string(),
+        },
+    ];
+    if series_count > 1 {
+        for index in 0..series_count {
+            fields.push(GraphFieldBinding {
+                role: format!("multiY{index}"),
+                column: format!("reading_{}", index + 1),
+            });
+        }
+    }
+
+    GraphDataRequest {
+        request_id: format!("request-{dataset_id}"),
+        dataset_id: dataset_id.to_string(),
+        generation,
+        fields,
+        filters: Vec::new(),
+        elements: vec![GraphElementRequest {
+            kind: "timeSeries".to_string(),
+            summary_stat: "none".to_string(),
+            correlation_method: None,
+            time_series: Some(crate::models::graph_data::GraphTimeSeriesRequest {
+                x_interpretation: TimeSeriesXInterpretation::NativeTemporal,
+                order: GraphTimeSeriesOrder::TimeAscending,
+                missing_values: GraphTimeSeriesMissingValues::Break,
+                marker_mode: GraphTimeSeriesMarkerMode::Auto,
+                connection: GraphTimeSeriesConnection::Line,
+            }),
         }],
         sampling: GraphSampling::Full,
         raw_point_budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
@@ -736,6 +1155,75 @@ fn seed_graph_benchmark_dataset(
     }
 
     Ok(())
+}
+
+fn seed_time_series_benchmark_dataset(
+    state: &AppState,
+    dataset_id: &str,
+    rows: usize,
+    series_count: usize,
+) -> Result<(), AppError> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let mut column_names = vec!["captured_at".to_string()];
+    let mut column_types = vec!["DATE".to_string()];
+    for index in 0..series_count {
+        column_names.push(format!("reading_{}", index + 1));
+        column_types.push("DOUBLE".to_string());
+    }
+    db.create_empty_table(
+        dataset_id,
+        "Performance Time Series Baseline",
+        &column_names,
+        &column_types,
+    )?;
+
+    if rows > 0 {
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let upper_bound = i64::try_from(rows)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| AppError::InvalidParam("benchmark row count is too large".into()))?;
+        let reading_columns = (0..series_count)
+            .map(|index| format!("reading_{}", index + 1))
+            .collect::<Vec<_>>();
+        let reading_exprs = (0..series_count)
+            .map(|index| {
+                format!(
+                    "CASE WHEN i % 100 = 0 THEN NULL ELSE CAST(i AS DOUBLE) * {}.0 END",
+                    index + 1
+                )
+            })
+            .collect::<Vec<_>>();
+        let insert_sql = format!(
+            "INSERT INTO \"{table_name}\" (_row_id, captured_at, {})
+             SELECT i,
+                DATE '2026-01-01' + CAST(((i - 1) / 2) AS INTEGER),
+                {}
+             FROM range(1, CAST(? AS BIGINT)) AS generated(i)",
+            reading_columns.join(", "),
+            reading_exprs.join(", ")
+        );
+        db.conn().execute(&insert_sql, params![upper_bound])?;
+        db.conn().execute(
+            "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
+            params![rows as i64, dataset_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn invalid_time_series_x_count(disposition: &Option<GraphTimeSeriesDisposition>) -> u64 {
+    match disposition {
+        Some(GraphTimeSeriesDisposition::Included { invalid_x_rows, .. })
+        | Some(GraphTimeSeriesDisposition::InvalidTimeSeriesX { invalid_x_rows, .. }) => {
+            *invalid_x_rows
+        }
+        None => 0,
+    }
 }
 
 #[cfg(test)]
@@ -872,6 +1360,11 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows: usize::try_from(completion.processed_rows).map_err(|_| {
             AppError::InvalidParam("graph processed row count does not fit usize".to_string())
@@ -879,10 +1372,17 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         selected_columns,
         query_ms: Some(query_ms),
         encode_ms: Some(encode_ms),
+        stdout_write_ms: None,
         decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
         draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
         processed_rows: Some(completion.processed_rows),
+        source_rows: Some(completion.source_rows),
+        chunks: Some(capture.chunks),
         transferred_bytes: Some(transferred_bytes),
+        projection_passes: Some(capture.projection_passes),
+        invalid_x_count: Some(invalid_time_series_x_count(
+            &completion.time_series_disposition,
+        )),
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -890,6 +1390,118 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         save_stage_ms: None,
         process_memory: None,
         graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: None,
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
+    })
+}
+
+fn execute_time_series_graph(
+    options: Options,
+    total_started: Instant,
+) -> Result<PerformanceReport, AppError> {
+    let series_count = options.columns.clamp(1, 4);
+    if options.rows % series_count != 0 {
+        return Err(AppError::InvalidParam(format!(
+            "time series benchmark rows must divide evenly across {series_count} series"
+        )));
+    }
+    let physical_rows = options.rows / series_count;
+    let setup_started = Instant::now();
+    let state = AppState::new()?;
+    let dataset_id = "performance-time-series-baseline";
+    seed_time_series_benchmark_dataset(&state, dataset_id, physical_rows, series_count)?;
+    let generation = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.get_dataset_generation(dataset_id)?
+    };
+    let request = build_time_series_graph_request(dataset_id, generation, series_count);
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let expected_rows = u64::try_from(options.rows)
+        .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?;
+    let service = GraphDataService::new(&state);
+    let capture = service.collect_benchmark_result(&request)?;
+    let completion = capture.completion;
+    let operation_ms = capture.operation_ms;
+
+    if completion.source_rows != expected_rows {
+        return Err(AppError::InvalidParam(format!(
+            "time series source_rows mismatch: expected {expected_rows}, got {}",
+            completion.source_rows
+        )));
+    }
+    if completion.processed_rows != expected_rows {
+        return Err(AppError::InvalidParam(format!(
+            "time series processed_rows mismatch: expected {expected_rows}, got {}",
+            completion.processed_rows
+        )));
+    }
+    if capture.projection_passes != 1 {
+        return Err(AppError::InvalidParam(format!(
+            "time series projection pass mismatch: expected 1, got {}",
+            capture.projection_passes
+        )));
+    }
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: series_count,
+        operation: options.operation,
+        setup_ms,
+        operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows: usize::try_from(completion.processed_rows).map_err(|_| {
+            AppError::InvalidParam("time series processed row count does not fit usize".to_string())
+        })?,
+        selected_columns: capture.selected_columns,
+        query_ms: Some(capture.query_ms),
+        encode_ms: Some(capture.encode_ms),
+        stdout_write_ms: None,
+        decode_ms: Some(DesktopOnlyMetric::DesktopOnly),
+        draw_ms: Some(DesktopOnlyMetric::DesktopOnly),
+        processed_rows: Some(completion.processed_rows),
+        source_rows: Some(completion.source_rows),
+        chunks: Some(capture.chunks),
+        transferred_bytes: Some(capture.transferred_bytes),
+        projection_passes: Some(capture.projection_passes),
+        invalid_x_count: Some(invalid_time_series_x_count(
+            &completion.time_series_disposition,
+        )),
+        archive_bytes: 0,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        process_memory: None,
+        graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: None,
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
     })
 }
 
@@ -903,10 +1515,19 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     if options.operation == Operation::Datalink {
         return execute_datalink(options);
     }
+    if options.operation == Operation::Calculated {
+        return execute_calculated(options);
+    }
 
     let total_started = Instant::now();
+    if options.operation == Operation::TableNavigation {
+        return execute_table_navigation(options, total_started);
+    }
     if options.operation == Operation::Graph {
         return execute_graph(options, total_started);
+    }
+    if options.operation == Operation::TimeSeriesGraph {
+        return execute_time_series_graph(options, total_started);
     }
 
     let setup_started = Instant::now();
@@ -957,8 +1578,15 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
             (snapshot.rows.len(), 0)
         }
         Operation::Graph => unreachable!("graph operation is handled by execute_graph"),
+        Operation::TimeSeriesGraph => {
+            unreachable!("time series graph operation is handled by execute_time_series_graph")
+        }
         Operation::Save => unreachable!("save is handled before this branch"),
         Operation::Datalink => unreachable!("datalink is handled before this branch"),
+        Operation::Calculated => unreachable!("calculated is handled before this branch"),
+        Operation::TableNavigation => {
+            unreachable!("table-navigation is handled before this branch")
+        }
     };
     let operation_ms = operation_started.elapsed().as_millis();
 
@@ -968,15 +1596,25 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows,
         selected_columns,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -984,7 +1622,397 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         save_stage_ms: None,
         process_memory: None,
         graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: None,
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
     })
+}
+
+fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
+    let total_started = Instant::now();
+    let setup_started = Instant::now();
+    let state = AppState::new()?;
+    let dataset_id = "performance-calculated-baseline";
+    {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.seed_benchmark_table(
+            dataset_id,
+            "Performance Calculated Baseline",
+            options.rows,
+            options.columns,
+        )?;
+    }
+    seed_calculated_chain(&state, dataset_id, options.chain_depth)?;
+    mutate_calculated_source_column(&state, dataset_id, 0)?;
+    validate_calculated_chain_outputs(&state, dataset_id, options.chain_depth)?;
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let mut runs_ms = Vec::with_capacity(options.runs);
+    let mut process_memory = None;
+    for run_index in 0..options.runs {
+        let run_started = Instant::now();
+        let (run_result, run_memory) = measure_peak_working_set_during(|| {
+            mutate_calculated_source_column(&state, dataset_id, run_index + 1)?;
+            validate_calculated_chain_outputs(&state, dataset_id, options.chain_depth)?;
+            Ok::<_, AppError>(())
+        });
+        run_result?;
+        runs_ms.push(run_started.elapsed().as_millis());
+        process_memory = merge_peak_memory_reports(process_memory, run_memory);
+    }
+    let median_ms = median(&runs_ms).ok_or_else(|| {
+        AppError::InvalidParam("calculated benchmark requires at least one run".into())
+    })?;
+    let physical_input_bytes = estimate_physical_input_bytes(options.rows, options.columns)?;
+    let calculated_result_bytes =
+        estimate_calculated_result_bytes(options.rows, options.chain_depth)?;
+    let memory_budget_bytes = physical_input_bytes
+        .checked_add(calculated_result_bytes)
+        .and_then(|bytes| bytes.checked_mul(CALCULATED_MEMORY_GROWTH_BUDGET_MULTIPLIER))
+        .ok_or_else(|| AppError::InvalidParam("calculated memory budget overflow".into()))?;
+    let qualification_failure =
+        calculated_qualification_failure(median_ms, process_memory.as_ref(), memory_budget_bytes);
+    let duckdb_version = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        duckdb_version(&db)
+    };
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: options.columns,
+        operation: options.operation,
+        setup_ms,
+        operation_ms: median_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows: options.rows,
+        selected_columns: options.chain_depth,
+        query_ms: None,
+        encode_ms: None,
+        stdout_write_ms: None,
+        decode_ms: None,
+        draw_ms: None,
+        processed_rows: Some(
+            u64::try_from(options.rows)
+                .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?,
+        ),
+        source_rows: None,
+        chunks: None,
+        transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
+        archive_bytes: 0,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        process_memory,
+        graph_new: None,
+        chain_depth: Some(options.chain_depth),
+        runs_ms: Some(runs_ms),
+        median_ms: Some(median_ms),
+        process_memory_method: process_memory_method(),
+        physical_input_bytes: Some(physical_input_bytes),
+        calculated_result_bytes: Some(calculated_result_bytes),
+        memory_budget_bytes: Some(memory_budget_bytes),
+        memory_growth_budget_multiplier: Some(CALCULATED_MEMORY_GROWTH_BUDGET_MULTIPLIER),
+        qualification_passed: Some(qualification_failure.is_none()),
+        qualification_failure,
+        machine: Some(machine_report(duckdb_version)),
+    })
+}
+
+fn seed_calculated_chain(
+    state: &AppState,
+    dataset_id: &str,
+    chain_depth: usize,
+) -> Result<(), AppError> {
+    let calculated = CalculatedColumnService::new(state);
+    let mut dependency = "value_1".to_string();
+    for level in 1..=chain_depth {
+        let output_name = format!("calc_{level}");
+        calculated.upsert(&UpsertCalculatedColumnInput {
+            dataset_id: dataset_id.to_string(),
+            output_name: output_name.clone(),
+            formula_text: format!("{dependency} + {level}"),
+            at_index: None,
+            output_column_id: None,
+            formula_id: None,
+            expected_generation: None,
+        })?;
+        dependency = output_name;
+    }
+    Ok(())
+}
+
+fn mutate_calculated_source_column(
+    state: &AppState,
+    dataset_id: &str,
+    offset: usize,
+) -> Result<(), AppError> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let source_column_id = db
+        .get_user_column_descriptors(dataset_id)?
+        .into_iter()
+        .find(|column| column.name == "value_1")
+        .map(|column| column.column_id)
+        .ok_or_else(|| AppError::Database("benchmark source column value_1 is missing".into()))?;
+    let offset = i64::try_from(offset)
+        .map_err(|_| AppError::InvalidParam("calculated mutation offset is too large".into()))?;
+    execute_table_mutation(&db, dataset_id, None, |engine| {
+        let table_name =
+            DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+        engine.conn().execute(
+            &format!("UPDATE {table_name} SET \"value_1\" = CAST(\"_row_id\" AS BIGINT) + $1"),
+            params![offset],
+        )?;
+        Ok(TableMutationEffects {
+            value: (),
+            changed_column_ids: BTreeSet::from([source_column_id.clone()]),
+            change_set_id: None,
+            recompute_column_ids: None,
+        })
+    })
+}
+
+fn validate_calculated_chain_outputs(
+    state: &AppState,
+    dataset_id: &str,
+    chain_depth: usize,
+) -> Result<(), AppError> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    let mut cumulative = 0i64;
+    for level in 1..=chain_depth {
+        cumulative = cumulative
+            .checked_add(i64::try_from(level).map_err(|_| {
+                AppError::InvalidParam("calculated chain depth is too large".into())
+            })?)
+            .ok_or_else(|| AppError::InvalidParam("calculated chain sum overflow".into()))?;
+        let column_name = DuckDbEngine::quote_identifier(&format!("calc_{level}"));
+        let mismatches: i64 = db.conn().query_row(
+            &format!(
+                "SELECT COUNT(*) FROM {table_name} WHERE {column_name} IS DISTINCT FROM \"value_1\" + $1"
+            ),
+            params![cumulative],
+            |row| row.get(0),
+        )?;
+        if mismatches != 0 {
+            return Err(AppError::InvalidParam(format!(
+                "calculated output calc_{level} mismatch count: {mismatches}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn median(values: &[u128]) -> Option<u128> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    Some(sorted[sorted.len() / 2])
+}
+
+fn estimate_physical_input_bytes(rows: usize, columns: usize) -> Result<u64, AppError> {
+    estimate_bytes(rows, columns)
+}
+
+fn merge_peak_memory_reports(
+    existing: Option<ProcessMemoryReport>,
+    next: Option<ProcessMemoryReport>,
+) -> Option<ProcessMemoryReport> {
+    match (existing, next) {
+        (None, None) => None,
+        (Some(report), None) | (None, Some(report)) => Some(report),
+        (Some(existing), Some(next)) => {
+            if next.delta_working_set_bytes > existing.delta_working_set_bytes {
+                Some(next)
+            } else {
+                Some(existing)
+            }
+        }
+    }
+}
+
+fn estimate_calculated_result_bytes(rows: usize, chain_depth: usize) -> Result<u64, AppError> {
+    estimate_bytes(rows, chain_depth)
+}
+
+fn estimate_bytes(rows: usize, columns: usize) -> Result<u64, AppError> {
+    let cells = rows
+        .checked_mul(columns)
+        .ok_or_else(|| AppError::InvalidParam("benchmark byte estimate overflow".into()))?;
+    u64::try_from(cells)
+        .ok()
+        .and_then(|value| value.checked_mul(8))
+        .ok_or_else(|| AppError::InvalidParam("benchmark byte estimate overflow".into()))
+}
+
+fn calculated_qualification_failure(
+    median_ms: u128,
+    process_memory: Option<&ProcessMemoryReport>,
+    memory_budget_bytes: u64,
+) -> Option<String> {
+    if median_ms > CALCULATED_MEDIAN_THRESHOLD_MS {
+        return Some(format!(
+            "median {median_ms} ms exceeds {CALCULATED_MEDIAN_THRESHOLD_MS} ms threshold"
+        ));
+    }
+    let Some(process_memory) = process_memory else {
+        return Some("process memory measurement unavailable".to_string());
+    };
+    if process_memory.delta_working_set_bytes > memory_budget_bytes {
+        return Some(format!(
+            "working-set delta {} bytes exceeds {} byte budget",
+            process_memory.delta_working_set_bytes, memory_budget_bytes
+        ));
+    }
+    None
+}
+
+fn duckdb_version(db: &DuckDbEngine) -> String {
+    db.conn()
+        .query_row("SELECT version()", [], |row| row.get::<_, String>(0))
+        .unwrap_or_else(|error| format!("unknown ({error})"))
+}
+
+fn machine_report(duckdb_version: String) -> MachineReport {
+    MachineReport {
+        os: format!("{} {}", std::env::consts::OS, os_version()),
+        arch: std::env::consts::ARCH.to_string(),
+        cpu: cpu_brand(),
+        physical_memory_bytes: physical_memory_bytes(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        duckdb_version,
+    }
+}
+
+fn os_version() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl_string("kern.osproductversion").unwrap_or_else(|| "unknown".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unknown".to_string()
+    }
+}
+
+fn cpu_brand() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl_string("machdep.cpu.brand_string").unwrap_or_else(|| "unknown".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unknown".to_string()
+    }
+}
+
+fn physical_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl_u64("hw.memsize")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sysctl_string(name: &str) -> Option<String> {
+    let mut size = 0usize;
+    let name = std::ffi::CString::new(name).ok()?;
+    let first = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if first != 0 || size == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; size];
+    let second = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if second != 0 {
+        return None;
+    }
+    buffer.truncate(size);
+    while buffer.last() == Some(&0) {
+        buffer.pop();
+    }
+    String::from_utf8(buffer).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn sysctl_u64(name: &str) -> Option<u64> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut value = 0u64;
+    let mut size = std::mem::size_of::<u64>();
+    let result = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut u64).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result == 0 && size == std::mem::size_of::<u64>() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "System")]
+extern "C" {
+    fn sysctlbyname(
+        name: *const std::ffi::c_char,
+        oldp: *mut core::ffi::c_void,
+        oldlenp: *mut usize,
+        newp: *mut core::ffi::c_void,
+        newlen: usize,
+    ) -> i32;
 }
 
 fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
@@ -1058,15 +2086,25 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows,
         selected_columns: 0,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes: 0,
         max_retained_batch_bytes: None,
         max_encoded_batch_bytes: None,
@@ -1074,6 +2112,17 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         save_stage_ms: None,
         process_memory,
         graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: process_memory_method(),
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
     })
 }
 
@@ -1189,15 +2238,25 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         operation: options.operation,
         setup_ms,
         operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
         total_ms: total_started.elapsed().as_millis(),
         result_rows,
         selected_columns: 0,
         query_ms: None,
         encode_ms: None,
+        stdout_write_ms: None,
         decode_ms: None,
         draw_ms: None,
         processed_rows: None,
+        source_rows: None,
+        chunks: None,
         transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
         archive_bytes,
         max_retained_batch_bytes: Some(save_perf_metrics.max_retained_batch_bytes as u64),
         max_encoded_batch_bytes: Some(save_perf_metrics.max_encoded_batch_bytes as u64),
@@ -1214,6 +2273,17 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
         }),
         process_memory,
         graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: process_memory_method(),
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
     })
 }
 
@@ -1246,6 +2316,7 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 
 pub fn run_cli() -> Result<(), String> {
     let options = parse_args(std::env::args().skip(1)).map_err(|error| error.to_string())?;
+    let payload_stdout = options.payload_stdout;
     if let Some((source, artifacts)) = &options.graph_new_csv {
         let report = execute_graph_new_csv(source, artifacts, options.graph_new_axis.as_ref()).map_err(|error| error.to_string())?;
         println!("{report}");
@@ -1253,7 +2324,14 @@ pub fn run_cli() -> Result<(), String> {
     }
     let report = execute(options).map_err(|error| error.to_string())?;
     let json = serde_json::to_string(&report).map_err(|error| error.to_string())?;
-    println!("{json}");
+    if payload_stdout {
+        eprintln!("{json}");
+    } else {
+        println!("{json}");
+    }
+    if let Some(failure) = report.qualification_failure() {
+        return Err(failure.to_string());
+    }
     Ok(())
 }
 
@@ -1427,6 +2505,11 @@ mod tests {
     use crate::models::graph_data::{
         GraphAggregatePacket, GraphAxisEncoding, HistogramBin, HistogramPacket,
     };
+    use crate::models::table::{CellUpdate, CreateTableFromRowsRequest};
+    use crate::services::calculated_column_service::{
+        CalculatedColumnService, UpsertCalculatedColumnInput,
+    };
+    use crate::services::data_service::DataService;
 
     fn owned_archive_path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -1547,6 +2630,313 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_parses_calculated_operation_and_chain_depth() {
+        let options =
+            parse_args(["--operation", "calculated", "--chain-depth", "5"].map(String::from))
+                .unwrap();
+
+        assert_eq!(options.operation, Operation::Calculated);
+        assert_eq!(options.chain_depth, 5);
+    }
+
+    #[test]
+    fn performance_cli_rejects_zero_calculated_chain_depth() {
+        let error =
+            parse_args(["--operation", "calculated", "--chain-depth", "0"].map(String::from))
+                .unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::InvalidParam(_)));
+        assert!(error
+            .to_string()
+            .contains("--chain-depth must be at least 1"));
+    }
+
+    #[test]
+    fn performance_calculated_harness_recomputes_five_level_chain_before_timing() {
+        let state = AppState::new().expect("state");
+        let data = DataService::new(&state);
+        let dataset_id = data
+            .create_table_from_rows(&CreateTableFromRowsRequest {
+                name: "Calculated Perf Harness".to_string(),
+                column_names: vec!["Source".to_string()],
+                column_types: vec!["DOUBLE".to_string()],
+                rows: vec![vec![serde_json::json!(1.0)], vec![serde_json::json!(2.0)]],
+            })
+            .expect("seed source rows")
+            .id;
+
+        seed_calculated_chain(&state, &dataset_id, 5).expect("seed formula chain");
+        data.update_cells(
+            &dataset_id,
+            &[
+                CellUpdate {
+                    row_id: 1,
+                    column_name: "Source".to_string(),
+                    value: Some("10".to_string()),
+                },
+                CellUpdate {
+                    row_id: 2,
+                    column_name: "Source".to_string(),
+                    value: Some("20".to_string()),
+                },
+            ],
+            None,
+        )
+        .expect("mutate source through production coordinator");
+
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Calc1"),
+            vec![11.0, 21.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Calc2"),
+            vec![13.0, 23.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Calc3"),
+            vec![16.0, 26.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Calc4"),
+            vec![20.0, 30.0]
+        );
+        assert_eq!(
+            numeric_column_values(&state, &dataset_id, "Calc5"),
+            vec![25.0, 35.0]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn current_working_set_bytes_returns_some_for_current_process_on_macos() {
+        assert!(current_working_set_bytes().is_some());
+    }
+
+    #[test]
+    fn performance_cli_executes_calculated_operation_on_mixed_seed_table() {
+        let report = execute(Options {
+            rows: 10,
+            columns: 4,
+            operation: Operation::Calculated,
+            graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: 2,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.result_rows, 10);
+        assert_eq!(report.selected_columns, 2);
+        assert_eq!(report.runs_ms.as_ref().map(Vec::len), Some(1));
+        assert!(report.qualification_passed.is_some());
+    }
+
+    #[test]
+    fn performance_cli_parses_time_series_graph_operation() {
+        let options = parse_args(["--operation", "time-series-graph"].map(String::from)).unwrap();
+
+        assert_eq!(options.operation, Operation::TimeSeriesGraph);
+    }
+
+    #[test]
+    fn parses_table_navigation_operation() {
+        let options = parse_args(
+            [
+                "--rows",
+                "10000000",
+                "--columns",
+                "20",
+                "--operation",
+                "table-navigation",
+                "--position-percent",
+                "99",
+            ]
+            .map(String::from),
+        )
+        .unwrap();
+
+        assert_eq!(options.operation, Operation::TableNavigation);
+        assert_eq!(options.position_percent, Some(99));
+    }
+
+    #[test]
+    fn performance_cli_rejects_table_navigation_percent_above_100() {
+        let error = parse_args(
+            [
+                "--operation",
+                "table-navigation",
+                "--position-percent",
+                "101",
+            ]
+            .map(String::from),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn performance_cli_rejects_position_percent_for_other_operations() {
+        let error =
+            parse_args(["--operation", "query", "--position-percent", "50"].map(String::from))
+                .unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn performance_cli_reports_table_navigation_metrics_shape() {
+        let report = execute(Options {
+            rows: 1_000,
+            columns: 20,
+            operation: Operation::TableNavigation,
+            graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: Some(99),
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(
+            json.get("operation").and_then(|value| value.as_str()),
+            Some("table_navigation")
+        );
+        assert_eq!(
+            json.get("positionPercent").and_then(|value| value.as_u64()),
+            Some(99)
+        );
+        assert!(json
+            .get("targetStart")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("lockWaitMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("countMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("anchorMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("queryMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("encodeMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert!(json
+            .get("totalMs")
+            .and_then(|value| value.as_u64())
+            .is_some());
+        assert_eq!(
+            json.get("resultRows").and_then(|value| value.as_u64()),
+            Some(500)
+        );
+        assert!(json
+            .get("transferredBytes")
+            .and_then(|value| value.as_u64())
+            .is_some());
+    }
+
+    #[test]
+    fn performance_cli_table_navigation_uses_natural_service_payload_shape() {
+        let rows = 1_000;
+        let columns = 4;
+        let position_percent = 50;
+        let state = AppState::new().expect("state");
+        {
+            let db = state.db.lock().expect("db lock");
+            db.seed_benchmark_table(
+                "performance-table-navigation-baseline",
+                "Performance Table Navigation Baseline",
+                rows,
+                columns,
+            )
+            .expect("seed table");
+        }
+
+        let service = DataService::new(&state);
+        let meta = {
+            let db = state.db.lock().expect("db lock");
+            db.get_dataset_meta("performance-table-navigation-baseline")
+                .expect("meta")
+        };
+        let total_rows = usize::try_from(meta.row_count).expect("row count fits usize");
+        let visible_rows = 500usize;
+        let max_start = total_rows.saturating_sub(visible_rows);
+        let target_start = if max_start == 0 {
+            0
+        } else {
+            let ratio = position_percent as f64 / 100.0;
+            ((max_start as f64) * ratio)
+                .round()
+                .clamp(0.0, max_start as f64) as usize
+        };
+        let column_ids = service
+            .get_column_descriptors("performance-table-navigation-baseline")
+            .expect("columns")
+            .into_iter()
+            .map(|column| column.column_id)
+            .collect::<Vec<_>>();
+        let request = TableNavigationRequest {
+            version: 1,
+            request_id: "performance-table-navigation".to_string(),
+            dataset_id: "performance-table-navigation-baseline".to_string(),
+            generation: meta.generation,
+            start: target_start,
+            count: visible_rows,
+            column_ids,
+            sort: None,
+            filters: vec![],
+            session_id: None,
+            include_transport_diagnostics: false,
+        };
+        let mut natural_result = service
+            .query_table_navigation_window(&request)
+            .expect("natural navigation result");
+        natural_result.timings.total_ms = 0;
+        let minimum_transferred_bytes = serde_json::to_vec(&natural_result)
+            .expect("natural navigation json")
+            .len() as u64;
+
+        let report = execute(Options {
+            rows,
+            columns,
+            operation: Operation::TableNavigation,
+            graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: Some(position_percent),
+            payload_stdout: false,
+        })
+        .expect("table navigation benchmark");
+
+        natural_result.timings.total_ms = u64::try_from(report.total_ms).unwrap_or(u64::MAX);
+        let maximum_transferred_bytes = serde_json::to_vec(&natural_result)
+            .expect("natural navigation json")
+            .len() as u64;
+        assert!(matches!(
+            report.transferred_bytes,
+            Some(bytes) if bytes >= minimum_transferred_bytes && bytes <= maximum_transferred_bytes
+        ));
+        assert_eq!(report.selected_columns, natural_result.columns.len());
+    }
+
+    #[test]
     fn performance_cli_executes_each_operation() {
         for operation in [
             Operation::Query,
@@ -1563,6 +2953,10 @@ mod tests {
                 graph_new_rows: None,
                 graph_new_csv: None,
                 graph_new_axis: None,
+                chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+                runs: 1,
+                position_percent: None,
+                payload_stdout: false,
             })
             .unwrap();
 
@@ -1604,6 +2998,49 @@ mod tests {
         }
     }
 
+    fn seed_calculated_chain(
+        state: &AppState,
+        dataset_id: &str,
+        chain_depth: usize,
+    ) -> Result<(), AppError> {
+        let calculated = CalculatedColumnService::new(state);
+        let mut dependency = "Source".to_string();
+        for level in 1..=chain_depth {
+            let output_name = format!("Calc{level}");
+            calculated.upsert(&UpsertCalculatedColumnInput {
+                dataset_id: dataset_id.to_string(),
+                output_name: output_name.clone(),
+                formula_text: format!("{dependency} + {level}"),
+                at_index: None,
+                output_column_id: None,
+                formula_id: None,
+                expected_generation: None,
+            })?;
+            dependency = output_name;
+        }
+        Ok(())
+    }
+
+    fn numeric_column_values(state: &AppState, dataset_id: &str, column_name: &str) -> Vec<f64> {
+        let table = DataService::new(state)
+            .query_table(dataset_id, 0, 100, None, None)
+            .expect("query dataset");
+        let column_index = table
+            .columns
+            .iter()
+            .position(|candidate| candidate == column_name)
+            .unwrap_or_else(|| panic!("missing column {column_name}"));
+        table
+            .rows
+            .into_iter()
+            .map(|row| {
+                row[column_index]
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("expected numeric {column_name}"))
+            })
+            .collect()
+    }
+
     #[test]
     fn performance_cli_streams_graph_via_production_service() {
         let report = execute(Options {
@@ -1613,6 +3050,10 @@ mod tests {
             graph_new_rows: None,
             graph_new_csv: None,
             graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 
@@ -1630,6 +3071,10 @@ mod tests {
             graph_new_rows: None,
             graph_new_csv: None,
             graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 
@@ -1662,6 +3107,33 @@ mod tests {
             .get("transferredBytes")
             .and_then(|value| value.as_u64())
             .is_some_and(|value| value > 0));
+    }
+
+    #[test]
+    fn performance_cli_reports_time_series_temporal_transfer_metrics() {
+        let report = execute(Options {
+            rows: 300_000,
+            columns: 4,
+            operation: Operation::TimeSeriesGraph,
+            graph_new_rows: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.result_rows, 300_000);
+        assert_eq!(report.processed_rows, Some(300_000));
+        assert_eq!(report.source_rows, Some(300_000));
+        assert_eq!(report.invalid_x_count, Some(0));
+        assert_eq!(report.projection_passes, Some(1));
+        assert!(report.chunks.is_some_and(|chunks| chunks > 0));
+        assert!(report.transferred_bytes.is_some_and(|bytes| bytes > 0));
+        assert!(report.query_ms.is_some());
+        assert!(report.encode_ms.is_some());
     }
 
     #[test]
@@ -1736,6 +3208,7 @@ mod tests {
                 wrap_codes: None,
                 role_vectors: Default::default(),
                 x_encoding: GraphAxisEncoding::Categorical,
+                temporal_metadata: None,
                 final_chunk: true,
             },
             payload: vec![1, 2, 3, 4, 5],
@@ -1776,10 +3249,15 @@ mod tests {
                 valid_rows: 1,
                 budget: crate::models::graph_data::GRAPH_SCATTER_RENDER_BUDGET,
             },
+            time_series_disposition: None,
         };
 
-        let actual = measure_transferred_bytes(&[chunk.clone()], &[aggregate.clone()], &completion)
-            .expect("transferred bytes");
+        let actual = measure_transferred_bytes(
+            std::slice::from_ref(&chunk),
+            std::slice::from_ref(&aggregate),
+            &completion,
+        )
+        .expect("transferred bytes");
 
         let header_bytes = serde_json::to_vec(&GraphStreamHeaderMessage {
             message_type: "header",
@@ -1814,6 +3292,10 @@ mod tests {
             graph_new_rows: None,
             graph_new_csv: None,
             graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         });
 
         match result {
@@ -1860,6 +3342,10 @@ mod tests {
             graph_new_rows: Some(vec![100, 1_000]),
             graph_new_csv: None,
             graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 
@@ -1921,6 +3407,10 @@ mod tests {
             graph_new_rows: None,
             graph_new_csv: None,
             graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
         })
         .unwrap();
 

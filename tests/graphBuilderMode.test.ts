@@ -7,6 +7,7 @@ import {
   normalizeGraphBuilderItem,
 } from "../src/components/graphBuilder/graphBuilderMode.ts";
 import { getLayerMode } from "../src/components/graphBuilder/graphLayerConfig.ts";
+import { DEFAULT_TIME_SERIES_OPTIONS } from "../src/components/graphBuilder/timeSeriesContract.ts";
 
 import type { GraphBuilderItem } from "../src/types/graphBuilder.ts";
 
@@ -305,6 +306,45 @@ assert.deepEqual(categoricalXWithVariableY.modeStates.twoD.encoding, {
   y: continuous("measurement"),
 });
 assert.deepEqual(categoricalXWithVariableY.modeStates.twoD.multiX, []);
+
+const timeSeriesGraph = normalizeGraphBuilderItem({
+  ...legacy2d,
+  id: "graph-builder-time-series",
+  modeStates: {
+    ...legacy2d.modeStates,
+    twoD: {
+      ...legacy2d.modeStates.twoD,
+      elements: [
+        { kind: "timeSeries", enabled: true } as GraphBuilderItem["modeStates"]["twoD"]["elements"][number],
+        { kind: "line", enabled: true },
+      ],
+    },
+  },
+});
+assert.deepEqual(timeSeriesGraph.modeStates.twoD.elements.map((element) => element.kind), ["timeSeries"]);
+assert.deepEqual(timeSeriesGraph.modeStates.twoD.elements[0]?.options, DEFAULT_TIME_SERIES_OPTIONS);
+assert.deepEqual(timeSeriesGraph.modeStates.twoD.refLinesY, legacyBase.refLinesY);
+assert.deepEqual(timeSeriesGraph.modeStates.twoD.refLinesX, legacyBase.refLinesX);
+
+const disabledTimeSeriesGraph = normalizeGraphBuilderItem({
+  ...legacy2d,
+  id: "graph-builder-disabled-time-series",
+  modeStates: {
+    ...legacy2d.modeStates,
+    twoD: {
+      ...legacy2d.modeStates.twoD,
+      elements: [
+        { kind: "timeSeries", enabled: false } as GraphBuilderItem["modeStates"]["twoD"]["elements"][number],
+        { kind: "line", enabled: true },
+      ],
+    },
+  },
+});
+assert.deepEqual(disabledTimeSeriesGraph.modeStates.twoD.elements.map((element) => [element.kind, element.enabled]), [
+  ["timeSeries", false],
+  ["line", true],
+]);
+assert.deepEqual(disabledTimeSeriesGraph.modeStates.twoD.elements[0]?.options, DEFAULT_TIME_SERIES_OPTIONS);
 
 const analysisDistributionComposite = normalizeGraphBuilderItem({
   ...legacy2d,

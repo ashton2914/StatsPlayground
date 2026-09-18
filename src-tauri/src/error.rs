@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::models::mcp::McpCommandError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("Database error: {0}")]
@@ -22,6 +24,9 @@ pub enum AppError {
 
     #[error("Cancelled: {0}")]
     Cancelled(String),
+
+    #[error("Application command error [{code}]: {message}", code = .0.code, message = .0.message)]
+    ApplicationCommand(McpCommandError),
 }
 
 // Tauri commands require errors to be serializable

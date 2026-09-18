@@ -1,6 +1,7 @@
 import { SCATTER_RENDER_BUDGET } from "../../graphCore/scatterBudget.ts";
 import type { GraphRawPointDisposition } from "../../types/graphData.ts";
 import type { GraphElementRequest, GraphSampling } from "../../types/graphData.ts";
+import { isGraphTimeSeriesRequest } from "../../types/graphData.ts";
 
 export const DEFAULT_GRAPH_SAMPLE_SIZE = Math.min(20_000, SCATTER_RENDER_BUDGET);
 
@@ -32,6 +33,9 @@ export function requiresRawGraphFrame(
   return elements.some((element) => {
     const kind = String(element.kind || "").toLowerCase();
     const summary = String(element.summaryStat || "").toLowerCase();
+    if (kind === "timeseries") {
+      return true;
+    }
     if (kind === "points" || kind === "line") {
       return summary === "none";
     }
@@ -43,6 +47,13 @@ export function resolveEffectiveGraphSampling(
   configured: GraphSampling | undefined,
   elements: readonly GraphElementRequest[],
 ): GraphSampling {
+  const hasTimeSeries = elements.some(
+    (element) => String(element.kind || "").toLowerCase() === "timeseries"
+      && isGraphTimeSeriesRequest(element.timeSeries),
+  );
+  if (hasTimeSeries) {
+    return { mode: "full" };
+  }
   if (configured?.mode === "sample") {
     return {
       mode: "sample",

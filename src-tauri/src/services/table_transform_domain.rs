@@ -659,6 +659,7 @@ mod tests {
             width: None,
             format: None,
             extras: None,
+            ..Default::default()
         }
     }
 

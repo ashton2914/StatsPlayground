@@ -389,7 +389,10 @@ impl PostgresConnector {
     fn tls_connector(&self) -> Result<native_tls::TlsConnector, DataLinkError> {
         let mut builder = native_tls::TlsConnector::builder();
         builder.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
-        if matches!(self.definition.tls_mode, TlsMode::VerifyCa | TlsMode::VerifyFull) {
+        if matches!(
+            self.definition.tls_mode,
+            TlsMode::VerifyCa | TlsMode::VerifyFull
+        ) {
             if let Some(pem) = self.definition.tls_root_certificate_pem.as_deref() {
                 for certificate in Self::root_certificates(pem)? {
                     builder.add_root_certificate(certificate);
@@ -421,10 +424,12 @@ impl PostgresConnector {
     }
 
     fn root_certificates(pem: &str) -> Result<Vec<native_tls::Certificate>, DataLinkError> {
-        let invalid_certificate = || DataLinkError::new(
+        let invalid_certificate = || {
+            DataLinkError::new(
             DataLinkErrorCategory::Tls,
             "Invalid PostgreSQL CA certificate; provide PEM certificates only (maximum 256 KiB)",
-        );
+        )
+        };
         if pem.len() > 256 * 1024 {
             return Err(invalid_certificate());
         }
@@ -433,8 +438,10 @@ impl PostgresConnector {
         for item in rustls_pemfile::read_all(&mut reader) {
             match item.map_err(|_| invalid_certificate())? {
                 rustls_pemfile::Item::X509Certificate(der) => {
-                    certificates.push(native_tls::Certificate::from_der(der.as_ref())
-                        .map_err(|_| invalid_certificate())?);
+                    certificates.push(
+                        native_tls::Certificate::from_der(der.as_ref())
+                            .map_err(|_| invalid_certificate())?,
+                    );
                 }
                 _ => return Err(invalid_certificate()),
             }
@@ -588,7 +595,8 @@ mod tests {
         for pem in [
             String::new(),
             "not-a-certificate-secret".to_string(),
-            "-----BEGIN CERTIFICATE-----\nbm90LWEtdmFsaWQtY2VydA==\n-----END CERTIFICATE-----".to_string(),
+            "-----BEGIN CERTIFICATE-----\nbm90LWEtdmFsaWQtY2VydA==\n-----END CERTIFICATE-----"
+                .to_string(),
             "x".repeat(256 * 1024 + 1),
         ] {
             let mut definition = fixture_definition();
@@ -643,13 +651,20 @@ mod tests {
             let connector = PostgresConnector::new(
                 tls_fixture_definition(mode, host),
                 fixture_credentials("stats_reader_local_only"),
-            ).expect("create TLS connector");
+            )
+            .expect("create TLS connector");
             let mut client = connector.connect().expect("connect with TLS");
-            let row = client.query_one(
-                "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()", &[],
-            ).expect("inspect transport encryption");
+            let row = client
+                .query_one(
+                    "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+                    &[],
+                )
+                .expect("inspect transport encryption");
             assert!(row.get::<_, bool>("ssl"));
-            assert!(matches!(row.get::<_, String>("version").as_str(), "TLSv1.2" | "TLSv1.3"));
+            assert!(matches!(
+                row.get::<_, String>("version").as_str(),
+                "TLSv1.2" | "TLSv1.3"
+            ));
         }
     }
 
@@ -660,9 +675,14 @@ mod tests {
             for certificate in [None, Some(tls_fixture_certificate("other-ca.pem"))] {
                 let mut definition = tls_fixture_definition(mode.clone(), "localhost");
                 definition.tls_root_certificate_pem = certificate;
-                let connector = PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
-                    .expect("create untrusted connector");
-                let error = connector.test_connection().expect_err("reject untrusted CA");
+                let connector = PostgresConnector::new(
+                    definition,
+                    fixture_credentials("stats_reader_local_only"),
+                )
+                .expect("create untrusted connector");
+                let error = connector
+                    .test_connection()
+                    .expect_err("reject untrusted CA");
                 assert_eq!(error.category, DataLinkErrorCategory::Tls);
                 assert!(!error.message.contains("stats_reader_local_only"));
             }
@@ -670,8 +690,11 @@ mod tests {
         let connector = PostgresConnector::new(
             tls_fixture_definition(TlsMode::VerifyFull, "127.0.0.1"),
             fixture_credentials("stats_reader_local_only"),
-        ).expect("create hostname mismatch connector");
-        let error = connector.test_connection().expect_err("reject hostname mismatch");
+        )
+        .expect("create hostname mismatch connector");
+        let error = connector
+            .test_connection()
+            .expect_err("reject hostname mismatch");
         assert_eq!(error.category, DataLinkErrorCategory::Tls);
     }
 
@@ -681,17 +704,27 @@ mod tests {
         for mode in [TlsMode::Required, TlsMode::VerifyCa, TlsMode::VerifyFull] {
             let mut definition = tls_fixture_definition(mode, "localhost");
             definition.port = 16435;
-            let connector = PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
-                .expect("create connector requiring TLS");
-            let error = connector.test_connection().expect_err("reject plaintext server");
+            let connector =
+                PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
+                    .expect("create connector requiring TLS");
+            let error = connector
+                .test_connection()
+                .expect_err("reject plaintext server");
             assert_eq!(error.category, DataLinkErrorCategory::Tls);
         }
         let mut definition = tls_fixture_definition(TlsMode::Disabled, "127.0.0.1");
         definition.port = 16435;
-        let connector = PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
-            .expect("create explicitly plaintext connector");
-        let mut client = connector.connect().expect("connect without TLS only when requested");
-        let row = client.query_one("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()", &[])
+        let connector =
+            PostgresConnector::new(definition, fixture_credentials("stats_reader_local_only"))
+                .expect("create explicitly plaintext connector");
+        let mut client = connector
+            .connect()
+            .expect("connect without TLS only when requested");
+        let row = client
+            .query_one(
+                "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+                &[],
+            )
             .expect("inspect plaintext transport");
         assert!(!row.get::<_, bool>("ssl"));
     }
@@ -702,8 +735,11 @@ mod tests {
         let connector = PostgresConnector::new(
             tls_fixture_definition(TlsMode::VerifyFull, "localhost"),
             fixture_credentials("must-not-appear-in-errors"),
-        ).expect("create connector with incorrect password");
-        let error = connector.test_connection().expect_err("reject incorrect password");
+        )
+        .expect("create connector with incorrect password");
+        let error = connector
+            .test_connection()
+            .expect_err("reject incorrect password");
         assert_eq!(error.category, DataLinkErrorCategory::Authentication);
         assert!(!error.message.contains("must-not-appear-in-errors"));
         let mut definition = tls_fixture_definition(TlsMode::VerifyFull, "127.0.0.1");
@@ -712,7 +748,9 @@ mod tests {
         drop(unused_port);
         let connector = PostgresConnector::new(definition, fixture_credentials("unused"))
             .expect("create unreachable connector");
-        let error = connector.test_connection().expect_err("reject unreachable server");
+        let error = connector
+            .test_connection()
+            .expect_err("reject unreachable server");
         assert_eq!(error.category, DataLinkErrorCategory::Network);
     }
 
@@ -728,12 +766,22 @@ mod tests {
         let state = crate::state::AppState::new().expect("create app state");
         let service = crate::services::io_service::IoService::new(&state);
         for (name, row_count) in [("customers", 3), ("measurements", 100_000)] {
-            let object = objects.iter().find(|object| object.name == name).expect("find fixture object");
+            let object = objects
+                .iter()
+                .find(|object| object.name == name)
+                .expect("find fixture object");
             let preview = connector.preview(object, 100).expect("preview over TLS");
             assert_eq!(preview.rows.len(), row_count.min(100));
-            let summary = service.import_postgres_snapshot(
-                definition.clone(), credentials.clone(), object.clone(), name, |_, _| {}, || false,
-            ).expect("import verified TLS snapshot");
+            let summary = service
+                .import_postgres_snapshot(
+                    definition.clone(),
+                    credentials.clone(),
+                    object.clone(),
+                    name,
+                    |_, _| {},
+                    || false,
+                )
+                .expect("import verified TLS snapshot");
             assert_eq!(summary.status, "completed");
             assert_eq!(summary.total_rows_written, row_count);
         }

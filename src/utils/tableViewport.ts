@@ -1,4 +1,10 @@
-import type { TableWindowFilter, TableWindowRequest, TableWindowResult } from "@/types/data";
+import type {
+  TableQuerySessionRequest,
+  TableWindowFilter,
+  TableWindowRequest,
+  TableWindowResult,
+  TableWindowSort,
+} from "@/types/data";
 import type { FilterRuleItem } from "@/types/filter";
 
 interface TableViewportInput {
@@ -157,21 +163,119 @@ export function serializeTableWindowFilters(filters: FilterRuleItem[]): TableWin
           rule: { kind: rule.kind, field: rule.field.name, min: rule.min, max: rule.max },
         };
       case "categorical":
+        {
+          const selected = [...rule.selected]
+            .sort((left, right) => left.localeCompare(right))
+            .filter((value, index, values) => index === 0 || values[index - 1] !== value);
         return {
           op,
           rule: {
             kind: rule.kind,
             field: rule.field.name,
-            selected: rule.selected,
+            selected,
             exclude: rule.exclude ?? false,
           },
         };
+        }
       case "date":
         return {
           op,
           rule: { kind: rule.kind, field: rule.field.name, start: rule.start, end: rule.end },
         };
     }
+  });
+}
+
+function canonicalizeTableWindowSort(sort: TableWindowSort | null): Array<{ column: string; descending: boolean }> {
+  if (!sort) {
+    return [{ column: "_row_id", descending: false }];
+  }
+  const column = sort.column.trim();
+  if (column.length === 0) {
+    return [{ column: "_row_id", descending: false }];
+  }
+  if (column === "_row_id") {
+    return [{ column, descending: sort.descending }];
+  }
+  return [
+    { column, descending: sort.descending },
+    { column: "_row_id", descending: false },
+  ];
+}
+
+function canonicalizeTableWindowFilter(filter: TableWindowFilter): TableWindowFilter {
+  const op = filter.op.toUpperCase() === "OR" ? "OR" : "AND";
+  switch (filter.rule.kind) {
+    case "continuous":
+      return {
+        op,
+        rule: {
+          kind: "continuous",
+          field: filter.rule.field.trim(),
+          min: filter.rule.min,
+          max: filter.rule.max,
+        },
+      };
+    case "categorical": {
+      const selected = [...filter.rule.selected].sort((left, right) => left.localeCompare(right));
+      return {
+        op,
+        rule: {
+          kind: "categorical",
+          field: filter.rule.field.trim(),
+          selected,
+          exclude: filter.rule.exclude ?? false,
+        },
+      };
+    }
+    case "date":
+      return {
+        op,
+        rule: {
+          kind: "date",
+          field: filter.rule.field.trim(),
+          start: filter.rule.start,
+          end: filter.rule.end,
+        },
+      };
+  }
+}
+
+function canonicalizeTableWindowFilters(filters: TableWindowFilter[]): TableWindowFilter[] {
+  const normalized = filters.map(canonicalizeTableWindowFilter);
+  if (normalized.length <= 1) {
+    return normalized;
+  }
+  const firstOp = normalized[0]?.op;
+  if (!firstOp || normalized.some((filter) => filter.op !== firstOp)) {
+    return normalized;
+  }
+  return [...normalized].sort((left, right) => {
+    const leftKey = JSON.stringify(left.rule);
+    const rightKey = JSON.stringify(right.rule);
+    return leftKey.localeCompare(rightKey);
+  });
+}
+
+export function buildTableQuerySignature(
+  filters: TableWindowFilter[],
+  sort: TableWindowSort | null,
+): string {
+  return JSON.stringify({
+    filters: canonicalizeTableWindowFilters(filters),
+    sort: canonicalizeTableWindowSort(sort),
+  });
+}
+
+export function buildTableQuerySessionSignature(request: TableQuerySessionRequest): string {
+  return JSON.stringify({
+    datasetId: request.datasetId.trim(),
+    generation: request.generation,
+    query: {
+      filters: canonicalizeTableWindowFilters(request.filters),
+      sort: canonicalizeTableWindowSort(request.sort),
+    },
+    columnIds: request.columnIds.map((columnId) => columnId.trim()),
   });
 }
 

@@ -20,7 +20,7 @@ import { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } fr
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { dataService } from "@/services/dataService";
-import { isMissing, DEFAULT_GROUP_KEY, type FieldRef, type ChartElement, type ElementKind, type MarkStyle, type GroupStyle, type GroupStyleMap, type MarkerShape, type RefLineY, type RefLineX, type YAxisConfig } from "@/graphCore";
+import { isMissing, DEFAULT_GROUP_KEY, type FieldRef, type ChartElement, type ElementKind, type MarkStyle, type GroupStyle, type GroupStyleMap, type MarkerShape, type RefLineY, type RefLineX, type TimeSeriesOptions, type TimeSeriesTextDateFormat, type TimeSeriesXInterpretation, type YAxisConfig } from "@/graphCore";
 import { SCATTER_RENDER_BUDGET } from "@/graphCore/scatterBudget";
 import type { DatasetMeta } from "@/types/data";
 import type { GraphBuilderItem, GraphBuilderMode, GraphRuntimeItem, GraphSlotKey } from "@/types/graphBuilder";
@@ -41,6 +41,13 @@ import {
   clampSampleSize,
   DEFAULT_GRAPH_SAMPLE_SIZE,
 } from "./graphSamplingPolicy";
+import {
+  isStandaloneTimeSqlType,
+  normalizeTimeSeriesOptions,
+  reconcileTimeSeriesElements,
+  TIME_SERIES_TEXT_DATE_FORMATS,
+  validateTimeSeriesX,
+} from "./timeSeriesContract";
 import { FilterPanel } from "@/components/filter";
 import { PanelSplitter } from "@/components/layout";
 import { defaultLayerOptions, GRAPH_LAYER_DEFS, getLayerMode, type GraphLayerDef } from "./graphLayerConfig";
@@ -65,6 +72,7 @@ import {
   reconcileGroupThemeSlots,
   resolveGroupThemeFieldName,
 } from "./graphThemeIdentity";
+import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
 import { useLayoutPreferencesStore } from "@/stores/useLayoutPreferencesStore";
 
 interface GraphBuilderViewProps {
@@ -99,6 +107,20 @@ const GRAPH_BUILDER_LEFT_STACK_MIN_PERCENT = 15;
 const GRAPH_BUILDER_LEFT_STACK_MAX_PERCENT = 85;
 const GRAPH_BUILDER_LEFT_STACK_DEFAULT_PERCENT = 50;
 type MultivariateDropNotice = "invalidFieldType" | "duplicateField" | "maxColumns";
+function normalizeTimeSeriesUiOptions(options: Record<string, unknown>): TimeSeriesOptions {
+  const normalized = normalizeTimeSeriesOptions(options);
+  if (normalized.xInterpretation.kind === "textDate") {
+    return normalized;
+  }
+  const rawInterpretation = options.xInterpretation as Partial<TimeSeriesXInterpretation> | undefined;
+  if (rawInterpretation?.kind === "textDate") {
+    return {
+      ...normalized,
+      xInterpretation: { kind: "textDate", format: "usDate" },
+    };
+  }
+  return normalized;
+}
 
 function clampPanelSize(value: number) {
   return Math.min(GRAPH_BUILDER_PANEL_MAX_WIDTH, Math.max(GRAPH_BUILDER_PANEL_MIN_WIDTH, value));
@@ -117,46 +139,61 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const multivariate = item.modeStates.multivariate;
   const cartesianState = isThreeDMode ? threeD : twoD;
   const visualSlots = resolveVisualGraphSlots(item.mode === "2d" && twoD.transposed === true);
-  const modeStates = item.modeStates;
-  const updateItemRaw = useGraphBuilderStore((s) => s.updateItem);
   const markDirtyRaw = useProjectStore((s) => s.markDirty);
   const readOnly = useProjectStore((s) => s.readOnly);
   const markDirty = useCallback(() => {
     if (readOnly) return;
     markDirtyRaw();
   }, [readOnly, markDirtyRaw]);
-  const updateItem = useCallback((id: string, patch: Partial<GraphBuilderItem>) => {
+  const graphUpdateQueueRef = useRef(Promise.resolve());
+  const queueGraphUpdate = useCallback((buildNext: (current: GraphBuilderItem) => GraphBuilderItem) => {
     if (readOnly) return;
-    updateItemRaw(id, patch);
-  }, [readOnly, updateItemRaw]);
+    graphUpdateQueueRef.current = graphUpdateQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
+        const expectedDocumentRevision = useGraphBuilderStore.getState().getDocumentRevision(item.id);
+        await applicationRuntime.execute(
+          {
+            type: "graph.update",
+            input: {
+              graphId: item.id,
+              expectedDocumentRevision,
+              definition: buildNext(currentItem),
+            },
+          },
+          { kind: "ui" },
+        );
+      })
+      .catch(() => undefined);
+  }, [item, readOnly]);
+  const updateItem = useCallback((_id: string, patch: Partial<GraphBuilderItem>) => {
+    queueGraphUpdate((current) => ({ ...current, ...patch }));
+  }, [queueGraphUpdate]);
   const setMode = useCallback((mode: GraphBuilderMode) => {
     if (item.mode === mode) return;
-    updateItem(item.id, { mode });
-    markDirty();
-  }, [item.id, item.mode, updateItem, markDirty]);
+    queueGraphUpdate((current) => ({ ...current, mode }));
+  }, [item.mode, queueGraphUpdate]);
   const setTwoDState = useCallback(
     (updater: typeof twoD | ((prev: typeof twoD) => typeof twoD)) => {
-      const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
-      const nextItem = updateGraphBuilder2D(currentItem, updater);
-      updateItem(item.id, {
-        modeStates: nextItem.modeStates,
-      });
-      markDirty();
+      queueGraphUpdate((current) => updateGraphBuilder2D(current, updater));
     },
-    [item, twoD, updateItem, markDirty],
+    [queueGraphUpdate, twoD],
   );
   const setThreeDState = useCallback(
     (updater: typeof threeD | ((prev: typeof threeD) => typeof threeD)) => {
-      const next = typeof updater === "function" ? updater(threeD) : updater;
-      updateItem(item.id, {
-        modeStates: {
-          ...modeStates,
-          threeD: next,
-        },
+      queueGraphUpdate((current) => {
+        const next = typeof updater === "function" ? updater(current.modeStates.threeD) : updater;
+        return {
+          ...current,
+          modeStates: {
+            ...current.modeStates,
+            threeD: next,
+          },
+        };
       });
-      markDirty();
     },
-    [item.id, threeD, modeStates, updateItem, markDirty],
+    [queueGraphUpdate, threeD],
   );
   const setMultivariateState = useCallback(
     (
@@ -164,16 +201,18 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         | typeof multivariate
         | ((prev: typeof multivariate) => typeof multivariate),
     ) => {
-      const next = typeof updater === "function" ? updater(multivariate) : updater;
-      updateItem(item.id, {
-        modeStates: {
-          ...modeStates,
-          multivariate: next,
-        },
+      queueGraphUpdate((current) => {
+        const next = typeof updater === "function" ? updater(current.modeStates.multivariate) : updater;
+        return {
+          ...current,
+          modeStates: {
+            ...current.modeStates,
+            multivariate: next,
+          },
+        };
       });
-      markDirty();
     },
-    [item.id, multivariate, modeStates, updateItem, markDirty],
+    [multivariate, queueGraphUpdate],
   );
   // Cross-view bridge: click a scatter point → highlight the matching
   // cell in the DataTableView for `dataset.id` next time it mounts.
@@ -394,6 +433,11 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const filters = useDatasetFilterStore((state) => state.byDataset[dataset.id] ?? EMPTY_FILTERS);
   const replaceDatasetFilters = useDatasetFilterStore((state) => state.replaceFilters);
   const runtimeItem = useMemo<GraphRuntimeItem>(() => ({ ...item, filters }), [filters, item]);
+  const resolveLatestRuntimeItem = useCallback((): GraphRuntimeItem => {
+    const latestItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
+    const latestFilters = useDatasetFilterStore.getState().byDataset[dataset.id] ?? filters;
+    return { ...latestItem, filters: latestFilters };
+  }, [dataset.id, filters, item]);
   const getGraphCategoricalValues = useCallback(async (field: string, search: string) => {
     const generation = await dataService.getDatasetGeneration(dataset.id);
     return dataService.queryTableFilterValues(dataset.id, field, search, 500, generation);
@@ -404,6 +448,58 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const pipelineStatus = runtimeState?.status ?? "idle";
   const progress = runtimeState?.progress ?? null;
   const rawPointNotice = runtimeState?.rawPointNotice ?? null;
+  const timeSeriesDisposition = runtimeState?.timeSeriesDisposition ?? null;
+  const timeSeriesElement = item.mode === "2d"
+    ? elements.find((element) => element.enabled !== false && element.kind === "timeSeries")
+    : undefined;
+  const timeSeriesOptions = useMemo(
+    () => normalizeTimeSeriesUiOptions(timeSeriesElement?.options ?? {}),
+    [timeSeriesElement?.options],
+  );
+  const timeSeriesXValidation = useMemo(() => {
+    if (!timeSeriesElement || item.mode !== "2d") return null;
+    const xField = encoding.x;
+    if (!xField) return null;
+    const columnIndex = columns.findIndex((column) => column.name === xField.name);
+    const sqlType = columnIndex >= 0 ? colSqlTypes[columnIndex] ?? "" : "";
+    if (!sqlType) return null;
+    if (isStandaloneTimeSqlType(sqlType)) {
+      return {
+        valid: false as const,
+        message: t("graph.timeSeries.error.standaloneTime", {
+          defaultValue: "Standalone TIME columns cannot define Time Series order. Choose a DATE/TIMESTAMP column or an explicit text date format.",
+        }),
+      };
+    }
+    const validation = validateTimeSeriesX(xField, sqlType, timeSeriesOptions.xInterpretation);
+    if (validation.valid) return validation;
+    if (xField.type === "continuous") {
+      return {
+        valid: false as const,
+        message: t("graph.timeSeries.error.sequenceRequired", {
+          field: xField.name,
+          defaultValue: "Choose Sequence / elapsed value for numeric Time Series X column {{field}}.",
+        }),
+      };
+    }
+    if (xField.type === "nominal" || xField.type === "ordinal" || xField.type === "id") {
+      return {
+        valid: false as const,
+        message: t("graph.timeSeries.error.textDateRequired", {
+          field: xField.name,
+          defaultValue: "Choose one of the supported text date formats for {{field}}.",
+        }),
+      };
+    }
+    return {
+      valid: false as const,
+      message: t("graph.timeSeries.error.nativeTemporalRequired", {
+        field: xField.name,
+        defaultValue: "Choose Native DATE/TIMESTAMP for temporal Time Series X column {{field}}.",
+      }),
+    };
+  }, [colSqlTypes, columns, encoding.x, item.mode, t, timeSeriesElement, timeSeriesOptions.xInterpretation]);
+  const validTimeSeriesActive = !!timeSeriesElement && timeSeriesXValidation?.valid === true;
 
   // Auto-close the manager when its slot is no longer manageable.
   // In 2D, management is meaningful only for 2+ columns (multi mode).
@@ -508,8 +604,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       return;
     }
     updateItem(item.id, { groupThemeSlots: resolvedThemeSlots });
-    markDirty();
-  }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem, markDirty]);
+  }, [groupingFieldName, frame, slotCandidateKeys, item.id, item.groupThemeSlots, resolvedThemeSlots, readOnly, updateItem]);
 
   const setElements = useCallback(
     (
@@ -767,9 +862,8 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       const currentItem = useGraphBuilderStore.getState().items.find((candidate) => candidate.id === item.id) ?? item;
       const nextItem = bindGraphBuilderField(currentItem, slot, field);
       updateItem(item.id, { modeStates: nextItem.modeStates });
-      markDirty();
     },
-    [item, updateItem, markDirty],
+    [item, updateItem],
   );
 
   /** Replace a slot's multi-mode list. Length 0 / undefined exits
@@ -953,11 +1047,13 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
     setElements((prev) => {
       const idx = prev.findIndex((e) => e.kind === kind);
       if (idx >= 0) {
-        return prev.map((e, i) => (i === idx ? { ...e, enabled: true } : e));
+        const enabled = prev.map((e, i) => (i === idx ? { ...e, enabled: true } : e));
+        return kind === "timeSeries" ? [...reconcileTimeSeriesElements({ elements: enabled }).elements] : enabled;
       }
       const next: ChartElement = { kind, enabled: true };
       next.options = defaultLayerOptions(kind, prev);
-      return [...prev, next];
+      const appended = [...prev, next];
+      return kind === "timeSeries" ? [...reconcileTimeSeriesElements({ elements: appended }).elements] : appended;
     });
   }, [item.mode, setElements]);
 
@@ -1026,7 +1122,6 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
   const setSamplingMode = useCallback((mode: "full" | "sample") => {
     if (mode === "full") {
       updateItem(item.id, { sampling: { mode: "full" } });
-      markDirty();
       return;
     }
     updateItem(item.id, {
@@ -1036,8 +1131,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed: sampleSeed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSize, sampleSeed]);
+  }, [item.id, updateItem, sampleSize, sampleSeed]);
 
   const setSampleSize = useCallback((raw: number) => {
     const size = clampSampleSize(Number.isFinite(raw) ? raw : sampleSize);
@@ -1048,8 +1142,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed: sampleSeed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSeed, sampleSize]);
+  }, [item.id, updateItem, sampleSeed, sampleSize]);
 
   const setSampleSeed = useCallback((raw: number) => {
     const seed = Math.max(0, Math.trunc(raw) || 0);
@@ -1060,8 +1153,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         seed,
       },
     });
-    markDirty();
-  }, [item.id, updateItem, markDirty, sampleSize]);
+  }, [item.id, updateItem, sampleSize]);
 
   const rowStatus = useMemo(() => {
     if (!progress) {
@@ -1086,6 +1178,12 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         defaultValue: "Sampled: {{processed}} / {{source}} rows",
       });
     }
+    if (validTimeSeriesActive && timeSeriesDisposition?.status === "included") {
+      return `${t("graph.timeSeries.status.fullResolution", { defaultValue: "Full resolution" })}: ${t("graph.timeSeries.status.includedCount", {
+        count: timeSeriesDisposition.includedRows.toLocaleString(),
+        defaultValue: "{{count}} included",
+      })}`;
+    }
     if (!isMultivariateMode && rawPointNotice) {
       return t("graph.rowStatus.pointsOmitted", {
         valid: rawPointNotice.validRows.toLocaleString(),
@@ -1097,7 +1195,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
       processed: progress.processedRows,
       defaultValue: "Full Data: {{processed}} rows",
     });
-  }, [frame, isMultivariateMode, pipelineStatus, progress, rawPointNotice, t]);
+  }, [frame, isMultivariateMode, pipelineStatus, progress, rawPointNotice, t, timeSeriesDisposition, validTimeSeriesActive]);
 
   const correlationNoticeText = useMemo(() => {
     if (!isMultivariateMode || !correlationNotice) {
@@ -1254,7 +1352,7 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
         </div>
         <div className="gb-toolbar-spacer" />
         <div className="gb-toolbar-right">
-          {!isMultivariateMode && (
+          {!isMultivariateMode && !validTimeSeriesActive && (
             <div className="gb-sampling" role="radiogroup" aria-label={t("graph.sampling.label", { defaultValue: "Sampling mode" })}>
             <button
               type="button"
@@ -1600,15 +1698,20 @@ export function GraphBuilderView({ item, dataset }: GraphBuilderViewProps) {
                     groupThemeSlots: nextItem.groupThemeSlots,
                   });
                   if (!readOnly && nextItem.filters) {
-                    replaceDatasetFilters(dataset.id, nextItem.filters);
+                    if (replaceDatasetFilters(dataset.id, nextItem.filters)) markDirty();
                   }
-                  markDirty();
                 }}
                 onStateChange={setRuntimeState}
+                resolveLatestItem={resolveLatestRuntimeItem}
               />
               {correlationNoticeText && (
                 <div className="gb-canvas-overlay gb-canvas-overlay-warn" role="status" aria-live="polite">
                   {correlationNoticeText}
+                </div>
+              )}
+              {timeSeriesXValidation?.valid === false && (
+                <div className="gb-canvas-overlay gb-canvas-overlay-warn" role="status" aria-live="polite">
+                  {timeSeriesXValidation.message}
                 </div>
               )}
             </div>
@@ -2326,6 +2429,9 @@ function LayerCard({
         {kind === "line" && (
           <LineOptions options={options} onChange={onChangeOptions} t={t} />
         )}
+        {kind === "timeSeries" && (
+          <TimeSeriesOptionsEditor options={options} onChange={onChangeOptions} t={t} />
+        )}
         {kind === "boxplot" && (
           <BoxplotOptions options={options} onChange={onChangeOptions} t={t} />
         )}
@@ -2548,6 +2654,74 @@ function LineOptions({ options, onChange, t }: OptionsEditorProps) {
         >
           <option value="connect">{t("graph.opt.missing.connect")}</option>
           <option value="break">{t("graph.opt.missing.break")}</option>
+        </select>
+      </OptRow>
+    </>
+  );
+}
+
+function TimeSeriesOptionsEditor({ options, onChange, t }: OptionsEditorProps) {
+  const timeSeries = normalizeTimeSeriesUiOptions(options);
+  const interpretationKind = timeSeries.xInterpretation.kind;
+  const textDateFormat = timeSeries.xInterpretation.kind === "textDate"
+    ? timeSeries.xInterpretation.format
+    : "usDate";
+  return (
+    <>
+      <OptRow label={t("graph.timeSeries.xInterpretation.label", { defaultValue: "X interpretation" })}>
+        <select
+          className="gb-opt-select"
+          value={interpretationKind}
+          onChange={(event) => {
+            const kind = event.target.value as TimeSeriesXInterpretation["kind"];
+            onChange({
+              xInterpretation: kind === "textDate"
+                ? { kind, format: textDateFormat }
+                : { kind },
+            });
+          }}
+        >
+          <option value="nativeTemporal">{t("graph.timeSeries.xInterpretation.nativeTemporal", { defaultValue: "Native DATE/TIMESTAMP" })}</option>
+          <option value="textDate">{t("graph.timeSeries.xInterpretation.textDate", { defaultValue: "Text date" })}</option>
+          <option value="sequence">{t("graph.timeSeries.xInterpretation.sequence", { defaultValue: "Sequence / elapsed value" })}</option>
+        </select>
+      </OptRow>
+      {interpretationKind === "textDate" && (
+        <OptRow label={t("graph.timeSeries.format.label", { defaultValue: "Text format" })}>
+          <select
+            className="gb-opt-select"
+            value={textDateFormat}
+            onChange={(event) => onChange({ xInterpretation: { kind: "textDate", format: event.target.value as TimeSeriesTextDateFormat } })}
+          >
+            {TIME_SERIES_TEXT_DATE_FORMATS.map((format) => (
+              <option key={format} value={format}>{t(`graph.timeSeries.format.${format}`)}</option>
+            ))}
+          </select>
+        </OptRow>
+      )}
+      <OptRow label={t("graph.timeSeries.order.label", { defaultValue: "Order" })}>
+        <select className="gb-opt-select" value={timeSeries.order} onChange={(event) => onChange({ order: event.target.value })}>
+          <option value="timeAscending">{t("graph.timeSeries.order.timeAscending", { defaultValue: "Time ascending" })}</option>
+          <option value="sourceRow">{t("graph.timeSeries.order.sourceRow", { defaultValue: "Source row" })}</option>
+        </select>
+      </OptRow>
+      <OptRow label={t("graph.timeSeries.missingValues.label", { defaultValue: "Missing values" })}>
+        <select className="gb-opt-select" value={timeSeries.missingValues} onChange={(event) => onChange({ missingValues: event.target.value })}>
+          <option value="break">{t("graph.timeSeries.missingValues.break", { defaultValue: "Break line" })}</option>
+          <option value="connect">{t("graph.timeSeries.missingValues.connect", { defaultValue: "Connect through" })}</option>
+        </select>
+      </OptRow>
+      <OptRow label={t("graph.timeSeries.connection.label", { defaultValue: "Connection" })}>
+        <select className="gb-opt-select" value={timeSeries.connection} onChange={(event) => onChange({ connection: event.target.value })}>
+          <option value="line">{t("graph.timeSeries.connection.line", { defaultValue: "Line" })}</option>
+          <option value="step">{t("graph.timeSeries.connection.step", { defaultValue: "Step" })}</option>
+        </select>
+      </OptRow>
+      <OptRow label={t("graph.timeSeries.markerMode.label", { defaultValue: "Markers" })}>
+        <select className="gb-opt-select" value={timeSeries.markerMode} onChange={(event) => onChange({ markerMode: event.target.value })}>
+          <option value="auto">{t("graph.timeSeries.markerMode.auto", { defaultValue: "Auto" })}</option>
+          <option value="show">{t("graph.timeSeries.markerMode.show", { defaultValue: "Show" })}</option>
+          <option value="hide">{t("graph.timeSeries.markerMode.hide", { defaultValue: "Hide" })}</option>
         </select>
       </OptRow>
     </>
@@ -3172,6 +3346,7 @@ function AddLayerCard({ availableKinds, onAdd, t }: AddLayerCardProps) {
         ref={btnRef}
         className="gb-layer-add"
         onClick={() => setOpen((o) => !o)}
+        aria-label={t("graph.addLayer")}
         title={t("graph.addLayer")}
       >
         +

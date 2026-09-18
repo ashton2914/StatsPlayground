@@ -2,21 +2,37 @@ import React, { useEffect, useLayoutEffect, useState, useRef, useCallback, useMe
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { dataService } from "@/services/dataService";
-import type { TableQueryResult, ColumnDisplayProps } from "@/types/data";
+import type {
+  CalculatedColumnDescriptor,
+  CalculatedColumnMutationResult,
+  CalculatedOutputTypeV1,
+  ColumnDescriptor,
+  ColumnDisplayProps,
+  TableNavigationRequest,
+  TableNavigationResult,
+  TableQuerySessionRequest,
+  TableQuerySessionState,
+  TableQuerySessionStatus,
+  TableQueryResult,
+  UpsertCalculatedColumnRequest,
+} from "@/types/data";
 import { EXTRA_DEFS, EXTRA_KINDS, type ExtraKind, summarizeExtraKinds, extraKindLabel, extraFieldLabel } from "@/types/columnExtras";
+import { CalculatedColumnDialog } from "./CalculatedColumnDialog";
 import { ManageExtrasDialog } from "./ManageExtrasDialog";
 import { TableShapeSummary } from "./TableShapeSummary";
 import { useDataStore } from "@/stores/useDataStore";
 import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
+import { useTableNavigationSortStore } from "@/stores/useTableNavigationSortStore";
 import { useTableZoomStore } from "@/stores/useTableZoomStore";
 import { useTableSelectionStore } from "@/stores/useTableSelectionStore";
 import { modKey, shiftKey } from "@/utils/platform";
 import { ctxMenuRef } from "@/utils/ctxMenu";
 import { buildClipboardTsv, copyThenClear, createClipboardRowFetcher, resolveClipboardSelection } from "@/utils/tableClipboard";
-import { TableWindowCache } from "@/utils/tableWindowCache";
-import { calculatePlaceholderRange, canMaterializeSelection, calculateTableWindow, isStaleDatasetGenerationError, MAX_MATERIALIZED_SELECTION_ITEMS, queryTableWindowWithFreshGeneration, RequestEpoch, serializeTableWindowFilters, shouldReloadDatasetRevision, windowRowAt, type DatasetRevision } from "@/utils/tableViewport";
+import { TableNavigationScheduler, type TableNavigationSchedulerClock } from "@/utils/tableNavigationScheduler";
+import { TableWindowCache, type TableWindowCacheRequest } from "@/utils/tableWindowCache";
+import { buildTableQuerySessionSignature, buildTableQuerySignature, canMaterializeSelection, calculateTableWindow, isStaleDatasetGenerationError, MAX_MATERIALIZED_SELECTION_ITEMS, queryTableWindowWithFreshGeneration, RequestEpoch, serializeTableWindowFilters, shouldReloadDatasetRevision, windowRowAt, type DatasetRevision } from "@/utils/tableViewport";
 import { inferFieldType, type FieldRef, type GraphData } from "@/graphCore";
 import { FilterPanel } from "@/components/filter";
 import { PanelSplitter } from "@/components/layout";
@@ -28,6 +44,8 @@ import {
   type TablePropertyManagerRequest,
 } from "./tablePropertyManagerRequest";
 import { shouldIssueDataTableLoadForCurrentDataset } from "./dataTableLoadGuards";
+import { LogicalVerticalScrollbar } from "./table/LogicalVerticalScrollbar";
+import { TableViewportRows } from "./table/TableViewportRows";
 
 interface DataTableViewProps {
   datasetId: string;
@@ -36,9 +54,233 @@ interface DataTableViewProps {
   onPropertyManagerRequestHandled?: (requestId: string) => void;
 }
 
+type ScheduledTableNavigationRequest = TableNavigationRequest & {
+  windowRequest: TableWindowCacheRequest;
+  cacheKey: string;
+  localEpoch: number;
+  prefetch: boolean;
+};
+
+interface TableQuerySessionViewState {
+  signature: string | null;
+  sessionId: string | null;
+  state: TableQuerySessionState | "idle";
+  totalRows: number | null;
+}
+
+interface TableCacheStatusDiagnostics {
+  cacheHit: boolean | null;
+  diagnosticJsonEncodeMs: number | null;
+  postReceivePaintMs: number | null;
+  diagnosticJsonBytes: number | null;
+  retainedRows: number;
+  estimatedBytes: number;
+  entryCount: number;
+}
+
+type TransportMetricsSnapshot = Pick<TableCacheStatusDiagnostics, "diagnosticJsonEncodeMs" | "postReceivePaintMs" | "diagnosticJsonBytes">;
+
+type FrontendMeasuredTableNavigationResult = TableNavigationResult & {
+  frontendReceivedAtMs?: number;
+};
+
+interface AfterPaintScheduleHandle {
+  cancel(): void;
+}
+
+interface PendingAfterPaintState {
+  token: number;
+  handle: AfterPaintScheduleHandle | null;
+}
+
+interface ActiveTransportFrameState {
+  token: number;
+  first: number | null;
+  second: number | null;
+}
+
+interface TableAfterPaintController {
+  schedule(callback: () => void): AfterPaintScheduleHandle;
+}
+
+const IDLE_TABLE_QUERY_SESSION_STATE: TableQuerySessionViewState = {
+  signature: null,
+  sessionId: null,
+  state: "idle",
+  totalRows: null,
+};
+
+const EMPTY_TABLE_CACHE_DIAGNOSTICS: TableCacheStatusDiagnostics = {
+  cacheHit: null,
+  diagnosticJsonEncodeMs: null,
+  postReceivePaintMs: null,
+  diagnosticJsonBytes: null,
+  retainedRows: 0,
+  estimatedBytes: 0,
+  entryCount: 0,
+};
+
+const EMPTY_TABLE_TRANSPORT_METRICS: TransportMetricsSnapshot = {
+  diagnosticJsonEncodeMs: null,
+  postReceivePaintMs: null,
+  diagnosticJsonBytes: null,
+};
+
+function roundMetric(value: number): number {
+  return Math.round(value * 1_000) / 1_000;
+}
+
+function scheduleAfterPaint(callback: () => void): AfterPaintScheduleHandle {
+  const controller = (window as typeof window & {
+    __statsPlaygroundAfterPaintController?: TableAfterPaintController;
+  }).__statsPlaygroundAfterPaintController;
+  if (controller) {
+    return controller.schedule(callback);
+  }
+  let firstFrame: number | null = window.requestAnimationFrame(() => {
+    firstFrame = null;
+    secondFrame = window.requestAnimationFrame(() => {
+      secondFrame = null;
+      callback();
+    });
+  });
+  let secondFrame: number | null = null;
+  return {
+    cancel() {
+      if (firstFrame != null) {
+        window.cancelAnimationFrame(firstFrame);
+        firstFrame = null;
+      }
+      if (secondFrame != null) {
+        window.cancelAnimationFrame(secondFrame);
+        secondFrame = null;
+      }
+    },
+  };
+}
+
+const browserTableNavigationClock: TableNavigationSchedulerClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+  clearTimeout: (handle) => window.clearTimeout(handle),
+};
+
 const COLUMN_TYPE_VALUES = ["VARCHAR", "INTEGER", "BIGINT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"] as const;
 const typeLabel = (t: TFunction, v: string): string => t(`dataTable.type.${v}`, { defaultValue: v });
 const typeLabelOf = (t: TFunction) => (v: string): string => typeLabel(t, v);
+
+const calculatedOutputTypeToSqlType = (outputType: CalculatedOutputTypeV1): string => {
+  switch (outputType) {
+    case "boolean":
+      return "BOOLEAN";
+    case "continuous":
+      return "DOUBLE";
+    case "integer":
+      return "INTEGER";
+    case "text":
+      return "VARCHAR";
+    case "null":
+      return "NULL";
+    case "unknown":
+    default:
+      return "UNKNOWN";
+  }
+};
+
+const calculatedStatusIconClass = (status: CalculatedColumnDescriptor["status"]): string => {
+  switch (status) {
+    case "ready":
+      return "fa-circle-check";
+    case "draft":
+      return "fa-file-pen";
+    case "disabled":
+      return "fa-ban";
+    case "broken":
+      return "fa-triangle-exclamation";
+    case "unsupported":
+    default:
+      return "fa-circle-question";
+  }
+};
+
+function collectDownstreamCalculatedNames(
+  descriptors: ColumnDescriptor[],
+  rootColumnId: string | null,
+): string[] {
+  if (!rootColumnId) return [];
+  const namesById = new Map(descriptors.map((descriptor) => [descriptor.columnId, descriptor.name]));
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const visit = (columnId: string) => {
+    for (const descriptor of descriptors) {
+      const calculated = descriptor.calculated;
+      if (!calculated || seen.has(descriptor.columnId)) continue;
+      if (!calculated.dependencyColumnIds.includes(columnId)) continue;
+      seen.add(descriptor.columnId);
+      ordered.push(namesById.get(descriptor.columnId) ?? descriptor.name);
+      visit(descriptor.columnId);
+    }
+  };
+  visit(rootColumnId);
+  return ordered;
+}
+
+function formatCalculatedDescriptorTitle(
+  t: TFunction,
+  calculated: CalculatedColumnDescriptor,
+  descriptors: ColumnDescriptor[],
+): string {
+  const namesById = new Map(descriptors.map((descriptor) => [descriptor.columnId, descriptor.name]));
+  const dependencies = calculated.dependencyColumnIds
+    .map((columnId) => namesById.get(columnId) ?? columnId)
+    .join(", ");
+  const lines = [
+    t("dataTable.calculatedColumn.tooltip.status", {
+      status: t(`dataTable.calculatedColumn.status.${calculated.status}`, { defaultValue: calculated.status }),
+    }),
+    t("dataTable.calculatedColumn.tooltip.outputType", {
+      type: calculatedOutputTypeToSqlType(calculated.inferredOutputType),
+    }),
+    t("dataTable.calculatedColumn.tooltip.formula", {
+      formula: calculated.displayFormulaText || t("common.empty"),
+    }),
+  ];
+  if (dependencies) {
+    lines.push(t("dataTable.calculatedColumn.tooltip.dependencies", { names: dependencies }));
+  }
+  return lines.join("\n");
+}
+
+interface CalculatedDialogState {
+  mode: "create" | "edit" | "convertExisting";
+  outputName: string;
+  formulaText: string;
+  atIndex: number | null;
+  outputColumnId: string | null;
+  formulaId: string | null;
+}
+
+function formatCalculatedDependencyDeleteError(t: TFunction, error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const structured = message.match(/^formula_dependency_in_use\|([^|]+)\|(.+)$/);
+  if (structured) {
+    const [, name, rawPath] = structured;
+    return t("dataTable.calculatedColumn.diagnostics.formula_dependency_in_use.message", {
+      name,
+      path: rawPath.split(">").join(" -> "),
+      defaultValue: message,
+    });
+  }
+  const legacy = message.match(/cannot delete a column referenced by a calculated dependency:\s*(.+)$/i);
+  if (legacy) {
+    return t("dataTable.calculatedColumn.diagnostics.formula_dependency_in_use.message", {
+      name: legacy[1],
+      path: legacy[1],
+      defaultValue: message,
+    });
+  }
+  return null;
+}
 
 // Excel-style column letter (A, B, C, ... Z, AA, AB, ...)
 const colLetter = (i: number): string => {
@@ -65,6 +307,11 @@ const OVERSCAN = 10; // extra rows above/below viewport
 const COLUMN_OVERSCAN = 4; // extra columns left/right of viewport
 const TABLE_WINDOW_SIZE = 500;
 const TABLE_CACHE_ROW_LIMIT = 5_000;
+const TABLE_CACHE_BYTE_LIMIT = 64 * 1024 * 1024;
+const TABLE_NAVIGATION_SETTLE_MS = 75;
+const TABLE_TRANSPORT_VERSION = 1;
+const TABLE_NAVIGATION_RUNTIME_DIAGNOSTICS = import.meta.env.DEV
+  && import.meta.env.VITE_TABLE_NAVIGATION_RUNTIME_DIAGNOSTICS === "1";
 const TABLE_FILTER_PANEL_ID = "table.filter" as const;
 const TABLE_COLUMNS_PANEL_ID = "table.columns" as const;
 const TABLE_FILTER_DEFAULT_WIDTH = 260;
@@ -75,6 +322,22 @@ const TABLE_COLUMNS_MIN_WIDTH = 120;
 const TABLE_COLUMNS_MAX_WIDTH = 600;
 const TABLE_FILTER_SPLITTER_LABEL = "Resize data table filter panel";
 const TABLE_COLUMNS_SPLITTER_LABEL = "Resize data table columns panel";
+
+function buildTableWindowSessionKey(querySignature: string, sessionId: string | null): string {
+  return `${querySignature}:${sessionId ?? "natural"}`;
+}
+
+function buildTableWindowPendingKey(request: TableWindowCacheRequest): string {
+  return JSON.stringify({
+    datasetId: request.datasetId,
+    generation: request.generation,
+    sessionKey: request.sessionKey,
+    start: request.start,
+    count: request.count,
+    columnIds: request.columnIds,
+    transportVersion: request.transportVersion,
+  });
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -114,22 +377,23 @@ const CURRENCY_OPTIONS = [
 
 const DEFAULT_FORMAT: ColumnFormat = { kind: "asis" };
 
-function formatCellValue(value: unknown, fmt: ColumnFormat): string {
+function formatCellValue(value: unknown, fmt: unknown): string {
+  const format = (fmt as ColumnFormat | undefined) ?? DEFAULT_FORMAT;
   if (value == null) return "";
-  if (fmt.kind === "asis") return String(value);
+  if (format.kind === "asis") return String(value);
   const num = Number(value);
   if (isNaN(num)) return String(value);
-  switch (fmt.kind) {
+  switch (format.kind) {
     case "fixed":
-      return num.toFixed(fmt.decimals ?? 2);
+      return num.toFixed(format.decimals ?? 2);
     case "percent":
-      return (num * 100).toFixed(fmt.decimals ?? 2) + "%";
+      return (num * 100).toFixed(format.decimals ?? 2) + "%";
     case "scientific":
       return num.toExponential();
     case "currency": {
-      const cur = CURRENCY_OPTIONS.find(c => c.value === fmt.currency);
+      const cur = CURRENCY_OPTIONS.find(c => c.value === format.currency);
       const symbol = cur?.symbol ?? "";
-      return symbol + num.toFixed(fmt.decimals ?? 2);
+      return symbol + num.toFixed(format.decimals ?? 2);
     }
     default:
       return String(value);
@@ -151,118 +415,6 @@ function normalizeRange(r: CellRange) {
     c2: Math.max(r.startCol, r.endCol),
   };
 }
-
-// ---- Memoized row component ----
-// Props are designed to be reference-stable when nothing in this row
-// actually changed, so React.memo can skip re-renders.
-interface TableRowProps {
-  ri: number;
-  displayRow: unknown[];
-  colFormats: ColumnFormat[];
-  isRowSelected: boolean;
-  isRowActive: boolean;
-  /** Active column index, or -1 if active cell is not in this row. */
-  activeCol: number;
-  selectedCols: ReadonlySet<number>;
-  /** Column being edited in this row, or -1 if not editing this row. */
-  editingCol: number;
-  editValue: string;
-  editInputRef: React.RefObject<HTMLInputElement | null>;
-  /** Selection clamped to this row: -1/-1 if row is outside the selection. */
-  selStartCol: number;
-  selEndCol: number;
-  /**
-   * Set of column indices in THIS row that are individually selected via
-   * Ctrl/Cmd+click (non-contiguous cell selection). Pass `undefined` when
-   * the row has no Ctrl-selected cells so the prop stays referentially
-   * stable (undefined === undefined) and React.memo doesn't re-render
-   * unrelated rows whenever the global selectedCells Set changes.
-   */
-  selectedColsInRow?: ReadonlySet<number>;
-  // Column virtualization window
-  visStart: number;
-  visEnd: number;
-  leftSpacerW: number;
-  rightSpacerW: number;
-  onEditValueChange: (v: string) => void;
-  onCommitEdit: (dir: "none" | "down" | "right" | "left") => void;
-  onCancelEdit: () => void;
-}
-
-const TableRow = React.memo(function TableRow({
-  ri, displayRow, colFormats, isRowSelected, isRowActive,
-  activeCol, selectedCols, editingCol, editValue, editInputRef,
-  selStartCol, selEndCol, selectedColsInRow,
-  visStart, visEnd, leftSpacerW, rightSpacerW,
-  onEditValueChange, onCommitEdit, onCancelEdit,
-}: TableRowProps) {
-  const totalCols = displayRow.length;
-  const renderEnd = Math.min(visEnd, totalCols);
-  const cells: React.ReactNode[] = [];
-  for (let ci = visStart; ci < renderEnd; ci++) {
-    const cell = displayRow[ci];
-    const isColSelected = selectedCols.has(ci);
-    const isCellActive = activeCol === ci && isRowActive && !isRowSelected && !isColSelected;
-    const isCellEditing = editingCol === ci;
-    const inRect = selStartCol >= 0 && ci >= selStartCol && ci <= selEndCol;
-    const inDiscrete = selectedColsInRow ? selectedColsInRow.has(ci) : false;
-    const isCellSelected = inRect || inDiscrete;
-    cells.push(
-      <td
-        key={ci}
-        data-row={ri}
-        data-col={ci}
-        className={`sp-cell${isCellActive ? " sp-cell-active" : ""}${isCellEditing ? " sp-cell-editing" : ""}${isCellSelected ? " sp-cell-selected" : ""}${isColSelected ? " sp-col-selected-cell" : ""}`}
-      >
-        <span className={cell == null ? "sp-null" : "sp-val"} style={isCellEditing ? { visibility: "hidden" } : undefined}>
-          {formatCellValue(cell, colFormats[ci] ?? DEFAULT_FORMAT)}
-        </span>
-        {isCellEditing && (
-          <input
-            ref={editInputRef}
-            className="sp-cell-input"
-            value={editValue}
-            onChange={(e) => onEditValueChange(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onDoubleClick={(e) => e.stopPropagation()}
-            onBlur={() => onCommitEdit("none")}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                onCommitEdit("down");
-              } else if (e.key === "Escape") {
-                onCancelEdit();
-              } else if (e.key === "Tab") {
-                e.preventDefault();
-                onCommitEdit(e.shiftKey ? "left" : "right");
-              }
-              e.stopPropagation();
-            }}
-          />
-        )}
-      </td>
-    );
-  }
-  return (
-    <tr className={`sp-data-row${isRowSelected ? " sp-row-selected" : ""}`}>
-      <td
-        className={`sp-row-hdr${isRowActive ? " sp-row-active" : ""}${isRowSelected ? " sp-row-selected-hdr" : ""}`}
-        data-row-hdr={ri}
-      >
-        {ri + 1}
-      </td>
-      {leftSpacerW > 0 && (
-        <td className="sp-col-spacer" style={{ width: leftSpacerW, padding: 0, border: "none" }} aria-hidden="true" />
-      )}
-      {cells}
-      {rightSpacerW > 0 && (
-        <td className="sp-col-spacer" style={{ width: rightSpacerW, padding: 0, border: "none" }} aria-hidden="true" />
-      )}
-      <td className="sp-add-col-cell" />
-    </tr>
-  );
-});
 
 // ---- JMP-style ordered list editor for `valueList` extra fields ----
 // Used inside ExtrasEditor when a kind declares a `valueList` field
@@ -525,6 +677,8 @@ const ExtrasEditor = React.memo(function ExtrasEditor({ extras, onChange, getCol
 interface ColsPanelListProps {
   cols: string[];
   colTypes: string[];
+  calculated: ReadonlyArray<CalculatedColumnDescriptor | undefined>;
+  calculatedTitles: ReadonlyArray<string | undefined>;
   selectedCols: ReadonlySet<number>;
   /** Per-column extras map (length matches cols); null means no extras. */
   colExtras: ReadonlyArray<Record<string, unknown> | null>;
@@ -535,7 +689,7 @@ interface ColsPanelListProps {
 }
 
 const ColsPanelList = React.memo(function ColsPanelList({
-  cols, colTypes, selectedCols, colExtras, onItemClick, onItemContextMenu, onReorder,
+  cols, colTypes, calculated, calculatedTitles, selectedCols, colExtras, onItemClick, onItemContextMenu, onReorder,
 }: ColsPanelListProps) {
   const { t } = useTranslation();
   const labelOf = typeLabelOf(t);
@@ -547,6 +701,8 @@ const ColsPanelList = React.memo(function ColsPanelList({
       {cols.map((name, ci) => {
         const tLabel = labelOf(colTypes[ci]);
         const isSel = selectedCols.has(ci);
+        const calculatedDescriptor = calculated[ci];
+        const calculatedTitle = calculatedTitles[ci];
         const extras = colExtras[ci];
         const extraSummary = extras ? summarizeExtraKinds(extras, t) : "";
         const extraCount = extras ? Object.keys(extras).length : 0;
@@ -556,6 +712,7 @@ const ColsPanelList = React.memo(function ColsPanelList({
           <div
             key={ci}
             className={`sp-cols-panel-item${isSel ? " sp-cols-panel-item-selected" : ""}${isDragging ? " sp-cols-panel-item-dragging" : ""}${isDropTarget ? " sp-cols-panel-item-dropbelow" : ""}`}
+            data-calculated={calculatedDescriptor?.status}
             onClick={(e) => onItemClick(ci, e)}
             onContextMenu={(e) => onItemContextMenu(e, ci)}
             onDragOver={(e) => {
@@ -570,10 +727,15 @@ const ColsPanelList = React.memo(function ColsPanelList({
               setDragIdx(null);
               setOverIdx(null);
             }}
-            title={`${colLetter(ci)}  ${name}  (${tLabel})${extraSummary ? "\n" + t("dataTable.colsPanelExtraTooltip", { summary: extraSummary }) : ""}`}
+            title={`${colLetter(ci)}  ${name}  (${tLabel})${calculatedTitle ? "\n" + calculatedTitle : ""}${extraSummary ? "\n" + t("dataTable.colsPanelExtraTooltip", { summary: extraSummary }) : ""}`}
           >
             <span className="sp-cols-panel-item-type">{tLabel}</span>
             <span className="sp-cols-panel-item-name">{name || t("dataTable.colsPanelItemFallback", { letter: colLetter(ci) })}</span>
+            {calculatedDescriptor && (
+              <span className={`sp-cols-panel-item-calc is-${calculatedDescriptor.status}`} title={calculatedTitle}>
+                <i className={`fa-solid ${calculatedStatusIconClass(calculatedDescriptor.status)}`} aria-hidden="true" />
+              </span>
+            )}
             {extraCount > 0 && (
               <span className="sp-cols-panel-item-extras" title={t("dataTable.colsPanelExtraTooltip", { summary: extraSummary })}>
                 📎{extraCount}
@@ -741,6 +903,7 @@ export function DataTableView({
   const [colMenu, setColMenu] = useState<{ colIdx: number; x: number; y: number } | null>(null);
   const [rowMenu, setRowMenu] = useState<{ rowIdx: number; x: number; y: number } | null>(null);
   const [showAddCol, setShowAddCol] = useState(false);
+  const [calculatedDialog, setCalculatedDialog] = useState<CalculatedDialogState | null>(null);
   const [newColName, setNewColName] = useState("");
   const [newColType, setNewColType] = useState("VARCHAR");
   const [renameCol, setRenameCol] = useState<{ colIdx: number; oldName: string; oldType: string } | null>(null);
@@ -772,10 +935,11 @@ export function DataTableView({
   colExtrasRef.current = colExtras;
   const [selection, setSelection] = useState<CellRange | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [columnDescriptors, setColumnDescriptors] = useState<ColumnDescriptor[]>([]);
   const [loadedDataLoadToken, setLoadedDataLoadToken] = useState<string | null>(null);
-  const [loadedFilterGeneration, setLoadedFilterGeneration] = useState(0);
+  const [tableQuerySession, setTableQuerySession] = useState<TableQuerySessionViewState>(IDLE_TABLE_QUERY_SESSION_STATE);
   const [loadedDisplayPropsLoadToken, setLoadedDisplayPropsLoadToken] = useState<string | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
+  const [logicalStart, setLogicalStart] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   // rAF coalesce scroll updates: one state commit per animation frame instead
   // of one per scroll event (which can fire 60–120Hz on smooth wheels and was
@@ -786,7 +950,6 @@ export function DataTableView({
     if (scrollRafRef.current != null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
-      setScrollTop(el.scrollTop);
       setScrollLeft(el.scrollLeft);
     });
   }, []);
@@ -819,13 +982,21 @@ export function DataTableView({
   const autoScrollRef = useRef<number | null>(null);
 
   const tableFilters = useDatasetFilterStore((state) => state.byDataset[datasetId] ?? EMPTY_FILTERS);
+  const tableSort = useTableNavigationSortStore((state) => state.byDataset[datasetId] ?? null);
   const replaceDatasetFilters = useDatasetFilterStore((state) => state.replaceFilters);
+  const replaceDatasetSort = useTableNavigationSortStore((state) => state.replaceSort);
+  const getTableCategoricalValues = useCallback(async (field: string, search: string) => {
+    const generation = await dataService.getDatasetGeneration(datasetId);
+    return dataService.queryTableFilterValues(datasetId, field, search, 500, generation);
+  }, [datasetId]);
   const persistedTableFilterWidth = useLayoutPreferencesStore((state) => state.sizes[TABLE_FILTER_PANEL_ID]);
   const persistedColsPanelWidth = useLayoutPreferencesStore((state) => state.sizes[TABLE_COLUMNS_PANEL_ID]);
   const setPanelSizePreference = useLayoutPreferencesStore((state) => state.setPanelSize);
   const resetPanelSizePreference = useLayoutPreferencesStore((state) => state.resetPanelSize);
   const tableFiltersRef = useRef<FilterRuleItem[]>([]);
+  const tableSortRef = useRef<TableNavigationRequest["sort"]>(tableSort);
   tableFiltersRef.current = tableFilters;
+  tableSortRef.current = tableSort;
   const [showTableFilters, setShowTableFilters] = useState(false);
   const [tableFilterWidth, setTableFilterWidth] = useState(() => clamp(
     persistedTableFilterWidth ?? TABLE_FILTER_DEFAULT_WIDTH,
@@ -867,6 +1038,11 @@ export function DataTableView({
     if (readOnly) return;
     if (replaceDatasetFilters(datasetId, next)) markDirty();
   }, [datasetId, markDirty, readOnly, replaceDatasetFilters]);
+  const handleTableSortChange = useCallback((next: TableNavigationRequest["sort"]) => {
+    if (readOnly) return;
+    if (replaceDatasetSort(datasetId, next)) markDirty();
+    setColMenu(null);
+  }, [datasetId, markDirty, readOnly, replaceDatasetSort]);
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
   const {
@@ -902,45 +1078,326 @@ export function DataTableView({
   const datasetRevisionRef = useRef<DatasetRevision | null>(null);
   const currentRenderedLoadTokenRef = useRef(currentRenderedLoadToken);
   const windowStartRef = useRef(0);
+  const logicalStartRef = useRef(0);
   const windowCacheRef = useRef<TableWindowCache | null>(null);
   const requestEpochRef = useRef<RequestEpoch | null>(null);
   const pendingWindowsRef = useRef<Set<string>>(new Set());
-  const loadedFilterKeyRef = useRef("[]");
+  const pendingPrefetchRequestsRef = useRef<ScheduledTableNavigationRequest[]>([]);
+  const columnDescriptorsRef = useRef<ColumnDescriptor[]>([]);
+  const tableQuerySessionRef = useRef<TableQuerySessionViewState>(IDLE_TABLE_QUERY_SESSION_STATE);
+  const tableCacheDiagnosticsRef = useRef<TableCacheStatusDiagnostics>(EMPTY_TABLE_CACHE_DIAGNOSTICS);
+  const tableQuerySessionPollSeqRef = useRef(0);
+  const tableNavigationRequestSeqRef = useRef(0);
+  const tableNavigationSchedulerRef = useRef<TableNavigationScheduler<ScheduledTableNavigationRequest, FrontendMeasuredTableNavigationResult> | null>(null);
+  const navigationReloadRef = useRef<() => void>(() => {});
+  const loadedFilterKeyRef = useRef(buildTableQuerySignature([], null));
   const skipFilterReloadRef = useRef(false);
-  if (!windowCacheRef.current) windowCacheRef.current = new TableWindowCache(TABLE_CACHE_ROW_LIMIT);
+  const pendingPrefetchPaintFramesRef = useRef<PendingAfterPaintState>({
+    token: 0,
+    handle: null,
+  });
+  const activeTransportFramesRef = useRef<ActiveTransportFrameState>({
+    token: 0,
+    first: null,
+    second: null,
+  });
+  if (!windowCacheRef.current) {
+    windowCacheRef.current = new TableWindowCache({
+      maxRows: TABLE_CACHE_ROW_LIMIT,
+      maxBytes: TABLE_CACHE_BYTE_LIMIT,
+    });
+  }
   if (!requestEpochRef.current) requestEpochRef.current = new RequestEpoch();
   currentRenderedLoadTokenRef.current = currentRenderedLoadToken;
+  tableQuerySessionRef.current = tableQuerySession;
+  const [tableCacheDiagnostics, setTableCacheDiagnostics] = useState<TableCacheStatusDiagnostics>(EMPTY_TABLE_CACHE_DIAGNOSTICS);
+  tableCacheDiagnosticsRef.current = tableCacheDiagnostics;
+  const cancelPendingPrefetchAfterPaint = useCallback(() => {
+    const state = pendingPrefetchPaintFramesRef.current;
+    state.token += 1;
+    state.handle?.cancel();
+    state.handle = null;
+  }, []);
+  const cancelActiveTransportMeasurement = useCallback(() => {
+    const state = activeTransportFramesRef.current;
+    state.token += 1;
+    if (state.first != null) {
+      window.cancelAnimationFrame(state.first);
+      state.first = null;
+    }
+    if (state.second != null) {
+      window.cancelAnimationFrame(state.second);
+      state.second = null;
+    }
+  }, []);
+  const clearPendingPrefetches = useCallback(() => {
+    pendingPrefetchRequestsRef.current = [];
+    cancelPendingPrefetchAfterPaint();
+  }, [cancelPendingPrefetchAfterPaint]);
+  const updateTableCacheDiagnostics = useCallback((patch: Partial<TableCacheStatusDiagnostics> = {}) => {
+    const cache = windowCacheRef.current;
+    if (!cache) return;
+    setTableCacheDiagnostics((previous) => {
+      const next = {
+        cacheHit: patch.cacheHit ?? previous.cacheHit,
+        diagnosticJsonEncodeMs: patch.diagnosticJsonEncodeMs ?? previous.diagnosticJsonEncodeMs,
+        postReceivePaintMs: patch.postReceivePaintMs ?? previous.postReceivePaintMs,
+        diagnosticJsonBytes: patch.diagnosticJsonBytes ?? previous.diagnosticJsonBytes,
+        retainedRows: cache.retainedRows,
+        estimatedBytes: cache.estimatedBytes,
+        entryCount: cache.entryCount,
+      };
+      if (
+        previous.cacheHit === next.cacheHit
+        && previous.diagnosticJsonEncodeMs === next.diagnosticJsonEncodeMs
+        && previous.postReceivePaintMs === next.postReceivePaintMs
+        && previous.diagnosticJsonBytes === next.diagnosticJsonBytes
+        && previous.retainedRows === next.retainedRows
+        && previous.estimatedBytes === next.estimatedBytes
+        && previous.entryCount === next.entryCount
+      ) {
+        return previous;
+      }
+      return next;
+    });
+  }, []);
+  const scheduleActiveTransportDiagnostics = useCallback((cacheHit: boolean, metrics: {
+    frontendReceivedAtMs?: number;
+    diagnosticJsonEncodeMs?: number | null;
+    diagnosticJsonBytes?: number | null;
+  }) => {
+    cancelActiveTransportMeasurement();
+    const transportState = activeTransportFramesRef.current;
+    const token = transportState.token;
+    const nextMetrics: TransportMetricsSnapshot = {
+      diagnosticJsonEncodeMs: metrics.diagnosticJsonEncodeMs ?? null,
+      postReceivePaintMs: null,
+      diagnosticJsonBytes: metrics.diagnosticJsonBytes ?? null,
+    };
+    updateTableCacheDiagnostics({ cacheHit, ...nextMetrics });
+    const frontendReceivedAtMs = metrics.frontendReceivedAtMs;
+    if (frontendReceivedAtMs == null) {
+      return;
+    }
+    transportState.first = window.requestAnimationFrame(() => {
+      transportState.first = null;
+      transportState.second = window.requestAnimationFrame(() => {
+        transportState.second = null;
+        if (transportState.token !== token) return;
+        updateTableCacheDiagnostics({
+          cacheHit,
+          diagnosticJsonEncodeMs: nextMetrics.diagnosticJsonEncodeMs,
+          postReceivePaintMs: roundMetric(performance.now() - frontendReceivedAtMs),
+          diagnosticJsonBytes: nextMetrics.diagnosticJsonBytes,
+        });
+      });
+    });
+  }, [cancelActiveTransportMeasurement, updateTableCacheDiagnostics]);
+  const endTableMutation = useCallback(() => {
+    requestEpochRef.current?.endMutation();
+    endHistoryTableMutation();
+  }, [endHistoryTableMutation]);
   const tryBeginTableMutation = useCallback(() => {
     if (!tryBeginHistoryTableMutation()) return false;
     requestEpochRef.current!.beginMutation();
     pendingWindowsRef.current.clear();
+    clearPendingPrefetches();
+    cancelActiveTransportMeasurement();
     return true;
-  }, [tryBeginHistoryTableMutation]);
-  const endTableMutation = useCallback(() => {
-    requestEpochRef.current!.endMutation();
-    endHistoryTableMutation();
-  }, [endHistoryTableMutation]);
-  const getTableCategoricalValues = useCallback(
-    (field: string, search: string) => dataService.queryTableFilterValues(
-      datasetId,
-      field,
-      search,
-      500,
-      loadedFilterGeneration,
-    ),
-    [datasetId, loadedFilterGeneration],
-  );
+  }, [cancelActiveTransportMeasurement, clearPendingPrefetches, tryBeginHistoryTableMutation]);
   const colWidthsRef = useRef<number[]>([]);
   const currentDatasetIdRef = useRef<string | null>(datasetId);
   if (data) dataRef.current = data;
   colWidthsRef.current = colWidths;
   currentDatasetIdRef.current = datasetId;
+  logicalStartRef.current = logicalStart;
+
+  const releaseTableQuerySession = useCallback(async (sessionId: string | null) => {
+    if (!sessionId) return;
+    try {
+      await dataService.releaseTableQuerySession(sessionId);
+    } catch (error) {
+      console.warn("Failed to release table query session", error);
+    }
+  }, []);
+
+  const resetTableQuerySession = useCallback((nextState: TableQuerySessionViewState = IDLE_TABLE_QUERY_SESSION_STATE) => {
+    tableQuerySessionRef.current = nextState;
+    setTableQuerySession(nextState);
+  }, []);
+
+  const resolveColumnIds = useCallback((columnNames: string[]): string[] | null => {
+    const descriptorByName = new Map(
+      columnDescriptorsRef.current.map((descriptor) => [descriptor.name, descriptor]),
+    );
+    const columnIds: string[] = [];
+    for (const name of columnNames) {
+      if (name === "_row_id") continue;
+      const columnId = descriptorByName.get(name)?.columnId;
+      if (!columnId) return null;
+      columnIds.push(columnId);
+    }
+    return columnIds;
+  }, []);
+
+  const buildWindowRequest = useCallback((input: {
+    start: number;
+    count: number;
+    sort: TableWindowCacheRequest["sort"];
+    filters: TableWindowCacheRequest["filters"];
+    generation: number;
+    columnIds: string[];
+    querySignature: string;
+    sessionId: string | null;
+  }): TableWindowCacheRequest => ({
+    datasetId,
+    start: input.start,
+    count: input.count,
+    sort: input.sort,
+    filters: input.filters,
+    generation: input.generation,
+    sessionKey: buildTableWindowSessionKey(input.querySignature, input.sessionId),
+    columnIds: [...input.columnIds],
+    transportVersion: TABLE_TRANSPORT_VERSION,
+  }), [datasetId]);
+
+  const syncTableQuerySession = useCallback((signature: string, status: TableQuerySessionStatus) => {
+    const nextState: TableQuerySessionViewState = {
+      signature,
+      sessionId: status.sessionId,
+      state: status.state,
+      totalRows: status.totalRows,
+    };
+    tableQuerySessionRef.current = nextState;
+    setTableQuerySession((previous) => {
+      if (
+        previous.signature === nextState.signature
+        && previous.sessionId === nextState.sessionId
+        && previous.state === nextState.state
+        && previous.totalRows === nextState.totalRows
+      ) {
+        return previous;
+      }
+      return nextState;
+    });
+  }, []);
+
+  const pollUntilTableQuerySessionReady = useCallback(async (
+    signature: string,
+    sessionId: string,
+    epoch: number,
+    isCurrentDatasetLoad: () => boolean,
+  ) => {
+    const pollSeq = ++tableQuerySessionPollSeqRef.current;
+    while (true) {
+      if (pollSeq !== tableQuerySessionPollSeqRef.current) return null;
+      if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return null;
+      const status = await dataService.getTableQuerySessionStatus(sessionId);
+      if (pollSeq !== tableQuerySessionPollSeqRef.current) return null;
+      if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return null;
+      if (status.state === "ready" || status.state === "failed" || status.state === "cancelled") {
+        syncTableQuerySession(signature, status);
+        return status;
+      }
+      syncTableQuerySession(signature, status);
+      await new Promise((resolve) => window.setTimeout(resolve, 25));
+    }
+  }, [syncTableQuerySession]);
+
+  const scheduleNextPrefetch = useCallback(() => {
+    while (pendingPrefetchRequestsRef.current.length > 0) {
+      const nextRequest = pendingPrefetchRequestsRef.current.shift()!;
+      if (!requestEpochRef.current!.isCurrent(nextRequest.localEpoch)) {
+        continue;
+      }
+      if (windowCacheRef.current!.get(nextRequest.windowRequest)) {
+        continue;
+      }
+      if (pendingWindowsRef.current.has(nextRequest.cacheKey)) {
+        continue;
+      }
+      pendingWindowsRef.current.add(nextRequest.cacheKey);
+      const droppedRequest = tableNavigationSchedulerRef.current!.schedule(nextRequest);
+      if (droppedRequest) {
+        pendingWindowsRef.current.delete(droppedRequest.cacheKey);
+      }
+      tableNavigationSchedulerRef.current!.flush();
+      break;
+    }
+  }, []);
+
+  const queueNeighborPrefetches = useCallback((input: {
+    baseRequest: TableWindowCacheRequest;
+    totalRows: number;
+    sort: TableNavigationRequest["sort"];
+    filters: TableNavigationRequest["filters"];
+    sessionId: string | null;
+  }) => {
+    clearPendingPrefetches();
+    const epoch = requestEpochRef.current!.current;
+    const candidateStarts = [
+      input.baseRequest.start + input.baseRequest.count,
+      Math.max(0, input.baseRequest.start - input.baseRequest.count),
+    ].filter((start, index, values) => {
+      if (start >= input.totalRows || start === input.baseRequest.start) {
+        return false;
+      }
+      return values.indexOf(start) === index;
+    });
+    pendingPrefetchRequestsRef.current = candidateStarts.map((start) => {
+      const count = Math.min(input.baseRequest.count, input.totalRows - start);
+      const windowRequest = buildWindowRequest({
+        start,
+        count,
+        sort: input.sort,
+        filters: input.filters,
+        generation: input.baseRequest.generation,
+        columnIds: input.baseRequest.columnIds,
+        querySignature: loadedFilterKeyRef.current,
+        sessionId: input.sessionId,
+      });
+      return {
+        version: 1 as const,
+        requestId: `table-nav-prefetch:${datasetId}:${input.baseRequest.generation}:${++tableNavigationRequestSeqRef.current}`,
+        datasetId,
+        generation: input.baseRequest.generation,
+        start: windowRequest.start,
+        count: windowRequest.count,
+        columnIds: [...windowRequest.columnIds],
+        sort: input.sort,
+        filters: input.filters,
+        sessionId: input.sessionId,
+        windowRequest,
+        cacheKey: buildTableWindowPendingKey(windowRequest),
+        localEpoch: epoch,
+        prefetch: true,
+      };
+    }).filter((request) => request.windowRequest.count > 0);
+    if (pendingPrefetchRequestsRef.current.length === 0) {
+      return;
+    }
+    const afterPaintState = pendingPrefetchPaintFramesRef.current;
+    const token = ++afterPaintState.token;
+    afterPaintState.handle = scheduleAfterPaint(() => {
+      afterPaintState.handle = null;
+      if (pendingPrefetchPaintFramesRef.current.token !== token) return;
+      if (!requestEpochRef.current!.isCurrent(epoch)) return;
+      scheduleNextPrefetch();
+    });
+  }, [buildWindowRequest, clearPendingPrefetches, datasetId, scheduleNextPrefetch]);
 
   useLayoutEffect(() => {
     return () => {
+      void tableNavigationSchedulerRef.current?.invalidate({ datasetId, generation: datasetGeneration });
+      tableQuerySessionPollSeqRef.current += 1;
+      clearPendingPrefetches();
+      cancelActiveTransportMeasurement();
+      const activeSessionId = tableQuerySessionRef.current.sessionId;
+      resetTableQuerySession();
+      void releaseTableQuerySession(activeSessionId);
       currentDatasetIdRef.current = null;
     };
-  }, []);
+  }, [cancelActiveTransportMeasurement, clearPendingPrefetches, datasetGeneration, datasetId, releaseTableQuerySession, resetTableQuerySession]);
 
   useEffect(() => {
     if (!readOnly) return;
@@ -986,15 +1443,157 @@ export function DataTableView({
     setLoadedDataLoadToken(null);
     setLoadedDisplayPropsLoadToken(null);
     windowCacheRef.current!.clear();
+    cancelActiveTransportMeasurement();
+    updateTableCacheDiagnostics({ cacheHit: null, ...EMPTY_TABLE_TRANSPORT_METRICS });
     pendingWindowsRef.current.clear();
+    clearPendingPrefetches();
     const serializedFilters = serializeTableWindowFilters(filters);
-    loadedFilterKeyRef.current = JSON.stringify(serializedFilters);
+    const currentSort = tableSortRef.current;
+    const requiresPreparedSession = serializedFilters.length > 0 || currentSort !== null;
+    const previousQueryKey = loadedFilterKeyRef.current;
+    const nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
+    loadedFilterKeyRef.current = nextQueryKey;
+    const provisionalTotalRows = nextQueryKey === previousQueryKey && requiresPreparedSession
+      ? (tableQuerySessionRef.current.totalRows ?? datasetRowCount)
+      : datasetRowCount;
+    windowStartRef.current = start;
+    setWindowStart(start);
+    setData((previous) => {
+      if (!previous) return previous;
+      const nextData: TableQueryResult = {
+        ...previous,
+        rows: [],
+        totalRows: provisionalTotalRows,
+        page: 0,
+        pageSize: 0,
+      };
+      dataRef.current = nextData;
+      return nextData;
+    });
     try {
+      let sessionStatus: TableQuerySessionStatus | null = null;
+      let sessionSignature: string | null = null;
+      const hydrateReadySessionWindow = async (readyStatus: TableQuerySessionStatus) => {
+        if (!readyStatus.sessionId) return;
+        const visibleColumnNames = (dataRef.current?.columns ?? [])
+          .filter((column) => column !== "_row_id");
+        const columnIds = resolveColumnIds(visibleColumnNames);
+        if (!columnIds || columnIds.length === 0) return;
+        const windowRequest = buildWindowRequest({
+          start,
+          count: TABLE_WINDOW_SIZE,
+          sort: currentSort,
+          filters: serializedFilters,
+          generation: generationRef.current,
+          columnIds,
+          querySignature: nextQueryKey,
+          sessionId: readyStatus.sessionId,
+        });
+        const navigationResult: FrontendMeasuredTableNavigationResult = {
+          ...(await dataService.queryTableNavigationWindow({
+            version: 1,
+            requestId: `table-nav:${requestedDatasetId}:${generationRef.current}:${++tableNavigationRequestSeqRef.current}`,
+            datasetId: requestedDatasetId,
+            generation: generationRef.current,
+            start,
+            count: TABLE_WINDOW_SIZE,
+            columnIds: [...columnIds],
+            sort: currentSort,
+            filters: serializedFilters,
+            sessionId: readyStatus.sessionId,
+            includeTransportDiagnostics: TABLE_NAVIGATION_RUNTIME_DIAGNOSTICS,
+          })),
+          frontendReceivedAtMs: performance.now(),
+        };
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        windowCacheRef.current!.put(windowRequest, {
+          columns: navigationResult.columns,
+          columnTypes: navigationResult.columnTypes,
+          rows: navigationResult.rows,
+          totalRows: navigationResult.totalRows,
+          start: navigationResult.start,
+          generation: navigationResult.generation,
+        });
+        windowCacheRef.current!.pin(windowRequest);
+        scheduleActiveTransportDiagnostics(false, {
+          frontendReceivedAtMs: navigationResult.frontendReceivedAtMs,
+          diagnosticJsonEncodeMs: navigationResult.timings.diagnosticJsonEncodeMs ?? null,
+          diagnosticJsonBytes: navigationResult.timings.diagnosticJsonBytes ?? null,
+        });
+        const nextWindowData: TableQueryResult = {
+          columns: navigationResult.columns,
+          columnTypes: navigationResult.columnTypes,
+          rows: navigationResult.rows,
+          totalRows: navigationResult.totalRows,
+          page: 0,
+          pageSize: navigationResult.rows.length,
+        };
+        windowStartRef.current = navigationResult.start;
+        setWindowStart(navigationResult.start);
+        dataRef.current = nextWindowData;
+        setData(nextWindowData);
+        queueNeighborPrefetches({
+          baseRequest: windowRequest,
+          totalRows: navigationResult.totalRows,
+          sort: currentSort,
+          filters: serializedFilters,
+          sessionId: readyStatus.sessionId,
+        });
+      };
+      if (requiresPreparedSession) {
+        if (columnDescriptorsRef.current.length === 0) {
+          try {
+            columnDescriptorsRef.current = await dataService.getColumnDescriptors(requestedDatasetId);
+          } catch {
+            if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+            columnDescriptorsRef.current = [];
+          }
+        }
+        const descriptorByName = new Map(columnDescriptorsRef.current.map((descriptor) => [descriptor.name, descriptor]));
+        const visibleColumns = dataRef.current?.columns?.filter((column) => column !== "_row_id")
+          ?? columnDescriptorsRef.current.map((descriptor) => descriptor.name);
+        const columnIds = visibleColumns
+          .map((name) => descriptorByName.get(name)?.columnId ?? null)
+          .filter((columnId): columnId is string => columnId != null);
+        if (columnIds.length > 0) {
+          const sessionRequest: TableQuerySessionRequest = {
+            datasetId: requestedDatasetId,
+            generation: datasetGeneration,
+            sort: currentSort,
+            filters: serializedFilters,
+            columnIds,
+          };
+          sessionSignature = buildTableQuerySessionSignature(sessionRequest);
+          const previousSession = tableQuerySessionRef.current;
+          if (previousSession.signature !== sessionSignature) {
+            tableQuerySessionPollSeqRef.current += 1;
+            const previousSessionId = previousSession.sessionId;
+            resetTableQuerySession({
+              signature: sessionSignature,
+              sessionId: null,
+              state: "preparing",
+              totalRows: null,
+            });
+            void releaseTableQuerySession(previousSessionId);
+          }
+          sessionStatus = await dataService.prepareTableQuerySession(sessionRequest);
+          if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) {
+            void releaseTableQuerySession(sessionStatus.sessionId);
+            return;
+          }
+          syncTableQuerySession(sessionSignature, sessionStatus);
+        }
+      } else if (tableQuerySessionRef.current.sessionId) {
+        tableQuerySessionPollSeqRef.current += 1;
+        const previousSessionId = tableQuerySessionRef.current.sessionId;
+        resetTableQuerySession();
+        void releaseTableQuerySession(previousSessionId);
+      }
       const request = {
         datasetId: requestedDatasetId,
         start,
         count: TABLE_WINDOW_SIZE,
-        sort: null,
+        sort: currentSort,
         filters: serializedFilters,
       };
       const result = await queryTableWindowWithFreshGeneration(
@@ -1003,22 +1602,65 @@ export function DataTableView({
         dataService.queryTableWindow,
       );
       if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
-      windowCacheRef.current!.put({ ...request, generation: result.generation }, result);
+      if (columnDescriptorsRef.current.length === 0) {
+        try {
+          columnDescriptorsRef.current = await dataService.getColumnDescriptors(requestedDatasetId);
+        } catch {
+          if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+          columnDescriptorsRef.current = [];
+        }
+      }
+      const initialColumnIds = resolveColumnIds(result.columns);
+      const initialWindowRequest = initialColumnIds
+        ? buildWindowRequest({
+          start: request.start,
+          count: request.count,
+          sort: currentSort,
+          filters: serializedFilters,
+          generation: result.generation,
+          columnIds: initialColumnIds,
+          querySignature: nextQueryKey,
+          sessionId: sessionStatus?.state === "ready" ? sessionStatus.sessionId : null,
+        })
+        : null;
+      if (initialWindowRequest) {
+        windowCacheRef.current!.put(initialWindowRequest, result);
+        windowCacheRef.current!.pin(initialWindowRequest);
+        updateTableCacheDiagnostics({ cacheHit: false, ...EMPTY_TABLE_TRANSPORT_METRICS });
+      }
       const nextData: TableQueryResult = {
         columns: result.columns,
         columnTypes: result.columnTypes,
         rows: result.rows,
-        totalRows: result.totalRows,
+        totalRows: sessionStatus?.state === "ready"
+          ? (sessionStatus.totalRows ?? result.totalRows)
+          : (requiresPreparedSession ? datasetRowCount : result.totalRows),
         page: 0,
         pageSize: result.rows.length,
       };
       generationRef.current = result.generation;
-      setLoadedFilterGeneration(result.generation);
       windowStartRef.current = result.start;
       setWindowStart(result.start);
       setData(nextData);
       dataRef.current = nextData;
+      if (initialWindowRequest) {
+        queueNeighborPrefetches({
+          baseRequest: initialWindowRequest,
+          totalRows: nextData.totalRows,
+          sort: currentSort,
+          filters: serializedFilters,
+          sessionId: sessionStatus?.state === "ready" ? sessionStatus.sessionId : null,
+        });
+      }
       setLoadedDataLoadToken(loadToken);
+      try {
+        const descriptors = await dataService.getColumnDescriptors(requestedDatasetId);
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        setColumnDescriptors(descriptors);
+      } catch {
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        setColumnDescriptors([]);
+      }
       // Load saved display props
       try {
         const props = await dataService.getColumnDisplayProps(requestedDatasetId);
@@ -1051,6 +1693,31 @@ export function DataTableView({
         if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
         setLoadedDisplayPropsLoadToken(null);
       }
+
+      if (requiresPreparedSession && sessionStatus?.state === "ready") {
+        await hydrateReadySessionWindow(sessionStatus);
+      }
+
+      if (requiresPreparedSession && sessionStatus && sessionSignature && sessionStatus.state !== "ready") {
+        const readyStatus = await pollUntilTableQuerySessionReady(
+          sessionSignature,
+          sessionStatus.sessionId,
+          epoch,
+          isCurrentDatasetLoad,
+        );
+        if (!readyStatus || readyStatus.state !== "ready") return;
+        if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+        setData((previous) => {
+          if (!previous) return previous;
+          const next = {
+            ...previous,
+            totalRows: readyStatus.totalRows ?? previous.totalRows,
+          };
+          dataRef.current = next;
+          return next;
+        });
+        await hydrateReadySessionWindow(readyStatus);
+      }
     } catch (e) {
       if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
       console.error("Failed to load table:", e);
@@ -1059,10 +1726,101 @@ export function DataTableView({
       setLoadedDisplayPropsLoadToken(null);
       setWindowStart(0);
       windowStartRef.current = 0;
+      setColumnDescriptors([]);
+      columnDescriptorsRef.current = [];
       setData(null);
       dataRef.current = null;
     }
-  }, [datasetId]);
+  }, [buildWindowRequest, cancelActiveTransportMeasurement, clearPendingPrefetches, datasetGeneration, datasetId, queueNeighborPrefetches, resolveColumnIds, scheduleActiveTransportDiagnostics, updateTableCacheDiagnostics]);
+  navigationReloadRef.current = () => {
+    void load(tableFiltersRef.current, windowStartRef.current);
+  };
+  const invalidateScheduledNavigation = useCallback(async (target: { datasetId: string; generation: number }) => {
+    const droppedRequest = await tableNavigationSchedulerRef.current?.invalidate(target);
+    if (droppedRequest) {
+      pendingWindowsRef.current.delete(droppedRequest.cacheKey);
+    }
+    clearPendingPrefetches();
+  }, [clearPendingPrefetches]);
+  if (!tableNavigationSchedulerRef.current) {
+    tableNavigationSchedulerRef.current = new TableNavigationScheduler<ScheduledTableNavigationRequest, FrontendMeasuredTableNavigationResult>({
+      settleMs: TABLE_NAVIGATION_SETTLE_MS,
+      clock: browserTableNavigationClock,
+      start: async ({ windowRequest: _windowRequest, cacheKey: _cacheKey, localEpoch: _localEpoch, prefetch, ...request }) => {
+        const result = await dataService.queryTableNavigationWindow({
+          ...request,
+          includeTransportDiagnostics: TABLE_NAVIGATION_RUNTIME_DIAGNOSTICS && !prefetch,
+        });
+        return {
+          ...result,
+          frontendReceivedAtMs: prefetch ? undefined : performance.now(),
+        };
+      },
+      cancel: (requestId) => dataService.cancelTableNavigationRequest(requestId),
+      isCancelledError: (error) => String(error).includes("Cancelled:"),
+      onResult: (result, request) => {
+        pendingWindowsRef.current.delete(request.cacheKey);
+        if (!requestEpochRef.current!.isCurrent(request.localEpoch)) return;
+        if (!windowCacheRef.current!.put(request.windowRequest, {
+          columns: result.columns,
+          columnTypes: result.columnTypes,
+          rows: result.rows,
+          totalRows: result.totalRows,
+          start: result.start,
+          generation: result.generation,
+        })) {
+          return;
+        }
+        if (request.prefetch) {
+          updateTableCacheDiagnostics();
+          scheduleNextPrefetch();
+          return;
+        }
+        windowCacheRef.current!.pin(request.windowRequest);
+        if (!requestEpochRef.current!.isLatest({ epoch: request.localEpoch, key: request.cacheKey })) return;
+        const assembled = windowCacheRef.current!.get(request.windowRequest);
+        if (!assembled) return;
+        const nextData: TableQueryResult = {
+          columns: assembled.columns,
+          columnTypes: assembled.columnTypes,
+          rows: assembled.rows,
+          totalRows: assembled.totalRows,
+          page: 0,
+          pageSize: assembled.rows.length,
+        };
+        windowStartRef.current = assembled.start;
+        setWindowStart(assembled.start);
+        dataRef.current = nextData;
+        setData(nextData);
+        scheduleActiveTransportDiagnostics(false, {
+          frontendReceivedAtMs: result.frontendReceivedAtMs,
+          diagnosticJsonEncodeMs: result.timings.diagnosticJsonEncodeMs ?? null,
+          diagnosticJsonBytes: result.timings.diagnosticJsonBytes ?? null,
+        });
+        queueNeighborPrefetches({
+          baseRequest: request.windowRequest,
+          totalRows: assembled.totalRows,
+          sort: request.sort,
+          filters: request.filters,
+          sessionId: request.sessionId ?? null,
+        });
+      },
+      onError: (error, request) => {
+        pendingWindowsRef.current.delete(request.cacheKey);
+        if (request.prefetch) {
+          scheduleNextPrefetch();
+          return;
+        }
+        if (!requestEpochRef.current!.isLatest({ epoch: request.localEpoch, key: request.cacheKey })) return;
+        if (isStaleDatasetGenerationError(error)) {
+          navigationReloadRef.current();
+          return;
+        }
+        updateTableCacheDiagnostics({ cacheHit: false, ...EMPTY_TABLE_TRANSPORT_METRICS });
+        setErrorMsg(String(error));
+      },
+    });
+  }
 
   /** Save current display props to backend.
    *
@@ -1097,7 +1855,10 @@ export function DataTableView({
 
   useEffect(() => {
     skipFilterReloadRef.current = true;
+    columnDescriptorsRef.current = [];
+    void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
     void load(tableFiltersRef.current, 0);
+    setLogicalStart(0);
     setActiveCell(null);
     setEditCell(null);
     setSelectedRows(EMPTY_NUM_SET);
@@ -1111,8 +1872,9 @@ export function DataTableView({
     setShowInsertMultiCols(false);
     setRenameCol(null);
     setShowAddCol(false);
+    setCalculatedDialog(null);
     setShowTableFilters(false);
-  }, [datasetId, load]);
+  }, [datasetGeneration, datasetId, load]);
 
   const {
     showManageExtras,
@@ -1132,6 +1894,12 @@ export function DataTableView({
   useEffect(() => {
     const previous = datasetRevisionRef.current;
     datasetRevisionRef.current = datasetRevision;
+    if (previous && (previous.datasetId !== datasetRevision.datasetId || previous.generation !== datasetRevision.generation)) {
+      void invalidateScheduledNavigation({
+        datasetId: previous.datasetId,
+        generation: datasetRevision.generation,
+      });
+    }
     if (!shouldReloadDatasetRevision(previous, datasetRevision)) return;
     void load(tableFiltersRef.current, windowStartRef.current);
   }, [datasetRevision, load]);
@@ -1141,12 +1909,15 @@ export function DataTableView({
       skipFilterReloadRef.current = false;
       return;
     }
-    const filterKey = JSON.stringify(serializeTableWindowFilters(tableFilters));
-    if (filterKey === loadedFilterKeyRef.current) return;
-    if (tableRef.current) tableRef.current.scrollTop = 0;
-    setScrollTop(0);
+    const queryKey = buildTableQuerySignature(
+      serializeTableWindowFilters(tableFilters),
+      tableSort,
+    );
+    if (queryKey === loadedFilterKeyRef.current) return;
+    void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
+    setLogicalStart(0);
     void load(tableFilters, 0);
-  }, [tableFilters, load]);
+  }, [datasetGeneration, datasetId, invalidateScheduledNavigation, load, tableFilters, tableSort]);
 
   // Apply pending restore from history store (undo/redo/jumpTo)
   useEffect(() => {
@@ -1160,24 +1931,15 @@ export function DataTableView({
 
   useEffect(() => {
     if (historyRevision === 0) return;
+    void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
     void load();
     void refreshAndMarkDirty();
-  }, [historyRevision, load, refreshAndMarkDirty]);
+  }, [datasetGeneration, datasetId, historyRevision, invalidateScheduledNavigation, load, refreshAndMarkDirty]);
 
   // Auto-scroll to keep activeCell visible (virtual scrolling) — both axes.
   useEffect(() => {
     if (!activeCell || !tableRef.current) return;
     const wrapper = tableRef.current;
-    const headerH = Math.max(1, Math.round(BASE_HEADER_HEIGHT * zoom));
-    const rowTop = activeCell.row * ROW_HEIGHT + headerH;
-    const rowBottom = rowTop + ROW_HEIGHT;
-    const viewTop = wrapper.scrollTop;
-    const viewBottom = viewTop + wrapper.clientHeight;
-    if (rowTop < viewTop + headerH) {
-      wrapper.scrollTop = rowTop - headerH;
-    } else if (rowBottom > viewBottom) {
-      wrapper.scrollTop = rowBottom - wrapper.clientHeight;
-    }
     // Horizontal: ensure activeCell column is visible (skip the sticky row hdr).
     const colLeft = ROW_HDR_WIDTH + (colOffsets[activeCell.col] ?? 0);
     const colRight = ROW_HDR_WIDTH + (colOffsets[activeCell.col + 1] ?? colLeft);
@@ -1194,16 +1956,6 @@ export function DataTableView({
   useEffect(() => {
     if (!selection || !tableRef.current) return;
     const wrapper = tableRef.current;
-    const headerH = Math.max(1, Math.round(BASE_HEADER_HEIGHT * zoom));
-    const rowTop = selection.endRow * ROW_HEIGHT + headerH;
-    const rowBottom = rowTop + ROW_HEIGHT;
-    const viewTop = wrapper.scrollTop;
-    const viewBottom = viewTop + wrapper.clientHeight;
-    if (rowTop < viewTop + headerH) {
-      wrapper.scrollTop = rowTop - headerH;
-    } else if (rowBottom > viewBottom) {
-      wrapper.scrollTop = rowBottom - wrapper.clientHeight;
-    }
     const colLeft = ROW_HDR_WIDTH + (colOffsets[selection.endCol] ?? 0);
     const colRight = ROW_HDR_WIDTH + (colOffsets[selection.endCol + 1] ?? colLeft);
     const viewLeft = wrapper.scrollLeft;
@@ -1281,6 +2033,126 @@ export function DataTableView({
   const rowIdIdx = data ? data.columns.indexOf("_row_id") : -1;
   const cols = useMemo(() => data ? data.columns.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
   const colTypes = useMemo(() => data ? data.columnTypes.filter((_, i) => i !== rowIdIdx) : [], [data, rowIdIdx]);
+  const visibleDescriptors = useMemo(() => {
+    const byName = new Map(columnDescriptors.map((descriptor) => [descriptor.name, descriptor]));
+    return cols.map((name, index) => byName.get(name) ?? {
+      columnId: `visible-${index}`,
+      name,
+      sqlType: colTypes[index] ?? "VARCHAR",
+    });
+  }, [colTypes, cols, columnDescriptors]);
+  const calculatedTitles = useMemo(
+    () => visibleDescriptors.map((descriptor) => descriptor.calculated ? formatCalculatedDescriptorTitle(t, descriptor.calculated, visibleDescriptors) : undefined),
+    [t, visibleDescriptors],
+  );
+  const getDescriptorAt = useCallback((colIdx: number) => visibleDescriptors[colIdx] ?? null, [visibleDescriptors]);
+  const getCalculatedAt = useCallback((colIdx: number) => getDescriptorAt(colIdx)?.calculated ?? null, [getDescriptorAt]);
+  const showCalculatedReadOnlyError = useCallback((colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    setErrorMsg(t("dataTable.calculatedColumn.readOnly", {
+      defaultValue: "Calculated columns must be edited through Calculated Column.",
+      name: descriptor?.name ?? colLetter(colIdx),
+    }));
+  }, [getDescriptorAt, t]);
+  const containsCalculatedColumn = useCallback((indices: Iterable<number>) => {
+    for (const index of indices) {
+      if (getCalculatedAt(index)) return true;
+    }
+    return false;
+  }, [getCalculatedAt]);
+  const openCreateCalculatedColumn = useCallback((atIndex: number | null = null) => {
+    const existingNames = new Set(cols);
+    let suffix = 1;
+    let outputName = t("dataTable.calculatedColumn.defaultName", { defaultValue: "Calculated", n: suffix });
+    while (existingNames.has(outputName)) {
+      suffix += 1;
+      outputName = t("dataTable.calculatedColumn.defaultName", { defaultValue: "Calculated", n: suffix });
+    }
+    setCalculatedDialog({
+      mode: "create",
+      outputName,
+      formulaText: "",
+      atIndex,
+      outputColumnId: null,
+      formulaId: null,
+    });
+    setColMenu(null);
+    setCornerMenu(null);
+  }, [cols, t]);
+  const openConvertExistingColumn = useCallback((colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    if (!descriptor || descriptor.calculated) return;
+    setCalculatedDialog({
+      mode: "convertExisting",
+      outputName: descriptor.name,
+      formulaText: "",
+      atIndex: colIdx,
+      outputColumnId: descriptor.columnId,
+      formulaId: null,
+    });
+    setColMenu(null);
+  }, [getDescriptorAt]);
+  const openEditCalculatedColumn = useCallback((colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    const calculated = descriptor?.calculated;
+    if (!descriptor || !calculated) return;
+    setCalculatedDialog({
+      mode: "edit",
+      outputName: descriptor.name,
+      formulaText: calculated.displayFormulaText,
+      atIndex: colIdx,
+      outputColumnId: descriptor.columnId,
+      formulaId: calculated.formulaId,
+    });
+    setColMenu(null);
+  }, [getDescriptorAt]);
+  const handleCalculatedDialogApplied = useCallback(async (
+    result: CalculatedColumnMutationResult,
+    request: UpsertCalculatedColumnRequest,
+  ) => {
+    recordTable(
+      request.formulaId
+        ? t("history.editCalculatedColumn", { defaultValue: "Edit calculated column" })
+        : t("history.createCalculatedColumn", { defaultValue: "Create calculated column" }),
+      { kind: "changeSet", datasetId, changeSetId: result.changeSetId },
+    );
+    setCalculatedDialog(null);
+    await load();
+    await refreshAndMarkDirty();
+  }, [datasetId, load, recordTable, refreshAndMarkDirty, t]);
+  const handleConvertCalculatedToValues = useCallback(async (colIdx: number) => {
+    const descriptor = getDescriptorAt(colIdx);
+    const calculated = descriptor?.calculated;
+    if (!descriptor || !calculated) return;
+    const confirmed = window.confirm(t("dataTable.calculatedColumn.confirmConvert", {
+      name: descriptor.name,
+      defaultValue: `Convert calculated column "${descriptor.name}" to values?`,
+    }));
+    if (!confirmed) {
+      setColMenu(null);
+      return;
+    }
+    if (!tryBeginTableMutation()) return;
+    try {
+      const result = await dataService.convertCalculatedColumnToValues(
+        datasetId,
+        descriptor.columnId,
+        generationRef.current,
+      );
+      recordTable(t("history.convertCalculatedColumnToValues", { defaultValue: "Convert calculated column to values" }), {
+        kind: "changeSet",
+        datasetId,
+        changeSetId: result.changeSetId,
+      });
+      setColMenu(null);
+      await load();
+      await refreshAndMarkDirty();
+    } catch (error) {
+      setErrorMsg(String(error));
+    } finally {
+      endTableMutation();
+    }
+  }, [datasetId, endTableMutation, getDescriptorAt, load, recordTable, refreshAndMarkDirty, t, tryBeginTableMutation]);
 
   // All rows stripped of _row_id (used by filter popover for unique values)
   const allRows = useMemo(() =>
@@ -1451,18 +2323,6 @@ export function DataTableView({
     setSelectedCols(EMPTY_NUM_SET);
     setActiveCell(null);
     setSelection(null);
-    // Scroll to the first selected row.
-    const wrapper = tableRef.current;
-    if (wrapper && firstRow !== Infinity) {
-      const headerH = Math.max(1, Math.round(BASE_HEADER_HEIGHT * zoom));
-      const rowTop = firstRow * ROW_HEIGHT + headerH;
-      const rowBottom = rowTop + ROW_HEIGHT;
-      const viewTop = wrapper.scrollTop;
-      const viewBottom = viewTop + wrapper.clientHeight;
-      if (rowTop < viewTop + headerH || rowBottom > viewBottom) {
-        wrapper.scrollTop = rowTop - headerH;
-      }
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickedCells, pickedCellsTick, data, rowIdIdx, cols, windowStart]);
 
@@ -1554,8 +2414,9 @@ export function DataTableView({
           : t("dataTable.dimensions", { rows: datasetRowCount, cols: datasetColCount })
         : "",
       selectionStats,
+      tableCacheDiagnostics,
     });
-  }, [activeCell, activeDatasetMeta, selection, selectedRows, selectedCols, data, datasetColCount, datasetRowCount, displayRows, displayRowAt, cols, setStatusInfo, tableFilters, t, windowStart]);
+  }, [activeCell, activeDatasetMeta, selection, selectedRows, selectedCols, data, datasetColCount, datasetRowCount, displayRows, displayRowAt, cols, setStatusInfo, tableCacheDiagnostics, tableFilters, t, windowStart]);
 
   // Precompute active row/col ranges for className computation.
   // Row/col headers light up for:
@@ -1640,38 +2501,54 @@ export function DataTableView({
   const headerHeight = Math.max(1, Math.round(BASE_HEADER_HEIGHT * zoom));
   const visibleAreaHeight = wrapperHeight - headerHeight;
   const totalRowCount = data?.totalRows ?? 0;
-  const virtualRange = useMemo(() => {
-    const startIdx = Math.max(0, Math.floor((scrollTop - headerHeight) / ROW_HEIGHT) - OVERSCAN);
-    const visibleCount = Math.ceil(visibleAreaHeight / ROW_HEIGHT) + 2 * OVERSCAN;
-    const endIdx = Math.min(totalRowCount, startIdx + visibleCount);
-    return { startIdx, endIdx };
-  }, [scrollTop, totalRowCount, visibleAreaHeight, headerHeight, ROW_HEIGHT]);
-  const retainedRenderRange = useMemo(() => {
-    const startIdx = Math.max(virtualRange.startIdx, windowStart);
-    const endIdx = Math.min(virtualRange.endIdx, windowStart + displayRows.length);
-    return endIdx > startIdx
-      ? { startIdx, endIdx }
-      : { startIdx: virtualRange.startIdx, endIdx: virtualRange.startIdx };
-  }, [displayRows.length, virtualRange, windowStart]);
-  const placeholderRange = useMemo(
-    () => calculatePlaceholderRange(
-      virtualRange.startIdx,
-      virtualRange.endIdx,
-      windowStart,
-      displayRows.length,
-    ),
-    [displayRows.length, virtualRange, windowStart],
-  );
-  const renderedRange = placeholderRange ?? retainedRenderRange;
+  const activePreparedSessionId = tableQuerySession.state === "ready" ? tableQuerySession.sessionId : null;
+  const visibleSlotCount = Math.max(1, Math.ceil(Math.max(0, visibleAreaHeight) / ROW_HEIGHT));
+  const maxLogicalStart = Math.max(0, totalRowCount - visibleSlotCount);
+
+  const setLogicalStartClamped = useCallback((next: number | ((previous: number) => number)) => {
+    setLogicalStart((previous) => {
+      const candidate = typeof next === "function" ? next(previous) : next;
+      const clampedValue = clamp(candidate, 0, maxLogicalStart);
+      logicalStartRef.current = clampedValue;
+      return clampedValue;
+    });
+  }, [maxLogicalStart]);
+
+  useEffect(() => {
+    setLogicalStartClamped((previous) => previous);
+  }, [setLogicalStartClamped]);
+
+  const ensureLogicalRowVisible = useCallback((rowIndex: number) => {
+    setLogicalStartClamped((previous) => {
+      if (rowIndex < previous) return rowIndex;
+      const visibleEnd = previous + visibleSlotCount - 1;
+      if (rowIndex > visibleEnd) return rowIndex - visibleSlotCount + 1;
+      return previous;
+    });
+  }, [setLogicalStartClamped, visibleSlotCount]);
+
+  const handleLogicalWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (event.shiftKey) return;
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    event.preventDefault();
+    const rawDelta = event.deltaMode === 1 ? event.deltaY : event.deltaY / ROW_HEIGHT;
+    const deltaRows = rawDelta === 0 ? 0 : (Math.abs(rawDelta) < 1 ? Math.sign(rawDelta) : Math.round(rawDelta));
+    if (deltaRows === 0) return;
+    setLogicalStartClamped((previous) => previous + deltaRows);
+  }, [ROW_HEIGHT, setLogicalStartClamped]);
 
   useEffect(() => {
     if (!data || data.totalRows === 0) return;
     if (!requestEpochRef.current!.canIssueViewportRequest) return;
+    const serializedFilters = serializeTableWindowFilters(tableFiltersRef.current);
+    const requiresPreparedSession = serializedFilters.length > 0 || tableSortRef.current !== null;
+    if (requiresPreparedSession && !activePreparedSessionId) return;
+    clearPendingPrefetches();
     const range = calculateTableWindow({
       totalRows: data.totalRows,
       rowHeight: ROW_HEIGHT,
-      scrollTop: Math.max(0, scrollTop - headerHeight),
-      viewportHeight: visibleAreaHeight,
+      scrollTop: logicalStart * ROW_HEIGHT,
+      viewportHeight: Math.max(ROW_HEIGHT, visibleSlotCount * ROW_HEIGHT),
       overscanRows: OVERSCAN,
       pageSize: TABLE_WINDOW_SIZE,
     });
@@ -1679,51 +2556,80 @@ export function DataTableView({
     const request = {
       datasetId,
       ...range,
-      sort: null,
-      filters: serializeTableWindowFilters(tableFiltersRef.current),
+      sort: tableSortRef.current,
+      filters: serializedFilters,
       generation: generationRef.current,
     };
-    const applyResult = (result: import("@/types/data").TableWindowResult) => {
-      const nextData: TableQueryResult = {
-        columns: result.columns,
-        columnTypes: result.columnTypes,
-        rows: result.rows,
-        totalRows: result.totalRows,
-        page: 0,
-        pageSize: result.rows.length,
-      };
-      windowStartRef.current = result.start;
-      setWindowStart(result.start);
-      dataRef.current = nextData;
-      setData(nextData);
-    };
-    const key = `${request.generation}:${request.start}:${request.count}:${loadedFilterKeyRef.current}`;
-    const trackedRequest = requestEpochRef.current!.track(key);
-    const cached = windowCacheRef.current!.get(request);
+    const columnIds = resolveColumnIds(cols);
+    if (!columnIds) return;
+    const windowRequest = buildWindowRequest({
+      start: request.start,
+      count: request.count,
+      sort: request.sort,
+      filters: request.filters,
+      generation: request.generation,
+      columnIds,
+      querySignature: loadedFilterKeyRef.current,
+      sessionId: activePreparedSessionId,
+    });
+    const key = buildTableWindowPendingKey(windowRequest);
+    const cached = windowCacheRef.current!.get(windowRequest);
     if (cached) {
-      if (cached.start !== windowStartRef.current) applyResult(cached);
+      cancelActiveTransportMeasurement();
+      windowCacheRef.current!.pin(windowRequest);
+      updateTableCacheDiagnostics({ cacheHit: true, ...EMPTY_TABLE_TRANSPORT_METRICS });
+      if (cached.start !== windowStartRef.current) {
+        const nextData: TableQueryResult = {
+          columns: cached.columns,
+          columnTypes: cached.columnTypes,
+          rows: cached.rows,
+          totalRows: cached.totalRows,
+          page: 0,
+          pageSize: cached.rows.length,
+        };
+        windowStartRef.current = cached.start;
+        setWindowStart(cached.start);
+        dataRef.current = nextData;
+        setData(nextData);
+      }
+      queueNeighborPrefetches({
+        baseRequest: windowRequest,
+        totalRows: cached.totalRows,
+        sort: request.sort,
+        filters: request.filters,
+        sessionId: activePreparedSessionId,
+      });
       return;
     }
+    cancelActiveTransportMeasurement();
+    updateTableCacheDiagnostics({ cacheHit: false, ...EMPTY_TABLE_TRANSPORT_METRICS });
     if (pendingWindowsRef.current.has(key)) return;
+    const trackedRequest = requestEpochRef.current!.track(key);
     pendingWindowsRef.current.add(key);
-    void dataService.queryTableWindow(request)
-      .then((result) => {
-        if (!requestEpochRef.current!.isCurrent(trackedRequest.epoch)) return;
-        if (!windowCacheRef.current!.put(request, result)) return;
-        if (!requestEpochRef.current!.isLatest(trackedRequest)) return;
-        const assembled = windowCacheRef.current!.get(request);
-        if (assembled) applyResult(assembled);
-      })
-      .catch((error) => {
-        if (!requestEpochRef.current!.isLatest(trackedRequest)) return;
-        if (isStaleDatasetGenerationError(error)) {
-          void load(tableFiltersRef.current, windowStartRef.current);
-          return;
-        }
-        setErrorMsg(String(error));
-      })
-      .finally(() => pendingWindowsRef.current.delete(key));
-  }, [data?.totalRows, datasetId, headerHeight, load, ROW_HEIGHT, scrollTop, visibleAreaHeight]);
+    const droppedRequest = tableNavigationSchedulerRef.current!.schedule({
+      version: 1 as const,
+      requestId: `table-nav:${datasetId}:${generationRef.current}:${++tableNavigationRequestSeqRef.current}`,
+      datasetId,
+      generation: generationRef.current,
+      start: request.start,
+      count: request.count,
+      columnIds,
+      sort: request.sort,
+      filters: request.filters,
+      sessionId: activePreparedSessionId,
+      windowRequest,
+      cacheKey: key,
+      localEpoch: trackedRequest.epoch,
+      prefetch: false,
+    });
+    if (droppedRequest) {
+      pendingWindowsRef.current.delete(droppedRequest.cacheKey);
+    }
+  }, [activePreparedSessionId, buildWindowRequest, cancelActiveTransportMeasurement, clearPendingPrefetches, cols, data?.totalRows, datasetId, logicalStart, queueNeighborPrefetches, resolveColumnIds, ROW_HEIGHT, updateTableCacheDiagnostics, visibleSlotCount]);
+
+  const handleLogicalInteractionEnd = useCallback(() => {
+    tableNavigationSchedulerRef.current?.flush();
+  }, []);
 
   // Column virtualization: cumulative widths and visible column range.
   // Stored colWidths are in base (zoom-independent) units; scale on output.
@@ -1759,6 +2665,14 @@ export function DataTableView({
   }, [colVirtRange.startIdx, colVirtRange.endIdx]);
   // Normalized selection range (memoized once per selection change).
   const selRangeNorm = useMemo(() => selection ? normalizeRange(selection) : null, [selection]);
+
+  useEffect(() => {
+    if (activeCell) ensureLogicalRowVisible(activeCell.row);
+  }, [activeCell, ensureLogicalRowVisible]);
+
+  useEffect(() => {
+    if (selection) ensureLogicalRowVisible(selection.endRow);
+  }, [selection, ensureLogicalRowVisible]);
 
   // Bucket the discrete cell selection by row so each TableRow can receive a
   // referentially-stable per-row Set. Without this, every TableRow would have
@@ -2127,7 +3041,7 @@ export function DataTableView({
       await load();
       await refreshAndMarkDirty();
     } catch (error) {
-      setErrorMsg(String(error));
+      setErrorMsg(formatCalculatedDependencyDeleteError(t, error) ?? String(error));
     } finally {
       endTableMutation();
     }
@@ -2154,7 +3068,7 @@ export function DataTableView({
       await load();
       await refreshAndMarkDirty();
     } catch (error) {
-      setErrorMsg(String(error));
+      setErrorMsg(formatCalculatedDependencyDeleteError(t, error) ?? String(error));
     } finally {
       endTableMutation();
     }
@@ -2223,30 +3137,23 @@ export function DataTableView({
     if (readOnly) return;
     if (pendingAction) return;
     if (!batchColProps) return;
-    // Apply column widths — user-entered value is visual; store as base.
+    const changedColumnNames = Array.from(batchColProps.checkedCols)
+      .filter((columnIndex) => colTypes[columnIndex] !== batchColType)
+      .map((columnIndex) => cols[columnIndex]);
+    const hasSchemaChanges = changedColumnNames.length > 0;
+    if (hasSchemaChanges && !tryBeginTableMutation()) return;
+    // Prepare column widths — user-entered value is visual; store as base.
     const visualW = Math.max(DEFAULT_COL_WIDTH, Math.round(Number(batchColWidth) || DEFAULT_COL_WIDTH));
     const newW = Math.max(BASE_DEFAULT_COL_WIDTH, Math.round(visualW / zoom));
     const newWidths = [...colWidths];
     for (const ci of batchColProps.checkedCols) {
       newWidths[ci] = newW;
     }
-    setColWidths(newWidths);
-    colWidthsRef.current = newWidths;
-    // Apply column formats
+    // Prepare column formats
     const newFormats = [...colFormats];
     for (const ci of batchColProps.checkedCols) {
       newFormats[ci] = { ...batchColFormat };
     }
-    setColFormats(newFormats);
-    colFormatsRef.current = newFormats;
-    // Sync display props to backend
-    syncDisplayProps(newWidths, newFormats);
-    markDirty();
-    const changedColumnNames = Array.from(batchColProps.checkedCols)
-      .filter((columnIndex) => colTypes[columnIndex] !== batchColType)
-      .map((columnIndex) => cols[columnIndex]);
-    const hasSchemaChanges = changedColumnNames.length > 0;
-    if (hasSchemaChanges && !tryBeginTableMutation()) return;
     try {
       if (hasSchemaChanges) {
         const generation = await dataService.getDatasetGeneration(datasetId);
@@ -2264,6 +3171,12 @@ export function DataTableView({
       } else {
         recordAction(t("history.modifyColumnProps"));
       }
+      setColWidths(newWidths);
+      colWidthsRef.current = newWidths;
+      setColFormats(newFormats);
+      colFormatsRef.current = newFormats;
+      syncDisplayProps(newWidths, newFormats);
+      markDirty();
       await load();
       await refreshAndMarkDirty();
       setBatchColProps(null);
@@ -2387,6 +3300,10 @@ export function DataTableView({
 
   const handleCellDoubleClick = (row: number, col: number, value: unknown) => {
     if (readOnly) return;
+    if (getCalculatedAt(col)) {
+      showCalculatedReadOnlyError(col);
+      return;
+    }
     setActiveCell({ row, col });
     setEditCell({ row, col });
     setEditValue(value == null ? "" : String(value));
@@ -2430,6 +3347,11 @@ export function DataTableView({
     if (!editCell) return;
     if (pendingAction) return;
     const { row: editRow, col: editCol } = editCell;
+    if (getCalculatedAt(editCol)) {
+      setEditCell(null);
+      showCalculatedReadOnlyError(editCol);
+      return;
+    }
     const colType = colTypes[editCol];
     const err = validateCellValue(editValue, colType);
     if (err) {
@@ -2529,6 +3451,10 @@ export function DataTableView({
     if (readOnly) return false;
     if (!activeCell) return;
     const { row: editRow, col: editCol } = activeCell;
+    if (getCalculatedAt(editCol)) {
+      showCalculatedReadOnlyError(editCol);
+      return false;
+    }
     const colType = colTypes[editCol];
     const err = validateCellValue(value, colType);
     if (err) {
@@ -2583,6 +3509,11 @@ export function DataTableView({
   // ---- Clear cells (Delete key) ----
   const clearCells = async (cells: { row: number; col: number }[]) => {
     if (readOnly) return;
+    if (containsCalculatedColumn(cells.map((cell) => cell.col))) {
+      const firstCalculated = cells.find((cell) => getCalculatedAt(cell.col));
+      if (firstCalculated) showCalculatedReadOnlyError(firstCalculated.col);
+      return;
+    }
     if (cells.some(({ row, col }) => !displayRowAt(row) || col < 0 || col >= cols.length)) {
       setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
         defaultValue: "This operation requires rows outside the loaded window.",
@@ -2840,6 +3771,13 @@ export function DataTableView({
     }
     const numPasteCols = dataRows.reduce((max, r) => Math.max(max, r.length), 0);
     const numPasteRows = dataRows.length;
+    for (let c = 0; c < numPasteCols; c++) {
+      const targetCol = startCol + c;
+      if (targetCol < cols.length && getCalculatedAt(targetCol)) {
+        showCalculatedReadOnlyError(targetCol);
+        return;
+      }
+    }
 
     // Detect types for each column from data rows
     const detectedTypes: string[] = [];
@@ -3134,6 +4072,11 @@ export function DataTableView({
           cellsToCut.push(activeCell);
         }
         if (cellsToCut.length > 0) {
+          if (containsCalculatedColumn(cellsToCut.map((cell) => cell.col))) {
+            const firstCalculated = cellsToCut.find((cell) => getCalculatedAt(cell.col));
+            if (firstCalculated) showCalculatedReadOnlyError(firstCalculated.col);
+            return;
+          }
           void copyThenClear(
             () => handleCopy(),
             () => clearCells(cellsToCut),
@@ -3281,6 +4224,10 @@ export function DataTableView({
         // Printable character: start editing with that key (replace mode)
         if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
+          if (getCalculatedAt(col)) {
+            showCalculatedReadOnlyError(col);
+            return;
+          }
           setActiveCell({ row, col });
           setEditCell({ row, col });
           setEditValue(e.key);
@@ -4136,6 +5083,7 @@ export function DataTableView({
     return r === true;
   };
   jumpToCellRef.current = (row: number, col: number) => {
+    ensureLogicalRowVisible(row);
     setActiveCell({ row, col });
     setSelection({ startRow: row, startCol: col, endRow: row, endCol: col });
     setSelectedRows(EMPTY_NUM_SET);
@@ -4146,6 +5094,7 @@ export function DataTableView({
     if (!activeCell) return;
     const maxRow = data.totalRows - 1;
     if (activeCell.row < maxRow) {
+      ensureLogicalRowVisible(activeCell.row + 1);
       setActiveCell({ row: activeCell.row + 1, col: activeCell.col });
     }
   };
@@ -4178,7 +5127,6 @@ export function DataTableView({
         <button
           className={`sp-tb-btn${showTableFilters ? " sp-tb-btn-active" : ""}`}
           onClick={() => setShowTableFilters((v) => !v)}
-          disabled={readOnly}
           title={t("graph.filter.toggleTitle", { defaultValue: "Show/Hide local data filter" })}
         >
           {t("graph.filter.toolbarBtn", { defaultValue: "Filter" })}
@@ -4189,11 +5137,35 @@ export function DataTableView({
         <div className="sp-tb-sep" />
         <button
           className="sp-tb-btn"
+          onClick={() => openCreateCalculatedColumn(null)}
+          disabled={readOnly || Boolean(pendingAction)}
+        >
+          {t("dataTable.calculatedColumn.actions.create", { defaultValue: "Calculated Column" })}
+        </button>
+        <button
+          className="sp-tb-btn"
           onClick={openManageExtras}
         >
           {t("menu.manageExtras")}
         </button>
       </div>
+
+      {calculatedDialog && (
+        <CalculatedColumnDialog
+          datasetId={datasetId}
+          mode={calculatedDialog.mode}
+          generation={generationRef.current}
+          descriptors={visibleDescriptors}
+          initialOutputName={calculatedDialog.outputName}
+          initialFormulaText={calculatedDialog.formulaText}
+          initialAtIndex={calculatedDialog.atIndex}
+          initialOutputColumnId={calculatedDialog.outputColumnId}
+          initialFormulaId={calculatedDialog.formulaId}
+          downstreamNames={collectDownstreamCalculatedNames(visibleDescriptors, calculatedDialog.outputColumnId)}
+          onClose={() => setCalculatedDialog(null)}
+          onApplied={handleCalculatedDialogApplied}
+        />
+      )}
 
       {/* Add column inline form */}
       {showAddCol && (
@@ -4368,6 +5340,8 @@ export function DataTableView({
             <ColsPanelList
               cols={cols}
               colTypes={colTypes}
+              calculated={visibleDescriptors.map((descriptor) => descriptor.calculated)}
+              calculatedTitles={calculatedTitles}
               selectedCols={selectedCols}
               colExtras={colExtras}
               onItemClick={stableColsPanelClick}
@@ -4422,7 +5396,9 @@ export function DataTableView({
           />
 
           {/* Spreadsheet table */}
-          <div className="sp-grid-wrapper" ref={tableRef} onScroll={onGridScroll}>
+          <div className="sp-grid-shell">
+            <div className="sp-grid-main">
+              <div className="sp-grid-wrapper" ref={tableRef} onScroll={onGridScroll} onWheel={handleLogicalWheel}>
         <table className="sp-grid" style={{ width: ROW_HDR_WIDTH + totalColsWidth + ADD_COL_WIDTH }}>
           <colgroup>
             <col style={{ width: ROW_HDR_WIDTH }} />
@@ -4438,6 +5414,7 @@ export function DataTableView({
               {/* Select-all corner */}
               <th
                 className={`sp-corner${cornerSelected ? " sp-corner-active" : ""}`}
+                scope="col"
                 onClick={handleCornerClick}
                 onContextMenu={handleCornerContextMenu}
                 style={{ cursor: "pointer" }}
@@ -4448,20 +5425,40 @@ export function DataTableView({
               {/* Column headers — event delegation via data-col-hdr (only visible cols) */}
               {visibleColIdxs.map((ci) => {
                 const col = cols[ci];
+                const calculated = getCalculatedAt(ci);
+                const isSortedColumn = tableSort?.column === col;
+                const sortDirection = isSortedColumn ? (tableSort?.descending ? "descending" : "ascending") : "none";
                 return (
                   <th
                     key={ci}
+                    scope="col"
                     data-col-hdr={ci}
+                    data-calculated={calculated?.status}
                     className={`sp-col-hdr${activeColRange.has(ci) ? " sp-col-active" : ""}${selectedCols.has(ci) ? " sp-col-selected" : ""}`}
+                    aria-sort={sortDirection}
                     onClick={(e) => handleColSelect(ci, e)}
                     onMouseDown={(e) => handleColHeaderMouseDown(ci, e)}
                     onDoubleClick={() => handleStartRenameCol(ci)}
                     onContextMenu={(e) => handleColContextMenu(e, ci)}
+                    title={calculated ? formatCalculatedDescriptorTitle(t, calculated, visibleDescriptors) : undefined}
                   >
                     <div className="sp-col-hdr-content">
                       <span className="sp-col-letter">{colLetter(ci)}</span>
                       <span className="sp-col-name">{col}</span>
+                      {isSortedColumn && (
+                        <span
+                          className="sp-col-sort-indicator"
+                          title={t(tableSort?.descending ? "dataTable.ctxSortDesc" : "dataTable.ctxSortAsc")}
+                        >
+                          {tableSort?.descending ? "↓" : "↑"}
+                        </span>
+                      )}
                       <span className="sp-col-type">{labelOf(colTypes[ci])}</span>
+                      {calculated && (
+                        <span className={`sp-col-calc-badge is-${calculated.status}`} aria-label={t("dataTable.calculatedColumn.badgeLabel", { defaultValue: "Calculated column" })}>
+                          <i className={`fa-solid ${calculatedStatusIconClass(calculated.status)}`} aria-hidden="true" />
+                        </span>
+                      )}
                     </div>
                     {/* Resize handle */}
                     <div
@@ -4477,7 +5474,7 @@ export function DataTableView({
                 <th className="sp-col-spacer-hdr" aria-hidden="true" style={{ background: "var(--bg-header)", borderBottom: "2px solid var(--border-header-bottom)" }} />
               )}
               {/* "+" column at end */}
-              <th className="sp-add-col-hdr" onClick={handleAddColumnQuick} title={t("dataTable.addColTitle")}>
+              <th scope="col" className="sp-add-col-hdr" onClick={handleAddColumnQuick} title={t("dataTable.addColTitle")}>
                 +
               </th>
             </tr>
@@ -4531,107 +5528,79 @@ export function DataTableView({
               }
             }}
           >
-            {/* Top spacer for virtual scroll */}
-            {renderedRange.startIdx > 0 && (
-              <tr aria-hidden="true">
-                <td colSpan={9999} style={{ padding: 0, border: "none", height: renderedRange.startIdx * ROW_HEIGHT }} />
-              </tr>
-            )}
-            {!placeholderRange && retainedRenderRange.endIdx > retainedRenderRange.startIdx && (
-              displayRows
-                .slice(
-                  retainedRenderRange.startIdx - windowStart,
-                  retainedRenderRange.endIdx - windowStart,
-                )
-                .map((displayRow, idx) => {
-                const ri = retainedRenderRange.startIdx + idx;
-                const isRowSelected = selectedRows.has(ri);
-                const isRowActive = activeRowRange.has(ri);
-                const activeCol = activeCell?.row === ri ? activeCell.col : -1;
-                const editingCol = editCell?.row === ri ? editCell.col : -1;
-                let selStartCol = -1;
-                let selEndCol = -1;
-                if (selRangeNorm && ri >= selRangeNorm.r1 && ri <= selRangeNorm.r2) {
-                  selStartCol = selRangeNorm.c1;
-                  selEndCol = selRangeNorm.c2;
-                }
-                return (
-                  <TableRow
-                    key={ri}
-                    ri={ri}
-                    displayRow={displayRow}
-                    colFormats={colFormats}
-                    isRowSelected={isRowSelected}
-                    isRowActive={isRowActive}
-                    activeCol={activeCol}
-                    selectedCols={selectedCols}
-                    editingCol={editingCol}
-                    editValue={editValue}
-                    editInputRef={editInputRef}
-                    selStartCol={selStartCol}
-                    selEndCol={selEndCol}
-                    selectedColsInRow={cellsByRow?.get(ri)}
-                    visStart={colVirtRange.startIdx}
-                    visEnd={colVirtRange.endIdx}
-                    leftSpacerW={colVirtRange.leftSpacerW}
-                    rightSpacerW={colVirtRange.rightSpacerW}
-                    onEditValueChange={stableSetEditValue}
-                    onCommitEdit={stableCommitEdit}
-                    onCancelEdit={stableCancelEdit}
-                  />
-                );
-              })
-            )}
-            {placeholderRange && Array.from(
-              { length: placeholderRange.endIdx - placeholderRange.startIdx },
-              (_, index) => {
-                const rowIndex = placeholderRange.startIdx + index;
-                return (
-                  <tr key={`placeholder-${rowIndex}`} className="sp-placeholder-row" aria-hidden="true">
-                    <td className="sp-row-hdr">{rowIndex + 1}</td>
-                    {colVirtRange.leftSpacerW > 0 && (
-                      <td className="sp-col-spacer" style={{ width: colVirtRange.leftSpacerW, padding: 0, border: "none" }} />
-                    )}
-                    {visibleColIdxs.map((columnIndex) => (
-                      <td key={columnIndex} className="sp-cell sp-placeholder-cell" />
-                    ))}
-                    {colVirtRange.rightSpacerW > 0 && (
-                      <td className="sp-col-spacer" style={{ width: colVirtRange.rightSpacerW, padding: 0, border: "none" }} />
-                    )}
-                    <td className="sp-add-col-cell" />
-                  </tr>
-                );
-              },
-            )}
-            {/* Bottom spacer for virtual scroll */}
-            {renderedRange.endIdx < totalRowCount && (
-              <tr aria-hidden="true">
-                <td colSpan={9999} style={{ padding: 0, border: "none", height: (totalRowCount - renderedRange.endIdx) * ROW_HEIGHT }} />
-              </tr>
-            )}
-            {/* "Add row" bottom row */}
-            <tr className="sp-add-row-tr">
-              <td
-                className="sp-add-row-hdr"
-                onClick={handleAddRow}
-                title={t("dataTable.addRowTitle")}
-              >
-                +
-              </td>
-              {colVirtRange.leftSpacerW > 0 && (
-                <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
-              )}
-              {visibleColIdxs.map((ci) => (
-                <td key={ci} className="sp-add-row-cell" />
-              ))}
-              {colVirtRange.rightSpacerW > 0 && (
-                <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
-              )}
-              <td className="sp-add-corner" />
-            </tr>
+            <TableViewportRows
+              totalRows={totalRowCount}
+              slotCount={visibleSlotCount}
+              logicalStart={logicalStart}
+              loadedWindowStart={windowStart}
+              loadedRows={displayRows}
+              visibleColIdxs={visibleColIdxs}
+              colFormats={colFormats}
+              formatCellValue={formatCellValue}
+              selectedRows={selectedRows}
+              activeRowRange={activeRowRange}
+              activeCell={activeCell}
+              editCell={editCell}
+              editValue={editValue}
+              editInputRef={editInputRef}
+              selectionRange={selRangeNorm}
+              selectedCellsByRow={cellsByRow}
+              selectedCols={selectedCols}
+              visibleColumnStart={colVirtRange.startIdx}
+              visibleColumnEnd={colVirtRange.endIdx}
+              leftSpacerW={colVirtRange.leftSpacerW}
+              rightSpacerW={colVirtRange.rightSpacerW}
+              onEditValueChange={stableSetEditValue}
+              onCommitEdit={stableCommitEdit}
+              onCancelEdit={stableCancelEdit}
+            />
           </tbody>
         </table>
-        </div>
+              </div>
+              <div className="sp-grid-footer" aria-label="Add row affordance">
+                <table className="sp-grid sp-grid-footer-table" style={{ width: ROW_HDR_WIDTH + totalColsWidth + ADD_COL_WIDTH, transform: `translateX(${-scrollLeft}px)` }}>
+                  <colgroup>
+                    <col style={{ width: ROW_HDR_WIDTH }} />
+                    {colVirtRange.leftSpacerW > 0 && <col style={{ width: colVirtRange.leftSpacerW }} />}
+                    {visibleColIdxs.map((ci) => (
+                      <col key={ci} style={{ width: (colWidths[ci] ?? BASE_DEFAULT_COL_WIDTH) * zoom }} />
+                    ))}
+                    {colVirtRange.rightSpacerW > 0 && <col style={{ width: colVirtRange.rightSpacerW }} />}
+                    <col style={{ width: ADD_COL_WIDTH }} />
+                  </colgroup>
+                  <tbody>
+                    <tr className="sp-add-row-tr">
+                      <td
+                        className="sp-add-row-hdr"
+                        onClick={handleAddRow}
+                        title={t("dataTable.addRowTitle")}
+                      >
+                        +
+                      </td>
+                      {colVirtRange.leftSpacerW > 0 && (
+                        <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
+                      )}
+                      {visibleColIdxs.map((ci) => (
+                        <td key={ci} className="sp-add-row-cell" />
+                      ))}
+                      {colVirtRange.rightSpacerW > 0 && (
+                        <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
+                      )}
+                      <td className="sp-add-corner" />
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <LogicalVerticalScrollbar
+              totalRows={totalRowCount}
+              visibleRows={visibleSlotCount}
+              logicalStart={logicalStart}
+              onLogicalStartChange={setLogicalStartClamped}
+              onInteractionEnd={handleLogicalInteractionEnd}
+              disabled={totalRowCount <= visibleSlotCount}
+            />
+          </div>
         </div>
       </div>
 
@@ -4659,6 +5628,9 @@ export function DataTableView({
               <div className="sp-ctx-item" onClick={() => handleInsertColumnAfter(colMenu.colIdx)}>
                 {t("dataTable.ctxInsertCol")}
               </div>
+              <div className="sp-ctx-item" onClick={() => openCreateCalculatedColumn(colMenu.colIdx + 1)}>
+                {t("dataTable.calculatedColumn.actions.create", { defaultValue: "Calculated Column" })}
+              </div>
               <div className="sp-ctx-item" onClick={() => { setInsertColAnchor(colMenu.colIdx); setShowInsertMultiCols(true); setColMenu(null); }}>
                 {t("dataTable.ctxInsertMultiCols")}
               </div>
@@ -4672,9 +5644,33 @@ export function DataTableView({
             </>
           ) : (
             <>
+              <div className="sp-ctx-item" onClick={() => handleTableSortChange({ column: cols[colMenu.colIdx], descending: false })}>
+                {t("dataTable.ctxSortAsc")}
+              </div>
+              <div className="sp-ctx-item" onClick={() => handleTableSortChange({ column: cols[colMenu.colIdx], descending: true })}>
+                {t("dataTable.ctxSortDesc")}
+              </div>
+              <div className="sp-ctx-item" onClick={() => handleTableSortChange(null)}>
+                {t("dataTable.ctxClearSort")}
+              </div>
+              <div className="sp-ctx-sep" />
               <div className="sp-ctx-item" onClick={() => handleStartRenameCol(colMenu.colIdx)}>
                 {t("dataTable.ctxColProps")}
               </div>
+              {getCalculatedAt(colMenu.colIdx) ? (
+                <>
+                  <div className="sp-ctx-item" onClick={() => openEditCalculatedColumn(colMenu.colIdx)}>
+                    {t("dataTable.calculatedColumn.actions.edit", { defaultValue: "Edit Formula" })}
+                  </div>
+                  <div className="sp-ctx-item" onClick={() => handleConvertCalculatedToValues(colMenu.colIdx)}>
+                    {t("dataTable.calculatedColumn.actions.convert", { defaultValue: "Convert to Values" })}
+                  </div>
+                </>
+              ) : (
+                <div className="sp-ctx-item" onClick={() => openConvertExistingColumn(colMenu.colIdx)}>
+                  {t("dataTable.calculatedColumn.actions.convertExisting", { defaultValue: "Calculated Formula" })}
+                </div>
+              )}
               <div className="sp-ctx-item" onClick={() => handleInsertColumnAfter(colMenu.colIdx)}>
                 {t("dataTable.ctxInsertCol")}
               </div>
@@ -4733,6 +5729,9 @@ export function DataTableView({
           <div className="sp-ctx-sep" />
           <div className="sp-ctx-item" onClick={() => { handleAddColumnQuick(); setCornerMenu(null); }}>
             {t("dataTable.ctxInsertCol")}
+          </div>
+          <div className="sp-ctx-item" onClick={() => openCreateCalculatedColumn(null)}>
+            {t("dataTable.calculatedColumn.actions.create", { defaultValue: "Calculated Column" })}
           </div>
           <div className="sp-ctx-item" onClick={() => { setInsertColAnchor(null); setShowInsertMultiCols(true); setCornerMenu(null); }}>
             {t("dataTable.ctxInsertMultiCols")}

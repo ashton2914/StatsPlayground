@@ -29,6 +29,7 @@ export interface FieldRef {
 export type ElementKind =
   | "points"       // 散点
   | "line"         // 折线
+  | "timeSeries"   // 全分辨率时间序列
   | "bar"          // 柱状（含分组均值）
   | "heatmap"      // 热力图
   | "correlationMatrix" // 相关矩阵热力图
@@ -40,6 +41,36 @@ export type ElementKind =
   | "surface"      // 3D 曲面（仅 3D 模式；由 X/Y/Z 三通道构建）
   | "contour3d"    // 3D 等高线（仅 3D 模式；由 X/Y/Z 三通道构建）
   | "scatter3d";   // 3D 散点（仅 3D 模式；由 X/Y/Z 三通道构建）
+
+export type TimeSeriesTextDateFormat =
+  | "isoDate"
+  | "isoDateTime"
+  | "usDate"
+  | "usDateTime"
+  | "dayFirstDate"
+  | "dayFirstDateTime";
+
+export type TimeSeriesXInterpretation =
+  | { kind: "nativeTemporal" }
+  | { kind: "textDate"; format: TimeSeriesTextDateFormat }
+  | { kind: "sequence" };
+
+export interface TimeSeriesOptions {
+  [key: string]: unknown;
+  xInterpretation: TimeSeriesXInterpretation;
+  order: "timeAscending" | "sourceRow";
+  missingValues: "break" | "connect";
+  connection: "line" | "step";
+  markerMode: "auto" | "show" | "hide";
+}
+
+export const DEFAULT_TIME_SERIES_OPTIONS: TimeSeriesOptions = {
+  xInterpretation: { kind: "nativeTemporal" },
+  order: "timeAscending",
+  missingValues: "break",
+  connection: "line",
+  markerMode: "auto",
+};
 
 /** 平滑器配置 */
 export interface SmootherOptions {

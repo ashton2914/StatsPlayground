@@ -20,17 +20,22 @@ const ANALYSIS_HELPERS = createNamedDocumentHelpers("Analysis");
 
 function normalizeDistributionAnalysisIdentity(analysis: AnalysisDocument): AnalysisDocument {
   if (analysis.analysisKind !== "distribution") return analysis;
-  if (typeof analysis.definition.analysis.fitAll === "boolean") return analysis;
+  const configuration = analysis.definition.analysis;
+  if (typeof configuration.fitAll === "boolean") return analysis;
   return {
     ...analysis,
     definition: {
       ...analysis.definition,
       analysis: {
-        ...analysis.definition.analysis,
+        ...configuration,
         fitAll: false,
       },
     },
   };
+}
+
+export function normalizePersistedAnalysisDocument(analysis: AnalysisDocument): AnalysisDocument {
+  return normalizeDistributionAnalysisIdentity(analysis);
 }
 
 function applyAnalysisPatch(analysis: AnalysisDocument, patch: AnalysisDocumentPatch): AnalysisDocument {

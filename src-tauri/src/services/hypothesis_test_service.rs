@@ -5,8 +5,7 @@ use crate::engine::hypothesis_test::plot::build_plot_data;
 use crate::engine::hypothesis_test::run_hypothesis_test;
 use crate::error::AppError;
 use crate::models::hypothesis_test::{
-    HypothesisTestAudit, HypothesisTestExclusion, HypothesisTestRequest,
-    HypothesisTestResponse,
+    HypothesisTestAudit, HypothesisTestExclusion, HypothesisTestRequest, HypothesisTestResponse,
 };
 use crate::state::AppState;
 
@@ -51,18 +50,21 @@ impl<'a> HypothesisTestService<'a> {
         let retained_observations = normalized.study.retained_observations() as u64;
         let plot_data = build_plot_data(&normalized.study, request.definition.confidence_level)?;
         let computation = run_hypothesis_test(normalized.study, &request.definition)?;
-        let exclusions = normalized.exclusions.into_iter().map(|exclusion| {
-            HypothesisTestExclusion {
+        let exclusions = normalized
+            .exclusions
+            .into_iter()
+            .map(|exclusion| HypothesisTestExclusion {
                 identity: exclusion.identity,
                 reason_code: match exclusion.reason {
                     ExclusionReason::MissingResponse => "MISSING_RESPONSE",
                     ExclusionReason::MissingCondition => "MISSING_CONDITION",
                     ExclusionReason::IncompletePair => "INCOMPLETE_PAIR",
                     ExclusionReason::IncompleteBlock => "INCOMPLETE_BLOCK",
-                }.into(),
+                }
+                .into(),
                 condition: exclusion.condition,
-            }
-        }).collect();
+            })
+            .collect();
         let executed_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| AppError::Stats(error.to_string()))?
@@ -126,13 +128,16 @@ mod tests {
                 "hypothesis-stale",
                 &["A".into(), "B".into()],
                 &["DOUBLE".into(), "DOUBLE".into()],
-            ).expect("dataset");
+            )
+            .expect("dataset");
         }
 
         let error = HypothesisTestService::new(&state)
             .prepare(&request("hypothesis-stale", 1))
             .expect_err("stale request must fail");
-        assert!(matches!(error, AppError::InvalidParam(message) if message.contains("stale dataset generation")));
+        assert!(
+            matches!(error, AppError::InvalidParam(message) if message.contains("stale dataset generation"))
+        );
     }
 
     #[test]
@@ -145,12 +150,15 @@ mod tests {
                 "hypothesis-wide",
                 &["A".into(), "B".into()],
                 &["DOUBLE".into(), "DOUBLE".into()],
-            ).expect("dataset");
-            db.conn().execute_batch(
-                r#"INSERT INTO "dataset_hypothesis_wide" (_row_id, A, B) VALUES
+            )
+            .expect("dataset");
+            db.conn()
+                .execute_batch(
+                    r#"INSERT INTO "dataset_hypothesis_wide" (_row_id, A, B) VALUES
                     (1, 1.0, 3.0),
                     (2, 2.0, 4.0);"#,
-            ).expect("rows");
+                )
+                .expect("rows");
         }
 
         let normalized = HypothesisTestService::new(&state)
@@ -169,22 +177,30 @@ mod tests {
                 "hypothesis-run",
                 &["A".into(), "B".into()],
                 &["DOUBLE".into(), "DOUBLE".into()],
-            ).expect("dataset");
-            db.conn().execute_batch(
-                r#"INSERT INTO "dataset_hypothesis_run" (_row_id, A, B) VALUES
+            )
+            .expect("dataset");
+            db.conn()
+                .execute_batch(
+                    r#"INSERT INTO "dataset_hypothesis_run" (_row_id, A, B) VALUES
                     (1, 0.0, 4.0), (2, 1.0, 5.0), (3, 2.0, 6.0), (4, 3.0, 7.0),
                     (5, 4.0, 8.0), (6, 5.0, 9.0), (7, 6.0, 10.0), (8, 7.0, 11.0);"#,
-            ).expect("rows");
+                )
+                .expect("rows");
         }
 
         let request = request("hypothesis-run", 0);
-        let response = HypothesisTestService::new(&state).run(request).expect("response");
+        let response = HypothesisTestService::new(&state)
+            .run(request)
+            .expect("response");
         assert_eq!(response.analysis_kind, "hypothesisTest");
         assert_eq!(response.analysis_id, "analysis-1");
         assert_eq!(response.dataset_id, "hypothesis-run");
         assert_eq!(response.request_fingerprint, "fingerprint");
         assert_eq!(response.retained_observations, 16);
-        assert_eq!(response.primary_result.method_id, crate::models::hypothesis_test::HypothesisTestMethodId::StudentTwoSampleT);
+        assert_eq!(
+            response.primary_result.method_id,
+            crate::models::hypothesis_test::HypothesisTestMethodId::StudentTwoSampleT
+        );
         assert_eq!(response.plot_data.study_structure, "independent");
         assert_eq!(response.plot_data.conditions, vec!["A", "B"]);
         assert_eq!(response.plot_data.observations.len(), 16);
@@ -205,8 +221,14 @@ mod tests {
                 kind: "hypothesisTest".into(),
                 roles: HypothesisTestRoles::Wide {
                     measurements: vec![
-                        HypothesisTestFieldRef { name: "A".into(), field_type: "continuous".into() },
-                        HypothesisTestFieldRef { name: "B".into(), field_type: "continuous".into() },
+                        HypothesisTestFieldRef {
+                            name: "A".into(),
+                            field_type: "continuous".into(),
+                        },
+                        HypothesisTestFieldRef {
+                            name: "B".into(),
+                            field_type: "continuous".into(),
+                        },
                     ],
                     subject: None,
                 },

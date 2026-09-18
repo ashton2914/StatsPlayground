@@ -1,4 +1,5 @@
 import type { TableWindowFilter } from "./data";
+import type { TimeSeriesTextDateFormat, TimeSeriesXInterpretation } from "../graphCore/types";
 
 export const DISTRIBUTION_GRAPH_ELEMENT_IDS = {
   overviewHistogram: "distribution.overview.histogram",
@@ -20,6 +21,18 @@ export interface GraphElementRequest {
   kind: string;
   summaryStat: string;
   correlationMethod?: CorrelationMethod;
+  timeSeries?: GraphTimeSeriesRequest;
+}
+
+export type GraphTimeSeriesTextDateFormat = TimeSeriesTextDateFormat;
+export type GraphTimeSeriesXInterpretation = TimeSeriesXInterpretation;
+
+export interface GraphTimeSeriesRequest {
+  xInterpretation: GraphTimeSeriesXInterpretation;
+  order: "timeAscending" | "sourceRow";
+  missingValues: "break" | "connect";
+  markerMode: "auto" | "show" | "hide";
+  connection: "line" | "step";
 }
 
 export type GraphSampling =
@@ -51,7 +64,13 @@ export interface GraphTypedSliceDescriptor {
   byteLength: number;
 }
 
-export type GraphAxisEncoding = "numeric" | "categorical";
+export type GraphAxisEncoding = "numeric" | "categorical" | "temporal";
+
+export interface GraphTemporalAxisMetadata {
+  unit: "epochMilliseconds";
+  kind: "date" | "timestamp" | "timestampTz";
+  displayZone: "utc";
+}
 
 export interface GraphChunkHeader {
   requestId: string;
@@ -76,7 +95,65 @@ export interface GraphChunkHeader {
   wrapCodes?: GraphTypedSliceDescriptor;
   roleVectors?: Record<string, GraphTypedSliceDescriptor>;
   xEncoding: GraphAxisEncoding;
+  temporalMetadata?: GraphTemporalAxisMetadata;
   finalChunk: boolean;
+}
+
+const TIME_SERIES_TEXT_DATE_FORMATS = new Set<GraphTimeSeriesTextDateFormat>([
+  "isoDate",
+  "isoDateTime",
+  "usDate",
+  "usDateTime",
+  "dayFirstDate",
+  "dayFirstDateTime",
+]);
+
+export function isGraphTimeSeriesRequest(value: unknown): value is GraphTimeSeriesRequest {
+  if (!isRecord(value) || !isRecord(value.xInterpretation)) {
+    return false;
+  }
+
+  const interpretation = value.xInterpretation;
+  const interpretationValid = interpretation.kind === "nativeTemporal"
+    || interpretation.kind === "sequence"
+    || (interpretation.kind === "textDate" && TIME_SERIES_TEXT_DATE_FORMATS.has(
+      interpretation.format as GraphTimeSeriesTextDateFormat,
+    ));
+
+  return interpretationValid
+    && (value.order === "timeAscending" || value.order === "sourceRow")
+    && (value.missingValues === "break" || value.missingValues === "connect")
+    && (value.markerMode === "auto" || value.markerMode === "show" || value.markerMode === "hide")
+    && (value.connection === "line" || value.connection === "step");
+}
+
+export function validateGraphChunkHeaderContract(header: GraphChunkHeader): void {
+  if (header.xEncoding !== "numeric" && header.xEncoding !== "categorical" && header.xEncoding !== "temporal") {
+    throw new GraphPayloadError("xEncoding must be numeric, categorical, or temporal");
+  }
+
+  const metadata = header.temporalMetadata;
+  if (metadata !== undefined) {
+    if (metadata.unit !== "epochMilliseconds"
+      || (metadata.kind !== "date" && metadata.kind !== "timestamp" && metadata.kind !== "timestampTz")
+      || metadata.displayZone !== "utc") {
+      throw new GraphPayloadError("temporal metadata is invalid");
+    }
+  }
+
+  if (header.xEncoding === "temporal") {
+    if (header.xValues.type !== "f64") {
+      throw new GraphPayloadError("temporal xEncoding requires f64 xValues");
+    }
+    if (metadata === undefined) {
+      throw new GraphPayloadError("temporal xEncoding requires temporal metadata");
+    }
+    return;
+  }
+
+  if (metadata !== undefined) {
+    throw new GraphPayloadError("temporal metadata is only valid for temporal xEncoding");
+  }
 }
 
 export interface GraphDataCompletion {
@@ -88,7 +165,12 @@ export interface GraphDataCompletion {
   chunksSent: number;
   cancelled: boolean;
   rawPointDisposition: GraphRawPointDisposition;
+  timeSeriesDisposition?: GraphTimeSeriesDisposition;
 }
+
+export type GraphTimeSeriesDisposition =
+  | { status: "included"; includedRows: number; invalidXRows: 0 }
+  | { status: "invalidTimeSeriesX"; includedRows: number; invalidXRows: number };
 
 export type GraphRawPointDisposition =
   | { status: "included"; validRows: number; budget: number }
@@ -584,6 +666,7 @@ export interface DecodedRawPointChunk {
   wrapCodes?: Uint32Array;
   roleVectors?: Record<string, Float64Array | Uint32Array | BigInt64Array | Uint8Array>;
   validity: Record<string, Uint8Array>;
+  temporalMetadata?: GraphTemporalAxisMetadata;
 }
 
 export interface GraphDataFrame {
@@ -598,6 +681,7 @@ export interface GraphDataFrame {
   rawChunks: readonly DecodedRawPointChunk[];
   aggregates: readonly GraphAggregatePacket[];
   rawPointDisposition: GraphRawPointDisposition;
+  timeSeriesDisposition?: GraphTimeSeriesDisposition;
 }
 
 export interface DecodedGraphChunk extends DecodedRawPointChunk {
@@ -607,6 +691,7 @@ export interface DecodedGraphChunk extends DecodedRawPointChunk {
   processedRows: number;
   dictionaries: Record<string, readonly string[]>;
   xEncoding: GraphAxisEncoding;
+  temporalMetadata?: GraphTemporalAxisMetadata;
   finalChunk: boolean;
 }
 
@@ -687,6 +772,8 @@ export function decodeGraphPayload(
   header: GraphChunkHeader,
   payload: ArrayBuffer,
 ): DecodedGraphChunk {
+  validateGraphChunkHeaderContract(header);
+
   if (!Number.isInteger(header.rowCount) || header.rowCount < 0) {
     throw new GraphPayloadError("rowCount must be a non-negative integer");
   }
@@ -917,6 +1004,7 @@ export function decodeGraphPayload(
     processedRows: header.processedRows,
     dictionaries: header.dictionaries,
     xEncoding: header.xEncoding,
+    temporalMetadata: header.temporalMetadata,
     finalChunk: header.finalChunk,
     xValues,
     yValues,

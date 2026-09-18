@@ -1,3 +1,4 @@
+pub mod calculated_column_commands;
 pub mod data_commands;
 pub mod data_link_commands;
 pub mod distribution_commands;
@@ -8,6 +9,7 @@ pub mod graph_new_commands;
 pub mod history_commands;
 pub mod hypothesis_test_commands;
 pub mod io_commands;
+pub mod mcp_commands;
 #[cfg(test)]
 mod mutation_guard_coverage;
 pub mod project_commands;

@@ -77,6 +77,9 @@
   },
   "menu": {
     "file": "檔案",
+    "ai": "AI",
+    "mcpServer": "MCP Server...",
+    "skills": "Skills...",
     "save": "儲存",
     "dataLink": "DataLink...",
     "preferences": "偏好設定",
@@ -112,6 +115,39 @@
     "about": "關於",
     "exportTables": "匯出資料表",
     "fitModel": "配適模型"
+  },
+  "ai": {
+    "mcpServer": {
+      "description": "管理供外部 AI 用戶端使用的應用程式內 MCP 端點。",
+      "start": "啟動服務",
+      "stop": "停止服務",
+      "state": "狀態",
+      "connections": "連線數",
+      "queued": "排隊中",
+      "running": "執行中",
+      "endpoint": "端點",
+      "token": "權杖",
+      "notRunning": "未執行",
+      "copyEndpoint": "複製端點",
+      "copyToken": "複製權杖",
+      "clientConfig": "用戶端設定",
+      "clientConfigHint": "請先啟動服務以產生用戶端設定。",
+      "copyConfig": "複製用戶端設定",
+      "authorizedRoots": "已授權輸出根目錄",
+      "authorizeRoot": "授權輸出根目錄",
+      "authorizeRootButton": "授權根目錄",
+      "noAuthorizedRoots": "目前工作階段沒有已授權的輸出根目錄。",
+      "confirmations": "待確認操作",
+      "noConfirmations": "目前沒有待確認操作。",
+      "activity": "工作階段活動",
+      "noActivity": "目前工作階段還沒有 MCP 活動。"
+    },
+    "skills": {
+      "openPlaceholder": "查看 Skills 佔位頁",
+      "placeholderLead": "Phase 1 暫不提供 Skills。",
+      "placeholderBody": "這個佔位頁刻意保持真實：目前 MCP 範圍內沒有 Skill 執行階段、安裝流程或啟用控制。",
+      "backToServer": "返回 MCP Server"
+    }
   },
   "alert": {
     "selectDatasetFirst": "請先選擇一個資料表作為資料來源",
@@ -228,6 +264,7 @@
     "newGraph": "新增圖形 \"{{name}}\"（資料來源：{{source}}）",
     "newReport": "新增報告 \"{{name}}\"",
     "newAnalysis": "新增分析 \"{{name}}\"",
+    "editGraph": "編輯圖形 \"{{name}}\"",
     "editReport": "編輯報告 \"{{name}}\"",
     "newTabulate": "New tabulate \"{{name}}\" (source: {{source}})",
     "newFitYByX": "新增配適 Y by X \"{{name}}\"（資料來源：{{source}}）",
@@ -259,6 +296,9 @@
     "insertRow": "插入列",
     "addColumn": "新增欄",
     "addColumnNamed": "新增欄 \"{{name}}\"",
+    "createCalculatedColumn": "建立計算欄",
+    "editCalculatedColumn": "編輯計算欄",
+    "convertCalculatedColumnToValues": "將計算欄轉成值",
     "addColumnsBatch": "批次新增欄",
     "reorderColumn": "調整欄順序",
     "deleteColumn": "刪除欄",
@@ -1066,8 +1106,126 @@
     "ctxDeleteSelectedRows": "刪除選取的 {{n}} 列",
     "ctxDeleteSelectedCols": "刪除選取的 {{n}} 欄",
     "ctxDeleteCol": "刪除欄 \"{{name}}\"",
+    "ctxSortAsc": "遞增排序",
+    "ctxSortDesc": "遞減排序",
+    "ctxClearSort": "清除排序",
     "ctxColProps": "欄屬性",
     "ctxColPropsBatch": "欄屬性（{{n}} 欄）",
+    "calculatedColumn": {
+      "defaultName": "計算欄{{n}}",
+      "subtitle": "使用現有欄位與支援的逐列函式來定義公式。",
+      "readOnly": "計算欄 \"{{name}}\" 必須透過「計算欄」編輯。",
+      "staleValidation": "由於資料表已變更，目前驗證已過期。請重新驗證後再套用。",
+      "confirmConvert": "要將計算欄 \"{{name}}\" 轉成值嗎？",
+      "outputType": "輸出型別：{{type}}",
+      "warningCount": "警告：{{count}}",
+      "warningLabels": {
+        "expression": "運算式：{{count}}",
+        "dependencyGraph": "依賴圖：{{count}}",
+        "validation": "驗證：{{count}}"
+      },
+      "zeroMatch": "找不到相符的欄位或函式。",
+      "badgeLabel": "計算欄",
+      "actions": {
+        "create": "計算欄",
+        "edit": "編輯公式",
+        "revalidate": "重新驗證",
+        "convert": "轉成值",
+        "convertExisting": "計算公式"
+      },
+      "fields": {
+        "outputName": "輸出欄名",
+        "formula": "公式",
+        "search": "插入欄位或函式",
+        "dependencies": "依賴欄位",
+        "downstream": "下游欄位",
+        "diagnostics": "診斷"
+      },
+      "status": {
+        "pending": "等待驗證",
+        "draft": "草稿",
+        "ready": "就緒",
+        "disabled": "已停用",
+        "broken": "已損壞",
+        "unsupported": "不支援"
+      },
+      "tooltip": {
+        "status": "狀態：{{status}}",
+        "outputType": "輸出型別：{{type}}",
+        "formula": "公式：{{formula}}",
+        "dependencies": "依賴：{{names}}"
+      },
+      "functions": {
+        "abs": { "detail": "數值絕對值" },
+        "coalesce": { "detail": "回傳第一個非空值" },
+        "if": { "detail": "條件分支" },
+        "max": { "detail": "逐列最大值" },
+        "min": { "detail": "逐列最小值" },
+        "round": { "detail": "數值四捨五入" }
+      },
+      "diagnostics": {
+        "validationFailed": {
+          "label": "驗證失敗",
+          "message": "驗證失敗。請檢查公式後再試一次。",
+          "withContext": "驗證失敗：{{context}}"
+        },
+        "missing_dependency": {
+          "label": "缺少依賴",
+          "message": "{{output}} 依賴缺失的欄位 {{dependency}}。"
+        },
+        "unsupported_function": {
+          "label": "函式不受支援",
+          "message": "計算欄暫不支援函式 {{functionName}}。"
+        },
+        "missingFormulaId": {
+          "label": "缺少公式 ID",
+          "message": "計算欄中繼資料缺少公式 ID。",
+          "withContext": "計算欄中繼資料缺少公式 ID。{{context}}"
+        },
+        "missingOutputColumnId": {
+          "label": "缺少輸出欄 ID",
+          "message": "計算欄中繼資料缺少輸出欄 ID。",
+          "withContext": "計算欄中繼資料缺少輸出欄 ID。{{context}}"
+        },
+        "missingColumnIdMapEntry": {
+          "label": "缺少欄位 ID 映射",
+          "message": "重新映射的依賴缺少目標欄位 ID。",
+          "withContext": "重新映射的依賴缺少目標欄位 ID。{{context}}"
+        },
+        "duplicateOutputColumnId": {
+          "label": "輸出欄 ID 重複",
+          "message": "兩個計算欄解析到了同一個輸出欄 ID。",
+          "withContext": "兩個計算欄解析到了同一個輸出欄 ID。{{context}}"
+        },
+        "dependencyMismatch": {
+          "label": "依賴不一致",
+          "message": "儲存的依賴 ID 與公式運算式不一致。",
+          "withContext": "儲存的依賴 ID 與公式運算式不一致。{{context}}"
+        },
+        "fingerprintMismatch": {
+          "label": "指紋不一致",
+          "message": "儲存的計算欄指紋與標準定義不一致。",
+          "withContext": "儲存的計算欄指紋與標準定義不一致。{{context}}"
+        },
+        "cyclicDependency": {
+          "label": "循環依賴",
+          "message": "計算欄形成了循環依賴：{{columns}}。"
+        },
+        "missingDependencyColumns": {
+          "label": "依賴欄位缺失",
+          "message": "一個或多個依賴欄位不可用：{{columns}}。"
+        },
+        "formula_dependency_in_use": {
+          "label": "依賴仍在使用",
+          "message": "無法刪除 \"{{name}}\"，因為依賴路徑 {{path}} 仍在使用它。"
+        },
+        "unknown": {
+          "label": "診斷資訊",
+          "message": "計算欄回傳了一則診斷資訊。",
+          "withContext": "計算欄回傳了一則診斷資訊：{{context}}"
+        }
+      }
+    },
     "validInteger": "\"{{value}}\" 不是有效的整數",
     "validNumber": "\"{{value}}\" 不是有效的數字",
     "validBoolean": "\"{{value}}\" 不是有效的布林值（可輸入 true/false/1/0）",
@@ -1099,7 +1257,8 @@
       "fitline": "擬合線",
       "scatter3d": "散佈",
       "surface": "曲面",
-      "contour3d": "等高線"
+      "contour3d": "等高線",
+      "timeSeries": "時間序列"
     },
     "frequency": "頻次",
     "mode": {
@@ -1264,6 +1423,55 @@
         "insufficientData": "樣本不足",
         "zeroVariance": "零變異",
         "unknown": "未知"
+      }
+    },
+    "timeSeries": {
+      "xInterpretation": {
+        "label": "X 軸解釋",
+        "nativeTemporal": "原生 DATE/TIMESTAMP",
+        "textDate": "文字日期",
+        "sequence": "序列 / 經過值"
+      },
+      "format": {
+        "label": "文字格式",
+        "isoDate": "ISO 日期 (YYYY-MM-DD)",
+        "isoDateTime": "ISO 日期時間",
+        "usDate": "美式日期 (M/D/YYYY)",
+        "usDateTime": "美式日期時間",
+        "dayFirstDate": "日優先日期 (D/M/YYYY)",
+        "dayFirstDateTime": "日優先日期時間"
+      },
+      "order": {
+        "label": "順序",
+        "timeAscending": "時間遞增",
+        "sourceRow": "來源列順序"
+      },
+      "missingValues": {
+        "label": "缺失值",
+        "break": "中斷折線",
+        "connect": "跨過連接"
+      },
+      "connection": {
+        "label": "連接",
+        "line": "直線",
+        "step": "階梯"
+      },
+      "markerMode": {
+        "label": "標記",
+        "auto": "自動",
+        "show": "顯示",
+        "hide": "隱藏"
+      },
+      "status": {
+        "fullResolution": "全解析度",
+        "includedCount": "已包含 {{count}} 列"
+      },
+      "error": {
+        "textDateRequired": "請為 {{field}} 選擇一種支援的文字日期格式。",
+        "sequenceRequired": "數值型時間序列 X 欄 {{field}} 需要選擇序列 / 經過值。",
+        "nativeTemporalRequired": "時間型時間序列 X 欄 {{field}} 需要選擇原生 DATE/TIMESTAMP。",
+        "standaloneTime": "單獨的 TIME 欄不能定義時間序列順序。請選擇 DATE/TIMESTAMP 欄或明確文字日期格式。",
+        "invalidXRows": "{{count}} 個無效 X 值"
       }
     },
     "removeSlot": "移除",

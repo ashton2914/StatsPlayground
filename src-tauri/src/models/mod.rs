@@ -1,3 +1,4 @@
+pub mod calculated_column;
 pub mod data_link;
 pub mod distribution;
 pub mod fit_model;
@@ -6,6 +7,7 @@ pub mod graph_data;
 pub mod graph_new;
 pub mod graph_new_data;
 pub mod hypothesis_test;
+pub mod mcp;
 pub mod project;
 pub mod save;
 pub mod stats;

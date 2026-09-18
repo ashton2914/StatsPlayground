@@ -16,6 +16,7 @@ import { useDataLinkStore } from "@/stores/useDataLinkStore";
 import { useUpdateStore } from "@/stores/useUpdateStore";
 import { dataService } from "@/services/dataService";
 import { ioService } from "@/services/ioService";
+import { mcpManagementService } from "@/services/mcpManagementService";
 import { projectService } from "@/services/projectService";
 import { openUpdateUrl } from "@/services/updateDownload";
 import { DataTableView } from "./DataTableView";
@@ -35,42 +36,34 @@ import { FitYByXRoleDialog } from "./fitYByX";
 import { HypothesisTestDialog } from "./hypothesisTest";
 import {
   FitModelRoleDialog,
-  createFitModelItem,
-  toFitModelFieldInfo,
   type FitModelCreateDefinition,
 } from "./fitModel";
 import { ReportView } from "./report";
 import { AnalysisView } from "./analysis/AnalysisView";
+import { AiActivityView } from "./ai/AiActivityView";
 import {
-  createDistributionAnalysisDocument,
-  createFitModelAnalysisDocument,
-  createFitYByXAnalysisDocument,
-  createHypothesisTestAnalysisDocument,
   type FitYByXAnalysisEditorItem,
   type HypothesisTestAnalysisEditorItem,
 } from "./analysis/adapters";
-import {
-  createAnalysisEditorPatch,
-  toAnalysisEditorItem,
-} from "./analysis/analysisEditorRegistry";
+import { toAnalysisEditorItem } from "./analysis/analysisEditorRegistry";
 import {
   DistributionDialog,
   type DistributionFieldInfo,
   type DistributionManagePropertiesRequest,
 } from "./distribution";
+import {
+  createDefaultDistributionAnalysisConfig,
+  createDefaultDistributionGraphs,
+} from "./distribution/distributionConfig";
 import { TabulateView } from "./tabulate";
 import { WorkflowPanel, WorkflowView } from "./workflow";
 import { applyWorkflowRunCommit } from "./workflow/workflowRunCommit";
 import {
   ANALYSIS_SAMPLE_COLUMN,
   createAnalysisSample,
-  createAnalysisSampleDocument,
 } from "./analysis/analysisSample";
 import {
-  buildAnalysisProjectPayload,
-  createWorkspaceAnalysisGraphConfigPatch,
   createEmptyWorkspaceDocumentSelection,
-  getAnalysisCreationHistoryKey,
   getRetainedActiveAnalysisIdAfterDatasetDeletion,
   hydrateAnalysisProjectPayload,
   selectWorkspaceDocument,
@@ -88,12 +81,11 @@ import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTableTransformStore } from "@/stores/useTableTransformStore";
-import type { GraphBuilderItem } from "@/types/graphBuilder";
 import {
-  createDefaultGraph2DState,
-  createDefaultGraph3DState,
-  createDefaultMultivariateGraphState,
-} from "@/components/graphBuilder/graphBuilderMode";
+  resolveSelectionAfterDatasetDeletion,
+  useWorkspaceSelectionStore,
+} from "@/stores/useWorkspaceSelectionStore";
+import type { GraphBuilderItem } from "@/types/graphBuilder";
 import type { AnalysisDocument, FitModelAnalysisDocument, FitYByXAnalysisDocument, HypothesisTestAnalysisDocument } from "@/types/analysis";
 import type { FitYByXItem } from "@/types/fitYByX";
 import type { FitModelPrefill } from "@/types/fitModel";
@@ -129,6 +121,17 @@ import {
   shouldApplyDistributionCreateMetadataLoad,
   shouldApplyDistributionEditMetadataLoad,
 } from "./workspaceDistributionMetadata";
+import { applicationRuntime } from "@/applicationCommands/applicationRuntime";
+import {
+  createWorkspaceCommandHandlers,
+  waitForWorkspaceCommandConfirmation,
+} from "./workspaceCommandHandlers";
+import { mountApplicationCommandBridge } from "./workspaceApplicationCommandBridge";
+import {
+  applyWorkspaceAiNavigation,
+  openWorkspaceAiServer,
+  openWorkspaceAiSkills,
+} from "./workspaceAiNavigation";
 
 function formatStat(n: number): string {
   if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
@@ -143,16 +146,6 @@ function nextDistributionAnalysisName(items: readonly AnalysisDocument[]): strin
     if (match) maximum = Math.max(maximum, Number(match[1]));
   }
   return `Distribution ${maximum + 1}`;
-}
-
-function nextFitModelAnalysisName(items: readonly AnalysisDocument[]): string {
-  let maximum = 0;
-  for (const item of items) {
-    if (item.analysisKind !== "fitModel") continue;
-    const match = item.name.match(/^Fit Model (\d+)$/);
-    if (match) maximum = Math.max(maximum, Number.parseInt(match[1], 10));
-  }
-  return `Fit Model ${maximum + 1}`;
 }
 
 function nextFitYByXAnalysisName(items: readonly AnalysisDocument[]): string {
@@ -278,22 +271,33 @@ function MenuDropdown({ label, children, openMenu, setOpenMenu }: {
   );
 }
 
+function formatStatusBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${bytes} B`;
+}
+
 export function Workspace() {
   const { t } = useTranslation();
   const {
     project,
-    saveProject,
     initProject,
     dirty,
     markDirty,
+    setDirty,
+    resetRevision,
     readOnly,
     saving,
     saveProgress,
     saveError,
   } = useProjectStore();
-  const { datasets, activeDatasetId, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
+  const { datasets, setActiveDataset, refreshDatasets, statusInfo } = useDataStore();
   const { openProject } = useProjectStore();
-  const { record: recordHistory, createSnapshot, restoreSnapshot, deleteSnapshot, reset: resetHistory, invalidateData } = useHistoryStore();
+  const { record: recordHistory, restoreSnapshot, deleteSnapshot, reset: resetHistory, invalidateData } = useHistoryStore();
   const graphBuilders = useGraphBuilderStore((s) => s.items);
   const removeDatasetFilters = useDatasetFilterStore((s) => s.removeDataset);
   const renameDatasetFilterColumn = useDatasetFilterStore((s) => s.renameColumn);
@@ -301,13 +305,10 @@ export function Workspace() {
   const resetDatasetFilters = useDatasetFilterStore((s) => s.reset);
   const tabulates = useTabulateStore((s) => s.items);
   const workflows = useWorkflowStore((s) => s.workflows);
-  const logicalFolders = useWorkflowStore((s) => s.logicalFolders);
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
-  const createAndRunTableTransform = useTableTransformStore((s) => s.createAndRun);
   const tableTransforms = useTableTransformStore((s) => s.definitions);
   const tableTransformBindings = useTableTransformStore((s) => s.bindings);
   const rebindTableTransform = useTableTransformStore((s) => s.rebindAndRun);
-  const rerunTableTransform = useTableTransformStore((s) => s.rerun);
   const deleteTableTransform = useTableTransformStore((s) => s.remove);
   const loadTableTransforms = useTableTransformStore((s) => s.loadFromProject);
   const resetTableTransforms = useTableTransformStore((s) => s.reset);
@@ -328,25 +329,19 @@ export function Workspace() {
   const deleteGraphBuildersByDataset = useGraphBuilderStore((s) => s.deleteByDataset);
   const resetGraphBuilders = useGraphBuilderStore((s) => s.reset);
   const loadGraphBuildersFromProject = useGraphBuilderStore((s) => s.loadFromProject);
-  const gbCounter = useGraphBuilderStore((s) => s.counter);
-  const bumpGbCounter = useGraphBuilderStore((s) => s.bumpCounter);
   const reportItems = useReportStore((s) => s.items);
-  const addReport = useReportStore((s) => s.addItem);
   const renameReport = useReportStore((s) => s.renameItem);
   const deleteReport = useReportStore((s) => s.deleteItem);
   const resetReports = useReportStore((s) => s.reset);
   const loadReportsFromProject = useReportStore((s) => s.loadFromProject);
-  const nextReportName = useReportStore((s) => s.nextName);
   const analysisItems = useAnalysisStore((s) => s.items);
   const fitYByXAnalysisItems = analysisItems.filter(isFitYByXAnalysisDocument);
   const hypothesisTestAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "hypothesisTest");
   const distributionAnalysisItems = analysisItems.filter((analysis) => analysis.analysisKind === "distribution");
-  const addAnalysis = useAnalysisStore((s) => s.addAnalysis);
   const updateAnalysis = useAnalysisStore((s) => s.updateAnalysis);
   const deleteAnalysis = useAnalysisStore((s) => s.removeAnalysis);
   const loadAnalyses = useAnalysisStore((s) => s.loadAnalyses);
   const resetAnalyses = useAnalysisStore((s) => s.reset);
-  const addTabulate = useTabulateStore((s) => s.addItem);
   const renameTabulate = useTabulateStore((s) => s.renameItem);
   const deleteTabulate = useTabulateStore((s) => s.deleteItem);
   const resetTabulates = useTabulateStore((s) => s.reset);
@@ -360,15 +355,18 @@ export function Workspace() {
     tabulates,
     reports: reportItems,
   }), [analysisItems, datasets, graphBuilders, reportItems, tableTransformBindings, tableTransforms, tabulates]);
-  const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "history" | "workflow" | "ai">("files");
+  const [activeAiSubview, setActiveAiSubview] = useState<"server" | "skills">("server");
   const [activeWorkflowViewId, setActiveWorkflowViewId] = useState("lineage");
-  /** 当前选中项的类型与 ID。代替原有的 viewMode 机制。 */
   const [activeGraphBuilderNewId, setActiveGraphBuilderNewId] = useState<string | null>(null);
-  const [activeGraphBuilderId, setActiveGraphBuilderId] = useState<string | null>(null);
-  const [activeTableTransformId, setActiveTableTransformId] = useState<string | null>(null);
-  const [activeReportId, setActiveReportId] = useState<string | null>(null);
-  const [activeAnalysisId, setActiveAnalysisId] = useState<string | null>(null);
-  const [activeTabulateId, setActiveTabulateId] = useState<string | null>(null);
+  const workspaceSelection = useWorkspaceSelectionStore((state) => state.selection);
+  const loadWorkspaceSelection = useWorkspaceSelectionStore((state) => state.load);
+  const activeDatasetId = workspaceSelection.activeDatasetId;
+  const activeTableTransformId = workspaceSelection.activeTableTransformId;
+  const activeGraphBuilderId = workspaceSelection.activeGraphBuilderId;
+  const activeReportId = workspaceSelection.activeReportId;
+  const activeAnalysisId = workspaceSelection.activeAnalysisId;
+  const activeTabulateId = workspaceSelection.activeTabulateId;
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showPrefs, setShowPrefs] = useState(false);
@@ -457,90 +455,88 @@ export function Workspace() {
   const [tableKey, setTableKey] = useState(0);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const tableCounter = useRef(0);
-  const reportHistoryTimerRef = useRef<number | null>(null);
-  const pendingReportHistoryRef = useRef<{ id: string; name: string } | null>(null);
+  const reportUpdateQueueRef = useRef(Promise.resolve());
 
   /** Record an action to history (synchronous — no IPC) */
   const recordAction = useCallback((desc: string) => {
     recordHistory(desc);
   }, [recordHistory]);
 
-  const applyWorkspaceDocumentSelection = useCallback((selection: WorkspaceDocumentSelection) => {
-    if (activeGraphBuilderNewId) closeGraphBuilderNew(activeGraphBuilderNewId);
-    setActiveGraphBuilderNewId(null);
+  const applyWorkspaceDocumentSelection = useCallback(async (selection: WorkspaceDocumentSelection) => {
+    const currentActiveReportId = useWorkspaceSelectionStore.getState().selection.activeReportId;
+    if (currentActiveReportId && currentActiveReportId !== selection.activeReportId) {
+      await applicationRuntime.flushPendingEffects();
+    }
+    if (activeGraphBuilderNewId) {
+      closeGraphBuilderNew(activeGraphBuilderNewId);
+      setActiveGraphBuilderNewId(null);
+    }
+    loadWorkspaceSelection(selection);
     setActiveDataset(selection.activeDatasetId);
-    setActiveTableTransformId(selection.activeTableTransformId);
-    setActiveGraphBuilderId(selection.activeGraphBuilderId);
-    setActiveReportId(selection.activeReportId);
-    setActiveAnalysisId(selection.activeAnalysisId);
-    setActiveTabulateId(selection.activeTabulateId);
-  }, [activeGraphBuilderNewId, closeGraphBuilderNew, setActiveDataset]);
+  }, [activeGraphBuilderNewId, closeGraphBuilderNew, loadWorkspaceSelection, setActiveDataset]);
 
-  const activateWorkspaceDocument = useCallback((kind: WorkspaceDocumentKind, id: string) => {
-    applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
+  const activateWorkspaceDocument = useCallback(async (kind: WorkspaceDocumentKind, id: string) => {
+    await applyWorkspaceDocumentSelection(selectWorkspaceDocument(kind, id));
   }, [applyWorkspaceDocumentSelection]);
 
-  const clearWorkspaceDocumentSelection = useCallback(() => {
-    applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
+  const clearWorkspaceDocumentSelection = useCallback(async () => {
+    await applyWorkspaceDocumentSelection(createEmptyWorkspaceDocumentSelection());
   }, [applyWorkspaceDocumentSelection]);
 
-  const handleOpenGraphBuilderNew = (id: string) => {
+  const handleOpenGraphBuilderNew = async (id: string) => {
     const item = useGraphBuilderNewStore.getState().items.find((candidate) => candidate.id === id);
     if (!item) return;
     const dataset = useDataStore.getState().datasets.find((candidate) => candidate.id === item.datasetId);
-    if (activeGraphBuilderNewId !== id) clearWorkspaceDocumentSelection();
+    if (activeGraphBuilderNewId !== id) await clearWorkspaceDocumentSelection();
     setActiveGraphBuilderNewId(reopenGraphBuilderNew(id, dataset?.generation ?? 0));
   };
 
-  const flushPendingReportHistory = useCallback(() => {
-    const pending = pendingReportHistoryRef.current;
-    if (!pending) {
-      return;
-    }
-    pendingReportHistoryRef.current = null;
-    if (reportHistoryTimerRef.current !== null) {
-      window.clearTimeout(reportHistoryTimerRef.current);
-      reportHistoryTimerRef.current = null;
-    }
-    recordAction(t("history.editReport", {
-      defaultValue: 'Edit report "{{name}}"',
-      name: pending.name,
-    }));
-  }, [recordAction, t]);
+  const flushPendingReportHistory = useCallback(async () => {
+    await applicationRuntime.flushPendingEffects();
+  }, []);
 
-  const scheduleReportHistory = useCallback((id: string, name: string) => {
-    pendingReportHistoryRef.current = { id, name };
-    if (reportHistoryTimerRef.current !== null) {
-      window.clearTimeout(reportHistoryTimerRef.current);
-    }
-    reportHistoryTimerRef.current = window.setTimeout(() => {
-      flushPendingReportHistory();
-    }, 700);
-  }, [flushPendingReportHistory]);
+  useEffect(() => applicationRuntime.registerPendingEffectsDrain(async () => {
+    await reportUpdateQueueRef.current.catch(() => undefined);
+  }), []);
+
+  useEffect(() => {
+    const bridge = mountApplicationCommandBridge();
+    return () => {
+      void bridge.dispose();
+    };
+  }, []);
 
   const handleReportMarkdownChange = useCallback((id: string, markdown: string) => {
     if (readOnly) {
       return;
     }
-    const current = useReportStore.getState().items.find((item) => item.id === id);
-    if (!current || current.markdown === markdown) {
-      return;
-    }
-    useReportStore.getState().updateMarkdown(id, markdown, new Date().toISOString());
-    markDirty();
-    scheduleReportHistory(id, current.name);
-  }, [markDirty, readOnly, scheduleReportHistory]);
-
-  useEffect(() => {
-    const pending = pendingReportHistoryRef.current;
-    if (pending && activeReportId !== pending.id) {
-      flushPendingReportHistory();
-    }
-  }, [activeReportId, flushPendingReportHistory]);
+    reportUpdateQueueRef.current = reportUpdateQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const current = useReportStore.getState().items.find((item) => item.id === id);
+        if (!current || current.markdown === markdown) {
+          return;
+        }
+        const expectedDocumentRevision = useReportStore.getState().getDocumentRevision(id);
+        await applicationRuntime.execute(
+          {
+            type: "report.update",
+            input: {
+              reportId: id,
+              expectedDocumentRevision,
+              markdown,
+            },
+          },
+          { kind: "ui" },
+        );
+      })
+      .catch(() => undefined);
+  }, [readOnly]);
 
   useEffect(() => () => {
-    flushPendingReportHistory();
-  }, [flushPendingReportHistory]);
+    // Fallback only: controlled save/open/close/selection paths await this boundary explicitly.
+    void applicationRuntime.shutdown();
+  }, []);
 
   useEffect(() => {
     if (!editingAnalysisId) return;
@@ -758,69 +754,49 @@ export function Workspace() {
       return;
     }
     const name = resolved.basename;
-    const meta = await dataService.createTable(name, [], []);
-    await refreshDatasets();
-    markDirty();
-    activateWorkspaceDocument("dataset", meta.id);
-    recordAction(t("history.newTable", { name: meta.name }));
+    const result = await applicationRuntime.execute(
+      {
+        type: "table.create",
+        input: {
+          request: {
+            name,
+            columns: [],
+            rows: [],
+          },
+        },
+      },
+      { kind: "ui" },
+    );
+    const created = result.data;
     // Enter rename mode
-    setRenamingId(meta.id);
-    setRenameValue(meta.name);
+    setRenamingId(created.dataset.id);
+    setRenameValue(created.dataset.name);
   };
   handleCreateTableRef.current = handleCreateTable;
 
   /** 新建一个图表构建器项，绑定到当前选中数据表 */
-  const handleCreateGraphBuilder = () => {
+  const handleCreateGraphBuilder = async () => {
     if (readOnly) return;
     if (!activeDatasetId) {
       alert(t("alert.selectDatasetFirst"));
       return;
     }
-    const ds = datasets.find((d) => d.id === activeDatasetId);
-    if (!ds) return;
-    const nextNum = gbCounter + 1;
-    bumpGbCounter(nextNum);
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `gb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Per-table sequential numbering: scan existing graph builders bound to
-    // the same dataset, look at names matching `${ds.name} - Graph<N>`, and
-    // pick the next N.
-    const prefix = `${ds.name} - Graph`;
-    const perTableMax = graphBuilders
-      .filter((g) => g.sourceDatasetId === ds.id)
-      .reduce((max, g) => {
-        if (!g.name.startsWith(prefix)) return max;
-        const n = parseInt(g.name.slice(prefix.length), 10);
-        return Number.isFinite(n) && n > max ? n : max;
-      }, 0);
-    const name = allocateProjectBasename(
-      `${ds.name} - Graph${perTableMax + 1}`,
-      ".spgh",
-      graphBuilders.map((item) => item.name),
-    );
-    const item: GraphBuilderItem = {
-      id,
-      name,
-      sourceDatasetId: ds.id,
-      mode: "2d",
-      modeStates: {
-        twoD: createDefaultGraph2DState(),
-        threeD: createDefaultGraph3DState(),
-        multivariate: createDefaultMultivariateGraphState(),
-      },
-      createdAt: new Date().toISOString(),
-    };
-    addGraphBuilder(item);
-    activateWorkspaceDocument("graph", id);
-    markDirty();
-    recordAction(t("history.newGraph", { name, source: ds.name }));
-    setRenamingId(id);
-    setRenameValue(name);
+    try {
+      const result = await applicationRuntime.execute(
+        {
+          type: "graph.create",
+          input: { sourceDatasetId: activeDatasetId },
+        },
+        { kind: "ui" },
+      );
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    } catch {
+      alert(t("alert.importGraphFailed") + t("common.error", { defaultValue: "Error" }));
+    }
   };
 
-  const handleCreateGraphBuilderNew = () => {
+  const handleCreateGraphBuilderNew = async () => {
     if (readOnly) return;
     if (!activeDatasetId) {
       alert(t("alert.selectDatasetFirst"));
@@ -828,7 +804,7 @@ export function Workspace() {
     }
     const dataset = datasets.find((candidate) => candidate.id === activeDatasetId);
     if (!dataset) return;
-    clearWorkspaceDocumentSelection();
+    await clearWorkspaceDocumentSelection();
     setActiveGraphBuilderNewId(openGraphBuilderNew(dataset.id, dataset.generation));
   };
 
@@ -837,30 +813,18 @@ export function Workspace() {
     if (!activeDatasetId) {
       return;
     }
-    const ds = datasets.find((d) => d.id === activeDatasetId);
-    if (!ds) return;
-    const id = crypto.randomUUID();
-    const item: TabulateItem = {
-      id,
-      name: allocateProjectBasename(
-        useTabulateStore.getState().nextName(),
-        ".spf",
-        analysisDocumentNames,
-      ),
-      sourceDatasetId: activeDatasetId,
-      rowFields: [],
-      columnFields: [],
-      statistics: [],
-      includeRowTotals: true,
-      includeColumnTotals: true,
-      createdAt: new Date().toISOString(),
-    };
-    addTabulate(item);
-    activateWorkspaceDocument("tabulate", id);
-    markDirty();
-    recordAction(t("history.newTabulate", { name: item.name, source: ds.name }));
-    setRenamingId(id);
-    setRenameValue(item.name);
+    applicationRuntime.execute(
+      {
+        type: "tabulate.create",
+        input: { sourceDatasetId: activeDatasetId },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch(() => {
+      alert(t("alert.failedToCreateTabulate", { defaultValue: "Failed to create tabulate." }));
+    });
   };
 
   const handleCreateFitYByX = () => {
@@ -883,27 +847,26 @@ export function Workspace() {
 
   const handleCreateHypothesisTestItem = (name: string, submitted: HypothesisTestAnalysisEditorItem) => {
     if (!activeDatasetId) return;
-    const resolved = resolveProjectBasename(name || nextHypothesisTestAnalysisName(analysisItems), "analysis");
-    if (resolved.error) {
-      alert(resolved.error);
-      return;
-    }
-    if (resolved.basename === null) return;
-    const timestamp = new Date().toISOString();
-    const created = createHypothesisTestAnalysisDocument({
-      id: crypto.randomUUID(),
-      name: resolved.basename,
-      sourceDatasetId: activeDatasetId,
-      definition: submitted.definition,
-      createdAt: timestamp,
+    applicationRuntime.execute(
+      {
+        type: "analysis.create",
+        input: {
+          analysisKind: "hypothesisTest",
+          sourceDatasetId: activeDatasetId,
+          draft: {
+            name: name.trim() || undefined,
+            definition: submitted.definition,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setShowHypothesisTestDialog(false);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch((error) => {
+      alert(String(error));
     });
-    addAnalysis(created);
-    activateWorkspaceDocument("analysis", created.id);
-    setShowHypothesisTestDialog(false);
-    markDirty();
-    recordAction(t("history.newAnalysis", { defaultValue: "Created {{name}}", name: created.name }));
-    setRenamingId(created.id);
-    setRenameValue(created.name);
   };
 
   const openFitModel = (prefill?: FitModelPrefill) => {
@@ -922,102 +885,74 @@ export function Workspace() {
 
   const handleCreateFitModelItem = async (definition: FitModelCreateDefinition) => {
     if (!activeDatasetId) return;
-    const sourceDatasetId = activeDatasetId;
-    const [columns, displayProps] = await Promise.all([
-      dataService.getColumns(sourceDatasetId),
-      dataService.getColumnDisplayProps(sourceDatasetId).catch(() => []),
-    ]);
-    const displayPropsByIndex = new Map(displayProps.map((entry) => [entry.colIndex, entry]));
-    const fields = columns.map(([name, sqlType], index) => (
-      toFitModelFieldInfo(name, sqlType, displayPropsByIndex.get(index)).field
-    ));
-    const id = crypto.randomUUID();
-    const name = nextFitModelAnalysisName(analysisItems);
-    const item = createFitModelItem({
-      id,
-      name,
-      sourceDatasetId,
-      response: definition.response,
-      construct: definition.construct,
-      terms: definition.terms,
-      centeringMethod: definition.centeringMethod,
-      createdAt: new Date().toISOString(),
-      fields,
-    });
-    const source = datasets.find((dataset) => dataset.id === sourceDatasetId)?.name ?? sourceDatasetId;
-    const analysis = createFitModelAnalysisDocument({
-      item,
-      confidenceLevel: 0.95,
-      updatedAt: item.createdAt,
-    });
-    addAnalysis(analysis);
-    activateWorkspaceDocument("analysis", id);
-    setShowFitModelDialog(false);
-    setFitModelPrefill(null);
-    markDirty();
-    recordAction(t("history.newFitModel", { name, source }));
-    setRenamingId(id);
-    setRenameValue(name);
+    try {
+      const result = await applicationRuntime.execute(
+        {
+          type: "analysis.create",
+          input: {
+            analysisKind: "fitModel",
+            sourceDatasetId: activeDatasetId,
+            draft: {
+              response: definition.response,
+              construct: definition.construct,
+              terms: definition.terms,
+              centeringMethod: definition.centeringMethod,
+              confidenceLevel: 0.95,
+            },
+          },
+        },
+        { kind: "ui" },
+      );
+      setShowFitModelDialog(false);
+      setFitModelPrefill(null);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    } catch (error) {
+      alert(String(error));
+    }
   };
 
   const handleCreateFitYByXItem = (item: FitYByXAnalysisEditorItem) => {
-    const requestedName = item.name.trim();
-    const resolved = resolveProjectBasename(
-      requestedName || nextFitYByXAnalysisName(analysisItems),
-      "analysis",
-    );
-    if (resolved.error) {
-      alert(resolved.error);
-      return;
-    }
-    if (resolved.basename === null) return;
-    const created = createFitYByXAnalysisDocument({
-      item: { ...item, name: resolved.basename },
-      confidenceLevel: item.confidenceLevel,
-      updatedAt: new Date().toISOString(),
+    applicationRuntime.execute(
+      {
+        type: "analysis.create",
+        input: {
+          analysisKind: "fitYByX",
+          sourceDatasetId: item.sourceDatasetId,
+          draft: {
+            name: item.name.trim() || undefined,
+            response: item.response,
+            factor: item.factor,
+            confidenceLevel: item.confidenceLevel,
+            graph: item.graph,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setShowFitYByXDialog(false);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch((error) => {
+      alert(String(error));
     });
-    const source = datasets.find((dataset) => dataset.id === created.source.datasetId)?.name
-      ?? created.source.datasetId;
-    addAnalysis(created);
-    activateWorkspaceDocument("analysis", created.id);
-    setShowFitYByXDialog(false);
-    markDirty();
-    recordAction(t("history.newFitYByX", { name: created.name, source }));
-    setRenamingId(created.id);
-    setRenameValue(created.name);
   };
 
-  const handleCreateReport = () => {
+  const handleCreateReport = async () => {
     if (readOnly) return;
-    const timestamp = new Date().toISOString();
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const item: ReportItem = {
-      schemaVersion: 1,
-      id,
-      name: allocateProjectBasename(nextReportName(), ".sprp", reportItems.map((entry) => entry.name)),
-      markdown: "",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    addReport(item);
-    activateWorkspaceDocument("report", id);
-    markDirty();
-    recordAction(t("history.newReport", { name: item.name }));
-    setRenamingId(id);
-    setRenameValue(item.name);
+    const result = await applicationRuntime.execute(
+      {
+        type: "report.create",
+        input: {},
+      },
+      { kind: "ui" },
+    );
+    setRenamingId(result.data.item.id);
+    setRenameValue(result.data.item.name);
   };
 
   const handleCreateAnalysisSample = async () => {
     if (readOnly) return;
-    const timestamp = new Date().toISOString();
-    const createId = (prefix: string) => (
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    );
     const tableName = allocateProjectBasename(
       "DIM1 Sample",
       ".sptb",
@@ -1030,7 +965,6 @@ export function Workspace() {
     );
 
     let createdDatasetId: string | null = null;
-    let addedAnalysisId: string | null = null;
     try {
       const sample = createAnalysisSample(112, 200);
       const dataset = await dataService.createTableFromRows({
@@ -1041,20 +975,27 @@ export function Workspace() {
       });
       createdDatasetId = dataset.id;
       await refreshDatasets();
-      const analysis = createAnalysisSampleDocument({
-        datasetId: dataset.id,
-        analysisId: createId("analysis"),
-        analysisName,
-        createdAt: timestamp,
-      });
-
-      addAnalysis(analysis);
-      addedAnalysisId = analysis.id;
-      activateWorkspaceDocument("analysis", analysis.id);
-      markDirty();
-      recordAction(t(getAnalysisCreationHistoryKey("sample"), { name: analysis.name }));
+      await applicationRuntime.execute(
+        {
+          type: "analysis.create",
+          input: {
+            analysisKind: "distribution",
+            sourceDatasetId: dataset.id,
+            draft: {
+              name: analysisName,
+              responses: [{ name: ANALYSIS_SAMPLE_COLUMN, type: "continuous" }],
+              weight: null,
+              frequency: null,
+              by: [],
+              nestedSubgroup: null,
+              analysis: createDefaultDistributionAnalysisConfig(),
+              graphs: createDefaultDistributionGraphs({ name: ANALYSIS_SAMPLE_COLUMN, type: "continuous" }),
+            },
+          },
+        },
+        { kind: "ui" },
+      );
     } catch (error) {
-      if (addedAnalysisId) deleteAnalysis(addedAnalysisId);
       if (createdDatasetId) {
         try {
           await dataService.deleteDataset(createdDatasetId);
@@ -1150,14 +1091,30 @@ export function Workspace() {
   const handleUpdateDistributionAnalysisInputs = (editing: AnalysisDocument, submitted: DistributionItem) => {
     if (readOnly) return;
     if (editing.analysisKind !== "distribution") return;
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      submitted,
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "distribution",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            responses: submitted.responses,
+            weight: submitted.weight,
+            frequency: submitted.frequency,
+            by: submitted.by,
+            nestedSubgroup: submitted.nestedSubgroup,
+            analysis: submitted.analysis,
+            graphs: submitted.graphs,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleManageDistributionProperties = useCallback((request: DistributionManagePropertiesRequest) => {
@@ -1181,14 +1138,27 @@ export function Workspace() {
     submitted: FitYByXAnalysisEditorItem,
   ) => {
     if (readOnly) return;
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      submitted,
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "fitYByX",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            response: submitted.response,
+            factor: submitted.factor,
+            confidenceLevel: submitted.confidenceLevel,
+            graph: submitted.graph,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleUpdateFitModelAnalysisInputs = (
@@ -1196,15 +1166,28 @@ export function Workspace() {
     submitted: FitModelCreateDefinition,
   ) => {
     if (readOnly) return;
-    const editorItem = toAnalysisEditorItem(editing);
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      { ...editorItem, ...submitted },
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "fitModel",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            response: submitted.response,
+            construct: submitted.construct,
+            terms: submitted.terms,
+            centeringMethod: submitted.centeringMethod,
+            confidenceLevel: editing.definition.confidenceLevel,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleUpdateHypothesisTestAnalysisInputs = (
@@ -1212,40 +1195,55 @@ export function Workspace() {
     submitted: HypothesisTestAnalysisEditorItem,
   ) => {
     if (readOnly) return;
-    updateAnalysis(editing.id, createAnalysisEditorPatch(
-      editing,
-      submitted,
-      new Date().toISOString(),
-    ));
-    setEditingAnalysisId(null);
-    markDirty();
-    recordAction(t("history.updateAnalysisInputs", { name: editing.name }));
+    applicationRuntime.execute(
+      {
+        type: "analysis.update",
+        input: {
+          analysisId: editing.id,
+          analysisKind: "hypothesisTest",
+          expectedConfigRevision: editing.configRevision,
+          draft: {
+            definition: submitted.definition,
+            presentation: submitted.presentation,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then(() => {
+      setEditingAnalysisId(null);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleCreateDistributionItem = (item: DistributionItem) => {
     if (readOnly) return;
-    const resolved = resolveProjectBasename(
-      item.name.trim() || nextDistributionAnalysisName(analysisItems),
-      "analysis",
-    );
-    if (resolved.error) {
-      alert(resolved.error);
-      return;
-    }
-    if (resolved.basename === null) return;
-    const created = createDistributionAnalysisDocument(
-      { ...item, name: resolved.basename },
-      new Date().toISOString(),
-    );
-    const source = datasets.find((dataset) => dataset.id === created.source.datasetId)?.name
-      ?? created.source.datasetId;
-    addAnalysis(created);
-    activateWorkspaceDocument("analysis", created.id);
-    setShowDistributionDialog(false);
-    markDirty();
-    recordAction(t(getAnalysisCreationHistoryKey("generic"), { name: created.name, source }));
-    setRenamingId(created.id);
-    setRenameValue(created.name);
+    applicationRuntime.execute(
+      {
+        type: "analysis.create",
+        input: {
+          analysisKind: "distribution",
+          sourceDatasetId: item.sourceDatasetId,
+          draft: {
+            name: item.name.trim() || undefined,
+            responses: item.responses,
+            weight: item.weight,
+            frequency: item.frequency,
+            by: item.by,
+            nestedSubgroup: item.nestedSubgroup,
+            analysis: item.analysis,
+            graphs: item.graphs,
+          },
+        },
+      },
+      { kind: "ui" },
+    ).then((result) => {
+      setShowDistributionDialog(false);
+      setRenamingId(result.data.item.id);
+      setRenameValue(result.data.item.name);
+    }).catch((error) => {
+      alert(String(error));
+    });
   };
 
   const handleRenameSubmit = async (id: string) => {
@@ -1307,7 +1305,7 @@ export function Workspace() {
     }
     const report = useReportStore.getState().items.find((it) => it.id === id);
     if (report) {
-      flushPendingReportHistory();
+      await flushPendingReportHistory();
       const resolved = resolveProjectBasename(trimmed, "report", report.name);
       if (resolved.error !== null) {
         alert(resolved.error);
@@ -1367,7 +1365,7 @@ export function Workspace() {
   const handleDeleteGraphBuilder = (id: string) => {
     const it = useGraphBuilderStore.getState().items.find((x) => x.id === id);
     deleteGraphBuilder(id);
-    if (activeGraphBuilderId === id) setActiveGraphBuilderId(null);
+    if (activeGraphBuilderId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (it) recordAction(t("history.deleteGraph", { name: it.name }));
   };
@@ -1386,7 +1384,7 @@ export function Workspace() {
     if (readOnly) return;
     const item = useTableTransformStore.getState().definitions.find((entry) => entry.id === id);
     deleteTableTransform(id);
-    if (activeTableTransformId === id) setActiveTableTransformId(null);
+    if (activeTableTransformId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteTableTransform", { name: item.name }));
   };
@@ -1394,16 +1392,16 @@ export function Workspace() {
   const handleDeleteTabulate = (id: string) => {
     const item = useTabulateStore.getState().items.find((entry) => entry.id === id);
     deleteTabulate(id);
-    if (activeTabulateId === id) setActiveTabulateId(null);
+    if (activeTabulateId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteTabulate", { name: item.name }));
   };
 
-  const handleDeleteReport = (id: string) => {
+  const handleDeleteReport = async (id: string) => {
     const item = useReportStore.getState().items.find((entry) => entry.id === id);
-    flushPendingReportHistory();
+    await flushPendingReportHistory();
     deleteReport(id);
-    if (activeReportId === id) setActiveReportId(null);
+    if (activeReportId === id) await clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteReport", { name: item.name }));
   };
@@ -1412,7 +1410,7 @@ export function Workspace() {
     if (readOnly) return;
     const item = useAnalysisStore.getState().items.find((entry) => entry.id === id);
     deleteAnalysis(id);
-    if (activeAnalysisId === id) setActiveAnalysisId(null);
+    if (activeAnalysisId === id) clearWorkspaceDocumentSelection();
     markDirty();
     if (item) recordAction(t("history.deleteAnalysis", { name: item.name }));
   };
@@ -1426,22 +1424,21 @@ export function Workspace() {
       deletedDatasetId: id,
       activeAnalysis: activeAnalysis ?? null,
     });
+    const selectionAfterDelete = resolveSelectionAfterDatasetDeletion({
+      selection: useWorkspaceSelectionStore.getState().selection,
+      deletedDatasetId: id,
+      graphItems: useGraphBuilderStore.getState().items,
+      retainedActiveAnalysisId,
+    });
     await dataService.deleteDataset(id);
     removeDatasetFilters(id);
-    if (activeDatasetId === id) setActiveDataset(null);
     // 联动删除引用此数据表的图表
     deleteGraphBuildersByDataset(id);
     const nativeDependents = useGraphBuilderNewStore.getState().items.filter((item) => item.datasetId === id);
     useGraphBuilderNewStore.getState().deleteByDataset(id);
     for (const item of nativeDependents) fsSetGraphNewFolder(item.id, null);
     if (nativeDependents.some((item) => item.id === activeGraphBuilderNewId)) setActiveGraphBuilderNewId(null);
-    if (activeGraphBuilderId) {
-      const stillExists = useGraphBuilderStore
-        .getState()
-        .items.find((it) => it.id === activeGraphBuilderId);
-      if (!stillExists) setActiveGraphBuilderId(null);
-    }
-    if (retainedActiveAnalysisId) setActiveAnalysisId(retainedActiveAnalysisId);
+    await applyWorkspaceDocumentSelection(selectionAfterDelete);
     await refreshDatasets();
     markDirty();
     recordAction(t("history.deleteTable", { name }));
@@ -1534,89 +1531,25 @@ export function Workspace() {
   };
 
   const handleSave = async (saveAs = false) => {
-    if (saving) return;
-    flushPendingReportHistory();
-    const { snapshots } = useHistoryStore.getState();
-    const gbItems = useGraphBuilderStore.getState().items;
-    const gbNewItems = useGraphBuilderNewStore.getState().items;
-    const datasetFilters = useDatasetFilterStore.getState().toProjectPayload();
-    // History is session-only (not persisted); only snapshots are saved.
-    // Per issue #7 folder routing for both tables and graphs flows OUT-OF-BAND
-    // via the folderPayload — the file bodies (.sptb / .spgh) themselves
-    // never carry a `folder` field. The backend uses tableFolders and
-    // graphFolders to derive each file's path inside the archive.
-    const folderPayload = {
-      folders,
-      tableFolders,
-      graphFolders,
-      reportFolders,
-      tabulateFolders,
-      ...buildAnalysisProjectPayload({ analyses: analysisItems, analysisFolders }),
-    };
     try {
-      if (saveAs || !project?.filePath) {
-        const filePath = await save({
-          title: t("welcome.saveProjectDialog"),
-          defaultPath: project?.filePath || "Untitled Project.spprj",
-          filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
-        });
-        if (!filePath) return; // User cancelled
-        await saveProject({
-          filePath: filePath as string,
-          history: [],
-          snapshots,
-          datasetFilters,
-          graphBuilders: gbItems,
-          graphBuildersNew: useGraphBuilderNewStore.getState().items,
-          graphNewFolders: useFolderStore.getState().graphNewFolders,
-          fitYByX: [],
-          tabulates,
-          distributions: [],
-          analyses: folderPayload.analyses,
-          folders: folderPayload.folders,
-          tableFolders: folderPayload.tableFolders,
-          graphFolders: folderPayload.graphFolders,
-          fitYByXFolders: {},
-          reportFolders: folderPayload.reportFolders,
-          tabulateFolders: folderPayload.tabulateFolders,
-          reports: reportItems,
-          distributionFolders: folderPayload.distributionFolders,
-          analysisFolders: folderPayload.analysisFolders,
-          workflows,
-          logicalFolders,
-          workflowRuns,
-          tableTransforms,
-          tableTransformBindings,
-        });
-      } else {
-        await saveProject({
-          history: [],
-          snapshots,
-          datasetFilters,
-          graphBuilders: gbItems,
-          graphBuildersNew: gbNewItems,
-          graphNewFolders: useFolderStore.getState().graphNewFolders,
-          fitYByX: [],
-          tabulates,
-          distributions: [],
-          analyses: folderPayload.analyses,
-          folders: folderPayload.folders,
-          tableFolders: folderPayload.tableFolders,
-          graphFolders: folderPayload.graphFolders,
-          fitYByXFolders: {},
-          reportFolders: folderPayload.reportFolders,
-          tabulateFolders: folderPayload.tabulateFolders,
-          reports: reportItems,
-          distributionFolders: folderPayload.distributionFolders,
-          analysisFolders: folderPayload.analysisFolders,
-          workflows,
-          logicalFolders,
-          workflowRuns,
-          tableTransforms,
-          tableTransformBindings,
-        });
-      }
-      showToast(t("common.saved"), 1500);
+      await flushPendingReportHistory();
+      await createWorkspaceCommandHandlers({
+        t,
+        getProjectFilePath: () => saveAs ? undefined : project?.filePath,
+        getProjectRevision: () => useProjectStore.getState().projectRevision,
+        isSaving: () => saving,
+        isReadOnly: () => readOnly,
+        requestSaveProjectPath: async () => {
+          const selectedFilePath = await save({
+            title: t("welcome.saveProjectDialog"),
+            defaultPath: project?.filePath || "Untitled Project.spprj",
+            filters: [{ name: "StatsPlayground Project", extensions: ["spprj"] }],
+          });
+          return typeof selectedFilePath === "string" ? selectedFilePath : null;
+        },
+        executeCommand: applicationRuntime.execute.bind(applicationRuntime),
+        showToast,
+      }).saveProject();
     } catch (error) {
       alert(`${t("menu.save")}: ${String(error)}`);
     }
@@ -1770,8 +1703,10 @@ export function Workspace() {
   const handleCloseProject = async () => {
     if (useProjectStore.getState().readOnly) return;
     if (useProjectStore.getState().dirty && !window.confirm(t("workspace.discardUnsavedChanges"))) return;
-    flushPendingReportHistory();
-    clearWorkspaceDocumentSelection();
+    await flushPendingReportHistory();
+    await clearWorkspaceDocumentSelection();
+    setDirty(false);
+    resetRevision();
     resetHistory();
     resetGraphBuilders();
     resetGraphBuildersNew();
@@ -1797,6 +1732,7 @@ export function Workspace() {
     if (selected) {
       if (useProjectStore.getState().readOnly) return;
       if (useProjectStore.getState().dirty && !window.confirm(t("workspace.discardUnsavedChanges"))) return;
+      await flushPendingReportHistory();
       setBusyMessage(t("workspace.openingProject"));
       const unlisten = await listen<{
         datasetIndex: number;
@@ -1824,8 +1760,7 @@ export function Workspace() {
           fitModels: result.fitModels ?? [],
           fitModelFolders: result.fitModelFolders ?? {},
         });
-        flushPendingReportHistory();
-        clearWorkspaceDocumentSelection();
+        await clearWorkspaceDocumentSelection();
         resetHistory();
         resetGraphBuilders();
         resetGraphBuildersNew();
@@ -1952,7 +1887,7 @@ export function Workspace() {
     return t(`tableExport.pickerTitle.${format}`, { defaultValue: defaultTitle });
   }, [t]);
 
-  const handleTableExport = async (plan: TableExportPlan): Promise<boolean> => {
+  const handleExportTables = async (plan: TableExportPlan) => {
     let outputPath: string | null = null;
     const pickerTitle = tableExportPickerTitle(plan.format);
 
@@ -1984,8 +1919,20 @@ export function Workspace() {
 
     if (plan.format === "csv") {
       if (plan.mode === "single-file") {
-        await ioService.exportCsv(plan.datasetIds[0]!, outputPath);
-        return true;
+        return createWorkspaceCommandHandlers({
+          t,
+          getProjectFilePath: () => project?.filePath,
+          getProjectRevision: () => useProjectStore.getState().projectRevision,
+          isSaving: () => saving,
+          isReadOnly: () => readOnly,
+          executeCommand: applicationRuntime.execute.bind(applicationRuntime),
+          authorizeCsvExportRoot: ioService.authorizeCsvExportRoot,
+          revokeCsvExportRoot: ioService.revokeCsvExportRoot,
+          listCommandRequests: mcpManagementService.listCommandRequests,
+          confirmCommandRequest: mcpManagementService.confirmCommandRequest,
+          confirmOverwrite: () => window.confirm(t("common.confirmOverwrite", { defaultValue: "Overwrite the existing file?" })),
+          waitForCommandConfirmation,
+        }).exportCsv(plan, outputPath);
       }
       await ioService.exportCsvZipSubset(outputPath, plan.datasetIds, plan.archivePaths);
       return true;
@@ -2003,6 +1950,36 @@ export function Workspace() {
 
     await projectService.exportTablesSptbZip(plan.datasetIds, outputPath, plan.archivePaths);
     return true;
+  };
+
+  const waitForCommandConfirmation = async (requestId: string, commandPromise: Promise<unknown>) => {
+    return waitForWorkspaceCommandConfirmation(requestId, commandPromise, {
+      listCommandRequests: mcpManagementService.listCommandRequests,
+      waitForAnimationFrame: () => new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      }),
+    });
+  };
+
+  const handleCreateSnapshot = async () => {
+    try {
+      await createWorkspaceCommandHandlers({
+        t,
+        getProjectFilePath: () => project?.filePath,
+        getProjectRevision: () => useProjectStore.getState().projectRevision,
+        isSaving: () => saving,
+        isReadOnly: () => readOnly,
+        executeCommand: applicationRuntime.execute.bind(applicationRuntime),
+        listen,
+        setBusyMessage,
+      }).createSnapshot();
+    } finally {
+    }
+  };
+
+  const handleSnapshotContextMenu = (menu: SnapshotMenuData) => {
+    setSnapMenu(menu);
+    setConfirmDeleteSnapId(null);
   };
 
   // ---- Folder mutation helpers wired to the side-panel UI ----------------
@@ -2692,6 +2669,20 @@ export function Workspace() {
             <MenuDropdown label={t("menu.report")}>
               <div className={`menu-item${readOnly ? " menu-item-disabled" : ""}`} onClick={readOnly ? undefined : handleCreateReport}>{t("menu.newReport")}</div>
             </MenuDropdown>
+            <MenuDropdown label={t("menu.ai", { defaultValue: "AI" })}>
+              <div className="menu-item" onClick={() => {
+                applyWorkspaceAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
+                  setActiveTab,
+                  setActiveAiSubview,
+                });
+              }}>{t("menu.mcpServer", { defaultValue: "MCP Server..." })}</div>
+              <div className="menu-item" onClick={() => {
+                applyWorkspaceAiNavigation(openWorkspaceAiSkills({ activeTab, activeAiSubview }), {
+                  setActiveTab,
+                  setActiveAiSubview,
+                });
+              }}>{t("menu.skills", { defaultValue: "Skills..." })}</div>
+            </MenuDropdown>
             <MenuDropdown label={t("menu.help")}>
               <div className="menu-item" onClick={() => setHelpDialog(true)}>{t("menu.about")}</div>
             </MenuDropdown>
@@ -2701,26 +2692,7 @@ export function Workspace() {
         <button
           className={`menu-bar-snapshot${dirty ? " menu-bar-snapshot-dirty" : ""}`}
           disabled={readOnly}
-          onClick={async () => {
-            if (readOnly) return;
-            setBusyMessage(t("workspace.creatingSnapshot"));
-            const unlisten = await listen<{
-              datasetIndex: number;
-              datasetTotal: number;
-              datasetName: string;
-            }>("snapshot-progress", (event) => {
-              const { datasetIndex, datasetTotal, datasetName } = event.payload;
-              if (datasetTotal > 0 && datasetIndex < datasetTotal) {
-                setBusyMessage(`${t("workspace.creatingSnapshot")} ${t("workspace.importProgressTable", { i: datasetIndex + 1, total: datasetTotal, name: datasetName })}`);
-              }
-            });
-            try {
-              await createSnapshot();
-            } finally {
-              unlisten();
-              setBusyMessage(null);
-            }
-          }}
+          onClick={handleCreateSnapshot}
           title={t("workspace.createSnapshotTitle")}
         >
           <i className="fa-solid fa-camera" aria-hidden="true" />
@@ -2764,6 +2736,19 @@ export function Workspace() {
             aria-label={t("workflow.title", { defaultValue: "Workflow" })}
           >
             <i className="fa-solid fa-diagram-project" aria-hidden="true" />
+          </button>
+          <button
+            className={`activity-btn${activeTab === "ai" ? " activity-btn-active" : ""}`}
+            onClick={() => {
+              applyWorkspaceAiNavigation(openWorkspaceAiServer({ activeTab, activeAiSubview }), {
+                setActiveTab,
+                setActiveAiSubview,
+              });
+            }}
+            title={t("menu.ai", { defaultValue: "AI" })}
+            aria-label={t("menu.ai", { defaultValue: "AI" })}
+          >
+            <i className="fa-solid fa-robot" aria-hidden="true" />
           </button>
           </div>
         )}
@@ -2821,10 +2806,34 @@ export function Workspace() {
               selectedId={activeWorkflowViewId}
               onSelect={setActiveWorkflowViewId}
             />
+          ) : activeTab === "ai" ? (
+            <>
+              <div className="panel-header">
+                <h3>{t("menu.ai", { defaultValue: "AI" })}</h3>
+              </div>
+              <div className="ai-nav-list">
+                <button
+                  type="button"
+                  className={`ai-nav-btn${activeAiSubview === "server" ? " ai-nav-btn-active" : ""}`}
+                  onClick={() => setActiveAiSubview("server")}
+                >
+                  <span>MCP Server</span>
+                  <i className="fa-solid fa-plug" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={`ai-nav-btn${activeAiSubview === "skills" ? " ai-nav-btn-active" : ""}`}
+                  onClick={() => setActiveAiSubview("skills")}
+                >
+                  <span>Skills</span>
+                  <i className="fa-solid fa-wand-magic-sparkles" aria-hidden="true" />
+                </button>
+              </div>
+            </>
           ) : (
             <HistoryPanel
               setBusyMessage={setBusyMessage}
-              onSnapshotMenu={(menu) => { setSnapMenu(menu); setConfirmDeleteSnapId(null); }}
+              onSnapshotMenu={handleSnapshotContextMenu}
               snapRenameRef={snapRenameRef}
             />
           )}
@@ -2832,7 +2841,12 @@ export function Workspace() {
         )}
       >
         <div className="main-area">
-          {activeTab === "workflow" ? (
+          {activeTab === "ai" ? (
+            <AiActivityView
+              subview={activeAiSubview}
+              onSelectSubview={setActiveAiSubview}
+            />
+          ) : activeTab === "workflow" ? (
             <WorkflowView
               lineageGraph={projectLineageGraph}
               workflow={workflows.find((workflow) => workflow.id === activeWorkflowViewId)}
@@ -2873,19 +2887,77 @@ export function Workspace() {
                   onEditInputs={() => void handleEditAnalysisInputs(item.id)}
                   onGraphConfigChange={readOnly ? undefined : (role, graph) => {
                     const current = useAnalysisStore.getState().items.find((entry) => entry.id === item.id) ?? item;
-                    const graphUpdate = createWorkspaceAnalysisGraphConfigPatch(
-                      current,
-                      role,
-                      graph,
-                      new Date().toISOString(),
-                    );
-                    updateAnalysis(item.id, graphUpdate.patch);
-                    markDirty();
+                    if (current.analysisKind === "distribution") {
+                      void applicationRuntime.execute(
+                        {
+                          type: "analysis.update",
+                          input: {
+                            analysisId: current.id,
+                            analysisKind: "distribution",
+                            expectedConfigRevision: current.configRevision,
+                            draft: {
+                              responses: current.definition.responses,
+                              weight: current.definition.weight,
+                              frequency: current.definition.frequency,
+                              by: current.definition.by,
+                              nestedSubgroup: current.definition.nestedSubgroup,
+                              analysis: current.definition.analysis,
+                              graphs: { ...current.definition.graphs, [role]: graph },
+                            },
+                          },
+                        },
+                        { kind: "ui" },
+                      ).catch((error) => {
+                        alert(String(error));
+                      });
+                      return;
+                    }
+                    if (current.analysisKind === "fitYByX") {
+                      void applicationRuntime.execute(
+                        {
+                          type: "analysis.update",
+                          input: {
+                            analysisId: current.id,
+                            analysisKind: "fitYByX",
+                            expectedConfigRevision: current.configRevision,
+                            draft: {
+                              response: current.definition.response,
+                              factor: current.definition.factor,
+                              confidenceLevel: current.definition.confidenceLevel,
+                              graph,
+                            },
+                          },
+                        },
+                        { kind: "ui" },
+                      ).catch((error) => {
+                        alert(String(error));
+                      });
+                    }
                   }}
                   onDefinitionChange={readOnly ? undefined : (patch) => {
-                    updateAnalysis(item.id, patch);
-                    markDirty();
-                    recordAction(t("history.updateAnalysisInputs", { name: item.name }));
+                    if (item.analysisKind !== "fitModel" || patch.definition?.kind !== "fitModel") {
+                      return;
+                    }
+                    void applicationRuntime.execute(
+                      {
+                        type: "analysis.update",
+                        input: {
+                          analysisId: item.id,
+                          analysisKind: "fitModel",
+                          expectedConfigRevision: item.configRevision,
+                          draft: {
+                            response: patch.definition.response,
+                            construct: patch.definition.construct,
+                            terms: patch.definition.terms,
+                            centeringMethod: patch.definition.centeringMethod,
+                            confidenceLevel: patch.definition.confidenceLevel,
+                          },
+                        },
+                      },
+                      { kind: "ui" },
+                    ).catch((error) => {
+                      alert(String(error));
+                    });
                   }}
                   onDatasetChanged={async () => {
                     markDirty();
@@ -2906,12 +2978,6 @@ export function Workspace() {
                   item={item}
                   dataset={ds}
                   existingDatasetNames={datasets.map((entry) => entry.name)}
-                  onTableCreated={async (dataset) => {
-                    await refreshDatasets();
-                    markDirty();
-                    activateWorkspaceDocument("dataset", dataset.id);
-                    recordAction(t("history.tabulateTableCreated", { name: dataset.name }));
-                  }}
                 />
               );
             })()
@@ -2964,11 +3030,15 @@ export function Workspace() {
                     markDirty();
                   }}
                   onRerun={async () => {
-                    await rerunTableTransform(definition.id);
-                    await refreshDatasets();
+                    await applicationRuntime.execute(
+                      {
+                        type: "tableTransform.run",
+                        input: { transformId: definition.id },
+                      },
+                      { kind: "ui" },
+                    );
                     setTableKey((key) => key + 1);
                     invalidateData();
-                    markDirty();
                   }}
                   onOpenOutput={(tableDocumentId) => activateWorkspaceDocument("dataset", tableDocumentId)}
                 />
@@ -3018,6 +3088,27 @@ export function Workspace() {
           <span>{statusInfo.selectionLabel || statusInfo.cellLabel}</span>
         )}
         {statusInfo?.dimensions && <span>{statusInfo.dimensions}</span>}
+        {statusInfo?.tableCacheDiagnostics && (
+          <span>
+            {statusInfo.tableCacheDiagnostics.cacheHit == null
+              ? t("workspace.tableCache.pending", { defaultValue: "Cache pending" })
+              : statusInfo.tableCacheDiagnostics.cacheHit
+                ? t("workspace.tableCache.hit", { defaultValue: "Cache hit" })
+                : t("workspace.tableCache.miss", { defaultValue: "Cache miss" })}
+            {statusInfo.tableCacheDiagnostics.diagnosticJsonEncodeMs == null
+              ? ""
+              : ` · ${t("workspace.tableCache.encodeProxy", { defaultValue: "Diagnostic JSON encode" })} ${statusInfo.tableCacheDiagnostics.diagnosticJsonEncodeMs.toFixed(3)} ms`}
+            {statusInfo.tableCacheDiagnostics.postReceivePaintMs == null
+              ? ""
+              : ` · ${t("workspace.tableCache.postReceivePaint", { defaultValue: "Post-receive paint" })} ${statusInfo.tableCacheDiagnostics.postReceivePaintMs.toFixed(3)} ms`}
+            {statusInfo.tableCacheDiagnostics.diagnosticJsonBytes == null
+              ? ""
+              : ` · ${t("workspace.tableCache.responseBytes", { defaultValue: "Diagnostic JSON bytes" })} ${formatStatusBytes(statusInfo.tableCacheDiagnostics.diagnosticJsonBytes)}`}
+            {` · ${statusInfo.tableCacheDiagnostics.retainedRows.toLocaleString()} ${t("workspace.tableCache.rows", { defaultValue: "rows" })}`}
+            {` · ${statusInfo.tableCacheDiagnostics.entryCount.toLocaleString()} ${t("workspace.tableCache.entries", { defaultValue: "entries" })}`}
+            {` · ${formatStatusBytes(statusInfo.tableCacheDiagnostics.estimatedBytes)}`}
+          </span>
+        )}
         {activeDatasetId && <TableZoomControl />}
         {saving && (
           <span>
@@ -3088,7 +3179,7 @@ export function Workspace() {
           datasets={datasets}
           tableFolders={tableFolders}
           projectName={project?.name ?? "export"}
-          onExport={handleTableExport}
+          onExport={handleExportTables}
           onClose={() => setShowTableExport(false)}
         />
       )}
@@ -3099,11 +3190,14 @@ export function Workspace() {
           activeDatasetId={activeDatasetId}
           onClose={() => setShowTableTransformDialog(false)}
           onSubmit={async (draft) => {
-            const execution = await createAndRunTableTransform(draft);
-            await refreshDatasets();
-            if (execution.output) activateWorkspaceDocument("dataset", execution.output.id);
+            await applicationRuntime.execute(
+              {
+                type: "tableTransform.create",
+                input: { draft },
+              },
+              { kind: "ui" },
+            );
             invalidateData();
-            markDirty();
           }}
         />
       )}
@@ -3113,11 +3207,17 @@ export function Workspace() {
           datasets={datasets}
           tableFolders={tableFolders}
           onClose={() => setShowSqlQuery(false)}
-          onCreated={async (dataset) => {
-            await refreshDatasets();
-            activateWorkspaceDocument("dataset", dataset.id);
-            markDirty();
-            recordAction(t("history.sqlQueryTableCreated", { name: dataset.name }));
+          onCreateTable={async ({ sql, name }) => {
+            await applicationRuntime.execute(
+              {
+                type: "sql.createTable",
+                input: {
+                  sql,
+                  name,
+                },
+              },
+              { kind: "ui" },
+            );
             setShowSqlQuery(false);
           }}
         />

@@ -3,8 +3,16 @@ import type { TabulateItem } from "../types/tabulate.ts";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { assertProjectMutable } from "@/utils/saveReadOnly";
 
+export interface TabulateLatestResult {
+  requestFingerprint: string;
+  sourceGeneration: number;
+  result: import("@/types/tabulate").TabulateResult;
+  completedAt: string;
+}
+
 interface TabulateStore {
   items: TabulateItem[];
+  latestResultsById: Record<string, TabulateLatestResult>;
   counter: number;
   addItem: (item: TabulateItem) => void;
   updateItem: (id: string, patch: Partial<TabulateItem>) => void;
@@ -13,6 +21,9 @@ interface TabulateStore {
   loadFromProject: (items: TabulateItem[]) => void;
   reset: () => void;
   nextName: () => string;
+  setLatestResult: (id: string, latest: TabulateLatestResult) => void;
+  getLatestResult: (id: string) => TabulateLatestResult | null;
+  clearLatestResult: (id: string) => void;
 }
 
 const TABULATE_NAME_RE = /^Tabulate (\d+)$/;
@@ -27,14 +38,35 @@ function maxTabulateSuffix(items: readonly TabulateItem[]): number {
   }, 0);
 }
 
+function hasOwnProperty(object: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function hasDefinitionPatch(patch: Partial<TabulateItem>): boolean {
+  return (
+    hasOwnProperty(patch, "sourceDatasetId")
+    || hasOwnProperty(patch, "rowFields")
+    || hasOwnProperty(patch, "columnFields")
+    || hasOwnProperty(patch, "statistics")
+    || hasOwnProperty(patch, "includeRowTotals")
+    || hasOwnProperty(patch, "includeColumnTotals")
+  );
+}
+
 export const useTabulateStore = create<TabulateStore>((set, get) => ({
   items: [],
+  latestResultsById: {},
   counter: 0,
   addItem: (item) =>
     {
       assertProjectMutable(useProjectStore.getState().readOnly);
       set((state) => ({
         items: [...state.items, item],
+        latestResultsById: (() => {
+          const next = { ...state.latestResultsById };
+          delete next[item.id];
+          return next;
+        })(),
         counter: Math.max(state.counter, maxTabulateSuffix([item])),
       }));
     },
@@ -43,7 +75,14 @@ export const useTabulateStore = create<TabulateStore>((set, get) => ({
       assertProjectMutable(useProjectStore.getState().readOnly);
       set((state) => {
         const items = state.items.map((item) => (item.id === id ? { ...item, ...patch } : item));
-        return { items, counter: Math.max(state.counter, maxTabulateSuffix(items)) };
+        const latestResultsById = hasDefinitionPatch(patch)
+          ? (() => {
+              const next = { ...state.latestResultsById };
+              delete next[id];
+              return next;
+            })()
+          : state.latestResultsById;
+        return { items, latestResultsById, counter: Math.max(state.counter, maxTabulateSuffix(items)) };
       });
     },
   renameItem: (id, name) =>
@@ -59,14 +98,34 @@ export const useTabulateStore = create<TabulateStore>((set, get) => ({
       assertProjectMutable(useProjectStore.getState().readOnly);
       set((state) => ({
         items: state.items.filter((item) => item.id !== id),
+        latestResultsById: (() => {
+          const next = { ...state.latestResultsById };
+          delete next[id];
+          return next;
+        })(),
       }));
     },
-  loadFromProject: (items) => set({ items, counter: maxTabulateSuffix(items) }),
-  reset: () => set({ items: [], counter: 0 }),
+  loadFromProject: (items) => set({ items, latestResultsById: {}, counter: maxTabulateSuffix(items) }),
+  reset: () => set({ items: [], latestResultsById: {}, counter: 0 }),
   nextName: () => {
     assertProjectMutable(useProjectStore.getState().readOnly);
     const nextCounter = get().counter + 1;
     set({ counter: nextCounter });
     return `Tabulate ${nextCounter}`;
   },
+  setLatestResult: (id, latest) => set((state) => ({
+    latestResultsById: {
+      ...state.latestResultsById,
+      [id]: latest,
+    },
+  })),
+  getLatestResult: (id) => get().latestResultsById[id] ?? null,
+  clearLatestResult: (id) => set((state) => {
+    if (!state.latestResultsById[id]) {
+      return state;
+    }
+    const next = { ...state.latestResultsById };
+    delete next[id];
+    return { latestResultsById: next };
+  }),
 }));

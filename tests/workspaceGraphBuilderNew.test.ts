@@ -295,9 +295,16 @@ useFolderStore.getState().reset();
 
 const workspaceSource = readFileSync(new URL("../src/components/Workspace.tsx", import.meta.url), "utf8");
 const saveHandler = sourceBetween(workspaceSource, "const handleSave =", "handleSaveRef.current = handleSave;");
-assert.match(saveHandler, /useGraphBuilderNewStore\.getState\(\)\.items/);
-assert.equal((saveHandler.match(/graphBuildersNew:/g) ?? []).length, 2, "Save and Save As include all durable documents");
-assert.equal((saveHandler.match(/graphNewFolders:/g) ?? []).length, 2);
+assert.match(saveHandler, /createWorkspaceCommandHandlers/);
+assert.match(saveHandler, /getProjectFilePath: \(\) => saveAs \? undefined : project\?\.filePath/);
+const projectCommandSource = readFileSync(new URL("../src/applicationCommands/projectCommands.ts", import.meta.url), "utf8");
+const saveRequestBuilder = sourceBetween(
+  projectCommandSource,
+  "export function buildSaveProjectRequest",
+  "function normalizePageLimit",
+);
+assert.match(saveRequestBuilder, /graphBuildersNew: useGraphBuilderNewStore\.getState\(\)\.items/);
+assert.match(saveRequestBuilder, /graphNewFolders: folderStore\.graphNewFolders/);
 const closeProjectHandler = sourceBetween(workspaceSource, "const handleCloseProject =", "const handleOpenAnother =");
 assert.match(closeProjectHandler, /resetGraphBuildersNew\(\)/);
 const openProjectHandler = sourceBetween(workspaceSource, "const handleOpenAnother =", "const singleExportBaseName =");
@@ -307,15 +314,16 @@ assert.match(workspaceSource, /reopenGraphBuilderNew\(id, dataset\?\.generation 
 assert.match(workspaceSource, /graphNewChildren/);
 const currentGraphHandler = sourceBetween(
   workspaceSource,
-  "const handleCreateGraphBuilder = () => {",
-  "const handleCreateGraphBuilderNew = () => {",
+  "const handleCreateGraphBuilder = async () => {",
+  "const handleCreateGraphBuilderNew = async () => {",
 );
 const graphBuilderNewHandler = sourceBetween(
   workspaceSource,
-  "const handleCreateGraphBuilderNew = () => {",
+  "const handleCreateGraphBuilderNew = async () => {",
   "const handleCreateTabulate = () => {",
 );
 assert.match(workspaceSource, />\s*Graph Builder-new\s*</);
+assert.match(graphBuilderNewHandler, /await clearWorkspaceDocumentSelection\(\)/);
 assert.match(graphBuilderNewHandler, /openGraphBuilderNew\(dataset\.id, dataset\.generation\)/);
 assert.doesNotMatch(graphBuilderNewHandler, /recordAction|addGraphBuilder\(/);
 assert.doesNotMatch(currentGraphHandler, /GraphBuilderNew|graphBuilderNew/);

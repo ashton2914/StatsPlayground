@@ -4,7 +4,10 @@ import type {
   GraphDataCompletion,
   GraphDataRequest,
 } from "../types/graphData.ts";
-import { isGraphAggregatePacket as isStrictGraphAggregatePacket } from "../types/graphData.ts";
+import {
+  isGraphAggregatePacket as isStrictGraphAggregatePacket,
+  validateGraphChunkHeaderContract,
+} from "../types/graphData.ts";
 
 export interface GraphStreamTransportHandlers {
   onHeader: (header: GraphChunkHeader) => void;
@@ -131,7 +134,23 @@ function isGraphDataCompletion(value: unknown): value is GraphDataCompletion {
     && Number.isInteger(record.chunksSent)
     && typeof record.cancelled === "boolean"
     && isRawPointDisposition(record.rawPointDisposition)
+    && (record.timeSeriesDisposition === undefined
+      || isTimeSeriesDisposition(record.timeSeriesDisposition))
   );
+}
+
+function isTimeSeriesDisposition(value: unknown): boolean {
+  const record = toRecord(value);
+  if (!record || !Number.isInteger(record.includedRows) || !Number.isInteger(record.invalidXRows)) {
+    return false;
+  }
+  if ((record.includedRows as number) < 0 || (record.invalidXRows as number) < 0) {
+    return false;
+  }
+  if (record.status === "included") {
+    return record.invalidXRows === 0;
+  }
+  return record.status === "invalidTimeSeriesX" && (record.invalidXRows as number) > 0;
 }
 
 function isRawPointDisposition(value: unknown): boolean {
@@ -171,6 +190,7 @@ function completionEquals(left: GraphDataCompletion, right: GraphDataCompletion)
     && left.chunksSent === right.chunksSent
     && left.cancelled === right.cancelled
     && JSON.stringify(left.rawPointDisposition) === JSON.stringify(right.rawPointDisposition)
+    && JSON.stringify(left.timeSeriesDisposition ?? null) === JSON.stringify(right.timeSeriesDisposition ?? null)
   );
 }
 
@@ -232,6 +252,12 @@ export function createGraphStreamTransport(
       }
 
       if (isGraphChunkHeader(structured)) {
+        try {
+          validateGraphChunkHeaderContract(structured);
+        } catch (error) {
+          fail(describeError(error));
+          return;
+        }
         if (!isExpectedRequest(structured.requestId, structured.generation)) {
           fail("graph header does not match active request");
           return;

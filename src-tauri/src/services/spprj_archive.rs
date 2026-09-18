@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::AppError;
+use crate::models::table::ColumnDisplayProps;
 use crate::services::workflow_domain;
 
 #[cfg(test)]
@@ -387,9 +388,11 @@ pub struct TableDoc {
     pub rows: Vec<Vec<Value>>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TableColumn {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_id: Option<String>,
     pub name: String,
     pub col_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -398,6 +401,8 @@ pub struct TableColumn {
     pub format: Option<TableColumnFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<BTreeMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calculated: Option<crate::models::calculated_column::ArchivedCalculatedColumn>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -502,6 +507,187 @@ pub fn migrate_legacy_graph_filters(
 
 fn default_doc_version() -> String {
     "1".to_string()
+}
+
+fn table_doc_major_version(version: &str) -> Option<u32> {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+}
+
+fn is_table_doc_v3(version: &str) -> bool {
+    table_doc_major_version(version) == Some(3)
+}
+
+pub(crate) struct TableDocValidation {
+    pub calculated_columns_by_id:
+        HashMap<String, crate::models::calculated_column::ArchivedCalculatedColumn>,
+}
+
+fn parse_archive_uuid(context: &str, field: &str, value: &str) -> Result<(), AppError> {
+    uuid::Uuid::parse_str(value)
+        .map_err(|_| AppError::FileIO(format!("{context} {field} must be a valid UUID")))?;
+    Ok(())
+}
+
+fn missing_dependency_diagnostic(
+    formula_id: &str,
+    missing_dependency_ids: Vec<String>,
+) -> crate::models::calculated_column::CalculatedColumnDiagnostic {
+    crate::models::calculated_column::CalculatedColumnDiagnostic {
+        level: crate::models::calculated_column::CalculatedDiagnosticLevel::Error,
+        code: "missingDependencyColumns".to_string(),
+        message: format!("definition {formula_id} references missing dependency column ids"),
+        related_column_ids: missing_dependency_ids,
+    }
+}
+
+pub(crate) fn validate_table_doc_structure(doc: &TableDoc) -> Result<TableDocValidation, AppError> {
+    if !is_table_doc_v3(&doc.version) {
+        return Ok(TableDocValidation {
+            calculated_columns_by_id: HashMap::new(),
+        });
+    }
+
+    let mut calculated_columns_by_id = HashMap::new();
+    let mut seen_column_ids = HashSet::new();
+    let mut seen_formula_ids = HashSet::new();
+    let mut present_column_ids = HashSet::new();
+    let mut supported_definitions = Vec::new();
+    for (index, column) in doc.columns.iter().enumerate() {
+        let context = format!("TableDoc {} column[{index}]", doc.id);
+        let column_id = column.column_id.as_deref().ok_or_else(|| {
+            AppError::FileIO(format!("{context} columnId is required for V3 documents"))
+        })?;
+        if column_id.is_empty() {
+            return Err(AppError::FileIO(format!(
+                "{context} columnId is required for V3 documents"
+            )));
+        }
+        parse_archive_uuid(&context, "columnId", column_id)?;
+        if !seen_column_ids.insert(column_id.to_string()) {
+            return Err(AppError::FileIO(format!(
+                "{context} columnId must be unique within a V3 document"
+            )));
+        }
+        present_column_ids.insert(column_id.to_string());
+
+        let Some(calculated) = column.calculated.as_ref() else {
+            continue;
+        };
+        if calculated.output_column_id() != column_id {
+            return Err(AppError::FileIO(format!(
+                "{context} calculated outputColumnId must match the columnId"
+            )));
+        }
+        if let Some(definition) = calculated.ready_definition() {
+            parse_archive_uuid(
+                &context,
+                "calculated definition formulaId",
+                &definition.formula_id,
+            )?;
+            if !seen_formula_ids.insert(definition.formula_id.clone()) {
+                return Err(AppError::FileIO(format!(
+                    "{context} calculated definition formulaId must be unique within a V3 document"
+                )));
+            }
+            parse_archive_uuid(
+                &context,
+                "calculated definition outputColumnId",
+                &definition.output_column_id,
+            )?;
+            for dependency_column_id in &definition.dependency_column_ids {
+                parse_archive_uuid(
+                    &context,
+                    "calculated definition dependencyColumnId",
+                    dependency_column_id,
+                )?;
+            }
+            for expression_column_id in
+                crate::models::calculated_column::expression_dependency_ids(&definition.expression)
+            {
+                parse_archive_uuid(
+                    &context,
+                    "calculated definition expression columnId",
+                    &expression_column_id,
+                )?;
+            }
+            supported_definitions.push(definition.clone());
+        }
+        calculated_columns_by_id.insert(column_id.to_string(), calculated.clone());
+    }
+
+    crate::models::calculated_column::validate_definition_graph(&supported_definitions).map_err(
+        |diagnostic| {
+            AppError::FileIO(format!(
+                "TableDoc {} calculated column graph invalid: {}: {}",
+                doc.id, diagnostic.code, diagnostic.message
+            ))
+        },
+    )?;
+
+    for definition in supported_definitions {
+        let missing_dependency_ids = definition
+            .dependency_column_ids
+            .iter()
+            .filter(|dependency_column_id| !present_column_ids.contains(*dependency_column_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing_dependency_ids.is_empty() {
+            continue;
+        }
+
+        let Some(calculated) = calculated_columns_by_id.remove(&definition.output_column_id) else {
+            continue;
+        };
+        let mut state = calculated.ready_state().cloned().unwrap_or_default();
+        state.status = crate::models::calculated_column::CalculatedColumnStatus::Broken;
+        state.diagnostics.push(missing_dependency_diagnostic(
+            &definition.formula_id,
+            missing_dependency_ids,
+        ));
+        calculated_columns_by_id.insert(
+            definition.output_column_id.clone(),
+            calculated.with_ready_state(state),
+        );
+    }
+
+    Ok(TableDocValidation {
+        calculated_columns_by_id,
+    })
+}
+
+fn validate_table_doc(doc: &TableDoc) -> Result<(), AppError> {
+    validate_table_doc_structure(doc).map(|_| ())
+}
+
+pub(crate) fn project_archive_table_columns(
+    columns: &[crate::engine::duckdb_engine::ArchiveColumnPlan],
+    display: Option<&[ColumnDisplayProps]>,
+) -> Vec<TableColumn> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            let props = display.and_then(|items| items.iter().find(|item| item.col_index == index));
+            TableColumn {
+                column_id: Some(column.column_id.clone()),
+                name: column.name.clone(),
+                col_type: column.sql_type.clone(),
+                width: props.and_then(|item| item.width),
+                format: props.and_then(|item| {
+                    item.format.as_ref().map(|format| TableColumnFormat {
+                        kind: format.kind.clone(),
+                        decimals: format.decimals,
+                        currency: format.currency.clone(),
+                    })
+                }),
+                extras: props.and_then(|item| item.extras.clone()),
+                calculated: column.calculated.clone(),
+            }
+        })
+        .collect()
 }
 
 // ----------------------------------------------------------------------------
@@ -697,7 +883,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_report_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!("Archive report entry {} missing id", entry.file))
         })?;
@@ -716,6 +901,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_report_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.fit_y_by_x_files {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -759,7 +945,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_legacy_distribution_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!(
                 "Archive distribution entry {} missing id",
@@ -781,6 +966,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_legacy_distribution_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.analyses {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -795,7 +981,6 @@ pub fn validate_archive_manifest_and_entries(
                 entry.file
             ))
         })?;
-        validate_analysis_value(&value, &entry.file)?;
         let body_id = value.get("id").and_then(Value::as_str).ok_or_else(|| {
             AppError::FileIO(format!("Archive analysis entry {} missing id", entry.file))
         })?;
@@ -814,6 +999,7 @@ pub fn validate_archive_manifest_and_entries(
                 )));
             }
         }
+        validate_analysis_value(&value, &entry.file)?;
     }
     for entry in &expected_manifest.tabulate_files {
         let mut doc_entry = zip.by_name(&entry.file).map_err(|e| {
@@ -1044,6 +1230,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
             .ok_or_else(|| AppError::FileIO(format!("Missing table entry: {}", entry.file)))?;
         let doc: TableDoc = serde_json::from_slice(&bytes)
             .map_err(|e| AppError::FileIO(format!("Invalid table file {}: {}", entry.file, e)))?;
+        validate_table_doc(&doc)?;
         if doc.id != entry.id {
             return Err(AppError::FileIO(format!(
                 "Mismatched table id in {}: manifest={}, body={}",
@@ -1238,13 +1425,6 @@ fn read_indexed_values<R: Read + Seek>(
             .ok_or_else(|| AppError::FileIO(format!("Missing indexed entry: {}", entry.file)))?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| AppError::FileIO(format!("Invalid indexed file {}: {}", entry.file, e)))?;
-        match expected_kind {
-            DocumentKind::GraphBuilderNew => validate_graph_builder_new_value(&value)?,
-            DocumentKind::Report => validate_report_value(&value, &entry.file)?,
-            DocumentKind::Distribution => validate_legacy_distribution_value(&value, &entry.file)?,
-            DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
-            _ => {}
-        }
         let body_id = value
             .get("id")
             .and_then(Value::as_str)
@@ -1263,6 +1443,13 @@ fn read_indexed_values<R: Read + Seek>(
                     entry.file, entry.name, body_name
                 )));
             }
+        }
+        match expected_kind {
+            DocumentKind::GraphBuilderNew => validate_graph_builder_new_value(&value)?,
+            DocumentKind::Report => validate_report_value(&value, &entry.file)?,
+            DocumentKind::Distribution => validate_legacy_distribution_value(&value, &entry.file)?,
+            DocumentKind::Analysis => validate_analysis_value(&value, &entry.file)?,
+            _ => {}
         }
         out.push(value);
     }
@@ -3495,6 +3682,7 @@ fn write_zip_json_entry_pretty<W: Write + Seek, T: Serialize>(
 
 /// Write a single `TableDoc` to a `.sptb` file (just JSON on disk for now).
 pub fn write_table_file(doc: &TableDoc, path: &str) -> Result<(), AppError> {
+    validate_table_doc(doc)?;
     let bytes = serde_json::to_vec_pretty(doc).map_err(|e| AppError::FileIO(e.to_string()))?;
     std::fs::write(path, bytes)?;
     Ok(())
@@ -3505,14 +3693,15 @@ pub fn read_table_file(path: &str) -> Result<TableDoc, AppError> {
     let bytes = std::fs::read(path)?;
     let doc: TableDoc = serde_json::from_slice(&bytes)
         .map_err(|e| AppError::FileIO(format!("Invalid .sptb file: {}", e)))?;
+    validate_table_doc(&doc)?;
     Ok(doc)
 }
 
 /// Write a single `GraphDoc` to a `.spgh` file.
 pub fn write_graph_file(doc: &GraphDoc, path: &str) -> Result<(), AppError> {
     let sanitized = without_standalone_filters(doc);
-    let bytes = serde_json::to_vec_pretty(&sanitized)
-        .map_err(|e| AppError::FileIO(e.to_string()))?;
+    let bytes =
+        serde_json::to_vec_pretty(&sanitized).map_err(|e| AppError::FileIO(e.to_string()))?;
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -5715,6 +5904,12 @@ fn folder_ancestors(folder: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::calculated_column::{
+        definition_fingerprint, expression_dependency_ids, remap_definition,
+        validate_definition_graph, ArchivedCalculatedColumn, CalculatedBinaryOperatorV1,
+        CalculatedColumnDefinitionV1, CalculatedExpressionV1, CalculatedFunctionV1,
+        CalculatedNumber, CalculatedOutputTypeV1,
+    };
     use crate::services::workflow_domain;
     use std::io::{Read, Write};
 
@@ -5967,6 +6162,649 @@ mod tests {
         std::fs::remove_file(target).unwrap();
     }
 
+    fn calculated_fixture(
+        formula_id: &str,
+        output_column_id: &str,
+        dependency_column_id: &str,
+    ) -> ArchivedCalculatedColumn {
+        let expression = CalculatedExpressionV1::Function {
+            function: CalculatedFunctionV1::Coalesce,
+            arguments: vec![
+                CalculatedExpressionV1::ColumnRef {
+                    column_id: dependency_column_id.into(),
+                },
+                CalculatedExpressionV1::Binary {
+                    operator: CalculatedBinaryOperatorV1::Add,
+                    left: Box::new(CalculatedExpressionV1::ColumnRef {
+                        column_id: dependency_column_id.into(),
+                    }),
+                    right: Box::new(CalculatedExpressionV1::NumberLiteral {
+                        value: CalculatedNumber::from(1),
+                    }),
+                },
+            ],
+        };
+        let mut definition = CalculatedColumnDefinitionV1 {
+            formula_id: formula_id.into(),
+            schema_version: "1".into(),
+            output_column_id: output_column_id.into(),
+            expression,
+            dependency_column_ids: vec![dependency_column_id.into()],
+            inferred_output_type: CalculatedOutputTypeV1::Continuous,
+            fingerprint: String::new(),
+        };
+        definition.fingerprint = definition_fingerprint(&definition);
+        ArchivedCalculatedColumn::Ready {
+            definition,
+            state: crate::models::calculated_column::ArchivedCalculatedColumnState::default(),
+        }
+    }
+
+    fn uuid(index: u8) -> String {
+        format!("00000000-0000-0000-0000-{:012x}", index)
+    }
+
+    fn preserved_unknown_schema_fixture(output_column_id: &str) -> ArchivedCalculatedColumn {
+        serde_json::from_value(json!({
+            "kind": "ready",
+            "definition": {
+                "formulaId": "formula-preserved",
+                "schemaVersion": "99",
+                "outputColumnId": output_column_id,
+                "expression": {
+                    "kind": "futureAst",
+                    "columnRefs": ["column-a"]
+                },
+                "dependencyColumnIds": ["column-not-validated"],
+                "inferredOutputType": "continuous",
+                "fingerprint": "future-fingerprint",
+                "diagnostics": {
+                    "status": "broken",
+                    "reason": "unsupported schema"
+                }
+            }
+        }))
+        .expect("preserved fixture should deserialize")
+    }
+
+    #[test]
+    fn table_doc_v3_round_trip_preserves_column_and_formula_ids() {
+        let calculated = calculated_fixture("formula-a", "column-c", "column-a");
+        let doc = TableDoc {
+            id: "dataset-a".into(),
+            name: "Measurements".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![TableColumn {
+                column_id: Some("column-c".into()),
+                name: "Area".into(),
+                col_type: "DOUBLE".into(),
+                width: None,
+                format: None,
+                extras: None,
+                calculated: Some(calculated),
+            }],
+            rows: vec![vec![json!(1), json!(12.5)]],
+        };
+
+        let decoded: TableDoc =
+            serde_json::from_value(serde_json::to_value(&doc).unwrap()).unwrap();
+        assert_eq!(decoded.version, "3");
+        assert_eq!(decoded.columns[0].column_id.as_deref(), Some("column-c"));
+        assert_eq!(decoded.columns[0].calculated, doc.columns[0].calculated);
+    }
+
+    #[test]
+    fn legacy_table_column_without_identity_remains_readable() {
+        let doc: TableDoc = serde_json::from_value(json!({
+            "id": "legacy", "name": "Legacy", "sourceType": "csv", "version": "2",
+            "columns": [{ "name": "A", "colType": "DOUBLE" }],
+            "rows": [[1, 2.0]]
+        }))
+        .unwrap();
+        assert_eq!(doc.columns[0].column_id, None);
+        assert_eq!(doc.columns[0].calculated, None);
+    }
+
+    #[test]
+    fn calculated_definition_fingerprint_ignores_display_labels_supplied_by_archive() {
+        fn v3_doc(name: &str, display_label: &str) -> TableDoc {
+            let calculated = calculated_fixture("formula-a", "column-c", "column-a");
+            let mut extras = BTreeMap::new();
+            extras.insert(
+                "displayLabel".to_string(),
+                Value::String(display_label.to_string()),
+            );
+
+            TableDoc {
+                id: "dataset-a".into(),
+                name: name.into(),
+                source_type: "manual".into(),
+                version: "3".into(),
+                columns: vec![TableColumn {
+                    column_id: Some("column-c".into()),
+                    name: "Area".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: Some(extras),
+                    calculated: Some(calculated),
+                }],
+                rows: vec![vec![json!(1), json!(12.5)]],
+            }
+        }
+
+        let first = v3_doc("Measurements", "Area (display)");
+        let second = v3_doc("Renamed Measurements", "Different display label");
+
+        let first_definition = match &first.columns[0].calculated {
+            Some(ArchivedCalculatedColumn::Ready { definition, .. }) => definition,
+            Some(ArchivedCalculatedColumn::Preserved { .. }) => {
+                panic!("expected supported calculated definition")
+            }
+            None => panic!("expected calculated definition"),
+        };
+        let second_definition = match &second.columns[0].calculated {
+            Some(ArchivedCalculatedColumn::Ready { definition, .. }) => definition,
+            Some(ArchivedCalculatedColumn::Preserved { .. }) => {
+                panic!("expected supported calculated definition")
+            }
+            None => panic!("expected calculated definition"),
+        };
+
+        assert_eq!(first_definition.fingerprint, second_definition.fingerprint);
+        assert_eq!(
+            first_definition.fingerprint,
+            definition_fingerprint(first_definition)
+        );
+        assert_eq!(
+            second_definition.fingerprint,
+            definition_fingerprint(second_definition)
+        );
+    }
+
+    #[test]
+    fn v3_table_doc_validation_rejects_missing_ids_and_mismatched_calculated_metadata() {
+        let output_column_id = uuid(3);
+        let dependency_column_id = uuid(1);
+        let base_definition =
+            match calculated_fixture(&uuid(10), &output_column_id, &dependency_column_id) {
+                ArchivedCalculatedColumn::Ready { definition, .. } => definition,
+                ArchivedCalculatedColumn::Preserved { .. } => {
+                    panic!("expected supported calculated definition")
+                }
+            };
+
+        let valid_doc = TableDoc {
+            id: "dataset-a".into(),
+            name: "Measurements".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![TableColumn {
+                column_id: Some(output_column_id.clone()),
+                name: "Area".into(),
+                col_type: "DOUBLE".into(),
+                width: None,
+                format: None,
+                extras: None,
+                calculated: Some(ArchivedCalculatedColumn::Ready {
+                    definition: base_definition.clone(),
+                    state: crate::models::calculated_column::ArchivedCalculatedColumnState::default(
+                    ),
+                }),
+            }],
+            rows: vec![],
+        };
+
+        assert!(validate_table_doc(&valid_doc).is_ok());
+
+        let missing_column_id = TableDoc {
+            columns: vec![TableColumn {
+                column_id: None,
+                ..valid_doc.columns[0].clone()
+            }],
+            ..valid_doc.clone()
+        };
+        assert!(matches!(
+            validate_table_doc(&missing_column_id),
+            Err(AppError::FileIO(message)) if message.contains("columnId is required for V3 documents")
+        ));
+
+        let missing_calculated = TableDoc {
+            columns: vec![TableColumn {
+                calculated: None,
+                ..valid_doc.columns[0].clone()
+            }],
+            ..valid_doc.clone()
+        };
+        assert!(validate_table_doc(&missing_calculated).is_ok());
+
+        let duplicate_column_id = TableDoc {
+            columns: vec![
+                valid_doc.columns[0].clone(),
+                TableColumn {
+                    column_id: Some(output_column_id.clone()),
+                    name: "Area 2".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+            ],
+            ..valid_doc.clone()
+        };
+        assert!(matches!(
+            validate_table_doc(&duplicate_column_id),
+            Err(AppError::FileIO(message)) if message.contains("columnId must be unique")
+        ));
+
+        let mismatched_output_column_id = TableDoc {
+            columns: vec![TableColumn {
+                calculated: Some(ArchivedCalculatedColumn::Ready {
+                    definition: CalculatedColumnDefinitionV1 {
+                        output_column_id: uuid(4),
+                        ..base_definition.clone()
+                    },
+                    state: crate::models::calculated_column::ArchivedCalculatedColumnState::default(
+                    ),
+                }),
+                ..valid_doc.columns[0].clone()
+            }],
+            ..valid_doc.clone()
+        };
+        assert!(matches!(
+            validate_table_doc(&mismatched_output_column_id),
+            Err(AppError::FileIO(message)) if message.contains("calculated outputColumnId must match the columnId")
+        ));
+
+        let mismatched_dependency_fingerprint = TableDoc {
+            columns: vec![TableColumn {
+                calculated: Some(ArchivedCalculatedColumn::Ready {
+                    definition: CalculatedColumnDefinitionV1 {
+                        dependency_column_ids: vec![uuid(2)],
+                        fingerprint: String::from("deadbeef"),
+                        ..base_definition
+                    },
+                    state: crate::models::calculated_column::ArchivedCalculatedColumnState::default(
+                    ),
+                }),
+                ..valid_doc.columns[0].clone()
+            }],
+            ..valid_doc
+        };
+        assert!(matches!(
+            validate_table_doc(&mismatched_dependency_fingerprint),
+            Err(AppError::FileIO(message)) if message.contains("dependency ids do not match the expression") || message.contains("fingerprint does not match its canonical form")
+        ));
+    }
+
+    #[test]
+    fn v3_table_doc_validation_rejects_invalid_and_duplicate_formula_ids() {
+        let dependency_column_id = uuid(1);
+        let first_output_column_id = uuid(2);
+        let second_output_column_id = uuid(3);
+        let formula_id = uuid(10);
+        let make_column = |output_column_id: &str, formula_id: &str| TableColumn {
+            column_id: Some(output_column_id.to_string()),
+            name: format!("Calculated {output_column_id}"),
+            col_type: "DOUBLE".into(),
+            width: None,
+            format: None,
+            extras: None,
+            calculated: Some(calculated_fixture(
+                formula_id,
+                output_column_id,
+                &dependency_column_id,
+            )),
+        };
+        let valid_doc = TableDoc {
+            id: "dataset-a".into(),
+            name: "Measurements".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![
+                TableColumn {
+                    column_id: Some(dependency_column_id.clone()),
+                    name: "Length".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                make_column(&first_output_column_id, &formula_id),
+            ],
+            rows: vec![],
+        };
+
+        let mut invalid_formula_id = valid_doc.clone();
+        invalid_formula_id.columns[1] = make_column(&first_output_column_id, "not-a-uuid");
+        assert!(matches!(
+            validate_table_doc(&invalid_formula_id),
+            Err(AppError::FileIO(message)) if message.contains("formulaId must be a valid UUID")
+        ));
+
+        let mut duplicate_formula_id = valid_doc;
+        duplicate_formula_id
+            .columns
+            .push(make_column(&second_output_column_id, &formula_id));
+        assert!(matches!(
+            validate_table_doc(&duplicate_formula_id),
+            Err(AppError::FileIO(message)) if message.contains("formulaId must be unique")
+        ));
+    }
+
+    #[test]
+    fn v3_table_doc_validation_rejects_dependency_mismatch() {
+        let output_column_id = uuid(3);
+        let dependency_column_id = uuid(1);
+        let valid_doc = TableDoc {
+            id: "dataset-a".into(),
+            name: "Measurements".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![TableColumn {
+                column_id: Some(output_column_id.clone()),
+                name: "Area".into(),
+                col_type: "DOUBLE".into(),
+                width: None,
+                format: None,
+                extras: None,
+                calculated: Some(calculated_fixture(
+                    &uuid(10),
+                    &output_column_id,
+                    &dependency_column_id,
+                )),
+            }],
+            rows: vec![],
+        };
+
+        let mut dependency_mismatch = valid_doc.clone();
+        dependency_mismatch.columns[0].calculated = Some(ArchivedCalculatedColumn::Ready {
+            definition: CalculatedColumnDefinitionV1 {
+                dependency_column_ids: vec![uuid(2)],
+                ..match &valid_doc.columns[0].calculated {
+                    Some(ArchivedCalculatedColumn::Ready { definition, .. }) => definition.clone(),
+                    Some(ArchivedCalculatedColumn::Preserved { .. }) => {
+                        panic!("expected supported calculated definition")
+                    }
+                    None => panic!("expected calculated definition"),
+                }
+            },
+            state: crate::models::calculated_column::ArchivedCalculatedColumnState::default(),
+        });
+
+        assert!(matches!(
+            validate_table_doc(&dependency_mismatch),
+            Err(AppError::FileIO(message)) if message.contains("dependency ids do not match the expression")
+        ));
+    }
+
+    #[test]
+    fn v3_table_doc_validation_rejects_fingerprint_mismatch() {
+        let output_column_id = uuid(3);
+        let dependency_column_id = uuid(1);
+        let valid_doc = TableDoc {
+            id: "dataset-a".into(),
+            name: "Measurements".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![TableColumn {
+                column_id: Some(output_column_id.clone()),
+                name: "Area".into(),
+                col_type: "DOUBLE".into(),
+                width: None,
+                format: None,
+                extras: None,
+                calculated: Some(calculated_fixture(
+                    &uuid(10),
+                    &output_column_id,
+                    &dependency_column_id,
+                )),
+            }],
+            rows: vec![],
+        };
+
+        let mut fingerprint_mismatch = valid_doc.clone();
+        fingerprint_mismatch.columns[0].calculated = Some(ArchivedCalculatedColumn::Ready {
+            definition: CalculatedColumnDefinitionV1 {
+                fingerprint: String::from("deadbeef"),
+                ..match &valid_doc.columns[0].calculated {
+                    Some(ArchivedCalculatedColumn::Ready { definition, .. }) => definition.clone(),
+                    Some(ArchivedCalculatedColumn::Preserved { .. }) => {
+                        panic!("expected supported calculated definition")
+                    }
+                    None => panic!("expected calculated definition"),
+                }
+            },
+            state: crate::models::calculated_column::ArchivedCalculatedColumnState::default(),
+        });
+
+        assert!(matches!(
+            validate_table_doc(&fingerprint_mismatch),
+            Err(AppError::FileIO(message)) if message.contains("fingerprint does not match its canonical form")
+        ));
+    }
+
+    #[test]
+    fn v3_table_doc_validation_preserves_unknown_schema_without_running_v1_semantics() {
+        let base_column_id = uuid(1);
+        let output_column_id = uuid(3);
+        let preserved = preserved_unknown_schema_fixture(&output_column_id);
+        let doc = TableDoc {
+            id: "dataset-preserved".into(),
+            name: "Preserved".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![
+                TableColumn {
+                    column_id: Some(base_column_id.clone()),
+                    name: "Base".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(output_column_id.clone()),
+                    name: "Future".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(preserved.clone()),
+                },
+            ],
+            rows: vec![],
+        };
+
+        let validation = validate_table_doc_structure(&doc)
+            .expect("unknown schema metadata should remain structurally valid");
+        assert_eq!(
+            validation
+                .calculated_columns_by_id
+                .get(&output_column_id)
+                .map(|value| serde_json::to_value(value).unwrap()),
+            Some(serde_json::to_value(&preserved).unwrap())
+        );
+
+        let mismatched = TableDoc {
+            columns: vec![
+                doc.columns[0].clone(),
+                TableColumn {
+                    calculated: Some(preserved_unknown_schema_fixture(&uuid(5))),
+                    ..doc.columns[1].clone()
+                },
+            ],
+            ..doc
+        };
+        assert!(matches!(
+            validate_table_doc(&mismatched),
+            Err(AppError::FileIO(message)) if message.contains("calculated outputColumnId must match the columnId")
+        ));
+    }
+
+    #[test]
+    fn v3_table_doc_validation_rejects_malformed_column_id_uuid_before_restore_or_import() {
+        let malformed_column_id = "not-a-uuid".to_string();
+        let valid_dependency_id = uuid(1);
+        let valid_output_id = uuid(3);
+        let doc = TableDoc {
+            id: "dataset-invalid-uuid".into(),
+            name: "Invalid UUID".into(),
+            source_type: "manual".into(),
+            version: "3".into(),
+            columns: vec![
+                TableColumn {
+                    column_id: Some(malformed_column_id.clone()),
+                    name: "base_a".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(valid_dependency_id.clone()),
+                    name: "base_b".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: None,
+                },
+                TableColumn {
+                    column_id: Some(valid_output_id.clone()),
+                    name: "sum".into(),
+                    col_type: "DOUBLE".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    calculated: Some(calculated_fixture(
+                        "formula-a",
+                        &valid_output_id,
+                        &malformed_column_id,
+                    )),
+                },
+            ],
+            rows: vec![],
+        };
+
+        assert!(matches!(
+            validate_table_doc(&doc),
+            Err(AppError::FileIO(message))
+                if message.contains("columnId") && message.contains("UUID")
+        ));
+    }
+
+    #[test]
+    fn calculated_definition_helpers_cover_dependencies_fingerprint_remap_and_cycles() {
+        let expression = CalculatedExpressionV1::Function {
+            function: CalculatedFunctionV1::Coalesce,
+            arguments: vec![
+                CalculatedExpressionV1::ColumnRef {
+                    column_id: "column-a".into(),
+                },
+                CalculatedExpressionV1::Binary {
+                    operator: CalculatedBinaryOperatorV1::Add,
+                    left: Box::new(CalculatedExpressionV1::ColumnRef {
+                        column_id: "column-b".into(),
+                    }),
+                    right: Box::new(CalculatedExpressionV1::NumberLiteral {
+                        value: CalculatedNumber::from(1),
+                    }),
+                },
+            ],
+        };
+        let definition = CalculatedColumnDefinitionV1 {
+            formula_id: "formula-a".into(),
+            schema_version: "1".into(),
+            output_column_id: "column-c".into(),
+            expression: expression.clone(),
+            dependency_column_ids: vec!["column-a".into(), "column-b".into()],
+            inferred_output_type: CalculatedOutputTypeV1::Continuous,
+            fingerprint: String::new(),
+        };
+        let mut definition = definition;
+        definition.fingerprint = definition_fingerprint(&definition);
+
+        assert_eq!(
+            expression_dependency_ids(&definition.expression),
+            vec!["column-a", "column-b"]
+        );
+        assert_eq!(definition.fingerprint, definition_fingerprint(&definition));
+
+        let remapped = remap_definition(
+            &definition,
+            "formula-b",
+            "column-d",
+            &HashMap::from([
+                ("column-a".to_string(), "column-x".to_string()),
+                ("column-b".to_string(), "column-y".to_string()),
+                ("column-c".to_string(), "column-z".to_string()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(remapped.formula_id, "formula-b");
+        assert_eq!(remapped.output_column_id, "column-d");
+        assert_eq!(remapped.dependency_column_ids, vec!["column-x", "column-y"]);
+
+        assert!(remap_definition(
+            &definition,
+            "formula-b",
+            "column-d",
+            &HashMap::from([(String::from("column-a"), String::from("column-x"))]),
+        )
+        .is_err());
+
+        assert!(validate_definition_graph(&[definition.clone(), remapped.clone()]).is_ok());
+
+        let direct_cycle = CalculatedColumnDefinitionV1 {
+            formula_id: "formula-self".into(),
+            schema_version: "1".into(),
+            output_column_id: "column-self".into(),
+            expression: CalculatedExpressionV1::ColumnRef {
+                column_id: "column-self".into(),
+            },
+            dependency_column_ids: vec!["column-self".into()],
+            inferred_output_type: CalculatedOutputTypeV1::Continuous,
+            fingerprint: String::new(),
+        };
+        let mut direct_cycle = direct_cycle;
+        direct_cycle.fingerprint = definition_fingerprint(&direct_cycle);
+        assert!(validate_definition_graph(&[direct_cycle]).is_err());
+
+        let indirect_a = CalculatedColumnDefinitionV1 {
+            formula_id: "formula-a2".into(),
+            schema_version: "1".into(),
+            output_column_id: "column-a2".into(),
+            expression: CalculatedExpressionV1::ColumnRef {
+                column_id: "column-b2".into(),
+            },
+            dependency_column_ids: vec!["column-b2".into()],
+            inferred_output_type: CalculatedOutputTypeV1::Continuous,
+            fingerprint: String::new(),
+        };
+        let mut indirect_a = indirect_a;
+        indirect_a.fingerprint = definition_fingerprint(&indirect_a);
+        let indirect_b = CalculatedColumnDefinitionV1 {
+            formula_id: "formula-b2".into(),
+            schema_version: "1".into(),
+            output_column_id: "column-b2".into(),
+            expression: CalculatedExpressionV1::ColumnRef {
+                column_id: "column-a2".into(),
+            },
+            dependency_column_ids: vec!["column-a2".into()],
+            inferred_output_type: CalculatedOutputTypeV1::Continuous,
+            fingerprint: String::new(),
+        };
+        let mut indirect_b = indirect_b;
+        indirect_b.fingerprint = definition_fingerprint(&indirect_b);
+        assert!(validate_definition_graph(&[indirect_a, indirect_b]).is_err());
+    }
+
     fn graph_doc(id: &str, name: &str) -> GraphDoc {
         GraphDoc {
             id: id.into(),
@@ -5981,6 +6819,52 @@ mod tests {
         graph.body.insert(
             "sourceDatasetId".to_string(),
             Value::String(source_dataset_id.to_string()),
+        );
+        graph
+    }
+
+    fn time_series_graph_doc() -> GraphDoc {
+        let mut graph = graph_doc_with_source("graph-time-series", "Saved Time Series", "table-1");
+        graph
+            .body
+            .insert("mode".to_string(), Value::String("2d".to_string()));
+        graph
+            .body
+            .insert("sampling".to_string(), json!({ "mode": "full" }));
+        graph.body.insert(
+            "modeStates".to_string(),
+            json!({
+                "twoD": {
+                    "encoding": {
+                        "x": { "name": "Captured", "type": "nominal" },
+                        "y": { "name": "Reading", "type": "continuous" }
+                    },
+                    "multiX": [],
+                    "multiY": [],
+                    "elements": [{
+                        "kind": "timeSeries",
+                        "enabled": true,
+                        "options": {
+                            "xInterpretation": { "kind": "textDate", "format": "usDate" },
+                            "order": "timeAscending",
+                            "missingValues": "break",
+                            "connection": "line",
+                            "markerMode": "auto"
+                        }
+                    }],
+                    "smootherLambda": 0.4
+                },
+                "threeD": {
+                    "encoding": {},
+                    "elements": [{ "kind": "scatter3d", "enabled": true }],
+                    "smootherLambda": 0.4
+                },
+                "multivariate": {
+                    "columns": [],
+                    "chartType": "correlationMatrix",
+                    "correlationMethod": "pearson"
+                }
+            }),
         );
         graph
     }
@@ -6013,6 +6897,44 @@ mod tests {
             "graphs": {},
             "createdAt": "2026-09-02T00:00:00Z"
         })
+    }
+
+    #[test]
+    fn time_series_graph_body_round_trips_through_spprj_archive() {
+        let graph = time_series_graph_doc();
+        let expected_body = graph.body.clone();
+        let bundle = build_bundle(
+            "Project".to_string(),
+            "4".to_string(),
+            "2026-09-16T00:00:00.000Z".to_string(),
+            vec![table_doc("table-1", "Source Table")],
+            vec![graph],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .expect("bundle should build");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let archive_path = temp_dir.path().join("time-series.spprj");
+
+        write_project_archive(&bundle, archive_path.to_str().expect("archive path"))
+            .expect("archive write should succeed");
+        let reopened = read_project_file(archive_path.to_str().expect("archive path"))
+            .expect("archive read should succeed");
+
+        assert_eq!(reopened.graphs.len(), 1);
+        let reopened_graph = &reopened.graphs[0];
+        assert_eq!(reopened_graph.id, "graph-time-series");
+        assert_eq!(reopened_graph.name, "Saved Time Series");
+        assert_eq!(reopened_graph.body, expected_body);
     }
 
     fn analysis_doc(id: &str, name: &str) -> Value {
@@ -7218,8 +8140,14 @@ mod tests {
         })]);
 
         assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
-        assert_eq!(docs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert_eq!(
+            docs[0].body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
+        assert_eq!(
+            docs[0].body.get("title"),
+            Some(&serde_json::json!("Preserved"))
+        );
         assert!(!docs[0].body.contains_key("filters"));
     }
 
@@ -7235,7 +8163,10 @@ mod tests {
         let persisted = read_graph_file(path.to_str().unwrap()).unwrap();
 
         assert!(!persisted.body.contains_key("filters"));
-        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        assert_eq!(
+            persisted.body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -7271,10 +8202,14 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         let graph_entry = &bundle.manifest.graphs[0].file;
-        let persisted: GraphDoc = serde_json::from_reader(archive.by_name(graph_entry).unwrap()).unwrap();
+        let persisted: GraphDoc =
+            serde_json::from_reader(archive.by_name(graph_entry).unwrap()).unwrap();
 
         assert!(!persisted.body.contains_key("filters"));
-        assert_eq!(persisted.body.get("sourceDatasetId"), Some(&serde_json::json!("table-a")));
+        assert_eq!(
+            persisted.body.get("sourceDatasetId"),
+            Some(&serde_json::json!("table-a"))
+        );
         drop(archive);
         let _ = std::fs::remove_file(path);
     }
@@ -7453,7 +8388,10 @@ mod tests {
         assert!(migrated.dataset_filters.is_empty());
         assert!(migrated.conflicts.is_empty());
         assert!(migrated.changed);
-        assert_eq!(graphs[0].body.get("title"), Some(&serde_json::json!("Preserved")));
+        assert_eq!(
+            graphs[0].body.get("title"),
+            Some(&serde_json::json!("Preserved"))
+        );
         assert!(!graphs[0].body.contains_key("filters"));
     }
 
@@ -8160,8 +9098,7 @@ mod tests {
         assert!(validate_analysis_value(&hypothesis_test, "analysis validation").is_ok());
 
         let mut invalid_hypothesis_subject = hypothesis_test.clone();
-        invalid_hypothesis_subject["definition"]["roles"]["subject"] =
-            json!({ "name": "Part" });
+        invalid_hypothesis_subject["definition"]["roles"]["subject"] = json!({ "name": "Part" });
         assert!(matches!(
             validate_analysis_value(&invalid_hypothesis_subject, "analysis validation"),
             Err(AppError::FileIO(message)) if message.contains("subject")

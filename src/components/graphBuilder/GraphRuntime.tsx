@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -11,7 +11,7 @@ import {
 import { dataService } from "@/services/dataService";
 import { useGraphPaletteStore } from "@/stores/useGraphPaletteStore";
 import type { ColumnMeta, DatasetMeta } from "@/types/data";
-import type { GraphDataFrame } from "@/types/graphData";
+import type { GraphDataFrame, GraphTimeSeriesDisposition } from "@/types/graphData";
 import type { GraphRuntimeItem } from "@/types/graphBuilder";
 
 import { reconcileGraphColumnIdentities, type GraphColumnDescriptor } from "./graphColumnIdentity";
@@ -54,6 +54,7 @@ export interface GraphRuntimeProps {
   onAxisContextMenu?: (axis: "x" | "y", x: number, y: number) => void;
   onItemReconciled?: (item: GraphRuntimeItem) => void;
   onStateChange?: (state: GraphRuntimeState) => void;
+  resolveLatestItem?: () => GraphRuntimeItem | null;
 }
 
 export interface GraphRuntimeState {
@@ -69,6 +70,7 @@ export interface GraphRuntimeState {
   metaError: string | null;
   valueOrders: Record<string, string[]>;
   rawPointNotice: { validRows: number; budget: number } | null;
+  timeSeriesDisposition: GraphTimeSeriesDisposition | null;
 }
 
 const EMPTY_METADATA: GraphRuntimeMetadata = {
@@ -93,7 +95,8 @@ function snapshotChanged(previous: GraphRuntimeState | null, next: GraphRuntimeS
     || previous.metaLoading !== next.metaLoading
     || previous.metaError !== next.metaError
     || previous.valueOrders !== next.valueOrders
-    || previous.rawPointNotice !== next.rawPointNotice;
+    || previous.rawPointNotice !== next.rawPointNotice
+    || previous.timeSeriesDisposition !== next.timeSeriesDisposition;
 }
 
 export function GraphRuntime({
@@ -114,6 +117,7 @@ export function GraphRuntime({
   onAxisContextMenu,
   onItemReconciled,
   onStateChange,
+  resolveLatestItem,
 }: GraphRuntimeProps) {
   const { t } = useTranslation();
   const [metadata, setMetadata] = useState<GraphRuntimeMetadata>(EMPTY_METADATA);
@@ -220,6 +224,10 @@ export function GraphRuntime({
     () => deriveValueOrders(metadata, model.meltInfo),
     [metadata, model.meltInfo],
   );
+  const resolveLatestEffectiveItem = useCallback(() => {
+    const latestItem = resolveLatestItem?.();
+    return latestItem ? reconcileGraphColumnIdentities(latestItem, columnDescriptors) : null;
+  }, [columnDescriptors, resolveLatestItem]);
 
   const internalDataState = useGraphDataPipeline(
     effectiveItem,
@@ -228,6 +236,8 @@ export function GraphRuntime({
     !metaLoading
       && descriptorGeneration === dataset.generation
       && externalDataState === undefined,
+    columnDescriptors,
+    resolveLatestEffectiveItem,
   );
   const {
     frame,
@@ -239,6 +249,7 @@ export function GraphRuntime({
     () => getRawPointNotice(frame?.rawPointDisposition),
     [frame?.rawPointDisposition],
   );
+  const timeSeriesDisposition = frame?.timeSeriesDisposition ?? null;
   const groupingFieldName = resolveGroupThemeFieldName(model.effectiveEncoding);
   const groupKeys = useMemo(
     () => deriveGraphGroupKeys(
@@ -301,7 +312,8 @@ export function GraphRuntime({
     metaError,
     valueOrders,
     rawPointNotice,
-  }), [colSqlTypes, columns, error, frame, graphData, metaError, metaLoading, progress, rawPointNotice, runtimeSpec, status, valueOrders]);
+    timeSeriesDisposition,
+  }), [colSqlTypes, columns, error, frame, graphData, metaError, metaLoading, progress, rawPointNotice, runtimeSpec, status, timeSeriesDisposition, valueOrders]);
 
   useEffect(() => {
     if (!onStateChange) return;
@@ -360,7 +372,7 @@ export function GraphRuntime({
           {status === "error" && error && (
             <div className="gb-canvas-overlay gb-canvas-overlay-error">{error}</div>
           )}
-          {effectiveItem.mode !== "multivariate" && status === "ready" && rawPointNotice && (
+          {effectiveItem.mode !== "multivariate" && status === "ready" && rawPointNotice && !timeSeriesDisposition && (
             <div className="gb-point-budget-notice" role="status">
               <i className="fa-solid fa-circle-info" aria-hidden="true" />
               <span className="gb-point-budget-copy">
