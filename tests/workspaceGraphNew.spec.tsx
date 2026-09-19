@@ -202,7 +202,7 @@ test("actual create action clears table selection and saves two independently ed
     await component.getByRole("button", { name: "Graph", exact: true }).click();
     await component.getByRole("menuitem", { name: "Graph Builder-new", exact: true }).click();
     await component.getByLabel("X field").selectOption("x");
-    await component.getByLabel("Y field").selectOption("y");
+    await component.getByLabel("Y field", { exact: true }).selectOption("y");
     await component.getByLabel("X interpretation").selectOption(xMode);
     await component.getByLabel("Raw series").selectOption(rawMode);
     await component.getByRole("checkbox", { name: "Mean", exact: true }).uncheck();
