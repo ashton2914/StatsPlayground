@@ -1114,11 +1114,16 @@ mod tests {
             scene.presentation.raw_line = None;
             scene.presentation.show_points = true;
             pollster::block_on(renderer.render_scene(&scene)).unwrap();
-            assert_eq!(renderer.cache_stats().geometry_capacity_bytes, capacity, "normal toggle keeps indices");
+            let toggled_capacity = renderer.cache_stats().geometry_capacity_bytes;
+            assert_eq!(
+                toggled_capacity,
+                capacity,
+                "normal toggle keeps hidden point backing and raw indices resident without pressure"
+            );
             scene.points.extend((2_000_000..2_100_000).map(|index| SourcePoint::new(index + 1, (index - 2_000_000) as f64 / 99_999.0, 0.5)));
             assert!(renderer.planned_gpu_bytes(1920, 1080, Some(&scene)).unwrap() > super::super::graph_new_cache::DEFAULT_GPU_BYTES);
             pollster::block_on(renderer.render_scene(&scene)).expect("inactive raw storage must be reclaimed under pressure");
-            assert!(renderer.cache_stats().geometry_capacity_bytes < capacity + 100_000 * 40);
+            assert!(renderer.cache_stats().geometry_capacity_bytes < toggled_capacity + 100_000 * 40);
             scene.presentation.raw_line = Some(indices);
             scene.presentation.show_points = show_points;
             let restored = pollster::block_on(renderer.render_scene(&scene)).unwrap();

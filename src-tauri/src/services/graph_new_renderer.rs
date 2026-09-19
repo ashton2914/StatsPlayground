@@ -44,6 +44,16 @@ impl Default for ScenePresentation {
 }
 
 impl GraphNewScene {
+    fn raw_line_uses_point_buffer(&self) -> bool {
+        self.presentation.raw_line.is_some()
+            && !self.overlay.active
+            && PointBasis::reference(self).camera(self).is_some()
+    }
+
+    fn point_buffer_required(&self) -> bool {
+        self.presentation.show_points || self.raw_line_uses_point_buffer()
+    }
+
     pub(crate) fn physical_size(&self) -> Result<(u32, u32), AppError> {
         let ratio = self.device_pixel_ratio;
         let width = (self.width as f64 * ratio).ceil();
@@ -114,7 +124,7 @@ impl GraphNewScene {
     }
 
     pub(crate) fn point_upload_bytes(&self) -> u64 {
-        if self.presentation.show_points {
+        if self.point_buffer_required() {
             self.enabled_point_count().max(1) as u64 * 40
         } else {
             0
@@ -525,6 +535,7 @@ impl ScenePipeline {
             digest.update(point.group_code.to_le_bytes());
             digest.update(scene.point_color_bytes(point.group_code));
         }
+        digest.update([u8::from(scene.point_buffer_required())]);
         digest.update(scene.enabled_groups.bits().to_le_bytes());
         let content_hash: [u8; 32] = digest.finalize().into();
         let reused_camera = if self.content_hash == Some(content_hash) {
@@ -586,7 +597,7 @@ impl ScenePipeline {
         }
         queue.write_buffer(&self.decoration_instances, 0, bytes);
         if let Some(basis) = basis.filter(|_| reused_camera.is_none()) {
-            if scene.presentation.show_points {
+            if scene.point_buffer_required() {
                 let points: Vec<Mark> = scene
                     .points
                     .iter()
