@@ -1017,11 +1017,7 @@ fn seed_graph_new_benchmark_dataset(
                             END,
                             CASE
                                 WHEN i = 1 THEN 0.125
-                                ELSE 0.1 + CAST(
-                                    ((i - 2) % 256)
-                                    + (((i - 2) / 256) % 11) * 7
-                                    AS DOUBLE
-                                ) / 1024.0
+                                ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
                             END,
                             CASE WHEN i = 1 THEN NULL ELSE 'group-0' END
                          FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
@@ -1041,12 +1037,10 @@ fn seed_graph_new_benchmark_dataset(
                             CASE
                                 WHEN i = 1 THEN 0.125
                                 WHEN i = 2 THEN 0.875
-                                ELSE 0.1 + CAST(
-                                    ((i - 3) % 256)
-                                    + (((i - 3) / 256) % 11) * 7
-                                    + (((i - 3) % CAST(? AS BIGINT)) * 13)
-                                    AS DOUBLE
-                                ) / 1024.0
+                                ELSE 0.5 + sin(
+                                    CAST(i AS DOUBLE) / 73.0
+                                    + CAST(((i - 3) % CAST(? AS BIGINT)) AS DOUBLE)
+                                ) * 0.45
                             END,
                             CASE
                                 WHEN i = 1 THEN NULL
