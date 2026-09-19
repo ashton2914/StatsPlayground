@@ -2,13 +2,13 @@
 
 ## Issue 235 Native Overlay Qualification (2026-09-19)
 
-Required 2M source SHA: `14c3f1842567e643bc2435463fdfe24b2209e5a3`  
+Required 2M source SHA: `95a075a0ada58a8e440d83fa59c4d6d4dcde2c47`  
 Stretch 10M source SHA: `2441e9f2a99082e6a7c438c06b7cd15ead7152af`
-(10M was not rerun after the later harness-only Clippy cleanup, the backend
-regression fix, or Fix Round 1; its single controlled-refusal sample remains
-tied to that earlier reviewed SHA)  
+(10M was not rerun after the later backend regression fix, Fix Round 1, or the
+final review fix wave; its single controlled-refusal sample remains tied to
+that earlier reviewed SHA)  
 Platform: macOS 27.0 (`Darwin arm64`), Apple M3 Pro  
-Evidence: `.cache/issue235-overlay/performance/overlay-2m-14c3f1842567e643bc2435463fdfe24b2209e5a3.json`,
+Evidence: `.cache/issue235-overlay/performance/overlay-2m-95a075a0ada58a8e440d83fa59c4d6d4dcde2c47.json`,
 `.cache/issue235-overlay/performance/overlay-10m.json`
 
 This section records single release-harness samples from
@@ -27,32 +27,38 @@ cache allocations. `processRssBytes` is whole-process RSS sampled from the OS.
 - Qualification result: `qualificationPassed = true`
 - Source/finite shape: `sourceRows = 2,000,000`, `processedRows = 2,000,000`,
   `finiteRows = 2,000,000`, `excludedNonFiniteRows = 0`
-- Build summary: `operationMs = 10,776`, `scanCompleteMs = 3420`,
-  `overviewReadyMs = 3795`, `pyramidCompleteMs = 3795`,
+- Build summary: `operationMs = 11,339`, `scanCompleteMs = 3566`,
+  `overviewReadyMs = 3942`, `pyramidCompleteMs = 3942`,
   `spoolBytes = 52,000,000`, `accountedMemoryBytes = 248,462,336`,
   `tileCount = 1`, `tileBytes = 60,000,100`, `levels = 1`,
-  build-time `processRssBytes = 509,083,648`
+  build-time `processRssBytes = 523,321,344`
 - Overlay shape: 9 groups total (8 nonmissing + Missing), with exact counts:
   `group-0..group-6 = 285,714` each, `group-7 = 1`, `(Missing) = 1`
 - Minority evidence: `minorityGroupRows = 1` (<0.1% of finite rows);
   `missingGroupRows = 1`
 - Identity stability: `coldGraphKey = hiddenGraphKey = shownGraphKey =
-  a3d56c1f0142b21c35f6f9edf22a59424ef99adf07e680297a7ed8f0708f02c7`
+  fff58d41fa138a3fac73d37766adf41ceb162ba399310878b3a8af9c4141b904`
 - Cold phase camera/domain:
-  `{"xMin":0.00001,"xMax":0.99999,"yMin":0.0000011920928955078125,"yMax":0.9499999999999884}`
+  `{"xMin":0.0,"xMax":1.0,"yMin":0.050000000000001266,"yMax":0.9499999999999884}`
 - Camera stability across the bounded camera + hide/show interaction:
-  `{"xMin":0.25000500000000003,"xMax":0.7499950000000001,"yMin":0.23750089406966873,"yMax":0.7125002980232151}`
+  `{"xMin":0.25,"xMax":0.75,"yMin":0.274999999999998,"yMax":0.7249999999999917}`
 - Query counts: warm/camera/hide/show `sourceProjectionQueryCount = 0`
 - Marks: cold `selectedMarks = 2,000,000`, hide `selectedMarks = 1,999,999`,
   show `selectedMarks = 2,000,000`; every phase remained `exactVisible = true`
+- Required overlay layer evidence also passed on the same 2M build:
+  grouped Raw Line completed with `rawMode = "line"` and
+  `rawLineSegments = 1,999,991`; grouped Mean completed with
+  `meanVisible = true` and `meanGroups = 1,794`
 
 | Phase | wallMs | buildMs | renderMs | readbackMs | projection queries | selectedMarks | visibleRows | cpuCacheBytes | persistentCacheBytes | gpuAllocatedBytes | processCpuReservedBytes | processRssBytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| cold | 4786.920833 | 3774.543708 | 302.403125 | 48.735541 | 1 | 2000000 | 2000000 | 60007792 | 60001905 | 96590980 | 260011888 | 905068544 |
-| warm | 346.81404100000003 | 0.0 | 279.371125 | 47.346625 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96590980 | 260011888 | 825065472 |
-| camera | 321.576916 | 0.0 | 278.10825 | 23.151625 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591500 | 260011888 | 825081856 |
-| hide | 346.13091699999995 | 0.0 | 300.776709 | 28.216333 | 0 | 1999999 | 1999999 | 60007792 | 60001905 | 96591500 | 260011888 | 982499328 |
-| show | 340.931042 | 0.0 | 300.626625 | 24.981416 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591500 | 260011888 | 1059913728 |
+| cold | 4912.072875 | 3879.179417 | 304.9455 | 70.25225 | 1 | 2000000 | 2000000 | 60007792 | 60001905 | 96591020 | 260011888 | 915046400 |
+| warm | 358.01612500000005 | 0.0 | 284.319875 | 50.622125 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591020 | 260011888 | 835059712 |
+| camera | 320.403834 | 0.0 | 283.601458 | 17.468833 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591420 | 260011888 | 835092480 |
+| hide | 342.187583 | 0.0 | 307.060333 | 16.871000000000002 | 0 | 1999999 | 1999999 | 60007792 | 60001905 | 96591420 | 260011888 | 992493568 |
+| show | 351.45025000000004 | 0.0 | 309.733875 | 19.898459 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591420 | 260011888 | 1069891584 |
+| raw | 685.039292 | 0.0 | 425.96329199999997 | 26.091875 | 0 | 2000000 | 2000000 | 84007780 | 60001905 | 144591192 | 260011888 | 1106853888 |
+| mean | 369.929459 | 0.0 | 283.54816700000003 | 17.182083000000002 | 0 | 2000000 | 2000000 | 132007780 | 60001905 | 144634008 | 260011888 | 1109180416 |
 
 ### Bounded 10M stretch
 
