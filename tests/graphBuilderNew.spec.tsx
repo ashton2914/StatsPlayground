@@ -2,11 +2,13 @@ import { expect, test } from "@playwright/experimental-ct-react";
 
 import { GraphBuilderNewHarness } from "./GraphBuilderNewHarness";
 
+const OVERLAY_A_ID = `sha256:${"a".repeat(64)}`;
+
 for (const reopen of ["Reopen current generation", "Reopen retained generation"]) {
 test(`transport identity close and reopen survives native permanent tombstones: ${reopen}`, async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   const original = JSON.parse((await component.getByTestId("render-request").textContent())!);
@@ -29,7 +31,7 @@ for (const replacement of ["Reopen current generation", "Reload full view"]) {
   test(`transport identity replacement isolates delayed old close: ${replacement}`, async ({ mount }) => {
     const component = await mount(<GraphBuilderNewHarness mode="render" deferClose />);
     await component.getByLabel("X field").selectOption("column-x");
-    await component.getByLabel("Y field").selectOption("column-y");
+    await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
     const metrics = component.getByTestId("render-metrics");
     await expect(metrics).toContainText('"presented":1');
     const original = JSON.parse((await component.getByTestId("render-request").textContent())!);
@@ -51,7 +53,7 @@ for (const replacement of ["Reopen current generation", "Reload full view"]) {
 test("persistence settles camera once and restores a saved document without dirty feedback", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   await component.getByRole("button", { name: "Mark saved", exact: true }).click();
@@ -73,10 +75,13 @@ test("persistence settles camera once and restores a saved document without dirt
 test("persistence save read-only disables document edits and camera gestures", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await component.getByRole("button", { name: "Begin save", exact: true }).click();
-  for (const label of ["X field", "Y field", "X interpretation", "Raw series"]) await expect(component.getByLabel(label)).toBeDisabled();
+  await expect(component.getByLabel("X field")).toBeDisabled();
+  await expect(component.getByLabel("Y field", { exact: true })).toBeDisabled();
+  await expect(component.getByLabel("X interpretation")).toBeDisabled();
+  await expect(component.getByLabel("Raw series")).toBeDisabled();
   await expect(component.getByRole("checkbox", { name: "Mean", exact: true })).toBeDisabled();
   await expect(component.getByRole("button", { name: "Reset view", exact: true })).toBeDisabled();
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
@@ -153,7 +158,7 @@ test("persistence fences an old generation decode before restoring the current g
 test("persistence drops an unsettled camera mutation if save starts during the gesture", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await component.getByTestId("camera-plot").evaluate((element) => {
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
@@ -170,7 +175,7 @@ test("persistence drops an unsettled camera mutation if save starts during the g
 test("persistence batched hydration with the same ID and generation drops the old camera", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
@@ -183,7 +188,7 @@ test("persistence batched hydration with the same ID and generation drops the ol
 test("persistence retains a pending gesture through a raw-mode effect replacement", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await component.getByTestId("camera-plot").evaluate((element) => {
     element.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
@@ -204,7 +209,7 @@ for (const width of [960, 390]) {
       await page.setViewportSize({ width, height: 800 });
       const component = await mount(<GraphBuilderNewHarness mode="largeExact" axisFixture={axisFixture} />);
       await component.getByLabel("X field").selectOption("column-x");
-      await component.getByLabel("Y field").selectOption("column-y");
+      await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
       await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
       const expected = axisFixture === "nanoTime" ? ["2026-09-18 00:00:00.000000001 UTC", "2026-09-18 00:00:00.000000002 UTC"]
         : axisFixture === "microTime" ? ["2026-09-18 00:00:00.000001 UTC", "2026-09-18 00:00:00.000002 UTC"]
@@ -240,7 +245,7 @@ test("phase1 typed X and raw line controls preserve mode camera and reset interp
   const component = await mount(<GraphBuilderNewHarness mode="mixedFields" />);
   await expect(component.getByLabel("X field").locator('option[value="text-test-time"]')).toHaveJSProperty("disabled", false);
   await component.getByLabel("X field").selectOption("text-test-time");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
@@ -263,7 +268,7 @@ for (const width of [960, 390]) {
     await page.setViewportSize({ width, height: 800 });
     const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
     await component.getByLabel("X field").selectOption("column-x");
-    await component.getByLabel("Y field").selectOption("column-y");
+    await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
     await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
     for (const [index, mode] of ["duration", "time", "category"].entries()) {
       await component.getByLabel("X interpretation").selectOption(mode);
@@ -293,7 +298,7 @@ for (const width of [960, 390]) {
 test("mean overlay defaults on and toggles without resetting the camera", async ({ mount }, testInfo) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   const toggle = component.getByRole("checkbox", { name: "Mean" });
   await expect(metrics).toContainText('"presented":1');
@@ -320,7 +325,7 @@ test("mean overlay defaults on and toggles without resetting the camera", async 
 test("mean overlay refuses incomplete data without hiding the scatter", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="unknownCount" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByRole("checkbox", { name: "Mean" })).toBeDisabled();
   await expect(component.getByTestId("mean-unavailable")).toContainText("complete data");
   await expect(component.getByTestId("mean-legend")).toHaveCount(0);
@@ -330,7 +335,7 @@ test("mean overlay refuses incomplete data without hiding the scatter", async ({
 test("mean overlay fences stale decode and preserves desired camera", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   await page.evaluate(() => {
@@ -366,7 +371,7 @@ test("mean overlay Chinese unavailable reason fits a narrow viewport", async ({ 
   await page.setViewportSize({ width: 390, height: 844 });
   const component = await mount(<GraphBuilderNewHarness mode="unknownCount" locale="zh-CN" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByRole("checkbox", { name: "均值" })).toBeDisabled();
   await expect(component.getByTestId("mean-unavailable")).toHaveText("均值不可用：未保留完整数据。");
   const layers = component.locator(".graph-new-layers");
@@ -383,7 +388,7 @@ test("bounded LOD status reports unknown visible count without implying complete
   const component = await mount(<GraphBuilderNewHarness mode="unknownCount" />);
   const status = component.locator(".graph-new-frame-status");
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(status).toContainText("3 visible; 2 submitted");
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
   await expect(status).toContainText("Approximate LOD: 0 submitted; visible count unknown");
@@ -395,7 +400,7 @@ test("bounded LOD status reports unknown visible count without implying complete
 test("status distinguishes exact visible points from approximate LOD", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByRole("status").filter({ hasText: "Approximate LOD" })).toContainText("3 visible; 2 submitted");
   const plot = component.getByTestId("camera-plot");
   await plot.dispatchEvent("wheel", { deltaY: -200 });
@@ -405,7 +410,7 @@ test("status distinguishes exact visible points from approximate LOD", async ({ 
 test("exact status distinguishes seven visible rows from all submitted marks", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="largeExact" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const status = component.locator(".graph-new-frame-status");
   await expect(status).toContainText("Exact:");
   await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -200 });
@@ -416,7 +421,7 @@ for (const change of ["host resize", "DPR change"]) {
   test(`camera retains settled zoom across ${change}`, async ({ mount, page }, testInfo) => {
     const component = await mount(<GraphBuilderNewHarness mode="slow" />);
     await component.getByLabel("X field").selectOption("column-x");
-    await component.getByLabel("Y field").selectOption("column-y");
+    await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
     const metrics = component.getByTestId("render-metrics");
     const requestOutput = component.getByTestId("render-request");
     const plot = component.getByTestId("camera-plot");
@@ -460,7 +465,7 @@ for (const change of ["host resize", "DPR change"]) {
     expect(JSON.parse((await requestOutput.textContent())!).cameraDomain).toBeNull();
     await plot.dispatchEvent("wheel", { deltaY: -100 });
     await expect(metrics).toContainText('"presented":6');
-    await component.getByLabel("Y field").selectOption("column-x");
+    await component.getByLabel("Y field", { exact: true }).selectOption("column-x");
     await expect(metrics).toContainText('"presented":7');
     expect(JSON.parse((await requestOutput.textContent())!).cameraDomain).toBeNull();
     await testInfo.attach("retained-camera-requests", { body: JSON.stringify({ zoomed, resized, continued }), contentType: "application/json" });
@@ -470,7 +475,7 @@ for (const change of ["host resize", "DPR change"]) {
 test("camera resize preserves desired zoom while stale decode is pending", async ({ mount, page }, testInfo) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   await page.evaluate(() => {
@@ -509,7 +514,7 @@ test("camera resize preserves desired zoom while stale decode is pending", async
 test("camera transforms immediately, coalesces wheel and supports keyboard reset", async ({ mount, page }, testInfo) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   const plot = component.getByTestId("camera-plot");
@@ -553,7 +558,7 @@ test("camera transforms immediately, coalesces wheel and supports keyboard reset
 test("camera gesture during decode fences snapback and preserves cache on replacement", async ({ mount, page }, testInfo) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   await page.evaluate(() => {
@@ -590,7 +595,7 @@ test("camera gesture during decode fences snapback and preserves cache on replac
 test("camera pointer capture cancels cleanly and unmount clears settle", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"presented":1');
   const plot = component.getByTestId("camera-plot");
@@ -618,7 +623,7 @@ test.describe("large high-DPR canvas", () => {
       const component = await mount(<GraphBuilderNewHarness mode="render" />);
       await page.addStyleTag({ content: `.graph-new-canvas-host { width: ${hostSize.width}px; height: ${hostSize.height}px; }` });
       await component.getByLabel("X field").selectOption("column-x");
-      await component.getByLabel("Y field").selectOption("column-y");
+      await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
       await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
       const request = JSON.parse((await component.getByTestId("render-request").textContent())!);
       expect(await page.evaluate(() => devicePixelRatio)).toBe(2);
@@ -643,7 +648,7 @@ test.describe("large high-DPR canvas", () => {
 test("presents a deterministic binary frame with frontend axis titles and closes", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const canvas = component.getByRole("img", { name: "Point plot frame" });
   await expect(canvas).toBeVisible();
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
@@ -657,7 +662,7 @@ test("presents a deterministic binary frame with frontend axis titles and closes
 test("keeps a coherent frame during resize and serializes rapid changes", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   const canvas = component.getByRole("img", { name: "Point plot frame" });
   await expect(metrics).toContainText('"presented":1');
@@ -665,7 +670,7 @@ test("keeps a coherent frame during resize and serializes rapid changes", async 
   await expect(metrics).toContainText('"renders":2');
   await expect(canvas).toBeVisible();
   expect(await canvas.evaluate((element: HTMLCanvasElement) => element.getContext("2d")!.getImageData(Math.floor(element.width / 2), Math.floor(element.height / 2), 1, 1).data[2])).toBe(235);
-  await component.getByLabel("Y field").selectOption("column-x");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-x");
   await expect(metrics).toContainText('"cancels":2');
   await expect(metrics).toContainText('"presented":2');
   await expect(metrics).toContainText('"maximumActive":1');
@@ -690,9 +695,9 @@ test("drops and closes a stale bitmap before replacement", async ({ mount, page 
   });
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect.poll(() => page.evaluate(() => typeof (window as any).releaseBitmap)).toBe("function");
-  await component.getByLabel("Y field").selectOption("column-x");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-x");
   await page.evaluate(() => (window as any).releaseBitmap());
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await expect.poll(() => page.evaluate(() => (window as any).bitmapClosed)).toBe(2);
@@ -702,7 +707,7 @@ test("drops and closes a stale bitmap before replacement", async ({ mount, page 
 test("cancels after close and reports safe render failures", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
   await component.getByRole("button", { name: "Close Graph Builder-new" }).click();
   await expect(component.getByTestId("render-metrics")).toContainText('"cancels":1');
@@ -710,7 +715,7 @@ test("cancels after close and reports safe render failures", async ({ mount }) =
   await component.unmount();
   const failed = await mount(<GraphBuilderNewHarness mode="renderError" />);
   await failed.getByLabel("X field").selectOption("column-x");
-  await failed.getByLabel("Y field").selectOption("column-y");
+  await failed.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(failed.getByRole("alert")).toHaveText("Plot could not be rendered.");
   await expect(failed.getByRole("alert")).toHaveAttribute("data-reason", "graph_new_render_failed");
   await expect(failed.getByText("/user/source.db", { exact: false })).toHaveCount(0);
@@ -719,7 +724,7 @@ test("cancels after close and reports safe render failures", async ({ mount }) =
 test("frames fit desktop and mobile layouts", async ({ mount, page }, testInfo) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const canvas = component.getByRole("img", { name: "Point plot frame" });
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await component.screenshot({ path: testInfo.outputPath("task6-desktop.png") });
@@ -737,7 +742,7 @@ test("frames fit desktop and mobile layouts", async ({ mount, page }, testInfo) 
 test("unmount cancels late work, remount restores the same session, and store close is terminal", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="slow" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   const metrics = component.getByTestId("render-metrics");
   await expect(metrics).toContainText('"renders":1');
   await component.getByRole("button", { name: "Unmount view" }).click();
@@ -761,7 +766,7 @@ test("unmount cancels late work, remount restores the same session, and store cl
 test("offers all X fields but only numeric Y fields and stores their stable IDs", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness />);
   const xField = component.getByLabel("X field");
-  const yField = component.getByLabel("Y field");
+  const yField = component.getByLabel("Y field", { exact: true });
 
   await expect(xField.getByRole("option")).toHaveText(["Select a field", "Diameter", "Height", "Cavity (Text)"]);
   await expect(yField.getByRole("option")).toHaveText(["Select a field", "Diameter", "Height"]);
@@ -772,11 +777,131 @@ test("offers all X fields but only numeric Y fields and stores their stable IDs"
   await expect(xField.locator('option[value="column-label"]')).toHaveJSProperty("disabled", false);
 });
 
+test("Overlay field selects a stable column, preserves camera, and persists v2 state", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overlay" />);
+  await component.getByLabel("X field", { exact: true }).selectOption("column-x");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  const cameraBefore = JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera;
+  await component.getByLabel("Overlay field").selectOption("lot-column");
+  await expect(component.getByTestId("render-request"))
+    .toContainText('"overlayColumnId":"lot-column"');
+  expect(
+    JSON.parse((await component.getByTestId("documents").textContent())!)[0],
+  ).toMatchObject({
+    version: 2,
+    overlayColumnId: "lot-column",
+    hiddenOverlayGroupIds: [],
+    camera: cameraBefore,
+  });
+  await expect.poll(async () => (
+    JSON.parse((await component.getByTestId("render-request").textContent())!).cameraDomain
+  )).toEqual(cameraBefore);
+  const request = JSON.parse((await component.getByTestId("render-request").textContent())!);
+  expect(request.cameraDomain).toEqual(cameraBefore);
+});
+
+for (const locale of ["en", "zh-CN"] as const) {
+  test(`Overlay field retains an unavailable saved selection in ${locale}`, async ({ mount }) => {
+    const component = await mount(<GraphBuilderNewHarness mode="invalid" locale={locale} />);
+    const overlayField = component.getByLabel(locale === "en" ? "Overlay field" : "覆盖字段");
+    await expect(overlayField).toHaveValue("removed-overlay");
+    await expect(overlayField.locator('option[value="removed-overlay"]')).toHaveJSProperty("disabled", true);
+    await expect(overlayField.locator('option[value="removed-overlay"]')).toHaveText(
+      locale === "en" ? "removed-overlay (unavailable)" : "removed-overlay（不可用）",
+    );
+    await expect(component.getByTestId("documents")).toContainText('"overlayColumnId":"removed-overlay"');
+    await expect(component.getByTestId("project-dirty")).toHaveText("false");
+  });
+}
+
+test("Overlay field follows the existing read-only disable rules", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overlay" />);
+  await component.getByRole("button", { name: "Begin save", exact: true }).click();
+  await expect(component.getByLabel("Overlay field")).toBeDisabled();
+});
+
+test("Overlay legend toggles visibility without camera churn and persists hidden groups", async ({ mount, page }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overlay" />);
+  await component.getByLabel("X field", { exact: true }).selectOption("column-x");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
+  await component.getByTestId("camera-plot").dispatchEvent("wheel", { deltaY: -100 });
+  await expect(component.getByTestId("render-metrics")).toContainText('"presented":2');
+  await component.getByLabel("Overlay field").selectOption("lot-column");
+
+  const legend = component.getByRole("group", { name: "Overlay legend" });
+  await expect(legend).toBeVisible();
+  await expect(legend.getByText("A")).toBeVisible();
+  await expect(legend.getByText("2,000,000")).toBeVisible();
+  await expect(legend.getByText("(Missing)")).toBeVisible();
+  await expect(legend.locator(".graph-new-overlay-swatch").first()).toHaveAttribute(
+    "style",
+    /rgba\(31,\s*111,\s*235,\s*0\.5\)/,
+  );
+
+  const cameraBefore = JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera;
+  const showA = legend.getByRole("checkbox", { name: "Show A" });
+  await showA.uncheck();
+  await expect(component.getByTestId("render-request"))
+    .toContainText(`"hiddenOverlayGroupIds":["${OVERLAY_A_ID}"]`);
+  await expect(component.getByTestId("render-metrics"))
+    .toContainText('"sourceProjectionQueries":0');
+  expect(
+    JSON.parse((await component.getByTestId("documents").textContent())!)[0].camera,
+  ).toEqual(cameraBefore);
+  await expect(component.getByTestId("project-dirty")).toHaveText("true");
+
+  await component.getByRole("button", { name: "Mark saved", exact: true }).click();
+  await component.getByRole("button", { name: "Reload documents", exact: true }).click();
+  await expect(component.getByRole("group", { name: "Overlay legend" })
+    .getByRole("checkbox", { name: "Show A" })).not.toBeChecked();
+
+  await showA.focus();
+  await page.keyboard.press("Space");
+  await expect(component.getByTestId("render-request"))
+    .toContainText('"hiddenOverlayGroupIds":[]');
+  await expect(component.getByRole("group", { name: "Overlay legend" })
+    .getByRole("checkbox", { name: "Show A" })).toBeChecked();
+});
+
+test("Overlay legend localizes missing groups in Chinese and disables visibility edits while saving", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overlay" locale="zh-CN" />);
+  await component.getByLabel("X field", { exact: true }).selectOption("column-x");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
+  await component.getByLabel("覆盖字段").selectOption("lot-column");
+
+  const legend = component.getByRole("group", { name: "覆盖图例" });
+  await expect(legend.getByText("（缺失）")).toBeVisible();
+  await component.getByRole("button", { name: "Begin save", exact: true }).click();
+  await expect(legend.getByRole("checkbox", { name: "显示 A" })).toBeDisabled();
+});
+
+test("Overlay legend constrains sixty-four groups inside a bounded scroll region", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overlayMany" />);
+  await component.getByLabel("X field", { exact: true }).selectOption("column-x");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
+  await component.getByLabel("Overlay field").selectOption("lot-column");
+
+  const legend = component.getByRole("group", { name: "Overlay legend" });
+  await expect(legend.getByRole("checkbox")).toHaveCount(64);
+  const dimensions = await legend.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflowY: getComputedStyle(element).overflowY,
+  }));
+  expect(dimensions.clientHeight).toBeLessThanOrEqual(240);
+  expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
+  expect(dimensions.overflowY).toBe("auto");
+});
+
 for (const locale of ["en", "zh-CN"] as const) {
   test(`field visibility preserves source order, stable IDs and numeric eligibility in ${locale}`, async ({ mount }, testInfo) => {
     const component = await mount(<GraphBuilderNewHarness mode="mixedFields" locale={locale} />);
     const xField = component.getByLabel("X field");
-    const yField = component.getByLabel("Y field");
+    const yField = component.getByLabel("Y field", { exact: true });
     const textSuffix = locale === "en" ? "Text" : "文本";
     const timestampSuffix = locale === "en" ? "Timestamp" : "时间戳";
     await expect(xField.locator("option")).toHaveText([
@@ -809,7 +934,7 @@ test("field visibility allows scalar X but requires numeric Y before rendering",
   const xField = component.getByLabel("X field");
   await expect(xField).toBeEnabled();
   await expect(xField.locator("option:disabled")).toHaveCount(0);
-  await expect(component.getByLabel("Y field")).toBeDisabled();
+  await expect(component.getByLabel("Y field", { exact: true })).toBeDisabled();
   await xField.selectOption({ index: 1 });
   await expect(xField).not.toHaveValue("");
   await expect(component.getByTestId("render-metrics")).toContainText('"renders":0');
@@ -838,19 +963,19 @@ test("field visibility clears loaded fields when the source becomes stale", asyn
   await component.getByRole("button", { name: "Invalidate source" }).click();
   await expect(component.getByLabel("X field").locator("option")).toHaveText(["Select a field"]);
   await expect(component.getByLabel("X field")).toBeDisabled();
-  await expect(component.getByLabel("Y field").locator("option")).toHaveText(["Select a field"]);
+  await expect(component.getByLabel("Y field", { exact: true }).locator("option")).toHaveText(["Select a field"]);
 });
 
 test("field visibility replaces loaded source fields without retaining old selections", async ({ mount }) => {
   const component = await mount(<GraphBuilderNewHarness mode="mixedFields" />);
   await component.getByLabel("X field").selectOption("column-x");
-  await component.getByLabel("Y field").selectOption("column-y");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
   await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
   await component.getByRole("button", { name: "Replace field source" }).click();
   await expect(component.getByLabel("X field").locator("option")).toHaveText([
     "Select a field", "New X", "New text (Text)",
   ]);
-  await expect(component.getByLabel("Y field").locator("option")).toHaveText(["Select a field", "New X"]);
+  await expect(component.getByLabel("Y field", { exact: true }).locator("option")).toHaveText(["Select a field", "New X"]);
   await expect(component.getByTestId("selected-columns")).toContainText('"xColumnId":null');
   await expect(component.getByTestId("selected-columns")).toContainText('"yColumnId":null');
   await expect(component.getByTestId("render-metrics")).toContainText('"renders":1');
@@ -860,7 +985,7 @@ for (const selected of ["column-x", "duplicate-x"]) {
   test(`field visibility retains scalar ${selected} unless metadata removes it`, async ({ mount }) => {
     const component = await mount(<GraphBuilderNewHarness mode="mixedFields" />);
     await component.getByLabel("X field").selectOption(selected);
-    await component.getByLabel("Y field").selectOption("column-y");
+    await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
     await expect(component.getByTestId("render-metrics")).toContainText('"presented":1');
     await component.getByRole("button", { name: "Refresh field metadata" }).click();
     await expect(component.getByTestId("selected-columns")).toContainText(`"xColumnId":"${selected}"`);

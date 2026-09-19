@@ -38,6 +38,8 @@ export function GraphBuilderNewView({
     state.sessions.find((candidate) => candidate.id === sessionId)
   ));
   const setColumns = useGraphBuilderNewStore((state) => state.setColumns);
+  const setOverlay = useGraphBuilderNewStore((state) => state.setOverlay);
+  const setHiddenOverlayGroups = useGraphBuilderNewStore((state) => state.setHiddenOverlayGroups);
   const setMean = useGraphBuilderNewStore((state) => state.setMean);
   const setModes = useGraphBuilderNewStore((state) => state.setModes);
   const setCamera = useGraphBuilderNewStore((state) => state.setCamera);
@@ -67,8 +69,10 @@ export function GraphBuilderNewView({
   const numericColumns = columns.filter(({ sqlType }) => inferFieldType(sqlType) === "continuous");
   const numericColumnIds = new Set(numericColumns.map(({ columnId }) => columnId));
   const xColumnIds = new Set(columns.map(({ columnId }) => columnId));
+  const overlayColumnIds = new Set(columns.map(({ columnId }) => columnId));
   const missingX = Boolean(session?.xColumnId && !xColumnIds.has(session.xColumnId));
   const missingY = Boolean(session?.yColumnId && !numericColumnIds.has(session.yColumnId));
+  const missingOverlay = Boolean(session?.overlayColumnId && !overlayColumnIds.has(session.overlayColumnId));
 
   useEffect(() => {
     if (transportId && (missingDataset || stale) && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -126,6 +130,10 @@ export function GraphBuilderNewView({
   const updateY = (yColumnId: string) => {
     if (useProjectStore.getState().readOnly || (yColumnId && !numericColumnIds.has(yColumnId))) return;
     setColumns(session.id, session.xColumnId, yColumnId || null);
+  };
+  const updateOverlay = (overlayColumnId: string) => {
+    if (useProjectStore.getState().readOnly || (overlayColumnId && !overlayColumnIds.has(overlayColumnId))) return;
+    setOverlay(session.id, overlayColumnId || null);
   };
 
   return (
@@ -187,6 +195,25 @@ export function GraphBuilderNewView({
             </select>
           </label>
           <label>
+            <span>{t("graphNew.overlayField")}</span>
+            <select
+              aria-label={t("graphNew.overlayField")}
+              value={session.overlayColumnId ?? ""}
+              disabled={readOnly || loading || stale || missingDataset || Boolean(error)}
+              onChange={(event) => updateOverlay(event.target.value)}
+            >
+              <option value="">{t("graphNew.noOverlay")}</option>
+              {!loading && !stale && !missingDataset && missingOverlay && (
+                <option value={session.overlayColumnId!} disabled>
+                  {t("graphNew.fieldUnavailable", { field: session.overlayColumnId })}
+                </option>
+              )}
+              {columns.map((column) => (
+                <option key={column.columnId} value={column.columnId}>{column.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
             <span>{t("graphNew.xInterpretation", { defaultValue: "X interpretation" })}</span>
             <select aria-label={t("graphNew.xInterpretation", { defaultValue: "X interpretation" })} value={session.xMode ?? "auto"}
               disabled={readOnly}
@@ -215,19 +242,29 @@ export function GraphBuilderNewView({
             <p role="status">Loading numeric fields...</p>
           ) : error ? (
             <p role="alert">{error}</p>
-          ) : missingX || missingY ? (
-            <p role="status">{t("graphNew.fieldsUnavailable", { fields: [missingX ? session.xColumnId : null, missingY ? session.yColumnId : null].filter(Boolean).join(", ") })}</p>
+          ) : missingX || missingY || missingOverlay ? (
+            <p role="status">{t("graphNew.fieldsUnavailable", {
+              fields: [
+                missingX ? session.xColumnId : null,
+                missingY ? session.yColumnId : null,
+                missingOverlay ? session.overlayColumnId : null,
+              ].filter(Boolean).join(", "),
+            })}
+            </p>
           ) : numericColumns.length === 0 ? (
             <p role="status">This table has no numeric columns.</p>
           ) : transportAvailable && session.xColumnId && session.yColumnId
             && xColumnIds.has(session.xColumnId) && numericColumnIds.has(session.yColumnId) ? (
             <GraphNewCanvas
-              key={JSON.stringify([session.transportId, runtimeEpoch, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.xMode ?? "auto"])}
+              key={JSON.stringify([session.transportId, runtimeEpoch, datasetId, datasetGeneration, session.xColumnId, session.yColumnId, session.overlayColumnId, session.xMode ?? "auto"])}
               transportId={session.transportId}
               datasetId={session.datasetId}
               datasetGeneration={session.datasetGeneration}
               xColumnId={session.xColumnId}
               yColumnId={session.yColumnId}
+              overlayColumnId={session.overlayColumnId ?? null}
+              hiddenOverlayGroupIds={session.hiddenOverlayGroupIds}
+              onHiddenOverlayGroupIdsChange={(ids) => setHiddenOverlayGroups(session.id, ids)}
               showMean={session.showMean ?? true}
               xMode={session.xMode ?? "auto"}
               rawMode={session.rawMode ?? "scatter"}
@@ -239,7 +276,9 @@ export function GraphBuilderNewView({
                   && current.transportId === session.transportId
                   && current.runtimeEpoch === session.runtimeEpoch
                   && current.datasetId === session.datasetId && current.xColumnId === session.xColumnId
-                  && current.yColumnId === session.yColumnId && current.xMode === session.xMode) setCamera(session.id, camera);
+                  && current.yColumnId === session.yColumnId
+                  && current.overlayColumnId === session.overlayColumnId
+                  && current.xMode === session.xMode) setCamera(session.id, camera);
               }}
               onMeanChange={(enabled) => setMean(session.id, enabled)}
               xTitle={columns.find((column) => column.columnId === session.xColumnId)?.name ?? ""}
