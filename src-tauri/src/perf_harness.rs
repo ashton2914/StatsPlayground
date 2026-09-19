@@ -3662,9 +3662,14 @@ mod tests {
                 "unmeasured_static_placeholder_from_headless_selector"
             );
             assert!(run.cancellation_observed);
-            #[cfg(not(windows))]
+            #[cfg(any(windows, target_os = "macos"))]
             {
-                assert_eq!(run.process_rss_bytes, None);
+                assert!(run.process_rss_bytes.is_some_and(|bytes| bytes > 0));
+                assert!(json["runs"][index]["processRssBytes"].is_u64());
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                assert!(run.process_rss_bytes.is_none());
                 assert!(json["runs"][index]["processRssBytes"].is_null());
             }
         }
