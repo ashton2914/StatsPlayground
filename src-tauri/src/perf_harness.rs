@@ -65,6 +65,7 @@ struct Options {
     columns: usize,
     operation: Operation,
     graph_new_rows: Option<Vec<usize>>,
+    graph_new_overlay_groups: Option<u16>,
     graph_new_csv: Option<(String, String)>,
     graph_new_axis: Option<(String, crate::models::graph_new::GraphNewXMode, crate::models::graph_new::GraphNewRawMode)>,
     chain_depth: usize,
@@ -169,6 +170,7 @@ struct GraphNewPerformanceReport {
     projection_query_count: u64,
     interaction_query_count: u64,
     interaction_query_count_metric: &'static str,
+    webview_presentation_metric: &'static str,
     runs: Vec<GraphNewPerformanceRun>,
 }
 
@@ -181,7 +183,7 @@ const GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC: &str =
 #[cfg(test)]
 #[test]
 fn graph_new_cache_harness_preserves_metrics_and_measures_production_reopens() {
-    let report = execute_graph_new_runs(&[128]).expect("production matrix fixture");
+    let report = execute_graph_new_runs(&[128], None).expect("production matrix fixture");
     let graph = report.graph_new.expect("graph report");
     let run = &graph.runs[0];
     assert_eq!(run.post_build_select_query_count_metric, GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC);
@@ -201,6 +203,8 @@ fn graph_new_cache_harness_preserves_metrics_and_measures_production_reopens() {
 struct GraphNewPerformanceRun {
     rows: usize,
     processed_rows: u64,
+    source_rows: u64,
+    finite_rows: u64,
     excluded_non_finite_rows: u64,
     scan_complete_ms: u128,
     overview_ready_ms: u128,
@@ -214,7 +218,86 @@ struct GraphNewPerformanceRun {
     post_build_select_query_count: u64,
     post_build_select_query_count_metric: &'static str,
     cancellation_observed: bool,
+    overlay_groups: usize,
+    missing_group_rows: u64,
+    minority_group_rows: u64,
+    warm_projection_query_count: u64,
+    camera_projection_query_count: u64,
+    hide_projection_query_count: u64,
+    show_projection_query_count: u64,
+    cold_selected_marks: usize,
+    hidden_selected_marks: usize,
+    shown_selected_marks: usize,
+    cold_graph_key: Option<String>,
+    hidden_graph_key: Option<String>,
+    shown_graph_key: Option<String>,
+    cold_camera: Option<crate::models::graph_new::GraphNewCameraDomain>,
+    hidden_camera: Option<crate::models::graph_new::GraphNewCameraDomain>,
+    shown_camera: Option<crate::models::graph_new::GraphNewCameraDomain>,
     cache_warm: Option<GraphNewCacheRun>,
+    grouped_overlay: Option<GraphNewOverlayRun>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphNewOverlayRun {
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal_code: Option<String>,
+    cold: Option<GraphNewOverlayPhase>,
+    warm: Option<GraphNewOverlayPhase>,
+    camera: Option<GraphNewOverlayPhase>,
+    hide: Option<GraphNewOverlayPhase>,
+    show: Option<GraphNewOverlayPhase>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphNewOverlayPhase {
+    wall_ms: f64,
+    graph_key: String,
+    process_rss_bytes: Option<u64>,
+    completion: crate::models::graph_new::GraphNewRenderCompletion,
+}
+
+fn graph_new_performance_run_defaults(rows: usize) -> GraphNewPerformanceRun {
+    GraphNewPerformanceRun {
+        rows,
+        processed_rows: 0,
+        source_rows: rows as u64,
+        finite_rows: 0,
+        excluded_non_finite_rows: 0,
+        scan_complete_ms: 0,
+        overview_ready_ms: 0,
+        pyramid_complete_ms: 0,
+        spool_bytes: 0,
+        accounted_memory_bytes: 0,
+        process_rss_bytes: None,
+        tile_count: 0,
+        tile_bytes: 0,
+        levels: 0,
+        post_build_select_query_count: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_PLACEHOLDER,
+        post_build_select_query_count_metric: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC,
+        cancellation_observed: false,
+        overlay_groups: 0,
+        missing_group_rows: 0,
+        minority_group_rows: 0,
+        warm_projection_query_count: 0,
+        camera_projection_query_count: 0,
+        hide_projection_query_count: 0,
+        show_projection_query_count: 0,
+        cold_selected_marks: 0,
+        hidden_selected_marks: 0,
+        shown_selected_marks: 0,
+        cold_graph_key: None,
+        hidden_graph_key: None,
+        shown_graph_key: None,
+        cold_camera: None,
+        hidden_camera: None,
+        shown_camera: None,
+        cache_warm: None,
+        grouped_overlay: None,
+    }
 }
 
 #[derive(Serialize)]
@@ -567,6 +650,17 @@ fn parse_positive_usize(flag: &str, value: Option<String>) -> Result<usize, AppE
     Ok(parsed)
 }
 
+fn parse_positive_u16(flag: &str, value: Option<String>) -> Result<u16, AppError> {
+    let value = value.ok_or_else(|| AppError::InvalidParam(format!("missing value for {flag}")))?;
+    let parsed = value
+        .parse::<u16>()
+        .map_err(|_| AppError::InvalidParam(format!("invalid value for {flag}: {value}")))?;
+    if parsed == 0 {
+        return Err(AppError::InvalidParam(format!("{flag} must be at least 1")));
+    }
+    Ok(parsed)
+}
+
 fn parse_position_percent(flag: &str, value: Option<String>) -> Result<u32, AppError> {
     let value = value.ok_or_else(|| AppError::InvalidParam(format!("missing value for {flag}")))?;
     let parsed = value
@@ -589,6 +683,7 @@ where
         columns: 20,
         operation: Operation::Query,
         graph_new_rows: None,
+        graph_new_overlay_groups: None,
         graph_new_csv: None,
         graph_new_axis: None,
         chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -618,6 +713,15 @@ where
             "--runs" => options.runs = parse_positive_usize(&flag, args.next())?,
             "--position-percent" => {
                 options.position_percent = Some(parse_position_percent(&flag, args.next())?);
+            }
+            "--graph-new-overlay-groups" => {
+                let parsed = parse_positive_u16(&flag, args.next())?;
+                if parsed > 64 {
+                    return Err(AppError::InvalidParam(
+                        "--graph-new-overlay-groups must be at most 64".into(),
+                    ));
+                }
+                options.graph_new_overlay_groups = Some(parsed);
             }
             "--payload-stdout" => {
                 options.payload_stdout = true;
@@ -831,21 +935,54 @@ fn execute_table_navigation(
     })
 }
 
+struct GraphNewBenchmarkColumns {
+    generation: u64,
+    x_column_id: String,
+    y_column_id: String,
+    overlay_column_id: Option<String>,
+}
+
+fn benchmark_cache_directory(dataset_id: &str, overlay_groups: Option<u16>) -> Result<std::path::PathBuf, AppError> {
+    let suffix = overlay_groups
+        .map(|groups| format!("overlay-{groups}"))
+        .unwrap_or_else(|| "plain".to_string());
+    let directory = std::env::current_dir()
+        .map_err(|error| AppError::FileIO(error.to_string()))?
+        .join(".cache/issue235-overlay/performance/harness")
+        .join(format!("{dataset_id}-{suffix}"));
+    if directory.exists() {
+        std::fs::remove_dir_all(&directory).map_err(|error| AppError::FileIO(error.to_string()))?;
+    }
+    std::fs::create_dir_all(&directory).map_err(|error| AppError::FileIO(error.to_string()))?;
+    directory
+        .canonicalize()
+        .map_err(|error| AppError::FileIO(error.to_string()))
+}
+
 fn seed_graph_new_benchmark_dataset(
     state: &AppState,
     dataset_id: &str,
     rows: usize,
-) -> Result<(), AppError> {
+    overlay_groups: Option<u16>,
+) -> Result<GraphNewBenchmarkColumns, AppError> {
     let db = state
         .db
         .lock()
         .map_err(|error| AppError::Database(error.to_string()))?;
-    db.create_empty_table(
-        dataset_id,
-        "Graph New Benchmark",
-        &["x_value".into(), "y_value".into()],
-        &["DOUBLE".into(), "DOUBLE".into()],
-    )?;
+    match overlay_groups {
+        Some(_) => db.create_empty_table(
+            dataset_id,
+            "Graph New Overlay Benchmark",
+            &["x_value".into(), "y_value".into(), "overlay_value".into()],
+            &["DOUBLE".into(), "DOUBLE".into(), "VARCHAR".into()],
+        )?,
+        None => db.create_empty_table(
+            dataset_id,
+            "Graph New Benchmark",
+            &["x_value".into(), "y_value".into()],
+            &["DOUBLE".into(), "DOUBLE".into()],
+        )?,
+    };
 
     if rows > 0 {
         let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
@@ -853,41 +990,77 @@ fn seed_graph_new_benchmark_dataset(
             .ok()
             .and_then(|value| value.checked_add(1))
             .ok_or_else(|| AppError::InvalidParam("benchmark row count is too large".into()))?;
-        db.conn().execute(
-            &format!(
-                "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value)
-                 SELECT i,
-                    CASE
-                        WHEN i % 20 = 0 THEN 0.5
-                        WHEN i % 5 = 0 THEN CAST(i % 2048 AS DOUBLE) / 2048.0
-                        ELSE CAST(i % 100000 AS DOUBLE) / 100000.0
-                    END,
-                    CASE
-                        WHEN i % 20 = 0 THEN 0.5
-                        WHEN i % 5 = 0 THEN CAST((i / 2048) % 2048 AS DOUBLE) / 2048.0
-                        ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
-                    END
-                 FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
-            ),
-            params![upper_bound],
-        )?;
+        if let Some(group_count) = overlay_groups {
+            if group_count == 1 {
+                db.conn().execute(
+                    &format!(
+                        "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value, overlay_value)
+                         SELECT i,
+                            CASE
+                                WHEN i % 20 = 0 THEN 0.5
+                                WHEN i % 5 = 0 THEN CAST(i % 2048 AS DOUBLE) / 2048.0
+                                ELSE CAST(i % 100000 AS DOUBLE) / 100000.0
+                            END,
+                            CASE
+                                WHEN i % 20 = 0 THEN 0.5
+                                WHEN i % 5 = 0 THEN CAST((i / 2048) % 2048 AS DOUBLE) / 2048.0
+                                ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
+                            END,
+                            CASE WHEN i = 1 THEN NULL ELSE 'group-0' END
+                         FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+                    ),
+                    params![upper_bound],
+                )?;
+            } else {
+                db.conn().execute(
+                    &format!(
+                        "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value, overlay_value)
+                         SELECT i,
+                            CASE
+                                WHEN i % 20 = 0 THEN 0.5
+                                WHEN i % 5 = 0 THEN CAST(i % 2048 AS DOUBLE) / 2048.0
+                                ELSE CAST(i % 100000 AS DOUBLE) / 100000.0
+                            END,
+                            CASE
+                                WHEN i % 20 = 0 THEN 0.5
+                                WHEN i % 5 = 0 THEN CAST((i / 2048) % 2048 AS DOUBLE) / 2048.0
+                                ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
+                            END,
+                            CASE
+                                WHEN i = 1 THEN NULL
+                                WHEN i = 2 THEN 'group-' || CAST(? AS VARCHAR)
+                                ELSE 'group-' || CAST(((i - 3) % CAST(? AS BIGINT)) AS VARCHAR)
+                            END
+                         FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+                    ),
+                    params![i64::from(group_count - 1), i64::from(group_count - 1), upper_bound],
+                )?;
+            }
+        } else {
+            db.conn().execute(
+                &format!(
+                    "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value)
+                     SELECT i,
+                        CASE
+                            WHEN i % 20 = 0 THEN 0.5
+                            WHEN i % 5 = 0 THEN CAST(i % 2048 AS DOUBLE) / 2048.0
+                            ELSE CAST(i % 100000 AS DOUBLE) / 100000.0
+                        END,
+                        CASE
+                            WHEN i % 20 = 0 THEN 0.5
+                            WHEN i % 5 = 0 THEN CAST((i / 2048) % 2048 AS DOUBLE) / 2048.0
+                            ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
+                        END
+                     FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+                ),
+                params![upper_bound],
+            )?;
+        }
         db.conn().execute(
             "UPDATE _meta_datasets SET row_count = $1 WHERE id = $2",
             params![rows as i64, dataset_id],
         )?;
     }
-
-    Ok(())
-}
-
-fn graph_new_column_ids(
-    state: &AppState,
-    dataset_id: &str,
-) -> Result<(u64, String, String), AppError> {
-    let db = state
-        .db
-        .lock()
-        .map_err(|error| AppError::Database(error.to_string()))?;
     let generation = db.get_dataset_generation(dataset_id)?;
     let mut statement = db
         .conn()
@@ -895,7 +1068,12 @@ fn graph_new_column_ids(
     let columns = statement
         .query_map(params![dataset_id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((generation, columns[0].clone(), columns[1].clone()))
+    Ok(GraphNewBenchmarkColumns {
+        generation,
+        x_column_id: columns[0].clone(),
+        y_column_id: columns[1].clone(),
+        overlay_column_id: overlay_groups.map(|_| columns[2].clone()),
+    })
 }
 
 fn graph_new_cancellation_observed<T>(outcome: Result<T, AppError>) -> Result<bool, AppError> {
@@ -906,30 +1084,171 @@ fn graph_new_cancellation_observed<T>(outcome: Result<T, AppError>) -> Result<bo
     }
 }
 
-fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError> {
+fn graph_new_overlay_domain(domain: crate::models::graph_new::GraphNewCameraDomain) -> crate::models::graph_new::GraphNewCameraDomain {
+    crate::models::graph_new::GraphNewCameraDomain {
+        x_min: domain.x_min + (domain.x_max - domain.x_min) * 0.25,
+        x_max: domain.x_min + (domain.x_max - domain.x_min) * 0.75,
+        y_min: domain.y_min + (domain.y_max - domain.y_min) * 0.25,
+        y_max: domain.y_min + (domain.y_max - domain.y_min) * 0.75,
+    }
+}
+
+fn graph_new_key_hash(
+    request: &crate::models::graph_new::GraphNewRenderRequest,
+) -> Result<String, AppError> {
+    let build = request.build_request();
+    let domain_policy = if request.x_mode == crate::models::graph_new::GraphNewXMode::Auto {
+        crate::models::graph_new_data::GRAPH_NEW_DEFAULT_DOMAIN_POLICY.to_string()
+    } else {
+        format!(
+            "{}-{:?}",
+            crate::models::graph_new_data::GRAPH_NEW_DEFAULT_DOMAIN_POLICY,
+            request.x_mode
+        )
+    };
+    crate::services::graph_new_key::GraphKey::canonical(
+        &crate::services::graph_new_key::GraphKeyParts {
+            dataset_id: request.dataset_id.clone(),
+            dataset_generation: request.dataset_generation,
+            x_column_id: request.x_column_id.clone(),
+            y_column_id: request.y_column_id.clone(),
+            overlay_column_id: request.overlay_column_id.clone(),
+            filter_identity: None,
+            renderer_contract_version:
+                crate::services::graph_new_key::GRAPH_NEW_RENDERER_CONTRACT_VERSION,
+            tile_format_version: crate::services::graph_new_key::GRAPH_NEW_TILE_FORMAT_VERSION,
+            domain_policy,
+            levels: build.levels,
+            max_tile_points: build.max_tile_points,
+        },
+    )
+    .map(|key| key.hash_hex)
+}
+
+fn render_graph_new_overlay_phase(
+    service: &GraphNewService,
+    request: &crate::models::graph_new::GraphNewRenderRequest,
+) -> Result<GraphNewOverlayPhase, AppError> {
+    let graph_key = graph_new_key_hash(request)?;
+    let started = Instant::now();
+    let (completion, process_memory) = measure_peak_working_set_during(|| {
+        service.render_with(
+            request,
+            crate::services::graph_new_renderer::GraphNewRenderer::render,
+            &mut |header, rgba| {
+                if rgba.len() as u64 != header.byte_length {
+                    return Err(AppError::Stats("graph_new_render_failed".into()));
+                }
+                Ok(())
+            },
+        )
+    });
+    Ok(GraphNewOverlayPhase {
+        wall_ms: started.elapsed().as_secs_f64() * 1000.0,
+        graph_key,
+        process_rss_bytes: process_memory
+            .as_ref()
+            .map(|memory| memory.peak_working_set_bytes),
+        completion: completion?,
+    })
+}
+
+fn controlled_graph_new_refusal_code(error: &AppError) -> Option<String> {
+    match error {
+        AppError::Stats(code) if code == "graph_new_cache_pressure" => Some(code.clone()),
+        _ => None,
+    }
+}
+
+fn grouped_overlay_qualification_failure(
+    row_count: usize,
+    run: &GraphNewPerformanceRun,
+    overlay_outcome: &GraphNewOverlayRun,
+) -> Option<String> {
+    if row_count != 2_000_000 || overlay_outcome.outcome != "completed" {
+        return None;
+    }
+    let Some(cold) = overlay_outcome.cold.as_ref() else {
+        return Some("missing cold grouped-overlay evidence".into());
+    };
+    let Some(warm) = overlay_outcome.warm.as_ref() else {
+        return Some("missing warm grouped-overlay evidence".into());
+    };
+    let Some(camera) = overlay_outcome.camera.as_ref() else {
+        return Some("missing camera grouped-overlay evidence".into());
+    };
+    let Some(hide) = overlay_outcome.hide.as_ref() else {
+        return Some("missing hide grouped-overlay evidence".into());
+    };
+    let Some(show) = overlay_outcome.show.as_ref() else {
+        return Some("missing show grouped-overlay evidence".into());
+    };
+
+    if run.processed_rows != row_count as u64 || run.finite_rows != row_count as u64 {
+        return Some("2M grouped overlay did not retain all finite rows".into());
+    }
+    if run.overlay_groups != 9 {
+        return Some("2M grouped overlay did not report nine groups including Missing".into());
+    }
+    if run.minority_group_rows == 0 || run.minority_group_rows.saturating_mul(1000) >= run.finite_rows {
+        return Some("2M grouped overlay minority group was not below 0.1%".into());
+    }
+    if !cold.completion.exact_visible || !show.completion.exact_visible {
+        return Some("2M grouped overlay did not retain exact compact geometry".into());
+    }
+    if warm.completion.source_projection_query_count != 0
+        || camera.completion.source_projection_query_count != 0
+        || hide.completion.source_projection_query_count != 0
+        || show.completion.source_projection_query_count != 0
+    {
+        return Some("2M grouped overlay interaction queried source projection".into());
+    }
+    if hide.completion.selected_marks >= show.completion.selected_marks {
+        return Some("2M grouped overlay hide/show marks did not change as expected".into());
+    }
+    if cold.graph_key != hide.graph_key || cold.graph_key != show.graph_key {
+        return Some("2M grouped overlay graph identity changed across visibility toggles".into());
+    }
+    if camera.completion.camera_domain != hide.completion.camera_domain
+        || camera.completion.camera_domain != show.completion.camera_domain
+    {
+        return Some("2M grouped overlay camera changed across visibility toggles".into());
+    }
+    None
+}
+
+fn execute_graph_new_runs(
+    rows: &[usize],
+    overlay_groups: Option<u16>,
+) -> Result<PerformanceReport, AppError> {
     let total_started = Instant::now();
     let mut runs = Vec::with_capacity(rows.len());
+    let mut qualification_failure = None;
     for &row_count in rows {
-        let cache_directory = tempfile::tempdir()?;
         let state = AppState::new()?;
-        state.set_graph_cache_directory(&cache_directory.path().canonicalize()?)?;
+        let cache_directory = benchmark_cache_directory(
+            &format!("graph-new-{row_count}"),
+            overlay_groups,
+        )?;
+        state.set_graph_cache_directory(&cache_directory)?;
         let dataset_id = format!("graph-new-{row_count}");
-        seed_graph_new_benchmark_dataset(&state, &dataset_id, row_count)?;
-        let (generation, x_column_id, y_column_id) = graph_new_column_ids(&state, &dataset_id)?;
+        let columns =
+            seed_graph_new_benchmark_dataset(&state, &dataset_id, row_count, overlay_groups)?;
         let service = GraphNewService::new(&state);
         let request = GraphNewBuildRequest {
             request_id: format!("graph-new-request-{row_count}"),
             dataset_id: dataset_id.clone(),
-            dataset_generation: generation,
-            x_column_id,
-            y_column_id,
-            overlay_column_id: None,
+            dataset_generation: columns.generation,
+            x_column_id: columns.x_column_id.clone(),
+            y_column_id: columns.y_column_id.clone(),
+            overlay_column_id: columns.overlay_column_id.clone(),
             max_tile_points: 4_096,
             levels: 8,
             batch_rows: 16_384,
             overdraw_factor: GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
             construction_memory_limit_bytes: GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
         };
+        let mut run = graph_new_performance_run_defaults(row_count);
         let mut scan_complete_ms = 0u128;
         let build_started = Instant::now();
         let (result, process_memory) = measure_peak_working_set_during(|| {
@@ -941,7 +1260,28 @@ fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError>
                 }
             })
         });
-        let result = result?;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(refusal_code) = controlled_graph_new_refusal_code(&error) {
+                    run.process_rss_bytes = process_memory
+                        .as_ref()
+                        .map(|memory| memory.peak_working_set_bytes);
+                    run.grouped_overlay = Some(GraphNewOverlayRun {
+                        outcome: "controlled_refusal",
+                        refusal_code: Some(refusal_code),
+                        cold: None,
+                        warm: None,
+                        camera: None,
+                        hide: None,
+                        show: None,
+                    });
+                    runs.push(run);
+                    continue;
+                }
+                return Err(error);
+            }
+        };
         let tile_count = result
             .summary
             .levels
@@ -985,30 +1325,138 @@ fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError>
             },
             &|| !cancel_requested.load(std::sync::atomic::Ordering::Relaxed),
         ))?;
-        let mut run = GraphNewPerformanceRun {
-            rows: row_count,
-            processed_rows: result.summary.processed_rows,
-            excluded_non_finite_rows: result.summary.excluded_non_finite_rows,
-            scan_complete_ms,
-            overview_ready_ms: result.summary.overview_ready_ms,
-            pyramid_complete_ms: result.summary.pyramid_complete_ms,
-            spool_bytes: result.summary.spool_bytes,
-            accounted_memory_bytes: result.summary.accounted_memory_bytes,
-            process_rss_bytes: process_memory
-                .as_ref()
-                .map(|memory| memory.peak_working_set_bytes),
-            tile_count,
-            tile_bytes,
-            levels: result.summary.levels.len(),
-            post_build_select_query_count: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_PLACEHOLDER,
-            post_build_select_query_count_metric: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC,
-            cancellation_observed,
-            cache_warm: None,
-        };
+        run.processed_rows = result.summary.processed_rows;
+        run.finite_rows = result.summary.processed_rows
+            .saturating_sub(result.summary.excluded_non_finite_rows);
+        run.excluded_non_finite_rows = result.summary.excluded_non_finite_rows;
+        run.scan_complete_ms = scan_complete_ms;
+        run.overview_ready_ms = result.summary.overview_ready_ms;
+        run.pyramid_complete_ms = result.summary.pyramid_complete_ms;
+        run.spool_bytes = result.summary.spool_bytes;
+        run.accounted_memory_bytes = result.summary.accounted_memory_bytes;
+        run.process_rss_bytes = process_memory
+            .as_ref()
+            .map(|memory| memory.peak_working_set_bytes);
+        run.tile_count = tile_count;
+        run.tile_bytes = tile_bytes;
+        run.levels = result.summary.levels.len();
+        run.cancellation_observed = cancellation_observed;
         drop(_overview_selection);
         drop(_deep_selection);
         drop(result);
-        run.cache_warm = Some(measure_graph_new_cache(&state, &request)?);
+        if overlay_groups.is_some() {
+            use crate::models::graph_new::GraphNewRenderRequest;
+
+            let overlay_service = GraphNewService::new(&state);
+            let mut render_request = GraphNewRenderRequest {
+                request_id: "overlay-cold".into(),
+                session_id: "overlay-session".into(),
+                dataset_id: request.dataset_id.clone(),
+                dataset_generation: request.dataset_generation,
+                x_column_id: request.x_column_id.clone(),
+                y_column_id: request.y_column_id.clone(),
+                width: 1920,
+                height: 1080,
+                device_pixel_ratio: 1.0,
+                renderer_generation: 1,
+                camera_generation: 0,
+                camera_domain: None,
+                show_mean: false,
+                x_mode: Default::default(),
+                raw_mode: Default::default(),
+                overlay_column_id: request.overlay_column_id.clone(),
+                hidden_overlay_group_ids: vec![],
+            };
+            let grouped_overlay = match (|| -> Result<GraphNewOverlayRun, AppError> {
+                let cold = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+                let minority_group = cold
+                    .completion
+                    .overlay_groups
+                    .iter()
+                    .filter(|group| !group.missing)
+                    .min_by_key(|group| group.total_rows)
+                    .ok_or_else(|| AppError::Stats("graph_new_overlay_missing_minority_group".into()))?;
+
+                render_request.request_id = "overlay-warm".into();
+                render_request.renderer_generation = 2;
+                let warm = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+
+                render_request.request_id = "overlay-camera".into();
+                render_request.renderer_generation = 3;
+                render_request.camera_generation = 1;
+                render_request.camera_domain = Some(graph_new_overlay_domain(cold.completion.camera_domain));
+                let camera = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+
+                render_request.request_id = "overlay-hide".into();
+                render_request.renderer_generation = 4;
+                render_request.hidden_overlay_group_ids = vec![minority_group.id.clone()];
+                let hide = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+
+                render_request.request_id = "overlay-show".into();
+                render_request.renderer_generation = 5;
+                render_request.hidden_overlay_group_ids.clear();
+                let show = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+
+                run.overlay_groups = cold.completion.overlay_groups.len();
+                run.missing_group_rows = cold
+                    .completion
+                    .overlay_groups
+                    .iter()
+                    .find(|group| group.missing)
+                    .map(|group| group.total_rows)
+                    .unwrap_or(0);
+                run.minority_group_rows = minority_group.total_rows;
+                run.warm_projection_query_count = warm.completion.source_projection_query_count;
+                run.camera_projection_query_count = camera.completion.source_projection_query_count;
+                run.hide_projection_query_count = hide.completion.source_projection_query_count;
+                run.show_projection_query_count = show.completion.source_projection_query_count;
+                run.cold_selected_marks = cold.completion.selected_marks;
+                run.hidden_selected_marks = hide.completion.selected_marks;
+                run.shown_selected_marks = show.completion.selected_marks;
+                run.cold_graph_key = Some(cold.graph_key.clone());
+                run.hidden_graph_key = Some(hide.graph_key.clone());
+                run.shown_graph_key = Some(show.graph_key.clone());
+                run.cold_camera = Some(camera.completion.camera_domain);
+                run.hidden_camera = Some(hide.completion.camera_domain);
+                run.shown_camera = Some(show.completion.camera_domain);
+                run.finite_rows = cold.completion.finite_rows;
+                Ok(GraphNewOverlayRun {
+                    outcome: "completed",
+                    refusal_code: None,
+                    cold: Some(cold),
+                    warm: Some(warm),
+                    camera: Some(camera),
+                    hide: Some(hide),
+                    show: Some(show),
+                })
+            })() {
+                Ok(grouped_overlay) => grouped_overlay,
+                Err(error) => {
+                    if let Some(refusal_code) = controlled_graph_new_refusal_code(&error) {
+                        GraphNewOverlayRun {
+                            outcome: "controlled_refusal",
+                            refusal_code: Some(refusal_code),
+                            cold: None,
+                            warm: None,
+                            camera: None,
+                            hide: None,
+                            show: None,
+                        }
+                    } else {
+                        return Err(error);
+                    }
+                }
+            };
+            qualification_failure = qualification_failure
+                .or_else(|| grouped_overlay_qualification_failure(row_count, &run, &grouped_overlay));
+            run.grouped_overlay = Some(grouped_overlay);
+        } else {
+            let cache = measure_graph_new_cache(&state, &request)?;
+            run.finite_rows = cache.cold.finite_rows;
+            run.cold_selected_marks = cache.cold.selected_marks;
+            run.shown_selected_marks = cache.settled_camera.selected_marks;
+            run.cache_warm = Some(cache);
+        }
         runs.push(run);
     }
 
@@ -1048,6 +1496,7 @@ fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError>
             projection_query_count: 1,
             interaction_query_count: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_PLACEHOLDER,
             interaction_query_count_metric: GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC,
+            webview_presentation_metric: "unmeasured_cli_harness_no_webview_presentation",
             runs,
         }),
         chain_depth: None,
@@ -1058,8 +1507,14 @@ fn execute_graph_new_runs(rows: &[usize]) -> Result<PerformanceReport, AppError>
         calculated_result_bytes: None,
         memory_budget_bytes: None,
         memory_growth_budget_multiplier: None,
-        qualification_passed: None,
-        qualification_failure: None,
+        qualification_passed: if qualification_failure.is_some() {
+            Some(false)
+        } else if overlay_groups.is_some() && rows.iter().any(|row_count| *row_count == 2_000_000) {
+            Some(true)
+        } else {
+            None
+        },
+        qualification_failure,
         machine: None,
         tabulate: None,
     })
@@ -1544,7 +1999,7 @@ fn execute_time_series_graph(
 
 fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     if let Some(graph_new_rows) = &options.graph_new_rows {
-        return execute_graph_new_runs(graph_new_rows);
+        return execute_graph_new_runs(graph_new_rows, options.graph_new_overlay_groups);
     }
     if options.operation == Operation::Save {
         return execute_save(options);
@@ -2770,6 +3225,7 @@ mod tests {
         assert_eq!(options.columns, 20);
         assert_eq!(options.operation, Operation::Query);
         assert_eq!(options.graph_new_rows, None);
+        assert_eq!(options.graph_new_overlay_groups, None);
     }
 
     #[test]
@@ -2811,6 +3267,7 @@ mod tests {
             columns: 100,
             operation: Operation::Tabulate,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -2852,6 +3309,14 @@ mod tests {
             options.graph_new_rows,
             Some(vec![100_000, 1_000_000, 10_000_000])
         );
+    }
+
+    #[test]
+    fn performance_cli_parses_graph_new_overlay_groups() {
+        let options =
+            parse_args(["--graph-new-overlay-groups", "8"].map(String::from)).unwrap();
+
+        assert_eq!(options.graph_new_overlay_groups, Some(8));
     }
 
     #[test]
@@ -3013,6 +3478,7 @@ mod tests {
             columns: 4,
             operation: Operation::Calculated,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: 2,
@@ -3088,6 +3554,7 @@ mod tests {
             columns: 20,
             operation: Operation::TableNavigation,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3210,6 +3677,7 @@ mod tests {
             columns,
             operation: Operation::TableNavigation,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3245,6 +3713,7 @@ mod tests {
                 columns: 4,
                 operation,
                 graph_new_rows: None,
+                graph_new_overlay_groups: None,
                 graph_new_csv: None,
                 graph_new_axis: None,
                 chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3342,6 +3811,7 @@ mod tests {
             columns: 20,
             operation: Operation::Graph,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3363,6 +3833,7 @@ mod tests {
             columns: 20,
             operation: Operation::Graph,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3410,6 +3881,7 @@ mod tests {
             columns: 4,
             operation: Operation::TimeSeriesGraph,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3584,6 +4056,7 @@ mod tests {
             columns: 1,
             operation: Operation::Graph,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3634,6 +4107,7 @@ mod tests {
             columns: 1,
             operation: Operation::Query,
             graph_new_rows: Some(vec![100, 1_000]),
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
@@ -3680,6 +4154,41 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_executes_grouped_graph_new_matrix() {
+        let report = execute(Options {
+            rows: 1,
+            columns: 1,
+            operation: Operation::Query,
+            graph_new_rows: Some(vec![2_000]),
+            graph_new_overlay_groups: Some(8),
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.operation, Operation::Graph);
+        assert_eq!(report.columns, 2);
+        assert_eq!(report.result_rows, 2_000);
+        let graph_new = report.graph_new.expect("graph_new report");
+        assert_eq!(graph_new.runs.len(), 1);
+        let run = &graph_new.runs[0];
+        assert_eq!(run.rows, 2_000);
+        assert_eq!(run.processed_rows, 2_000);
+        assert_eq!(run.overlay_groups, 9);
+        assert!(run.minority_group_rows > 0);
+        assert_eq!(run.camera_projection_query_count, 0);
+        assert_eq!(run.hide_projection_query_count, 0);
+        assert_eq!(run.show_projection_query_count, 0);
+        assert!(run.hidden_selected_marks < run.shown_selected_marks);
+        assert_eq!(run.cold_graph_key, run.hidden_graph_key);
+        assert_eq!(run.cold_camera, run.hidden_camera);
+    }
+
+    #[test]
     fn performance_cli_rejects_legacy_save_current_alias() {
         let error = parse_args(
             [
@@ -3704,6 +4213,7 @@ mod tests {
             columns: 20,
             operation: Operation::Save,
             graph_new_rows: None,
+            graph_new_overlay_groups: None,
             graph_new_csv: None,
             graph_new_axis: None,
             chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
