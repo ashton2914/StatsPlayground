@@ -2,13 +2,13 @@
 
 ## Issue 235 Native Overlay Qualification (2026-09-19)
 
-Required 2M source SHA: `dd49edfd1b16535a5c937b74871b8a32fd9a6cac`  
+Required 2M source SHA: `14c3f1842567e643bc2435463fdfe24b2209e5a3`  
 Stretch 10M source SHA: `2441e9f2a99082e6a7c438c06b7cd15ead7152af`
-(10M was not rerun after the later harness-only Clippy cleanup or the final
-backend regression fix; its single controlled-refusal sample remains tied to
-that earlier reviewed SHA)  
+(10M was not rerun after the later harness-only Clippy cleanup, the backend
+regression fix, or Fix Round 1; its single controlled-refusal sample remains
+tied to that earlier reviewed SHA)  
 Platform: macOS 27.0 (`Darwin arm64`), Apple M3 Pro  
-Evidence: `.cache/issue235-overlay/performance/overlay-2m-dd49edfd1b16535a5c937b74871b8a32fd9a6cac.json`,
+Evidence: `.cache/issue235-overlay/performance/overlay-2m-14c3f1842567e643bc2435463fdfe24b2209e5a3.json`,
 `.cache/issue235-overlay/performance/overlay-10m.json`
 
 This section records single release-harness samples from
@@ -27,17 +27,19 @@ cache allocations. `processRssBytes` is whole-process RSS sampled from the OS.
 - Qualification result: `qualificationPassed = true`
 - Source/finite shape: `sourceRows = 2,000,000`, `processedRows = 2,000,000`,
   `finiteRows = 2,000,000`, `excludedNonFiniteRows = 0`
-- Build summary: `operationMs = 11,109`, `scanCompleteMs = 3458`,
-  `overviewReadyMs = 3864`, `pyramidCompleteMs = 3864`,
+- Build summary: `operationMs = 10,776`, `scanCompleteMs = 3420`,
+  `overviewReadyMs = 3795`, `pyramidCompleteMs = 3795`,
   `spoolBytes = 52,000,000`, `accountedMemoryBytes = 248,462,336`,
   `tileCount = 1`, `tileBytes = 60,000,100`, `levels = 1`,
-  build-time `processRssBytes = 509,280,256`
+  build-time `processRssBytes = 509,083,648`
 - Overlay shape: 9 groups total (8 nonmissing + Missing), with exact counts:
   `group-0..group-6 = 285,714` each, `group-7 = 1`, `(Missing) = 1`
 - Minority evidence: `minorityGroupRows = 1` (<0.1% of finite rows);
   `missingGroupRows = 1`
 - Identity stability: `coldGraphKey = hiddenGraphKey = shownGraphKey =
-  316142548ae0065a076904872f43362c029d8471779c8669b105849a5be6da79`
+  a3d56c1f0142b21c35f6f9edf22a59424ef99adf07e680297a7ed8f0708f02c7`
+- Cold phase camera/domain:
+  `{"xMin":0.00001,"xMax":0.99999,"yMin":0.0000011920928955078125,"yMax":0.9499999999999884}`
 - Camera stability across the bounded camera + hide/show interaction:
   `{"xMin":0.25000500000000003,"xMax":0.7499950000000001,"yMin":0.23750089406966873,"yMax":0.7125002980232151}`
 - Query counts: warm/camera/hide/show `sourceProjectionQueryCount = 0`
@@ -46,11 +48,11 @@ cache allocations. `processRssBytes` is whole-process RSS sampled from the OS.
 
 | Phase | wallMs | buildMs | renderMs | readbackMs | projection queries | selectedMarks | visibleRows | cpuCacheBytes | persistentCacheBytes | gpuAllocatedBytes | processCpuReservedBytes | processRssBytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| cold | 4926.642791 | 3852.632875 | 351.154958 | 57.271625 | 1 | 2000000 | 2000000 | 60007792 | 60001905 | 96590980 | 260011888 | 907313152 |
-| warm | 352.371083 | 0.0 | 279.185041 | 54.197708999999996 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96590980 | 260011888 | 827310080 |
-| camera | 321.303542 | 0.0 | 280.19125 | 19.100667 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591500 | 260011888 | 827326464 |
-| hide | 359.12929199999996 | 0.0 | 305.092708 | 34.198333999999996 | 0 | 1999999 | 1999999 | 60007792 | 60001905 | 96591500 | 260011888 | 984743936 |
-| show | 354.550584 | 0.0 | 304.979959 | 32.8885 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591500 | 260011888 | 1062141952 |
+| cold | 4786.920833 | 3774.543708 | 302.403125 | 48.735541 | 1 | 2000000 | 2000000 | 60007792 | 60001905 | 96590980 | 260011888 | 905068544 |
+| warm | 346.81404100000003 | 0.0 | 279.371125 | 47.346625 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96590980 | 260011888 | 825065472 |
+| camera | 321.576916 | 0.0 | 278.10825 | 23.151625 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591500 | 260011888 | 825081856 |
+| hide | 346.13091699999995 | 0.0 | 300.776709 | 28.216333 | 0 | 1999999 | 1999999 | 60007792 | 60001905 | 96591500 | 260011888 | 982499328 |
+| show | 340.931042 | 0.0 | 300.626625 | 24.981416 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591500 | 260011888 | 1059913728 |
 
 ### Bounded 10M stretch
 
