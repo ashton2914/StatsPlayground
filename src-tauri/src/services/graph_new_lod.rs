@@ -14,7 +14,9 @@ use crate::models::graph_new_data::{
     GRAPH_NEW_MAX_TILE_POINTS,
 };
 use crate::services::graph_new_key::{RetentionPolicy, GRAPH_NEW_TILE_FORMAT_VERSION};
-use crate::services::graph_new_overlay::{OverlayCatalog, ALL_ROWS_GROUP_CODE};
+use crate::services::graph_new_overlay::{
+    GroupedLineSegment, GroupedMeanPoint, OverlayCatalog, ALL_ROWS_GROUP_CODE,
+};
 use super::graph_new_raw::{RawStore, RawWriter, QueryWork, QUERY_SCRATCH_BYTES};
 use crate::services::graph_new_tile::{minimum_encoded_tile_bytes, GraphNewTile, GraphNewTileHeader};
 
@@ -170,22 +172,36 @@ impl TilePyramid {
     }
 
     fn mean_bytes(&self) -> u64 {
-        self.tile_store.mean.lock().map_or(0, |mean|
-            mean.as_ref().map_or(0, |points| points.capacity() as u64 * 16))
+        self.tile_store.mean.lock().map_or(0, |mean| {
+            mean.as_ref().map_or(0, |points| {
+                points.capacity() as u64 * std::mem::size_of::<GroupedMeanPoint>() as u64
+            })
+        })
     }
 
     fn raw_line_bytes(&self) -> u64 {
-        self.tile_store.raw_line.lock().map_or(0, |indices| indices.as_ref().map_or(0, |indices| indices.capacity() as u64 * 8))
+        self.tile_store.raw_line.lock().map_or(0, |indices| {
+            indices.as_ref().map_or(0, |indices| {
+                indices.capacity() as u64 * std::mem::size_of::<GroupedLineSegment>() as u64
+            })
+        })
     }
 
-    pub(crate) fn raw_line(&self, points: &[SourcePoint], control: &dyn Fn() -> Result<(), AppError>) -> Result<Option<Arc<Vec<[u32; 2]>>>, AppError> {
+    pub(crate) fn raw_line(
+        &self,
+        points: &[SourcePoint],
+        control: &dyn Fn() -> Result<(), AppError>,
+    ) -> Result<Option<Arc<Vec<GroupedLineSegment>>>, AppError> {
         if !self.mean_available() { return Ok(None); }
         let mut cached = self.tile_store.raw_line.lock().map_err(|_| cache_format_error())?;
         if cached.is_none() { *cached = Some(Arc::new(super::graph_new_service::raw_line_indices(points, control)?)); }
         Ok(cached.clone())
     }
 
-    pub(crate) fn mean_line(&self, control: &dyn Fn() -> Result<(), AppError>) -> Result<Option<Arc<Vec<[f64; 2]>>>, AppError> {
+    pub(crate) fn mean_line(
+        &self,
+        control: &dyn Fn() -> Result<(), AppError>,
+    ) -> Result<Option<Arc<Vec<GroupedMeanPoint>>>, AppError> {
         if !self.mean_available() { return Ok(None); }
         let mut cached = self.tile_store.mean.lock().map_err(|_| cache_format_error())?;
         if let Some(mean) = cached.as_ref() { return Ok(Some(mean.clone())); }
@@ -194,22 +210,45 @@ impl TilePyramid {
         if let Some(level) = self.levels.first() {
             for entry in &level.tiles {
                 let tile = self.tile_store.decode(&entry.address)?;
-                for (position, (&x, &y)) in tile.xs.iter().zip(&tile.ys).enumerate() {
+                for (position, ((&x, &y), &group_code)) in tile
+                    .xs
+                    .iter()
+                    .zip(&tile.ys)
+                    .zip(&tile.group_codes)
+                    .enumerate()
+                {
                     if position % CONTROL_CHECK_BATCH_POINTS == 0 { control()?; }
-                    points.push([if x == 0.0 { 0.0 } else { x }, y]);
+                    points.push(GroupedMeanPoint {
+                        group_code,
+                        x: if x == 0.0 { 0.0 } else { x },
+                        y,
+                    });
                 }
             }
         }
-        points.sort_unstable_by(|left, right| left[0].total_cmp(&right[0]));
+        points.sort_unstable_by(|left, right| {
+            left.group_code
+                .cmp(&right.group_code)
+                .then_with(|| left.x.total_cmp(&right.x))
+        });
         control()?;
         let mut start = 0;
         let mut groups = 0;
         while start < points.len() {
             control()?;
             let mut end = start + 1;
-            while end < points.len() && points[end][0] == points[start][0] { end += 1; }
+            while end < points.len()
+                && points[end].group_code == points[start].group_code
+                && points[end].x == points[start].x
+            {
+                end += 1;
+            }
             let mean = finite_group_mean(&points[start..end], control)?;
-            points[groups] = [points[start][0], mean];
+            points[groups] = GroupedMeanPoint {
+                group_code: points[start].group_code,
+                x: points[start].x,
+                y: mean,
+            };
             groups += 1;
             start = end;
         }
@@ -1551,8 +1590,8 @@ struct TileStore {
     file: Arc<Mutex<File>>,
     index: Arc<BTreeMap<TileAddress, StoredTile>>,
     decoded: Arc<Mutex<DecodedTiles>>,
-    mean: Arc<Mutex<Option<Arc<Vec<[f64; 2]>>>>>,
-    raw_line: Arc<Mutex<Option<Arc<Vec<[u32; 2]>>>>>,
+    mean: Arc<Mutex<Option<Arc<Vec<GroupedMeanPoint>>>>>,
+    raw_line: Arc<Mutex<Option<Arc<Vec<GroupedLineSegment>>>>>,
 }
 
 #[derive(Default)]
@@ -2418,15 +2457,34 @@ fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, Ap
 
 const MEAN_SUM_LIMBS: usize = 34;
 
-fn finite_group_mean(points: &[[f64; 2]], control: &dyn Fn() -> Result<(), AppError>) -> Result<f64, AppError> {
+trait MeanPoint {
+    fn y(&self) -> f64;
+}
+
+impl MeanPoint for [f64; 2] {
+    fn y(&self) -> f64 {
+        self[1]
+    }
+}
+
+impl MeanPoint for GroupedMeanPoint {
+    fn y(&self) -> f64 {
+        self.y
+    }
+}
+
+fn finite_group_mean<T: MeanPoint>(
+    points: &[T],
+    control: &dyn Fn() -> Result<(), AppError>,
+) -> Result<f64, AppError> {
     if points.len() == 1 {
-        return Ok(if points[0][1] == 0.0 { 0.0 } else { points[0][1] });
+        return Ok(if points[0].y() == 0.0 { 0.0 } else { points[0].y() });
     }
     let mut positive = [0u64; MEAN_SUM_LIMBS];
     let mut negative = [0u64; MEAN_SUM_LIMBS];
     for (position, point) in points.iter().enumerate() {
         if position % CONTROL_CHECK_BATCH_POINTS == 0 { control()?; }
-        let bits = point[1].to_bits();
+        let bits = point.y().to_bits();
         let exponent = ((bits >> 52) & 0x7ff) as usize;
         let significand = (bits & ((1u64 << 52) - 1)) | if exponent > 0 { 1u64 << 52 } else { 0 };
         let shift = exponent.saturating_sub(1);
@@ -2526,7 +2584,9 @@ mod tests {
     use serde_json::Value;
 
     use crate::models::graph_new_data::GRAPH_NEW_MAX_TILE_POINTS;
-    use crate::services::graph_new_overlay::OverlayDictionary;
+    use crate::services::graph_new_overlay::{
+        GroupedLineSegment, GroupedMeanPoint, OverlayDictionary,
+    };
 
     use super::{GraphCamera, SourcePoint, TilePyramidBuilder};
 
@@ -2603,13 +2663,71 @@ mod tests {
         let pyramid = builder.finish().unwrap();
         let reserved = pyramid.cache_reservation_bytes();
         let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
-        assert_eq!(mean.as_slice(), &[[0.0, 3.0], [1.0, 7.0], [2.0, 15.0]]);
-        assert_eq!(mean[0][0].to_bits(), 0.0f64.to_bits());
+        assert_eq!(mean.as_slice(), &[
+            GroupedMeanPoint { group_code: 0, x: 0.0, y: 3.0 },
+            GroupedMeanPoint { group_code: 0, x: 1.0, y: 7.0 },
+            GroupedMeanPoint { group_code: 0, x: 2.0, y: 15.0 },
+        ]);
+        assert_eq!(mean[0].x.to_bits(), 0.0f64.to_bits());
         let repeated = pyramid.mean_line(&|| panic!("cached mean must not aggregate again")).unwrap().unwrap();
         assert!(std::sync::Arc::ptr_eq(&mean, &repeated));
         assert!(pyramid.resident_bytes() >= mean.capacity() as u64 * 16);
         assert_eq!(pyramid.cache_reservation_bytes(), reserved);
         assert!(pyramid.resident_bytes() + pyramid.decoded_bytes() + pyramid.total_finite_rows * (24 + 40) <= reserved);
+    }
+
+    #[test]
+    fn grouped_raw_and_mean_preserve_group_boundaries_and_no_overlay_baseline() {
+        let grouped_points = vec![
+            SourcePoint::with_group(1, 1.0, 1.0, 1),
+            SourcePoint::with_group(2, 1.0, 30.0, 2),
+            SourcePoint::with_group(3, 2.0, 5.0, 1),
+            SourcePoint::with_group(4, 2.0, 50.0, 2),
+            SourcePoint::with_group(5, 1.0, 5.0, 1),
+        ];
+        let mut grouped = TilePyramidBuilder::new(8, 4096, 1.5).unwrap();
+        grouped.push_batch(&grouped_points).unwrap();
+        let grouped = grouped.finish().unwrap();
+        let raw = grouped.raw_line(&grouped_points, &|| Ok(())).unwrap().unwrap();
+        assert_eq!(raw.len(), 3);
+        for GroupedLineSegment { indices, group_code } in raw.iter().copied() {
+            assert_eq!(grouped_points[indices[0] as usize].group_code, group_code);
+            assert_eq!(grouped_points[indices[1] as usize].group_code, group_code);
+        }
+        assert_eq!(
+            grouped.mean_line(&|| Ok(())).unwrap().unwrap().as_slice(),
+            &[
+                GroupedMeanPoint { group_code: 1, x: 1.0, y: 3.0 },
+                GroupedMeanPoint { group_code: 1, x: 2.0, y: 5.0 },
+                GroupedMeanPoint { group_code: 2, x: 1.0, y: 30.0 },
+                GroupedMeanPoint { group_code: 2, x: 2.0, y: 50.0 },
+            ]
+        );
+
+        let baseline_points = vec![
+            SourcePoint::new(1, 2.0, 2.0),
+            SourcePoint::new(2, 1.0, 4.0),
+            SourcePoint::new(3, 2.0, 6.0),
+            SourcePoint::new(4, 1.0, 8.0),
+        ];
+        let mut baseline = TilePyramidBuilder::new(8, 4096, 1.5).unwrap();
+        baseline.push_batch(&baseline_points).unwrap();
+        let baseline = baseline.finish().unwrap();
+        assert_eq!(
+            baseline.raw_line(&baseline_points, &|| Ok(())).unwrap().unwrap().as_slice(),
+            &[
+                GroupedLineSegment { indices: [1, 3], group_code: 0 },
+                GroupedLineSegment { indices: [3, 0], group_code: 0 },
+                GroupedLineSegment { indices: [0, 2], group_code: 0 },
+            ]
+        );
+        assert_eq!(
+            baseline.mean_line(&|| Ok(())).unwrap().unwrap().as_slice(),
+            &[
+                GroupedMeanPoint { group_code: 0, x: 1.0, y: 6.0 },
+                GroupedMeanPoint { group_code: 0, x: 2.0, y: 4.0 },
+            ]
+        );
     }
 
     #[test]
@@ -2624,7 +2742,7 @@ mod tests {
                 SourcePoint::new(index as i64 + 1, 0.0, *value)).collect::<Vec<_>>()).unwrap();
             let pyramid = builder.finish().unwrap();
             let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
-            assert_eq!(mean[0][1], 3.333333333333333e-25, "{values:?}");
+            assert_eq!(mean[0].y, 3.333333333333333e-25, "{values:?}");
         }
     }
 
@@ -2656,8 +2774,8 @@ mod tests {
             let pyramid = builder.finish().unwrap();
             let reserved = pyramid.cache_reservation_bytes();
             let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
-            assert_eq!(mean[0][1].to_bits(), expected.to_bits(), "{values:?}");
-            assert!(mean[0][1].is_finite());
+            assert_eq!(mean[0].y.to_bits(), expected.to_bits(), "{values:?}");
+            assert!(mean[0].y.is_finite());
             assert_eq!(pyramid.cache_reservation_bytes(), reserved);
             assert!(pyramid.resident_bytes() + pyramid.decoded_bytes() + pyramid.total_finite_rows * 64 <= reserved);
         }
@@ -2714,8 +2832,8 @@ mod tests {
             let pyramid = builder.finish().unwrap();
             let mean = pyramid.mean_line(&|| Ok(())).unwrap().unwrap();
             assert_eq!(mean.len(), 1);
-            assert!((mean[0][1] - expected).abs() <= expected.abs() * 1e-14);
-            assert!(mean[0][1].is_finite());
+            assert!((mean[0].y - expected).abs() <= expected.abs() * 1e-14);
+            assert!(mean[0].y.is_finite());
         }
         let empty = TilePyramidBuilder::new(1, 4096, 1.5).unwrap().finish().unwrap();
         assert!(empty.mean_line(&|| Ok(())).unwrap().unwrap().is_empty());

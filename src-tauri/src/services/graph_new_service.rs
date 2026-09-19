@@ -19,7 +19,9 @@ use super::graph_new_key::{
     GraphKey, GraphKeyParts, GRAPH_NEW_RENDERER_CONTRACT_VERSION, GRAPH_NEW_TILE_FORMAT_VERSION,
 };
 use super::graph_new_lod::{GraphCamera, SourcePoint, TilePyramid, TilePyramidBuilder};
-use super::graph_new_overlay::OverlayDictionary;
+use super::graph_new_overlay::{
+    EnabledOverlayMask, GroupedLineSegment, OverlayDictionary,
+};
 use super::graph_new_renderer::{GraphNewRenderer, GraphNewScene};
 use super::graph_new_transport_service::SyntheticFrame;
 
@@ -251,6 +253,10 @@ impl<'a> GraphNewService<'a> {
             let domain = request.camera_domain.map_or(built.pyramid.domain, |camera| super::graph_new_lod::GraphDomain {
                 x_min: camera.x_min, x_max: camera.x_max, y_min: camera.y_min, y_max: camera.y_max,
             });
+            let enabled_groups = EnabledOverlayMask::from_hidden(
+                &built.pyramid.overlay,
+                &request.hidden_overlay_group_ids,
+            )?;
             let mean = if request.show_mean { built.pyramid.mean_line(&|| {
                 if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) }
             })? } else { None };
@@ -287,9 +293,70 @@ impl<'a> GraphNewService<'a> {
             let raw_line = if request.raw_mode != crate::models::graph_new::GraphNewRawMode::Scatter && built.pyramid.mean_available() {
                 built.pyramid.raw_line(&points, &|| if is_current() { Ok(()) } else { Err(AppError::Cancelled("graph_new_cancelled".into())) })?
             } else { None };
+            let overlay_active = built.pyramid.overlay.active;
+            let enabled_selected_marks = if overlay_active {
+                points
+                    .iter()
+                    .filter(|point| enabled_groups.is_enabled(point.group_code))
+                    .count()
+            } else {
+                selected_marks
+            };
+            let enabled_visible_rows = if overlay_active {
+                selection.visible_rows.map(|_| enabled_selected_marks as u64)
+            } else {
+                selection.visible_rows
+            };
+            let enabled_mean_points = if overlay_active {
+                mean.as_ref().map(|points| {
+                    points
+                        .iter()
+                        .filter(|point| enabled_groups.is_enabled(point.group_code))
+                        .count()
+                })
+            } else {
+                mean.as_ref().map(|mean| mean.len())
+            };
+            let enabled_mean_visible = if overlay_active {
+                mean.as_ref().is_some_and(|points| {
+                    let mut visible = 0usize;
+                    let mut current_group = None;
+                    let mut group_points = 0usize;
+                    for point in points.iter().filter(|point| enabled_groups.is_enabled(point.group_code)) {
+                        if current_group != Some(point.group_code) {
+                            if group_points >= 2 {
+                                visible += group_points - 1;
+                            }
+                            current_group = Some(point.group_code);
+                            group_points = 0;
+                        }
+                        group_points += 1;
+                    }
+                    if group_points >= 2 {
+                        visible += group_points - 1;
+                    }
+                    visible > 0
+                })
+            } else {
+                mean.as_ref().is_some_and(|mean| mean.len() >= 2)
+            };
+            let enabled_raw_segments = if overlay_active {
+                raw_line
+                    .as_ref()
+                    .map(|segments| {
+                        segments
+                            .iter()
+                            .filter(|segment| enabled_groups.is_enabled(segment.group_code))
+                            .count()
+                    })
+                    .unwrap_or(0)
+            } else {
+                raw_line.as_ref().map_or(0, |segments| segments.len())
+            };
             let x_axis = axis_ticks(&built.pyramid.x_axis, domain, request.width)?;
             let scene = GraphNewScene { width: request.width, height: request.height,
-                device_pixel_ratio: request.device_pixel_ratio, domain, points, mean,
+                device_pixel_ratio: request.device_pixel_ratio, domain, points,
+                overlay: built.pyramid.overlay.clone(), enabled_groups, mean,
                 presentation: super::graph_new_renderer::ScenePresentation {
                     raw_line: raw_line.clone(), show_points: request.raw_mode != crate::models::graph_new::GraphNewRawMode::Line,
                     x_axis: (x_axis.kind != GraphNewXMode::Numeric).then_some(x_axis.clone()),
@@ -311,18 +378,18 @@ impl<'a> GraphNewService<'a> {
             let mut completion = GraphNewRenderCompletion { request_id: request.request_id.clone(),
                 x_axis,
                 raw_mode: request.raw_mode, raw_line_available: built.pyramid.mean_available(),
-                raw_line_segments: raw_line.as_ref().map_or(0, |segments| segments.len()),
+                raw_line_segments: enabled_raw_segments,
                 overlay_groups: built.pyramid.overlay.groups.clone(),
                 overlay_active: built.pyramid.overlay.active,
                 hidden_overlay_groups: request.hidden_overlay_group_ids.len(),
-                mean_available: built.pyramid.mean_available(), mean_groups: scene.mean.as_ref().map(|mean| mean.len()),
-                mean_visible: scene.mean.as_ref().is_some_and(|mean| mean.len() >= 2),
-                exact_visible: selection.exact, visible_rows: selection.visible_rows,
+                mean_available: built.pyramid.mean_available(), mean_groups: enabled_mean_points,
+                mean_visible: enabled_mean_visible,
+                exact_visible: selection.exact, visible_rows: enabled_visible_rows,
                 raw_index_entries_inspected: selection.query_work.index_entries_inspected,
                 raw_blocks_inspected: selection.query_work.raw_blocks_inspected,
                 raw_points_inspected: selection.query_work.raw_points_inspected,
                 processed_rows: built.summary.processed_rows, finite_rows: built.summary.finite_rows,
-                excluded_non_finite_rows: built.summary.excluded_non_finite_rows, selected_marks,
+                excluded_non_finite_rows: built.summary.excluded_non_finite_rows, selected_marks: enabled_selected_marks,
                 build_ms, render_ms: frame.render_ms, readback_ms: frame.readback_ms, width, height,
                 camera_domain: crate::models::graph_new::GraphNewCameraDomain {
                     x_min: domain.x_min, x_max: domain.x_max, y_min: domain.y_min, y_max: domain.y_max },
@@ -798,20 +865,50 @@ impl<'a> GraphNewService<'a> {
     }
 }
 
-pub(super) fn raw_line_indices(points: &[SourcePoint], control: &dyn Fn() -> Result<(), AppError>) -> Result<Vec<[u32; 2]>, AppError> {
-    let mut order = Vec::with_capacity(points.len());
-    let mut run = 0u32;
-    for (index, point) in points.iter().enumerate() {
-        if index % 4096 == 0 { control()?; }
-        if index > 0 && points[index - 1].row_id.checked_add(1) != Some(point.row_id) { run += 1; }
-        order.push([index as u32, run]);
+pub(super) fn raw_line_indices(
+    points: &[SourcePoint],
+    control: &dyn Fn() -> Result<(), AppError>,
+) -> Result<Vec<GroupedLineSegment>, AppError> {
+    let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
+    let mut start = 0usize;
+    while start < points.len() {
+        control()?;
+        let mut end = start + 1;
+        while end < points.len()
+            && points[end - 1].row_id.checked_add(1) == Some(points[end].row_id)
+        {
+            if end % 4096 == 0 {
+                control()?;
+            }
+            end += 1;
+        }
+        let mut per_group = BTreeMap::<u16, Vec<u32>>::new();
+        for (offset, point) in points[start..end].iter().enumerate() {
+            per_group
+                .entry(point.group_code)
+                .or_default()
+                .push((start + offset) as u32);
+        }
+        for (group_code, indices) in &mut per_group {
+            indices.sort_unstable_by(|left, right| {
+                points[*left as usize]
+                    .x
+                    .total_cmp(&points[*right as usize].x)
+                    .then_with(|| {
+                        points[*left as usize]
+                            .row_id
+                            .cmp(&points[*right as usize].row_id)
+                    })
+            });
+            for pair in indices.windows(2) {
+                segments.push(GroupedLineSegment {
+                    indices: [pair[0], pair[1]],
+                    group_code: *group_code,
+                });
+            }
+        }
+        start = end;
     }
-    order.sort_unstable_by(|left, right| left[1].cmp(&right[1])
-        .then_with(|| points[left[0] as usize].x.total_cmp(&points[right[0] as usize].x))
-        .then_with(|| points[left[0] as usize].row_id.cmp(&points[right[0] as usize].row_id)));
-    control()?;
-    let mut segments = Vec::with_capacity(order.len().saturating_sub(1));
-    for pair in order.windows(2) { if pair[0][1] == pair[1][1] { segments.push([pair[0][0], pair[1][0]]); } }
     Ok(segments)
 }
 
@@ -1199,7 +1296,13 @@ mod tests {
                 assert_eq!(scene.mean.as_ref().unwrap().len(), 2, "{case}: distinct nanoseconds must not merge");
                 let indices = scene.presentation.raw_line.as_ref().unwrap();
                 assert_eq!(indices.len(), 1);
-                assert_eq!([scene.points[indices[0][0] as usize].row_id, scene.points[indices[0][1] as usize].row_id], [2, 1]);
+                assert_eq!(
+                    [
+                        scene.points[indices[0].indices[0] as usize].row_id,
+                        scene.points[indices[0].indices[1] as usize].row_id,
+                    ],
+                    [2, 1]
+                );
                 assert_eq!(scene.points.iter().map(|point| point.x).collect::<Vec<_>>(), vec![if case == "wide-coarse" { 31536000.0 } else { 1.0 }, 0.0]);
                 super::GraphNewRenderer::render(scene)
             }, &mut |_, _| Ok(())).unwrap();
@@ -1254,7 +1357,15 @@ mod tests {
                 assert!(std::sync::Arc::ptr_eq(previous, indices), "mode switches reuse the raw index cache");
             }
             *retained.borrow_mut() = Some(indices.clone());
-            let rows: Vec<_> = indices.iter().map(|pair| [scene.points[pair[0] as usize].row_id, scene.points[pair[1] as usize].row_id]).collect();
+            let rows: Vec<_> = indices
+                .iter()
+                .map(|segment| {
+                    [
+                        scene.points[segment.indices[0] as usize].row_id,
+                        scene.points[segment.indices[1] as usize].row_id,
+                    ]
+                })
+                .collect();
             assert_eq!(rows, vec![[2, 3], [3, 1], [5, 6]]);
             Ok(super::SyntheticFrame { rgba: vec![255; 640 * 360 * 4], padded_bytes_per_row: 640 * 4, render_ms: 0.0, readback_ms: 0.0 })
         };
@@ -2851,7 +2962,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_projection_hidden_sets_reuse_same_cache_key() {
+    fn overlay_visibility_reuses_cache_and_preserves_camera_domain() {
         let state = AppState::new().expect("state");
         let (x_column_id, y_column_id, lot_column_id) = seed_overlay_dataset(
             &state,
@@ -2923,6 +3034,38 @@ mod tests {
                 "cameraGeneration":0
             }))
             .expect("request");
+        let baseline_key = super::GraphKey::canonical(&super::GraphKeyParts {
+            dataset_id: request.dataset_id.clone(),
+            dataset_generation: request.dataset_generation,
+            x_column_id: request.x_column_id.clone(),
+            y_column_id: request.y_column_id.clone(),
+            overlay_column_id: request.overlay_column_id.clone(),
+            filter_identity: None,
+            renderer_contract_version: super::GRAPH_NEW_RENDERER_CONTRACT_VERSION,
+            tile_format_version: super::GRAPH_NEW_TILE_FORMAT_VERSION,
+            domain_policy: super::axis_policy(request.x_mode),
+            levels: request.build_request().levels,
+            max_tile_points: request.build_request().max_tile_points,
+        })
+        .expect("baseline key");
+        let mut hidden_key_request = request.clone();
+        hidden_key_request.hidden_overlay_group_ids = vec![hidden_id.clone()];
+        let hidden_key = super::GraphKey::canonical(&super::GraphKeyParts {
+            dataset_id: hidden_key_request.dataset_id.clone(),
+            dataset_generation: hidden_key_request.dataset_generation,
+            x_column_id: hidden_key_request.x_column_id.clone(),
+            y_column_id: hidden_key_request.y_column_id.clone(),
+            overlay_column_id: hidden_key_request.overlay_column_id.clone(),
+            filter_identity: None,
+            renderer_contract_version: super::GRAPH_NEW_RENDERER_CONTRACT_VERSION,
+            tile_format_version: super::GRAPH_NEW_TILE_FORMAT_VERSION,
+            domain_policy: super::axis_policy(hidden_key_request.x_mode),
+            levels: hidden_key_request.build_request().levels,
+            max_tile_points: hidden_key_request.build_request().max_tile_points,
+        })
+        .expect("hidden key");
+        assert_eq!(baseline_key.canonical_id, hidden_key.canonical_id);
+        assert_eq!(baseline_key.hash_hex, hidden_key.hash_hex);
 
         let cold = service
             .render_with(&request, render, &mut |_, _| Ok(()))
@@ -2940,10 +3083,11 @@ mod tests {
 
         request.request_id = "overlay-hidden-2".into();
         request.renderer_generation = 2;
-        let warm = service
+        request.camera_domain = Some(cold.camera_domain);
+        let camera = service
             .render_with(&request, render, &mut |_, _| Ok(()))
-            .expect("warm render");
-        assert_eq!(warm.source_projection_query_count, 0);
+            .expect("camera render");
+        assert_eq!(camera.source_projection_query_count, 0);
 
         request.request_id = "overlay-hidden-3".into();
         request.renderer_generation = 3;
@@ -2952,6 +3096,12 @@ mod tests {
             .render_with(&request, render, &mut |_, _| Ok(()))
             .expect("hidden render");
         assert_eq!(hidden.source_projection_query_count, 0);
+        assert_eq!(
+            serde_json::to_value(cold.camera_domain).expect("cold domain"),
+            serde_json::to_value(hidden.camera_domain).expect("hidden domain")
+        );
+        assert_eq!(cold.persistent_cache_bytes, hidden.persistent_cache_bytes);
+        assert!(hidden.selected_marks < camera.selected_marks);
         assert!(
             state
                 .graph_new
@@ -2961,5 +3111,19 @@ mod tests {
                 .get(&expected_key.hash_hex)
                 .is_some()
         );
+
+        request.request_id = "overlay-hidden-4".into();
+        request.renderer_generation = 4;
+        request.hidden_overlay_group_ids.clear();
+        let shown = service
+            .render_with(&request, render, &mut |_, _| Ok(()))
+            .expect("shown render");
+        assert_eq!(shown.source_projection_query_count, 0);
+        assert_eq!(
+            serde_json::to_value(cold.camera_domain).expect("cold domain"),
+            serde_json::to_value(shown.camera_domain).expect("shown domain")
+        );
+        assert_eq!(cold.persistent_cache_bytes, shown.persistent_cache_bytes);
+        assert!(hidden.selected_marks < shown.selected_marks);
     }
 }

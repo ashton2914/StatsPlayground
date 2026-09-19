@@ -2703,7 +2703,7 @@ fn execute_graph_new_csv(source: &str, artifacts: &str, axis: Option<&(String, c
         let started = Instant::now();
         let comparison = service.render_with(&request, |scene| {
             let harness_bytes = scene.points.len() as u64 * 148
-                + scene.mean.as_ref().map_or(0, |mean| mean.capacity() as u64 * 16) + 16 * 1024 * 1024;
+                + scene.mean.as_ref().map_or(0, |mean| mean.capacity() as u64 * 24) + 16 * 1024 * 1024;
             if harness_bytes > 384 * 1024 * 1024 {
                 return Err(AppError::Stats("graph_new_cache_pressure".into()));
             }
@@ -2712,7 +2712,8 @@ fn execute_graph_new_csv(source: &str, artifacts: &str, axis: Option<&(String, c
             let comparison_scene = crate::services::graph_new_renderer::GraphNewScene {
                 presentation: Default::default(),
                 width: scene.width, height: scene.height, device_pixel_ratio: scene.device_pixel_ratio,
-                domain: comparison_domain, points: scene.points.clone(), mean: scene.mean.clone(),
+                domain: comparison_domain, points: scene.points.clone(), overlay: scene.overlay.clone(),
+                enabled_groups: scene.enabled_groups, mean: scene.mean.clone(),
             };
             let native_started = Instant::now();
             let frame = GraphNewRenderer::render(&comparison_scene);

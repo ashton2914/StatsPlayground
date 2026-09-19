@@ -23,6 +23,19 @@ pub struct OverlayCatalog {
     pub groups: Vec<GraphNewOverlayGroup>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupedLineSegment {
+    pub indices: [u32; 2],
+    pub group_code: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroupedMeanPoint {
+    pub group_code: u16,
+    pub x: f64,
+    pub y: f64,
+}
+
 impl OverlayCatalog {
     pub fn group(&self, code: u16) -> Option<&GraphNewOverlayGroup> {
         self.groups.iter().find(|group| group.code == code)
@@ -43,6 +56,16 @@ impl OverlayCatalog {
                 .iter()
                 .map(|group| group.id.capacity() as u64 + group.label.capacity() as u64)
                 .sum::<u64>()
+    }
+
+    pub fn rgba_bytes(&self, code: u16) -> Option<[u8; 4]> {
+        if self.active {
+            self.group(code).map(|group| group.color)
+        } else if code == ALL_ROWS_GROUP_CODE {
+            None
+        } else {
+            None
+        }
     }
 
     pub(crate) fn validate_for_restore(&self, total_finite_rows: u64) -> Result<(), AppError> {
@@ -146,6 +169,10 @@ impl EnabledOverlayMask {
         bit_for(code)
             .map(|bit| self.0 & bit != 0)
             .unwrap_or(false)
+    }
+
+    pub fn bits(self) -> u64 {
+        self.0
     }
 }
 
