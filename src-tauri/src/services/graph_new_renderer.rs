@@ -90,17 +90,20 @@ impl GraphNewScene {
     }
 
     pub(crate) fn raw_upload_bytes(&self) -> u64 {
-        self.presentation
-            .raw_line
-            .as_ref()
-            .map_or(12, |segments| {
-                segments
-                    .iter()
-                    .filter(|segment| self.enabled_groups.is_enabled(segment.group_code))
-                    .count()
-                    .max(1) as u64
-                    * 24
-            })
+        self.presentation.raw_line.as_ref().map_or(if self.overlay.active { 12 } else { 8 }, |segments| {
+            let enabled = segments
+                .iter()
+                .filter(|segment| self.enabled_groups.is_enabled(segment.group_code))
+                .count()
+                .max(1) as u64;
+            if self.overlay.active {
+                enabled * 24
+            } else if PointBasis::reference(self).camera(self).is_none() {
+                enabled * 16
+            } else {
+                enabled * 8
+            }
+        })
     }
 
     pub(crate) fn enabled_point_count(&self) -> usize {
@@ -267,11 +270,14 @@ impl PointBasis {
 
 pub(crate) struct ScenePipeline {
     raw_pipeline: wgpu::RenderPipeline,
+    raw_clipped_pipeline: wgpu::RenderPipeline,
+    grouped_raw_pipeline: wgpu::RenderPipeline,
     raw_vertices: wgpu::Buffer,
     raw_capacity: u64,
     raw_source: Weak<Vec<GroupedLineSegment>>,
     raw_mask: Option<u64>,
     raw_basis: Option<PointBasis>,
+    raw_grouped: bool,
     raw_count: u32,
     pipeline: wgpu::RenderPipeline,
     mean_pipeline: wgpu::RenderPipeline,
@@ -404,8 +410,20 @@ impl ScenePipeline {
             multiview_mask: None, cache: None,
         });
         let instances = Self::buffer(device, 40);
-        let raw_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("graph-new raw line"), layout: Some(&pipeline_layout),
+        let [raw_pipeline, raw_clipped_pipeline] = [std::mem::size_of::<Mark>() as u64, 8]
+            .map(|stride| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("graph-new indexed raw line"), layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_indexed_raw"), compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: stride, step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2] })] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::LineList, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        }));
+        let grouped_raw_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("graph-new grouped raw line"), layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_raw"), compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<ColoredVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Unorm8x4] })] },
@@ -428,7 +446,16 @@ impl ScenePipeline {
         });
         Self {
             pipeline,
-            raw_pipeline, raw_vertices: Self::buffer(device, 12), raw_capacity: 12, raw_source: Weak::new(), raw_mask: None, raw_basis: None, raw_count: 0,
+            raw_pipeline,
+            raw_clipped_pipeline,
+            grouped_raw_pipeline,
+            raw_vertices: Self::raw_buffer(device, 12),
+            raw_capacity: 12,
+            raw_source: Weak::new(),
+            raw_mask: None,
+            raw_basis: None,
+            raw_grouped: false,
+            raw_count: 0,
             mean_pipeline,
             mean_instances: Self::buffer(device, 24),
             mean_capacity: 24,
@@ -459,6 +486,17 @@ impl ScenePipeline {
             label: Some("graph-new bounded scene instances"),
             size,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn raw_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("graph-new raw geometry"),
+            size,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::INDEX
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     }
@@ -569,8 +607,10 @@ impl ScenePipeline {
         self.raw_count = 0;
         if let Some(segments) = &scene.presentation.raw_line {
             let clipped = basis.is_some_and(|basis| basis.camera_relative);
+            let grouped = scene.overlay.active;
             let same =
-                self.raw_mask == Some(scene.enabled_groups.bits())
+                self.raw_grouped == grouped
+                    && self.raw_mask == Some(scene.enabled_groups.bits())
                     && self
                         .raw_source
                         .upgrade()
@@ -580,56 +620,84 @@ impl ScenePipeline {
                             && (!clipped || previous.domain == scene.domain)
                     });
             if !same {
-                let raw_domain = if clipped {
-                    scene.domain
-                } else {
-                    basis.map_or(scene.domain, |basis| basis.domain)
-                };
-                let vertices: Vec<ColoredVertex> = segments
-                    .iter()
-                    .filter(|segment| scene.enabled_groups.is_enabled(segment.group_code))
-                    .flat_map(|segment| {
-                        let start = &scene.points[segment.indices[0] as usize];
-                        let end = &scene.points[segment.indices[1] as usize];
-                        let endpoints = if clipped {
-                            clip_mean_segment([start.x, start.y], [end.x, end.y], scene.domain)
-                                .unwrap_or([[-10.0, -10.0]; 2])
-                        } else {
-                            [[start.x, start.y], [end.x, end.y]]
-                        };
-                        let color = scene.raw_color_bytes(segment.group_code);
-                        endpoints.map(|point| ColoredVertex {
-                            position: [
-                                normalized(point[0], raw_domain.x_min, raw_domain.x_max)
-                                    as f32,
-                                normalized(point[1], raw_domain.y_min, raw_domain.y_max)
-                                    as f32,
-                            ],
-                            color,
+                let raw_domain = if clipped { scene.domain } else { basis.map_or(scene.domain, |basis| basis.domain) };
+                let bytes = if grouped {
+                    let vertices: Vec<ColoredVertex> = segments
+                        .iter()
+                        .filter(|segment| scene.enabled_groups.is_enabled(segment.group_code))
+                        .flat_map(|segment| {
+                            let start = &scene.points[segment.indices[0] as usize];
+                            let end = &scene.points[segment.indices[1] as usize];
+                            let endpoints = if clipped {
+                                clip_mean_segment([start.x, start.y], [end.x, end.y], scene.domain)
+                                    .unwrap_or([[-10.0, -10.0]; 2])
+                            } else {
+                                [[start.x, start.y], [end.x, end.y]]
+                            };
+                            let color = scene.raw_color_bytes(segment.group_code);
+                            endpoints.map(|point| ColoredVertex {
+                                position: [
+                                    normalized(point[0], raw_domain.x_min, raw_domain.x_max)
+                                        as f32,
+                                    normalized(point[1], raw_domain.y_min, raw_domain.y_max)
+                                        as f32,
+                                ],
+                                color,
+                            })
                         })
-                    })
-                    .collect();
-                let bytes = bytemuck::cast_slice(vertices.as_slice());
+                        .collect();
+                    self.raw_count = vertices.len() as u32;
+                    bytemuck::cast_slice(vertices.as_slice()).to_vec()
+                } else if clipped {
+                    let vertices: Vec<[[f32; 2]; 2]> = segments
+                        .iter()
+                        .filter(|segment| scene.enabled_groups.is_enabled(segment.group_code))
+                        .map(|segment| {
+                            let start = &scene.points[segment.indices[0] as usize];
+                            let end = &scene.points[segment.indices[1] as usize];
+                            clip_mean_segment([start.x, start.y], [end.x, end.y], scene.domain)
+                                .map(|endpoints| {
+                                    endpoints.map(|point| {
+                                        [
+                                            normalized(point[0], scene.domain.x_min, scene.domain.x_max) as f32,
+                                            normalized(point[1], scene.domain.y_min, scene.domain.y_max) as f32,
+                                        ]
+                                    })
+                                })
+                                .unwrap_or([[-1.0; 2]; 2])
+                        })
+                        .collect();
+                    self.raw_count = vertices.len() as u32 * 2;
+                    bytemuck::cast_slice(vertices.as_slice()).to_vec()
+                } else {
+                    let indices: Vec<[u32; 2]> = segments
+                        .iter()
+                        .filter(|segment| scene.enabled_groups.is_enabled(segment.group_code))
+                        .map(|segment| segment.indices)
+                        .collect();
+                    self.raw_count = indices.len() as u32 * 2;
+                    bytemuck::cast_slice(indices.as_slice()).to_vec()
+                };
                 if bytes.len() as u64 > self.raw_capacity {
                     self.raw_capacity = bytes.len() as u64;
-                    self.raw_vertices = Self::buffer(device, self.raw_capacity);
+                    self.raw_vertices = Self::raw_buffer(device, self.raw_capacity);
                 }
                 if !bytes.is_empty() {
-                    queue.write_buffer(&self.raw_vertices, 0, bytes);
+                    queue.write_buffer(&self.raw_vertices, 0, &bytes);
                 }
                 self.raw_source = Arc::downgrade(segments);
                 self.raw_mask = Some(scene.enabled_groups.bits());
+                self.raw_grouped = grouped;
                 self.raw_basis = Some(PointBasis {
                     domain: raw_domain,
                     camera_relative: clipped,
                 });
-                self.raw_count = vertices.len() as u32;
             } else {
-                self.raw_count = segments
+                let visible = segments
                     .iter()
                     .filter(|segment| scene.enabled_groups.is_enabled(segment.group_code))
-                    .count() as u32
-                    * 2;
+                    .count() as u32;
+                self.raw_count = visible * 2;
             }
         }
         queue.write_buffer(
@@ -689,10 +757,11 @@ impl ScenePipeline {
         if self.raw_capacity <= 12 { return; }
         self.raw_vertices.destroy();
         self.raw_capacity = 12;
-        self.raw_vertices = Self::buffer(device, self.raw_capacity);
+        self.raw_vertices = Self::raw_buffer(device, self.raw_capacity);
         self.raw_source = Weak::new();
         self.raw_mask = None;
         self.raw_basis = None;
+        self.raw_grouped = false;
         self.raw_count = 0;
     }
 
@@ -781,9 +850,20 @@ impl ScenePipeline {
         pass.set_vertex_buffer(0, self.instances.slice(..));
         pass.draw(0..6, 0..self.total);
         if self.raw_count > 0 {
-            pass.set_pipeline(&self.raw_pipeline);
-            pass.set_vertex_buffer(0, self.raw_vertices.slice(..));
-            pass.draw(0..self.raw_count, 0..1);
+            if self.raw_grouped {
+                pass.set_pipeline(&self.grouped_raw_pipeline);
+                pass.set_vertex_buffer(0, self.raw_vertices.slice(..));
+                pass.draw(0..self.raw_count, 0..1);
+            } else if self.raw_basis.is_some_and(|basis| basis.camera_relative) {
+                pass.set_pipeline(&self.raw_clipped_pipeline);
+                pass.set_vertex_buffer(0, self.raw_vertices.slice(..));
+                pass.draw(0..self.raw_count, 0..1);
+            } else {
+                pass.set_pipeline(&self.raw_pipeline);
+                pass.set_vertex_buffer(0, self.instances.slice(..));
+                pass.set_index_buffer(self.raw_vertices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.raw_count, 0, 0..1);
+            }
         }
         pass.set_pipeline(&self.mean_pipeline);
         pass.set_vertex_buffer(0, self.mean_instances.slice(..));
@@ -911,6 +991,14 @@ struct Output {
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) kind_glyph: vec2<f32>,
 };
+@vertex fn vs_indexed_raw(@location(0) position: vec2<f32>) -> Output {
+    let projected = position * camera.affine.xy + camera.affine.zw;
+    let pixel = camera.plot.xy + vec2(projected.x, 1.0 - projected.y) * camera.plot.zw;
+    var output: Output;
+    output.position = vec4(pixel.x / camera.viewport.x * 2.0 - 1.0, 1.0 - pixel.y / camera.viewport.y * 2.0, 0.0, 1.0);
+    output.local = vec2(0.0); output.color = vec4(31.0 / 255.0, 111.0 / 255.0, 235.0 / 255.0, 1.0);
+    output.kind_glyph = vec2(3.0, 0.0); return output;
+}
 @vertex fn vs_raw(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> Output {
     let projected = position * camera.affine.xy + camera.affine.zw;
     let pixel = camera.plot.xy + vec2(projected.x, 1.0 - projected.y) * camera.plot.zw;
@@ -1011,6 +1099,43 @@ mod tests {
 
     fn frame_contains_rgba(rgba: &[u8], needle: [u8; 4]) -> bool {
         rgba.chunks_exact(4).any(|chunk| chunk == needle)
+    }
+
+    #[test]
+    fn graph_new_raw_upload_bytes_preserve_no_overlay_compaction() {
+        let mut input = scene();
+        input.points = vec![
+            SourcePoint::new(1, 0.0, 0.0),
+            SourcePoint::new(2, 0.5, 0.5),
+            SourcePoint::new(3, 1.0, 1.0),
+        ];
+        input.presentation.raw_line = Some(std::sync::Arc::new(vec![
+            GroupedLineSegment {
+                indices: [0, 1],
+                group_code: 0,
+            },
+            GroupedLineSegment {
+                indices: [1, 2],
+                group_code: 0,
+            },
+        ]));
+
+        assert_eq!(input.raw_upload_bytes(), 16);
+
+        input.overlay = OverlayCatalog {
+            active: true,
+            groups: vec![GraphNewOverlayGroup {
+                id: "all".into(),
+                code: 0,
+                label: "All Rows".into(),
+                color: [31, 111, 235, 255],
+                total_rows: 3,
+                missing: false,
+            }],
+        };
+        input.enabled_groups =
+            EnabledOverlayMask::from_hidden(&input.overlay, &[]).expect("overlay enabled");
+        assert_eq!(input.raw_upload_bytes(), 48);
     }
 
     fn overlay_scene() -> GraphNewScene {
