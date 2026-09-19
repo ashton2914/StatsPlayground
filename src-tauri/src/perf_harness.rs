@@ -1368,7 +1368,7 @@ fn grouped_overlay_qualification_failure(
     {
         return Some("2M grouped overlay camera changed across visibility toggles".into());
     }
-    if raw.completion.raw_mode != crate::models::graph_new::GraphNewRawMode::PointsLine
+    if raw.completion.raw_mode != crate::models::graph_new::GraphNewRawMode::Line
         || raw.completion.raw_line_segments == 0
     {
         return Some("2M grouped overlay raw qualification did not retain grouped raw segments".into());
@@ -1590,7 +1590,7 @@ fn execute_graph_new_runs_with_config(
                 let raw_segment_count = std::cell::Cell::new(0usize);
                 render_request.request_id = "overlay-raw".into();
                 render_request.renderer_generation = 6;
-                render_request.raw_mode = crate::models::graph_new::GraphNewRawMode::PointsLine;
+                render_request.raw_mode = crate::models::graph_new::GraphNewRawMode::Line;
                 let raw = render_graph_new_overlay_phase(&overlay_service, &render_request, |scene| {
                     raw_segment_count.set(validate_grouped_raw_phase(scene)?);
                     Ok(())
@@ -4500,7 +4500,7 @@ mod tests {
         let mean = grouped_overlay.mean.as_ref().expect("mean phase");
         assert_eq!(
             raw.completion.raw_mode,
-            crate::models::graph_new::GraphNewRawMode::PointsLine
+            crate::models::graph_new::GraphNewRawMode::Line
         );
         assert!(raw.completion.raw_line_segments > 0);
         assert_eq!(raw.completion.source_projection_query_count, 0);
@@ -4584,7 +4584,7 @@ mod tests {
         let hide = overlay_phase("stable-key", interaction_domain, 1_999_999, 0, true);
         let show = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
         let mut raw = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
-        raw.completion.raw_mode = crate::models::graph_new::GraphNewRawMode::PointsLine;
+        raw.completion.raw_mode = crate::models::graph_new::GraphNewRawMode::Line;
         raw.completion.raw_line_segments = 1_999_991;
         let mut mean = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
         mean.completion.mean_visible = true;

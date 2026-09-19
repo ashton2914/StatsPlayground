@@ -113,6 +113,14 @@ impl GraphNewScene {
             .count()
     }
 
+    pub(crate) fn point_upload_bytes(&self) -> u64 {
+        if self.presentation.show_points {
+            self.enabled_point_count().max(1) as u64 * 40
+        } else {
+            0
+        }
+    }
+
     fn point_color_bytes(&self, group_code: u16) -> [u8; 4] {
         self.overlay.rgba_bytes(group_code).unwrap_or([31, 111, 235, 255])
     }
@@ -578,25 +586,27 @@ impl ScenePipeline {
         }
         queue.write_buffer(&self.decoration_instances, 0, bytes);
         if let Some(basis) = basis.filter(|_| reused_camera.is_none()) {
-            let points: Vec<Mark> = scene
-                .points
-                .iter()
-                .filter(|point| scene.enabled_groups.is_enabled(point.group_code))
-                .map(|point| Mark {
-                    position: basis.position(point),
-                    size: [0.0; 2],
-                    color: scene.point_color(point.group_code),
-                    kind_glyph: [1.0, 0.0],
-                })
-                .collect();
-            let bytes = bytemuck::cast_slice(&points);
-            if bytes.len() as u64 > self.capacity {
-                self.capacity = bytes.len() as u64;
-                self.instances = Self::buffer(device, self.capacity);
-            }
-            if !bytes.is_empty() {
-                queue.write_buffer(&self.instances, 0, bytes);
-                self.uploads += 1;
+            if scene.presentation.show_points {
+                let points: Vec<Mark> = scene
+                    .points
+                    .iter()
+                    .filter(|point| scene.enabled_groups.is_enabled(point.group_code))
+                    .map(|point| Mark {
+                        position: basis.position(point),
+                        size: [0.0; 2],
+                        color: scene.point_color(point.group_code),
+                        kind_glyph: [1.0, 0.0],
+                    })
+                    .collect();
+                let bytes = bytemuck::cast_slice(&points);
+                if bytes.len() as u64 > self.capacity {
+                    self.capacity = bytes.len() as u64;
+                    self.instances = Self::buffer(device, self.capacity);
+                }
+                if !bytes.is_empty() {
+                    queue.write_buffer(&self.instances, 0, bytes);
+                    self.uploads += 1;
+                }
             }
             self.point_basis = Some(basis);
             self.content_hash = Some(content_hash);
@@ -730,7 +740,7 @@ impl ScenePipeline {
     }
 
     pub(crate) fn replacement_bytes(&self, scene: &GraphNewScene) -> u64 {
-        let points = scene.enabled_point_count().max(1) as u64 * 40;
+        let points = scene.point_upload_bytes();
         let mean = scene
             .mean
             .as_ref()

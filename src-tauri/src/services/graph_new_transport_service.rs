@@ -528,7 +528,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     fn planned_gpu_bytes(&self, width: u32, height: u32, scene: Option<&GraphNewScene>) -> Result<u64, AppError> {
         let target_bytes = if self.target.as_ref().is_some_and(|target| target.width == width && target.height == height) { 0 }
             else { u64::from(width) * u64::from(height) * 4 + u64::from(padded_bytes_per_row(width)?) * u64::from(height) };
-        let upload_bytes = scene.map_or(0, |scene| (scene.points.len().max(1) as u64 + 1024) * 40 + 64
+        let upload_bytes = scene.map_or(0, |scene| scene.point_upload_bytes() + 1024 * 40 + 64
             + scene.mean.as_ref().map_or(16, |mean| mean.len().saturating_sub(1).max(1) as u64 * 16)
             + scene.raw_upload_bytes()
             + u64::from(super::graph_new_text::ATLAS_WIDTH) * u64::from(super::graph_new_text::ATLAS_HEIGHT));
@@ -697,12 +697,29 @@ fn fs_main() -> @location(0) vec4<f32> {
 mod tests {
     use std::cell::Cell;
 
+    use crate::models::graph_new::GraphNewOverlayGroup;
     use crate::services::graph_new_overlay::{
         EnabledOverlayMask, GroupedLineSegment, GroupedMeanPoint, OverlayCatalog,
     };
 
     fn all_rows_overlay() -> (OverlayCatalog, EnabledOverlayMask) {
         let overlay = OverlayCatalog::default();
+        let enabled = EnabledOverlayMask::from_hidden(&overlay, &[]).expect("enabled");
+        (overlay, enabled)
+    }
+
+    fn grouped_overlay(total_rows: u64) -> (OverlayCatalog, EnabledOverlayMask) {
+        let overlay = OverlayCatalog {
+            active: true,
+            groups: vec![GraphNewOverlayGroup {
+                id: "group-0".into(),
+                code: 0,
+                label: "group-0".into(),
+                color: [31, 111, 235, 255],
+                total_rows,
+                missing: false,
+            }],
+        };
         let enabled = EnabledOverlayMask::from_hidden(&overlay, &[]).expect("enabled");
         (overlay, enabled)
     }
@@ -1108,6 +1125,53 @@ mod tests {
             assert_eq!(restored.rgba, before.rgba, "re-enabled raw indices remain valid");
             assert_eq!(renderer.cache_stats().geometry_uploads, uploads + 1);
         }
+    }
+
+    #[test]
+    fn graph_new_grouped_raw_line_mode_skips_hidden_point_upload_budget() {
+        use crate::services::graph_new_lod::{GraphDomain, SourcePoint};
+        use crate::services::graph_new_renderer::GraphNewScene;
+
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).unwrap();
+        let indices = std::sync::Arc::new(
+            (0..1_999_999)
+                .map(|index| GroupedLineSegment {
+                    indices: [index, index + 1],
+                    group_code: 0,
+                })
+                .collect::<Vec<_>>(),
+        );
+        let (overlay, enabled_groups) = grouped_overlay(2_000_000);
+        let scene = GraphNewScene {
+            presentation: super::super::graph_new_renderer::ScenePresentation {
+                raw_line: Some(indices),
+                show_points: false,
+                x_axis: None,
+            },
+            width: 1920,
+            height: 1080,
+            device_pixel_ratio: 1.0,
+            domain: GraphDomain {
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: 0.0,
+                y_max: 1.0,
+            },
+            points: (0..2_000_000)
+                .map(|index| SourcePoint::with_group(index + 1, index as f64 / 1_999_999.0, 0.5, 0))
+                .collect(),
+            overlay,
+            enabled_groups,
+            mean: None,
+        };
+
+        let planned = renderer.planned_gpu_bytes(1920, 1080, Some(&scene)).unwrap();
+        assert!(
+            planned <= super::super::graph_new_cache::DEFAULT_GPU_BYTES,
+            "grouped line-only render should fit budget, planned {planned}"
+        );
+        pollster::block_on(renderer.render_scene(&scene)).expect("line-only grouped raw render fits");
+        assert_eq!(renderer.cache_stats().geometry_uploads, 0, "point buffer stays idle in line-only mode");
     }
 
     #[test]
