@@ -12,6 +12,10 @@ pub const ALL_ROWS_GROUP_CODE: u16 = 0;
 const MISSING_LABEL: &str = "(Missing)";
 const MISSING_COLOR: [u8; 4] = [107, 114, 128, 255];
 
+fn missing_identity() -> String {
+    hashed_identity("missing")
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayCatalog {
@@ -56,6 +60,7 @@ impl OverlayCatalog {
 
         let mut ids = std::collections::BTreeSet::new();
         let mut codes = std::collections::BTreeSet::new();
+        let mut missing_groups = 0usize;
         let mut total_rows = 0u64;
         let mut sorted = self.groups.clone();
         sorted.sort_by(|left, right| {
@@ -77,6 +82,16 @@ impl OverlayCatalog {
                 || !codes.insert(group.code)
             {
                 return Err(AppError::Stats("graph_new_invalid_cache".into()));
+            }
+            if group.missing {
+                missing_groups += 1;
+                if missing_groups > 1
+                    || group.id != missing_identity()
+                    || group.label != MISSING_LABEL
+                    || group.color != MISSING_COLOR
+                {
+                    return Err(AppError::Stats("graph_new_invalid_cache".into()));
+                }
             }
             total_rows = total_rows
                 .checked_add(group.total_rows)
