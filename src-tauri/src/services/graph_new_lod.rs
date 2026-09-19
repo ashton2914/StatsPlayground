@@ -2017,6 +2017,9 @@ fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, Ap
                 ));
             }
         }
+        if grouped.len() > quota {
+            return Err(AppError::Stats("graph_new_cache_pressure".into()));
+        }
         grouped.sort_unstable_by_key(|(_, row_id, _, _, _)| *row_id);
         let total_source_count = grouped.iter().try_fold(0u64, |acc, (_, _, _, _, count)| {
             acc.checked_add(u64::from(*count)).ok_or_else(|| {
@@ -2648,6 +2651,27 @@ mod tests {
         legacy.seek(SeekFrom::Start(payload_length)).expect("checksum offset");
         legacy.write_all(&checksum).expect("valid checksum");
         assert!(super::TilePyramid::read_cache(legacy, &key, 16 * 1024 * 1024, 1024 * 1024).is_err());
+    }
+
+    #[test]
+    fn select_rejects_mixed_group_tile_when_quota_cannot_fit_all_groups() {
+        let mut builder = bounded_builder(2, 4, 1.0);
+        builder.push_batch(&[
+            SourcePoint::with_group(1, 0.10, 0.10, 1),
+            SourcePoint::with_group(2, 0.20, 0.20, 2),
+            SourcePoint::with_group(3, 0.30, 0.30, 3),
+        ]).expect("points");
+
+        let pyramid = builder.finish().expect("pyramid");
+        let error = pyramid.select_lod(&GraphCamera {
+            x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0,
+            viewport_width: 1, viewport_height: 1, device_pixel_ratio: 1.0,
+        }).expect_err("mixed-group quota overflow must fail");
+
+        assert!(matches!(
+            error,
+            crate::error::AppError::Stats(message) if message == "graph_new_cache_pressure"
+        ));
     }
 
     #[test]
