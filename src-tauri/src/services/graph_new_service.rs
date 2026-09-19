@@ -184,7 +184,7 @@ impl<'a> GraphNewService<'a> {
     pub(crate) fn render_with(
         &self,
         request: &GraphNewRenderRequest,
-        render: impl FnOnce(&GraphNewScene) -> Result<SyntheticFrame, AppError>,
+        mut render: impl FnMut(&GraphNewScene) -> Result<SyntheticFrame, AppError>,
         send: &mut impl FnMut(&GraphNewFrameHeader, Vec<u8>) -> Result<(), AppError>,
     ) -> Result<GraphNewRenderCompletion, AppError> {
         let runtime = &self.state.graph_new;
@@ -363,7 +363,28 @@ impl<'a> GraphNewService<'a> {
                 } };
             let (width, height) = scene.physical_size()?;
             ensure_current()?;
-            let frame = render(&scene)?;
+            let mut mean_degraded = false;
+            let frame = match render(&scene) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    if request.show_mean
+                        && scene.mean.is_some()
+                        && mean_degradable_render_reason(&error).is_some()
+                    {
+                        let mut degraded_scene = scene.clone();
+                        degraded_scene.mean = None;
+                        match render(&degraded_scene) {
+                            Ok(frame) => {
+                                mean_degraded = true;
+                                frame
+                            }
+                            Err(_) => return Err(error),
+                        }
+                    } else {
+                        return Err(error);
+                    }
+                }
+            };
             let byte_length = u64::from(width) * u64::from(height) * 4;
             if frame.rgba.len() as u64 != byte_length {
                 return Err(AppError::Stats("graph_new_render_failed".into()));
@@ -382,8 +403,9 @@ impl<'a> GraphNewService<'a> {
                 overlay_groups: built.pyramid.overlay.groups.clone(),
                 overlay_active: built.pyramid.overlay.active,
                 hidden_overlay_groups: request.hidden_overlay_group_ids.len(),
-                mean_available: built.pyramid.mean_available(), mean_groups: enabled_mean_points,
-                mean_visible: enabled_mean_visible,
+                mean_available: built.pyramid.mean_available() && !mean_degraded,
+                mean_groups: (!mean_degraded).then_some(enabled_mean_points).flatten(),
+                mean_visible: enabled_mean_visible && !mean_degraded,
                 exact_visible: selection.exact, visible_rows: enabled_visible_rows,
                 raw_index_entries_inspected: selection.query_work.index_entries_inspected,
                 raw_blocks_inspected: selection.query_work.raw_blocks_inspected,
@@ -1168,8 +1190,19 @@ fn safe_render_error(error: AppError) -> AppError {
         AppError::InvalidParam(message) if message == "graph_new_x_unrepresentable" => AppError::InvalidParam(message),
         AppError::InvalidParam(_) => AppError::InvalidParam("graph_new_invalid_request".into()),
         AppError::Stats(message) if message == "graph_new_channel_closed" || message == "graph_new_missing_cache"
-            || message == "graph_new_cache_pressure" => AppError::Stats(message),
+            || message == "graph_new_cache_pressure" || message == "graph_new_gpu_validation" => AppError::Stats(message),
         _ => AppError::Stats("graph_new_render_failed".into()),
+    }
+}
+
+fn mean_degradable_render_reason(error: &AppError) -> Option<&str> {
+    match error {
+        AppError::Stats(message)
+            if message == "graph_new_cache_pressure" || message == "graph_new_gpu_validation" =>
+        {
+            Some(message.as_str())
+        }
+        _ => None,
     }
 }
 
@@ -2494,6 +2527,66 @@ mod tests {
         (columns[0].clone(), columns[1].clone(), columns[2].clone())
     }
 
+    fn seed_overlay_group_counts_dataset(
+        state: &AppState,
+        dataset_id: &str,
+        groups: &[(&str, u64)],
+    ) -> (String, String, String) {
+        let db = state.db.lock().expect("db lock");
+        db.create_empty_table(
+            dataset_id,
+            "Graph New Overlay Group Counts Fixture",
+            &["x_value".into(), "y_value".into(), "lot".into()],
+            &["DOUBLE".into(), "DOUBLE".into(), "VARCHAR".into()],
+        )
+        .expect("create table");
+
+        let mut statement = db
+            .conn()
+            .prepare(
+                "SELECT column_id FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+            )
+            .expect("prepare column query");
+        let columns = statement
+            .query_map(params![dataset_id], |row| row.get::<_, String>(0))
+            .expect("query columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect columns");
+
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let mut next_row_id = 1u64;
+        let mut union_queries = Vec::with_capacity(groups.len());
+        for (index, (label, count)) in groups.iter().enumerate() {
+            let start = next_row_id;
+            let end = start + count - 1;
+            let group_offset = index as f64 * 0.001;
+            union_queries.push(format!(
+                "SELECT i AS _row_id, CAST(i - {start} + 1 AS DOUBLE) AS x_value, CAST(i - {start} + 1 AS DOUBLE) + {group_offset} AS y_value, '{label}' AS lot FROM range({start}, {end_plus_one}) tbl(i)",
+                end_plus_one = end + 1,
+            ));
+            next_row_id = end + 1;
+        }
+        db.conn()
+            .execute(
+                &format!(
+                    "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value, lot) {}",
+                    union_queries.join(" UNION ALL ")
+                ),
+                [],
+            )
+            .expect("insert grouped rows");
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = $2 WHERE id = $1",
+                params![dataset_id, next_row_id - 1],
+            )
+            .expect("update row count");
+        drop(statement);
+        drop(db);
+
+        (columns[0].clone(), columns[1].clone(), columns[2].clone())
+    }
+
     fn seed_dense_dataset(state: &AppState, dataset_id: &str, rows: u64) -> (String, String) {
         let db = state.db.lock().expect("db lock");
         db.create_empty_table(
@@ -3162,4 +3255,183 @@ mod tests {
         assert_eq!(cold.persistent_cache_bytes, shown.persistent_cache_bytes);
         assert!(hidden.selected_marks < shown.selected_marks);
     }
+
+    #[test]
+    fn overlay_mean_visibility_transitions_remain_renderable_with_persistent_renderer() {
+        use crate::models::graph_new::GraphNewRenderRequest;
+        use crate::services::graph_new_transport_service::SyntheticFrameRenderer;
+
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id, lot_column_id) = seed_overlay_group_counts_dataset(
+            &state,
+            "overlay-visibility-mean",
+            &[("MS4-44", 1_735), ("MS4-45", 1_532), ("MS4-46", 1_729)],
+        );
+        let service = GraphNewService::new(&state);
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("renderer");
+        let mut render =
+            |scene: &super::GraphNewScene| pollster::block_on(renderer.render_scene(scene));
+
+        let cold_request: GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"overlay-visibility-mean-cold",
+            "sessionId":"overlay-visibility-mean",
+            "datasetId":"overlay-visibility-mean",
+            "datasetGeneration":0,
+            "xColumnId":x_column_id,
+            "yColumnId":y_column_id,
+            "overlayColumnId":lot_column_id,
+            "width":1280,
+            "height":720,
+            "devicePixelRatio":1,
+            "rendererGeneration":1,
+            "cameraGeneration":0,
+            "showMean":true
+        }))
+        .expect("cold request");
+        let cold = service
+            .render_with(&cold_request, &mut render, &mut |_, _| Ok(()))
+            .expect("cold render");
+        assert_eq!(cold.finite_rows, 4_996);
+        assert_eq!(cold.selected_marks, 4_996);
+        assert_eq!(cold.mean_groups, Some(4_996));
+        assert!(cold.mean_visible);
+
+        let hidden_ids = cold
+            .overlay_groups
+            .iter()
+            .take(2)
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let hidden_request: GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"overlay-visibility-mean-hide",
+            "sessionId":"overlay-visibility-mean",
+            "datasetId":"overlay-visibility-mean",
+            "datasetGeneration":0,
+            "xColumnId":x_column_id,
+            "yColumnId":y_column_id,
+            "overlayColumnId":lot_column_id,
+            "width":1280,
+            "height":720,
+            "devicePixelRatio":1,
+            "rendererGeneration":2,
+            "cameraGeneration":1,
+            "cameraDomain":cold.camera_domain,
+            "showMean":true,
+            "hiddenOverlayGroupIds":hidden_ids
+        }))
+        .expect("hidden request");
+        let hidden = service
+            .render_with(&hidden_request, &mut render, &mut |_, _| Ok(()))
+            .expect("hidden render");
+        assert_eq!(hidden.source_projection_query_count, 0);
+        assert_eq!(hidden.finite_rows, 4_996);
+        assert_eq!(hidden.selected_marks, 1_729);
+        assert_eq!(hidden.visible_rows, Some(1_729));
+        assert_eq!(hidden.mean_groups, Some(1_729));
+        assert!(hidden.mean_visible);
+
+        let shown_request: GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"overlay-visibility-mean-show",
+            "sessionId":"overlay-visibility-mean",
+            "datasetId":"overlay-visibility-mean",
+            "datasetGeneration":0,
+            "xColumnId":x_column_id,
+            "yColumnId":y_column_id,
+            "overlayColumnId":lot_column_id,
+            "width":1280,
+            "height":720,
+            "devicePixelRatio":1,
+            "rendererGeneration":3,
+            "cameraGeneration":2,
+            "cameraDomain":cold.camera_domain,
+            "showMean":true
+        }))
+        .expect("shown request");
+        let shown = service
+            .render_with(&shown_request, &mut render, &mut |_, _| Ok(()))
+            .expect("shown render");
+        assert_eq!(shown.source_projection_query_count, 0);
+        assert_eq!(shown.selected_marks, 4_996);
+        assert_eq!(shown.mean_groups, Some(4_996));
+        assert_eq!(
+            serde_json::to_value(cold.camera_domain).expect("cold domain"),
+            serde_json::to_value(shown.camera_domain).expect("shown domain")
+        );
+    }
+
+    #[test]
+    fn grouped_mean_pressure_degrades_to_points_instead_of_failing_the_plot() {
+        use crate::models::graph_new::GraphNewRenderRequest;
+        use crate::services::graph_new_transport_service::SyntheticFrameRenderer;
+
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id, lot_column_id) = seed_overlay_group_counts_dataset(
+            &state,
+            "overlay-mean-pressure",
+            &[("MS4-44", 729_282), ("MS4-45", 584_843), ("MS4-46", 718_168)],
+        );
+        let service = GraphNewService::new(&state);
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("renderer");
+        let mut render =
+            |scene: &super::GraphNewScene| pollster::block_on(renderer.render_scene(scene));
+        let mut rendered_bytes = 0usize;
+
+        let cold_request: GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"overlay-mean-pressure-cold",
+            "sessionId":"overlay-mean-pressure",
+            "datasetId":"overlay-mean-pressure",
+            "datasetGeneration":0,
+            "xColumnId":x_column_id,
+            "yColumnId":y_column_id,
+            "overlayColumnId":lot_column_id,
+            "width":1280,
+            "height":720,
+            "devicePixelRatio":1,
+            "rendererGeneration":1,
+            "cameraGeneration":0,
+            "showMean":true
+        }))
+        .expect("cold request");
+        let cold = service
+            .render_with(&cold_request, &mut render, &mut |_, rgba| {
+                rendered_bytes = rgba.len();
+                Ok(())
+            })
+            .expect("cold render");
+        assert_eq!(rendered_bytes, 1_280 * 720 * 4);
+        assert!(cold.mean_visible);
+        assert_eq!(cold.mean_groups, Some(2_032_293));
+
+        let retina_request: GraphNewRenderRequest = serde_json::from_value(serde_json::json!({
+            "requestId":"overlay-mean-pressure-retina",
+            "sessionId":"overlay-mean-pressure",
+            "datasetId":"overlay-mean-pressure",
+            "datasetGeneration":0,
+            "xColumnId":x_column_id,
+            "yColumnId":y_column_id,
+            "overlayColumnId":lot_column_id,
+            "width":1280,
+            "height":720,
+            "devicePixelRatio":2,
+            "rendererGeneration":2,
+            "cameraGeneration":1,
+            "showMean":true
+        }))
+        .expect("retina request");
+        let completion = service
+            .render_with(&retina_request, &mut render, &mut |header, rgba| {
+                rendered_bytes = rgba.len();
+                assert_eq!(header.width, 2_560);
+                assert_eq!(header.height, 1_440);
+                Ok(())
+            })
+            .expect("retina render must degrade to a coherent point frame");
+        assert_eq!(rendered_bytes, 2_560 * 1_440 * 4);
+        assert_eq!(completion.selected_marks, 2_032_293);
+        assert_eq!(completion.visible_rows, Some(2_032_293));
+        assert!(!completion.mean_visible);
+        assert!(!completion.mean_available);
+        assert_eq!(completion.mean_groups, None);
+    }
+
 }

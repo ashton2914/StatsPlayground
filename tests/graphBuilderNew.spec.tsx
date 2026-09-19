@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/experimental-ct-react";
 import { GraphBuilderNewHarness } from "./GraphBuilderNewHarness";
 
 const OVERLAY_A_ID = `sha256:${"a".repeat(64)}`;
+const OVERLAY_B_ID = `sha256:${"b".repeat(64)}`;
 
 for (const reopen of ["Reopen current generation", "Reopen retained generation"]) {
 test(`transport identity close and reopen survives native permanent tombstones: ${reopen}`, async ({ mount }) => {
@@ -721,6 +722,21 @@ test("cancels after close and reports safe render failures", async ({ mount }) =
   await expect(failed.getByText("/user/source.db", { exact: false })).toHaveCount(0);
 });
 
+test("localizes cache pressure and GPU validation render failures", async ({ mount }) => {
+  const pressure = await mount(<GraphBuilderNewHarness mode="renderCachePressure" />);
+  await pressure.getByLabel("X field").selectOption("column-x");
+  await pressure.getByLabel("Y field", { exact: true }).selectOption("column-y");
+  await expect(pressure.getByRole("alert")).toHaveAttribute("data-reason", "graph_new_cache_pressure");
+  await expect(pressure.getByRole("alert")).toHaveText("Plot exceeded the render memory budget. Hide layers or reset the view.");
+  await pressure.unmount();
+
+  const validation = await mount(<GraphBuilderNewHarness mode="renderGpuValidation" />);
+  await validation.getByLabel("X field").selectOption("column-x");
+  await validation.getByLabel("Y field", { exact: true }).selectOption("column-y");
+  await expect(validation.getByRole("alert")).toHaveAttribute("data-reason", "graph_new_gpu_validation");
+  await expect(validation.getByRole("alert")).toHaveText("Plot rendering failed GPU validation. Hide layers or reset the view.");
+});
+
 test("frames fit desktop and mobile layouts", async ({ mount, page }, testInfo) => {
   const component = await mount(<GraphBuilderNewHarness mode="render" />);
   await component.getByLabel("X field").selectOption("column-x");
@@ -865,6 +881,22 @@ test("Overlay legend toggles visibility without camera churn and persists hidden
     .toContainText('"hiddenOverlayGroupIds":[]');
   await expect(component.getByRole("group", { name: "Overlay legend" })
     .getByRole("checkbox", { name: "Show A" })).toBeChecked();
+});
+
+test("Overlay mean visibility changes keep the current frame and avoid render alerts", async ({ mount }) => {
+  const component = await mount(<GraphBuilderNewHarness mode="overlayMean" />);
+  await component.getByLabel("X field", { exact: true }).selectOption("column-x");
+  await component.getByLabel("Y field", { exact: true }).selectOption("column-y");
+  await component.getByLabel("Overlay field").selectOption("lot-column");
+  await expect(component.getByRole("img", { name: "Point plot frame" })).toBeVisible();
+  await expect(component.getByTestId("mean-legend")).toBeVisible();
+  const legend = component.getByRole("group", { name: "Overlay legend" });
+  await legend.getByRole("checkbox", { name: "Show A" }).uncheck();
+  await legend.getByRole("checkbox", { name: "Show B" }).uncheck();
+  await expect(component.getByRole("img", { name: "Point plot frame" })).toBeVisible();
+  await expect(component.getByRole("alert")).toHaveCount(0);
+  await expect(component.getByTestId("render-request"))
+    .toContainText(`"hiddenOverlayGroupIds":["${OVERLAY_A_ID}","${OVERLAY_B_ID}"]`);
 });
 
 test("Overlay legend localizes missing groups in Chinese and disables visibility edits while saving", async ({ mount }) => {

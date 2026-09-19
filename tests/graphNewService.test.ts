@@ -222,6 +222,28 @@ async function main() {
     assert.deepEqual(await mean.completion, completion);
     assert.equal(calls.findLast((call) => call.command === "render_graph_new")?.args.request.showMean, true);
   }
+  const overlayMeanRequest = {
+    ...meanRequest,
+    overlayColumnId: "group-column",
+    hiddenOverlayGroupIds: [overlayId],
+  };
+  const overlayMeanCompletion = {
+    ...overlayCompletion,
+    selectedMarks: 2,
+    visibleRows: 2,
+    exactVisible: true,
+    meanAvailable: true,
+    meanGroups: 2,
+    meanVisible: true,
+  };
+  const overlayMean = graphNewService.render(overlayMeanRequest, {
+    activeIdentity: () => overlayMeanRequest,
+    onFrame: () => {},
+    onError: () => {},
+  });
+  resolveRender(overlayMeanCompletion);
+  assert.deepEqual(await overlayMean.completion, overlayMeanCompletion,
+    "overlay mean completions stay valid when hidden groups reduce submitted marks");
   assert.throws(() => graphNewService.render({ ...cameraRequest, showMean: "yes" } as any, handlers), /graph_new_invalid_request/);
   const camera = graphNewService.render(cameraRequest, handlers);
   resolveRender(cameraCompletion);
@@ -300,6 +322,19 @@ async function main() {
   const missing = graphNewService.render(cameraRequest, handlers);
   rejectRender("Stats error: graph_new_missing_cache");
   await assert.rejects(missing.completion, /graph_new_missing_cache/);
+  for (const [message, safe] of [
+    ["Stats error: graph_new_cache_pressure", "graph_new_cache_pressure"],
+    ["Stats error: graph_new_gpu_validation", "graph_new_gpu_validation"],
+  ] as const) {
+    const safeFailure = graphNewService.render(cameraRequest, {
+      activeIdentity: () => cameraRequest,
+      onFrame: () => {},
+      onError: (error) => errors.push(error),
+    });
+    rejectRender(message);
+    await assert.rejects(safeFailure.completion, new RegExp(safe));
+    assert.equal(errors.at(-1), safe);
+  }
   assert.throws(() => graphNewService.render({ ...cameraRequest, cameraDomain: { ...cameraDomain, xMax: NaN } }, handlers), /graph_new_invalid_request/);
   const nativeReportPath = process.argv[2];
   if (nativeReportPath) {

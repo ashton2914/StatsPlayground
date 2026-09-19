@@ -19,6 +19,8 @@
     "rawLine": "原始折线",
     "rawUnavailable": "原始折线不可用：未保留完整数据。",
     "xUnrepresentable": "此 X 字段超出坐标轴可表示范围。",
+    "cachePressure": "图表超出了渲染内存预算。请隐藏图层或重置视图。",
+    "gpuValidation": "图表渲染未通过 GPU 校验。请隐藏图层或重置视图。",
     "layers": "图层",
     "mean": "均值",
     "points": "散点",

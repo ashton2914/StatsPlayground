@@ -124,7 +124,7 @@ export interface GraphNewRenderController extends Omit<GraphNewProbeController, 
 
 function safeReason(error: unknown): string {
   const message = describeError(error);
-  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|cache_pressure|overlay_too_many_groups|overlay_value_too_large|overlay_group_missing|overlay_cache_incompatible))$/.exec(message);
+  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|cache_pressure|gpu_validation|overlay_too_many_groups|overlay_value_too_large|overlay_group_missing|overlay_cache_incompatible))$/.exec(message);
   return match?.[1] ?? "graph_new_render_failed";
 }
 
@@ -211,7 +211,7 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
       || !Number.isSafeInteger(completion.rawLineSegments) || completion.rawLineSegments! < 0
       || completion.rawLineSegments! > Math.max(0, completion.finiteRows - 1)
       || ((!completion.rawLineAvailable || completion.rawMode === "scatter") && completion.rawLineSegments !== 0)
-      || (completion.rawLineAvailable && completion.finiteRows > 0 && (!completion.exactVisible || completion.selectedMarks !== completion.finiteRows))) {
+      || (completion.rawLineAvailable && completion.finiteRows > 0 && !completion.exactVisible)) {
       throw new Error("graph_new_render_failed");
     }
   }
@@ -219,8 +219,7 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
     const groups = completion?.meanGroups;
     const computed = request.showMean === true && completion?.meanAvailable === true;
     if (typeof completion?.meanAvailable !== "boolean" || typeof completion?.meanVisible !== "boolean"
-      || (completion.meanAvailable && completion.finiteRows > 0
-        && (!completion.exactVisible || completion.selectedMarks !== completion.finiteRows))
+      || (completion.meanAvailable && completion.finiteRows > 0 && !completion.exactVisible)
       || (computed ? (typeof groups !== "number" || !Number.isSafeInteger(groups) || groups < 0
         || groups > completion.finiteRows || (completion.finiteRows > 0 && groups === 0)) : groups !== null)
       || completion.meanVisible !== (computed && typeof groups === "number" && groups >= 2)) {

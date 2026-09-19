@@ -352,12 +352,18 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
           if (!cancelled) {
             const missing = error instanceof Error && error.message === "graph_new_missing_cache";
             const unrepresentable = error instanceof Error && error.message === "graph_new_x_unrepresentable";
+            const cachePressure = error instanceof Error && error.message === "graph_new_cache_pressure";
+            const gpuValidation = error instanceof Error && error.message === "graph_new_gpu_validation";
             const overlayTooMany = error instanceof Error && error.message === "graph_new_overlay_too_many_groups";
             const overlayValueTooLarge = error instanceof Error && error.message === "graph_new_overlay_value_too_large";
             setReason(missing
               ? "graph_new_missing_cache"
               : unrepresentable
                 ? "graph_new_x_unrepresentable"
+                : cachePressure
+                  ? "graph_new_cache_pressure"
+                  : gpuValidation
+                    ? "graph_new_gpu_validation"
                 : overlayTooMany
                   ? "graph_new_overlay_too_many_groups"
                   : overlayValueTooLarge
@@ -367,6 +373,10 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
               ? "Camera cache unavailable. Reset view to rebuild."
               : unrepresentable
                 ? t("graphNew.xUnrepresentable", { defaultValue: "X values exceed the bounded categorical axis capacity." })
+                : cachePressure
+                  ? t("graphNew.cachePressure", { defaultValue: "Plot exceeded the render memory budget. Hide layers or reset the view." })
+                  : gpuValidation
+                    ? t("graphNew.gpuValidation", { defaultValue: "Plot rendering failed GPU validation. Hide layers or reset the view." })
                 : overlayTooMany
                   ? t("graphNew.overlayTooManyGroups")
                   : overlayValueTooLarge

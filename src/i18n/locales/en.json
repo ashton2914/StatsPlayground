@@ -19,6 +19,8 @@
     "rawLine": "Raw line",
     "rawUnavailable": "Raw line unavailable: complete data is not retained.",
     "xUnrepresentable": "This X field cannot be represented within the axis limits.",
+    "cachePressure": "Plot exceeded the render memory budget. Hide layers or reset the view.",
+    "gpuValidation": "Plot rendering failed GPU validation. Hide layers or reset the view.",
     "layers": "Plot layers",
     "mean": "Mean",
     "points": "Points",
