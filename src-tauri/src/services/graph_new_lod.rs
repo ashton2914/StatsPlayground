@@ -14,11 +14,10 @@ use crate::models::graph_new_data::{
     GRAPH_NEW_MAX_TILE_POINTS,
 };
 use crate::services::graph_new_key::{RetentionPolicy, GRAPH_NEW_TILE_FORMAT_VERSION};
+use crate::services::graph_new_overlay::{OverlayCatalog, ALL_ROWS_GROUP_CODE};
 use super::graph_new_raw::{RawStore, RawWriter, QueryWork, QUERY_SCRATCH_BYTES};
 use crate::services::graph_new_tile::{GraphNewTile, GraphNewTileHeader};
 
-const RAW_POINT_BYTES: u64 = 24;
-const FINE_BUCKET_RECORD_BYTES: u64 = 32;
 const CAMERA_MAX_VIEWPORT_DIMENSION: u32 = 16_384;
 const CAMERA_MAX_DEVICE_PIXEL_RATIO: f64 = 8.0;
 const LEVEL_ENTRY_BYTES_ESTIMATE: u64 = 128;
@@ -27,12 +26,11 @@ const OUTPUT_TILE_ENTRY_BYTES_ESTIMATE: u64 = 128;
 const TILE_INDEX_ENTRY_BYTES_ESTIMATE: u64 = 128;
 const TILE_LEVEL_BYTES_ESTIMATE: u64 = 64;
 const TILE_ENCODE_FIXED_BYTES_ESTIMATE: u64 = 128;
-const TILE_ENCODE_POINT_BYTES_ESTIMATE: u64 = 28;
 const SPOOL_WRITE_BUFFER_BYTES: usize = 64 * 1024;
 const SPOOL_READ_BUFFER_BYTES: usize = 8 * 1024;
 const CONTROL_CHECK_BATCH_POINTS: usize = 4_096;
 const DECODED_CACHE_BYTES: u64 = 8 * 1024 * 1024;
-const PYRAMID_MAGIC: &[u8; 8] = b"GNPC0003";
+const PYRAMID_MAGIC: &[u8; 8] = b"GNPC0004";
 const LOSSLESS_PYRAMID_MAGIC: &[u8; 8] = b"GNPL0003";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,11 +38,21 @@ pub struct SourcePoint {
     pub row_id: i64,
     pub x: f64,
     pub y: f64,
+    pub group_code: u16,
 }
 
 impl SourcePoint {
     pub fn new(row_id: i64, x: f64, y: f64) -> Self {
-        Self { row_id, x, y }
+        Self::with_group(row_id, x, y, ALL_ROWS_GROUP_CODE)
+    }
+
+    pub fn with_group(row_id: i64, x: f64, y: f64, group_code: u16) -> Self {
+        Self {
+            row_id,
+            x,
+            y,
+            group_code,
+        }
     }
 }
 
@@ -116,6 +124,7 @@ pub struct TileSelection {
 #[derive(Clone)]
 pub struct TilePyramid {
     pub x_axis: crate::models::graph_new::GraphNewAxisData,
+    pub overlay: OverlayCatalog,
     pub domain: GraphDomain,
     pub levels: Vec<TileLevel>,
     pub total_processed_rows: u64,
@@ -226,13 +235,22 @@ impl TilePyramid {
     }
 
     pub fn persisted_bytes(&self) -> u64 {
-        200 + serde_json::to_vec(&self.x_axis).map_or(0, |bytes| bytes.len() as u64) + self.tile_store.index.len() as u64 * 8 + self.levels.iter().map(|level| level.tile_bytes).sum::<u64>()
+        let axis_bytes = serde_json::to_vec(&self.x_axis).map_or(0, |bytes| bytes.len() as u64);
+        let overlay_bytes = if self.raw_store.is_some() {
+            0
+        } else {
+            serde_json::to_vec(&self.overlay).map_or(0, |bytes| bytes.len() as u64)
+        };
+        let header_bytes = if self.raw_store.is_some() { 200 } else { 208 };
+        header_bytes + axis_bytes + overlay_bytes + self.tile_store.index.len() as u64 * 8
+            + self.levels.iter().map(|level| level.tile_bytes).sum::<u64>()
             + self.raw_store.as_ref().map_or(0, |raw| raw.persisted_bytes())
     }
 
     pub fn resident_bytes(&self) -> u64 {
         std::mem::size_of::<Self>() as u64
             + self.x_axis.categories.capacity() as u64 * 24 + self.x_axis.categories.iter().map(|label| label.capacity() as u64).sum::<u64>()
+            + self.overlay.resident_bytes()
             + self.mean_bytes()
             + self.raw_line_bytes()
             + self.raw_store.as_ref().map_or(0, |raw| raw.resident_bytes())
@@ -259,6 +277,11 @@ impl TilePyramid {
         let axis = serde_json::to_vec(&self.x_axis).map_err(|_| cache_format_error())?;
         file.write_all(&(axis.len() as u64).to_le_bytes())?;
         file.write_all(&axis)?;
+        if self.raw_store.is_none() {
+            let overlay = serde_json::to_vec(&self.overlay).map_err(|_| cache_format_error())?;
+            file.write_all(&(overlay.len() as u64).to_le_bytes())?;
+            file.write_all(&overlay)?;
+        }
         for stored in self.tile_store.index.values() {
             file.write_all(&stored.encoded_bytes.to_le_bytes())?;
             source.seek(SeekFrom::Start(stored.offset))?;
@@ -282,7 +305,11 @@ impl TilePyramid {
 
     pub(crate) fn read_cache_with_policy(mut file: File, key: &str, memory_limit: u64, disk_limit: u64, policy: RetentionPolicy) -> Result<Self, AppError> {
         let length = file.metadata()?.len();
-        if length < 192 || length > disk_limit { return Err(cache_format_error()); }
+        let minimum_length = match policy {
+            RetentionPolicy::Bounded => 200,
+            RetentionPolicy::Lossless => 192,
+        };
+        if length < minimum_length || length > disk_limit { return Err(cache_format_error()); }
         let checksum = cache_checksum(&mut file, length - 32)?;
         let mut expected = [0; 32]; file.read_exact(&mut expected)?;
         if checksum != expected { return Err(cache_format_error()); }
@@ -290,19 +317,25 @@ impl TilePyramid {
         let mut magic = [0; 8]; file.read_exact(&mut magic)?;
         let mut stored_key = [0; 64]; file.read_exact(&mut stored_key)?;
         let expected_magic = match policy { RetentionPolicy::Bounded => PYRAMID_MAGIC, RetentionPolicy::Lossless => LOSSLESS_PYRAMID_MAGIC };
+        if policy == RetentionPolicy::Bounded && &magic == b"GNPC0003" {
+            return Err(AppError::Stats("graph_new_overlay_cache_incompatible".into()));
+        }
         if &magic != expected_magic || stored_key.as_slice() != key.as_bytes() { return Err(cache_format_error()); }
         let mut values = [0u64; 11];
         for value in &mut values { *value = read_cache_u64(&mut file)?; }
         let domain = GraphDomain { x_min: f64::from_bits(values[0]), x_max: f64::from_bits(values[1]),
             y_min: f64::from_bits(values[2]), y_max: f64::from_bits(values[3]) };
         let overdraw_factor = f64::from_bits(values[8]);
+        let min_tile_entry_bytes = 8u64
+            .checked_add(estimate_encoded_tile_bytes(1)?)
+            .ok_or_else(cache_format_error)?;
         if ![domain.x_min, domain.x_max, domain.y_min, domain.y_max].iter().all(|value| value.is_finite())
             || domain.x_min >= domain.x_max || domain.y_min >= domain.y_max
             || values[5].checked_add(values[6]) != Some(values[4])
             || values[7] == 0 || values[7] > super::graph_new_renderer::MAX_SCENE_POINTS as u64
             || !overdraw_factor.is_finite() || !(0.0..=4.0).contains(&overdraw_factor) || overdraw_factor == 0.0
             || values[9] > u64::from(GRAPH_NEW_MAX_LEVELS)
-            || values[10] > (length - 192) / 108 {
+            || values[10] > (length - minimum_length) / min_tile_entry_bytes {
             return Err(cache_format_error());
         }
         if values[10] > memory_limit.saturating_sub(DECODED_CACHE_BYTES + 4096) / 1024 {
@@ -310,7 +343,7 @@ impl TilePyramid {
         }
         if values[7] > u64::from(GRAPH_NEW_MAX_TILE_POINTS)
             && (values[9] != 1 || values[10] != 1 || values[5] != values[7]
-                || values[7] * 112 + DECODED_CACHE_BYTES + 8192 > memory_limit) {
+                || exact_tile_restore_memory(values[7])? > memory_limit) {
             return Err(AppError::Stats("graph_new_cache_pressure".into()));
         }
         let mut levels: Vec<TileLevel> = (0..values[9]).map(|level| TileLevel {
@@ -322,17 +355,34 @@ impl TilePyramid {
         file.read_exact(&mut axis_bytes)?;
         let x_axis: crate::models::graph_new::GraphNewAxisData = serde_json::from_slice(&axis_bytes).map_err(|_| cache_format_error())?;
         if x_axis.categories.len() > 16384 || x_axis.categories.iter().any(|label| label.len() > 512) { return Err(cache_format_error()); }
+        let overlay = if policy == RetentionPolicy::Bounded {
+            let overlay_length = read_cache_u64(&mut file)?;
+            if overlay_length > 2 * 1024 * 1024 || overlay_length > memory_limit / 4 {
+                return Err(cache_format_error());
+            }
+            let mut overlay_bytes = vec![0; overlay_length as usize];
+            file.read_exact(&mut overlay_bytes)?;
+            let overlay: OverlayCatalog =
+                serde_json::from_slice(&overlay_bytes).map_err(|_| cache_format_error())?;
+            overlay
+        } else {
+            OverlayCatalog::default()
+        };
         let mut index = BTreeMap::new();
         for _ in 0..values[10] {
             let encoded_bytes = read_cache_u64(&mut file)?;
             let offset = file.stream_position()?;
-            if encoded_bytes < 100 || encoded_bytes > 100 + values[7] * 28
+            let max_encoded = estimate_encoded_tile_bytes(values[7] as usize)?;
+            if encoded_bytes < 100 || encoded_bytes > max_encoded
                 || offset.checked_add(encoded_bytes).is_none_or(|end| end > length - 32) {
                 return Err(cache_format_error());
             }
             let mut bytes = vec![0; encoded_bytes as usize]; file.read_exact(&mut bytes)?;
             let tile = GraphNewTileHeader::decode(&bytes)?;
             if tile.header.point_count == 0 || u64::from(tile.header.point_count) > values[7] {
+                return Err(cache_format_error());
+            }
+            if tile.group_codes.iter().any(|code| !overlay.contains_code(*code)) {
                 return Err(cache_format_error());
             }
             let address = TileAddress { level: tile.header.level as u8, tile_x: tile.header.tile_x, tile_y: tile.header.tile_y };
@@ -361,7 +411,7 @@ impl TilePyramid {
             raw.validate_domain(domain)?;
             Some(raw)
         } else { None };
-        let result = Self { x_axis, domain, levels, total_processed_rows: values[4], total_finite_rows: values[5],
+        let result = Self { x_axis, overlay, domain, levels, total_processed_rows: values[4], total_finite_rows: values[5],
             total_excluded_non_finite_rows: values[6], max_tile_points: values[7] as u32, overdraw_factor,
             spool_bytes: 0, accounted_memory_bytes: 0, tile_store, raw_store };
         if result.cache_reservation_bytes() > memory_limit { return Err(AppError::Stats("graph_new_cache_pressure".into())); }
@@ -400,7 +450,9 @@ impl TilePyramid {
                 let tile = GraphNewTile { header: build_tile_header(&self.domain, 0, 0, 0, count, count as u64),
                     row_ids: page.iter().map(|record| record.point.row_id).collect(),
                     xs: page.iter().map(|record| record.point.x).collect(),
-                    ys: page.iter().map(|record| record.point.y).collect(), counts: vec![1; page.len()] };
+                    ys: page.iter().map(|record| record.point.y).collect(),
+                    group_codes: page.iter().map(|record| record.point.group_code).collect(),
+                    counts: vec![1; page.len()] };
                 tiles.push(SelectedTile { entry: TileEntry { address: TileAddress { level: 0, tile_x: 0, tile_y: 0 },
                     representative_row_ids: Vec::new(), total_source_count: count as u64, retained_mark_count: count,
                     x_min: self.domain.x_min, x_max: self.domain.x_max, y_min: self.domain.y_min, y_max: self.domain.y_max }, tile });
@@ -421,6 +473,7 @@ impl TilePyramid {
                     tile.row_ids[retained] = tile.row_ids[position];
                     tile.xs[retained] = tile.xs[position];
                     tile.ys[retained] = tile.ys[position];
+                    tile.group_codes[retained] = tile.group_codes[position];
                     tile.counts[retained] = tile.counts[position];
                     retained += 1;
                 }
@@ -428,6 +481,7 @@ impl TilePyramid {
             tile.row_ids.truncate(retained);
             tile.xs.truncate(retained);
             tile.ys.truncate(retained);
+            tile.group_codes.truncate(retained);
             tile.counts.truncate(retained);
             tile.header.point_count = retained as u32;
             tile.header.total_source_count = tile.counts.iter().map(|count| u64::from(*count)).sum();
@@ -624,6 +678,7 @@ pub struct TilePyramidBuilder {
     max_tile_points: u32,
     overdraw_factor: f64,
     construction_memory_limit_bytes: u64,
+    overlay: OverlayCatalog,
     raw_spool: BufWriter<File>,
     raw_spool_bytes: u64,
     total_processed_rows: u64,
@@ -691,6 +746,7 @@ impl TilePyramidBuilder {
             max_tile_points,
             overdraw_factor,
             construction_memory_limit_bytes,
+            overlay: OverlayCatalog::default(),
             raw_spool: BufWriter::with_capacity(SPOOL_WRITE_BUFFER_BYTES, tempfile()?),
             raw_spool_bytes: 0,
             total_processed_rows: 0,
@@ -707,6 +763,10 @@ impl TilePyramidBuilder {
 
     pub(crate) fn limit_disk_to(&mut self, bytes: u64) {
         self.disk_limit = bytes.min(super::graph_new_cache::DEFAULT_DISK_BYTES);
+    }
+
+    pub(crate) fn set_overlay(&mut self, overlay: OverlayCatalog) {
+        self.overlay = overlay;
     }
 
     fn check_disk_budget(&self, buckets: u64, tiles: u64) -> Result<(), AppError> {
@@ -741,7 +801,7 @@ impl TilePyramidBuilder {
                     "graph-new row IDs must be positive".to_string(),
                 ));
             }
-            self.check_disk_budget(0, 56)?;
+            self.check_disk_budget(0, source_point_spool_bytes())?;
             if let Some(raw) = &mut self.raw_writer { raw.push(*point, self.total_processed_rows - 1)?; }
             if point.x.is_finite() && point.y.is_finite() {
                 self.total_finite_rows =
@@ -784,6 +844,7 @@ impl TilePyramidBuilder {
             None => {
                 return Ok(TilePyramid {
                     x_axis: Default::default(),
+                    overlay: self.overlay,
                     domain: GraphDomain {
                         x_min: 0.0,
                         x_max: 1.0,
@@ -804,9 +865,13 @@ impl TilePyramidBuilder {
             }
         };
 
-        let exact_memory = self.total_finite_rows.saturating_mul(112)
-            .saturating_add(DECODED_CACHE_BYTES + SPOOL_WRITE_BUFFER_BYTES as u64 + 8192);
-        let exact_disk = self.raw_spool_bytes.saturating_add(self.total_finite_rows * 28 + 100);
+        let exact_memory = exact_tile_restore_memory(self.total_finite_rows)?;
+        let exact_disk = self
+            .raw_spool_bytes
+            .checked_add(estimate_encoded_tile_bytes(self.total_finite_rows as usize)?)
+            .ok_or_else(|| {
+                AppError::InvalidParam("graph-new exact disk estimate overflow".to_string())
+            })?;
         if self.raw_writer.is_none()
             && self.total_finite_rows <= super::graph_new_renderer::MAX_SCENE_POINTS as u64
             && exact_memory <= self.construction_memory_limit_bytes
@@ -873,7 +938,7 @@ impl TilePyramidBuilder {
 
             let (fine_tile_x, fine_tile_y) = tile_index(&domain, finest_level, &point)?;
             let bucket_index = bucket_index(fine_tile_x, fine_tile_y, bucket_count);
-            self.check_disk_budget(bucket_bytes.saturating_add(FINE_BUCKET_RECORD_BYTES), 0)?;
+            self.check_disk_budget(bucket_bytes.saturating_add(bucket_record_bytes()), 0)?;
             write_bucket_point(
                 &mut bucket_files[bucket_index],
                 fine_tile_x,
@@ -881,7 +946,7 @@ impl TilePyramidBuilder {
                 &point,
             )?;
             bucket_bytes = bucket_bytes
-                .checked_add(FINE_BUCKET_RECORD_BYTES)
+                .checked_add(bucket_record_bytes())
                 .ok_or_else(|| {
                     AppError::InvalidParam("graph-new bucket byte overflow".to_string())
                 })?;
@@ -936,6 +1001,7 @@ impl TilePyramidBuilder {
                     row_ids: vec![representative.row_id],
                     xs: vec![representative.x],
                     ys: vec![representative.y],
+                    group_codes: vec![representative.group_code],
                     counts: vec![source_count_u32],
                 };
                 self.update_peak_memory(estimate_construction_memory(
@@ -944,9 +1010,12 @@ impl TilePyramidBuilder {
                     0,
                     output_tile_count + 1,
                     output_level_count,
-                    estimate_encoded_tile_bytes(1),
+                    estimate_encoded_tile_bytes(1)?,
                 ))?;
-                self.check_disk_budget(bucket_bytes, tile_file.stream_position()? + estimate_encoded_tile_bytes(tile.row_ids.len()))?;
+                self.check_disk_budget(
+                    bucket_bytes,
+                    tile_file.stream_position()? + estimate_encoded_tile_bytes(tile.row_ids.len())?,
+                )?;
                 let stored = append_tile(&mut tile_file, &mut tile_index, tile)?;
                 output_tile_count += 1;
                 tile_bytes = tile_bytes
@@ -1103,8 +1172,12 @@ impl TilePyramidBuilder {
                         bucket_retained_bytes,
                         output_tile_count + 1,
                         output_level_count,
-                        point_count as u64 * TILE_ENCODE_POINT_BYTES_ESTIMATE
-                            + estimate_encoded_tile_bytes(point_count),
+                        checked_mul_u64(
+                            point_count as u64,
+                            tile_payload_point_bytes(),
+                            "tile encode scratch",
+                        )?
+                            + estimate_encoded_tile_bytes(point_count)?,
                     ) + bucket_tile_count * FINE_TILE_ENTRY_BYTES_ESTIMATE,
                 )?;
                 let retained_points = accumulator.retained_points.into_sorted_vec();
@@ -1143,9 +1216,13 @@ impl TilePyramidBuilder {
                     row_ids: retained_points.iter().map(|point| point.0.row_id).collect(),
                     xs: retained_points.iter().map(|point| point.0.x).collect(),
                     ys: retained_points.iter().map(|point| point.0.y).collect(),
+                    group_codes: retained_points.iter().map(|point| point.0.group_code).collect(),
                     counts,
                 };
-                self.check_disk_budget(bucket_bytes, tile_file.stream_position()? + estimate_encoded_tile_bytes(tile.row_ids.len()))?;
+                self.check_disk_budget(
+                    bucket_bytes,
+                    tile_file.stream_position()? + estimate_encoded_tile_bytes(tile.row_ids.len())?,
+                )?;
                 let stored = append_tile(&mut tile_file, &mut tile_index, tile)?;
                 drop(retained_points);
                 bucket_retained_bytes -= retained_bytes;
@@ -1197,6 +1274,7 @@ impl TilePyramidBuilder {
         control()?;
         Ok(TilePyramid {
             x_axis: Default::default(),
+            overlay: self.overlay,
             domain,
             levels,
             total_processed_rows: self.total_processed_rows,
@@ -1248,7 +1326,7 @@ impl TilePyramidBuilder {
         let mut tile = GraphNewTile {
             header: build_tile_header(&domain, 0, 0, 0, count as u32, count as u64),
             row_ids: Vec::with_capacity(count), xs: Vec::with_capacity(count),
-            ys: Vec::with_capacity(count), counts: vec![1; count],
+            ys: Vec::with_capacity(count), group_codes: Vec::with_capacity(count), counts: vec![1; count],
         };
         for position in 0..count {
             if position % CONTROL_CHECK_BATCH_POINTS == 0 { control()?; }
@@ -1256,6 +1334,7 @@ impl TilePyramidBuilder {
             tile.row_ids.push(point.row_id);
             tile.xs.push(point.x);
             tile.ys.push(point.y);
+            tile.group_codes.push(point.group_code);
         }
         control()?;
         let mut file = tempfile()?;
@@ -1264,6 +1343,7 @@ impl TilePyramidBuilder {
         control()?;
         Ok(TilePyramid {
             x_axis: Default::default(),
+            overlay: self.overlay,
             domain, levels: vec![TileLevel { level: 0, tiles: vec![stored.entry],
                 tile_bytes: stored.encoded_bytes, retained_marks: count as u64, total_source_count: count as u64 }],
             total_processed_rows: self.total_processed_rows, total_finite_rows: self.total_finite_rows,
@@ -1278,9 +1358,10 @@ impl TilePyramidBuilder {
         self.raw_spool.write_all(&point.row_id.to_le_bytes())?;
         self.raw_spool.write_all(&point.x.to_le_bytes())?;
         self.raw_spool.write_all(&point.y.to_le_bytes())?;
+        self.raw_spool.write_all(&point.group_code.to_le_bytes())?;
         self.raw_spool_bytes = self
             .raw_spool_bytes
-            .checked_add(RAW_POINT_BYTES)
+            .checked_add(source_point_spool_bytes())
             .ok_or_else(|| {
                 AppError::InvalidParam("graph-new raw spool byte overflow".to_string())
             })?;
@@ -1360,6 +1441,57 @@ struct DecodedTiles {
 
 fn cache_format_error() -> AppError { AppError::Stats("graph_new_invalid_cache".into()) }
 
+fn checked_usize_as_u64(value: usize, label: &str) -> Result<u64, AppError> {
+    u64::try_from(value)
+        .map_err(|_| AppError::InvalidParam(format!("graph-new {label} overflow")))
+}
+
+fn checked_mul_u64(left: u64, right: u64, label: &str) -> Result<u64, AppError> {
+    left.checked_mul(right)
+        .ok_or_else(|| AppError::InvalidParam(format!("graph-new {label} overflow")))
+}
+
+fn source_point_spool_bytes() -> u64 {
+    (std::mem::size_of::<i64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<u16>()) as u64
+}
+
+fn bucket_record_bytes() -> u64 {
+    (std::mem::size_of::<u32>()
+        + std::mem::size_of::<u32>()) as u64
+        + source_point_spool_bytes()
+}
+
+fn tile_payload_point_bytes() -> u64 {
+    (std::mem::size_of::<i64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<u16>()
+        + std::mem::size_of::<u32>()) as u64
+}
+
+fn decoded_tile_capacity_bytes(point_capacity: usize) -> Result<u64, AppError> {
+    checked_mul_u64(
+        checked_usize_as_u64(point_capacity, "decoded tile capacity")?,
+        tile_payload_point_bytes(),
+        "decoded tile capacity bytes",
+    )?
+    .checked_add(512)
+    .ok_or_else(|| AppError::InvalidParam("graph-new decoded tile capacity overflow".to_string()))
+}
+
+fn exact_tile_restore_memory(point_count: u64) -> Result<u64, AppError> {
+    let payload = checked_mul_u64(point_count, tile_payload_point_bytes(), "exact tile memory")?;
+    payload
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(DECODED_CACHE_BYTES))
+        .and_then(|bytes| bytes.checked_add(SPOOL_WRITE_BUFFER_BYTES as u64))
+        .and_then(|bytes| bytes.checked_add(8192))
+        .ok_or_else(|| AppError::InvalidParam("graph-new exact tile restore overflow".to_string()))
+}
+
 fn read_cache_u64(file: &mut File) -> Result<u64, AppError> {
     let mut bytes = [0; 8]; file.read_exact(&mut bytes)?; Ok(u64::from_le_bytes(bytes))
 }
@@ -1379,8 +1511,15 @@ fn cache_checksum(file: &mut File, length: u64) -> Result<[u8; 32], AppError> {
 
 impl TileStore {
     fn decoded_limit(&self) -> u64 {
-        self.index.values().map(|stored| u64::from(stored.entry.retained_mark_count) * 28 + 512)
-            .max().unwrap_or(0).max(DECODED_CACHE_BYTES)
+        self.index
+            .values()
+            .map(|stored| {
+                decoded_tile_capacity_bytes(stored.entry.retained_mark_count as usize)
+                    .unwrap_or(u64::MAX)
+            })
+            .max()
+            .unwrap_or(0)
+            .max(DECODED_CACHE_BYTES)
     }
 
     fn new(file: File, index: BTreeMap<TileAddress, StoredTile>) -> Self {
@@ -1421,8 +1560,7 @@ impl TileStore {
         ];
         file.read_exact(&mut bytes)?;
         let tile = GraphNewTileHeader::decode(&bytes)?;
-        let retained = (tile.row_ids.capacity() + tile.xs.capacity() + tile.ys.capacity()) as u64 * 8
-            + tile.counts.capacity() as u64 * 4 + 512;
+        let retained = decoded_tile_capacity_bytes(tile.row_ids.capacity())?;
         let limit = self.decoded_limit();
         if retained <= limit {
             while cache.bytes + retained > limit {
@@ -1578,12 +1716,15 @@ fn read_raw_point(reader: &mut BufReader<File>) -> Result<Option<SourcePoint>, A
     }
     let mut x = [0u8; 8];
     let mut y = [0u8; 8];
+    let mut group_code = [0u8; 2];
     reader.read_exact(&mut x)?;
     reader.read_exact(&mut y)?;
+    reader.read_exact(&mut group_code)?;
     Ok(Some(SourcePoint {
         row_id: i64::from_le_bytes(row_id),
         x: f64::from_le_bytes(x),
         y: f64::from_le_bytes(y),
+        group_code: u16::from_le_bytes(group_code),
     }))
 }
 
@@ -1598,6 +1739,7 @@ fn write_bucket_point(
     file.write_all(&point.row_id.to_le_bytes())?;
     file.write_all(&point.x.to_le_bytes())?;
     file.write_all(&point.y.to_le_bytes())?;
+    file.write_all(&point.group_code.to_le_bytes())?;
     Ok(())
 }
 
@@ -1614,10 +1756,12 @@ fn read_bucket_point(
     let mut row_id = [0u8; 8];
     let mut x = [0u8; 8];
     let mut y = [0u8; 8];
+    let mut group_code = [0u8; 2];
     reader.read_exact(&mut tile_y)?;
     reader.read_exact(&mut row_id)?;
     reader.read_exact(&mut x)?;
     reader.read_exact(&mut y)?;
+    reader.read_exact(&mut group_code)?;
     Ok(Some((
         u32::from_le_bytes(tile_x),
         u32::from_le_bytes(tile_y),
@@ -1625,6 +1769,7 @@ fn read_bucket_point(
             row_id: i64::from_le_bytes(row_id),
             x: f64::from_le_bytes(x),
             y: f64::from_le_bytes(y),
+            group_code: u16::from_le_bytes(group_code),
         },
     )))
 }
@@ -1758,9 +1903,15 @@ fn estimate_construction_memory(
         .saturating_add(encode_scratch_bytes)
 }
 
-fn estimate_encoded_tile_bytes(point_count: usize) -> u64 {
-    TILE_ENCODE_FIXED_BYTES_ESTIMATE
-        .saturating_add((point_count as u64).saturating_mul(TILE_ENCODE_POINT_BYTES_ESTIMATE))
+fn estimate_encoded_tile_bytes(point_count: usize) -> Result<u64, AppError> {
+    let point_count = checked_usize_as_u64(point_count, "encoded tile points")?;
+    checked_mul_u64(
+        point_count,
+        tile_payload_point_bytes(),
+        "encoded tile payload",
+    )?
+    .checked_add(TILE_ENCODE_FIXED_BYTES_ESTIMATE)
+    .ok_or_else(|| AppError::InvalidParam("graph-new encoded tile bytes overflow".to_string()))
 }
 
 fn next_point_capacity(current_capacity: usize, max_tile_points: usize) -> usize {
@@ -1830,6 +1981,7 @@ fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, Ap
     let mut row_ids = Vec::with_capacity(quota);
     let mut xs = Vec::with_capacity(quota);
     let mut ys = Vec::with_capacity(quota);
+    let mut group_codes = Vec::with_capacity(quota);
     let mut counts = Vec::with_capacity(quota);
     let mut total_source_count = 0u64;
 
@@ -1854,6 +2006,7 @@ fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, Ap
         row_ids.push(tile.row_ids[start]);
         xs.push(tile.xs[start]);
         ys.push(tile.ys[start]);
+        group_codes.push(tile.group_codes[start]);
         counts.push(count);
     }
 
@@ -1873,6 +2026,7 @@ fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, Ap
         row_ids,
         xs,
         ys,
+        group_codes,
         counts,
     })
 }
@@ -2130,6 +2284,7 @@ mod tests {
                 row_ids: (1..=count as i64).collect(),
                 xs: vec![0.5; count],
                 ys: vec![0.5; count],
+                group_codes: vec![0; count],
                 counts: vec![1; count],
             };
             let mut file = tempfile::tempfile().expect("temporary tile file");
@@ -2137,8 +2292,7 @@ mod tests {
             let stored = super::append_tile(&mut file, &mut index, tile).expect("encode exact tile");
             let store = super::TileStore::new(file, index);
             let decoded = store.decode(&stored.entry.address).expect("cold decode");
-            let allocated = (decoded.row_ids.capacity() + decoded.xs.capacity() + decoded.ys.capacity()) as u64 * 8
-                + decoded.counts.capacity() as u64 * 4 + 512;
+            let allocated = super::decoded_tile_capacity_bytes(decoded.row_ids.capacity()).expect("allocated");
             assert!(allocated <= store.decoded_limit(), "{count}: actual allocation {allocated} exceeds cache limit {}", store.decoded_limit());
             assert_eq!(store.decoded.lock().expect("cache").bytes, allocated);
             drop(decoded);
@@ -2228,7 +2382,7 @@ mod tests {
         assert_eq!(actual, points.iter().map(|point| (point.row_id, point.x.to_bits(), point.y.to_bits())).collect::<Vec<_>>());
         assert_eq!(pyramid.levels.len(), 1, "no deep pyramid for an exact scene");
         assert!(pyramid.raw_store.is_none(), "research raw index stays opt-in");
-        assert_eq!(pyramid.spool_bytes, 8193 * 24, "no bucket replay spool");
+        assert_eq!(pyramid.spool_bytes, 8193 * super::source_point_spool_bytes(), "no bucket replay spool");
         let key = "e".repeat(64);
         let mut file = tempfile::tempfile().expect("cache file");
         pyramid.write_cache(&mut file, &key).expect("persist");
@@ -2750,7 +2904,8 @@ mod tests {
             2 * u64::from(cap) * std::mem::size_of::<super::RowIdPoint>() as u64,
             coarse_tiles + 1,
             4,
-            u64::from(cap) * 28 + super::estimate_encoded_tile_bytes(cap as usize),
+            u64::from(cap) * super::tile_payload_point_bytes()
+                + super::estimate_encoded_tile_bytes(cap as usize).expect("encoded bytes"),
         ) + 2 * super::FINE_TILE_ENTRY_BYTES_ESTIMATE
     }
 

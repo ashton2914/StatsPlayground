@@ -521,6 +521,9 @@ impl GraphNewCacheCoordinator {
             Err(AppError::Stats(message)) if message == "graph_new_cache_pressure" => {
                 return Ok(false)
             }
+            Err(AppError::Stats(message)) if message == "graph_new_overlay_cache_incompatible" => {
+                return Ok(false)
+            }
             Err(_) => {
                 self.corruptions += 1;
                 self.remove_disk(&key.hash_hex)?;
@@ -845,7 +848,28 @@ pub(super) fn construction_disk_requirement(
         || max_tile_points == 0 || max_tile_points > GRAPH_NEW_MAX_TILE_POINTS {
         return Err(cache_pressure());
     }
-    let record_bytes = if policy == RetentionPolicy::Lossless { 88 } else { 56 };
+    let bounded_spool_bytes = (std::mem::size_of::<i64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<u16>()) as u64;
+    let bounded_bucket_bytes = (std::mem::size_of::<u32>()
+        + std::mem::size_of::<u32>()) as u64
+        + bounded_spool_bytes;
+    let tile_point_bytes = (std::mem::size_of::<i64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<f64>()
+        + std::mem::size_of::<u16>()
+        + std::mem::size_of::<u32>()) as u64;
+    let record_bytes = if policy == RetentionPolicy::Lossless {
+        bounded_spool_bytes
+            .checked_add(bounded_bucket_bytes)
+            .and_then(|bytes| bytes.checked_add(32))
+            .ok_or_else(cache_pressure)?
+    } else {
+        bounded_spool_bytes
+            .checked_add(bounded_bucket_bytes)
+            .ok_or_else(cache_pressure)?
+    };
     let mut required = rows.checked_mul(record_bytes).ok_or_else(cache_pressure)?;
     for level in 0..levels {
         let tiles = rows.min(1u64 << (2 * u32::from(level)));
@@ -854,7 +878,7 @@ pub(super) fn construction_disk_requirement(
             rows.min(tiles.checked_mul(u64::from(limit)).ok_or_else(cache_pressure)?)
         } else { tiles };
         required = tiles.checked_mul(128)
-            .and_then(|bytes| marks.checked_mul(28).and_then(|marks| bytes.checked_add(marks)))
+            .and_then(|bytes| marks.checked_mul(tile_point_bytes).and_then(|marks| bytes.checked_add(marks)))
             .and_then(|bytes| required.checked_add(bytes)).ok_or_else(cache_pressure)?;
     }
     Ok(required)
@@ -1053,6 +1077,7 @@ pub(super) mod tests {
             dataset_generation: generation,
             x_column_id: "x".into(),
             y_column_id: "y".into(),
+            overlay_column_id: None,
             filter_identity: None,
             renderer_contract_version: 1,
             tile_format_version: 1,
@@ -1253,7 +1278,7 @@ pub(super) mod tests {
 
     #[test]
     fn graph_new_cache_construction_bound_covers_both_retention_peaks() {
-        for (policy, two_row_bytes) in [(RetentionPolicy::Bounded, 580), (RetentionPolicy::Lossless, 644)] {
+        for (policy, two_row_bytes) in [(RetentionPolicy::Bounded, 594), (RetentionPolicy::Lossless, 658)] {
             assert_eq!(construction_disk_requirement(2, 2, 16, policy).expect("bound"), two_row_bytes);
             assert_eq!(construction_disk_requirement(0, 2, 16, policy).expect("empty"), 0);
             assert!(construction_disk_requirement(u64::MAX, 2, 16, policy).is_err());
@@ -1382,7 +1407,7 @@ pub(super) mod tests {
         let mut graph = built(0);
         let parts = GraphKeyParts {
             dataset_id: "fixture".into(), dataset_generation: 0,
-            x_column_id: "x".into(), y_column_id: "y".into(), filter_identity: None,
+            x_column_id: "x".into(), y_column_id: "y".into(), overlay_column_id: None, filter_identity: None,
             renderer_contract_version: 1, tile_format_version: 1,
             domain_policy: "finite-domain-v1".into(), levels: 2, max_tile_points: 4096,
         };
@@ -1693,7 +1718,7 @@ pub(super) mod tests {
         assert!(cache.get(&key.hash_hex).is_some());
         cache.unpin();
         cache.evict_unpinned();
-        cache.disk_limit = cache.disk_bytes + built(1).pyramid.encoded_bytes();
+        cache.disk_limit = cache.disk_bytes + built(1).pyramid.persisted_bytes();
         let second_key = built(1).key.hash_hex;
         cache.insert(built(1)).expect("second");
         cache.persist(&second_key).expect("evict first disk");

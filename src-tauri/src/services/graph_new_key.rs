@@ -6,8 +6,8 @@ use crate::models::graph_new_data::{
     GRAPH_NEW_DEFAULT_DOMAIN_POLICY, GRAPH_NEW_MAX_LEVELS, GRAPH_NEW_MAX_TILE_POINTS,
 };
 
-pub const GRAPH_NEW_RENDERER_CONTRACT_VERSION: u16 = 1;
-pub const GRAPH_NEW_TILE_FORMAT_VERSION: u16 = 1;
+pub const GRAPH_NEW_RENDERER_CONTRACT_VERSION: u16 = 2;
+pub const GRAPH_NEW_TILE_FORMAT_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum RetentionPolicy {
@@ -22,6 +22,7 @@ pub struct GraphKeyParts {
     pub dataset_generation: u64,
     pub x_column_id: String,
     pub y_column_id: String,
+    pub overlay_column_id: Option<String>,
     pub filter_identity: Option<String>,
     pub renderer_contract_version: u16,
     pub tile_format_version: u16,
@@ -37,6 +38,8 @@ pub struct GraphKeyDiagnostics {
     pub dataset_generation: u64,
     pub x_column_id: String,
     pub y_column_id: String,
+    pub overlay_state: String,
+    pub overlay_hash_prefix: Option<String>,
     pub filter_state: String,
     pub filter_hash_prefix: Option<String>,
     pub renderer_contract_version: u16,
@@ -54,6 +57,7 @@ struct CanonicalGraphKey<'a> {
     dataset_generation: u64,
     x_column_id: &'a str,
     y_column_id: &'a str,
+    overlay_column_id: CanonicalOptionalIdentity<'a>,
     filter_identity: CanonicalFilterIdentity<'a>,
     renderer_contract_version: u16,
     tile_format_version: u16,
@@ -65,6 +69,13 @@ struct CanonicalGraphKey<'a> {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum CanonicalFilterIdentity<'a> {
+    None,
+    Hashed { sha256: &'a str },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum CanonicalOptionalIdentity<'a> {
     None,
     Hashed { sha256: &'a str },
 }
@@ -93,6 +104,20 @@ impl GraphKey {
         let dataset_id = normalize_non_empty(&parts.dataset_id, "datasetId")?;
         let x_column_id = normalize_non_empty(&parts.x_column_id, "xColumnId")?;
         let y_column_id = normalize_non_empty(&parts.y_column_id, "yColumnId")?;
+        let overlay_hash = match parts.overlay_column_id.as_deref() {
+            None => None,
+            Some(value) if value.trim().is_empty() => {
+                return Err(AppError::InvalidParam(
+                    "graph-new overlayColumnId must not be blank when provided".to_string(),
+                ))
+            }
+            Some(value) => Some(hex_digest(value.as_bytes())),
+        };
+        if retention_policy == RetentionPolicy::Lossless && overlay_hash.is_some() {
+            return Err(AppError::InvalidParam(
+                "graph-new lossless cache does not support overlayColumnId".to_string(),
+            ));
+        }
         if parts.renderer_contract_version == 0 {
             return Err(AppError::InvalidParam(
                 "graph-new renderer contract version must be positive".to_string(),
@@ -129,13 +154,17 @@ impl GraphKey {
         };
         let canonical_id = serde_json::to_string(&CanonicalGraphKey {
             key_version: match retention_policy {
-                RetentionPolicy::Bounded => "graph-new-v6-compact-exact-2100000",
+                RetentionPolicy::Bounded => "graph-new-v7-overlay-compact-exact-2100000",
                 RetentionPolicy::Lossless => "graph-new-v4-lossless-research",
             },
             dataset_id: &dataset_id,
             dataset_generation: parts.dataset_generation,
             x_column_id: &x_column_id,
             y_column_id: &y_column_id,
+            overlay_column_id: match overlay_hash.as_deref() {
+                None => CanonicalOptionalIdentity::None,
+                Some(hash) => CanonicalOptionalIdentity::Hashed { sha256: hash },
+            },
             filter_identity: match filter_hash.as_deref() {
                 None => CanonicalFilterIdentity::None,
                 Some(hash) => CanonicalFilterIdentity::Hashed { sha256: hash },
@@ -166,6 +195,14 @@ impl GraphKey {
                 dataset_generation: parts.dataset_generation,
                 x_column_id: format!("sha256:{}", hex_digest(x_column_id.as_bytes())),
                 y_column_id: format!("sha256:{}", hex_digest(y_column_id.as_bytes())),
+                overlay_state: if overlay_hash.is_some() {
+                    "hashed".to_string()
+                } else {
+                    "none".to_string()
+                },
+                overlay_hash_prefix: overlay_hash
+                    .as_ref()
+                    .map(|hash| hash[..16].to_string()),
                 filter_state: if filter_hash.is_some() {
                     "hashed".to_string()
                 } else {
@@ -216,9 +253,10 @@ mod tests {
             dataset_generation: 7,
             x_column_id: "x-column".to_string(),
             y_column_id: "y-column".to_string(),
+            overlay_column_id: None,
             filter_identity: Some("region=north".to_string()),
-            renderer_contract_version: 1,
-            tile_format_version: 1,
+            renderer_contract_version: 2,
+            tile_format_version: 2,
             domain_policy: "finite-domain-v1".to_string(),
             levels: 4,
             max_tile_points: 256,
@@ -255,6 +293,16 @@ mod tests {
     }
 
     #[test]
+    fn overlay_column_changes_key_but_visibility_does_not_enter_key() {
+        let baseline = GraphKey::canonical(&sample_parts()).expect("baseline");
+        let mut grouped = sample_parts();
+        grouped.overlay_column_id = Some("lot-column".into());
+        let grouped = GraphKey::canonical(&grouped).expect("grouped");
+        assert_ne!(baseline.hash_hex, grouped.hash_hex);
+        assert_eq!(grouped.diagnostics.overlay_state, "hashed");
+    }
+
+    #[test]
     fn canonical_key_preserves_stable_ids_and_distinguishes_missing_filter_identity() {
         let mut preserved = sample_parts();
         preserved.dataset_id = "  dataset-1  ".to_string();
@@ -288,23 +336,19 @@ mod tests {
             parts.dataset_id = hostile.into();
             parts.x_column_id = hostile.into();
             parts.y_column_id = hostile.into();
+            parts.overlay_column_id = Some(hostile.into());
             parts.domain_policy = hostile.into();
             parts.filter_identity = Some(hostile.into());
             let key = GraphKey::canonical(&parts).expect("hostile key");
             let quoted = serde_json::to_string(hostile).expect("quoted identity");
             let digest = super::hex_digest(hostile.as_bytes());
             let expected = format!(
-                "{{\"keyVersion\":\"graph-new-v6-compact-exact-2100000\",\"datasetId\":{quoted},\"datasetGeneration\":7,\"xColumnId\":{quoted},\"yColumnId\":{quoted},\"filterIdentity\":{{\"kind\":\"hashed\",\"sha256\":\"{digest}\"}},\"rendererContractVersion\":1,\"tileFormatVersion\":1,\"domainPolicy\":{quoted},\"levels\":4,\"maxTilePoints\":256}}"
+                "{{\"keyVersion\":\"graph-new-v7-overlay-compact-exact-2100000\",\"datasetId\":{quoted},\"datasetGeneration\":7,\"xColumnId\":{quoted},\"yColumnId\":{quoted},\"overlayColumnId\":{{\"kind\":\"hashed\",\"sha256\":\"{digest}\"}},\"filterIdentity\":{{\"kind\":\"hashed\",\"sha256\":\"{digest}\"}},\"rendererContractVersion\":2,\"tileFormatVersion\":2,\"domainPolicy\":{quoted},\"levels\":4,\"maxTilePoints\":256}}"
             );
             assert_eq!(key.canonical_id, expected);
             assert_eq!(key.hash_hex, super::hex_digest(expected.as_bytes()));
             let diagnostics = &key.diagnostics;
-            for opaque in [
-                &diagnostics.dataset_id,
-                &diagnostics.x_column_id,
-                &diagnostics.y_column_id,
-                &diagnostics.domain_policy,
-            ] {
+            for opaque in [&diagnostics.dataset_id, &diagnostics.x_column_id, &diagnostics.y_column_id, &diagnostics.domain_policy] {
                 assert_eq!(opaque, &format!("sha256:{digest}"));
             }
             let diagnostic_json = serde_json::to_value(diagnostics).expect("diagnostic json");
@@ -328,10 +372,16 @@ mod tests {
                 diagnostics.filter_hash_prefix.as_deref(),
                 Some(&digest[..16])
             );
+            assert_eq!(diagnostics.overlay_state, "hashed");
+            assert_eq!(
+                diagnostics.overlay_hash_prefix.as_deref(),
+                Some(&digest[..16])
+            );
         }
 
         let mut parts = sample_parts();
         parts.filter_identity = None;
+        parts.overlay_column_id = None;
         parts.domain_policy = String::new();
         let key = GraphKey::canonical(&parts).expect("default policy");
         assert_eq!(
@@ -340,6 +390,8 @@ mod tests {
         );
         assert_eq!(key.diagnostics.filter_state, "none");
         assert_eq!(key.diagnostics.filter_hash_prefix, None);
+        assert_eq!(key.diagnostics.overlay_state, "none");
+        assert_eq!(key.diagnostics.overlay_hash_prefix, None);
         parts.domain_policy = "unknown-safe-policy".into();
         assert!(GraphKey::canonical(&parts)
             .expect("unknown policy")
@@ -361,6 +413,7 @@ mod tests {
         let tile_points_key = GraphKey::canonical(&changed_tile_points).expect("tile points key");
 
         let mut hostile_filter = sample_parts();
+        hostile_filter.overlay_column_id = Some("C:/private/filters\\north\nteam=alpha".to_string());
         hostile_filter.filter_identity = Some("C:/private/filters\\north\nteam=alpha".to_string());
         let hostile_key = GraphKey::canonical(&hostile_filter).expect("hostile key");
         let diagnostics_json = to_string(&hostile_key.diagnostics).expect("diagnostics json");

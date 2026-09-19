@@ -210,6 +210,7 @@ impl<'a> GraphNewService<'a> {
             let key = GraphKey::canonical(&GraphKeyParts {
                 dataset_id: request.dataset_id.clone(), dataset_generation: request.dataset_generation,
                 x_column_id: request.x_column_id.clone(), y_column_id: request.y_column_id.clone(),
+                overlay_column_id: request.overlay_column_id.clone(),
                 filter_identity: None, renderer_contract_version: GRAPH_NEW_RENDERER_CONTRACT_VERSION,
                 tile_format_version: GRAPH_NEW_TILE_FORMAT_VERSION,
                 domain_policy: axis_policy(request.x_mode), levels: build_request.levels,
@@ -464,6 +465,7 @@ impl<'a> GraphNewService<'a> {
             dataset_generation: request.dataset_generation,
             x_column_id: x_column.column_id.clone(),
             y_column_id: y_column.column_id.clone(),
+            overlay_column_id: request.overlay_column_id.clone(),
             filter_identity: None,
             renderer_contract_version: GRAPH_NEW_RENDERER_CONTRACT_VERSION,
             tile_format_version: GRAPH_NEW_TILE_FORMAT_VERSION,
@@ -1828,7 +1830,10 @@ mod tests {
         let initial = service.render_with(&request, render, &mut |_, _| Ok(())).expect("cold");
         let key = super::GraphKey::canonical(&super::GraphKeyParts {
             dataset_id: request.dataset_id.clone(), dataset_generation: 0, x_column_id, y_column_id,
-            filter_identity: None, renderer_contract_version: 1, tile_format_version: 1,
+            overlay_column_id: None,
+            filter_identity: None,
+            renderer_contract_version: super::GRAPH_NEW_RENDERER_CONTRACT_VERSION,
+            tile_format_version: super::GRAPH_NEW_TILE_FORMAT_VERSION,
             domain_policy: super::GRAPH_NEW_DEFAULT_DOMAIN_POLICY.into(), levels: 8, max_tile_points: 4096,
         }).expect("key");
         {

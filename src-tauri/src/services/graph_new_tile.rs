@@ -33,6 +33,7 @@ pub struct GraphNewTile {
     pub row_ids: Vec<i64>,
     pub xs: Vec<f64>,
     pub ys: Vec<f64>,
+    pub group_codes: Vec<u16>,
     pub counts: Vec<u32>,
 }
 
@@ -124,6 +125,7 @@ impl GraphNewTileHeader {
         let row_ids = read_i64_vec(prefix, &mut offset, point_count as usize)?;
         let xs = read_f64_vec(prefix, &mut offset, point_count as usize)?;
         let ys = read_f64_vec(prefix, &mut offset, point_count as usize)?;
+        let group_codes = read_u16_vec(prefix, &mut offset, point_count as usize)?;
         let counts = read_u32_vec(prefix, &mut offset, point_count as usize)?;
         if offset != prefix.len() {
             return Err(AppError::InvalidParam(
@@ -135,6 +137,7 @@ impl GraphNewTileHeader {
             &row_ids,
             &xs,
             &ys,
+            &group_codes,
             &counts,
             total_source_count,
             x_min,
@@ -161,6 +164,7 @@ impl GraphNewTileHeader {
             row_ids,
             xs,
             ys,
+            group_codes,
             counts,
         })
     }
@@ -195,7 +199,11 @@ impl GraphNewTile {
             point_count_u32,
             self.header.total_source_count,
         )?;
-        if self.xs.len() != point_count || self.ys.len() != point_count || self.counts.len() != point_count {
+        if self.xs.len() != point_count
+            || self.ys.len() != point_count
+            || self.group_codes.len() != point_count
+            || self.counts.len() != point_count
+        {
             return Err(AppError::InvalidParam(
                 "graph-new tile column lengths must match".to_string(),
             ));
@@ -209,6 +217,7 @@ impl GraphNewTile {
             &self.row_ids,
             &self.xs,
             &self.ys,
+            &self.group_codes,
             &self.counts,
             self.header.total_source_count,
             self.header.x_min,
@@ -247,6 +256,9 @@ impl GraphNewTile {
         }
         for value in &self.ys {
             push_f64(&mut bytes, *value);
+        }
+        for value in &self.group_codes {
+            push_u16(&mut bytes, *value);
         }
         for value in &self.counts {
             push_u32(&mut bytes, *value);
@@ -316,6 +328,7 @@ fn validate_payload(
     row_ids: &[i64],
     xs: &[f64],
     ys: &[f64],
+    group_codes: &[u16],
     counts: &[u32],
     total_source_count: u64,
     x_min: f64,
@@ -323,7 +336,11 @@ fn validate_payload(
     y_min: f64,
     y_max: f64,
 ) -> Result<(), AppError> {
-    if row_ids.len() != xs.len() || xs.len() != ys.len() || ys.len() != counts.len() {
+    if row_ids.len() != xs.len()
+        || xs.len() != ys.len()
+        || ys.len() != group_codes.len()
+        || group_codes.len() != counts.len()
+    {
         return Err(AppError::InvalidParam(
             "graph-new tile column lengths must match".to_string(),
         ));
@@ -350,6 +367,7 @@ fn validate_payload(
                 "graph-new tile counts must be positive".to_string(),
             ));
         }
+        let _group_code = group_codes[index];
         count_sum = count_sum
             .checked_add(u64::from(counts[index]))
             .ok_or_else(|| AppError::InvalidParam("graph-new tile count overflow".to_string()))?;
@@ -366,7 +384,7 @@ fn payload_length(point_count: usize) -> Result<u64, AppError> {
     let point_count = u64::try_from(point_count)
         .map_err(|_| AppError::InvalidParam("graph-new tile point count overflow".to_string()))?;
     point_count
-        .checked_mul(28)
+        .checked_mul(30)
         .ok_or_else(|| AppError::InvalidParam("graph-new tile payload overflow".to_string()))
 }
 
@@ -485,6 +503,14 @@ fn read_u32_vec(bytes: &[u8], offset: &mut usize, count: usize) -> Result<Vec<u3
     Ok(values)
 }
 
+fn read_u16_vec(bytes: &[u8], offset: &mut usize, count: usize) -> Result<Vec<u16>, AppError> {
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(read_u16(bytes, offset)?);
+    }
+    Ok(values)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -513,18 +539,19 @@ mod tests {
                 level: 2,
                 tile_x: 3,
                 tile_y: 1,
-                point_count: 2,
+                point_count: 3,
                 total_source_count: 12,
                 x_min: 1.0,
                 x_max: 3.0,
                 y_min: 3.5,
                 y_max: 4.75,
-                payload_bytes: 0,
+                payload_bytes: 90,
             },
-            row_ids: vec![11, 12],
-            xs: vec![1.25, 2.5],
-            ys: vec![3.75, 4.5],
-            counts: vec![5, 7],
+            row_ids: vec![11, 12, 13],
+            xs: vec![1.25, 2.0, 2.5],
+            ys: vec![3.75, 4.0, 4.5],
+            group_codes: vec![0, 1, 1],
+            counts: vec![2, 3, 7],
         }
     }
 
@@ -543,7 +570,7 @@ mod tests {
         counts: &[u32],
     ) -> Vec<u8> {
         let point_count = u32::try_from(row_ids.len()).expect("point count");
-        let payload_bytes = (row_ids.len() * 28) as u64;
+        let payload_bytes = (row_ids.len() * 30) as u64;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&GRAPH_NEW_TILE_MAGIC);
         push_u16(&mut bytes, GRAPH_NEW_TILE_FORMAT_VERSION);
@@ -565,6 +592,9 @@ mod tests {
         }
         for value in ys {
             push_f64(&mut bytes, *value);
+        }
+        for _ in row_ids {
+            push_u16(&mut bytes, 0);
         }
         for value in counts {
             push_u32(&mut bytes, *value);
@@ -591,9 +621,7 @@ mod tests {
         let encoded = sample_tile().encode().expect("encode tile");
         let decoded = GraphNewTileHeader::decode(&encoded).expect("decode tile");
 
-        assert_eq!(decoded.header.point_count, 2);
-        assert_eq!(decoded.row_ids, vec![11, 12]);
-        assert_eq!(decoded.counts, vec![5, 7]);
+        assert_eq!(decoded, sample_tile());
     }
 
     #[test]
@@ -606,7 +634,7 @@ mod tests {
         assert!(GraphNewTileHeader::decode(&bad_magic).is_err());
 
         let bad_version = overwrite_with_checksum(encoded.clone(), |bytes| {
-            bytes[4] = 9;
+            bytes[4] = 1;
         });
         assert!(GraphNewTileHeader::decode(&bad_version).is_err());
 
@@ -617,6 +645,20 @@ mod tests {
         let last = bad_checksum.len() - 1;
         bad_checksum[last] ^= 0x5a;
         assert!(GraphNewTileHeader::decode(&bad_checksum).is_err());
+    }
+
+    #[test]
+    fn tile_rejects_mismatched_group_code_lengths_and_removed_group_code_bytes() {
+        let mut tile = sample_tile();
+        tile.group_codes.pop();
+        assert!(tile.encode().is_err());
+
+        let encoded = sample_tile().encode().expect("encode tile");
+        let without_group_bytes = overwrite_with_checksum(encoded, |bytes| {
+            let group_offset = 68 + (3 * 8) + (3 * 8) + (3 * 8);
+            bytes.drain(group_offset..group_offset + 3 * 2);
+        });
+        assert!(GraphNewTileHeader::decode(&without_group_bytes).is_err());
     }
 
     #[test]
