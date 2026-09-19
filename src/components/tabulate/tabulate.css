@@ -398,6 +398,141 @@
   border-color: var(--fg-danger);
 }
 
+.sp-tabulate-session-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.sp-tabulate-session-status > span {
+  flex: 1;
+}
+
+.sp-tabulate-virtual-viewport {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 120px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.sp-tabulate-virtual-grid {
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  outline-offset: -2px;
+}
+
+.sp-tabulate-virtual-row {
+  display: contents;
+}
+
+.sp-tabulate-virtual-cell {
+  min-width: 0;
+  padding: 5px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-right: 1px solid var(--border-main);
+  border-bottom: 1px solid var(--border-main);
+  background-color: var(--bg-panel);
+}
+
+.sp-tabulate-virtual-grid .sp-tabulate-row-label {
+  align-self: stretch;
+}
+
+.sp-tabulate-virtual-grid .sp-tabulate-row-label,
+.sp-tabulate-virtual-grid .sp-tabulate-corner-header {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.sp-tabulate-virtual-grid .sp-tabulate-group-header {
+  text-align: left;
+}
+
+.sp-tabulate-virtual-grid .sp-tabulate-corner-header {
+  top: 0;
+  z-index: 7;
+}
+
+.sp-tabulate-virtual-grid .sp-tabulate-group-header,
+.sp-tabulate-virtual-grid .sp-tabulate-stat-header,
+.sp-tabulate-virtual-grid .sp-tabulate-total-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background-color: var(--bg-header);
+}
+
+.sp-tabulate-virtual-grid .sp-tabulate-stat-field {
+  display: inline;
+  margin-left: 5px;
+}
+
+.sp-tabulate-virtual-grid [data-continues-before="true"] {
+  border-top-color: transparent;
+  font-style: italic;
+}
+
+.sp-tabulate-virtual-grid .sp-tabulate-total-cell {
+  background-color: var(--bg-cell-hover);
+  text-align: right;
+}
+
+.sp-tabulate-value-cell {
+  text-align: right;
+}
+
+.sp-tabulate-virtual-cell[aria-busy="true"] {
+  color: var(--fg-hint);
+}
+
+.sp-tabulate-logical-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-main);
+}
+
+.sp-tabulate-axis-navigation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.sp-tabulate-axis-navigation label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sp-tabulate-axis-navigation input[type="number"] {
+  width: 90px;
+  height: 26px;
+  color: var(--fg-main);
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-main);
+}
+
+.sp-tabulate-axis-navigation input[type="range"] {
+  flex: 1 1 80px;
+  min-width: 60px;
+  max-width: 100%;
+}
+
 .sp-tabulate-stat-dialog {
   min-width: 420px;
 }

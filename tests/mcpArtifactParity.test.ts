@@ -145,6 +145,9 @@ function loadFixture(): ArtifactParityFixture {
   assert.ok(parsed && typeof parsed === "object", "Artifact fixture must be an object");
   const fixture = parsed as ArtifactParityFixture;
   assert.ok(Array.isArray(fixture.projectionCases), "Fixture must include projectionCases");
+  for (const entry of fixture.projectionCases.filter((entry) => entry.id === "tabulate.run" || entry.id === "tabulate.exportTable")) {
+    assert.equal("maxResultCells" in (entry.expectedEnvelope.input.request as object), false, "MCP Tabulate requests must be uncapped definitions");
+  }
   assert.ok(Array.isArray(fixture.tableSeed.columns), "Fixture must include tableSeed columns");
   return fixture;
 }
@@ -641,38 +644,38 @@ function createScenarioRuntime(actor: CommandActor, fixture: ArtifactParityFixtu
     tabulate: {
       createTabulateId: () => fixture.documents.tabulate.id,
       createNowIso: () => fixture.documents.tabulate.createdAt,
-      runTabulate: async () => {
+      prepareSession: async (request) => {
         counters.tabulateRun += 1;
         return {
-          rowMembers: [["EV"], ["DV"]],
-          columnMembers: [[]],
-          statistics: [{ id: "stat-mean", field: "width", kind: "mean" }],
-          cells: [10.01, 9.98],
-          rowTotals: [10.01, 9.98],
-          columnTotals: [9.995],
-          grandTotals: [9.995],
-          cellCount: 2,
-          limit: 10000,
+          sessionId: "parity-session", fingerprint: "parity-fingerprint", sourceGeneration: request.sourceGeneration,
+          state: "ready", rowMemberCount: 2, columnMemberCount: 1, logicalCellCount: 2, measuredMemberIndexBytes: 128,
         };
       },
+      releaseSession: async (id) => { assert.equal(id, "parity-session"); },
       getDatasetGeneration: async (datasetId: string) => datasets.get(datasetId)?.meta.generation ?? 1,
-      createTable: async (input) => {
+      materializeTable: async (input) => {
         counters.tabulateExport += 1;
-        const created = createManaged(input.request);
+        assert.equal(input.sessionId, "parity-session");
+        return createManaged({ name: input.destinationName, columns: [
+          { name: "build", sqlType: "VARCHAR" }, { name: "Mean", sqlType: "DOUBLE" },
+        ], rows: [["EV", 10.01], ["DV", 9.98]] }).dataset;
+      },
+      completeMaterializedTable: async (dataset) => {
+        const record = datasets.get(dataset.id)!;
         const result: TableCreateResult = {
           dataset: {
-            id: created.dataset.id,
-            name: created.dataset.name,
-            sourceType: created.dataset.sourceType,
+            id: dataset.id,
+            name: dataset.name,
+            sourceType: dataset.sourceType,
             sourceName: null,
-            rowCount: created.dataset.rowCount,
-            colCount: created.dataset.colCount,
-            generation: created.dataset.generation,
-            createdAt: created.dataset.createdAt,
-            updatedAt: created.dataset.updatedAt,
+            rowCount: dataset.rowCount,
+            colCount: dataset.colCount,
+            generation: dataset.generation,
+            createdAt: dataset.createdAt,
+            updatedAt: dataset.updatedAt,
           },
-          generation: created.generation,
-          columns: created.columns,
+          generation: dataset.generation,
+          columns: record.columns.map(([colName, colType], colIndex) => ({ colName, colType, colIndex })),
         };
         return { result, warnings: [] };
       },
@@ -860,7 +863,11 @@ async function runUiScenario(fixture: ArtifactParityFixture): Promise<{
     includeRowTotals: fixture.documents.tabulate.includeRowTotals,
     includeColumnTotals: fixture.documents.tabulate.includeColumnTotals,
   });
-  await awaitWithTimeout(scenario.runtime.execute(fixtureEnvelopeToCommand(fixture, "tabulate.run", "tabulate.run"), actor), "ui.tabulate.run", scenario.runtime);
+  const tabulateRun = await awaitWithTimeout(scenario.runtime.execute(fixtureEnvelopeToCommand(fixture, "tabulate.run", "tabulate.run"), actor), "ui.tabulate.run", scenario.runtime);
+  assert.equal(tabulateRun.data.session.logicalCellCount, 2);
+  assert.equal(tabulateRun.data.leaseReleased, true);
+  assert.equal("result" in tabulateRun.data, false);
+  assert.equal(Object.values(tabulateRun.data.session).some(Array.isArray), false);
   await awaitWithTimeout(scenario.runtime.execute(fixtureEnvelopeToCommand(fixture, "tabulate.exportTable", "tabulate.exportTable"), actor), "ui.tabulate.exportTable", scenario.runtime);
 
   await awaitWithTimeout(scenario.runtime.execute(fixtureEnvelopeToCommand(fixture, "graph.create", "graph.create"), actor), "ui.graph.create", scenario.runtime);

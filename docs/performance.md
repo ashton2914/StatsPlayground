@@ -1,5 +1,49 @@
 # Performance Baselines
 
+## Tabulate Viewport Qualification
+
+The Tabulate viewport benchmark generates its source table in an in-memory
+DuckDB database with a parameterized `range`; it does not read, copy, or retain
+a source-data artifact. Qualification uses exactly 10,000,000 source rows and
+logical grids of 100,000, 1,000,000, and 10,000,000 cells. A smaller invocation
+is a smoke check only.
+
+Run a bounded smoke check with:
+
+```bash
+node scripts/runTabulateViewportBenchmark.mjs \
+  --source-rows=100000 --logical-cells=100000 --samples=3
+```
+
+The native harness prepares one production `TabulateSessionService` session,
+then issues repeated production window queries capped at 128 rows by 64 columns
+and one statistic. `preparationMs`, `backendTileMs`, `totalsMs`, and
+`cancellationLatencyMs` are native backend measurements. `tilePayloadBytes` is
+the serialized bounded window response. `memberIndexBytes` is the session's
+accounted member-index allocation. `wholeProcessRssBytes` is separately sampled
+process RSS and includes DuckDB, the harness, and other process allocations; it
+is not a member-index or graph-only budget.
+
+The CLI runner does not cross Tauri IPC or present a WebView frame. Therefore
+`ipcRoundTripMs` and `visibleInteractionMs` are explicitly reported as
+`unmeasured`, never copied from backend timings or filled with zero. Platform
+results are separate because RSS collection uses the host process API. At least
+30 settled samples are required before P50/P95 are calculated. Fewer samples
+retain sample counts with null percentiles and cannot be qualification evidence.
+
+A completed tier must report exact logical cardinality and an exact bounded
+window; truncation or a false completed result is invalid. A stable controlled
+10M-tier resource refusal may be reported as `controlled_refusal` with its code,
+but it is not converted into success. The full matrix is run only after source
+and review fixes are frozen so its evidence describes the reviewed revision.
+
+Production resource regressions in `tabulate_session_service.rs` force the
+member-index budget, two-session quota, five-minute expiry, active and queued
+cancellation, cleanup failure, explicit release, shutdown, and stale-generation
+recovery. They assert failed sessions never become ready or retain measured
+bytes, temporary objects are dropped, active identities are removed before
+cleanup waits, and a valid replacement request can recover.
+
 ## Typed-X Review Corrections (2026-09-18)
 
 Five reviewed issues now have focused regression evidence:

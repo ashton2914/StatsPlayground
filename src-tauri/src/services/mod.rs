@@ -33,6 +33,7 @@ pub mod table_navigation_service;
 pub mod table_transform_domain;
 pub mod table_transform_service;
 pub mod tabulate_service;
+pub mod tabulate_session_service;
 pub mod time_series;
 pub mod workflow_document_executor;
 pub mod workflow_domain;

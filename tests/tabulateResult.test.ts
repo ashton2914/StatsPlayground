@@ -2,77 +2,63 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  buildHeaderSpans,
+  canAssignTabulateField,
   canExportTabulateResult,
-  canShowReadyResult,
-  cellIndex,
   isNumericDuckDbType,
-  isLatestSequence,
   parseQuantileInput,
   reorderForDrop,
-  totalIndex,
 } from "../src/components/tabulate/tabulateResult.ts";
 import { useTabulateStore } from "../src/stores/useTabulateStore.ts";
-import type { TabulateItem, TabulateResult } from "../src/types/tabulate.ts";
+import { useProjectStore } from "../src/stores/useProjectStore.ts";
+import type { TabulateItem } from "../src/types/tabulate.ts";
 
-assert.equal(cellIndex(1, 2, 1, 4, 3), 19);
-assert.equal(totalIndex(2, 1, 3), 7);
+const durableDefinition: TabulateItem = {
+  id: "legacy-tabulate", name: "Saved Tabulate", sourceDatasetId: "dataset-1",
+  rowFields: ["Region"], columnFields: ["Channel"],
+  statistics: [{ id: "count", field: "Sales", kind: "count" }],
+  includeRowTotals: true, includeColumnTotals: false,
+  createdAt: "2026-08-13T00:00:00.000Z",
+};
+useTabulateStore.getState().loadFromProject([durableDefinition]);
+useProjectStore.setState({ readOnly: true });
+assert.deepEqual(JSON.parse(JSON.stringify(useTabulateStore.getState().items)), [durableDefinition]);
+for (const mutate of [
+  () => useTabulateStore.getState().addItem(durableDefinition),
+  () => useTabulateStore.getState().updateItem(durableDefinition.id, { rowFields: [] }),
+  () => useTabulateStore.getState().renameItem(durableDefinition.id, "Changed"),
+  () => useTabulateStore.getState().deleteItem(durableDefinition.id),
+  () => useTabulateStore.getState().nextName(),
+]) assert.throws(mutate);
+assert.deepEqual(useTabulateStore.getState().items, [durableDefinition]);
+useTabulateStore.getState().reset();
+assert.deepEqual(useTabulateStore.getState().items, []);
+useTabulateStore.getState().loadFromProject([durableDefinition]);
+assert.deepEqual(useTabulateStore.getState().items, [durableDefinition]);
+useProjectStore.setState({ readOnly: false });
+useTabulateStore.getState().reset();
 
-assert.deepEqual(buildHeaderSpans([["A", "x"], ["A", "y"], ["B", "x"]]), [
-  [
-    { label: "A", start: 0, span: 2 },
-    { label: "B", start: 2, span: 1 },
-  ],
-  [
-    { label: "x", start: 0, span: 1 },
-    { label: "y", start: 1, span: 1 },
-    { label: "x", start: 2, span: 1 },
-  ],
-]);
-
-assert.deepEqual(
-  buildHeaderSpans([
-    ["A", null],
-    ["A", "x"],
-    ["A", null],
-  ]),
-  [
-    [{ label: "A", start: 0, span: 3 }],
-    [
-      { label: null, start: 0, span: 1 },
-      { label: "x", start: 1, span: 1 },
-      { label: null, start: 2, span: 1 },
-    ],
-  ],
-);
-
-assert.deepEqual(
-  buildHeaderSpans([
-    ["A", "x"],
-    ["B", "x"],
-    ["A", "x"],
-  ]),
-  [
-    [
-      { label: "A", start: 0, span: 1 },
-      { label: "B", start: 1, span: 1 },
-      { label: "A", start: 2, span: 1 },
-    ],
-    [
-      { label: "x", start: 0, span: 1 },
-      { label: "x", start: 1, span: 1 },
-      { label: "x", start: 2, span: 1 },
-    ],
-  ],
-);
-
-assert.equal(isLatestSequence(4, 4), true);
-assert.equal(isLatestSequence(3, 4), false);
+const legacyPaths = [
+  "src-tauri/src/models/tabulate.rs", "src-tauri/src/services/tabulate_service.rs",
+  "src-tauri/src/engine/duckdb_engine.rs", "src-tauri/src/commands/tabulate_commands.rs",
+  "src/types/tabulate.ts", "src/services/tabulateService.ts", "src/stores/useTabulateStore.ts",
+  "src/types/index.ts",
+  "src/applicationCommands/tabulateCommands.ts", "src/components/tabulate/tabulateResult.ts",
+  "src/components/tabulate/TabulateResultTable.tsx",
+];
+const legacyMatches = legacyPaths.flatMap((path) => {
+  const source = readFileSync(new URL(`../${path}`, import.meta.url), "utf8").split(/#\[cfg\(test\)\]\s*mod tests\s*\{/)[0];
+  return /\b(?:TabulateRequest|TabulateResult|TabulateLatestResult|MAX_RESULT_CELLS|MAX_RESULT_CELLS_STR|max_result_cells|maxResultCells|setLatestResult|getLatestResult|clearLatestResult|buildTabulateExportRequest)\b/.test(source) ? [path] : [];
+});
+assert.deepEqual(legacyMatches, [], "Task 9 removes the monolithic Tabulate runtime and compatibility shims");
+for (const locale of ["en", "zh-CN", "zh-TW", "vi"]) {
+  const copy = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), "utf8")).tabulate;
+  assert.equal("resultTooLargeDetail" in copy, false);
+  assert.equal("resultTooLargeTitle" in copy, false);
+}
+assert.doesNotMatch(readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"), /tabulate_commands::tabulate\s*,/);
+assert.doesNotMatch(readFileSync(new URL("../src-tauri/src/commands/mutation_guard_coverage.rs", import.meta.url), "utf8"), /commands::tabulate_commands::tabulate"/);
 assert.equal(isNumericDuckDbType("DECIMAL(18,2)"), true);
 assert.equal(isNumericDuckDbType("INTERVAL"), false);
-assert.equal(canShowReadyResult(4, true, 1), true);
-assert.equal(canShowReadyResult(4, false, 1), false);
-assert.equal(canShowReadyResult(4, true, 0), false);
 assert.equal(canExportTabulateResult(true, true, false, false, false), true);
 assert.equal(canExportTabulateResult(true, false, false, false, false), false);
 assert.equal(canExportTabulateResult(true, true, true, false, false), false);
@@ -98,6 +84,14 @@ const tabulateResultTableSource = readFileSync(
 );
 const tabulateCss = readFileSync(
   new URL("../src/components/tabulate/tabulate.css", import.meta.url),
+  "utf8",
+);
+const tabulateTypesSource = readFileSync(
+  new URL("../src/types/tabulate.ts", import.meta.url),
+  "utf8",
+);
+const tabulateServiceSource = readFileSync(
+  new URL("../src/services/tabulateService.ts", import.meta.url),
   "utf8",
 );
 const englishLocale = JSON.parse(readFileSync(
@@ -131,9 +125,11 @@ assert.match(
   tabulateRoleZoneSource,
   /onDrop=\{\(event\) => \{\s*event\.stopPropagation\(\);\s*const payload = readDragPayload/,
 );
-assert.match(tabulateResultTableSource, /style=\{\{ left: rowLabelIndex \* ROW_LABEL_WIDTH \}\}/);
 assert.match(tabulateViewSource, /applicationRuntime\.execute\(/);
-assert.match(tabulateViewSource, /type: "tabulate\.run"/);
+assert.doesNotMatch(tabulateViewSource, /type: "tabulate\.run"|useState<TabulateResult|latestResultsById/);
+assert.match(tabulateViewSource, /useTabulateSession\(/);
+assert.match(tabulateResultTableSource, /buildVisibleHeaderSpans\(/);
+assert.match(tabulateResultTableSource, /role="grid"/);
 assert.match(tabulateViewSource, /type: "tabulate\.exportTable"/);
 assert.match(tabulateViewSource, /resolveProjectBasenameForKind\(/);
 assert.match(tabulateViewSource, /invalidName\.wrongExtension/);
@@ -142,6 +138,30 @@ assert.match(tabulateViewSource, /exporting/);
 assert.match(tabulateViewSource, /readOnly/);
 assert.match(tabulateResultTableSource, /fa-table-arrow-up/);
 assert.match(tabulateResultTableSource, /sp-tabulate-results-toolbar/);
+assert.match(tabulateTypesSource, /interface TabulateSessionRequest/);
+assert.doesNotMatch(
+  tabulateTypesSource.match(/interface TabulateSessionRequest \{[\s\S]*?\n\}/)?.[0] ?? "",
+  /maxResultCells/,
+);
+assert.doesNotMatch(
+  tabulateTypesSource.match(/interface TabulateWindowResult \{[\s\S]*?\n\}/)?.[0] ?? "",
+  /cells:\s*Array<number \| null>/,
+);
+for (const command of [
+  "prepare_tabulate_session",
+  "get_tabulate_session_status",
+  "query_tabulate_window",
+  "query_tabulate_totals",
+  "cancel_tabulate_request",
+  "release_tabulate_session",
+  "materialize_tabulate_table",
+]) {
+  assert.equal(
+    (tabulateServiceSource.match(new RegExp(`"${command}"`, "g")) ?? []).length,
+    1,
+    `${command} must have exactly one TypeScript wrapper`,
+  );
+}
 assert.equal(englishLocale.tabulate.fields, "Columns");
 assert.equal(englishLocale.tabulate.searchFields, "Search columns");
 assert.equal(englishLocale.tabulate.rowsEmptyHint, "Drag columns here to build row nesting.");
@@ -226,186 +246,16 @@ assert.deepEqual(
 );
 assert.equal("deleteByDataset" in useTabulateStore.getState(), false);
 
-useTabulateStore.getState().setLatestResult("tab-2", {
-  requestFingerprint: "fp-1",
-  sourceGeneration: 3,
-  completedAt: "2026-09-15T00:00:00.000Z",
-  result: {
-    rowMembers: [["Region"]],
-    columnMembers: [["Channel"]],
-    statistics: [],
-    cells: [],
-    rowTotals: [],
-    columnTotals: [],
-    grandTotals: [],
-    cellCount: 0,
-    limit: 10000,
-  },
-});
-assert.equal(useTabulateStore.getState().getLatestResult("tab-2")?.requestFingerprint, "fp-1");
-
-useTabulateStore.getState().updateItem("tab-2", { rowFields: ["Build"] });
-assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null);
-
-useTabulateStore.getState().setLatestResult("tab-2", {
-  requestFingerprint: "fp-undef",
-  sourceGeneration: 5,
-  completedAt: "2026-09-15T00:00:00.000Z",
-  result: {
-    rowMembers: [["Region"]],
-    columnMembers: [["Channel"]],
-    statistics: [],
-    cells: [],
-    rowTotals: [],
-    columnTotals: [],
-    grandTotals: [],
-    cellCount: 0,
-    limit: 10000,
-  },
-});
-const explicitUndefinedDefinitionPatch = {
-  rowFields: undefined,
-} as unknown as Partial<TabulateItem>;
-useTabulateStore.getState().updateItem("tab-2", explicitUndefinedDefinitionPatch);
-assert.equal(
-  useTabulateStore.getState().getLatestResult("tab-2"),
-  null,
-  "own-key definition patch with undefined value must invalidate latest cache",
-);
-
-useTabulateStore.getState().setLatestResult("tab-2", {
-  requestFingerprint: "fp-2",
-  sourceGeneration: 4,
-  completedAt: "2026-09-15T00:00:00.000Z",
-  result: {
-    rowMembers: [["Region"]],
-    columnMembers: [["Channel"]],
-    statistics: [],
-    cells: [],
-    rowTotals: [],
-    columnTotals: [],
-    grandTotals: [],
-    cellCount: 0,
-    limit: 10000,
-  },
-});
-useTabulateStore.getState().deleteItem("tab-2");
-assert.equal(useTabulateStore.getState().getLatestResult("tab-2"), null);
-
 useTabulateStore.getState().reset();
 assert.deepEqual(useTabulateStore.getState().items, []);
 assert.equal(useTabulateStore.getState().counter, 0);
-assert.deepEqual(useTabulateStore.getState().latestResultsById, {});
+assert.equal("latestResultsById" in useTabulateStore.getState(), false);
 
 console.log("tabulateResult helpers OK");
 
-// --- Export payload tests (Task 1) ---
-{
-  // Minimal item/result to exercise export builder
-  const exportItem: Pick<TabulateItem, "rowFields" | "columnFields" | "statistics"> = {
-    rowFields: ["Region"],
-    columnFields: ["Zone", "Channel"],
-    statistics: [
-      { id: "s1", kind: "mean", field: "Sales" },
-      { id: "s2", kind: "count", field: "Sales" },
-    ],
-  };
-
-  const exportResult: Pick<TabulateResult, "rowMembers" | "columnMembers" | "statistics" | "cells"> = {
-    rowMembers: [["North"], ["South"]],
-    columnMembers: [["East", "Retail"], [null, "Retail"]],
-    statistics: exportItem.statistics,
-    cells: [10, 2, null, 1, 20, 4, 30, 6],
-  };
-
-  // require helpers to be exported; will fail until implemented
-  // dynamic import to avoid top-level alias resolution issues in some runners
-  const { buildTabulateExportRequest, canAssignTabulateField } = await import("../src/components/tabulate/tabulateResult.ts");
-
-  assert.deepEqual(buildTabulateExportRequest(exportItem, exportResult, {
-    tableName: "Sales Summary",
-    missingLabel: "Missing",
-    statisticLabel: (statistic: { kind: string }) => statistic.kind === "mean" ? "Mean" : "Count",
-  }), {
-    name: "Sales Summary",
-    columnNames: [
-      "Region",
-      "East - Retail - Mean - Sales",
-      "East - Retail - Count - Sales",
-      "Missing - Retail - Mean - Sales",
-      "Missing - Retail - Count - Sales",
-    ],
-    columnTypes: ["VARCHAR", "DOUBLE", "DOUBLE", "DOUBLE", "DOUBLE"],
-    rows: [["North", 10, 2, null, 1], ["South", 20, 4, 30, 6]],
-  });
-
-  assert.equal(canAssignTabulateField("rows", ["Region"], "Store"), false);
-  assert.equal(canAssignTabulateField("columns", ["Region"], "Store"), true);
-  assert.equal(canAssignTabulateField("statistics", ["Sales"], "Profit"), true);
-
-  const missingRowPayload = buildTabulateExportRequest(
-    exportItem,
-    { ...exportResult, rowMembers: [[null], ["South"]] },
-    {
-      tableName: "T",
-      missingLabel: "Missing",
-      statisticLabel: (statistic: { kind: string }) => statistic.kind === "mean" ? "Mean" : "Count",
-    },
-  );
-  assert.equal(missingRowPayload.rows[0][0], "Missing");
-
-  assert.throws(
-    () => buildTabulateExportRequest(
-      { ...exportItem, rowFields: ["Region", "Store"] },
-      exportResult,
-      { tableName: "T", missingLabel: "Missing", statisticLabel: () => "S" },
-    ),
-    /at most one row field/i,
-  );
-  assert.throws(
-    () => buildTabulateExportRequest(
-      exportItem,
-      { ...exportResult, columnMembers: [["East"]] },
-      { tableName: "T", missingLabel: "Missing", statisticLabel: () => "S" },
-    ),
-    /column member depth/i,
-  );
-  assert.throws(
-    () => buildTabulateExportRequest(
-      exportItem,
-      { ...exportResult, cells: exportResult.cells.slice(0, -1) },
-      { tableName: "T", missingLabel: "Missing", statisticLabel: () => "S" },
-    ),
-    /cell count/i,
-  );
-
-  const noRowsItem = { ...exportItem, rowFields: [] };
-  const noRowResult = { ...exportResult, rowMembers: [[]], cells: [10, 2, null, 1] };
-  const noRowsPayload = buildTabulateExportRequest(noRowsItem, noRowResult, {
-    tableName: "T",
-    missingLabel: "Missing",
-    statisticLabel: () => "S",
-  });
-  assert.deepEqual(noRowsPayload.rows, [[10, 2, null, 1]]);
-
-  const noColumnsItem = { ...exportItem, columnFields: [] };
-  const noColResult = { ...exportResult, columnMembers: [[]], cells: [10, 2, 20, 4] };
-  const noColsPayload = buildTabulateExportRequest(noColumnsItem, noColResult, {
-    tableName: "T",
-    missingLabel: "Missing",
-    statisticLabel: () => "S",
-  });
-  assert.deepEqual(noColsPayload.columnNames, ["Region", "S - Sales", "S - Sales (2)"]);
-  assert.deepEqual(noColsPayload.rows, [["North", 10, 2], ["South", 20, 4]]);
-
-  // duplicate generated names receive stable suffixes
-  const dupColsResult = { ...exportResult, columnMembers: [["East", "Retail"], ["East", "Retail"]] };
-  const dupPayload = buildTabulateExportRequest(exportItem, dupColsResult, {
-    tableName: "T",
-    missingLabel: "Missing",
-    statisticLabel: (s: { kind: string }) => s.kind === "mean" ? "Mean" : "Count",
-  });
-  // Expect second generated column header to receive " (2)" for duplicates
-  assert.ok(dupPayload.columnNames[1].endsWith("Mean - Sales") );
-  assert.ok(dupPayload.columnNames[3].match(/\(2\)$/));
+assert.equal(canAssignTabulateField("rows", ["Region"], "Store"), false);
+assert.equal(canAssignTabulateField("columns", ["Region"], "Store"), true);
+assert.equal(canAssignTabulateField("statistics", ["Sales"], "Profit"), true);
+for (const name of ["setLatestResult", "getLatestResult", "clearLatestResult", "latestResultsById"]) {
+  assert.equal(name in useTabulateStore.getState(), false);
 }

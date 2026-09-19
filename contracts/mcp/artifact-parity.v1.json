@@ -469,8 +469,7 @@
             }
           ],
           "includeRowTotals": true,
-          "includeColumnTotals": false,
-          "maxResultCells": 10000
+          "includeColumnTotals": false
         }
       },
       "expectedEnvelope": {
@@ -491,8 +490,7 @@
               }
             ],
             "includeRowTotals": true,
-            "includeColumnTotals": false,
-            "maxResultCells": 10000
+            "includeColumnTotals": false
           }
         }
       }
@@ -517,8 +515,7 @@
             }
           ],
           "includeRowTotals": true,
-          "includeColumnTotals": false,
-          "maxResultCells": 10000
+          "includeColumnTotals": false
         }
       },
       "expectedEnvelope": {
@@ -540,8 +537,7 @@
               }
             ],
             "includeRowTotals": true,
-            "includeColumnTotals": false,
-            "maxResultCells": 10000
+            "includeColumnTotals": false
           }
         }
       }
@@ -973,6 +969,8 @@
         "createdAt": "2026-09-16T00:00:00.000Z"
       }
     ],
+    "graphBuildersNew": [],
+    "graphNewFolders": {},
     "fitYByX": [],
     "tabulates": [
       {

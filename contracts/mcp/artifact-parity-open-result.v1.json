@@ -1,6 +1,8 @@
 {
   "version": "artifact-parity-open-result.v1",
   "canonicalOpenProjectResult": {
+    "graphBuildersNew": [],
+    "graphNewFolders": {},
     "analyses": [
       {
         "analysisKind": "distribution",

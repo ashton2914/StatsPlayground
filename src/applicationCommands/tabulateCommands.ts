@@ -1,6 +1,5 @@
 import { selectWorkspaceDocument } from "@/components/analysis/analysisWorkspaceLifecycle";
 import { formatStatisticLabel } from "@/components/tabulate/TabulateStatisticEditor";
-import { buildTabulateExportRequest } from "@/components/tabulate/tabulateResult";
 import { throwIfCommandCancelled } from "@/applicationCommands/cancellation";
 import { createTableCommandHandlers } from "@/applicationCommands/tableCommands";
 import { CommandExecutionError } from "@/applicationCommands/runtime";
@@ -12,7 +11,6 @@ import type {
   TabulateExportTableResult,
   TabulateRunInput,
   TabulateRunResult,
-  TableCreateInput,
 } from "@/applicationCommands/types";
 import i18n from "@/i18n";
 import { dataService } from "@/services/dataService";
@@ -21,10 +19,10 @@ import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useDataStore } from "@/stores/useDataStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useProjectStore } from "@/stores/useProjectStore";
-import { useTabulateStore, type TabulateLatestResult } from "@/stores/useTabulateStore";
+import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkspaceSelectionStore } from "@/stores/useWorkspaceSelectionStore";
-import { allocateProjectBasename } from "@/utils/projectFileNaming";
-import type { TabulateItem, TabulateRequest, TabulateResult } from "@/types/tabulate";
+import { allocateProjectBasename, validateProjectBasename } from "@/utils/projectFileNaming";
+import type { TabulateItem, TabulateSessionRequest } from "@/types/tabulate";
 
 const TABULATE_EXTENSION = ".spf";
 
@@ -32,51 +30,6 @@ const TABULATE_RUN_SOURCE_CHANGED_WARNING: CommandWarning = {
   code: "tabulate_run_source_changed",
   message: "Tabulate finished, but source table changed during execution",
 };
-
-export function fingerprintTabulateRequest(request: TabulateRequest): string {
-  return JSON.stringify({
-    datasetId: request.datasetId,
-    rowFields: request.rowFields,
-    columnFields: request.columnFields,
-    statistics: request.statistics.map((statistic) => ({
-      id: statistic.id,
-      field: statistic.field,
-      kind: statistic.kind,
-      quantile: statistic.quantile ?? null,
-    })),
-    includeRowTotals: request.includeRowTotals,
-    includeColumnTotals: request.includeColumnTotals,
-    maxResultCells: request.maxResultCells,
-  });
-}
-
-export function isTabulateCacheFresh(
-  latest: TabulateLatestResult | null,
-  requestFingerprint: string,
-  sourceGeneration: number,
-): boolean {
-  if (!latest) {
-    return false;
-  }
-  return latest.requestFingerprint === requestFingerprint && latest.sourceGeneration === sourceGeneration;
-}
-
-interface ExportRequestBuilder {
-  (
-    item: Pick<TabulateItem, "rowFields" | "columnFields" | "statistics">,
-    result: Pick<TabulateResult, "rowMembers" | "columnMembers" | "statistics" | "cells">,
-    options: {
-      tableName: string;
-      missingLabel: string;
-      statisticLabel: typeof formatStatisticLabel;
-    },
-  ): {
-    name: string;
-    columnNames: string[];
-    columnTypes: string[];
-    rows: Array<Array<string | number | boolean | null>>;
-  };
-}
 
 export interface TabulateCommandDependencies {
   listTabulates: () => TabulateItem[];
@@ -90,33 +43,13 @@ export interface TabulateCommandDependencies {
   markDirty: () => void;
   recordAction: (description: string) => void;
   historyCreateMessage: (name: string, sourceName: string) => string;
-  runTabulate: (request: TabulateRequest) => Promise<TabulateResult>;
+  isProjectReadOnly: () => boolean;
   getDatasetGeneration: (datasetId: string) => Promise<number>;
-  setLatestResult: (tabulateId: string, latest: TabulateLatestResult) => void;
-  getLatestResult: (tabulateId: string) => TabulateLatestResult | null;
-  createTable: (
-    input: TableCreateInput,
-    controls?: { beginCommit?: () => void },
-  ) => Promise<{ result: import("@/applicationCommands/types").TableCreateResult; warnings: CommandWarning[] }>;
-  buildExportRequest: ExportRequestBuilder;
-}
-
-function toManagedTableCreateInput(request: {
-  name: string;
-  columnNames: string[];
-  columnTypes: string[];
-  rows: Array<Array<string | number | boolean | null>>;
-}): TableCreateInput {
-  return {
-    request: {
-      name: request.name,
-      columns: request.columnNames.map((name, index) => ({
-        name,
-        sqlType: request.columnTypes[index] ?? "VARCHAR",
-      })),
-      rows: request.rows,
-    },
-  };
+  prepareSession: typeof tabulateService.prepare;
+  getSessionStatus: typeof tabulateService.getStatus;
+  releaseSession: typeof tabulateService.release;
+  materializeTable: typeof tabulateService.materializeTable;
+  completeMaterializedTable: ReturnType<typeof createTableCommandHandlers>["completeMaterializedTable"];
 }
 
 function resolveTabulateSource(
@@ -151,42 +84,59 @@ async function executeTabulateRun(
     throw new CommandExecutionError("invalid_input", "Tabulate request dataset does not match source table");
   }
 
-  const requestFingerprint = fingerprintTabulateRequest(input.request);
   const sourceGenerationBefore = await dependencies.getDatasetGeneration(input.request.datasetId);
-
   throwIfCommandCancelled(controls?.signal);
-
-  const result = await dependencies.runTabulate(input.request);
-
-  throwIfCommandCancelled(controls?.signal);
-
-  const sourceGenerationAfter = await dependencies.getDatasetGeneration(input.request.datasetId);
-  throwIfCommandCancelled(controls?.signal);
-  const completedAt = dependencies.createNowIso();
-
-  dependencies.setLatestResult(input.tabulateId, {
-    requestFingerprint,
-    sourceGeneration: sourceGenerationBefore,
-    result,
-    completedAt,
+  const prepared = await dependencies.prepareSession({
+    datasetId: input.request.datasetId, sourceGeneration: sourceGenerationBefore,
+    rowFields: [...input.request.rowFields], columnFields: [...input.request.columnFields],
+    statistics: input.request.statistics.map((statistic) => ({ ...statistic })),
+    includeRowTotals: input.request.includeRowTotals, includeColumnTotals: input.request.includeColumnTotals,
   });
-
   const warnings: CommandWarning[] = [];
-  if (sourceGenerationAfter !== sourceGenerationBefore) {
-    warnings.push(TABULATE_RUN_SOURCE_CHANGED_WARNING);
+  let data: TabulateRunResult | undefined;
+  try {
+    let session = prepared;
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      throwIfCommandCancelled(controls?.signal);
+      if (session.sessionId !== prepared.sessionId || session.fingerprint !== prepared.fingerprint
+        || session.sourceGeneration !== sourceGenerationBefore) {
+        throw new CommandExecutionError("execution_failed", "Tabulate session identity changed", true);
+      }
+      if (session.state !== "preparing") break;
+      if (Date.now() >= deadline) {
+        throw new CommandExecutionError("execution_failed", "Tabulate preparation timed out", true);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      throwIfCommandCancelled(controls?.signal);
+      session = await dependencies.getSessionStatus(prepared.sessionId);
+    }
+    if (session.state !== "ready") {
+      throw new CommandExecutionError(session.state === "cancelled" ? "cancelled" : "execution_failed",
+        session.failureCode ?? "Tabulate session unavailable", true);
+    }
+    const sourceGenerationAfter = await dependencies.getDatasetGeneration(input.request.datasetId);
+    throwIfCommandCancelled(controls?.signal);
+    if (sourceGenerationAfter !== sourceGenerationBefore) warnings.push(TABULATE_RUN_SOURCE_CHANGED_WARNING);
+    data = {
+      tabulateId: input.tabulateId, requestFingerprint: session.fingerprint,
+      sourceGeneration: sourceGenerationBefore, completedAt: dependencies.createNowIso(),
+      session: {
+        sessionId: session.sessionId, fingerprint: session.fingerprint, sourceGeneration: session.sourceGeneration,
+        state: session.state, rowMemberCount: session.rowMemberCount, columnMemberCount: session.columnMemberCount,
+        logicalCellCount: session.logicalCellCount, measuredMemberIndexBytes: session.measuredMemberIndexBytes,
+      },
+      cacheValid: sourceGenerationAfter === sourceGenerationBefore, leaseReleased: false,
+    };
+    return { data, warnings };
+  } finally {
+    try {
+      await dependencies.releaseSession(prepared.sessionId);
+      if (data) data.leaseReleased = true;
+    } catch {
+      warnings.push({ code: "tabulate_release_failed", message: "Tabulate session cleanup failed" });
+    }
   }
-
-  return {
-    data: {
-      tabulateId: input.tabulateId,
-      requestFingerprint,
-      sourceGeneration: sourceGenerationBefore,
-      completedAt,
-      result,
-      cacheValid: sourceGenerationAfter === sourceGenerationBefore,
-    },
-    warnings,
-  };
 }
 
 export function createTabulateCommandHandlers(
@@ -216,12 +166,13 @@ export function createTabulateCommandHandlers(
     markDirty: () => useProjectStore.getState().markDirty(),
     recordAction: (description) => useHistoryStore.getState().record(description),
     historyCreateMessage: (name, sourceName) => i18n.t("history.newTabulate", { name, source: sourceName }),
-    runTabulate: tabulateService.run,
+    isProjectReadOnly: () => useProjectStore.getState().readOnly,
     getDatasetGeneration: dataService.getDatasetGeneration,
-    setLatestResult: (tabulateId, latest) => useTabulateStore.getState().setLatestResult(tabulateId, latest),
-    getLatestResult: (tabulateId) => useTabulateStore.getState().getLatestResult(tabulateId),
-    createTable: (input, controls) => tableHandlers.createTable(input, controls),
-    buildExportRequest: buildTabulateExportRequest,
+    prepareSession: tabulateService.prepare,
+    getSessionStatus: tabulateService.getStatus,
+    releaseSession: tabulateService.release,
+    materializeTable: tabulateService.materializeTable,
+    completeMaterializedTable: tableHandlers.completeMaterializedTable,
     ...dependencies,
   };
 
@@ -279,8 +230,11 @@ export function createTabulateCommandHandlers(
     if (!input.tabulateId) {
       throw new CommandExecutionError("invalid_input", "tabulateId is required");
     }
-    if (!input.tableName.trim()) {
-      throw new CommandExecutionError("invalid_input", "tableName is required");
+    if (validateProjectBasename(input.tableName)) {
+      throw new CommandExecutionError("invalid_input", "Invalid table name");
+    }
+    if (resolvedDependencies.isProjectReadOnly()) {
+      throw new CommandExecutionError("read_only", "Project is read-only");
     }
 
     const item = resolveTabulateItem(resolvedDependencies, input.tabulateId);
@@ -288,66 +242,70 @@ export function createTabulateCommandHandlers(
       throw new CommandExecutionError("invalid_input", "Tabulate request dataset does not match source table");
     }
 
-    const requestFingerprint = fingerprintTabulateRequest(input.request);
-    const sourceGeneration = await resolvedDependencies.getDatasetGeneration(input.request.datasetId);
-    const latest = resolvedDependencies.getLatestResult(input.tabulateId);
-
-    let result = latest?.result ?? null;
-    let effectiveSourceGeneration = latest?.sourceGeneration ?? sourceGeneration;
-    let warnings: CommandWarning[] = [];
-    let reran = false;
-
-    if (!isTabulateCacheFresh(latest, requestFingerprint, sourceGeneration)) {
-      const runOutcome = await executeTabulateRun(resolvedDependencies, {
-        tabulateId: input.tabulateId,
-        request: input.request,
-      }, { signal: controls?.signal });
-      if (!runOutcome.data.cacheValid) {
-        throw new CommandExecutionError(
-          "execution_failed",
-          "Source table changed during tabulate rerun; retry after source stabilizes",
-          true,
-          {
-            tabulateId: input.tabulateId,
-            sourceGenerationBefore: runOutcome.data.sourceGeneration,
-          },
-        );
-      }
-      warnings = [...warnings, ...runOutcome.warnings];
-      result = runOutcome.data.result;
-      effectiveSourceGeneration = runOutcome.data.sourceGeneration;
-      reran = true;
-    }
-
-    if (!result) {
-      throw new CommandExecutionError("execution_failed", "Tabulate run did not produce a result");
-    }
-
-    const rowsRequest = resolvedDependencies.buildExportRequest(item, result, {
-      tableName: input.tableName,
-      missingLabel: i18n.t("tabulate.missing"),
-      statisticLabel: formatStatisticLabel,
-    });
-
     throwIfCommandCancelled(controls?.signal);
-    controls?.beginCommit?.();
-
-    const created = await resolvedDependencies.createTable(
-      toManagedTableCreateInput(rowsRequest),
-      undefined,
-    );
-
-    warnings = [...warnings, ...created.warnings];
-
-    return {
-      data: {
-        outputTable: created.result,
-        reran,
-        requestFingerprint,
-        sourceGeneration: effectiveSourceGeneration,
-      },
-      warnings,
+    const sourceGeneration = await resolvedDependencies.getDatasetGeneration(input.request.datasetId);
+    throwIfCommandCancelled(controls?.signal);
+    const definition: TabulateSessionRequest = {
+      datasetId: input.request.datasetId,
+      sourceGeneration,
+      rowFields: [...input.request.rowFields],
+      columnFields: [...input.request.columnFields],
+      statistics: input.request.statistics.map((statistic) => ({ ...statistic })),
+      includeRowTotals: input.request.includeRowTotals,
+      includeColumnTotals: input.request.includeColumnTotals,
     };
+    const prepared = await resolvedDependencies.prepareSession(definition);
+    const warnings: CommandWarning[] = [];
+    try {
+      throwIfCommandCancelled(controls?.signal);
+      let session = prepared;
+      const deadline = Date.now() + 120_000;
+      while (session.state === "preparing") {
+        if (Date.now() >= deadline) {
+          throw new CommandExecutionError("execution_failed", "Tabulate preparation timed out", true);
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        throwIfCommandCancelled(controls?.signal);
+        session = await resolvedDependencies.getSessionStatus(prepared.sessionId);
+        throwIfCommandCancelled(controls?.signal);
+      }
+      if (session.state !== "ready") {
+        throw new CommandExecutionError("execution_failed", session.failureCode ?? "Tabulate session unavailable", true);
+      }
+      if (session.sessionId !== prepared.sessionId || session.fingerprint !== prepared.fingerprint
+        || session.sourceGeneration !== sourceGeneration
+        || await resolvedDependencies.getDatasetGeneration(definition.datasetId) !== sourceGeneration) {
+        throw new CommandExecutionError("execution_failed", "Source table changed during tabulate rerun; retry after source stabilizes", true);
+      }
+      throwIfCommandCancelled(controls?.signal);
+      controls?.beginCommit?.();
+      const created = await resolvedDependencies.materializeTable({
+        sessionId: session.sessionId,
+        fingerprint: session.fingerprint,
+        sourceGeneration,
+        destinationName: input.tableName,
+        missingLabel: i18n.t("tabulate.missing"),
+        statisticLabels: definition.statistics.map(formatStatisticLabel),
+      });
+      const completed = await resolvedDependencies.completeMaterializedTable(created);
+      warnings.push(...completed.warnings);
+      return {
+        data: {
+          outputTable: completed.result,
+          reran: prepared.state !== "ready" || input.session?.sessionId !== session.sessionId
+            || input.session.fingerprint !== session.fingerprint || input.session.sourceGeneration !== sourceGeneration,
+          requestFingerprint: session.fingerprint,
+          sourceGeneration,
+        },
+        warnings,
+      };
+    } finally {
+      try {
+        await resolvedDependencies.releaseSession(prepared.sessionId);
+      } catch {
+        warnings.push({ code: "tabulate_release_failed", message: "Tabulate session cleanup failed" });
+      }
+    }
   }
 
   return {

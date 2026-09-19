@@ -122,7 +122,9 @@ export function createApplicationRuntime(
     ...dependencies.report,
   });
   const tabulateHandlers = createTabulateCommandHandlers({
-    createTable: (input, controls) => tableHandlers.createTable(input, controls),
+    completeMaterializedTable: tableHandlers.completeMaterializedTable,
+    isProjectReadOnly: () => dependencies.project?.getProjectState?.().readOnly
+      ?? useProjectStore.getState().readOnly,
     ...dependencies.tabulate,
   });
 

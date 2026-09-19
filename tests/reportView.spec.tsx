@@ -1,6 +1,37 @@
 import { expect, test } from "@playwright/experimental-ct-react";
 
-import { ReportEmbedRecoveryHarness, ReportViewHarness } from "./reportViewHarness";
+import { ReportEmbedRecoveryHarness, ReportViewHarness, TabulateReportLifecycleHarness } from "./reportViewHarness";
+
+test("Tabulate read-only report navigates both axes with bounded cells and releases its session", async ({ mount }) => {
+  const component = await mount(<TabulateReportLifecycleHarness />);
+  await expect(component.locator('[data-tabulate-cell="0:0:0"]')).toHaveText("4");
+  await expect(component.getByRole("button", { name: "Export table" })).toHaveCount(0);
+  await component.getByRole("spinbutton", { name: "Row position" }).fill("501");
+  await component.getByRole("spinbutton", { name: "Row position" }).press("Enter");
+  await component.getByRole("spinbutton", { name: "Column position" }).fill("301");
+  await component.getByRole("spinbutton", { name: "Column position" }).press("Enter");
+  await expect(component.locator('[data-tabulate-cell="500:300:0"]')).toHaveText("804");
+  expect(await component.locator("[data-tabulate-cell]").count()).toBeLessThan(1000);
+  expect(await component.getByRole("grid").locator("*").count()).toBeLessThan(2000);
+  await component.getByRole("button", { name: "Change generation" }).click();
+  await expect.poll(async () => JSON.parse(await component.getByTestId("tabulate-report-evidence").textContent() ?? "{}").released.length).toBe(1);
+  await expect(component.locator('[data-tabulate-cell="0:0:0"]')).toHaveText("4");
+  await component.getByRole("button", { name: "Unmount Tabulate" }).click();
+  await expect.poll(async () => JSON.parse(await component.getByTestId("tabulate-report-evidence").textContent() ?? "{}").released.length).toBe(2);
+  const evidence = JSON.parse(await component.getByTestId("tabulate-report-evidence").textContent() ?? "{}");
+  expect(evidence.legacy).toBe(0);
+  expect(evidence.released).toEqual(evidence.prepared);
+  expect(evidence.windows.every((range: number[]) => range[2]! <= 128 && range[3]! <= 64)).toBe(true);
+});
+
+test("Tabulate report releases a late preparation after unmount", async ({ mount }) => {
+  const component = await mount(<TabulateReportLifecycleHarness late />);
+  await expect.poll(async () => JSON.parse(await component.getByTestId("tabulate-report-evidence").textContent() ?? "{}").prepared.length).toBe(1);
+  await component.getByRole("button", { name: "Unmount Tabulate" }).click();
+  await component.getByRole("button", { name: "Finish prepare" }).click();
+  await expect.poll(async () => JSON.parse(await component.getByTestId("tabulate-report-evidence").textContent() ?? "{}").released).toEqual(["report-0"]);
+  await expect(component.getByRole("grid")).toHaveCount(0);
+});
 
 test("renders GFM directly and keeps unsafe Markdown inert", async ({ mount, page }) => {
   const remoteImageRequests: string[] = [];
@@ -94,21 +125,6 @@ test("renders live table, graph, fit y by x, tabulate, and distribution embeds",
               anova: [],
               parameterEstimates: [],
             },
-          }),
-        },
-        tabulate: {
-          getColumns: async () => [["supplier", "VARCHAR"], ["phase", "VARCHAR"], ["strength", "DOUBLE"]],
-          getColumnDisplayProps: async () => [],
-          run: async () => ({
-            rowMembers: [["A"]],
-            columnMembers: [["EV"]],
-            statistics: [{ id: "count", field: "strength", kind: "count" }],
-            cells: [4],
-            rowTotals: [4],
-            columnTotals: [4],
-            grandTotals: [4],
-            cellCount: 1,
-            limit: 10000,
           }),
         },
         distribution: {

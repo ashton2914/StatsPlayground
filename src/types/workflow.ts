@@ -299,7 +299,7 @@ export type WorkflowDocumentCommit =
       kind: "tabulate";
       sourceTableId: string;
       document: unknown;
-      result: unknown;
+      result: { session: import("@/types/tabulate").TabulateSessionStatus; leaseReleased: boolean };
     })
   | (WorkflowDocumentCommitBase & {
       kind: "report";

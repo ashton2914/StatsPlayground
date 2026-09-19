@@ -8,12 +8,11 @@ use crate::models::distribution::DistributionRequest;
 use crate::models::fit_model::FitModelRequest;
 use crate::models::fit_y_by_x::FitYByXRequest;
 use crate::models::hypothesis_test::HypothesisTestRequest;
-use crate::models::tabulate::TabulateRequest;
+use crate::models::tabulate::{TabulateSessionRequest, TabulateSessionState};
 use crate::services::distribution_service::DistributionService;
 use crate::services::fit_model_service::FitModelService;
 use crate::services::fit_y_by_x_service::FitYByXService;
 use crate::services::hypothesis_test_service::HypothesisTestService;
-use crate::services::tabulate_service::TabulateService;
 use crate::services::workflow_executor::FrozenTableInput;
 use crate::services::workflow_fingerprint::{canonical_document_hash, canonical_json_hash};
 use crate::state::AppState;
@@ -159,24 +158,55 @@ impl<'a> WorkflowDocumentExecutor<'a> {
         id: &str,
         name: &str,
         document: Value,
-        request: TabulateRequest,
+        request: TabulateSessionRequest,
         frozen_input: &FrozenTableInput,
     ) -> Result<WorkflowDocumentCommit, AppError> {
         validate_document_identity(&document, id, "sourceDatasetId", frozen_input)?;
-        if request.dataset_id != frozen_input.table_document_id {
+        if request.dataset_id != frozen_input.table_document_id || request.source_generation != frozen_input.generation {
             return Err(identity_error(&request.dataset_id, frozen_input));
         }
         self.validate_frozen_input(frozen_input)?;
-        let result = serde_json::to_value(TabulateService::new(self.state).run(request)?).map_err(
-            |error| AppError::Stats(format!("failed to encode tabulate result: {error}")),
-        )?;
-        self.validate_frozen_input(frozen_input)?;
+        let service = self.state.tabulate_sessions.read()
+            .map_err(|error| AppError::Database(error.to_string()))?.clone();
+        let prepared = service.prepare(&request)?;
+        let computation = (|| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut session = prepared.clone();
+            while session.state == TabulateSessionState::Preparing {
+                if std::time::Instant::now() >= deadline {
+                    return Err(AppError::Stats("tabulate_query_timeout".into()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                session = service.status(&prepared.session_id)?;
+            }
+            if session.state != TabulateSessionState::Ready {
+                return Err(AppError::Stats(session.failure_code.unwrap_or_else(|| "tabulate_session_unavailable".into())));
+            }
+            if session.session_id != prepared.session_id || session.fingerprint != prepared.fingerprint
+                || session.source_generation != frozen_input.generation {
+                return Err(AppError::Stats("tabulate_stale_source".into()));
+            }
+            self.validate_frozen_input(frozen_input)?;
+            let validation_result_hash = canonical_json_hash(&serde_json::json!({
+                "sourceContentHash": frozen_input.content_hash,
+                "rowFields": request.row_fields, "columnFields": request.column_fields,
+                "statistics": request.statistics, "includeRowTotals": request.include_row_totals,
+                "includeColumnTotals": request.include_column_totals,
+                "rowMemberCount": session.row_member_count, "columnMemberCount": session.column_member_count,
+                "logicalCellCount": session.logical_cell_count,
+            }))?;
+            Ok((session, validation_result_hash))
+        })();
+        let released = service.release(&prepared.session_id);
+        let (session, validation_result_hash) = computation?;
+        released?;
+        let result = serde_json::json!({ "session": session, "leaseReleased": true });
         Ok(WorkflowDocumentCommit::Tabulate {
             id: id.to_string(),
             name: name.to_string(),
             source_table_id: frozen_input.table_document_id.clone(),
             document,
-            validation_result_hash: canonical_document_hash(&result)?,
+            validation_result_hash,
             result,
         })
     }
@@ -673,7 +703,7 @@ mod tests {
     use crate::models::fit_model::FitModelRequest;
     use crate::models::fit_y_by_x::{FitYByXPersonality, FitYByXRequest};
     use crate::models::hypothesis_test::HypothesisTestRequest;
-    use crate::models::tabulate::{StatisticKind, TabulateRequest, TabulateStatistic};
+    use crate::models::tabulate::{StatisticKind, TabulateSessionRequest, TabulateStatistic};
     use crate::services::workflow_executor::FrozenTableInput;
     use crate::services::workflow_fingerprint::canonical_json_hash;
     use crate::state::AppState;
@@ -734,6 +764,29 @@ mod tests {
             generation,
             content_hash,
         }
+    }
+
+    #[test]
+    fn workflow_tabulate_records_bounded_summary_and_releases_lease() {
+        let state = AppState::new().unwrap();
+        let frozen = seed_compute_dataset(&state);
+        let commit = WorkflowDocumentExecutor::new(&state).execute_tabulate(
+            "tab", "Summary", json!({"id": "tab", "sourceDatasetId": frozen.table_document_id}),
+            TabulateSessionRequest {
+                dataset_id: frozen.table_document_id.clone(), row_fields: vec!["site".into()],
+                column_fields: vec![], statistics: vec![TabulateStatistic {
+                    id: "mean".into(), field: "height".into(), kind: StatisticKind::Mean, quantile: None,
+                }], include_row_totals: true, include_column_totals: true, source_generation: frozen.generation,
+            }, &frozen,
+        ).unwrap();
+        let WorkflowDocumentCommit::Tabulate { result, .. } = commit else { panic!("Tabulate commit") };
+        assert!(result.get("cells").is_none(), "workflow must not serialize full cells");
+        assert_eq!(result["session"]["state"], "ready");
+        assert_eq!(result["session"]["rowMemberCount"], 2);
+        assert_eq!(result["session"]["sourceGeneration"], frozen.generation);
+        assert_eq!(result["leaseReleased"], true);
+        let session_id = result["session"]["sessionId"].as_str().unwrap();
+        assert!(state.tabulate_sessions.read().unwrap().status(session_id).is_err());
     }
 
     #[test]
@@ -931,7 +984,7 @@ mod tests {
                     "name": "Height summary",
                     "sourceDatasetId": "workflow-compute"
                 }),
-                TabulateRequest {
+                TabulateSessionRequest {
                     dataset_id: frozen.table_document_id.clone(),
                     row_fields: vec!["site".to_string()],
                     column_fields: vec![],
@@ -943,7 +996,7 @@ mod tests {
                     }],
                     include_row_totals: true,
                     include_column_totals: true,
-                    max_result_cells: 10_000,
+                    source_generation: frozen.generation,
                 },
                 &frozen,
             )
@@ -951,7 +1004,7 @@ mod tests {
         let WorkflowDocumentCommit::Tabulate { result, .. } = tabulate else {
             panic!("expected tabulate commit");
         };
-        assert_eq!(result["cellCount"], 2);
+        assert_eq!(result["session"]["logicalCellCount"], 2);
     }
 
     #[test]
@@ -974,7 +1027,7 @@ mod tests {
                 "tabulate-output",
                 "Height summary",
                 json!({ "sourceDatasetId": "workflow-compute" }),
-                TabulateRequest {
+                TabulateSessionRequest {
                     dataset_id: frozen.table_document_id.clone(),
                     row_fields: vec![],
                     column_fields: vec![],
@@ -986,7 +1039,7 @@ mod tests {
                     }],
                     include_row_totals: false,
                     include_column_totals: false,
-                    max_result_cells: 10_000,
+                    source_generation: frozen.generation,
                 },
                 &frozen,
             )

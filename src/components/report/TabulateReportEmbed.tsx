@@ -4,17 +4,17 @@ import { useTranslation } from "react-i18next";
 import type { TabulateFieldInfo } from "@/components/tabulate/TabulateFieldList";
 import { TabulateResultTable } from "@/components/tabulate/TabulateResultTable";
 import { isNumericDuckDbType } from "@/components/tabulate/tabulateResult";
+import { useTabulateSession, type TabulateSessionRuntime } from "@/components/tabulate/useTabulateSession";
 import { dataService } from "@/services/dataService";
-import { tabulateService } from "@/services/tabulateService";
 import type { ColumnDisplayProps } from "@/types/data";
-import type { TabulateResult } from "@/types/tabulate";
 
 import type { ReportResolvedSource } from "./ReportEmbed";
+import "@/components/tabulate/tabulate.css";
 
 export interface TabulateReportEmbedRuntime {
   getColumns?: typeof dataService.getColumns;
   getColumnDisplayProps?: typeof dataService.getColumnDisplayProps;
-  run?: typeof tabulateService.run;
+  session?: TabulateSessionRuntime;
 }
 
 export function TabulateReportEmbed({
@@ -27,32 +27,24 @@ export function TabulateReportEmbed({
   const { t } = useTranslation();
   const [fields, setFields] = useState<TabulateFieldInfo[]>([]);
   const [displayPropsByField, setDisplayPropsByField] = useState<Map<string, ColumnDisplayProps | undefined>>(new Map());
-  const [result, setResult] = useState<TabulateResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const session = useTabulateSession(source.item, source.dataset.generation, {
+    visibleRowDepth: source.item.rowFields.length,
+    visibleColumnDepth: source.item.columnFields.length,
+  }, runtime?.session);
 
   useEffect(() => {
     let cancelled = false;
     const getColumns = runtime?.getColumns ?? dataService.getColumns;
     const getColumnDisplayProps = runtime?.getColumnDisplayProps ?? dataService.getColumnDisplayProps;
-    const run = runtime?.run ?? tabulateService.run;
 
     setError(null);
-    setResult(null);
 
     void (async () => {
       try {
-        const [columns, displayProps, nextResult] = await Promise.all([
+        const [columns, displayProps] = await Promise.all([
           getColumns(source.dataset.id),
           getColumnDisplayProps(source.dataset.id).catch(() => []),
-          run({
-            datasetId: source.dataset.id,
-            rowFields: source.item.rowFields,
-            columnFields: source.item.columnFields,
-            statistics: source.item.statistics,
-            includeRowTotals: source.item.includeRowTotals,
-            includeColumnTotals: source.item.includeColumnTotals,
-            maxResultCells: 10000,
-          }),
         ]);
         if (cancelled) {
           return;
@@ -69,7 +61,6 @@ export function TabulateReportEmbed({
         });
         setFields(nextFields);
         setDisplayPropsByField(nextDisplayPropsByField);
-        setResult(nextResult);
       } catch (nextError) {
         if (!cancelled) {
           setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -80,16 +71,12 @@ export function TabulateReportEmbed({
     return () => {
       cancelled = true;
     };
-  }, [runtime?.getColumnDisplayProps, runtime?.getColumns, runtime?.run, source.dataset.id, source.item]);
+  }, [runtime?.getColumnDisplayProps, runtime?.getColumns, source.dataset.id, source.dataset.generation]);
 
   const fieldsByName = useMemo(() => new Map(fields.map((field) => [field.name, field])), [fields]);
 
   if (error) {
     return <div className="sp-report-embed-error">{t("report.embedError", { kind: t("report.group.tabulate"), name: source.name, message: error })}</div>;
-  }
-
-  if (!result) {
-    return <div className="sp-report-embed-card sp-report-embed-loading">{t("common.loading")}</div>;
   }
 
   return (
@@ -100,7 +87,7 @@ export function TabulateReportEmbed({
       </div>
       <TabulateResultTable
         item={source.item}
-        result={result}
+        session={session}
         fieldsByName={fieldsByName}
         displayPropsByField={displayPropsByField}
         visibleRowDepth={source.item.rowFields.length}

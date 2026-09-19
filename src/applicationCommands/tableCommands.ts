@@ -142,8 +142,43 @@ export function createTableCommandHandlers(
     return { result: buildCreateResult(created, input), warnings };
   }
 
+  async function completeMaterializedTable(
+    created: import("@/types/data").DatasetMeta,
+  ): Promise<{ result: TableCreateResult | null; warnings: CommandWarning[] }> {
+    const warnings: CommandWarning[] = [];
+    await runPostCreateCoordinator({
+      dependencies: resolvedDependencies,
+      datasetId: created.id,
+      historyMessage: resolvedDependencies.historyMessage(created.name),
+      warnings,
+      warningMap: TABLE_CREATE_POST_COMMIT_WARNINGS,
+    });
+    let result: TableCreateResult = {
+      dataset: {
+        id: created.id,
+        name: created.name,
+        sourceType: created.sourceType,
+        rowCount: created.rowCount,
+        colCount: created.colCount,
+        generation: created.generation,
+        createdAt: created.createdAt,
+        updatedAt: created.updatedAt,
+        sourceName: created.sourcePath,
+      },
+      generation: created.generation,
+      columns: [],
+    };
+    try {
+      result = await projectHandlers.describeProjectTable({ datasetId: created.id });
+    } catch {
+      warnings.push({ code: "table_create_describe_failed", message: "Table created, but output inspection failed" });
+    }
+    return { result, warnings };
+  }
+
   return {
     createTable,
+    completeMaterializedTable,
     listProjectTables: (input: TableListInput): Promise<TableListResult> => projectHandlers.listProjectTables(input),
     describeProjectTable: (input: TableDescribeInput): Promise<TableDescribeResult> => projectHandlers.describeProjectTable(input),
   };

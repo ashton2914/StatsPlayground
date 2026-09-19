@@ -785,21 +785,6 @@ pub struct TabulateRequest {
     pub statistics: Vec<TabulateStatistic>,
     pub include_row_totals: bool,
     pub include_column_totals: bool,
-    pub max_result_cells: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TabulateResult {
-    pub row_members: Vec<Vec<Value>>,
-    pub column_members: Vec<Vec<Value>>,
-    pub statistics: Vec<TabulateStatistic>,
-    pub cells: Vec<Option<f64>>,
-    pub row_totals: Vec<Option<f64>>,
-    pub column_totals: Vec<Option<f64>>,
-    pub grand_totals: Vec<Option<f64>>,
-    pub cell_count: u64,
-    pub limit: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -830,8 +815,41 @@ pub struct TabulateRunResultData {
     pub request_fingerprint: String,
     pub source_generation: u64,
     pub completed_at: String,
-    pub result: TabulateResult,
+    pub session: TabulateSessionSummary,
+    pub lease_released: bool,
     pub cache_valid: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TabulateSessionState {
+    Preparing,
+    Ready,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateSessionSummary {
+    pub session_id: String,
+    pub fingerprint: String,
+    pub source_generation: u64,
+    pub state: TabulateSessionState,
+    pub row_member_count: u64,
+    pub column_member_count: u64,
+    pub logical_cell_count: u64,
+    pub measured_member_index_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TabulateSessionIdentity {
+    pub session_id: String,
+    pub fingerprint: String,
+    pub source_generation: u64,
 }
 
 pub type TabulateRunToolOutput = ToolCommandResult<TabulateRunResultData>;
@@ -842,6 +860,8 @@ pub struct TabulateToTableToolInput {
     pub tabulate_id: String,
     pub request: TabulateRequest,
     pub table_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<TabulateSessionIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -2448,6 +2468,28 @@ mod tests {
     };
     use rmcp::model::{CallToolRequestParams, CallToolResponse};
     use serde::Deserialize;
+
+    #[test]
+    fn tabulate_session_schemas_are_bounded_and_strict() {
+        let input = serde_json::to_value(schema_for!(TabulateRunToolInput)).unwrap();
+        let export = serde_json::to_value(schema_for!(TabulateToTableToolInput)).unwrap();
+        let output = serde_json::to_value(schema_for!(TabulateRunToolOutput)).unwrap();
+        for schema in [&input, &export, &output] {
+            let encoded = schema.to_string();
+            assert!(!encoded.contains("maxResultCells"));
+            assert!(!encoded.contains("\"cells\""));
+            assert!(!encoded.contains("rowMembers"));
+        }
+        assert!(output.to_string().contains("sessionId"));
+        assert!(output.to_string().contains("leaseReleased"));
+        let mut request = serde_json::json!({
+            "tabulateId": "tab", "request": { "datasetId": "source", "rowFields": [],
+            "columnFields": [], "statistics": [], "includeRowTotals": true, "includeColumnTotals": true }
+        });
+        assert!(serde_json::from_value::<TabulateRunToolInput>(request.clone()).is_ok());
+        request["request"]["maxResultCells"] = serde_json::json!(10000);
+        assert!(serde_json::from_value::<TabulateRunToolInput>(request).is_err());
+    }
 
     #[derive(Debug, Deserialize)]
     struct ProjectionFixture {
