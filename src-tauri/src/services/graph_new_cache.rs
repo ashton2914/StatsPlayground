@@ -873,10 +873,20 @@ pub(super) fn construction_disk_requirement(
     let mut required = rows.checked_mul(record_bytes).ok_or_else(cache_pressure)?;
     for level in 0..levels {
         let tiles = rows.min(1u64 << (2 * u32::from(level)));
-        let marks = if level + 1 == levels {
-            let limit = max_tile_points.min(if policy == RetentionPolicy::Lossless { 128 } else { 4096 });
-            rows.min(tiles.checked_mul(u64::from(limit)).ok_or_else(cache_pressure)?)
-        } else { tiles };
+        let limit = if level + 1 == levels {
+            max_tile_points.min(if policy == RetentionPolicy::Lossless {
+                128
+            } else {
+                4096
+            })
+        } else {
+            max_tile_points
+        };
+        let marks = rows.min(
+            tiles
+                .checked_mul(u64::from(limit))
+                .ok_or_else(cache_pressure)?,
+        );
         required = tiles.checked_mul(128)
             .and_then(|bytes| marks.checked_mul(tile_point_bytes).and_then(|marks| bytes.checked_add(marks)))
             .and_then(|bytes| required.checked_add(bytes)).ok_or_else(cache_pressure)?;
@@ -1261,11 +1271,13 @@ pub(super) mod tests {
         cache.persist(&first_key).expect("persist first");
         let first_path = cache.disk_path(&first_key).expect("path");
         cache.remove(&first_key);
-        cache.disk_limit = 600;
+        let required =
+            construction_disk_requirement(2, 2, 16, RetentionPolicy::Bounded).expect("bound");
+        cache.disk_limit = required;
 
         let mut builder = TilePyramidBuilder::new(2, 16, 1.5).expect("builder");
         builder.limit_disk_to(cache.construction_disk_budget(
-            construction_disk_requirement(2, 2, 16, RetentionPolicy::Bounded).expect("bound")
+            required
         ).expect("construction admission"));
         builder.push_batch(&[SourcePoint::new(1, 2.0, 3.0), SourcePoint::new(2, 4.0, 5.0)])
             .expect("second scan fits after reclaim");
@@ -1278,7 +1290,7 @@ pub(super) mod tests {
 
     #[test]
     fn graph_new_cache_construction_bound_covers_both_retention_peaks() {
-        for (policy, two_row_bytes) in [(RetentionPolicy::Bounded, 594), (RetentionPolicy::Lossless, 658)] {
+        for (policy, two_row_bytes) in [(RetentionPolicy::Bounded, 624), (RetentionPolicy::Lossless, 688)] {
             assert_eq!(construction_disk_requirement(2, 2, 16, policy).expect("bound"), two_row_bytes);
             assert_eq!(construction_disk_requirement(0, 2, 16, policy).expect("empty"), 0);
             assert!(construction_disk_requirement(u64::MAX, 2, 16, policy).is_err());

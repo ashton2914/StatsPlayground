@@ -9,7 +9,6 @@ use crate::error::AppError;
 use crate::models::graph_new_data::{
     GraphNewBuildProgress, GraphNewBuildRequest, GraphNewBuildStage, GraphNewBuildSummary,
     GraphNewLevelSummary, GRAPH_NEW_DEFAULT_DOMAIN_POLICY,
-    GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES, GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
 };
 use crate::state::AppState;
 use crate::models::graph_new::{GraphNewRenderRequest, GraphNewRenderCompletion, GraphNewFrameHeader, GraphNewFrameFormat};
@@ -20,6 +19,7 @@ use super::graph_new_key::{
     GraphKey, GraphKeyParts, GRAPH_NEW_RENDERER_CONTRACT_VERSION, GRAPH_NEW_TILE_FORMAT_VERSION,
 };
 use super::graph_new_lod::{GraphCamera, SourcePoint, TilePyramid, TilePyramidBuilder};
+use super::graph_new_overlay::OverlayDictionary;
 use super::graph_new_renderer::{GraphNewRenderer, GraphNewScene};
 use super::graph_new_transport_service::SyntheticFrame;
 
@@ -273,8 +273,15 @@ impl<'a> GraphNewService<'a> {
             let mut points = Vec::with_capacity(selected_marks);
             for selected in selection.tiles {
                 if !is_current() { return Err(AppError::Cancelled("graph_new_cancelled".into())); }
-                for ((row_id, x), y) in selected.tile.row_ids.into_iter().zip(selected.tile.xs).zip(selected.tile.ys) {
-                    points.push(SourcePoint::new(row_id, x, y));
+                for (((row_id, x), y), group_code) in selected
+                    .tile
+                    .row_ids
+                    .into_iter()
+                    .zip(selected.tile.xs)
+                    .zip(selected.tile.ys)
+                    .zip(selected.tile.group_codes)
+                {
+                    points.push(SourcePoint::with_group(row_id, x, y, group_code));
                 }
             }
             let raw_line = if request.raw_mode != crate::models::graph_new::GraphNewRawMode::Scatter && built.pyramid.mean_available() {
@@ -305,7 +312,9 @@ impl<'a> GraphNewService<'a> {
                 x_axis,
                 raw_mode: request.raw_mode, raw_line_available: built.pyramid.mean_available(),
                 raw_line_segments: raw_line.as_ref().map_or(0, |segments| segments.len()),
-                overlay_groups: vec![], overlay_active: false, hidden_overlay_groups: 0,
+                overlay_groups: built.pyramid.overlay.groups.clone(),
+                overlay_active: built.pyramid.overlay.active,
+                hidden_overlay_groups: request.hidden_overlay_group_ids.len(),
                 mean_available: built.pyramid.mean_available(), mean_groups: scene.mean.as_ref().map(|mean| mean.len()),
                 mean_visible: scene.mean.as_ref().is_some_and(|mean| mean.len() >= 2),
                 exact_visible: selection.exact, visible_rows: selection.visible_rows,
@@ -419,7 +428,7 @@ impl<'a> GraphNewService<'a> {
         self.ensure_current(request, is_current, "before scan")?;
 
         let started = Instant::now();
-        let (x_column, y_column, read_conn) = {
+        let (x_column, y_column, overlay_column, read_conn) = {
             let db = self
                 .state
                 .db
@@ -451,6 +460,14 @@ impl<'a> GraphNewService<'a> {
                         )
                     })?
                 },
+                request.overlay_column_id.as_ref().map(|column_id| {
+                    bindings.get(column_id).cloned().ok_or_else(|| {
+                        AppError::InvalidParam(
+                            "graph-new overlayColumnId does not resolve to a dataset column"
+                                .to_string(),
+                        )
+                    })
+                }).transpose()?,
                 db.open_secondary_connection()?,
             )
         };
@@ -465,7 +482,7 @@ impl<'a> GraphNewService<'a> {
             dataset_generation: request.dataset_generation,
             x_column_id: x_column.column_id.clone(),
             y_column_id: y_column.column_id.clone(),
-            overlay_column_id: request.overlay_column_id.clone(),
+            overlay_column_id: overlay_column.as_ref().map(|column| column.column_id.clone()),
             filter_identity: None,
             renderer_contract_version: GRAPH_NEW_RENDERER_CONTRACT_VERSION,
             tile_format_version: GRAPH_NEW_TILE_FORMAT_VERSION,
@@ -475,7 +492,8 @@ impl<'a> GraphNewService<'a> {
         })?;
 
         let resolved_mode = if x_mode == GraphNewXMode::Auto && !is_numeric_type(&x_column.sql_type) && !is_native_time(&x_column) {
-            let parsed = parsed_x_sql(&x_column, &y_column, &request.dataset_id);
+            let parsed =
+                parsed_x_sql(&x_column, &y_column, overlay_column.as_ref(), &request.dataset_id);
             let (duration, time): (bool, bool) = read_conn.query_row(&format!(r#"{parsed}
                 SELECT coalesce(bool_and(label IS NULL OR duration IS NOT NULL), false),
                     coalesce(bool_and(label IS NULL OR time IS NOT NULL OR mdy IS NOT NULL)
@@ -488,12 +506,30 @@ impl<'a> GraphNewService<'a> {
             Some(bounded_categories(&read_conn, &x_column, &request.dataset_id,
                 &|| self.ensure_current(request, is_current, "during category admission"))?)
         } else { None };
-        let sql = if let Some(categories) = &categories { category_projection_sql(&x_column, &y_column, &request.dataset_id, categories.len()) }
-            else { x_projection_sql(&x_column, &y_column, &request.dataset_id, resolved_mode) };
+        let sql = if let Some(categories) = &categories {
+            category_projection_sql(
+                &x_column,
+                &y_column,
+                overlay_column.as_ref(),
+                &request.dataset_id,
+                categories.len(),
+            )
+        } else {
+            x_projection_sql(
+                &x_column,
+                &y_column,
+                overlay_column.as_ref(),
+                &request.dataset_id,
+                resolved_mode,
+            )
+        };
         let mut statement = read_conn.prepare(&sql)?;
         let mut rows = statement.query(duckdb::params_from_iter(categories.iter().flatten()))?;
         let mut axis = GraphNewAxisData { kind: GraphNewXMode::Numeric, categories: categories.clone().unwrap_or_default(), ..Default::default() };
         let mut label_bytes = 0usize;
+        let mut overlay_dictionary = overlay_column
+            .as_ref()
+            .map(|column| OverlayDictionary::new(&column.sql_type));
         let mut builder = TilePyramidBuilder::with_memory_limit(
             request.levels,
             request.max_tile_points,
@@ -532,10 +568,12 @@ impl<'a> GraphNewService<'a> {
             if kind == "mixedTime" { return Err(AppError::InvalidParam("graph_new_x_unrepresentable".into())); }
             axis.kind = match kind.as_str() { "duration" => GraphNewXMode::Duration, "time" => GraphNewXMode::Time,
                 "category" => GraphNewXMode::Category, _ => GraphNewXMode::Numeric };
-            axis.utc = row.get(5)?;
+            let overlay_missing: bool = row.get(5)?;
+            let overlay_label: Option<String> = row.get(6)?;
+            axis.utc = row.get(7)?;
             if axis.kind == GraphNewXMode::Time {
                 axis.origin = Some(crate::models::graph_new::GraphNewTimeOrigin {
-                    epoch_nanos: row.get(6)?, unit_nanos: row.get(7)?,
+                    epoch_nanos: row.get(8)?, unit_nanos: row.get(9)?,
                 });
             }
             if axis.kind == GraphNewXMode::Category {
@@ -549,11 +587,26 @@ impl<'a> GraphNewService<'a> {
                     }
                 }
             }
-            batch.push(SourcePoint::new(
-                row_id,
-                x.unwrap_or(f64::NAN),
-                y.unwrap_or(f64::NAN),
-            ));
+            let point = if x.is_some_and(f64::is_finite) && y.is_some_and(f64::is_finite) {
+                let group_code = if let Some(dictionary) = &mut overlay_dictionary {
+                    dictionary.observe(if overlay_missing {
+                        None
+                    } else {
+                        overlay_label.as_deref()
+                    })?
+                } else {
+                    0
+                };
+                SourcePoint::with_group(
+                    row_id,
+                    x.unwrap_or(f64::NAN),
+                    y.unwrap_or(f64::NAN),
+                    group_code,
+                )
+            } else {
+                SourcePoint::new(row_id, x.unwrap_or(f64::NAN), y.unwrap_or(f64::NAN))
+            };
+            batch.push(point);
             rows_since_current_check += 1;
             if rows_since_current_check >= GRAPH_NEW_CURRENT_CHECK_BATCH_ROWS {
                 self.ensure_current(request, is_current, "during scan")?;
@@ -617,6 +670,10 @@ impl<'a> GraphNewService<'a> {
                 projection_query_count: 1,
             },
         )?;
+
+        if let Some(dictionary) = overlay_dictionary.take() {
+            builder.set_overlay(dictionary.finish());
+        }
 
         let mut pyramid = builder.finish_with_control(&|| {
             self.ensure_current(request, is_current, "during pyramid")
@@ -694,9 +751,9 @@ impl<'a> GraphNewService<'a> {
                 max_tile_points,
                 levels,
                 batch_rows,
-                overdraw_factor: GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+                overdraw_factor: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
                 construction_memory_limit_bytes:
-                    GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+                    crate::models::graph_new_data::GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
             },
             progress_sink,
             is_current,
@@ -792,8 +849,9 @@ fn relative_time_projection(source: String) -> String {
     ), checked AS (
         SELECT *, max((epoch_nanos - origin) // unit) OVER () > 9007199254740991 AS unsupported FROM units
     ) SELECT _row_id, CASE WHEN kind = 'time' THEN CAST((epoch_nanos - origin) // unit AS DOUBLE) ELSE x END,
-        y, CASE WHEN kind = 'time' AND unsupported THEN 'mixedTime' ELSE kind END, label, utc,
-        CAST(coalesce(origin, 0) AS VARCHAR), unit FROM checked ORDER BY _row_id"#)
+        y, CASE WHEN kind = 'time' AND unsupported THEN 'mixedTime' ELSE kind END, label,
+        overlay_missing, overlay_label, utc, CAST(coalesce(origin, 0) AS VARCHAR), unit
+        FROM checked ORDER BY _row_id"#)
 }
 
 fn bounded_categories(connection: &duckdb::Connection, column: &ColumnBinding, dataset_id: &str,
@@ -831,21 +889,48 @@ fn bounded_categories(connection: &duckdb::Connection, column: &ColumnBinding, d
     Ok(labels.into_iter().map(|(label, _)| label).collect())
 }
 
-fn category_projection_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_id: &str, count: usize) -> String {
+fn overlay_projection_sql(overlay_column: Option<&ColumnBinding>) -> (String, String) {
+    let Some(overlay_column) = overlay_column else {
+        return ("FALSE".into(), "NULL::VARCHAR".into());
+    };
+    let overlay_identifier = quote_identifier(&overlay_column.name);
+    (
+        format!("CASE WHEN {overlay_identifier} IS NULL THEN TRUE ELSE FALSE END"),
+        format!(
+            "CASE WHEN {overlay_identifier} IS NULL THEN NULL ELSE CAST({overlay_identifier} AS VARCHAR) END"
+        ),
+    )
+}
+
+fn category_projection_sql(
+    x_column: &ColumnBinding,
+    y_column: &ColumnBinding,
+    overlay_column: Option<&ColumnBinding>,
+    dataset_id: &str,
+    count: usize,
+) -> String {
     let x_column = quote_identifier(&x_column.name);
     let y_column = quote_identifier(&y_column.name);
     let table = quote_identifier(&internal_table_name(dataset_id));
+    let (overlay_missing, overlay_label) = overlay_projection_sql(overlay_column);
     let dictionary = if count == 0 { "SELECT NULL::VARCHAR AS label, NULL::DOUBLE AS ordinal WHERE false".into() }
         else { format!("SELECT * FROM (VALUES {}) AS entries(label, ordinal)", (0..count).map(|index| format!("(?::VARCHAR, {index}::DOUBLE)")).collect::<Vec<_>>().join(",")) };
-    format!("WITH dictionary AS ({dictionary}) SELECT source._row_id, dictionary.ordinal, TRY_CAST(source.{y_column} AS DOUBLE), 'category', NULL::VARCHAR, false FROM {table} AS source LEFT JOIN dictionary ON TRY_CAST(source.{x_column} AS VARCHAR) = dictionary.label ORDER BY source._row_id")
+    format!("WITH dictionary AS ({dictionary}) SELECT source._row_id, dictionary.ordinal, TRY_CAST(source.{y_column} AS DOUBLE), 'category', NULL::VARCHAR, {overlay_missing}, {overlay_label}, false, NULL::VARCHAR, 1::UINTEGER FROM {table} AS source LEFT JOIN dictionary ON TRY_CAST(source.{x_column} AS VARCHAR) = dictionary.label ORDER BY source._row_id")
 }
 
-fn x_projection_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_id: &str, mode: GraphNewXMode) -> String {
+fn x_projection_sql(
+    x_column: &ColumnBinding,
+    y_column: &ColumnBinding,
+    overlay_column: Option<&ColumnBinding>,
+    dataset_id: &str,
+    mode: GraphNewXMode,
+) -> String {
     let x_column_sql = quote_identifier(&x_column.name);
     let y_column_sql = quote_identifier(&y_column.name);
     let table = quote_identifier(&internal_table_name(dataset_id));
+    let (overlay_missing, overlay_label) = overlay_projection_sql(overlay_column);
     if mode == GraphNewXMode::Numeric || (mode == GraphNewXMode::Auto && is_numeric_type(&x_column.sql_type)) {
-        return format!("SELECT _row_id, TRY_CAST({x_column_sql} AS DOUBLE), TRY_CAST({y_column_sql} AS DOUBLE), 'numeric', NULL::VARCHAR, false FROM {table} ORDER BY _row_id");
+        return format!("SELECT _row_id, TRY_CAST({x_column_sql} AS DOUBLE), TRY_CAST({y_column_sql} AS DOUBLE), 'numeric', NULL::VARCHAR, {overlay_missing}, {overlay_label}, false, NULL::VARCHAR, 1::UINTEGER FROM {table} ORDER BY _row_id");
     }
     let interpretation = match mode { GraphNewXMode::Category => "'category'", GraphNewXMode::Duration => "'duration'",
         GraphNewXMode::Time => "CASE WHEN utc AND has_naive THEN 'mixedTime' ELSE 'time' END",
@@ -855,9 +940,9 @@ fn x_projection_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_
     if native_time && matches!(mode, GraphNewXMode::Auto | GraphNewXMode::Time) {
         let epoch = if x_column.sql_type.eq_ignore_ascii_case("TIMESTAMP_NS") { format!("CAST(epoch_ns({x_column_sql}) AS HUGEINT)") }
             else { format!("CAST(epoch_us({x_column_sql}) AS HUGEINT) * 1000") };
-        return relative_time_projection(format!("SELECT _row_id, NULL::DOUBLE AS x, TRY_CAST({y_column_sql} AS DOUBLE) AS y, 'time' AS kind, NULL::VARCHAR AS label, {native_utc} AS utc, {epoch} AS epoch_nanos FROM {table}"));
+        return relative_time_projection(format!("SELECT _row_id, NULL::DOUBLE AS x, TRY_CAST({y_column_sql} AS DOUBLE) AS y, 'time' AS kind, NULL::VARCHAR AS label, {overlay_missing} AS overlay_missing, {overlay_label} AS overlay_label, {native_utc} AS utc, {epoch} AS epoch_nanos FROM {table}"));
     }
-    let parsed = parsed_x_sql(x_column, y_column, dataset_id);
+    let parsed = parsed_x_sql(x_column, y_column, overlay_column, dataset_id);
     relative_time_projection(format!(r#"{parsed}, interpreted AS (
             SELECT *, bool_and(label IS NULL OR duration IS NOT NULL) OVER () AS all_duration,
                 (bool_and(label IS NULL OR time IS NOT NULL OR mdy IS NOT NULL) OVER ()
@@ -867,7 +952,7 @@ fn x_projection_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_
                 FROM parsed
         ), chosen AS (SELECT *, {interpretation} AS kind FROM interpreted)
         SELECT _row_id, CASE WHEN label IS NULL THEN NULL WHEN kind = 'duration' THEN duration ELSE NULL END AS x,
-            y, kind, NULL::VARCHAR AS label, utc,
+            y, kind, NULL::VARCHAR AS label, overlay_missing, overlay_label, utc,
             CASE WHEN kind = 'time' THEN coalesce(time, mdy) END AS epoch_nanos FROM chosen
     "#))
 }
@@ -876,16 +961,23 @@ fn is_native_time(column: &ColumnBinding) -> bool {
     column.sql_type.to_ascii_uppercase().starts_with("TIMESTAMP") || column.sql_type.eq_ignore_ascii_case("DATE")
 }
 
-fn parsed_x_sql(x_column: &ColumnBinding, y_column: &ColumnBinding, dataset_id: &str) -> String {
+fn parsed_x_sql(
+    x_column: &ColumnBinding,
+    y_column: &ColumnBinding,
+    overlay_column: Option<&ColumnBinding>,
+    dataset_id: &str,
+) -> String {
     let x_column_sql = quote_identifier(&x_column.name);
     let y_column_sql = quote_identifier(&y_column.name);
     let table = quote_identifier(&internal_table_name(dataset_id));
+    let (overlay_missing, overlay_label) = overlay_projection_sql(overlay_column);
     let native = if is_native_time(x_column) { format!("CAST(epoch_us({x_column_sql}) AS HUGEINT) * 1000") } else { "NULL::HUGEINT".into() };
     let native_utc = x_column.sql_type.to_ascii_uppercase().contains("TIME ZONE") || x_column.sql_type.eq_ignore_ascii_case("TIMESTAMPTZ");
     format!(r#"
         WITH source AS (
             SELECT _row_id, CASE WHEN octet_length(encode(TRY_CAST({x_column_sql} AS VARCHAR))) > 512 THEN 'unrepresentable' ELSE TRY_CAST({x_column_sql} AS VARCHAR) END AS label,
-                TRY_CAST({y_column_sql} AS DOUBLE) AS y, {native} AS native_time FROM {table}
+                TRY_CAST({y_column_sql} AS DOUBLE) AS y, {overlay_missing} AS overlay_missing,
+                {overlay_label} AS overlay_label, {native} AS native_time FROM {table}
         ), parsed AS (
             SELECT *,
                 CASE WHEN regexp_full_match(label, '[0-9]+:[0-5][0-9]:[0-5][0-9](\.[0-9]+)?')
@@ -1223,18 +1315,27 @@ mod tests {
             db.conn().execute("UPDATE _meta_columns SET col_type=$1 WHERE dataset_id='scalars' AND column_id=$2", params![sql_type, x_id]).expect("metadata");
             let columns = super::resolve_columns(&db, "scalars").expect("bindings");
             let categories = if kind == "category" { Some(super::bounded_categories(db.conn(), &columns[&x_id], "scalars", &|| Ok(())).unwrap()) } else { None };
-            let sql = if let Some(labels) = &categories { super::category_projection_sql(&columns[&x_id], &columns[&y_id], "scalars", labels.len()) }
-                else { super::x_projection_sql(&columns[&x_id], &columns[&y_id], "scalars", mode) };
+            let sql = if let Some(labels) = &categories {
+                super::category_projection_sql(
+                    &columns[&x_id],
+                    &columns[&y_id],
+                    None,
+                    "scalars",
+                    labels.len(),
+                )
+            } else {
+                super::x_projection_sql(&columns[&x_id], &columns[&y_id], None, "scalars", mode)
+            };
             let mut statement = db.conn().prepare(&sql).expect("projection");
             let rows = statement.query_map(duckdb::params_from_iter(categories.iter().flatten()), |row| {
                 let kind: String = row.get(3)?;
                 let mut value: Option<f64> = row.get(1)?;
                 if kind == "time" {
-                    let origin: String = row.get(6)?;
-                    let unit: u32 = row.get(7)?;
+                    let origin: String = row.get(8)?;
+                    let unit: u32 = row.get(9)?;
                     value = value.map(|value| origin.parse::<f64>().unwrap() / 1e9 + value * f64::from(unit) / 1e9);
                 }
-                Ok((value, kind, row.get::<_, bool>(5)?))
+                Ok((value, kind, row.get::<_, bool>(7)?))
             })
                 .expect("query").collect::<Result<Vec<_>, _>>().expect("rows");
             assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), expected);
@@ -1284,7 +1385,13 @@ mod tests {
                 assert_eq!(result.x_axis.ticks.iter().filter_map(|tick| tick.label.as_deref()).collect::<Vec<_>>(), vec!["\u{6e29}\u{5ea6}", "\u{00e9}\u{0394}"]);
                 let db = state.db.lock().unwrap();
                 let bindings = super::resolve_columns(&db, "typed").unwrap();
-                let sql = super::category_projection_sql(&bindings[&request.x_column_id], &bindings[&request.y_column_id], "typed", 2);
+                let sql = super::category_projection_sql(
+                    &bindings[&request.x_column_id],
+                    &bindings[&request.y_column_id],
+                    None,
+                    "typed",
+                    2,
+                );
                 let plan: String = db.conn().query_row(&format!("EXPLAIN {sql}"), params![values[0], values[1]], |row| row.get(1)).unwrap();
                 assert!(!plan.contains("WINDOW"), "category projection must not rank full text: {plan}");
             }
@@ -2207,6 +2314,57 @@ mod tests {
         (x_column_id, y_column_id)
     }
 
+    fn seed_overlay_dataset(
+        state: &AppState,
+        dataset_id: &str,
+        rows: &[(i64, f64, f64, Option<&str>)],
+    ) -> (String, String, String) {
+        let db = state.db.lock().expect("db lock");
+        db.create_empty_table(
+            dataset_id,
+            "Graph New Overlay Fixture",
+            &["x_value".into(), "y_value".into(), "lot".into()],
+            &["DOUBLE".into(), "DOUBLE".into(), "VARCHAR".into()],
+        )
+        .expect("create table");
+
+        let mut statement = db
+            .conn()
+            .prepare(
+                "SELECT column_id FROM _meta_columns WHERE dataset_id = $1 ORDER BY col_index",
+            )
+            .expect("prepare column query");
+        let columns = statement
+            .query_map(params![dataset_id], |row| row.get::<_, String>(0))
+            .expect("query columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect columns");
+
+        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let mut insert = db
+            .conn()
+            .prepare(&format!(
+                "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value, lot) VALUES ($1, $2, $3, $4)"
+            ))
+            .expect("prepare insert");
+        for (row_id, x, y, lot) in rows {
+            insert
+                .execute(params![row_id, x, y, lot])
+                .expect("insert row");
+        }
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = $2 WHERE id = $1",
+                params![dataset_id, rows.len() as u64],
+            )
+            .expect("update row count");
+        drop(insert);
+        drop(statement);
+        drop(db);
+
+        (columns[0].clone(), columns[1].clone(), columns[2].clone())
+    }
+
     fn seed_dense_dataset(state: &AppState, dataset_id: &str, rows: u64) -> (String, String) {
         let db = state.db.lock().expect("db lock");
         db.create_empty_table(
@@ -2545,5 +2703,263 @@ mod tests {
         );
 
         assert!(result.is_ok(), "quoted decimal/hugeint columns should build");
+    }
+
+    #[test]
+    fn overlay_projection_builds_catalog_and_counts_rows_once() {
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id, lot_column_id) = seed_overlay_dataset(
+            &state,
+            "overlay-projection",
+            &[
+                (1, 1.0, 5.0, Some("A")),
+                (2, 2.0, 6.0, None),
+                (3, 3.0, 7.0, Some("(Missing)")),
+                (4, 4.0, 8.0, Some("A")),
+            ],
+        );
+        let request = crate::models::graph_new_data::GraphNewBuildRequest {
+            request_id: "overlay-projection".into(),
+            dataset_id: "overlay-projection".into(),
+            dataset_generation: 0,
+            x_column_id,
+            y_column_id,
+            overlay_column_id: Some(lot_column_id.clone()),
+            max_tile_points: 64,
+            levels: 4,
+            batch_rows: 2,
+            overdraw_factor: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+            construction_memory_limit_bytes:
+                crate::models::graph_new_data::GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+        };
+
+        let result = GraphNewService::new(&state)
+            .build(&request, &mut |_| {})
+            .expect("build result");
+
+        assert_eq!(result.query_count, 1);
+        assert_eq!(result.pyramid.overlay.groups.len(), 3);
+        assert_eq!(
+            result
+                .pyramid
+                .overlay
+                .groups
+                .iter()
+                .map(|group| group.total_rows)
+                .sum::<u64>(),
+            4,
+        );
+        assert_ne!(
+            result
+                .pyramid
+                .overlay
+                .groups
+                .iter()
+                .find(|group| group.missing)
+                .expect("missing group")
+                .id,
+            result
+                .pyramid
+                .overlay
+                .groups
+                .iter()
+                .find(|group| group.label == "(Missing)" && !group.missing)
+                .expect("literal missing group")
+                .id,
+        );
+    }
+
+    #[test]
+    fn overlay_projection_rejects_sixty_fifth_group_without_completed_cache_admission() {
+        let state = AppState::new().expect("state");
+        let rows = (1..=65)
+            .map(|row| {
+                (
+                    i64::from(row),
+                    f64::from(row),
+                    f64::from(row),
+                    Some(format!("group-{row}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        let prepared = rows
+            .iter()
+            .map(|(row_id, x, y, label)| (*row_id, *x, *y, label.as_deref()))
+            .collect::<Vec<_>>();
+        let (x_column_id, y_column_id, lot_column_id) =
+            seed_overlay_dataset(&state, "overlay-too-many-groups", &prepared);
+        let request = crate::models::graph_new_data::GraphNewBuildRequest {
+            request_id: "overlay-too-many-groups".into(),
+            dataset_id: "overlay-too-many-groups".into(),
+            dataset_generation: 0,
+            x_column_id,
+            y_column_id,
+            overlay_column_id: Some(lot_column_id),
+            max_tile_points: 64,
+            levels: 4,
+            batch_rows: 16,
+            overdraw_factor: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+            construction_memory_limit_bytes:
+                crate::models::graph_new_data::GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+        };
+
+        let error = GraphNewService::new(&state)
+            .build(&request, &mut |_| {})
+            .expect_err("sixty-fifth group must fail");
+
+        assert!(matches!(
+            error,
+            crate::error::AppError::InvalidParam(message)
+                if message == "graph_new_overlay_too_many_groups"
+        ));
+        assert!(state.graph_new.cache.lock().expect("cache").is_none());
+    }
+
+    #[test]
+    fn overlay_projection_rejects_oversized_label_without_completed_cache_admission() {
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id, lot_column_id) = seed_overlay_dataset(
+            &state,
+            "overlay-label-too-large",
+            &[(1, 1.0, 1.0, Some(&"x".repeat(513)))],
+        );
+        let request = crate::models::graph_new_data::GraphNewBuildRequest {
+            request_id: "overlay-label-too-large".into(),
+            dataset_id: "overlay-label-too-large".into(),
+            dataset_generation: 0,
+            x_column_id,
+            y_column_id,
+            overlay_column_id: Some(lot_column_id),
+            max_tile_points: 64,
+            levels: 4,
+            batch_rows: 16,
+            overdraw_factor: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+            construction_memory_limit_bytes:
+                crate::models::graph_new_data::GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+        };
+
+        let error = GraphNewService::new(&state)
+            .build(&request, &mut |_| {})
+            .expect_err("oversized label must fail");
+
+        assert!(matches!(
+            error,
+            crate::error::AppError::InvalidParam(message)
+                if message == "graph_new_overlay_value_too_large"
+        ));
+        assert!(state.graph_new.cache.lock().expect("cache").is_none());
+    }
+
+    #[test]
+    fn overlay_projection_hidden_sets_reuse_same_cache_key() {
+        let state = AppState::new().expect("state");
+        let (x_column_id, y_column_id, lot_column_id) = seed_overlay_dataset(
+            &state,
+            "overlay-hidden-cache",
+            &[
+                (1, 1.0, 5.0, Some("A")),
+                (2, 2.0, 6.0, None),
+                (3, 3.0, 7.0, Some("(Missing)")),
+                (4, 4.0, 8.0, Some("A")),
+            ],
+        );
+        let built = GraphNewService::new(&state)
+            .build(
+                &crate::models::graph_new_data::GraphNewBuildRequest {
+                    request_id: "overlay-hidden-build".into(),
+                    dataset_id: "overlay-hidden-cache".into(),
+                    dataset_generation: 0,
+                    x_column_id: x_column_id.clone(),
+                    y_column_id: y_column_id.clone(),
+                    overlay_column_id: Some(lot_column_id.clone()),
+                    max_tile_points: 64,
+                    levels: 4,
+                    batch_rows: 2,
+                    overdraw_factor:
+                        crate::models::graph_new_data::GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
+                    construction_memory_limit_bytes:
+                        crate::models::graph_new_data::GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+                },
+                &mut |_| {},
+            )
+            .expect("overlay build");
+        let hidden_id = built.pyramid.overlay.groups[0].id.clone();
+        let expected_key = super::GraphKey::canonical(&super::GraphKeyParts {
+            dataset_id: "overlay-hidden-cache".into(),
+            dataset_generation: 0,
+            x_column_id: x_column_id.clone(),
+            y_column_id: y_column_id.clone(),
+            overlay_column_id: Some(lot_column_id.clone()),
+            filter_identity: None,
+            renderer_contract_version: super::GRAPH_NEW_RENDERER_CONTRACT_VERSION,
+            tile_format_version: super::GRAPH_NEW_TILE_FORMAT_VERSION,
+            domain_policy: super::GRAPH_NEW_DEFAULT_DOMAIN_POLICY.into(),
+            levels: 8,
+            max_tile_points: 4096,
+        })
+        .expect("expected key");
+        let service = GraphNewService::new(&state);
+        let render = |scene: &super::GraphNewScene| {
+            Ok(super::SyntheticFrame {
+                rgba: vec![255; scene.width as usize * scene.height as usize * 4],
+                padded_bytes_per_row: scene.width * 4,
+                render_ms: 0.0,
+                readback_ms: 0.0,
+            })
+        };
+        let mut request: crate::models::graph_new::GraphNewRenderRequest =
+            serde_json::from_value(serde_json::json!({
+                "requestId":"overlay-hidden-1",
+                "sessionId":"overlay-hidden-session",
+                "datasetId":"overlay-hidden-cache",
+                "datasetGeneration":0,
+                "xColumnId":x_column_id,
+                "yColumnId":y_column_id,
+                "overlayColumnId":lot_column_id,
+                "width":320,
+                "height":200,
+                "devicePixelRatio":1,
+                "rendererGeneration":1,
+                "cameraGeneration":0
+            }))
+            .expect("request");
+
+        let cold = service
+            .render_with(&request, render, &mut |_, _| Ok(()))
+            .expect("cold render");
+        assert_eq!(cold.source_projection_query_count, 1);
+        assert!(
+            state
+                .graph_new
+                .cache
+                .lock()
+                .expect("cache")
+                .get(&expected_key.hash_hex)
+                .is_some()
+        );
+
+        request.request_id = "overlay-hidden-2".into();
+        request.renderer_generation = 2;
+        let warm = service
+            .render_with(&request, render, &mut |_, _| Ok(()))
+            .expect("warm render");
+        assert_eq!(warm.source_projection_query_count, 0);
+
+        request.request_id = "overlay-hidden-3".into();
+        request.renderer_generation = 3;
+        request.hidden_overlay_group_ids = vec![hidden_id];
+        let hidden = service
+            .render_with(&request, render, &mut |_, _| Ok(()))
+            .expect("hidden render");
+        assert_eq!(hidden.source_projection_query_count, 0);
+        assert!(
+            state
+                .graph_new
+                .cache
+                .lock()
+                .expect("cache")
+                .get(&expected_key.hash_hex)
+                .is_some()
+        );
     }
 }

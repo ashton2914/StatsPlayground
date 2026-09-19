@@ -365,6 +365,9 @@ impl TilePyramid {
             let overlay: OverlayCatalog =
                 serde_json::from_slice(&overlay_bytes).map_err(|_| cache_format_error())?;
             overlay
+                .validate_for_restore(values[5])
+                .map_err(|_| cache_format_error())?;
+            overlay
         } else {
             OverlayCatalog::default()
         };
@@ -931,10 +934,6 @@ impl TilePyramidBuilder {
                 group.total_source_count = group.total_source_count.checked_add(1).ok_or_else(|| {
                     AppError::InvalidParam("graph-new group tile count overflow".to_string())
                 })?;
-                match group.representative {
-                    Some(current) if current.row_id <= point.row_id => {}
-                    _ => group.representative = Some(point),
-                }
             }
 
             let (fine_tile_x, fine_tile_y) = tile_index(&domain, finest_level, &point)?;
@@ -962,6 +961,99 @@ impl TilePyramidBuilder {
         }
         control()?;
 
+        let mut coarse_retentions = (0..finest_level)
+            .map(|_| BTreeMap::<(u32, u32), RetainedTileAccumulator>::new())
+            .collect::<Vec<_>>();
+        let mut coarse_retained_points = 0u64;
+        for level in 0..finest_level {
+            for (&address, accumulator) in &level_maps[level as usize] {
+                let quotas = stratified_group_quotas(
+                    &accumulator
+                        .groups
+                        .iter()
+                        .map(|(&group_code, group)| (group_code, group.total_source_count))
+                        .collect(),
+                    self.max_tile_points as usize,
+                )?;
+                let retained_points = quotas.values().try_fold(0u64, |total, quota| {
+                    total.checked_add(*quota as u64).ok_or_else(|| {
+                        AppError::InvalidParam(
+                            "graph-new coarse retained point count overflow".to_string(),
+                        )
+                    })
+                })?;
+                coarse_retained_points = coarse_retained_points
+                    .checked_add(retained_points)
+                    .ok_or_else(|| {
+                        AppError::InvalidParam(
+                            "graph-new coarse retained point count overflow".to_string(),
+                        )
+                    })?;
+                let retained_tile = coarse_retentions[level as usize]
+                    .entry(address)
+                    .or_default();
+                for (group_code, retain_count) in quotas {
+                    retained_tile.groups.insert(
+                        group_code,
+                        RetainedGroupAccumulator {
+                            retain_count,
+                            retained_points: std::collections::BinaryHeap::with_capacity(
+                                retain_count,
+                            ),
+                        },
+                    );
+                }
+            }
+        }
+        self.update_peak_memory(
+            estimate_construction_memory(
+                bucket_count,
+                level_entry_count,
+                0,
+                output_tile_count,
+                output_level_count,
+                0,
+            ) + coarse_retained_points * std::mem::size_of::<RowIdPoint>() as u64,
+        )?;
+
+        if finest_level > 0 {
+            let mut raw_spool = self.raw_spool.get_ref().try_clone()?;
+            raw_spool.seek(SeekFrom::Start(0))?;
+            let mut reader = BufReader::with_capacity(SPOOL_READ_BUFFER_BYTES, raw_spool);
+            let mut coarse_points_since_control = 0usize;
+            while let Some(point) = read_raw_point(&mut reader)? {
+                coarse_points_since_control += 1;
+                if coarse_points_since_control >= CONTROL_CHECK_BATCH_POINTS {
+                    control()?;
+                    coarse_points_since_control = 0;
+                }
+                for level in 0..finest_level {
+                    let (tile_x, tile_y) = tile_index(&domain, level, &point)?;
+                    let Some(tile) = coarse_retentions[level as usize].get_mut(&(tile_x, tile_y))
+                    else {
+                        continue;
+                    };
+                    let Some(group) = tile.groups.get_mut(&point.group_code) else {
+                        continue;
+                    };
+                    if group.retained_points.len() < group.retain_count {
+                        group.retained_points.push(RowIdPoint(point));
+                        continue;
+                    }
+                    let should_replace = group
+                        .retained_points
+                        .peek()
+                        .map(|current| point.row_id < current.0.row_id)
+                        .unwrap_or(false);
+                    if should_replace {
+                        group.retained_points.pop();
+                        group.retained_points.push(RowIdPoint(point));
+                    }
+                }
+            }
+            control()?;
+        }
+
         let mut tile_file = tempfile()?;
         let mut tile_index = BTreeMap::<TileAddress, StoredTile>::new();
         let mut levels = Vec::with_capacity(self.levels as usize);
@@ -973,35 +1065,64 @@ impl TilePyramidBuilder {
             let mut tile_bytes = 0u64;
             let mut retained_marks = 0u64;
             let mut emitted_tiles_since_control = 0usize;
-            for (&(tile_x, tile_y), accumulator) in map {
+            for (&(tile_x, tile_y), retained) in &coarse_retentions[level as usize] {
                 emitted_tiles_since_control += 1;
                 if emitted_tiles_since_control >= CONTROL_CHECK_BATCH_POINTS {
                     control()?;
                     emitted_tiles_since_control = 0;
                 }
-                if accumulator.groups.is_empty() {
+                let accumulator = map.get(&(tile_x, tile_y)).ok_or_else(|| {
+                    AppError::Stats("graph-new tile metadata missing".to_string())
+                })?;
+                if retained.groups.is_empty() {
                     return Err(AppError::Stats(
                         "graph-new tile representative missing".to_string(),
                     ));
                 }
-                let mut row_ids = Vec::with_capacity(accumulator.groups.len());
-                let mut xs = Vec::with_capacity(accumulator.groups.len());
-                let mut ys = Vec::with_capacity(accumulator.groups.len());
-                let mut group_codes = Vec::with_capacity(accumulator.groups.len());
-                let mut counts = Vec::with_capacity(accumulator.groups.len());
-                for (&group_code, group) in &accumulator.groups {
-                    let representative = group.representative.ok_or_else(|| {
-                        AppError::Stats("graph-new group representative missing".to_string())
-                    })?;
-                    row_ids.push(representative.row_id);
-                    xs.push(representative.x);
-                    ys.push(representative.y);
-                    group_codes.push(group_code);
-                    counts.push(u32::try_from(group.total_source_count).map_err(|_| {
-                        AppError::InvalidParam(
-                            "graph-new per-group source count exceeds u32 storage".to_string(),
-                        )
-                    })?);
+                let retained_capacity = retained.groups.values().map(|group| group.retain_count).sum();
+                let mut row_ids = Vec::with_capacity(retained_capacity);
+                let mut xs = Vec::with_capacity(retained_capacity);
+                let mut ys = Vec::with_capacity(retained_capacity);
+                let mut group_codes = Vec::with_capacity(retained_capacity);
+                let mut counts = Vec::with_capacity(retained_capacity);
+                for (&group_code, group) in &retained.groups {
+                    let population = accumulator
+                        .groups
+                        .get(&group_code)
+                        .ok_or_else(|| {
+                            AppError::Stats("graph-new group metadata missing".to_string())
+                        })?
+                        .total_source_count;
+                    let representatives = group.retained_points.clone().into_sorted_vec();
+                    if representatives.len() != group.retain_count {
+                        return Err(AppError::Stats(
+                            "graph-new group representative missing".to_string(),
+                        ));
+                    }
+                    for (index, representative) in representatives.into_iter().enumerate() {
+                        row_ids.push(representative.0.row_id);
+                        xs.push(representative.0.x);
+                        ys.push(representative.0.y);
+                        group_codes.push(group_code);
+                        let count = if index == 0 {
+                            population
+                                .checked_sub((group.retain_count.saturating_sub(1)) as u64)
+                                .ok_or_else(|| {
+                                    AppError::InvalidParam(
+                                        "graph-new group overflow redistribution underflow"
+                                            .to_string(),
+                                    )
+                                })?
+                        } else {
+                            1
+                        };
+                        counts.push(u32::try_from(count).map_err(|_| {
+                            AppError::InvalidParam(
+                                "graph-new per-group source count exceeds u32 storage"
+                                    .to_string(),
+                            )
+                        })?);
+                    }
                 }
                 let tile = GraphNewTile {
                     header: build_tile_header(
@@ -1041,7 +1162,11 @@ impl TilePyramidBuilder {
                     .ok_or_else(|| {
                         AppError::InvalidParam("graph-new tile byte overflow".to_string())
                     })?;
-                retained_marks += 1;
+                retained_marks = retained_marks
+                    .checked_add(u64::from(stored.entry.retained_mark_count))
+                    .ok_or_else(|| {
+                        AppError::InvalidParam("graph-new retained mark overflow".to_string())
+                    })?;
                 tiles.push(stored.entry);
             }
             self.update_peak_memory(estimate_construction_memory(
@@ -1083,7 +1208,6 @@ impl TilePyramidBuilder {
             let mut bucket_reader = BufReader::with_capacity(SPOOL_READ_BUFFER_BYTES, bucket_file);
             let mut bucket_tiles = BTreeMap::<(u32, u32), FineTileAccumulator>::new();
             let mut bucket_tile_count = 0u64;
-            let mut bucket_retained_bytes = fine_output_bytes;
             let mut bucket_points_since_control = 0usize;
             while let Some((tile_x, tile_y, point)) = read_bucket_point(&mut bucket_reader)? {
                 bucket_points_since_control += 1;
@@ -1098,7 +1222,7 @@ impl TilePyramidBuilder {
                         estimate_construction_memory(
                             bucket_count,
                             level_entry_count,
-                            bucket_retained_bytes,
+                            fine_output_bytes,
                             output_tile_count,
                             output_level_count,
                             0,
@@ -1107,113 +1231,190 @@ impl TilePyramidBuilder {
                     bucket_tile_count += 1;
                 }
                 let entry = bucket_tiles.entry(key).or_default();
-                if entry.retained_points.len() < fine_mark_limit {
-                    if entry.retained_points.len() == entry.retained_points.capacity() {
-                        let old_capacity = entry.retained_points.capacity();
-                        let point_bytes = std::mem::size_of::<RowIdPoint>() as u64;
-                        let next_capacity =
-                            next_point_capacity(old_capacity, fine_mark_limit);
-                        self.update_peak_memory(
-                            estimate_construction_memory(
-                                bucket_count,
-                                level_entry_count,
-                                bucket_retained_bytes + next_capacity as u64 * point_bytes,
-                                output_tile_count,
-                                output_level_count,
-                                0,
-                            ) + bucket_tile_count * FINE_TILE_ENTRY_BYTES_ESTIMATE,
-                        )?;
-                        entry
-                            .retained_points
-                            .try_reserve_exact(next_capacity - entry.retained_points.len())
-                            .map_err(|error| {
-                                AppError::Busy(format!(
-                                    "graph-new retained point allocation failed: {error}"
-                                ))
-                            })?;
-                        let actual_capacity = entry.retained_points.capacity();
-                        if actual_capacity > fine_mark_limit {
-                            return Err(AppError::Busy(
-                                "graph-new retained point capacity exceeds tile limit".to_string(),
-                            ));
-                        }
-                        self.update_peak_memory(
-                            estimate_construction_memory(
-                                bucket_count,
-                                level_entry_count,
-                                bucket_retained_bytes + actual_capacity as u64 * point_bytes,
-                                output_tile_count,
-                                output_level_count,
-                                0,
-                            ) + bucket_tile_count * FINE_TILE_ENTRY_BYTES_ESTIMATE,
-                        )?;
-                        bucket_retained_bytes = bucket_retained_bytes
-                            .checked_add((actual_capacity - old_capacity) as u64 * point_bytes)
-                            .ok_or_else(|| {
-                                AppError::InvalidParam(
-                                    "graph-new retained bucket byte overflow".to_string(),
-                                )
-                            })?;
-                    }
-                    entry.retained_points.push(RowIdPoint(point));
-                    #[cfg(test)]
-                    assert!(entry.retained_points.capacity() <= fine_mark_limit);
-                } else {
-                    let should_replace = entry
-                        .retained_points
-                        .peek()
-                        .map(|current| point.row_id < current.0.row_id)
-                        .unwrap_or(false);
-                    if should_replace {
-                        entry.retained_points.pop();
-                        entry.retained_points.push(RowIdPoint(point));
-                    }
-                    entry.overflow_count =
-                        entry.overflow_count.checked_add(1).ok_or_else(|| {
-                            AppError::InvalidParam(
-                                "graph-new fine tile overflow count overflow".to_string(),
-                            )
-                        })?;
+                entry.total_source_count =
+                    entry.total_source_count.checked_add(1).ok_or_else(|| {
+                    AppError::InvalidParam("graph-new fine tile count overflow".to_string())
+                    })?;
+                let group = entry.groups.entry(point.group_code).or_default();
+                group.total_source_count = group.total_source_count.checked_add(1).ok_or_else(|| {
+                    AppError::InvalidParam(
+                    "graph-new fine group tile count overflow".to_string(),
+                    )
+                })?;
+            }
+            control()?;
+
+            let mut retained_tiles = BTreeMap::<(u32, u32), RetainedTileAccumulator>::new();
+            let mut bucket_retained_points = 0u64;
+            for (&address, accumulator) in &bucket_tiles {
+                let quotas = stratified_group_quotas(
+                    &accumulator
+                    .groups
+                    .iter()
+                    .map(|(&group_code, group)| (group_code, group.total_source_count))
+                    .collect(),
+                    fine_mark_limit,
+                )?;
+                let retained_points = quotas.values().try_fold(0u64, |total, quota| {
+                    total.checked_add(*quota as u64).ok_or_else(|| {
+                    AppError::InvalidParam(
+                        "graph-new fine retained point count overflow".to_string(),
+                    )
+                    })
+                })?;
+                bucket_retained_points = bucket_retained_points
+                    .checked_add(retained_points)
+                    .ok_or_else(|| {
+                    AppError::InvalidParam(
+                        "graph-new fine retained point count overflow".to_string(),
+                    )
+                    })?;
+                let retained_tile = retained_tiles.entry(address).or_default();
+                for (group_code, retain_count) in quotas {
+                    retained_tile.groups.insert(
+                    group_code,
+                    RetainedGroupAccumulator {
+                        retain_count,
+                        retained_points: std::collections::BinaryHeap::with_capacity(
+                            retain_count,
+                        ),
+                    },
+                    );
+                }
+            }
+            self.update_peak_memory(
+                estimate_construction_memory(
+                    bucket_count,
+                    level_entry_count,
+                    fine_output_bytes
+                    .checked_add(
+                        bucket_retained_points * std::mem::size_of::<RowIdPoint>() as u64,
+                    )
+                    .ok_or_else(|| {
+                        AppError::InvalidParam(
+                            "graph-new retained bucket byte overflow".to_string(),
+                        )
+                    })?,
+                    output_tile_count,
+                    output_level_count,
+                    0,
+                ) + bucket_tile_count * FINE_TILE_ENTRY_BYTES_ESTIMATE,
+            )?;
+
+            let mut bucket_file = bucket_reader.into_inner();
+            bucket_file.seek(SeekFrom::Start(0))?;
+            let mut bucket_reader = BufReader::with_capacity(SPOOL_READ_BUFFER_BYTES, bucket_file);
+            let mut bucket_points_since_control = 0usize;
+            while let Some((tile_x, tile_y, point)) = read_bucket_point(&mut bucket_reader)? {
+                bucket_points_since_control += 1;
+                if bucket_points_since_control >= CONTROL_CHECK_BATCH_POINTS {
+                    control()?;
+                    bucket_points_since_control = 0;
+                }
+                let Some(tile) = retained_tiles.get_mut(&(tile_x, tile_y)) else {
+                    continue;
+                };
+                let Some(group) = tile.groups.get_mut(&point.group_code) else {
+                    continue;
+                };
+                if group.retained_points.len() < group.retain_count {
+                    group.retained_points.push(RowIdPoint(point));
+                    continue;
+                }
+                let should_replace = group
+                    .retained_points
+                    .peek()
+                    .map(|current| point.row_id < current.0.row_id)
+                    .unwrap_or(false);
+                if should_replace {
+                    group.retained_points.pop();
+                    group.retained_points.push(RowIdPoint(point));
                 }
             }
             control()?;
 
-            for ((tile_x, tile_y), accumulator) in bucket_tiles {
+            for ((tile_x, tile_y), retained) in retained_tiles {
                 control()?;
-                let point_count = accumulator.retained_points.len();
-                let retained_bytes = accumulator.retained_points.capacity() as u64
-                    * std::mem::size_of::<RowIdPoint>() as u64;
+                let point_count = retained.groups.values().map(|group| group.retain_count).sum();
+                let retained_bytes = retained.groups.values().try_fold(0u64, |bytes, group| {
+                    bytes.checked_add(
+                    group.retained_points.capacity() as u64
+                        * std::mem::size_of::<RowIdPoint>() as u64,
+                    )
+                    .ok_or_else(|| {
+                    AppError::InvalidParam(
+                        "graph-new fine retained byte overflow".to_string(),
+                    )
+                    })
+                })?;
                 self.update_peak_memory(
                     estimate_construction_memory(
-                        bucket_count,
-                        level_entry_count,
-                        bucket_retained_bytes,
-                        output_tile_count + 1,
-                        output_level_count,
-                        checked_mul_u64(
-                            point_count as u64,
-                            tile_payload_point_bytes(),
+                    bucket_count,
+                    level_entry_count,
+                    fine_output_bytes
+                        .checked_add(retained_bytes)
+                        .ok_or_else(|| {
+                            AppError::InvalidParam(
+                                "graph-new fine retained byte overflow".to_string(),
+                            )
+                        })?,
+                    output_tile_count + 1,
+                    output_level_count,
+                    checked_mul_u64(
+                        point_count as u64,
+                        tile_payload_point_bytes(),
                             "tile encode scratch",
                         )?
                             + estimate_encoded_tile_bytes(point_count)?,
                     ) + bucket_tile_count * FINE_TILE_ENTRY_BYTES_ESTIMATE,
                 )?;
-                let retained_points = accumulator.retained_points.into_sorted_vec();
-                let meta = level_maps[finest_level as usize]
+                let meta = bucket_tiles
                     .get(&(tile_x, tile_y))
                     .ok_or_else(|| {
                         AppError::Stats("graph-new fine tile metadata missing".to_string())
                     })?;
-                let mut counts = vec![1u32; retained_points.len()];
-                if let Some(first) = counts.first_mut() {
-                    let overflow = u32::try_from(accumulator.overflow_count).map_err(|_| {
-                        AppError::InvalidParam(
-                            "graph-new fine tile overflow exceeds u32 counts".to_string(),
-                        )
-                    })?;
-                    *first = first.checked_add(overflow).ok_or_else(|| {
-                        AppError::InvalidParam("graph-new fine tile count overflow".to_string())
-                    })?;
+                let mut row_ids = Vec::with_capacity(point_count);
+                let mut xs = Vec::with_capacity(point_count);
+                let mut ys = Vec::with_capacity(point_count);
+                let mut group_codes = Vec::with_capacity(point_count);
+                let mut counts = Vec::with_capacity(point_count);
+                for (&group_code, group) in &retained.groups {
+                    let population = meta
+                        .groups
+                        .get(&group_code)
+                        .ok_or_else(|| {
+                            AppError::Stats("graph-new fine group metadata missing".to_string())
+                        })?
+                        .total_source_count;
+                    let representatives = group.retained_points.clone().into_sorted_vec();
+                    if representatives.len() != group.retain_count {
+                        return Err(AppError::Stats(
+                            "graph-new fine tile representative missing".to_string(),
+                        ));
+                    }
+                    for (index, representative) in representatives.into_iter().enumerate() {
+                        row_ids.push(representative.0.row_id);
+                        xs.push(representative.0.x);
+                        ys.push(representative.0.y);
+                        group_codes.push(group_code);
+                        let count = if index == 0 {
+                            population
+                                .checked_sub((group.retain_count.saturating_sub(1)) as u64)
+                                .ok_or_else(|| {
+                                    AppError::InvalidParam(
+                                        "graph-new fine overflow redistribution underflow"
+                                            .to_string(),
+                                    )
+                                })?
+                        } else {
+                            1
+                        };
+                        counts.push(u32::try_from(count).map_err(|_| {
+                            AppError::InvalidParam(
+                                "graph-new fine tile count overflow".to_string(),
+                            )
+                        })?);
+                    }
                 }
                 let tile = GraphNewTile {
                     header: build_tile_header(
@@ -1221,17 +1422,17 @@ impl TilePyramidBuilder {
                         finest_level,
                         tile_x,
                         tile_y,
-                        u32::try_from(retained_points.len()).map_err(|_| {
+                        u32::try_from(point_count).map_err(|_| {
                             AppError::InvalidParam(
                                 "graph-new fine point count overflow".to_string(),
                             )
                         })?,
                         meta.total_source_count,
                     ),
-                    row_ids: retained_points.iter().map(|point| point.0.row_id).collect(),
-                    xs: retained_points.iter().map(|point| point.0.x).collect(),
-                    ys: retained_points.iter().map(|point| point.0.y).collect(),
-                    group_codes: retained_points.iter().map(|point| point.0.group_code).collect(),
+                    row_ids,
+                    xs,
+                    ys,
+                    group_codes,
                     counts,
                 };
                 self.check_disk_budget(
@@ -1239,8 +1440,6 @@ impl TilePyramidBuilder {
                     tile_file.stream_position()? + estimate_encoded_tile_bytes(tile.row_ids.len())?,
                 )?;
                 let stored = append_tile(&mut tile_file, &mut tile_index, tile)?;
-                drop(retained_points);
-                bucket_retained_bytes -= retained_bytes;
                 output_tile_count += 1;
                 fine_tile_bytes = fine_tile_bytes
                     .checked_add(stored.encoded_bytes)
@@ -1404,13 +1603,23 @@ struct TileAccumulator {
 #[derive(Debug, Clone, Copy, Default)]
 struct GroupTileAccumulator {
     total_source_count: u64,
-    representative: Option<SourcePoint>,
 }
 
 #[derive(Debug, Default)]
 struct FineTileAccumulator {
+    total_source_count: u64,
+    groups: BTreeMap<u16, GroupTileAccumulator>,
+}
+
+#[derive(Debug, Default)]
+struct RetainedGroupAccumulator {
+    retain_count: usize,
     retained_points: std::collections::BinaryHeap<RowIdPoint>,
-    overflow_count: u64,
+}
+
+#[derive(Debug, Default)]
+struct RetainedTileAccumulator {
+    groups: BTreeMap<u16, RetainedGroupAccumulator>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1992,6 +2201,147 @@ fn compute_tile_quotas(
     Ok(quotas)
 }
 
+fn stratified_group_quotas(
+    group_counts: &BTreeMap<u16, u64>,
+    capacity: usize,
+) -> Result<BTreeMap<u16, usize>, AppError> {
+    if group_counts.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let total_population = group_counts.values().try_fold(0u64, |total, count| {
+        total.checked_add(*count).ok_or_else(|| {
+            AppError::InvalidParam("graph-new group population overflow".to_string())
+        })
+    })?;
+    if total_population <= capacity as u64 {
+        return Ok(group_counts
+            .iter()
+            .map(|(&group_code, &population)| {
+                Ok((
+                    group_code,
+                    usize::try_from(population).map_err(|_| {
+                        AppError::InvalidParam(
+                            "graph-new group population exceeds usize".to_string(),
+                        )
+                    })?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, AppError>>()?);
+    }
+
+    if capacity < group_counts.len() {
+        return Err(AppError::Stats("graph_new_cache_pressure".into()));
+    }
+
+    let total_population_u128 = u128::from(total_population);
+    let remaining = capacity - group_counts.len();
+    let remaining_u128 = u128::try_from(remaining).map_err(|_| {
+        AppError::InvalidParam("graph-new remaining quota overflow".to_string())
+    })?;
+    let mut quotas = BTreeMap::new();
+    let mut remainders = Vec::with_capacity(group_counts.len());
+    let mut used = group_counts.len();
+
+    for (&group_code, &population) in group_counts {
+        let numerator = u128::from(population) * remaining_u128;
+        let proportional = usize::try_from(numerator / total_population_u128).map_err(|_| {
+            AppError::InvalidParam("graph-new proportional quota overflow".to_string())
+        })?;
+        let available = usize::try_from(population.saturating_sub(1)).map_err(|_| {
+            AppError::InvalidParam("graph-new additional quota overflow".to_string())
+        })?;
+        let retained = 1usize.saturating_add(proportional.min(available));
+        used = used.checked_add(retained - 1).ok_or_else(|| {
+            AppError::InvalidParam("graph-new quota accumulation overflow".to_string())
+        })?;
+        quotas.insert(group_code, retained);
+        remainders.push((group_code, numerator % total_population_u128));
+    }
+
+    remainders.sort_by(|(left_code, left_remainder), (right_code, right_remainder)| {
+        right_remainder
+            .cmp(left_remainder)
+            .then_with(|| left_code.cmp(right_code))
+    });
+
+    let mut remaining_slots = capacity.saturating_sub(used);
+    while remaining_slots > 0 {
+        let mut progressed = false;
+        for (group_code, _) in &remainders {
+            if remaining_slots == 0 {
+                break;
+            }
+            let Some(&population) = group_counts.get(group_code) else {
+                continue;
+            };
+            let retained = quotas.get_mut(group_code).ok_or_else(|| {
+                AppError::InvalidParam("graph-new quota group missing".to_string())
+            })?;
+            if (*retained as u64) < population {
+                *retained += 1;
+                remaining_slots -= 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            return Err(AppError::Stats("graph_new_cache_pressure".into()));
+        }
+    }
+
+    Ok(quotas)
+}
+
+fn stratified_representatives(
+    points: impl IntoIterator<Item = SourcePoint>,
+    capacity: usize,
+) -> Result<Vec<SourcePoint>, AppError> {
+    let mut total_points = 0u64;
+    let mut groups = BTreeMap::<u16, (u64, std::collections::BinaryHeap<RowIdPoint>)>::new();
+    for point in points {
+        total_points = total_points.checked_add(1).ok_or_else(|| {
+            AppError::InvalidParam("graph-new representative count overflow".to_string())
+        })?;
+        let entry = groups
+            .entry(point.group_code)
+            .or_insert_with(|| (0, std::collections::BinaryHeap::new()));
+        entry.0 = entry.0.checked_add(1).ok_or_else(|| {
+            AppError::InvalidParam("graph-new group representative count overflow".to_string())
+        })?;
+        entry.1.push(RowIdPoint(point));
+    }
+
+    if total_points <= capacity as u64 {
+        let mut retained = Vec::with_capacity(total_points as usize);
+        for (_group_code, (_population, heap)) in groups {
+            retained.extend(heap.into_sorted_vec().into_iter().map(|point| point.0));
+        }
+        return Ok(retained);
+    }
+
+    let quotas = stratified_group_quotas(
+        &groups
+            .iter()
+            .map(|(&group_code, (population, _))| (group_code, *population))
+            .collect(),
+        capacity,
+    )?;
+
+    let mut retained = Vec::with_capacity(capacity);
+    for (group_code, quota) in quotas {
+        let (_population, heap) = groups.remove(&group_code).ok_or_else(|| {
+            AppError::InvalidParam("graph-new representative group missing".to_string())
+        })?;
+        retained.extend(
+            heap.into_sorted_vec()
+                .into_iter()
+                .take(quota)
+                .map(|point| point.0),
+        );
+    }
+    Ok(retained)
+}
+
 fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, AppError> {
     if quota >= tile.row_ids.len() {
         return Ok(tile.clone());
@@ -2173,8 +2523,13 @@ fn estimate_bucket_bytes(bucket_tiles: &BTreeMap<(u32, u32), FineTileAccumulator
     bucket_tiles
         .values()
         .map(|tile| {
+            let retained_points = tile
+                .groups
+                .values()
+                .map(|group| group.total_source_count)
+                .sum::<u64>();
             FINE_TILE_ENTRY_BYTES_ESTIMATE
-                + (tile.retained_points.len() as u64 * std::mem::size_of::<SourcePoint>() as u64)
+                + retained_points * std::mem::size_of::<SourcePoint>() as u64
         })
         .sum()
 }
@@ -2200,12 +2555,57 @@ fn bucket_index(tile_x: u32, tile_y: u32, bucket_count: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    use serde_json::Value;
+
     use crate::models::graph_new_data::GRAPH_NEW_MAX_TILE_POINTS;
+    use crate::services::graph_new_overlay::OverlayDictionary;
 
     use super::{GraphCamera, SourcePoint, TilePyramidBuilder};
 
     fn bounded_builder(levels: u8, cap: u32, overdraw: f64) -> TilePyramidBuilder {
         TilePyramidBuilder::with_memory_limit(levels, cap, overdraw, 8 * 1024 * 1024).expect("bounded builder")
+    }
+
+    fn cache_with_mutated_overlay_catalog(
+        pyramid: &super::TilePyramid,
+        key: &str,
+        mutate: impl FnOnce(&mut Value),
+    ) -> std::fs::File {
+        let mut file = tempfile::tempfile().expect("cache");
+        pyramid.write_cache(&mut file, key).expect("persist");
+        file.seek(SeekFrom::Start(0)).expect("start");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read cache");
+        let checksum_offset = bytes.len() - 32;
+        let axis_length =
+            u64::from_le_bytes(bytes[160..168].try_into().expect("axis length")) as usize;
+        let overlay_length_offset = 168 + axis_length;
+        let overlay_length = u64::from_le_bytes(
+            bytes[overlay_length_offset..overlay_length_offset + 8]
+                .try_into()
+                .expect("overlay length"),
+        ) as usize;
+        let overlay_start = overlay_length_offset + 8;
+        let overlay_end = overlay_start + overlay_length;
+        let mut overlay =
+            serde_json::from_slice::<Value>(&bytes[overlay_start..overlay_end]).expect("overlay");
+        mutate(&mut overlay);
+        let overlay_bytes = serde_json::to_vec(&overlay).expect("overlay bytes");
+        let mut mutated = Vec::new();
+        mutated.extend_from_slice(&bytes[..overlay_length_offset]);
+        mutated.extend_from_slice(&(overlay_bytes.len() as u64).to_le_bytes());
+        mutated.extend_from_slice(&overlay_bytes);
+        mutated.extend_from_slice(&bytes[overlay_end..checksum_offset]);
+
+        let mut output = tempfile::tempfile().expect("mutated cache");
+        output.write_all(&mutated).expect("write mutated");
+        let checksum = super::cache_checksum(&mut output, mutated.len() as u64).expect("checksum");
+        output.seek(SeekFrom::Start(mutated.len() as u64)).expect("checksum offset");
+        output.write_all(&checksum).expect("write checksum");
+        output.seek(SeekFrom::Start(0)).expect("rewind");
+        output
     }
 
     #[test]
@@ -2583,6 +2983,41 @@ mod tests {
     }
 
     #[test]
+    fn bounded_restore_rejects_invalid_overlay_catalog_invariants() {
+        let mut builder = bounded_builder(2, 16, 1.0);
+        builder.push_batch(&[
+            SourcePoint::with_group(1, 0.10, 0.10, 1),
+            SourcePoint::with_group(2, 0.20, 0.20, 1),
+            SourcePoint::with_group(3, 0.30, 0.30, 2),
+        ]).expect("points");
+        let mut overlay = OverlayDictionary::new("VARCHAR");
+        overlay.observe(Some("A")).expect("A");
+        overlay.observe(Some("A")).expect("A");
+        overlay.observe(Some("B")).expect("B");
+        builder.set_overlay(overlay.finish());
+        let pyramid = builder.finish().expect("pyramid");
+        let key = "b".repeat(64);
+
+        for mutate in [
+            Box::new(|overlay: &mut Value| {
+                overlay["groups"][0]["id"] = Value::String("not-a-hash".into());
+            }) as Box<dyn FnOnce(&mut Value)>,
+            Box::new(|overlay: &mut Value| {
+                overlay["groups"][1]["code"] = overlay["groups"][0]["code"].clone();
+            }),
+            Box::new(|overlay: &mut Value| {
+                overlay["groups"][0]["totalRows"] = Value::from(99u64);
+            }),
+        ] {
+            let file = cache_with_mutated_overlay_catalog(&pyramid, &key, mutate);
+            assert!(
+                super::TilePyramid::read_cache(file, &key, 16 * 1024 * 1024, 1024 * 1024)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn downsample_tile_preserves_group_totals_without_cross_group_counts() {
         let tile = super::GraphNewTile {
             header: super::GraphNewTileHeader::new_for_test(0, 0, 0, 4, 100),
@@ -2601,6 +3036,53 @@ mod tests {
         assert_eq!(totals.get(&1), Some(&40));
         assert_eq!(totals.get(&2), Some(&60));
         assert_eq!(downsampled.counts.iter().copied().map(u64::from).sum::<u64>(), tile.header.total_source_count);
+    }
+
+    #[test]
+    fn stratified_representatives_preserve_minority_and_missing_groups() {
+        let mut points = (1..=10_000)
+            .map(|row| SourcePoint::with_group(row, 0.5, 0.5, 1))
+            .collect::<Vec<_>>();
+        points.push(SourcePoint::with_group(10_001, 0.5, 0.5, 2));
+        points.push(SourcePoint::with_group(10_002, 0.5, 0.5, 0));
+
+        let retained = super::stratified_representatives(points, 64).expect("retained");
+
+        assert_eq!(retained.len(), 64);
+        assert!(retained.iter().any(|point| point.group_code == 0));
+        assert!(retained.iter().any(|point| point.group_code == 2));
+        assert_eq!(
+            retained
+                .iter()
+                .filter(|point| point.group_code == 1)
+                .count(),
+            62,
+        );
+    }
+
+    #[test]
+    fn stratified_representatives_break_ties_by_group_code_and_row_id() {
+        let points = vec![
+            SourcePoint::with_group(10, 0.1, 0.1, 1),
+            SourcePoint::with_group(11, 0.1, 0.1, 1),
+            SourcePoint::with_group(12, 0.1, 0.1, 1),
+            SourcePoint::with_group(20, 0.2, 0.2, 2),
+            SourcePoint::with_group(21, 0.2, 0.2, 2),
+            SourcePoint::with_group(22, 0.2, 0.2, 2),
+            SourcePoint::with_group(30, 0.3, 0.3, 3),
+            SourcePoint::with_group(31, 0.3, 0.3, 3),
+            SourcePoint::with_group(32, 0.3, 0.3, 3),
+        ];
+
+        let retained = super::stratified_representatives(points, 5).expect("retained");
+
+        assert_eq!(
+            retained
+                .iter()
+                .map(|point| (point.group_code, point.row_id))
+                .collect::<Vec<_>>(),
+            vec![(1, 10), (1, 11), (2, 20), (2, 21), (3, 30)],
+        );
     }
 
     #[test]

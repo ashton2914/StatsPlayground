@@ -40,6 +40,55 @@ impl OverlayCatalog {
                 .map(|group| group.id.capacity() as u64 + group.label.capacity() as u64)
                 .sum::<u64>()
     }
+
+    pub(crate) fn validate_for_restore(&self, total_finite_rows: u64) -> Result<(), AppError> {
+        if !self.active {
+            return if self.groups.is_empty() {
+                Ok(())
+            } else {
+                Err(AppError::Stats("graph_new_invalid_cache".into()))
+            };
+        }
+
+        if self.groups.is_empty() || self.groups.len() > MAX_OVERLAY_GROUPS {
+            return Err(AppError::Stats("graph_new_invalid_cache".into()));
+        }
+
+        let mut ids = std::collections::BTreeSet::new();
+        let mut codes = std::collections::BTreeSet::new();
+        let mut total_rows = 0u64;
+        let mut sorted = self.groups.clone();
+        sorted.sort_by(|left, right| {
+            left.missing
+                .cmp(&right.missing)
+                .then_with(|| left.label.cmp(&right.label))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if sorted != self.groups {
+            return Err(AppError::Stats("graph_new_invalid_cache".into()));
+        }
+
+        for group in &self.groups {
+            if !valid_group_id(&group.id)
+                || group.label.len() > MAX_OVERLAY_LABEL_BYTES
+                || usize::from(group.code) >= MAX_OVERLAY_GROUPS
+                || group.total_rows == 0
+                || !ids.insert(group.id.clone())
+                || !codes.insert(group.code)
+            {
+                return Err(AppError::Stats("graph_new_invalid_cache".into()));
+            }
+            total_rows = total_rows
+                .checked_add(group.total_rows)
+                .ok_or_else(|| AppError::Stats("graph_new_invalid_cache".into()))?;
+        }
+
+        if total_rows != total_finite_rows {
+            return Err(AppError::Stats("graph_new_invalid_cache".into()));
+        }
+
+        Ok(())
+    }
 }
 
 pub struct OverlayDictionary {
@@ -158,7 +207,7 @@ impl OverlayDictionary {
                 .then_with(|| left.id.cmp(&right.id))
         });
         OverlayCatalog {
-            active: true,
+            active: !groups.is_empty(),
             groups,
         }
     }
@@ -171,6 +220,16 @@ fn bit_for(code: u16) -> Result<u64, AppError> {
         ));
     }
     Ok(1u64 << u32::from(code))
+}
+
+fn valid_group_id(id: &str) -> bool {
+    id.len() == 71
+        && id.starts_with("sha256:")
+        && id
+            .as_bytes()
+            .iter()
+            .skip(7)
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn hashed_identity(input: &str) -> String {
