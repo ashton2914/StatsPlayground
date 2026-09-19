@@ -16,7 +16,7 @@ use crate::models::graph_new_data::{
 use crate::services::graph_new_key::{RetentionPolicy, GRAPH_NEW_TILE_FORMAT_VERSION};
 use crate::services::graph_new_overlay::{OverlayCatalog, ALL_ROWS_GROUP_CODE};
 use super::graph_new_raw::{RawStore, RawWriter, QueryWork, QUERY_SCRATCH_BYTES};
-use crate::services::graph_new_tile::{GraphNewTile, GraphNewTileHeader};
+use crate::services::graph_new_tile::{minimum_encoded_tile_bytes, GraphNewTile, GraphNewTileHeader};
 
 const CAMERA_MAX_VIEWPORT_DIMENSION: u32 = 16_384;
 const CAMERA_MAX_DEVICE_PIXEL_RATIO: f64 = 8.0;
@@ -327,7 +327,7 @@ impl TilePyramid {
             y_min: f64::from_bits(values[2]), y_max: f64::from_bits(values[3]) };
         let overdraw_factor = f64::from_bits(values[8]);
         let min_tile_entry_bytes = 8u64
-            .checked_add(estimate_encoded_tile_bytes(1)?)
+            .checked_add(minimum_encoded_tile_bytes(1)?)
             .ok_or_else(cache_format_error)?;
         if ![domain.x_min, domain.x_max, domain.y_min, domain.y_max].iter().all(|value| value.is_finite())
             || domain.x_min >= domain.x_max || domain.y_min >= domain.y_max
@@ -927,12 +927,13 @@ impl TilePyramidBuilder {
                     entry.total_source_count.checked_add(1).ok_or_else(|| {
                         AppError::InvalidParam("graph-new tile count overflow".to_string())
                     })?;
-                match entry.representative {
+                let group = entry.groups.entry(point.group_code).or_default();
+                group.total_source_count = group.total_source_count.checked_add(1).ok_or_else(|| {
+                    AppError::InvalidParam("graph-new group tile count overflow".to_string())
+                })?;
+                match group.representative {
                     Some(current) if current.row_id <= point.row_id => {}
-                    _ => entry.representative = Some(point),
-                }
-                if level < finest_level {
-                    entry.retained_mark_count = 1;
+                    _ => group.representative = Some(point),
                 }
             }
 
@@ -978,31 +979,48 @@ impl TilePyramidBuilder {
                     control()?;
                     emitted_tiles_since_control = 0;
                 }
-                let Some(representative) = accumulator.representative else {
+                if accumulator.groups.is_empty() {
                     return Err(AppError::Stats(
                         "graph-new tile representative missing".to_string(),
                     ));
-                };
-                let source_count_u32 =
-                    u32::try_from(accumulator.total_source_count).map_err(|_| {
-                        AppError::InvalidParam(
-                            "graph-new per-tile source count exceeds u32 storage".to_string(),
-                        )
+                }
+                let mut row_ids = Vec::with_capacity(accumulator.groups.len());
+                let mut xs = Vec::with_capacity(accumulator.groups.len());
+                let mut ys = Vec::with_capacity(accumulator.groups.len());
+                let mut group_codes = Vec::with_capacity(accumulator.groups.len());
+                let mut counts = Vec::with_capacity(accumulator.groups.len());
+                for (&group_code, group) in &accumulator.groups {
+                    let representative = group.representative.ok_or_else(|| {
+                        AppError::Stats("graph-new group representative missing".to_string())
                     })?;
+                    row_ids.push(representative.row_id);
+                    xs.push(representative.x);
+                    ys.push(representative.y);
+                    group_codes.push(group_code);
+                    counts.push(u32::try_from(group.total_source_count).map_err(|_| {
+                        AppError::InvalidParam(
+                            "graph-new per-group source count exceeds u32 storage".to_string(),
+                        )
+                    })?);
+                }
                 let tile = GraphNewTile {
                     header: build_tile_header(
                         &domain,
                         level,
                         tile_x,
                         tile_y,
-                        1,
+                        u32::try_from(row_ids.len()).map_err(|_| {
+                            AppError::InvalidParam(
+                                "graph-new coarse tile point count overflow".to_string(),
+                            )
+                        })?,
                         accumulator.total_source_count,
                     ),
-                    row_ids: vec![representative.row_id],
-                    xs: vec![representative.x],
-                    ys: vec![representative.y],
-                    group_codes: vec![representative.group_code],
-                    counts: vec![source_count_u32],
+                    row_ids,
+                    xs,
+                    ys,
+                    group_codes,
+                    counts,
                 };
                 self.update_peak_memory(estimate_construction_memory(
                     bucket_count,
@@ -1182,13 +1200,10 @@ impl TilePyramidBuilder {
                 )?;
                 let retained_points = accumulator.retained_points.into_sorted_vec();
                 let meta = level_maps[finest_level as usize]
-                    .get_mut(&(tile_x, tile_y))
+                    .get(&(tile_x, tile_y))
                     .ok_or_else(|| {
                         AppError::Stats("graph-new fine tile metadata missing".to_string())
                     })?;
-                meta.retained_mark_count = u32::try_from(retained_points.len()).map_err(|_| {
-                    AppError::InvalidParam("graph-new retained mark count overflow".to_string())
-                })?;
                 let mut counts = vec![1u32; retained_points.len()];
                 if let Some(first) = counts.first_mut() {
                     let overflow = u32::try_from(accumulator.overflow_count).map_err(|_| {
@@ -1380,10 +1395,15 @@ impl TilePyramidBuilder {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct TileAccumulator {
     total_source_count: u64,
-    retained_mark_count: u32,
+    groups: BTreeMap<u16, GroupTileAccumulator>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct GroupTileAccumulator {
+    total_source_count: u64,
     representative: Option<SourcePoint>,
 }
 
@@ -1977,6 +1997,52 @@ fn downsample_tile(tile: &GraphNewTile, quota: usize) -> Result<GraphNewTile, Ap
         return Ok(tile.clone());
     }
 
+    let distinct_groups = tile.group_codes.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    if distinct_groups.len() > 1 {
+        let mut grouped = Vec::<(u16, i64, f64, f64, u32)>::new();
+        let mut by_group = BTreeMap::<u16, usize>::new();
+        for index in 0..tile.row_ids.len() {
+            if let Some(existing) = by_group.get(&tile.group_codes[index]).copied() {
+                grouped[existing].4 = grouped[existing].4.checked_add(tile.counts[index]).ok_or_else(|| {
+                    AppError::InvalidParam("graph-new grouped fallback count overflow".to_string())
+                })?;
+            } else {
+                by_group.insert(tile.group_codes[index], grouped.len());
+                grouped.push((
+                    tile.group_codes[index],
+                    tile.row_ids[index],
+                    tile.xs[index],
+                    tile.ys[index],
+                    tile.counts[index],
+                ));
+            }
+        }
+        grouped.sort_unstable_by_key(|(_, row_id, _, _, _)| *row_id);
+        let total_source_count = grouped.iter().try_fold(0u64, |acc, (_, _, _, _, count)| {
+            acc.checked_add(u64::from(*count)).ok_or_else(|| {
+                AppError::InvalidParam("graph-new grouped fallback source count overflow".to_string())
+            })
+        })?;
+        if total_source_count != tile.header.total_source_count {
+            return Err(AppError::Stats(
+                "graph-new fallback failed to preserve total source count".to_string(),
+            ));
+        }
+        let mut header = tile.header.clone();
+        header.point_count = u32::try_from(grouped.len()).map_err(|_| {
+            AppError::InvalidParam("graph-new grouped fallback point count overflow".to_string())
+        })?;
+        header.payload_bytes = 0;
+        return Ok(GraphNewTile {
+            header,
+            row_ids: grouped.iter().map(|(_, row_id, _, _, _)| *row_id).collect(),
+            xs: grouped.iter().map(|(_, _, x, _, _)| *x).collect(),
+            ys: grouped.iter().map(|(_, _, _, y, _)| *y).collect(),
+            group_codes: grouped.iter().map(|(group_code, _, _, _, _)| *group_code).collect(),
+            counts: grouped.iter().map(|(_, _, _, _, count)| *count).collect(),
+        });
+    }
+
     let point_count = tile.row_ids.len();
     let mut row_ids = Vec::with_capacity(quota);
     let mut xs = Vec::with_capacity(quota);
@@ -2471,6 +2537,99 @@ mod tests {
         assert_eq!(restored.total_finite_rows, 8192);
         assert_eq!(restored.total_excluded_non_finite_rows, 1);
         assert_eq!(restored.levels[0].retained_marks, 4096);
+        let partial = restored.select(&GraphCamera {
+            x_min: restored.domain.x_min, x_max: (restored.domain.x_min + restored.domain.x_max) / 2.0,
+            y_min: restored.domain.y_min, y_max: restored.domain.y_max,
+            viewport_width: 640, viewport_height: 360, device_pixel_ratio: 1.0,
+        }).expect("partial");
+        assert!(!partial.exact);
+        assert_eq!(partial.visible_rows, None);
+        assert_eq!(partial.query_work.index_entries_inspected, 0);
+        let mut legacy = tempfile::tempfile().expect("legacy fixture");
+        restored.write_cache(&mut legacy, &key).expect("fixture");
+        use std::io::{Seek, SeekFrom, Write};
+        legacy.seek(SeekFrom::Start(0)).expect("start");
+        legacy.write_all(b"GNPC0002").expect("legacy schema");
+        let payload_length = legacy.metadata().expect("length").len() - 32;
+        let checksum = super::cache_checksum(&mut legacy, payload_length).expect("checksum");
+        legacy.seek(SeekFrom::Start(payload_length)).expect("checksum offset");
+        legacy.write_all(&checksum).expect("valid checksum");
+        assert!(super::TilePyramid::read_cache(legacy, &key, 16 * 1024 * 1024, 1024 * 1024).is_err());
+    }
+
+    #[test]
+    fn coarse_overlay_aggregation_preserves_group_totals_per_group() {
+        let mut builder = bounded_builder(2, 16, 1.0);
+        builder.push_batch(&[
+            SourcePoint::with_group(1, 0.10, 0.10, 1),
+            SourcePoint::with_group(2, 0.20, 0.20, 1),
+            SourcePoint::with_group(3, 0.30, 0.30, 2),
+            SourcePoint::with_group(4, 0.40, 0.40, 2),
+            SourcePoint::with_group(5, 0.50, 0.50, 2),
+        ]).expect("points");
+        let pyramid = builder.finish().expect("pyramid");
+        let coarse = pyramid.levels.first().expect("coarse");
+        let tile = pyramid.tile_store.decode(&coarse.tiles[0].address).expect("decode coarse tile");
+        let mut totals = std::collections::BTreeMap::<u16, u32>::new();
+        for (&group_code, &count) in tile.group_codes.iter().zip(&tile.counts) {
+            *totals.entry(group_code).or_default() += count;
+        }
+        assert_eq!(totals.get(&1), Some(&2));
+        assert_eq!(totals.get(&2), Some(&3));
+        assert_eq!(tile.counts.iter().copied().map(u64::from).sum::<u64>(), tile.header.total_source_count);
+    }
+
+    #[test]
+    fn downsample_tile_preserves_group_totals_without_cross_group_counts() {
+        let tile = super::GraphNewTile {
+            header: super::GraphNewTileHeader::new_for_test(0, 0, 0, 4, 100),
+            row_ids: vec![1, 2, 3, 4],
+            xs: vec![0.1, 0.2, 0.3, 0.4],
+            ys: vec![0.1, 0.2, 0.3, 0.4],
+            group_codes: vec![1, 2, 1, 2],
+            counts: vec![10, 20, 30, 40],
+        };
+
+        let downsampled = super::downsample_tile(&tile, 2).expect("downsample");
+        let mut totals = std::collections::BTreeMap::<u16, u32>::new();
+        for (&group_code, &count) in downsampled.group_codes.iter().zip(&downsampled.counts) {
+            *totals.entry(group_code).or_default() += count;
+        }
+        assert_eq!(totals.get(&1), Some(&40));
+        assert_eq!(totals.get(&2), Some(&60));
+        assert_eq!(downsampled.counts.iter().copied().map(u64::from).sum::<u64>(), tile.header.total_source_count);
+    }
+
+    #[test]
+    fn bounded_restore_accepts_many_valid_one_point_tiles_below_old_floor_estimate() {
+        let mut builder = bounded_builder(3, 1, 1.0);
+        let mut row_id = 1i64;
+        for tile_y in 0..4 {
+            for tile_x in 0..4 {
+                builder.push_batch(&[SourcePoint::new(
+                    row_id,
+                    (f64::from(tile_x) + 0.5) / 4.0,
+                    (f64::from(tile_y) + 0.5) / 4.0,
+                )]).expect("point");
+                row_id += 1;
+            }
+        }
+        let pyramid = builder.finish().expect("pyramid");
+        let key = "1".repeat(64);
+        let mut file = tempfile::tempfile().expect("cache");
+        pyramid.write_cache(&mut file, &key).expect("persist");
+        let file_len = file.metadata().expect("metadata").len();
+        let tile_count = pyramid.tile_store.index.len() as u64;
+        let old_min_tile_entry_bytes = 166u64;
+        assert!(
+            tile_count > (file_len - 200) / old_min_tile_entry_bytes,
+            "fixture must be smaller than the previous floor estimate"
+        );
+        let restored = super::TilePyramid::read_cache(file, &key, 16 * 1024 * 1024, 1024 * 1024)
+            .expect("restore valid one-point tiles");
+        assert_eq!(restored.levels.iter().map(|level| level.tiles.len()).sum::<usize>(), 21);
+        assert_eq!(restored.levels[0].retained_marks, 1);
+        assert_eq!(restored.levels[0].total_source_count, 16);
         let partial = restored.select(&GraphCamera {
             x_min: restored.domain.x_min, x_max: (restored.domain.x_min + restored.domain.x_max) / 2.0,
             y_min: restored.domain.y_min, y_max: restored.domain.y_max,

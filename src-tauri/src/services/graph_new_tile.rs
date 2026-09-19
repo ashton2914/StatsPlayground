@@ -269,6 +269,17 @@ impl GraphNewTile {
     }
 }
 
+pub(crate) fn minimum_encoded_tile_bytes(point_count: usize) -> Result<u64, AppError> {
+    let header = u64::try_from(GRAPH_NEW_TILE_HEADER_BYTES)
+        .map_err(|_| AppError::InvalidParam("graph-new tile header length overflow".to_string()))?;
+    let checksum = u64::try_from(GRAPH_NEW_TILE_CHECKSUM_BYTES)
+        .map_err(|_| AppError::InvalidParam("graph-new tile checksum length overflow".to_string()))?;
+    payload_length(point_count)?
+        .checked_add(header)
+        .and_then(|bytes| bytes.checked_add(checksum))
+        .ok_or_else(|| AppError::InvalidParam("graph-new tile encoded length overflow".to_string()))
+}
+
 fn validate_bounds(x_min: f64, x_max: f64, y_min: f64, y_max: f64) -> Result<(), AppError> {
     if !x_min.is_finite() || !x_max.is_finite() || !y_min.is_finite() || !y_max.is_finite() {
         return Err(AppError::InvalidParam(
