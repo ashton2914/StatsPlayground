@@ -1509,7 +1509,7 @@ fn execute_graph_new_runs(
         memory_growth_budget_multiplier: None,
         qualification_passed: if qualification_failure.is_some() {
             Some(false)
-        } else if overlay_groups.is_some() && rows.iter().any(|row_count| *row_count == 2_000_000) {
+        } else if overlay_groups.is_some() && rows.contains(&2_000_000) {
             Some(true)
         } else {
             None
