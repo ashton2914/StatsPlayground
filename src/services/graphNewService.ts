@@ -82,9 +82,9 @@ export interface GraphNewRenderCompletion {
   rawMode?: GraphNewRawMode;
   rawLineAvailable?: boolean;
   rawLineSegments?: number;
-  overlayGroups?: GraphNewOverlayGroup[];
-  overlayActive?: boolean;
-  hiddenOverlayGroups?: number;
+  overlayGroups: GraphNewOverlayGroup[];
+  overlayActive: boolean;
+  hiddenOverlayGroups: number;
   processedRows: number;
   finiteRows: number;
   excludedNonFiniteRows: number;
@@ -162,38 +162,35 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
 }
 
 function validateCompletion(completion: GraphNewRenderCompletion, request: GraphNewRenderRequest): void {
-  const expectsOverlay = request.overlayColumnId != null
-    || request.hiddenOverlayGroupIds !== undefined
-    || completion?.overlayActive !== undefined
-    || completion?.overlayGroups !== undefined
-    || completion?.hiddenOverlayGroups !== undefined;
-  if (expectsOverlay) {
-    const overlayGroups = completion?.overlayGroups;
-    const requestedHidden = request.hiddenOverlayGroupIds ?? [];
-    if (typeof completion?.overlayActive !== "boolean"
-      || !Array.isArray(overlayGroups)
-      || overlayGroups.length > MAX_HIDDEN_OVERLAY_GROUPS
-      || !Number.isSafeInteger(completion.hiddenOverlayGroups)
-      || completion.hiddenOverlayGroups! < 0
-      || completion.hiddenOverlayGroups! > overlayGroups.length
-      || overlayGroups.some((group) => !group
-        || typeof group.id !== "string" || !GROUP_ID.test(group.id)
-        || !Number.isSafeInteger(group.code) || group.code < 0 || group.code > 0xffff
-        || typeof group.label !== "string" || textEncoder.encode(group.label).length > MAX_OVERLAY_LABEL_BYTES
-        || !Array.isArray(group.color) || group.color.length !== 4
-        || group.color.some((channel) => !Number.isSafeInteger(channel) || channel < 0 || channel > 255)
-        || !Number.isSafeInteger(group.totalRows) || group.totalRows < 0 || group.totalRows > completion.finiteRows
-        || typeof group.missing !== "boolean")
-      || new Set(overlayGroups.map((group) => group.id)).size !== overlayGroups.length
-      || new Set(overlayGroups.map((group) => group.code)).size !== overlayGroups.length
-      || overlayGroups.reduce((sum, group) => sum + group.totalRows, 0) !== completion.finiteRows
-      || (completion.overlayActive
-        ? request.overlayColumnId == null
-          || requestedHidden.length !== completion.hiddenOverlayGroups
-          || requestedHidden.some((id) => !overlayGroups.some((group) => group.id === id))
-        : overlayGroups.length !== 0 || completion.hiddenOverlayGroups !== 0)) {
+  const overlayGroups = completion?.overlayGroups;
+  const requestedHidden = request.hiddenOverlayGroupIds ?? [];
+  if (typeof completion?.overlayActive !== "boolean"
+    || !Array.isArray(overlayGroups)
+    || overlayGroups.length > MAX_HIDDEN_OVERLAY_GROUPS
+    || !Number.isSafeInteger(completion.hiddenOverlayGroups)
+    || completion.hiddenOverlayGroups < 0
+    || completion.hiddenOverlayGroups > overlayGroups.length
+    || overlayGroups.some((group) => !group
+      || typeof group.id !== "string" || !GROUP_ID.test(group.id)
+      || !Number.isSafeInteger(group.code) || group.code < 0 || group.code > 0xffff
+      || typeof group.label !== "string" || textEncoder.encode(group.label).length > MAX_OVERLAY_LABEL_BYTES
+      || !Array.isArray(group.color) || group.color.length !== 4
+      || group.color.some((channel) => !Number.isSafeInteger(channel) || channel < 0 || channel > 255)
+      || !Number.isSafeInteger(group.totalRows) || group.totalRows < 0 || group.totalRows > completion.finiteRows
+      || typeof group.missing !== "boolean")
+    || new Set(overlayGroups.map((group) => group.id)).size !== overlayGroups.length
+    || new Set(overlayGroups.map((group) => group.code)).size !== overlayGroups.length) {
+    throw new Error("graph_new_render_failed");
+  }
+  if (completion.overlayActive) {
+    if (request.overlayColumnId == null
+      || requestedHidden.length !== completion.hiddenOverlayGroups
+      || requestedHidden.some((id) => !overlayGroups.some((group) => group.id === id))
+      || overlayGroups.reduce((sum, group) => sum + group.totalRows, 0) !== completion.finiteRows) {
       throw new Error("graph_new_render_failed");
     }
+  } else if (overlayGroups.length !== 0 || completion.hiddenOverlayGroups !== 0) {
+    throw new Error("graph_new_render_failed");
   }
   if (request.xMode !== undefined || completion?.xAxis !== undefined) {
     const axis = completion?.xAxis;

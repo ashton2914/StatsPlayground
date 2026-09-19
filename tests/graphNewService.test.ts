@@ -80,7 +80,8 @@ async function main() {
   const cameraCompletion = { requestId: request.requestId, processedRows: 4, finiteRows: 3,
     exactVisible: true, visibleRows: 2, rawIndexEntriesInspected: 1, rawBlocksInspected: 1, rawPointsInspected: 3,
     excludedNonFiniteRows: 1, selectedMarks: 2, buildMs: 0, renderMs: 1, readbackMs: 1, width: 96, height: 64,
-    cameraDomain, plotRect: { x: 64, y: 16, width: 16, height: 16 }, sourceProjectionQueryCount: 0, renderGenerationCheckCount: 4 };
+    cameraDomain, plotRect: { x: 64, y: 16, width: 16, height: 16 }, sourceProjectionQueryCount: 0, renderGenerationCheckCount: 4,
+    overlayActive: false, overlayGroups: [], hiddenOverlayGroups: 0 };
   const handlers = { activeIdentity: () => cameraRequest, onFrame: () => {}, onError: () => {} };
   for (const invalid of [{ xMode: "guessLocale" }, { rawMode: "mean" }, { rawMode: false }]) {
     assert.throws(() => graphNewService.render({ ...cameraRequest, ...invalid } as any, handlers), /graph_new_invalid_request/);
@@ -225,6 +226,16 @@ async function main() {
   const camera = graphNewService.render(cameraRequest, handlers);
   resolveRender(cameraCompletion);
   assert.deepEqual(await camera.completion, cameraCompletion);
+  for (const invalid of [
+    (({ overlayActive, ...rest }) => rest)(cameraCompletion),
+    (({ overlayGroups, ...rest }) => rest)(cameraCompletion),
+    (({ hiddenOverlayGroups, ...rest }) => rest)(cameraCompletion),
+    { ...cameraCompletion, overlayActive: true, overlayGroups: [], hiddenOverlayGroups: 0 },
+  ]) {
+    const pending = graphNewService.render(cameraRequest, handlers);
+    resolveRender(invalid);
+    await assert.rejects(pending.completion, /graph_new_render_failed/, "reject partial no-overlay metadata");
+  }
   const approximateCompletion = { ...cameraCompletion, exactVisible: false, visibleRows: null,
     rawIndexEntriesInspected: 0, rawBlocksInspected: 0, rawPointsInspected: 0 };
   const approximate = graphNewService.render(cameraRequest, handlers);
