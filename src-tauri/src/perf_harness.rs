@@ -1165,8 +1165,17 @@ fn grouped_overlay_qualification_failure(
     run: &GraphNewPerformanceRun,
     overlay_outcome: &GraphNewOverlayRun,
 ) -> Option<String> {
-    if row_count != 2_000_000 || overlay_outcome.outcome != "completed" {
+    if row_count != 2_000_000 {
         return None;
+    }
+    if overlay_outcome.outcome != "completed" {
+        return Some(match overlay_outcome.refusal_code.as_deref() {
+            Some(refusal_code) => format!("2M grouped overlay controlled refusal: {refusal_code}"),
+            None => format!(
+                "2M grouped overlay did not complete successfully: {}",
+                overlay_outcome.outcome
+            ),
+        });
     }
     let Some(cold) = overlay_outcome.cold.as_ref() else {
         return Some("missing cold grouped-overlay evidence".into());
@@ -1189,6 +1198,9 @@ fn grouped_overlay_qualification_failure(
     }
     if run.overlay_groups != 9 {
         return Some("2M grouped overlay did not report nine groups including Missing".into());
+    }
+    if run.missing_group_rows != 1 {
+        return Some("2M grouped overlay Missing group rows were not exactly 1".into());
     }
     if run.minority_group_rows == 0 || run.minority_group_rows.saturating_mul(1000) >= run.finite_rows {
         return Some("2M grouped overlay minority group was not below 0.1%".into());
@@ -1416,7 +1428,7 @@ fn execute_graph_new_runs(
                 run.cold_graph_key = Some(cold.graph_key.clone());
                 run.hidden_graph_key = Some(hide.graph_key.clone());
                 run.shown_graph_key = Some(show.graph_key.clone());
-                run.cold_camera = Some(camera.completion.camera_domain);
+                run.cold_camera = Some(cold.completion.camera_domain);
                 run.hidden_camera = Some(hide.completion.camera_domain);
                 run.shown_camera = Some(show.completion.camera_domain);
                 run.finite_rows = cold.completion.finite_rows;
@@ -3204,6 +3216,10 @@ mod tests {
     use crate::models::graph_data::{
         GraphAggregatePacket, GraphAxisEncoding, HistogramBin, HistogramPacket,
     };
+    use crate::models::graph_new::{
+        GraphNewAxis, GraphNewCameraDomain, GraphNewPlotRect, GraphNewRawMode,
+        GraphNewRenderCompletion, GraphNewXMode,
+    };
     use crate::models::table::{CellUpdate, CreateTableFromRowsRequest};
     use crate::services::calculated_column_service::{
         CalculatedColumnService, UpsertCalculatedColumnInput,
@@ -3215,6 +3231,88 @@ mod tests {
             "stats_playground_save_current_{}.spprj",
             uuid::Uuid::new_v4()
         ))
+    }
+
+    fn overlay_completion(
+        camera_domain: GraphNewCameraDomain,
+        selected_marks: usize,
+        source_projection_query_count: u64,
+        exact_visible: bool,
+    ) -> GraphNewRenderCompletion {
+        GraphNewRenderCompletion {
+            request_id: "overlay-phase".into(),
+            x_axis: GraphNewAxis {
+                kind: GraphNewXMode::Numeric,
+                utc: false,
+                ticks: vec![],
+                origin: None,
+            },
+            raw_line_available: true,
+            raw_line_segments: 0,
+            raw_mode: GraphNewRawMode::Scatter,
+            overlay_groups: vec![],
+            overlay_active: true,
+            hidden_overlay_groups: 0,
+            processed_rows: 2_000_000,
+            finite_rows: 2_000_000,
+            excluded_non_finite_rows: 0,
+            selected_marks,
+            mean_available: true,
+            mean_groups: None,
+            mean_visible: false,
+            exact_visible,
+            visible_rows: Some(selected_marks as u64),
+            raw_index_entries_inspected: 0,
+            raw_blocks_inspected: 0,
+            raw_points_inspected: 0,
+            build_ms: 0.0,
+            render_ms: 0.0,
+            readback_ms: 0.0,
+            width: 1920,
+            height: 1080,
+            camera_domain,
+            plot_rect: GraphNewPlotRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            source_projection_query_count,
+            render_generation_check_count: 4,
+            cpu_cache_hit: false,
+            persistent_cache_hit: false,
+            cpu_cache_bytes: 0,
+            cpu_cache_reserved_bytes: 0,
+            persistent_cache_bytes: 0,
+            cache_evictions: 0,
+            gpu_cache: None,
+            process_cpu_reserved_bytes: 0,
+            cache_cpu_hits: 0,
+            cache_misses: 1,
+            cache_disk_hits: 0,
+            cache_corruptions: 0,
+            cache_disk_write_failures: 0,
+        }
+    }
+
+    fn overlay_phase(
+        graph_key: &str,
+        camera_domain: GraphNewCameraDomain,
+        selected_marks: usize,
+        source_projection_query_count: u64,
+        exact_visible: bool,
+    ) -> GraphNewOverlayPhase {
+        GraphNewOverlayPhase {
+            wall_ms: 0.0,
+            graph_key: graph_key.into(),
+            process_rss_bytes: None,
+            completion: overlay_completion(
+                camera_domain,
+                selected_marks,
+                source_projection_query_count,
+                exact_visible,
+            ),
+        }
     }
 
     #[test]
@@ -4176,16 +4274,148 @@ mod tests {
         let graph_new = report.graph_new.expect("graph_new report");
         assert_eq!(graph_new.runs.len(), 1);
         let run = &graph_new.runs[0];
+        let grouped_overlay = run.grouped_overlay.as_ref().expect("grouped overlay report");
         assert_eq!(run.rows, 2_000);
         assert_eq!(run.processed_rows, 2_000);
         assert_eq!(run.overlay_groups, 9);
+        assert_eq!(run.missing_group_rows, 1);
         assert!(run.minority_group_rows > 0);
         assert_eq!(run.camera_projection_query_count, 0);
         assert_eq!(run.hide_projection_query_count, 0);
         assert_eq!(run.show_projection_query_count, 0);
         assert!(run.hidden_selected_marks < run.shown_selected_marks);
         assert_eq!(run.cold_graph_key, run.hidden_graph_key);
-        assert_eq!(run.cold_camera, run.hidden_camera);
+        assert_eq!(
+            run.cold_camera,
+            grouped_overlay.cold.as_ref().map(|phase| phase.completion.camera_domain)
+        );
+        assert_eq!(
+            run.hidden_camera,
+            grouped_overlay.hide.as_ref().map(|phase| phase.completion.camera_domain)
+        );
+        assert_eq!(
+            run.shown_camera,
+            grouped_overlay.show.as_ref().map(|phase| phase.completion.camera_domain)
+        );
+    }
+
+    #[test]
+    fn grouped_overlay_required_2m_refusal_fails_qualification_but_10m_refusal_is_stretch_only() {
+        let run = graph_new_performance_run_defaults(2_000_000);
+        let refusal = GraphNewOverlayRun {
+            outcome: "controlled_refusal",
+            refusal_code: Some("graph_new_cache_pressure".into()),
+            cold: None,
+            warm: None,
+            camera: None,
+            hide: None,
+            show: None,
+        };
+
+        let required_failure =
+            grouped_overlay_qualification_failure(2_000_000, &run, &refusal);
+        let required_passed = if required_failure.is_some() {
+            Some(false)
+        } else if Some(8).is_some() && [2_000_000].contains(&2_000_000) {
+            Some(true)
+        } else {
+            None
+        };
+        assert_eq!(
+            required_failure.as_deref(),
+            Some("2M grouped overlay controlled refusal: graph_new_cache_pressure")
+        );
+        assert_eq!(required_passed, Some(false));
+
+        let stretch_failure =
+            grouped_overlay_qualification_failure(10_000_000, &run, &refusal);
+        let stretch_passed = if stretch_failure.is_some() {
+            Some(false)
+        } else if Some(8).is_some() && [10_000_000].contains(&2_000_000) {
+            Some(true)
+        } else {
+            None
+        };
+        assert_eq!(stretch_failure, None);
+        assert_eq!(stretch_passed, None);
+    }
+
+    #[test]
+    fn grouped_overlay_required_2m_fails_when_missing_group_rows_are_absent() {
+        let cold_domain = GraphNewCameraDomain {
+            x_min: 0.0,
+            x_max: 1.0,
+            y_min: 0.0,
+            y_max: 1.0,
+        };
+        let interaction_domain = GraphNewCameraDomain {
+            x_min: 0.25,
+            x_max: 0.75,
+            y_min: 0.25,
+            y_max: 0.75,
+        };
+        let cold = overlay_phase("stable-key", cold_domain, 2_000_000, 1, true);
+        let warm = overlay_phase("stable-key", cold_domain, 2_000_000, 0, true);
+        let camera = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
+        let hide = overlay_phase("stable-key", interaction_domain, 1_999_999, 0, true);
+        let show = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
+        let mut run = graph_new_performance_run_defaults(2_000_000);
+        run.processed_rows = 2_000_000;
+        run.finite_rows = 2_000_000;
+        run.overlay_groups = 9;
+        run.missing_group_rows = 0;
+        run.minority_group_rows = 1;
+        let overlay = GraphNewOverlayRun {
+            outcome: "completed",
+            refusal_code: None,
+            cold: Some(cold),
+            warm: Some(warm),
+            camera: Some(camera),
+            hide: Some(hide),
+            show: Some(show),
+        };
+
+        assert_eq!(
+            grouped_overlay_qualification_failure(2_000_000, &run, &overlay).as_deref(),
+            Some("2M grouped overlay Missing group rows were not exactly 1")
+        );
+    }
+
+    #[test]
+    fn performance_cli_records_cold_camera_from_cold_phase() {
+        let report = execute(Options {
+            rows: 1,
+            columns: 1,
+            operation: Operation::Query,
+            graph_new_rows: Some(vec![2_000]),
+            graph_new_overlay_groups: Some(8),
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        let graph_new = report.graph_new.expect("graph_new report");
+        let run = &graph_new.runs[0];
+        let grouped_overlay = run.grouped_overlay.as_ref().expect("grouped overlay report");
+        let cold_camera = grouped_overlay
+            .cold
+            .as_ref()
+            .expect("cold phase")
+            .completion
+            .camera_domain;
+        let camera_phase_camera = grouped_overlay
+            .camera
+            .as_ref()
+            .expect("camera phase")
+            .completion
+            .camera_domain;
+
+        assert_ne!(cold_camera, camera_phase_camera);
+        assert_eq!(run.cold_camera, Some(cold_camera));
     }
 
     #[test]
