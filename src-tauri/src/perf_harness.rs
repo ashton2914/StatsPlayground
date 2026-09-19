@@ -180,6 +180,19 @@ const GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_PLACEHOLDER: u64 = 0;
 const GRAPH_NEW_HEADLESS_SELECTOR_QUERY_COUNT_METRIC: &str =
     "unmeasured_static_placeholder_from_headless_selector";
 
+#[derive(Clone, Copy)]
+struct GraphNewBenchmarkConfig {
+    batch_rows: usize,
+    construction_memory_limit_bytes: u64,
+    forced_grouped_overlay_refusal: Option<&'static str>,
+}
+
+const GRAPH_NEW_BENCHMARK_CONFIG: GraphNewBenchmarkConfig = GraphNewBenchmarkConfig {
+    batch_rows: 16_384,
+    construction_memory_limit_bytes: GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+    forced_grouped_overlay_refusal: None,
+};
+
 #[cfg(test)]
 #[test]
 fn graph_new_cache_harness_preserves_metrics_and_measures_production_reopens() {
@@ -249,6 +262,8 @@ struct GraphNewOverlayRun {
     camera: Option<GraphNewOverlayPhase>,
     hide: Option<GraphNewOverlayPhase>,
     show: Option<GraphNewOverlayPhase>,
+    raw: Option<GraphNewOverlayPhase>,
+    mean: Option<GraphNewOverlayPhase>,
 }
 
 #[derive(Serialize)]
@@ -997,14 +1012,16 @@ fn seed_graph_new_benchmark_dataset(
                         "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value, overlay_value)
                          SELECT i,
                             CASE
-                                WHEN i % 20 = 0 THEN 0.5
-                                WHEN i % 5 = 0 THEN CAST(i % 2048 AS DOUBLE) / 2048.0
-                                ELSE CAST(i % 100000 AS DOUBLE) / 100000.0
+                                WHEN i = 1 THEN 0.0
+                                ELSE CAST(((i - 2) % 256) AS DOUBLE) / 255.0
                             END,
                             CASE
-                                WHEN i % 20 = 0 THEN 0.5
-                                WHEN i % 5 = 0 THEN CAST((i / 2048) % 2048 AS DOUBLE) / 2048.0
-                                ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
+                                WHEN i = 1 THEN 0.125
+                                ELSE 0.1 + CAST(
+                                    ((i - 2) % 256)
+                                    + (((i - 2) / 256) % 11) * 7
+                                    AS DOUBLE
+                                ) / 1024.0
                             END,
                             CASE WHEN i = 1 THEN NULL ELSE 'group-0' END
                          FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
@@ -1017,14 +1034,19 @@ fn seed_graph_new_benchmark_dataset(
                         "INSERT INTO \"{table_name}\" (_row_id, x_value, y_value, overlay_value)
                          SELECT i,
                             CASE
-                                WHEN i % 20 = 0 THEN 0.5
-                                WHEN i % 5 = 0 THEN CAST(i % 2048 AS DOUBLE) / 2048.0
-                                ELSE CAST(i % 100000 AS DOUBLE) / 100000.0
+                                WHEN i = 1 THEN 0.0
+                                WHEN i = 2 THEN 1.0
+                                ELSE CAST(((i - 3) % 256) AS DOUBLE) / 255.0
                             END,
                             CASE
-                                WHEN i % 20 = 0 THEN 0.5
-                                WHEN i % 5 = 0 THEN CAST((i / 2048) % 2048 AS DOUBLE) / 2048.0
-                                ELSE 0.5 + sin(CAST(i AS DOUBLE) / 73.0) * 0.45
+                                WHEN i = 1 THEN 0.125
+                                WHEN i = 2 THEN 0.875
+                                ELSE 0.1 + CAST(
+                                    ((i - 3) % 256)
+                                    + (((i - 3) / 256) % 11) * 7
+                                    + (((i - 3) % CAST(? AS BIGINT)) * 13)
+                                    AS DOUBLE
+                                ) / 1024.0
                             END,
                             CASE
                                 WHEN i = 1 THEN NULL
@@ -1033,7 +1055,12 @@ fn seed_graph_new_benchmark_dataset(
                             END
                          FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
                     ),
-                    params![i64::from(group_count - 1), i64::from(group_count - 1), upper_bound],
+                    params![
+                        i64::from(group_count - 1),
+                        i64::from(group_count - 1),
+                        i64::from(group_count - 1),
+                        upper_bound
+                    ],
                 )?;
             }
         } else {
@@ -1128,13 +1155,17 @@ fn graph_new_key_hash(
 fn render_graph_new_overlay_phase(
     service: &GraphNewService,
     request: &crate::models::graph_new::GraphNewRenderRequest,
+    mut validate_scene: impl FnMut(&crate::services::graph_new_renderer::GraphNewScene) -> Result<(), AppError>,
 ) -> Result<GraphNewOverlayPhase, AppError> {
     let graph_key = graph_new_key_hash(request)?;
     let started = Instant::now();
     let (completion, process_memory) = measure_peak_working_set_during(|| {
         service.render_with(
             request,
-            crate::services::graph_new_renderer::GraphNewRenderer::render,
+            |scene| {
+                validate_scene(scene)?;
+                crate::services::graph_new_renderer::GraphNewRenderer::render(scene)
+            },
             &mut |header, rgba| {
                 if rgba.len() as u64 != header.byte_length {
                     return Err(AppError::Stats("graph_new_render_failed".into()));
@@ -1151,6 +1182,117 @@ fn render_graph_new_overlay_phase(
             .map(|memory| memory.peak_working_set_bytes),
         completion: completion?,
     })
+}
+
+fn expected_grouped_mean_points(
+    state: &AppState,
+    dataset_id: &str,
+    overlay_groups: &[crate::models::graph_new::GraphNewOverlayGroup],
+) -> Result<Vec<crate::services::graph_new_overlay::GroupedMeanPoint>, AppError> {
+    let db = state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+    let mut statement = db
+        .conn()
+        .prepare(&format!(
+            "SELECT overlay_value IS NULL AS missing,
+                    COALESCE(overlay_value, '') AS label,
+                    x_value,
+                    AVG(y_value) AS mean_y
+             FROM \"{table_name}\"
+             WHERE x_value IS NOT NULL
+               AND y_value IS NOT NULL
+               AND isfinite(x_value)
+               AND isfinite(y_value)
+             GROUP BY 1, 2, 3"
+        ))?;
+    let mut rows = statement.query([])?;
+    let mut expected = Vec::new();
+    while let Some(row) = rows.next()? {
+        let missing: bool = row.get(0)?;
+        let label: String = row.get(1)?;
+        let x: f64 = row.get(2)?;
+        let y: f64 = row.get(3)?;
+        let group_code = overlay_groups
+            .iter()
+            .find(|group| {
+                if missing {
+                    group.missing
+                } else {
+                    !group.missing && group.label == label
+                }
+            })
+            .map(|group| group.code)
+            .ok_or_else(|| AppError::Stats("graph_new_overlay_missing_mean_group".into()))?;
+        expected.push(crate::services::graph_new_overlay::GroupedMeanPoint {
+            group_code,
+            x,
+            y,
+        });
+    }
+    expected.sort_unstable_by(|left, right| {
+        left.group_code
+            .cmp(&right.group_code)
+            .then_with(|| left.x.total_cmp(&right.x))
+    });
+    Ok(expected)
+}
+
+fn validate_grouped_raw_phase(
+    scene: &crate::services::graph_new_renderer::GraphNewScene,
+) -> Result<usize, AppError> {
+    let segments = scene
+        .presentation
+        .raw_line
+        .as_ref()
+        .ok_or_else(|| AppError::Stats("graph_new_overlay_missing_raw_phase".into()))?;
+    let expected_segments = scene
+        .overlay
+        .groups
+        .iter()
+        .filter(|group| scene.enabled_groups.is_enabled(group.code))
+        .map(|group| group.total_rows.saturating_sub(1))
+        .sum::<u64>();
+    if segments.len() as u64 != expected_segments {
+        return Err(AppError::Stats("graph_new_overlay_raw_segment_count_mismatch".into()));
+    }
+    for segment in segments.iter() {
+        let start = scene.points[segment.indices[0] as usize];
+        let end = scene.points[segment.indices[1] as usize];
+        if start.group_code != segment.group_code
+            || end.group_code != segment.group_code
+            || start.group_code != end.group_code
+        {
+            return Err(AppError::Stats("graph_new_overlay_cross_group_raw_segment".into()));
+        }
+    }
+    Ok(segments.len())
+}
+
+fn validate_grouped_mean_phase(
+    state: &AppState,
+    dataset_id: &str,
+    scene: &crate::services::graph_new_renderer::GraphNewScene,
+) -> Result<usize, AppError> {
+    let mean = scene
+        .mean
+        .as_ref()
+        .ok_or_else(|| AppError::Stats("graph_new_overlay_missing_mean_phase".into()))?;
+    let expected = expected_grouped_mean_points(state, dataset_id, &scene.overlay.groups)?;
+    if mean.len() != expected.len() {
+        return Err(AppError::Stats("graph_new_overlay_mean_count_mismatch".into()));
+    }
+    for (actual, expected) in mean.iter().zip(expected.iter()) {
+        if actual.group_code != expected.group_code
+            || actual.x.to_bits() != expected.x.to_bits()
+            || (actual.y - expected.y).abs() > 1e-12
+        {
+            return Err(AppError::Stats("graph_new_overlay_mean_value_mismatch".into()));
+        }
+    }
+    Ok(mean.len())
 }
 
 fn controlled_graph_new_refusal_code(error: &AppError) -> Option<String> {
@@ -1192,6 +1334,12 @@ fn grouped_overlay_qualification_failure(
     let Some(show) = overlay_outcome.show.as_ref() else {
         return Some("missing show grouped-overlay evidence".into());
     };
+    let Some(raw) = overlay_outcome.raw.as_ref() else {
+        return Some("missing raw grouped-overlay evidence".into());
+    };
+    let Some(mean) = overlay_outcome.mean.as_ref() else {
+        return Some("missing mean grouped-overlay evidence".into());
+    };
 
     if run.processed_rows != row_count as u64 || run.finite_rows != row_count as u64 {
         return Some("2M grouped overlay did not retain all finite rows".into());
@@ -1226,12 +1374,34 @@ fn grouped_overlay_qualification_failure(
     {
         return Some("2M grouped overlay camera changed across visibility toggles".into());
     }
+    if raw.completion.raw_mode != crate::models::graph_new::GraphNewRawMode::PointsLine
+        || raw.completion.raw_line_segments == 0
+    {
+        return Some("2M grouped overlay raw qualification did not retain grouped raw segments".into());
+    }
+    if raw.completion.source_projection_query_count != 0 {
+        return Some("2M grouped overlay raw qualification queried source projection".into());
+    }
+    if !mean.completion.mean_visible || mean.completion.mean_groups.unwrap_or(0) == 0 {
+        return Some("2M grouped overlay mean qualification did not retain grouped means".into());
+    }
+    if mean.completion.source_projection_query_count != 0 {
+        return Some("2M grouped overlay mean qualification queried source projection".into());
+    }
     None
 }
 
 fn execute_graph_new_runs(
     rows: &[usize],
     overlay_groups: Option<u16>,
+) -> Result<PerformanceReport, AppError> {
+    execute_graph_new_runs_with_config(rows, overlay_groups, GRAPH_NEW_BENCHMARK_CONFIG)
+}
+
+fn execute_graph_new_runs_with_config(
+    rows: &[usize],
+    overlay_groups: Option<u16>,
+    config: GraphNewBenchmarkConfig,
 ) -> Result<PerformanceReport, AppError> {
     let total_started = Instant::now();
     let mut runs = Vec::with_capacity(rows.len());
@@ -1256,9 +1426,9 @@ fn execute_graph_new_runs(
             overlay_column_id: columns.overlay_column_id.clone(),
             max_tile_points: 4_096,
             levels: 8,
-            batch_rows: 16_384,
+            batch_rows: config.batch_rows,
             overdraw_factor: GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
-            construction_memory_limit_bytes: GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
+            construction_memory_limit_bytes: config.construction_memory_limit_bytes,
         };
         let mut run = graph_new_performance_run_defaults(row_count);
         let mut scan_complete_ms = 0u128;
@@ -1279,7 +1449,7 @@ fn execute_graph_new_runs(
                     run.process_rss_bytes = process_memory
                         .as_ref()
                         .map(|memory| memory.peak_working_set_bytes);
-                    run.grouped_overlay = Some(GraphNewOverlayRun {
+                    let grouped_overlay = GraphNewOverlayRun {
                         outcome: "controlled_refusal",
                         refusal_code: Some(refusal_code),
                         cold: None,
@@ -1287,7 +1457,12 @@ fn execute_graph_new_runs(
                         camera: None,
                         hide: None,
                         show: None,
-                    });
+                        raw: None,
+                        mean: None,
+                    };
+                    qualification_failure = qualification_failure
+                        .or_else(|| grouped_overlay_qualification_failure(row_count, &run, &grouped_overlay));
+                    run.grouped_overlay = Some(grouped_overlay);
                     runs.push(run);
                     continue;
                 }
@@ -1380,7 +1555,12 @@ fn execute_graph_new_runs(
                 hidden_overlay_group_ids: vec![],
             };
             let grouped_overlay = match (|| -> Result<GraphNewOverlayRun, AppError> {
-                let cold = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+                let cold = render_graph_new_overlay_phase(&overlay_service, &render_request, |_| {
+                    if let Some(refusal_code) = config.forced_grouped_overlay_refusal {
+                        return Err(AppError::Stats(refusal_code.into()));
+                    }
+                    Ok(())
+                })?;
                 let minority_group = cold
                     .completion
                     .overlay_groups
@@ -1391,23 +1571,56 @@ fn execute_graph_new_runs(
 
                 render_request.request_id = "overlay-warm".into();
                 render_request.renderer_generation = 2;
-                let warm = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+                let warm =
+                    render_graph_new_overlay_phase(&overlay_service, &render_request, |_| Ok(()))?;
 
                 render_request.request_id = "overlay-camera".into();
                 render_request.renderer_generation = 3;
                 render_request.camera_generation = 1;
                 render_request.camera_domain = Some(graph_new_overlay_domain(cold.completion.camera_domain));
-                let camera = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+                let camera =
+                    render_graph_new_overlay_phase(&overlay_service, &render_request, |_| Ok(()))?;
 
                 render_request.request_id = "overlay-hide".into();
                 render_request.renderer_generation = 4;
                 render_request.hidden_overlay_group_ids = vec![minority_group.id.clone()];
-                let hide = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+                let hide =
+                    render_graph_new_overlay_phase(&overlay_service, &render_request, |_| Ok(()))?;
 
                 render_request.request_id = "overlay-show".into();
                 render_request.renderer_generation = 5;
                 render_request.hidden_overlay_group_ids.clear();
-                let show = render_graph_new_overlay_phase(&overlay_service, &render_request)?;
+                let show =
+                    render_graph_new_overlay_phase(&overlay_service, &render_request, |_| Ok(()))?;
+
+                let raw_segment_count = std::cell::Cell::new(0usize);
+                render_request.request_id = "overlay-raw".into();
+                render_request.renderer_generation = 6;
+                render_request.raw_mode = crate::models::graph_new::GraphNewRawMode::PointsLine;
+                let raw = render_graph_new_overlay_phase(&overlay_service, &render_request, |scene| {
+                    raw_segment_count.set(validate_grouped_raw_phase(scene)?);
+                    Ok(())
+                })?;
+
+                let expected_mean_points = std::cell::Cell::new(0usize);
+                render_request.request_id = "overlay-mean".into();
+                render_request.renderer_generation = 7;
+                render_request.raw_mode = crate::models::graph_new::GraphNewRawMode::Scatter;
+                render_request.show_mean = true;
+                let mean = render_graph_new_overlay_phase(&overlay_service, &render_request, |scene| {
+                    expected_mean_points.set(validate_grouped_mean_phase(
+                        &state,
+                        &request.dataset_id,
+                        scene,
+                    )?);
+                    Ok(())
+                })?;
+                if raw.completion.raw_line_segments != raw_segment_count.get() {
+                    return Err(AppError::Stats("graph_new_overlay_raw_segment_count_mismatch".into()));
+                }
+                if mean.completion.mean_groups != Some(expected_mean_points.get()) {
+                    return Err(AppError::Stats("graph_new_overlay_mean_count_mismatch".into()));
+                }
 
                 run.overlay_groups = cold.completion.overlay_groups.len();
                 run.missing_group_rows = cold
@@ -1440,6 +1653,8 @@ fn execute_graph_new_runs(
                     camera: Some(camera),
                     hide: Some(hide),
                     show: Some(show),
+                    raw: Some(raw),
+                    mean: Some(mean),
                 })
             })() {
                 Ok(grouped_overlay) => grouped_overlay,
@@ -1453,6 +1668,8 @@ fn execute_graph_new_runs(
                             camera: None,
                             hide: None,
                             show: None,
+                            raw: None,
+                            mean: None,
                         }
                     } else {
                         return Err(error);
@@ -4285,6 +4502,17 @@ mod tests {
         assert_eq!(run.show_projection_query_count, 0);
         assert!(run.hidden_selected_marks < run.shown_selected_marks);
         assert_eq!(run.cold_graph_key, run.hidden_graph_key);
+        let raw = grouped_overlay.raw.as_ref().expect("raw phase");
+        let mean = grouped_overlay.mean.as_ref().expect("mean phase");
+        assert_eq!(
+            raw.completion.raw_mode,
+            crate::models::graph_new::GraphNewRawMode::PointsLine
+        );
+        assert!(raw.completion.raw_line_segments > 0);
+        assert_eq!(raw.completion.source_projection_query_count, 0);
+        assert!(mean.completion.mean_visible);
+        assert!(mean.completion.mean_groups.is_some_and(|groups| groups > 0));
+        assert_eq!(mean.completion.source_projection_query_count, 0);
         assert_eq!(
             run.cold_camera,
             grouped_overlay.cold.as_ref().map(|phase| phase.completion.camera_domain)
@@ -4310,6 +4538,8 @@ mod tests {
             camera: None,
             hide: None,
             show: None,
+            raw: None,
+            mean: None,
         };
 
         let required_failure =
@@ -4359,6 +4589,12 @@ mod tests {
         let camera = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
         let hide = overlay_phase("stable-key", interaction_domain, 1_999_999, 0, true);
         let show = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
+        let mut raw = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
+        raw.completion.raw_mode = crate::models::graph_new::GraphNewRawMode::PointsLine;
+        raw.completion.raw_line_segments = 1_999_991;
+        let mut mean = overlay_phase("stable-key", interaction_domain, 2_000_000, 0, true);
+        mean.completion.mean_visible = true;
+        mean.completion.mean_groups = Some(1_793);
         let mut run = graph_new_performance_run_defaults(2_000_000);
         run.processed_rows = 2_000_000;
         run.finite_rows = 2_000_000;
@@ -4373,6 +4609,8 @@ mod tests {
             camera: Some(camera),
             hide: Some(hide),
             show: Some(show),
+            raw: Some(raw),
+            mean: Some(mean),
         };
 
         assert_eq!(
@@ -4416,6 +4654,35 @@ mod tests {
 
         assert_ne!(cold_camera, camera_phase_camera);
         assert_eq!(run.cold_camera, Some(cold_camera));
+    }
+
+    #[test]
+    fn performance_cli_required_2m_build_refusal_sets_qualification_failure() {
+        let report = execute_graph_new_runs_with_config(
+            &[2_000_000],
+            Some(8),
+            GraphNewBenchmarkConfig {
+                batch_rows: GRAPH_NEW_BENCHMARK_CONFIG.batch_rows,
+                construction_memory_limit_bytes:
+                    GRAPH_NEW_BENCHMARK_CONFIG.construction_memory_limit_bytes,
+                forced_grouped_overlay_refusal: Some("graph_new_cache_pressure"),
+            },
+        )
+        .expect("report");
+
+        assert_eq!(report.qualification_passed, Some(false));
+        assert_eq!(
+            report.qualification_failure.as_deref(),
+            Some("2M grouped overlay controlled refusal: graph_new_cache_pressure")
+        );
+        let graph_new = report.graph_new.expect("graph report");
+        let run = &graph_new.runs[0];
+        let grouped_overlay = run.grouped_overlay.as_ref().expect("grouped overlay");
+        assert_eq!(grouped_overlay.outcome, "controlled_refusal");
+        assert_eq!(
+            grouped_overlay.refusal_code.as_deref(),
+            Some("graph_new_cache_pressure")
+        );
     }
 
     #[test]

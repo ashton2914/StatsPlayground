@@ -636,11 +636,18 @@ impl<'a> GraphNewService<'a> {
             axis.kind = match kind.as_str() { "duration" => GraphNewXMode::Duration, "time" => GraphNewXMode::Time,
                 "category" => GraphNewXMode::Category, _ => GraphNewXMode::Numeric };
             let overlay_missing: bool = row.get(5)?;
-            let overlay_label: Option<String> = row.get(6)?;
-            axis.utc = row.get(7)?;
+            let overlay_too_large: bool = row.get(6)?;
+            if overlay_too_large {
+                return Err(AppError::InvalidParam(
+                    "graph_new_overlay_value_too_large".into(),
+                ));
+            }
+            let overlay_label: Option<String> = row.get(7)?;
+            axis.utc = row.get(8)?;
             if axis.kind == GraphNewXMode::Time {
                 axis.origin = Some(crate::models::graph_new::GraphNewTimeOrigin {
-                    epoch_nanos: row.get(8)?, unit_nanos: row.get(9)?,
+                    epoch_nanos: row.get(9)?,
+                    unit_nanos: row.get(10)?,
                 });
             }
             if axis.kind == GraphNewXMode::Category {
@@ -947,7 +954,7 @@ fn relative_time_projection(source: String) -> String {
         SELECT *, max((epoch_nanos - origin) // unit) OVER () > 9007199254740991 AS unsupported FROM units
     ) SELECT _row_id, CASE WHEN kind = 'time' THEN CAST((epoch_nanos - origin) // unit AS DOUBLE) ELSE x END,
         y, CASE WHEN kind = 'time' AND unsupported THEN 'mixedTime' ELSE kind END, label,
-        overlay_missing, overlay_label, utc, CAST(coalesce(origin, 0) AS VARCHAR), unit
+        overlay_missing, overlay_too_large, overlay_label, utc, CAST(coalesce(origin, 0) AS VARCHAR), unit
         FROM checked ORDER BY _row_id"#)
 }
 
@@ -986,15 +993,23 @@ fn bounded_categories(connection: &duckdb::Connection, column: &ColumnBinding, d
     Ok(labels.into_iter().map(|(label, _)| label).collect())
 }
 
-fn overlay_projection_sql(overlay_column: Option<&ColumnBinding>) -> (String, String) {
+fn overlay_projection_sql(overlay_column: Option<&ColumnBinding>) -> (String, String, String) {
     let Some(overlay_column) = overlay_column else {
-        return ("FALSE".into(), "NULL::VARCHAR".into());
+        return ("FALSE".into(), "FALSE".into(), "NULL::VARCHAR".into());
     };
     let overlay_identifier = quote_identifier(&overlay_column.name);
     (
         format!("CASE WHEN {overlay_identifier} IS NULL THEN TRUE ELSE FALSE END"),
         format!(
-            "CASE WHEN {overlay_identifier} IS NULL THEN NULL ELSE CAST({overlay_identifier} AS VARCHAR) END"
+            "coalesce(octet_length(encode(TRY_CAST({overlay_identifier} AS VARCHAR))) > 512, false)"
+        ),
+        format!(
+            "CASE
+                WHEN {overlay_identifier} IS NULL THEN NULL
+                WHEN octet_length(encode(TRY_CAST({overlay_identifier} AS VARCHAR))) <= 512
+                    THEN TRY_CAST({overlay_identifier} AS VARCHAR)
+                ELSE NULL
+             END"
         ),
     )
 }
@@ -1009,10 +1024,11 @@ fn category_projection_sql(
     let x_column = quote_identifier(&x_column.name);
     let y_column = quote_identifier(&y_column.name);
     let table = quote_identifier(&internal_table_name(dataset_id));
-    let (overlay_missing, overlay_label) = overlay_projection_sql(overlay_column);
+    let (overlay_missing, overlay_too_large, overlay_label) =
+        overlay_projection_sql(overlay_column);
     let dictionary = if count == 0 { "SELECT NULL::VARCHAR AS label, NULL::DOUBLE AS ordinal WHERE false".into() }
         else { format!("SELECT * FROM (VALUES {}) AS entries(label, ordinal)", (0..count).map(|index| format!("(?::VARCHAR, {index}::DOUBLE)")).collect::<Vec<_>>().join(",")) };
-    format!("WITH dictionary AS ({dictionary}) SELECT source._row_id, dictionary.ordinal, TRY_CAST(source.{y_column} AS DOUBLE), 'category', NULL::VARCHAR, {overlay_missing}, {overlay_label}, false, NULL::VARCHAR, 1::UINTEGER FROM {table} AS source LEFT JOIN dictionary ON TRY_CAST(source.{x_column} AS VARCHAR) = dictionary.label ORDER BY source._row_id")
+    format!("WITH dictionary AS ({dictionary}) SELECT source._row_id, dictionary.ordinal, TRY_CAST(source.{y_column} AS DOUBLE), 'category', NULL::VARCHAR, {overlay_missing}, {overlay_too_large}, {overlay_label}, false, NULL::VARCHAR, 1::UINTEGER FROM {table} AS source LEFT JOIN dictionary ON TRY_CAST(source.{x_column} AS VARCHAR) = dictionary.label ORDER BY source._row_id")
 }
 
 fn x_projection_sql(
@@ -1025,9 +1041,10 @@ fn x_projection_sql(
     let x_column_sql = quote_identifier(&x_column.name);
     let y_column_sql = quote_identifier(&y_column.name);
     let table = quote_identifier(&internal_table_name(dataset_id));
-    let (overlay_missing, overlay_label) = overlay_projection_sql(overlay_column);
+    let (overlay_missing, overlay_too_large, overlay_label) =
+        overlay_projection_sql(overlay_column);
     if mode == GraphNewXMode::Numeric || (mode == GraphNewXMode::Auto && is_numeric_type(&x_column.sql_type)) {
-        return format!("SELECT _row_id, TRY_CAST({x_column_sql} AS DOUBLE), TRY_CAST({y_column_sql} AS DOUBLE), 'numeric', NULL::VARCHAR, {overlay_missing}, {overlay_label}, false, NULL::VARCHAR, 1::UINTEGER FROM {table} ORDER BY _row_id");
+        return format!("SELECT _row_id, TRY_CAST({x_column_sql} AS DOUBLE), TRY_CAST({y_column_sql} AS DOUBLE), 'numeric', NULL::VARCHAR, {overlay_missing}, {overlay_too_large}, {overlay_label}, false, NULL::VARCHAR, 1::UINTEGER FROM {table} ORDER BY _row_id");
     }
     let interpretation = match mode { GraphNewXMode::Category => "'category'", GraphNewXMode::Duration => "'duration'",
         GraphNewXMode::Time => "CASE WHEN utc AND has_naive THEN 'mixedTime' ELSE 'time' END",
@@ -1037,7 +1054,7 @@ fn x_projection_sql(
     if native_time && matches!(mode, GraphNewXMode::Auto | GraphNewXMode::Time) {
         let epoch = if x_column.sql_type.eq_ignore_ascii_case("TIMESTAMP_NS") { format!("CAST(epoch_ns({x_column_sql}) AS HUGEINT)") }
             else { format!("CAST(epoch_us({x_column_sql}) AS HUGEINT) * 1000") };
-        return relative_time_projection(format!("SELECT _row_id, NULL::DOUBLE AS x, TRY_CAST({y_column_sql} AS DOUBLE) AS y, 'time' AS kind, NULL::VARCHAR AS label, {overlay_missing} AS overlay_missing, {overlay_label} AS overlay_label, {native_utc} AS utc, {epoch} AS epoch_nanos FROM {table}"));
+        return relative_time_projection(format!("SELECT _row_id, NULL::DOUBLE AS x, TRY_CAST({y_column_sql} AS DOUBLE) AS y, 'time' AS kind, NULL::VARCHAR AS label, {overlay_missing} AS overlay_missing, {overlay_too_large} AS overlay_too_large, {overlay_label} AS overlay_label, {native_utc} AS utc, {epoch} AS epoch_nanos FROM {table}"));
     }
     let parsed = parsed_x_sql(x_column, y_column, overlay_column, dataset_id);
     relative_time_projection(format!(r#"{parsed}, interpreted AS (
@@ -1049,7 +1066,7 @@ fn x_projection_sql(
                 FROM parsed
         ), chosen AS (SELECT *, {interpretation} AS kind FROM interpreted)
         SELECT _row_id, CASE WHEN label IS NULL THEN NULL WHEN kind = 'duration' THEN duration ELSE NULL END AS x,
-            y, kind, NULL::VARCHAR AS label, overlay_missing, overlay_label, utc,
+            y, kind, NULL::VARCHAR AS label, overlay_missing, overlay_too_large, overlay_label, utc,
             CASE WHEN kind = 'time' THEN coalesce(time, mdy) END AS epoch_nanos FROM chosen
     "#))
 }
@@ -1067,14 +1084,15 @@ fn parsed_x_sql(
     let x_column_sql = quote_identifier(&x_column.name);
     let y_column_sql = quote_identifier(&y_column.name);
     let table = quote_identifier(&internal_table_name(dataset_id));
-    let (overlay_missing, overlay_label) = overlay_projection_sql(overlay_column);
+    let (overlay_missing, overlay_too_large, overlay_label) =
+        overlay_projection_sql(overlay_column);
     let native = if is_native_time(x_column) { format!("CAST(epoch_us({x_column_sql}) AS HUGEINT) * 1000") } else { "NULL::HUGEINT".into() };
     let native_utc = x_column.sql_type.to_ascii_uppercase().contains("TIME ZONE") || x_column.sql_type.eq_ignore_ascii_case("TIMESTAMPTZ");
     format!(r#"
         WITH source AS (
             SELECT _row_id, CASE WHEN octet_length(encode(TRY_CAST({x_column_sql} AS VARCHAR))) > 512 THEN 'unrepresentable' ELSE TRY_CAST({x_column_sql} AS VARCHAR) END AS label,
                 TRY_CAST({y_column_sql} AS DOUBLE) AS y, {overlay_missing} AS overlay_missing,
-                {overlay_label} AS overlay_label, {native} AS native_time FROM {table}
+                {overlay_too_large} AS overlay_too_large, {overlay_label} AS overlay_label, {native} AS native_time FROM {table}
         ), parsed AS (
             SELECT *,
                 CASE WHEN regexp_full_match(label, '[0-9]+:[0-5][0-9]:[0-5][0-9](\.[0-9]+)?')
@@ -1442,11 +1460,11 @@ mod tests {
                 let kind: String = row.get(3)?;
                 let mut value: Option<f64> = row.get(1)?;
                 if kind == "time" {
-                    let origin: String = row.get(8)?;
-                    let unit: u32 = row.get(9)?;
+                    let origin: String = row.get(9)?;
+                    let unit: u32 = row.get(10)?;
                     value = value.map(|value| origin.parse::<f64>().unwrap() / 1e9 + value * f64::from(unit) / 1e9);
                 }
-                Ok((value, kind, row.get::<_, bool>(7)?))
+                Ok((value, kind, row.get::<_, bool>(8)?))
             })
                 .expect("query").collect::<Result<Vec<_>, _>>().expect("rows");
             assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), expected);
@@ -2881,6 +2899,23 @@ mod tests {
     }
 
     #[test]
+    fn overlay_projection_sql_guards_oversized_labels_before_decode() {
+        let column = super::ColumnBinding {
+            column_id: "overlay".into(),
+            name: "lot".into(),
+            sql_type: "VARCHAR".into(),
+        };
+
+        let (missing, too_large, label) = super::overlay_projection_sql(Some(&column));
+
+        assert!(missing.contains("\"lot\" IS NULL"));
+        assert!(too_large.contains("octet_length(encode(TRY_CAST(\"lot\" AS VARCHAR))) > 512"));
+        assert!(label.contains("<= 512"));
+        assert!(label.contains("THEN TRY_CAST(\"lot\" AS VARCHAR)"));
+        assert!(label.contains("ELSE NULL"));
+    }
+
+    #[test]
     fn overlay_projection_rejects_sixty_fifth_group_without_completed_cache_admission() {
         let state = AppState::new().expect("state");
         let rows = (1..=65)
@@ -2929,10 +2964,11 @@ mod tests {
     #[test]
     fn overlay_projection_rejects_oversized_label_without_completed_cache_admission() {
         let state = AppState::new().expect("state");
+        let oversized = "x".repeat(1024 * 1024);
         let (x_column_id, y_column_id, lot_column_id) = seed_overlay_dataset(
             &state,
             "overlay-label-too-large",
-            &[(1, 1.0, 1.0, Some(&"x".repeat(513)))],
+            &[(1, 1.0, 1.0, Some(oversized.as_str()))],
         );
         let request = crate::models::graph_new_data::GraphNewBuildRequest {
             request_id: "overlay-label-too-large".into(),
