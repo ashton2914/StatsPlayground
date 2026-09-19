@@ -100,6 +100,60 @@ async function main() {
   const typed = graphNewService.render(typedRequest, handlers);
   resolveRender(typedCompletion);
   assert.deepEqual(await typed.completion, typedCompletion);
+  const overlayId = `sha256:${"1".repeat(64)}`;
+  const overlayGroup = {
+    id: overlayId,
+    code: 1,
+    label: "A",
+    color: [31, 111, 235, 255],
+    totalRows: 3,
+    missing: false,
+  };
+  const overlayRequest = {
+    ...cameraRequest,
+    overlayColumnId: "group-column",
+    hiddenOverlayGroupIds: [overlayId],
+  };
+  const overlayCompletion = {
+    ...cameraCompletion,
+    overlayActive: true,
+    overlayGroups: [overlayGroup],
+    hiddenOverlayGroups: 1,
+  };
+  const overlay = graphNewService.render(overlayRequest, {
+    activeIdentity: () => overlayRequest,
+    onFrame: () => {},
+    onError: () => {},
+  });
+  resolveRender(overlayCompletion);
+  assert.deepEqual(await overlay.completion, overlayCompletion);
+  assert.deepEqual(calls.findLast((call) => call.command === "render_graph_new")?.args.request.hiddenOverlayGroupIds, [overlayId]);
+  for (const invalid of [
+    { hiddenOverlayGroupIds: [overlayId, overlayId] },
+    { hiddenOverlayGroupIds: ["sha256:not-a-hash"] },
+    { hiddenOverlayGroupIds: Array.from({ length: 65 }, (_, index) => `sha256:${index.toString(16).padStart(64, "0")}`) },
+    { overlayColumnId: undefined, hiddenOverlayGroupIds: [overlayId] },
+  ]) {
+    assert.throws(() => graphNewService.render({ ...overlayRequest, ...invalid } as any, handlers), /graph_new_invalid_request/);
+  }
+  for (const invalid of [
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, id: overlayId }, { ...overlayGroup, code: 2 }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup }, { ...overlayGroup, id: `sha256:${"2".repeat(64)}`, code: 1 }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, id: "sha256:not-a-hash" }] },
+    { ...overlayCompletion, hiddenOverlayGroups: 65 },
+    { ...cameraCompletion, overlayActive: false, overlayGroups: [overlayGroup], hiddenOverlayGroups: 1 },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, color: [256, 0, 0, 255] }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, label: "界".repeat(171) }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, totalRows: 4 }] },
+  ]) {
+    const pending = graphNewService.render(overlayRequest, {
+      activeIdentity: () => overlayRequest,
+      onFrame: () => {},
+      onError: () => {},
+    });
+    resolveRender(invalid);
+    await assert.rejects(pending.completion, /graph_new_render_failed/);
+  }
   const extremeCompletion = { ...cameraCompletion, cameraDomain: { xMin: -1e308, xMax: 1e308, yMin: 0, yMax: 1 },
     xAxis: { kind: "numeric", utc: false, ticks: [-1e308, -5e307, 0, 5e307, 1e308].map((value, index) => ({ value, position: index / 4, label: null })) } };
   const extreme = graphNewService.render({ ...request, xMode: "numeric" }, handlers);

@@ -1,7 +1,7 @@
 import type { AnalysisDocument } from "./analysis";
 import type { DistributionItem } from "./distribution";
 import type { DatasetFilterMap } from "@/stores/useDatasetFilterStore";
-import type { GraphBuilderNewDocument } from "@/types/graphBuilderNew";
+import type { PersistedGraphBuilderNewDocument } from "@/types/graphBuilderNew";
 import type { ReportItem } from "./report";
 import type {
   TableTransformDefinition,
@@ -43,7 +43,7 @@ export interface OpenProjectResult {
   datasetFilters: DatasetFilterMap;
   datasetFilterMigrationConflicts: string[];
   graphBuilders: unknown[];
-  graphBuildersNew?: GraphBuilderNewDocument[];
+  graphBuildersNew?: PersistedGraphBuilderNewDocument[];
   graphNewFolders?: Record<string, string>;
   fitYByX: unknown[];
   fitModels?: unknown[];

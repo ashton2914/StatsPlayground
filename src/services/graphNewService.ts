@@ -15,6 +15,10 @@ import type {
 } from "../types/graphNew";
 
 let lastRender: GraphNewRenderRequest | null = null;
+const GROUP_ID = /^sha256:[0-9a-f]{64}$/;
+const MAX_HIDDEN_OVERLAY_GROUPS = 64;
+const MAX_OVERLAY_LABEL_BYTES = 512;
+const textEncoder = new TextEncoder();
 
 export interface GraphNewTransportProbeRequest {
   requestId: string;
@@ -61,6 +65,8 @@ export interface GraphNewRenderRequest extends GraphNewFrameIdentity {
   showMean?: boolean;
   xMode?: GraphNewXMode;
   rawMode?: GraphNewRawMode;
+  overlayColumnId?: string | null;
+  hiddenOverlayGroupIds?: string[];
 }
 
 export interface GraphNewAxis {
@@ -76,6 +82,9 @@ export interface GraphNewRenderCompletion {
   rawMode?: GraphNewRawMode;
   rawLineAvailable?: boolean;
   rawLineSegments?: number;
+  overlayGroups?: GraphNewOverlayGroup[];
+  overlayActive?: boolean;
+  hiddenOverlayGroups?: number;
   processedRows: number;
   finiteRows: number;
   excludedNonFiniteRows: number;
@@ -99,6 +108,15 @@ export interface GraphNewRenderCompletion {
   renderGenerationCheckCount: number;
 }
 
+export interface GraphNewOverlayGroup {
+  id: string;
+  code: number;
+  label: string;
+  color: [number, number, number, number];
+  totalRows: number;
+  missing: boolean;
+}
+
 export interface GraphNewRenderController extends Omit<GraphNewProbeController, "completion"> {
   completion: Promise<GraphNewRenderCompletion>;
   cancel: (preserveCache?: boolean) => Promise<void>;
@@ -106,7 +124,7 @@ export interface GraphNewRenderController extends Omit<GraphNewProbeController, 
 
 function safeReason(error: unknown): string {
   const message = describeError(error);
-  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|cache_pressure))$/.exec(message);
+  const match = /^(?:(?:Stats error|Invalid parameter|Busy|Cancelled): )?(graph_new_(?:cancelled|stale_dataset|invalid_request|busy|render_failed|channel_closed|missing_cache|x_unrepresentable|cache_pressure|overlay_too_many_groups|overlay_value_too_large|overlay_group_missing|overlay_cache_incompatible))$/.exec(message);
   return match?.[1] ?? "graph_new_render_failed";
 }
 
@@ -115,9 +133,23 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
   if (request.rawMode !== undefined && !["scatter", "line", "pointsLine"].includes(request.rawMode)) throw new Error("graph_new_invalid_request");
   if (request.showMean !== undefined && typeof request.showMean !== "boolean") throw new Error("graph_new_invalid_request");
   if (request.cameraDomain != null && !isCameraDomain(request.cameraDomain)) throw new Error("graph_new_invalid_request");
+  if (request.overlayColumnId != null && (typeof request.overlayColumnId !== "string"
+    || !request.overlayColumnId.trim()
+    || request.overlayColumnId.trim() !== request.overlayColumnId
+    || textEncoder.encode(request.overlayColumnId).length > 256)) {
+    throw new Error("graph_new_invalid_request");
+  }
+  const hiddenOverlayGroupIds = request.hiddenOverlayGroupIds ?? [];
+  if (!Array.isArray(hiddenOverlayGroupIds)
+    || hiddenOverlayGroupIds.length > MAX_HIDDEN_OVERLAY_GROUPS
+    || new Set(hiddenOverlayGroupIds).size !== hiddenOverlayGroupIds.length
+    || hiddenOverlayGroupIds.some((id) => typeof id !== "string" || !GROUP_ID.test(id))
+    || (request.overlayColumnId == null && hiddenOverlayGroupIds.length > 0)) {
+    throw new Error("graph_new_invalid_request");
+  }
   const identifiers = [request.requestId, request.sessionId, request.datasetId, request.xColumnId, request.yColumnId];
   const generations = [request.datasetGeneration, request.rendererGeneration, request.cameraGeneration];
-  if (identifiers.some((value) => typeof value !== "string" || !value.trim() || value.trim() !== value || new TextEncoder().encode(value).length > 256)
+  if (identifiers.some((value) => typeof value !== "string" || !value.trim() || value.trim() !== value || textEncoder.encode(value).length > 256)
     || generations.some((value) => !Number.isSafeInteger(value) || value < 0)
     || request.rendererGeneration === 0
     || !Number.isSafeInteger(request.width) || request.width < 96
@@ -130,6 +162,39 @@ function validateRenderRequest(request: GraphNewRenderRequest): void {
 }
 
 function validateCompletion(completion: GraphNewRenderCompletion, request: GraphNewRenderRequest): void {
+  const expectsOverlay = request.overlayColumnId != null
+    || request.hiddenOverlayGroupIds !== undefined
+    || completion?.overlayActive !== undefined
+    || completion?.overlayGroups !== undefined
+    || completion?.hiddenOverlayGroups !== undefined;
+  if (expectsOverlay) {
+    const overlayGroups = completion?.overlayGroups;
+    const requestedHidden = request.hiddenOverlayGroupIds ?? [];
+    if (typeof completion?.overlayActive !== "boolean"
+      || !Array.isArray(overlayGroups)
+      || overlayGroups.length > MAX_HIDDEN_OVERLAY_GROUPS
+      || !Number.isSafeInteger(completion.hiddenOverlayGroups)
+      || completion.hiddenOverlayGroups! < 0
+      || completion.hiddenOverlayGroups! > overlayGroups.length
+      || overlayGroups.some((group) => !group
+        || typeof group.id !== "string" || !GROUP_ID.test(group.id)
+        || !Number.isSafeInteger(group.code) || group.code < 0 || group.code > 0xffff
+        || typeof group.label !== "string" || textEncoder.encode(group.label).length > MAX_OVERLAY_LABEL_BYTES
+        || !Array.isArray(group.color) || group.color.length !== 4
+        || group.color.some((channel) => !Number.isSafeInteger(channel) || channel < 0 || channel > 255)
+        || !Number.isSafeInteger(group.totalRows) || group.totalRows < 0 || group.totalRows > completion.finiteRows
+        || typeof group.missing !== "boolean")
+      || new Set(overlayGroups.map((group) => group.id)).size !== overlayGroups.length
+      || new Set(overlayGroups.map((group) => group.code)).size !== overlayGroups.length
+      || overlayGroups.reduce((sum, group) => sum + group.totalRows, 0) !== completion.finiteRows
+      || (completion.overlayActive
+        ? request.overlayColumnId == null
+          || requestedHidden.length !== completion.hiddenOverlayGroups
+          || requestedHidden.some((id) => !overlayGroups.some((group) => group.id === id))
+        : overlayGroups.length !== 0 || completion.hiddenOverlayGroups !== 0)) {
+      throw new Error("graph_new_render_failed");
+    }
+  }
   if (request.xMode !== undefined || completion?.xAxis !== undefined) {
     const axis = completion?.xAxis;
     if (!axis || !["numeric", "time", "duration", "category"].includes(axis.kind) || typeof axis.utc !== "boolean"
@@ -139,7 +204,7 @@ function validateCompletion(completion: GraphNewRenderCompletion, request: Graph
       || !Array.isArray(axis.ticks) || axis.ticks.length > 12
       || axis.ticks.some((tick, index) => !tick || !Number.isFinite(tick.value) || !Number.isFinite(tick.position)
         || tick.position < 0 || tick.position > 1 || (index > 0 && tick.position <= axis.ticks[index - 1].position)
-        || (axis.kind === "category" ? typeof tick.label !== "string" || new TextEncoder().encode(tick.label).length > 512 : tick.label !== null)
+        || (axis.kind === "category" ? typeof tick.label !== "string" || textEncoder.encode(tick.label).length > 512 : tick.label !== null)
         || !completion.cameraDomain || !(Math.abs(normalizedAxisValue(tick.value, completion.cameraDomain.xMin, completion.cameraDomain.xMax) - tick.position) <= 1e-6))) {
       throw new Error("graph_new_render_failed");
     }

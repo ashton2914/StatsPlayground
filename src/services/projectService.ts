@@ -2,7 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AnalysisDocument } from "@/types/analysis";
 import type { DistributionItem } from "@/types/distribution";
 import type { DatasetFilterMap } from "@/stores/useDatasetFilterStore";
-import type { GraphBuilderNewDocument } from "@/types/graphBuilderNew";
+import type { GraphBuilderNewDocument, PersistedGraphBuilderNewDocument } from "@/types/graphBuilderNew";
 import type { ProjectInfo, OpenProjectResult, ImportTableResult } from "@/types/project";
 import type { ReportItem } from "@/types/report";
 import type {
@@ -101,7 +101,7 @@ export const projectService = {
     const result = await invoke<OpenProjectResult>("open_project", { filePath });
     return {
       ...result,
-      graphBuildersNew: result.graphBuildersNew ?? [],
+      graphBuildersNew: (result.graphBuildersNew ?? []) as PersistedGraphBuilderNewDocument[],
       graphNewFolders: result.graphNewFolders ?? {},
     };
   },

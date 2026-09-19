@@ -19,6 +19,7 @@ pub struct GraphNewBuildRequest {
     pub dataset_generation: u64,
     pub x_column_id: String,
     pub y_column_id: String,
+    pub overlay_column_id: Option<String>,
     pub max_tile_points: u32,
     pub levels: u8,
     pub batch_rows: usize,
@@ -47,6 +48,13 @@ impl GraphNewBuildRequest {
             return Err(AppError::InvalidParam(
                 "graph-new yColumnId must not be empty".to_string(),
             ));
+        }
+        if let Some(overlay_column_id) = &self.overlay_column_id {
+            if overlay_column_id.trim().is_empty() {
+                return Err(AppError::InvalidParam(
+                    "graph-new overlayColumnId must not be empty".to_string(),
+                ));
+            }
         }
         if self.max_tile_points == 0 || self.max_tile_points > GRAPH_NEW_MAX_TILE_POINTS {
             return Err(AppError::InvalidParam(format!(
@@ -141,6 +149,7 @@ mod tests {
             dataset_generation: 7,
             x_column_id: "".to_string(),
             y_column_id: "x-column".to_string(),
+            overlay_column_id: None,
             max_tile_points: 4_096,
             levels: 4,
             batch_rows: 2_048,
@@ -160,6 +169,7 @@ mod tests {
             dataset_generation: 7,
             x_column_id: "shared-column".to_string(),
             y_column_id: "shared-column".to_string(),
+            overlay_column_id: None,
             max_tile_points: 4_096,
             levels: 4,
             batch_rows: 2_048,

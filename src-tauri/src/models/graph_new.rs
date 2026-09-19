@@ -5,6 +5,8 @@ use crate::error::AppError;
 const MAX_FRAME_WIDTH: u32 = 3840;
 const MAX_FRAME_HEIGHT: u32 = 2160;
 const PROBE_FRAMES: u32 = 1;
+const MAX_HIDDEN_OVERLAY_GROUPS: usize = 64;
+const MAX_OVERLAY_LABEL_BYTES: usize = 512;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +37,17 @@ pub struct GraphNewAxisTick { pub value: f64, pub position: f64, pub label: Opti
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphNewAxis { pub kind: GraphNewXMode, pub utc: bool, pub ticks: Vec<GraphNewAxisTick>, pub origin: Option<GraphNewTimeOrigin> }
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphNewOverlayGroup {
+    pub id: String,
+    pub code: u16,
+    pub label: String,
+    pub color: [u8; 4],
+    pub total_rows: u64,
+    pub missing: bool,
+}
 
 #[cfg(test)]
 mod camera_tests {
@@ -101,6 +114,10 @@ pub struct GraphNewRenderRequest {
     pub x_mode: GraphNewXMode,
     #[serde(default)]
     pub raw_mode: GraphNewRawMode,
+    #[serde(default)]
+    pub overlay_column_id: Option<String>,
+    #[serde(default)]
+    pub hidden_overlay_group_ids: Vec<String>,
 }
 
 impl GraphNewRenderRequest {
@@ -108,13 +125,24 @@ impl GraphNewRenderRequest {
     if let Some(domain) = self.camera_domain { domain.validate()?; }
         let valid_ids = [&self.request_id, &self.session_id, &self.dataset_id, &self.x_column_id, &self.y_column_id]
             .iter().all(|id| !id.trim().is_empty() && id.len() <= 256 && id.trim() == id.as_str());
-        if !valid_ids || [self.dataset_generation, self.renderer_generation, self.camera_generation]
-            .iter().any(|value| *value > 9_007_199_254_740_991)
-            || self.renderer_generation == 0
-            || !self.device_pixel_ratio.is_finite()
-            || !(0.5..=8.0).contains(&self.device_pixel_ratio)
-            || self.width < 96 || self.height < 64
-            || (self.width as f64 * self.device_pixel_ratio).ceil() > MAX_FRAME_WIDTH as f64
+    let valid_overlay = self
+        .overlay_column_id
+        .as_ref()
+        .is_none_or(|id| !id.trim().is_empty() && id.len() <= 256 && id.trim() == id.as_str());
+    let valid_hidden = self.hidden_overlay_group_ids.len() <= MAX_HIDDEN_OVERLAY_GROUPS
+        && self.hidden_overlay_group_ids.iter().all(|id| validate_overlay_group_id(id))
+        && self.hidden_overlay_group_ids.iter().collect::<std::collections::HashSet<_>>().len()
+            == self.hidden_overlay_group_ids.len()
+        && (self.overlay_column_id.is_some() || self.hidden_overlay_group_ids.is_empty());
+    if !valid_ids || [self.dataset_generation, self.renderer_generation, self.camera_generation]
+        .iter().any(|value| *value > 9_007_199_254_740_991)
+        || !valid_overlay
+        || !valid_hidden
+        || self.renderer_generation == 0
+        || !self.device_pixel_ratio.is_finite()
+        || !(0.5..=8.0).contains(&self.device_pixel_ratio)
+        || self.width < 96 || self.height < 64
+        || (self.width as f64 * self.device_pixel_ratio).ceil() > MAX_FRAME_WIDTH as f64
             || (self.height as f64 * self.device_pixel_ratio).ceil() > MAX_FRAME_HEIGHT as f64
         {
             return Err(AppError::InvalidParam("graph_new_invalid_request".into()));
@@ -127,7 +155,8 @@ impl GraphNewRenderRequest {
         GraphNewBuildRequest {
             request_id: self.request_id.clone(), dataset_id: self.dataset_id.clone(),
             dataset_generation: self.dataset_generation, x_column_id: self.x_column_id.clone(),
-            y_column_id: self.y_column_id.clone(), levels: 8, max_tile_points: 4096,
+            y_column_id: self.y_column_id.clone(), overlay_column_id: self.overlay_column_id.clone(),
+            levels: 8, max_tile_points: 4096,
             batch_rows: 16384, overdraw_factor: GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
             construction_memory_limit_bytes: GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
         }
@@ -153,6 +182,9 @@ pub struct GraphNewRenderCompletion {
     pub raw_line_available: bool,
     pub raw_line_segments: usize,
     pub raw_mode: GraphNewRawMode,
+    pub overlay_groups: Vec<GraphNewOverlayGroup>,
+    pub overlay_active: bool,
+    pub hidden_overlay_groups: usize,
     pub processed_rows: u64,
     pub finite_rows: u64,
     pub excluded_non_finite_rows: u64,
@@ -187,6 +219,26 @@ pub struct GraphNewRenderCompletion {
     pub cache_disk_hits: u64,
     pub cache_corruptions: u64,
     pub cache_disk_write_failures: u64,
+}
+
+fn validate_overlay_group_id(id: &str) -> bool {
+    id.len() == 71
+        && id.starts_with("sha256:")
+        && id
+            .as_bytes()
+            .iter()
+            .skip(7)
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[allow(dead_code)]
+fn validate_overlay_group(group: &GraphNewOverlayGroup) -> Result<(), AppError> {
+    if !validate_overlay_group_id(&group.id)
+        || group.label.len() > MAX_OVERLAY_LABEL_BYTES
+    {
+        return Err(AppError::InvalidParam("graph_new_invalid_request".into()));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

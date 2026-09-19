@@ -18,8 +18,8 @@ import type { DatasetMeta } from "../src/types/data";
 const dataset: DatasetMeta = { id: "source", name: "Measurements", sourcePath: null, sourceType: "manual", rowCount: 2, colCount: 2, generation: 7, createdAt: "2026-09-18", updatedAt: "2026-09-18" };
 const project = { name: "Persistence", filePath: "", createdAt: "2026-09-18" };
 const documents: GraphBuilderNewDocument[] = [
-  { version: 1, id: "native-one", name: "First", datasetId: "source", xColumnId: "x", yColumnId: "y", showMean: false, xMode: "numeric", rawMode: "line", camera: { xMin: 25, xMax: 75, yMin: 25, yMax: 75 } },
-  { version: 1, id: "native-two", name: "Second", datasetId: "source", xColumnId: "y", yColumnId: "x", showMean: true, xMode: "duration", rawMode: "pointsLine", camera: null },
+  { version: 2, id: "native-one", name: "First", datasetId: "source", xColumnId: "x", yColumnId: "y", overlayColumnId: null, hiddenOverlayGroupIds: [], showMean: false, xMode: "numeric", rawMode: "line", camera: { xMin: 25, xMax: 75, yMin: 25, yMax: 75 } },
+  { version: 2, id: "native-two", name: "Second", datasetId: "source", xColumnId: "y", yColumnId: "x", overlayColumnId: null, hiddenOverlayGroupIds: [], showMean: true, xMode: "duration", rawMode: "pointsLine", camera: null },
 ];
 
 export function WorkspaceGraphNewHarness({ missingOnly = false, legacyFolders = false }: { missingOnly?: boolean; legacyFolders?: boolean }) {

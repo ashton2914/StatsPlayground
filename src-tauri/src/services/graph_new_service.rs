@@ -304,6 +304,7 @@ impl<'a> GraphNewService<'a> {
                 x_axis,
                 raw_mode: request.raw_mode, raw_line_available: built.pyramid.mean_available(),
                 raw_line_segments: raw_line.as_ref().map_or(0, |segments| segments.len()),
+                overlay_groups: vec![], overlay_active: false, hidden_overlay_groups: 0,
                 mean_available: built.pyramid.mean_available(), mean_groups: scene.mean.as_ref().map(|mean| mean.len()),
                 mean_visible: scene.mean.as_ref().is_some_and(|mean| mean.len() >= 2),
                 exact_visible: selection.exact, visible_rows: selection.visible_rows,
@@ -687,6 +688,7 @@ impl<'a> GraphNewService<'a> {
                 dataset_generation,
                 x_column_id: x_column_id.to_string(),
                 y_column_id: y_column_id.to_string(),
+                overlay_column_id: None,
                 max_tile_points,
                 levels,
                 batch_rows,
@@ -1058,7 +1060,8 @@ mod tests {
             }
             let request = crate::models::graph_new_data::GraphNewBuildRequest {
                 request_id: "categorylimit".into(), dataset_id: "categorylimit".into(), dataset_generation: 0,
-                x_column_id: x_id, y_column_id: y_id, levels: 1, max_tile_points: 4096, batch_rows: 1024,
+                x_column_id: x_id, y_column_id: y_id, overlay_column_id: None,
+                levels: 1, max_tile_points: 4096, batch_rows: 1024,
                 overdraw_factor: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_OVERDRAW_FACTOR,
                 construction_memory_limit_bytes: crate::models::graph_new_data::GRAPH_NEW_DEFAULT_CONSTRUCTION_MEMORY_LIMIT_BYTES,
             };
@@ -1942,6 +1945,8 @@ mod tests {
             renderer_generation: generation, camera_generation: 0, camera_domain: None, show_mean: false,
             x_mode: Default::default(),
             raw_mode: Default::default(),
+            overlay_column_id: None,
+            hidden_overlay_group_ids: vec![],
         };
         let first = make("first", 1);
         let second = make("second", 2);
@@ -2039,7 +2044,8 @@ mod tests {
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "render-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false };
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false,
+            overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let render = |scene: &super::super::graph_new_renderer::GraphNewScene| {
             assert!(state.db.try_lock().is_ok(), "render must not hold DB lock");
             assert_eq!(scene.points.len(), 3);
@@ -2083,7 +2089,8 @@ mod tests {
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "error-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false };
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false,
+            overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let error = service.render_with(&request, |_| Err(AppError::FileIO("/private/secret.db".into())),
             &mut |_, _| panic!("failed rendering must not send")).expect_err("failure");
         assert_eq!(serde_json::to_value(error).expect("error json"), "Stats error: graph_new_render_failed");
@@ -2124,7 +2131,8 @@ mod tests {
             x_mode: Default::default(),
             raw_mode: Default::default(),
             dataset_id: "concurrent-fixture".into(), dataset_generation: 0, x_column_id, y_column_id,
-            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false };
+            width: 320, height: 200, device_pixel_ratio: 1.0, renderer_generation: 1, camera_generation: 0, camera_domain: None, show_mean: false,
+            overlay_column_id: None, hidden_overlay_group_ids: vec![] };
         let (ready_send, ready_receive) = std::sync::mpsc::channel();
         let (release_send, release_receive) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
@@ -2248,6 +2256,7 @@ mod tests {
             dataset_generation: 0,
             x_column_id,
             y_column_id,
+            overlay_column_id: None,
             batch_rows: 1_000_000,
             levels: 1,
             max_tile_points: 5,
