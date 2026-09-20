@@ -210,8 +210,7 @@ pub struct ProjectManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_history: Option<DeltaHistoryRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_timeline:
-        Option<crate::services::table_history_archive::HistoryTimelineRef>,
+    pub history_timeline: Option<crate::services::table_history_archive::HistoryTimelineRef>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -260,6 +259,8 @@ pub struct DeltaHistoryChangeSet {
     pub snapshot_table: Option<String>,
     pub applied: bool,
     pub rows: Vec<DeltaHistoryRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_order_rebalances: Vec<DeltaHistoryRowOrderRebalance>,
     pub columns: Vec<DeltaHistoryColumn>,
 }
 
@@ -268,7 +269,54 @@ pub struct DeltaHistoryChangeSet {
 pub struct DeltaHistoryRow {
     pub ordinal: i32,
     pub row_id: i64,
+    #[serde(default, with = "optional_i128_string")]
     pub row_order: Option<i128>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeltaHistoryRowOrderRebalance {
+    pub ordinal: i32,
+    pub row_id: i64,
+    #[serde(default, with = "optional_i128_string")]
+    pub before_row_order: Option<i128>,
+    #[serde(default, with = "optional_i128_string")]
+    pub after_row_order: Option<i128>,
+}
+
+mod optional_i128_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum EncodedI128 {
+        Signed(i64),
+        Unsigned(u64),
+        String(String),
+    }
+
+    pub fn serialize<S>(value: &Option<i128>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_some(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<i128>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<EncodedI128>::deserialize(deserializer)?
+            .map(|value| match value {
+                EncodedI128::Signed(value) => Ok(i128::from(value)),
+                EncodedI128::Unsigned(value) => Ok(i128::from(value)),
+                EncodedI128::String(value) => value.parse().map_err(serde::de::Error::custom),
+            })
+            .transpose()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -796,8 +844,7 @@ pub struct ProjectBundle {
     pub workflows: Vec<workflow_domain::WorkflowDefinition>,
     pub table_transforms: Vec<crate::services::table_transform_domain::TableTransformDefinition>,
     pub delta_history: Option<DeltaHistoryBundle>,
-    pub history_timeline:
-        Option<crate::services::table_history_archive::HistoryTimelineBundle>,
+    pub history_timeline: Option<crate::services::table_history_archive::HistoryTimelineBundle>,
 }
 
 // ----------------------------------------------------------------------------
@@ -1433,8 +1480,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         &manifest.table_transform_files,
         strict_v4_name_checks,
     )?;
-    let history_timeline =
-        read_history_timeline(&mut zip, manifest.history_timeline.as_ref())?;
+    let history_timeline = read_history_timeline(&mut zip, manifest.history_timeline.as_ref())?;
     let delta_history = if history_timeline.is_some() {
         None
     } else {
@@ -1470,10 +1516,7 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
 fn read_history_timeline<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     history_ref: Option<&crate::services::table_history_archive::HistoryTimelineRef>,
-) -> Result<
-    Option<crate::services::table_history_archive::HistoryTimelineBundle>,
-    AppError,
-> {
+) -> Result<Option<crate::services::table_history_archive::HistoryTimelineBundle>, AppError> {
     use crate::services::table_history_archive::{
         validate_history_timeline, HistoryTimelineArchive, HistoryTimelineBundle,
     };
@@ -1696,9 +1739,13 @@ pub(crate) fn validate_delta_history_contract(
                         "Row delta metadata contains invalid row IDs".into(),
                     ));
                 }
+                validate_row_order_rebalance_metadata(change_set)?;
             }
             "column_delta" => {
-                if !change_set.rows.is_empty() || change_set.columns.is_empty() {
+                if !change_set.rows.is_empty()
+                    || !change_set.row_order_rebalances.is_empty()
+                    || change_set.columns.is_empty()
+                {
                     return Err(AppError::FileIO(
                         "Column delta metadata has an invalid shape".into(),
                     ));
@@ -1785,6 +1832,45 @@ pub(crate) fn validate_delta_history_contract(
         return Err(AppError::FileIO(
             "Delta history contains an unreferenced snapshot descriptor".into(),
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_row_order_rebalance_metadata(
+    change_set: &DeltaHistoryChangeSet,
+) -> Result<(), AppError> {
+    if change_set.row_order_rebalances.is_empty() {
+        return Ok(());
+    }
+    if change_set.storage_kind != "row_delta" || change_set.operation != "add_rows" {
+        return Err(AppError::FileIO(
+            "Row-order rebalance metadata belongs to an invalid operation".into(),
+        ));
+    }
+    if change_set.row_order_rebalances.len()
+        > crate::services::natural_row_order::MAX_REBALANCE_WINDOW
+    {
+        return Err(AppError::FileIO(
+            "Row-order rebalance metadata exceeds its bounded window".into(),
+        ));
+    }
+    let inserted_ids = change_set
+        .rows
+        .iter()
+        .map(|row| row.row_id)
+        .collect::<HashSet<_>>();
+    let mut existing_ids = HashSet::with_capacity(change_set.row_order_rebalances.len());
+    for (expected_ordinal, row) in change_set.row_order_rebalances.iter().enumerate() {
+        if row.ordinal != i32::try_from(expected_ordinal).unwrap_or(-1)
+            || row.row_id <= 0
+            || row.after_row_order.is_none()
+            || inserted_ids.contains(&row.row_id)
+            || !existing_ids.insert(row.row_id)
+        {
+            return Err(AppError::FileIO(
+                "Row-order rebalance metadata has invalid row ownership".into(),
+            ));
+        }
     }
     Ok(())
 }

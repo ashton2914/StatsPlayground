@@ -171,10 +171,17 @@ Metadata records the operation, dataset, generations, target position, and
 stable row IDs/order keys.
 
 - Added blank rows require only IDs and order keys.
+- If allocation performs a bounded local rebalance, the same change set stores
+  one typed metadata row per existing row touched (maximum 8,192), containing
+  the stable row ID and the nullable `_row_order` before-image plus explicit
+  after-image. This preserves the distinction between a legacy `NULL` fallback
+  key and an explicit `HUGEINT`; it is not a full-table snapshot.
 - Deleted rows use a typed per-change-set snapshot table containing only the
   deleted rows, including `_row_id`, `_row_order`, and user values.
-- Undo of an add deletes those IDs.
-- Redo of an add restores the same IDs and order keys.
+- Undo of an add deletes those IDs, then restores the bounded rebalance
+  before-image before publishing anchors and the manifest.
+- Redo of an add reapplies the bounded rebalance after-image before restoring
+  the same IDs and order keys.
 - Undo of a delete restores the typed rows at their original natural positions.
 - Redo deletes the same IDs again.
 

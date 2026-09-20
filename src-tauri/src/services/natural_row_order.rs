@@ -10,7 +10,7 @@ use crate::error::AppError;
 use crate::services::row_order_update_boundary::{begin_row_order_update, RowOrderUpdateKind};
 
 const INITIAL_REBALANCE_WINDOW: usize = 256;
-const MAX_REBALANCE_WINDOW: usize = 8_192;
+pub(crate) const MAX_REBALANCE_WINDOW: usize = 8_192;
 
 #[cfg(test)]
 thread_local! {
@@ -42,6 +42,14 @@ fn reset_repair_rows_examined() {
 pub(crate) struct RowOrderAllocation {
     pub row_orders: Vec<i128>,
     pub insertion_ordinal: i64,
+    pub rebalance_delta: Vec<RowOrderRebalanceDelta>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RowOrderRebalanceDelta {
+    pub row_id: i64,
+    pub before_row_order: Option<i128>,
+    pub after_row_order: Option<i128>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -92,12 +100,13 @@ pub(crate) fn allocate_before(
         return Ok(RowOrderAllocation {
             row_orders,
             insertion_ordinal: boundary.insertion_ordinal,
+            rebalance_delta: Vec::new(),
         });
     }
 
     let mut window_size = INITIAL_REBALANCE_WINDOW;
     loop {
-        if let Some(row_orders) = rebalance_window(
+        if let Some((row_orders, rebalance_delta)) = rebalance_window(
             engine,
             &table_name,
             boundary.insertion_ordinal,
@@ -107,6 +116,7 @@ pub(crate) fn allocate_before(
             return Ok(RowOrderAllocation {
                 row_orders,
                 insertion_ordinal: boundary.insertion_ordinal,
+                rebalance_delta,
             });
         }
         if window_size == MAX_REBALANCE_WINDOW {
@@ -253,7 +263,7 @@ fn rebalance_window(
     insertion_ordinal: i64,
     count: usize,
     window_size: usize,
-) -> Result<Option<Vec<i128>>, AppError> {
+) -> Result<Option<(Vec<i128>, Vec<RowOrderRebalanceDelta>)>, AppError> {
     let half_window = i64::try_from(window_size / 2)
         .map_err(|_| AppError::InvalidParam("rebalance window is too large".into()))?;
     let start = insertion_ordinal.saturating_sub(half_window).max(0);
@@ -263,9 +273,10 @@ fn rebalance_window(
         .checked_add(window_size_i64)
         .ok_or_else(|| AppError::InvalidParam("rebalance window is too large".into()))?;
     let sql = format!(
-        "SELECT \"_row_id\", order_key, ordinal
+        "SELECT \"_row_id\", row_order, order_key, ordinal
          FROM (
-             SELECT \"_row_id\", {NATURAL_ORDER_SQL} AS order_key,
+             SELECT \"_row_id\", \"_row_order\" AS row_order,
+                    {NATURAL_ORDER_SQL} AS order_key,
                     row_number() OVER (
                         ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
                     ) - 1 AS ordinal
@@ -280,20 +291,21 @@ fn rebalance_window(
         .query_map(params![query_start, end], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, i128>(1)?,
-                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i128>>(1)?,
+                row.get::<_, i128>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let left_boundary = queried
         .iter()
-        .find(|row| row.2 == start - 1)
-        .map(|row| row.1);
-    let right_boundary = queried.iter().find(|row| row.2 == end).map(|row| row.1);
+        .find(|row| row.3 == start - 1)
+        .map(|row| row.2);
+    let right_boundary = queried.iter().find(|row| row.3 == end).map(|row| row.2);
     let window_rows = queried
         .iter()
-        .filter(|row| row.2 >= start && row.2 < end)
-        .copied()
+        .filter(|row| row.3 >= start && row.3 < end)
+        .cloned()
         .collect::<Vec<_>>();
     let mut update_boundary =
         begin_row_order_update(engine, table_name, RowOrderUpdateKind::BoundedLocal)?;
@@ -338,17 +350,24 @@ fn rebalance_window(
         .checked_add(count)
         .ok_or_else(|| AppError::InvalidParam("rebalance window is too large".into()))?;
     let inserted_orders = assigned[relative_insertion..inserted_end].to_vec();
+    let mut rebalance_delta = Vec::with_capacity(window_rows.len());
     let mut assigned_index = 0;
-    for (row_index, (row_id, _, _)) in window_rows.iter().enumerate() {
+    for (row_index, (row_id, before_row_order, _, _)) in window_rows.iter().enumerate() {
         if row_index == relative_insertion {
             assigned_index += count;
         }
-        update_boundary.update_by_id(engine, table_name, *row_id, assigned[assigned_index])?;
+        let after_row_order = assigned[assigned_index];
+        rebalance_delta.push(RowOrderRebalanceDelta {
+            row_id: *row_id,
+            before_row_order: *before_row_order,
+            after_row_order: Some(after_row_order),
+        });
+        update_boundary.update_by_id(engine, table_name, *row_id, Some(after_row_order))?;
         assigned_index += 1;
     }
     update_boundary.finish();
 
-    Ok(Some(inserted_orders))
+    Ok(Some((inserted_orders, rebalance_delta)))
 }
 
 fn bounded_rebalance_boundaries(
@@ -2117,7 +2136,7 @@ mod tests {
 
         for (row_id, row_order) in updates {
             boundary
-                .update_by_id(&db, &table_name, row_id, row_order)
+                .update_by_id(&db, &table_name, row_id, Some(row_order))
                 .expect("bounded update");
         }
         assert_eq!(boundary.finish(), 10);

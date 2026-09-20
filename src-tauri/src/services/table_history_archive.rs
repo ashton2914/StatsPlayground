@@ -304,6 +304,7 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
             }
         }
         if let Some(delta) = &entry.delta {
+            crate::services::spprj_archive::validate_row_order_rebalance_metadata(delta)?;
             for column in &delta.columns {
                 validate_calculated_definition(
                     column.calculated_definition_json.as_deref(),
@@ -679,7 +680,8 @@ mod tests {
         ArchivedCalculatedColumn, PreservedCalculatedColumnDefinition,
     };
     use crate::services::spprj_archive::{
-        DeltaHistoryColumn, DeltaHistoryRow, DeltaHistorySnapshotColumn,
+        DeltaHistoryColumn, DeltaHistoryRow, DeltaHistoryRowOrderRebalance,
+        DeltaHistorySnapshotColumn,
     };
 
     fn schema() -> Vec<HistorySchemaColumn> {
@@ -708,6 +710,7 @@ mod tests {
                 row_id: after as i64,
                 row_order: Some(after as i128),
             }],
+            row_order_rebalances: Vec::new(),
             columns: Vec::new(),
         }
     }
@@ -759,6 +762,47 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn unified_history_rejects_rebalance_rows_owned_by_inserted_rows() {
+        let mut archive = valid_archive();
+        let delta = archive.entries[1].delta.as_mut().expect("row delta");
+        delta
+            .row_order_rebalances
+            .push(DeltaHistoryRowOrderRebalance {
+                ordinal: 0,
+                row_id: delta.rows[0].row_id,
+                before_row_order: None,
+                after_row_order: Some(10),
+            });
+
+        assert!(matches!(
+            validate_history_timeline(&archive),
+            Err(AppError::FileIO(message))
+                if message.contains("invalid row ownership")
+        ));
+    }
+
+    #[test]
+    fn legacy_compact_history_without_rebalance_rows_remains_compatible() {
+        let delta_json = serde_json::json!({
+            "id": "00000000-0000-4000-8000-000000000011",
+            "datasetId": "dataset-a",
+            "storageKind": "row_delta",
+            "generation": 1,
+            "operation": "add_rows",
+            "beforeGeneration": 0,
+            "afterGeneration": 1,
+            "snapshotTable": null,
+            "applied": true,
+            "rows": [{"ordinal": 0, "rowId": 1, "rowOrder": 10}],
+            "columns": []
+        });
+        let delta: DeltaHistoryChangeSet =
+            serde_json::from_value(delta_json).expect("legacy compact delta");
+
+        assert!(delta.row_order_rebalances.is_empty());
     }
 
     fn assert_corrupt(
@@ -829,12 +873,9 @@ mod tests {
                 },
             };
             let encoded = serde_json::to_string(&definition).unwrap();
-            archive.entries[0].before_schema[0].calculated_definition_json =
-                Some(encoded.clone());
-            archive.entries[0].after_schema[0].calculated_definition_json =
-                Some(encoded.clone());
-            archive.entries[1].before_schema[0].calculated_definition_json =
-                Some(encoded.clone());
+            archive.entries[0].before_schema[0].calculated_definition_json = Some(encoded.clone());
+            archive.entries[0].after_schema[0].calculated_definition_json = Some(encoded.clone());
+            archive.entries[1].before_schema[0].calculated_definition_json = Some(encoded.clone());
             archive.entries[1].after_schema[0].calculated_definition_json = Some(encoded);
         });
         assert_corrupt(valid_archive(), |archive| {
@@ -890,6 +931,7 @@ mod tests {
             snapshot_table: Some("_history_columns_00000000000040008000000000000013".into()),
             applied: true,
             rows: Vec::new(),
+            row_order_rebalances: Vec::new(),
             columns: vec![DeltaHistoryColumn {
                 ordinal: 0,
                 column_id: "column-a".into(),

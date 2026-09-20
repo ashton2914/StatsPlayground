@@ -7,8 +7,9 @@ use crate::models::calculated_column::ArchivedCalculatedColumn;
 use crate::models::table::{ColumnMutationResult, RowMutationResult};
 use crate::services::natural_row_order::{
     allocate_before, publish_deleted_anchors, publish_inserted_anchors, publish_restored_anchors,
-    resolve_natural_row_positions,
+    resolve_natural_row_positions, RowOrderRebalanceDelta, MAX_REBALANCE_WINDOW,
 };
+use crate::services::row_order_update_boundary::{begin_row_order_update, RowOrderUpdateKind};
 use crate::services::table_history_archive::{
     advance_history_timeline, capture_history_schema, record_history_timeline,
 };
@@ -104,39 +105,36 @@ pub(crate) fn add_columns_compact(
             capture_history_schema(engine, dataset_id)
         })?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
-        measure_mutation_stage(
-            MutationPerfStage::Mutation,
-            || -> Result<(), AppError> {
-                for column in &columns {
-                    engine.conn().execute(
-                        "UPDATE _meta_columns SET col_index = col_index + 1
+        measure_mutation_stage(MutationPerfStage::Mutation, || -> Result<(), AppError> {
+            for column in &columns {
+                engine.conn().execute(
+                    "UPDATE _meta_columns SET col_index = col_index + 1
                          WHERE dataset_id = ? AND col_index >= ?",
-                        params![dataset_id, column.col_index],
-                    )?;
-                    engine.conn().execute(
-                        &format!(
-                            "ALTER TABLE {table} ADD COLUMN {} {}",
-                            DuckDbEngine::quote_identifier(&column.name),
-                            column.sql_type
-                        ),
-                        [],
-                    )?;
-                    engine.conn().execute(
-                        "INSERT INTO _meta_columns
+                    params![dataset_id, column.col_index],
+                )?;
+                engine.conn().execute(
+                    &format!(
+                        "ALTER TABLE {table} ADD COLUMN {} {}",
+                        DuckDbEngine::quote_identifier(&column.name),
+                        column.sql_type
+                    ),
+                    [],
+                )?;
+                engine.conn().execute(
+                    "INSERT INTO _meta_columns
                          (dataset_id, column_id, col_index, col_name, col_type)
                          VALUES (?, ?, ?, ?, ?)",
-                        params![
-                            dataset_id,
-                            &column.column_id,
-                            column.col_index,
-                            &column.name,
-                            &column.sql_type
-                        ],
-                    )?;
-                }
-                Ok(())
-            },
-        )?;
+                    params![
+                        dataset_id,
+                        &column.column_id,
+                        column.col_index,
+                        &column.name,
+                        &column.sql_type
+                    ],
+                )?;
+            }
+            Ok(())
+        })?;
         let column_count = measure_mutation_stage(MutationPerfStage::Metadata, || {
             updated_column_count(
                 engine,
@@ -826,9 +824,7 @@ pub(crate) fn add_rows_compact(
                     .zip(allocation.row_orders.iter().copied())
                 {
                     engine.conn().execute(
-                        &format!(
-                            "INSERT INTO {table} (\"_row_id\", \"_row_order\") VALUES (?, ?)"
-                        ),
+                        &format!("INSERT INTO {table} (\"_row_id\", \"_row_order\") VALUES (?, ?)"),
                         params![row_id, row_order],
                     )?;
                     inserted.push((row_id, row_order));
@@ -864,6 +860,7 @@ pub(crate) fn add_rows_compact(
                     })
                     .collect::<Result<Vec<_>, AppError>>()?
                     .as_slice(),
+                &allocation.rebalance_delta,
                 &schema_json,
                 &schema_json,
             )
@@ -952,6 +949,7 @@ pub(crate) fn delete_rows_compact(
                 next_generation,
                 Some(&snapshot_name),
                 &delta_rows,
+                &[],
                 &schema_json,
                 &schema_json,
             )
@@ -1048,11 +1046,30 @@ pub(crate) fn apply_row_delta_change_set(
             })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
+        let mut statement = engine.conn().prepare(
+            "SELECT row_id, before_key, after_key
+             FROM _history_natural_rebalances
+             WHERE change_set_id = ? ORDER BY ordinal",
+        )?;
+        let rebalance_delta = statement
+            .query_map(params![change_set_id], |row| {
+                Ok(RowOrderRebalanceDelta {
+                    row_id: row.get(0)?,
+                    before_row_order: row.get(1)?,
+                    after_row_order: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        validate_rebalance_delta(&operation, &rows, &rebalance_delta)?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(&dataset_id));
         let deleting = (operation.as_str() == "add_rows" && undo)
             || (operation.as_str() == "delete_rows" && !undo);
         if deleting {
             delete_delta_rows(engine, &table, &rows)?;
+            if operation == "add_rows" {
+                apply_rebalance_delta(engine, &table, &rebalance_delta, false)?;
+            }
             updated_row_count(
                 engine,
                 &dataset_id,
@@ -1076,6 +1093,7 @@ pub(crate) fn apply_row_delta_change_set(
                 &deleted,
             )?;
         } else if operation == "add_rows" {
+            apply_rebalance_delta(engine, &table, &rebalance_delta, true)?;
             insert_added_rows(engine, &table, &rows)?;
             updated_row_count(
                 engine,
@@ -1248,6 +1266,7 @@ fn record_delta_change_set(
     after_generation: u64,
     snapshot_table: Option<&str>,
     rows: &[(i64, i64, Option<i128>)],
+    rebalance_delta: &[RowOrderRebalanceDelta],
     before_schema_json: &str,
     after_schema_json: &str,
 ) -> Result<(), AppError> {
@@ -1276,6 +1295,21 @@ fn record_delta_change_set(
             "INSERT INTO _history_row_deltas
              (change_set_id, ordinal, row_id, row_order) VALUES (?, ?, ?, ?)",
             params![change_set_id, ordinal, row_id, row_order],
+        )?;
+    }
+    for (ordinal, rebalance) in rebalance_delta.iter().enumerate() {
+        engine.conn().execute(
+            "INSERT INTO _history_natural_rebalances
+             (change_set_id, ordinal, row_id, before_key, after_key)
+             VALUES (?, ?, ?, ?, ?)",
+            params![
+                change_set_id,
+                i32::try_from(ordinal)
+                    .map_err(|_| AppError::InvalidParam("rebalance delta is too large".into()))?,
+                rebalance.row_id,
+                rebalance.before_row_order,
+                rebalance.after_row_order
+            ],
         )?;
     }
     record_history_timeline(
@@ -1317,6 +1351,64 @@ fn insert_added_rows(
             &format!("INSERT INTO {table} (\"_row_id\", \"_row_order\") VALUES (?, ?)"),
             params![row_id, row_order],
         )?;
+    }
+    Ok(())
+}
+
+fn validate_rebalance_delta(
+    operation: &str,
+    inserted_rows: &[(i64, i64, Option<i128>)],
+    rebalance_delta: &[RowOrderRebalanceDelta],
+) -> Result<(), AppError> {
+    if rebalance_delta.len() > MAX_REBALANCE_WINDOW {
+        return Err(AppError::Database(format!(
+            "row-order rebalance delta exceeds {MAX_REBALANCE_WINDOW} rows"
+        )));
+    }
+    if operation != "add_rows" && !rebalance_delta.is_empty() {
+        return Err(AppError::Database(
+            "row-order rebalance delta belongs to a non-add change set".into(),
+        ));
+    }
+    let inserted_ids = inserted_rows
+        .iter()
+        .map(|row| row.1)
+        .collect::<std::collections::HashSet<_>>();
+    let mut existing_ids = std::collections::HashSet::with_capacity(rebalance_delta.len());
+    for row in rebalance_delta {
+        if row.row_id <= 0
+            || row.after_row_order.is_none()
+            || inserted_ids.contains(&row.row_id)
+            || !existing_ids.insert(row.row_id)
+        {
+            return Err(AppError::Database(
+                "row-order rebalance delta has invalid row ownership".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn apply_rebalance_delta(
+    engine: &DuckDbEngine,
+    table: &str,
+    rebalance_delta: &[RowOrderRebalanceDelta],
+    use_after_image: bool,
+) -> Result<(), AppError> {
+    let mut boundary = begin_row_order_update(engine, table, RowOrderUpdateKind::BoundedLocal)?;
+    for row in rebalance_delta {
+        let row_order = if use_after_image {
+            row.after_row_order
+        } else {
+            row.before_row_order
+        };
+        boundary.update_by_id(engine, table, row.row_id, row_order)?;
+    }
+    let affected = boundary.finish();
+    if affected != rebalance_delta.len() {
+        return Err(AppError::Database(
+            "row-order rebalance delta does not match existing rows".into(),
+        ));
     }
     Ok(())
 }
@@ -1379,6 +1471,70 @@ mod tests {
             .expect("query natural rows")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect natural rows")
+    }
+
+    fn exact_natural_keys(
+        engine: &DuckDbEngine,
+        dataset_id: &str,
+    ) -> Vec<(i64, Option<i128>, i128)> {
+        let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+        engine
+            .conn()
+            .prepare(&format!(
+                "SELECT \"_row_id\", \"_row_order\", {NATURAL_ORDER_SQL}
+                 FROM {table}
+                 ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            ))
+            .expect("prepare exact natural keys")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query exact natural keys")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect exact natural keys")
+    }
+
+    fn assert_anchor_state(
+        engine: &DuckDbEngine,
+        dataset_id: &str,
+        generation: u64,
+        expected_row_count: i64,
+    ) {
+        engine
+            .validate_natural_anchor_manifest(dataset_id, generation as i64, expected_row_count)
+            .expect("valid anchor manifest");
+        let rows = exact_natural_keys(engine, dataset_id);
+        let anchors = engine
+            .conn()
+            .prepare(
+                "SELECT ordinal, order_key, row_id
+                 FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?
+                 ORDER BY ordinal",
+            )
+            .expect("prepare anchors")
+            .query_map(params![dataset_id, generation as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i128>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .expect("query anchors")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect anchors");
+        for (ordinal, order_key, row_id) in anchors {
+            let row = &rows[usize::try_from(ordinal).expect("anchor ordinal")];
+            assert_eq!((row.0, row.2), (row_id, order_key));
+        }
+    }
+
+    fn history_cursor(engine: &DuckDbEngine, dataset_id: &str) -> (u64, u64) {
+        let archive = engine.archive_unified_history().expect("archive history");
+        let cursor = archive
+            .datasets
+            .iter()
+            .find(|cursor| cursor.dataset_id == dataset_id)
+            .expect("dataset history cursor");
+        (cursor.applied_count, cursor.current_generation)
     }
 
     fn new_column(name: &str, sql_type: &str, col_index: i32) -> UserColumnDescriptor {
@@ -2101,6 +2257,164 @@ mod tests {
             .apply_change_set(&added.change_set_id, false)
             .expect("redo add");
         assert_eq!(natural_rows(&add_db, "compact-add-replay"), after_add);
+    }
+
+    #[test]
+    fn compact_add_rebalance_undo_redo_restores_exact_keys_and_older_delta() {
+        let dataset_id = "compact-rebalance-replay";
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        db.seed_benchmark_table(dataset_id, "Compact rebalance replay", 5, 1)
+            .expect("seed");
+        db.ensure_internal_row_order_column(dataset_id)
+            .expect("row order");
+        let stride = crate::engine::duckdb_engine::NATURAL_ORDER_STRIDE;
+        db.conn()
+            .execute(
+                "UPDATE dataset_compact_rebalance_replay
+                 SET \"_row_order\" = CASE \"_row_id\"
+                     WHEN 2 THEN ?
+                     WHEN 3 THEN ?
+                     ELSE \"_row_order\"
+                 END
+                 WHERE \"_row_id\" IN (2, 3)",
+                params![stride * 2, stride * 2 + 1],
+            )
+            .expect("exhaust insertion interval");
+        db.rebuild_natural_anchors(dataset_id, 0)
+            .expect("fixture anchors");
+        let before_older_add = exact_natural_keys(&db, dataset_id);
+
+        let older = add_rows_compact(&db, dataset_id, 1, None, 0).expect("older add");
+        let before_rebalance = exact_natural_keys(&db, dataset_id);
+        assert_anchor_state(&db, dataset_id, 1, 6);
+        assert_eq!(history_cursor(&db, dataset_id), (1, 1));
+
+        let rebalanced = add_rows_compact(&db, dataset_id, 1, Some(3), 1).expect("rebalance add");
+        let after_rebalance = exact_natural_keys(&db, dataset_id);
+        let inserted_id = rebalanced.row_ids[0];
+        let touched_existing = before_rebalance
+            .iter()
+            .filter(|before| {
+                after_rebalance
+                    .iter()
+                    .find(|after| after.0 == before.0)
+                    .is_some_and(|after| (after.1, after.2) != (before.1, before.2))
+            })
+            .count();
+        assert!(
+            touched_existing > 0,
+            "fixture must force a genuine rebalance"
+        );
+        assert!(touched_existing <= 8_192);
+        assert!(after_rebalance.iter().any(|row| row.0 == inserted_id));
+        assert_anchor_state(&db, dataset_id, 2, 7);
+        assert_eq!(history_cursor(&db, dataset_id), (2, 2));
+        let archived = db.archive_unified_history().expect("archive history");
+        assert_eq!(
+            archived.entries[1]
+                .delta
+                .as_ref()
+                .expect("row delta")
+                .row_order_rebalances
+                .len(),
+            6
+        );
+        let archived_json = serde_json::to_vec(&archived).expect("serialize unified history");
+        let reopened_archive: crate::services::table_history_archive::HistoryTimelineArchive =
+            serde_json::from_slice(&archived_json).expect("deserialize unified history");
+        let reopened = DuckDbEngine::new_in_memory().expect("reopened engine");
+        reopened
+            .seed_benchmark_table(dataset_id, "Compact rebalance replay", 5, 1)
+            .expect("seed reopened data");
+        reopened
+            .ensure_internal_row_order_column(dataset_id)
+            .expect("reopened row order");
+        for &(row_id, row_order, _) in &after_rebalance {
+            if row_id <= 5 {
+                reopened
+                    .conn()
+                    .execute(
+                        "UPDATE dataset_compact_rebalance_replay
+                         SET \"_row_order\" = ? WHERE \"_row_id\" = ?",
+                        params![row_order, row_id],
+                    )
+                    .expect("stage reopened existing key");
+            } else {
+                reopened
+                    .conn()
+                    .execute(
+                        "INSERT INTO dataset_compact_rebalance_replay
+                         (\"_row_id\", \"_row_order\") VALUES (?, ?)",
+                        params![row_id, row_order],
+                    )
+                    .expect("stage reopened inserted row");
+            }
+        }
+        reopened
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets
+                 SET row_count = 7, generation = 2, next_row_id = 8
+                 WHERE id = ?",
+                params![dataset_id],
+            )
+            .expect("stage reopened metadata");
+        let archived_column_id = &reopened_archive.entries[0].before_schema[0].column_id;
+        reopened
+            .conn()
+            .execute(
+                "UPDATE _meta_columns SET column_id = ?
+                 WHERE dataset_id = ? AND col_index = 0",
+                params![archived_column_id, dataset_id],
+            )
+            .expect("stage reopened stable column identity");
+        reopened
+            .rebuild_natural_anchors(dataset_id, 2)
+            .expect("stage reopened anchors");
+        reopened
+            .restore_unified_history(&reopened_archive, &[])
+            .expect("restore unified history");
+        reopened
+            .apply_change_set(&rebalanced.change_set_id, true)
+            .expect("reopened undo rebalance");
+        assert_eq!(exact_natural_keys(&reopened, dataset_id), before_rebalance);
+        reopened
+            .apply_change_set(&older.change_set_id, true)
+            .expect("reopened undo older add");
+        assert_eq!(exact_natural_keys(&reopened, dataset_id), before_older_add);
+        reopened
+            .apply_change_set(&older.change_set_id, false)
+            .expect("reopened redo older add");
+        reopened
+            .apply_change_set(&rebalanced.change_set_id, false)
+            .expect("reopened redo rebalance");
+        assert_eq!(exact_natural_keys(&reopened, dataset_id), after_rebalance);
+        assert_anchor_state(&reopened, dataset_id, 6, 7);
+        assert_eq!(history_cursor(&reopened, dataset_id), (2, 6));
+
+        db.apply_change_set(&rebalanced.change_set_id, true)
+            .expect("undo rebalance add");
+        assert_eq!(exact_natural_keys(&db, dataset_id), before_rebalance);
+        assert_anchor_state(&db, dataset_id, 3, 6);
+        assert_eq!(history_cursor(&db, dataset_id), (1, 3));
+
+        db.apply_change_set(&older.change_set_id, true)
+            .expect("undo older add");
+        assert_eq!(exact_natural_keys(&db, dataset_id), before_older_add);
+        assert_anchor_state(&db, dataset_id, 4, 5);
+        assert_eq!(history_cursor(&db, dataset_id), (0, 4));
+
+        db.apply_change_set(&older.change_set_id, false)
+            .expect("redo older add");
+        assert_eq!(exact_natural_keys(&db, dataset_id), before_rebalance);
+        assert_anchor_state(&db, dataset_id, 5, 6);
+        assert_eq!(history_cursor(&db, dataset_id), (1, 5));
+
+        db.apply_change_set(&rebalanced.change_set_id, false)
+            .expect("redo rebalance add");
+        assert_eq!(exact_natural_keys(&db, dataset_id), after_rebalance);
+        assert_anchor_state(&db, dataset_id, 6, 7);
+        assert_eq!(history_cursor(&db, dataset_id), (2, 6));
     }
 
     #[test]

@@ -193,3 +193,13 @@ sparse anchors/manifests, the expected compact snapshot shape, and no
 near-doubling of retained memory or RSS. Middle insertion precedes its stable
 target. The raw reports are stored outside the repository in the session
 artifact directory.
+
+Those measurements did not exercise bounded rebalance (`rebalancedRows = 0`).
+Compact add-row history now persists nullable before-images and explicit
+after-images for every existing row touched by a bounded rebalance (at most
+8,192), and unified history archive v2 validates and restores that metadata.
+Because this changes production mutation and archive source after `4d4917e`,
+the qualification above is retained as historical evidence only; it does not
+bind the new source. A clean five-operation 2,000,000-row qualification must be
+rerun before release, including a scenario that reports a nonzero bounded
+rebalance count.

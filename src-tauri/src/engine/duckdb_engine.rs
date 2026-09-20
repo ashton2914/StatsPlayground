@@ -658,6 +658,15 @@ impl DuckDbEngine {
                 PRIMARY KEY (change_set_id, ordinal)
             );
 
+            CREATE TABLE IF NOT EXISTS _history_natural_rebalances (
+                change_set_id TEXT NOT NULL,
+                ordinal       INTEGER NOT NULL,
+                row_id        BIGINT NOT NULL,
+                before_key    HUGEINT,
+                after_key     HUGEINT,
+                PRIMARY KEY (change_set_id, ordinal)
+            );
+
             CREATE TABLE IF NOT EXISTS _history_column_deltas (
                 change_set_id TEXT NOT NULL,
                 ordinal       INTEGER NOT NULL,
@@ -8972,9 +8981,28 @@ impl DuckDbEngine {
     > {
         use crate::services::spprj_archive::{
             DeltaHistoryArchive, DeltaHistoryChangeSet, DeltaHistoryColumn, DeltaHistoryRow,
-            DeltaHistorySnapshotRef,
+            DeltaHistoryRowOrderRebalance, DeltaHistorySnapshotRef,
         };
 
+        let invalid_rebalance_ownership: i64 = self.conn.query_row(
+            "SELECT COUNT(*)
+             FROM _history_natural_rebalances AS rebalance
+             LEFT JOIN _history_delta_change_sets AS delta
+               ON delta.id = rebalance.change_set_id
+             LEFT JOIN _history_change_sets AS change_set
+               ON change_set.id = rebalance.change_set_id
+             WHERE delta.id IS NULL
+                OR change_set.id IS NULL
+                OR change_set.storage_kind <> 'row_delta'
+                OR delta.operation <> 'add_rows'",
+            [],
+            |row| row.get(0),
+        )?;
+        if invalid_rebalance_ownership != 0 {
+            return Err(AppError::FileIO(
+                "Row-order rebalance metadata has invalid change-set ownership".into(),
+            ));
+        }
         let mut statement = self.conn.prepare(
             "SELECT change_set.id, change_set.dataset_id, change_set.storage_kind,
                     change_set.generation,
@@ -9050,6 +9078,22 @@ impl DuckDbEngine {
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
+            let row_order_rebalances = self
+                .conn
+                .prepare(
+                    "SELECT ordinal, row_id, before_key, after_key
+                     FROM _history_natural_rebalances
+                     WHERE change_set_id = ? ORDER BY ordinal",
+                )?
+                .query_map(params![&id], |row| {
+                    Ok(DeltaHistoryRowOrderRebalance {
+                        ordinal: row.get(0)?,
+                        row_id: row.get(1)?,
+                        before_row_order: row.get(2)?,
+                        after_row_order: row.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             if let Some(table_name) = &snapshot_table {
                 Self::validate_delta_snapshot_name(&parsed, &storage_kind, &operation, table_name)?;
                 let schema = self.delta_snapshot_schema(table_name)?;
@@ -9076,6 +9120,7 @@ impl DuckDbEngine {
                 snapshot_table,
                 applied,
                 rows,
+                row_order_rebalances,
                 columns,
             });
         }
@@ -9614,6 +9659,20 @@ impl DuckDbEngine {
                         "INSERT INTO _history_row_deltas
                          (change_set_id, ordinal, row_id, row_order) VALUES (?, ?, ?, ?)",
                         params![&change_set.id, row.ordinal, row.row_id, row.row_order],
+                    )?;
+                }
+                for rebalance in &change_set.row_order_rebalances {
+                    self.conn.execute(
+                        "INSERT INTO _history_natural_rebalances
+                         (change_set_id, ordinal, row_id, before_key, after_key)
+                         VALUES (?, ?, ?, ?, ?)",
+                        params![
+                            &change_set.id,
+                            rebalance.ordinal,
+                            rebalance.row_id,
+                            rebalance.before_row_order,
+                            rebalance.after_row_order
+                        ],
                     )?;
                 }
                 for column in &change_set.columns {
@@ -10415,6 +10474,10 @@ impl DuckDbEngine {
             )?;
             self.conn.execute(
                 "DELETE FROM _history_row_deltas WHERE change_set_id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_natural_rebalances WHERE change_set_id = ?",
                 params![change_set_id],
             )?;
             self.conn.execute(
@@ -13523,7 +13586,11 @@ mod tests {
             .conn()
             .prepare(
                 "SELECT table_name FROM information_schema.tables
-                 WHERE table_name IN ('_history_delta_change_sets', '_history_row_deltas')
+                 WHERE table_name IN (
+                     '_history_delta_change_sets',
+                     '_history_row_deltas',
+                     '_history_natural_rebalances'
+                 )
                  ORDER BY table_name",
             )
             .expect("prepare schema query")
@@ -13535,6 +13602,7 @@ mod tests {
             tables,
             vec![
                 "_history_delta_change_sets".to_string(),
+                "_history_natural_rebalances".to_string(),
                 "_history_row_deltas".to_string()
             ]
         );
@@ -20529,6 +20597,14 @@ mod tests {
                 .unwrap();
             db.conn()
                 .execute(
+                    "INSERT INTO _history_natural_rebalances
+                     (change_set_id, ordinal, row_id, before_key, after_key)
+                     VALUES (?, 0, 2, NULL, 20)",
+                    params![id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
                     "INSERT INTO _history_column_deltas
                      (change_set_id, ordinal, column_id, col_index, col_name, col_type)
                      VALUES (?, 0, ?, 0, 'value', 'BIGINT')",
@@ -20554,6 +20630,7 @@ mod tests {
             "_history_change_sets",
             "_history_delta_change_sets",
             "_history_row_deltas",
+            "_history_natural_rebalances",
             "_history_column_deltas",
             "_history_timeline",
         ] {
@@ -21247,6 +21324,7 @@ mod tests {
                 snapshot_table: None,
                 applied: true,
                 rows: vec![],
+                row_order_rebalances: vec![],
                 columns: vec![DeltaHistoryColumn {
                     ordinal: 0,
                     column_id: "00000000-0000-4000-8000-000000000022".into(),

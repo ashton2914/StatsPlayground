@@ -39,7 +39,7 @@ impl RowOrderUpdateBoundary {
         engine: &DuckDbEngine,
         table_name: &str,
         row_id: i64,
-        row_order: i128,
+        row_order: Option<i128>,
     ) -> Result<(), AppError> {
         let sql = format!("UPDATE {table_name} SET \"_row_order\" = ? WHERE \"_row_id\" = ?");
         self.affected_rows = self
@@ -177,7 +177,7 @@ pub(crate) fn execute_global_row_order_update_for_test(
     let mut boundary =
         begin_row_order_update(engine, &table_name, RowOrderUpdateKind::GlobalUnbounded)?;
     for (row_id, row_order) in updates {
-        boundary.update_by_id(engine, &table_name, row_id, row_order)?;
+        boundary.update_by_id(engine, &table_name, row_id, Some(row_order))?;
     }
     Ok(boundary.finish())
 }
