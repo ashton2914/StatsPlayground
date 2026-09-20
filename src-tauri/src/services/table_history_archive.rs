@@ -844,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_history_archive_rejects_changed_calculated_definition_on_compact_delete() {
+    fn unified_history_archive_rejects_changed_calculated_definition_on_delta_delete() {
         let definition = |marker: &str| {
             serde_json::to_string(&ArchivedCalculatedColumn::Preserved {
                 definition: PreservedCalculatedColumnDefinition {

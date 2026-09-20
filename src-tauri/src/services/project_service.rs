@@ -2186,7 +2186,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_history_archive_round_trips_interleaved_compact_and_legacy_replay() {
+    fn unified_history_archive_round_trips_interleaved_delta_and_legacy_replay() {
         let path = std::env::current_dir().unwrap().join(format!(
             ".task5-unified-history-{}.spprj",
             uuid::Uuid::new_v4()

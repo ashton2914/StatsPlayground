@@ -20582,7 +20582,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_history_timeline_orders_compact_and_legacy_and_preserves_created_state() {
+    fn unified_history_timeline_orders_delta_and_legacy_and_preserves_created_state() {
         let db = DuckDbEngine::new_in_memory().unwrap();
         db.seed_benchmark_table("timeline-id", "Timeline", 2, 1)
             .unwrap();
@@ -20774,7 +20774,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_history_timeline_orders_legacy_before_compact() {
+    fn unified_history_timeline_orders_legacy_before_delta() {
         let db = DuckDbEngine::new_in_memory().unwrap();
         db.seed_benchmark_table("legacy-first", "Legacy first", 2, 1)
             .unwrap();
