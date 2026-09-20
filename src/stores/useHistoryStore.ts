@@ -9,6 +9,7 @@ import type {
 } from "@/types/history";
 import {
   discardedChangeSetIds,
+  prepareArchivedHistory,
   recordIncrementalEntry,
   redoIncrementalEntry,
   undoIncrementalEntry,
@@ -377,9 +378,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     history: HistoryEntry[],
     snapshots: NamedSnapshot[]
   ) => {
-    const storedHistory = history.map((entry) => entry.action
-      ? { ...entry, action: undefined }
-      : entry);
+    const storedHistory = prepareArchivedHistory(history);
     dropDiscardedChangeSets(get().history, []);
     set({ history: storedHistory, snapshots, currentIdx: storedHistory.length > 0 ? 0 : -1 });
   },

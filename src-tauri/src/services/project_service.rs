@@ -36,6 +36,44 @@ pub struct ProjectService<'a> {
     state: &'a AppState,
 }
 
+fn reconcile_archived_history(
+    history: Vec<serde_json::Value>,
+    retained_change_set_ids: &std::collections::HashSet<String>,
+) -> Vec<serde_json::Value> {
+    history
+        .into_iter()
+        .map(|mut entry| {
+            let change_set_id = entry
+                .pointer("/action/kind")
+                .and_then(serde_json::Value::as_str)
+                .filter(|kind| *kind == "changeSet")
+                .and_then(|_| entry.pointer("/action/changeSetId"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            if let Some(change_set_id) = change_set_id {
+                if !retained_change_set_ids.contains(&change_set_id) {
+                    if let Some(object) = entry.as_object_mut() {
+                        object.remove("action");
+                        object.insert("replayable".into(), serde_json::Value::Bool(false));
+                        object.insert(
+                            "migrationError".into(),
+                            serde_json::Value::String(
+                                "This table change predates unified history archival and cannot be replayed"
+                                    .into(),
+                            ),
+                        );
+                        object.insert(
+                            "unavailableChangeSetId".into(),
+                            serde_json::Value::String(change_set_id),
+                        );
+                    }
+                }
+            }
+            entry
+        })
+        .collect()
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedTableTransform {
@@ -548,6 +586,18 @@ impl<'a> ProjectService<'a> {
             })
             .collect();
 
+        let retained_change_set_ids = {
+            let db = staged_state
+                .db
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?;
+            db.conn()
+                .prepare("SELECT id FROM _history_change_sets")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<std::collections::HashSet<_>, _>>()?
+        };
+        let restored_history =
+            reconcile_archived_history(bundle.history, &retained_change_set_ids);
         let staged_db = staged_state
             .db
             .into_inner()
@@ -580,7 +630,7 @@ impl<'a> ProjectService<'a> {
 
         Ok(OpenProjectResult {
             project,
-            history: bundle.history,
+            history: restored_history,
             snapshots: bundle.snapshots,
             graph_builders,
             graph_builders_new: bundle.graph_builders_new,
@@ -1877,7 +1927,10 @@ fn normalize_duplicate_dataset_names(docs: &mut [TableDoc]) -> Vec<DatasetNameMi
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_from_entry_path, normalize_duplicate_dataset_names, ProjectService};
+    use super::{
+        folder_from_entry_path, normalize_duplicate_dataset_names, reconcile_archived_history,
+        ProjectService,
+    };
     use crate::error::AppError;
     use crate::models::calculated_column::{
         definition_fingerprint, expression_dependency_ids, ArchivedCalculatedColumn,
@@ -2238,6 +2291,40 @@ mod tests {
         );
         drop(db);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_history_reference_without_backend_evidence_requires_migration() {
+        let retained_id = "00000000-0000-4000-8000-000000000021";
+        let missing_id = "00000000-0000-4000-8000-000000000022";
+        let history = vec![
+            serde_json::json!({
+                "id": "retained",
+                "action": {"kind": "changeSet", "changeSetId": retained_id}
+            }),
+            serde_json::json!({
+                "id": "missing",
+                "action": {"kind": "changeSet", "changeSetId": missing_id}
+            }),
+        ];
+        let reconciled = reconcile_archived_history(
+            history,
+            &std::collections::HashSet::from([retained_id.to_string()]),
+        );
+        assert_eq!(
+            reconciled[0].pointer("/action/changeSetId"),
+            Some(&serde_json::Value::String(retained_id.into()))
+        );
+        assert!(reconciled[1].get("action").is_none());
+        assert_eq!(reconciled[1]["replayable"], serde_json::json!(false));
+        assert_eq!(
+            reconciled[1]["unavailableChangeSetId"],
+            serde_json::json!(missing_id)
+        );
+        assert!(reconciled[1]["migrationError"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be replayed"));
     }
 
     #[test]

@@ -58,3 +58,11 @@ export function discardedChangeSetIds(
       : []
   );
 }
+
+export function prepareArchivedHistory(history: HistoryEntry[]): HistoryEntry[] {
+  return history.map((entry) =>
+    entry.replayable === false
+      ? { ...entry, action: undefined }
+      : entry
+  );
+}
