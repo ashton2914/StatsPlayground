@@ -35,7 +35,9 @@ function nowISO(): string {
 
 function dropDiscardedChangeSets(previous: HistoryEntry[], next: HistoryEntry[]): void {
   for (const changeSetId of discardedChangeSetIds(previous, next)) {
-    void dataService.dropTableChangeSet(changeSetId).catch(() => undefined);
+    void dataService.dropTableChangeSet(changeSetId).catch((error) => {
+      useHistoryStore.setState({ historyError: String(error) });
+    });
   }
 }
 

@@ -30,6 +30,7 @@ use crate::services::workflow_executor::{document_commit_id, WorkflowRunCommitPa
 use crate::state::AppState;
 use duckdb::appender_params_from_iter;
 use duckdb::types::Value as DuckValue;
+use std::io::Write;
 
 pub struct ProjectService<'a> {
     state: &'a AppState,
@@ -131,7 +132,9 @@ mod native_graph_persistence_tests {
             uuid::Uuid::new_v4()
         ));
         let service = ProjectService::new(&state);
-        service.create_project("Native Graphs", path.to_str().unwrap()).unwrap();
+        service
+            .create_project("Native Graphs", path.to_str().unwrap())
+            .unwrap();
         let documents = serde_json::json!([
             {
                 "version": 1, "id": "native-1", "name": "Native Trend",
@@ -152,7 +155,8 @@ mod native_graph_persistence_tests {
             "graphBuilders": legacy, "graphBuildersNew": documents, "graphNewFolders": folders,
             "folders": ["Graphs", "Graphs/Nested"], "tableFolders": {}, "graphFolders": {},
             "reportFolders": {}, "tabulateFolders": {}
-        })).unwrap();
+        }))
+        .unwrap();
         service.save_project(request.clone(), None).unwrap();
         let saved_bytes = std::fs::read(&path).unwrap();
         let mut invalid_request = request;
@@ -161,7 +165,8 @@ mod native_graph_persistence_tests {
         assert_eq!(std::fs::read(&path).unwrap(), saved_bytes);
         let reopened_state = AppState::new().unwrap();
         let reopened = ProjectService::new(&reopened_state)
-            .open_project(path.to_str().unwrap(), None).unwrap();
+            .open_project(path.to_str().unwrap(), None)
+            .unwrap();
         let result = serde_json::to_value(reopened).unwrap();
         assert_eq!(result["graphBuildersNew"], documents);
         assert_eq!(result["graphNewFolders"], folders);
@@ -387,6 +392,26 @@ impl<'a> ProjectService<'a> {
                     .map_err(|error| AppError::Database(error.to_string()))?
                     .delete_dataset(&doc.id);
                 staged_service.restore_table_doc(doc)?;
+            }
+            if let Some(delta_history) = &bundle.delta_history {
+                let mut temporary_snapshots = Vec::with_capacity(delta_history.snapshots.len());
+                let mut restore_snapshots = Vec::with_capacity(delta_history.snapshots.len());
+                for (descriptor, bytes) in &delta_history.snapshots {
+                    let mut file = tempfile::Builder::new()
+                        .prefix(".statsplayground-open-history-")
+                        .suffix(".parquet")
+                        .tempfile()?;
+                    file.write_all(bytes)?;
+                    file.as_file_mut().sync_all()?;
+                    restore_snapshots.push((descriptor.clone(), file.path().to_path_buf()));
+                    temporary_snapshots.push(file);
+                }
+                staged_state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                    .restore_delta_history(&delta_history.metadata, &restore_snapshots)?;
+                drop(temporary_snapshots);
             }
         }
 
@@ -777,10 +802,12 @@ impl<'a> ProjectService<'a> {
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        let archived_col_names: Vec<String> =
-            doc.columns.iter().map(|column| column.name.clone()).collect();
-        let col_names =
-            DuckDbEngine::remap_internal_user_column_names(&archived_col_names)?;
+        let archived_col_names: Vec<String> = doc
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        let col_names = DuckDbEngine::remap_internal_user_column_names(&archived_col_names)?;
         let col_types: Vec<String> = doc.columns.iter().map(|c| c.col_type.clone()).collect();
         db.conn().execute_batch("BEGIN TRANSACTION")?;
         let restore_result = (|| -> Result<(), AppError> {
@@ -1872,6 +1899,65 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
         )
+    }
+
+    #[test]
+    fn delta_history_archive_round_trips_row_and_column_replay() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-delta-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("History".into(), &path_string)
+            .unwrap();
+        let (row_change_set, column_change_set) = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("archive-history", "Archive History", 4, 2)
+                .unwrap();
+            let row = crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "archive-history",
+                &[2],
+                0,
+            )
+            .unwrap();
+            let column = db.get_user_column_descriptors("archive-history").unwrap()[0].clone();
+            let column = crate::services::table_delta_mutation::delete_columns_compact(
+                &db,
+                "archive-history",
+                &[column],
+                1,
+            )
+            .unwrap();
+            (row.change_set_id, column.change_set_id)
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": column_change_set}}),
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": row_change_set}}),
+        ];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let result = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        assert_eq!(result.history.len(), 2);
+        let db = reopened_state.db.lock().unwrap();
+        db.apply_change_set(&column_change_set, true).unwrap();
+        db.apply_change_set(&row_change_set, true).unwrap();
+        assert_eq!(db.get_dataset_meta("archive-history").unwrap().row_count, 4);
+        assert_eq!(db.get_user_columns("archive-history").unwrap().len(), 2);
+        db.apply_change_set(&row_change_set, false).unwrap();
+        db.apply_change_set(&column_change_set, false).unwrap();
+        assert_eq!(db.get_dataset_meta("archive-history").unwrap().row_count, 3);
+        assert_eq!(db.get_user_columns("archive-history").unwrap().len(), 1);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     fn seed_export_dataset(
@@ -3191,10 +3277,8 @@ mod tests {
         .expect("write legacy project");
 
         let state = AppState::new().expect("state");
-        let opened = ProjectService::new(&state).open_project(
-            project_path.to_str().expect("utf-8 project path"),
-            None,
-        );
+        let opened = ProjectService::new(&state)
+            .open_project(project_path.to_str().expect("utf-8 project path"), None);
         std::fs::remove_file(&project_path).expect("remove legacy project");
         opened.expect("open legacy project");
 
@@ -4076,6 +4160,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            delta_history: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -4300,6 +4385,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            delta_history: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -4513,6 +4599,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            delta_history: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());

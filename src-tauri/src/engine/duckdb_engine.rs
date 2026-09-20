@@ -38,8 +38,13 @@ use crate::models::table::{
     TableNavigationTimings, TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule,
     TableWindowRequest, TableWindowResult,
 };
-use crate::models::tabulate::{StatisticKind, TabulateSessionRequest, TabulateStatistic, TabulateSparseCell, TabulateWindowRequest, TabulateWindowResult};
-use crate::models::tabulate::{TabulateSparseTotal, TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult};
+use crate::models::tabulate::{
+    StatisticKind, TabulateSessionRequest, TabulateSparseCell, TabulateStatistic,
+    TabulateWindowRequest, TabulateWindowResult,
+};
+use crate::models::tabulate::{
+    TabulateSparseTotal, TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult,
+};
 use crate::services::archive_cell::archive_export_expression;
 use crate::services::calculated_column_expression::{
     compile_formula_sql, FormulaError, FormulaSqlColumn, TypedCalculatedExpression,
@@ -914,9 +919,7 @@ impl DuckDbEngine {
         )))?;
         let (anchor_count, checksum) =
             self.natural_anchor_manifest_values(dataset_id, generation, expected_row_count)?;
-        if manifest.0 != expected_row_count
-            || manifest.1 != anchor_count
-            || manifest.2 != checksum
+        if manifest.0 != expected_row_count || manifest.1 != anchor_count || manifest.2 != checksum
         {
             return Err(AppError::InvalidParam(format!(
                 "source anchor manifest is invalid for dataset {dataset_id} generation {generation}; controlled rebuild required"
@@ -959,10 +962,7 @@ impl DuckDbEngine {
         Ok((anchor_count, format!("{:x}", hasher.finalize())))
     }
 
-    pub fn ensure_internal_row_order_column(
-        &self,
-        dataset_id: &str,
-    ) -> Result<(), AppError> {
+    pub fn ensure_internal_row_order_column(&self, dataset_id: &str) -> Result<(), AppError> {
         let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         self.conn.execute(
             &format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS \"_row_order\" HUGEINT"),
@@ -1681,18 +1681,29 @@ impl DuckDbEngine {
         if request.session_id != session_id.to_string()
             || request.source_generation != definition.source_generation
             || request.statistic_labels.len() != definition.statistics.len()
-            || request.statistic_labels.iter().any(|label| label.trim().is_empty())
+            || request
+                .statistic_labels
+                .iter()
+                .any(|label| label.trim().is_empty())
         {
-            return Err(AppError::InvalidParam("tabulate_invalid_materialization".into()));
+            return Err(AppError::InvalidParam(
+                "tabulate_invalid_materialization".into(),
+            ));
         }
-        crate::services::spprj_archive::validate_portable_basename(&request.destination_name, "Dataset name")
-            .map_err(AppError::InvalidParam)?;
+        crate::services::spprj_archive::validate_portable_basename(
+            &request.destination_name,
+            "Dataset name",
+        )
+        .map_err(AppError::InvalidParam)?;
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let outcome = (|| {
             self.validate_tabulate_session(definition)?;
             self.validate_dataset_name(&request.destination_name, None)?;
             let (source_table, column_types) = self.validate_tabulate_fields(
-                &definition.dataset_id, &definition.row_fields, &definition.column_fields, &definition.statistics,
+                &definition.dataset_id,
+                &definition.row_fields,
+                &definition.column_fields,
+                &definition.statistics,
             )?;
             let (row_table, column_table) = Self::tabulate_member_table_names(session_id);
             let mut names = Vec::new();
@@ -1710,35 +1721,54 @@ impl DuckDbEngine {
             let mut projection = vec!["(members.ordinal + 1)::BIGINT AS \"_row_id\"".to_string()];
             for (index, field) in definition.row_fields.iter().enumerate() {
                 let name = unique_name(field.clone());
-                let types = HashMap::from([(format!("dimension_{index}"), column_types[field].clone())]);
-                let expression = dimension_select_expression(&format!("dimension_{index}"), &types)?;
+                let types =
+                    HashMap::from([(format!("dimension_{index}"), column_types[field].clone())]);
+                let expression =
+                    dimension_select_expression(&format!("dimension_{index}"), &types)?;
                 let label = tabulate_dimension_sql_label(&expression, &column_types[field]);
-                projection.push(format!("COALESCE({label}, ?) AS {}", Self::quote_identifier(&name)));
+                projection.push(format!(
+                    "COALESCE({label}, ?) AS {}",
+                    Self::quote_identifier(&name)
+                ));
                 parameters.push(Value::Text(request.missing_label.clone()));
                 names.push((name, "VARCHAR"));
             }
-            let member_types = definition.column_fields.iter().enumerate()
+            let member_types = definition
+                .column_fields
+                .iter()
+                .enumerate()
                 .map(|(index, field)| (format!("dimension_{index}"), column_types[field].clone()))
                 .collect::<HashMap<_, _>>();
             let member_projection = (0..definition.column_fields.len())
-                .map(|index| dimension_select_expression(&format!("dimension_{index}"), &member_types).map(|value| format!(", {value}")))
-                .collect::<Result<Vec<_>, _>>()?.join("");
-            let mut statement = self.conn.prepare(&format!("SELECT ordinal{member_projection} FROM {} ORDER BY ordinal", Self::quote_identifier(&column_table)))?;
+                .map(|index| {
+                    dimension_select_expression(&format!("dimension_{index}"), &member_types)
+                        .map(|value| format!(", {value}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join("");
+            let mut statement = self.conn.prepare(&format!(
+                "SELECT ordinal{member_projection} FROM {} ORDER BY ordinal",
+                Self::quote_identifier(&column_table)
+            ))?;
             let mut members = statement.query([])?;
             while let Some(member) = members.next()? {
                 let ordinal: u64 = member.get(0)?;
-                let labels = (0..definition.column_fields.len()).map(|index| {
-                    member
-                        .get::<_, Value>(index + 1)
-                        .map(json_dimension_value)
-                        .map(|value| tabulate_dimension_label(value, &request.missing_label))
-                }).collect::<Result<Vec<_>, _>>()?;
+                let labels = (0..definition.column_fields.len())
+                    .map(|index| {
+                        member
+                            .get::<_, Value>(index + 1)
+                            .map(json_dimension_value)
+                            .map(|value| tabulate_dimension_label(value, &request.missing_label))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 for (index, statistic) in definition.statistics.iter().enumerate() {
                     let mut parts = labels.clone();
                     parts.push(request.statistic_labels[index].clone());
                     parts.push(statistic.field.clone());
                     let name = unique_name(parts.join(" - "));
-                    let raw = format!("MAX(cells.stat_{index}) FILTER (WHERE cells.column_ordinal = {ordinal})");
+                    let raw = format!(
+                        "MAX(cells.stat_{index}) FILTER (WHERE cells.column_ordinal = {ordinal})"
+                    );
                     let value = if is_tabulate_percentage(&statistic.kind) {
                         let denominator = match statistic.kind {
                             StatisticKind::RowPercentage => format!("MAX(cells.row_total_{index})"),
@@ -1749,7 +1779,9 @@ impl DuckDbEngine {
                     } else if default_missing_value(&statistic.kind).is_some() {
                         format!("COALESCE({raw}, 0)::DOUBLE")
                     } else {
-                        format!("CASE WHEN isfinite({raw}::DOUBLE) THEN {raw}::DOUBLE ELSE NULL END")
+                        format!(
+                            "CASE WHEN isfinite({raw}::DOUBLE) THEN {raw}::DOUBLE ELSE NULL END"
+                        )
                     };
                     projection.push(format!("{value} AS {}", Self::quote_identifier(&name)));
                     names.push((name, "DOUBLE"));
@@ -1757,24 +1789,43 @@ impl DuckDbEngine {
             }
             drop(members);
             drop(statement);
-            let aggregates = definition.statistics.iter().enumerate().map(|(index, statistic)| {
-                aggregate_sql_for_field(statistic, &format!("source.{}", Self::quote_identifier(&statistic.field)))
+            let aggregates = definition
+                .statistics
+                .iter()
+                .enumerate()
+                .map(|(index, statistic)| {
+                    aggregate_sql_for_field(
+                        statistic,
+                        &format!("source.{}", Self::quote_identifier(&statistic.field)),
+                    )
                     .map(|value| format!("{value} AS stat_{index}"))
-            }).collect::<Result<Vec<_>, _>>()?.join(", ");
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ");
             let mut totals = Vec::new();
             for (index, statistic) in definition.statistics.iter().enumerate() {
                 if is_tabulate_percentage(&statistic.kind) {
-                    totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY row_ordinal) AS row_total_{index}"));
+                    totals.push(format!(
+                        "SUM(stat_{index}) OVER (PARTITION BY row_ordinal) AS row_total_{index}"
+                    ));
                     totals.push(format!("SUM(stat_{index}) OVER (PARTITION BY column_ordinal) AS column_total_{index}"));
                     totals.push(format!("SUM(stat_{index}) OVER () AS grand_total_{index}"));
                 }
             }
-            let totals = if totals.is_empty() { String::new() } else { format!(", {}", totals.join(", ")) };
+            let totals = if totals.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", totals.join(", "))
+            };
             let id = uuid::Uuid::new_v4().to_string();
             let output = Self::quote_identifier(&Self::internal_table_name(&id));
             let group_by = std::iter::once("members.ordinal".to_string())
-                .chain((0..definition.row_fields.len()).map(|index| format!("members.dimension_{index}")))
-                .collect::<Vec<_>>().join(", ");
+                .chain(
+                    (0..definition.row_fields.len())
+                        .map(|index| format!("members.dimension_{index}")),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
             let sql = format!(
                 "CREATE TABLE {output} AS WITH grouped AS (
                  SELECT row_members.ordinal AS row_ordinal, column_members.ordinal AS column_ordinal, {aggregates}
@@ -1831,8 +1882,7 @@ impl DuckDbEngine {
             let csv_column_names = csv_schema
                 .query_map(params![file_path], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
-            let storage_column_names =
-                Self::remap_internal_user_column_names(&csv_column_names)?;
+            let storage_column_names = Self::remap_internal_user_column_names(&csv_column_names)?;
             let csv_projection = csv_column_names
                 .iter()
                 .zip(storage_column_names.iter())
@@ -5201,8 +5251,7 @@ impl DuckDbEngine {
         let mut used = columns
             .iter()
             .filter(|name| {
-                !name.eq_ignore_ascii_case("_row_id")
-                    && !name.eq_ignore_ascii_case("_row_order")
+                !name.eq_ignore_ascii_case("_row_id") && !name.eq_ignore_ascii_case("_row_order")
             })
             .map(|name| name.to_ascii_lowercase())
             .collect::<HashSet<_>>();
@@ -8221,18 +8270,22 @@ impl DuckDbEngine {
             )
             .optional()?;
         if storage_kind.as_deref() == Some("row_delta") {
-            return crate::services::table_delta_mutation::apply_row_delta_change_set(
+            crate::services::table_delta_mutation::apply_row_delta_change_set(
                 self,
                 change_set_id,
                 undo,
-            );
+            )?;
+            self.refresh_delta_history_generations(change_set_id)?;
+            return Ok(());
         }
         if storage_kind.as_deref() == Some("column_delta") {
-            return crate::services::table_delta_mutation::apply_column_delta_change_set(
+            crate::services::table_delta_mutation::apply_column_delta_change_set(
                 self,
                 change_set_id,
                 undo,
-            );
+            )?;
+            self.refresh_delta_history_generations(change_set_id)?;
+            return Ok(());
         }
         let suffix = parsed_id.to_string().replace('-', "_");
         let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
@@ -8820,6 +8873,372 @@ impl DuckDbEngine {
         Ok(())
     }
 
+    fn refresh_delta_history_generations(&self, change_set_id: &str) -> Result<(), AppError> {
+        let dataset_id: String = self.conn.query_row(
+            "SELECT dataset_id FROM _history_delta_change_sets WHERE id = ?",
+            params![change_set_id],
+            |row| row.get(0),
+        )?;
+        let generation = self.get_dataset_generation(&dataset_id)?;
+        self.conn.execute(
+            "UPDATE _history_delta_change_sets
+             SET after_generation = ? WHERE dataset_id = ? AND applied = TRUE",
+            params![generation, &dataset_id],
+        )?;
+        self.conn.execute(
+            "UPDATE _history_delta_change_sets
+             SET before_generation = ? WHERE dataset_id = ? AND applied = FALSE",
+            params![generation, &dataset_id],
+        )?;
+        self.conn.execute(
+            "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?
+             AND storage_kind IN ('row_delta', 'column_delta')",
+            params![generation, &dataset_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn archive_delta_history(
+        &self,
+    ) -> Result<
+        (
+            crate::services::spprj_archive::DeltaHistoryArchive,
+            Vec<crate::services::spprj_archive::DeltaHistorySnapshotRef>,
+        ),
+        AppError,
+    > {
+        use crate::services::spprj_archive::{
+            DeltaHistoryArchive, DeltaHistoryChangeSet, DeltaHistoryColumn, DeltaHistoryRow,
+            DeltaHistorySnapshotRef,
+        };
+
+        let mut statement = self.conn.prepare(
+            "SELECT change_set.id, change_set.dataset_id, change_set.storage_kind,
+                    change_set.generation,
+                    delta.operation, delta.before_generation, delta.after_generation,
+                    delta.snapshot_table, delta.applied
+             FROM _history_change_sets AS change_set
+             JOIN _history_delta_change_sets AS delta ON delta.id = change_set.id
+             WHERE change_set.storage_kind IN ('row_delta', 'column_delta')
+             ORDER BY change_set.created_at, change_set.id",
+        )?;
+        let headers = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, u64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, bool>(8)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut change_sets = Vec::with_capacity(headers.len());
+        let mut snapshots = Vec::new();
+        for (
+            id,
+            dataset_id,
+            storage_kind,
+            generation,
+            operation,
+            before_generation,
+            after_generation,
+            snapshot_table,
+            applied,
+        ) in headers
+        {
+            let parsed = uuid::Uuid::parse_str(&id)
+                .map_err(|_| AppError::FileIO("Delta history contains an invalid UUID".into()))?;
+            let rows = self
+                .conn
+                .prepare(
+                    "SELECT ordinal, row_id, row_order FROM _history_row_deltas
+                     WHERE change_set_id = ? ORDER BY ordinal",
+                )?
+                .query_map(params![&id], |row| {
+                    Ok(DeltaHistoryRow {
+                        ordinal: row.get(0)?,
+                        row_id: row.get(1)?,
+                        row_order: row.get(2)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let columns = self
+                .conn
+                .prepare(
+                    "SELECT ordinal, column_id, col_index, col_name, col_type,
+                            calculated_definition_json
+                     FROM _history_column_deltas WHERE change_set_id = ? ORDER BY ordinal",
+                )?
+                .query_map(params![&id], |row| {
+                    Ok(DeltaHistoryColumn {
+                        ordinal: row.get(0)?,
+                        column_id: row.get(1)?,
+                        col_index: row.get(2)?,
+                        col_name: row.get(3)?,
+                        col_type: row.get(4)?,
+                        calculated_definition_json: row.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(table_name) = &snapshot_table {
+                Self::validate_delta_snapshot_name(&parsed, &storage_kind, &operation, table_name)?;
+                let schema = self.delta_snapshot_schema(table_name)?;
+                if schema.is_empty() {
+                    return Err(AppError::FileIO(format!(
+                        "Delta history snapshot is missing for {id}"
+                    )));
+                }
+                snapshots.push(DeltaHistorySnapshotRef {
+                    change_set_id: id.clone(),
+                    file: format!("history/snapshots/{}.parquet", parsed.hyphenated()),
+                    table_name: table_name.clone(),
+                    columns: schema,
+                });
+            }
+            change_sets.push(DeltaHistoryChangeSet {
+                id,
+                dataset_id,
+                storage_kind,
+                generation,
+                operation,
+                before_generation,
+                after_generation,
+                snapshot_table,
+                applied,
+                rows,
+                columns,
+            });
+        }
+        Ok((
+            DeltaHistoryArchive {
+                version: 1,
+                change_sets,
+            },
+            snapshots,
+        ))
+    }
+
+    fn validate_delta_snapshot_name(
+        id: &uuid::Uuid,
+        storage_kind: &str,
+        operation: &str,
+        table_name: &str,
+    ) -> Result<(), AppError> {
+        let prefix = match (storage_kind, operation) {
+            ("row_delta", "delete_rows") => "_history_rows_",
+            ("column_delta", "delete_columns") => "_history_columns_",
+            _ => {
+                return Err(AppError::FileIO(
+                    "Delta history operation must not reference a snapshot".into(),
+                ))
+            }
+        };
+        if table_name != format!("{prefix}{}", id.simple()) {
+            return Err(AppError::FileIO(
+                "Delta history snapshot identity does not match its change set".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn delta_snapshot_schema(
+        &self,
+        table_name: &str,
+    ) -> Result<Vec<crate::services::spprj_archive::DeltaHistorySnapshotColumn>, AppError> {
+        let mut statement = self.conn.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns
+             WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
+        )?;
+        statement
+            .query_map(params![table_name], |row| {
+                let duckdb_type: String = row.get(1)?;
+                Ok(crate::services::spprj_archive::DeltaHistorySnapshotColumn {
+                    name: row.get(0)?,
+                    duckdb_type: if duckdb_type == "HUGEINT" {
+                        "DECIMAL(38,0)".into()
+                    } else {
+                        duckdb_type
+                    },
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn export_delta_history_snapshot(
+        &self,
+        descriptor: &crate::services::spprj_archive::DeltaHistorySnapshotRef,
+        output_path: &str,
+    ) -> Result<(), AppError> {
+        let parsed = uuid::Uuid::parse_str(&descriptor.change_set_id)
+            .map_err(|_| AppError::FileIO("Invalid delta history change-set UUID".into()))?;
+        let (storage_kind, operation, snapshot_table): (String, String, Option<String>) = self
+            .conn
+            .query_row(
+                "SELECT change_set.storage_kind, delta.operation, delta.snapshot_table
+                     FROM _history_change_sets AS change_set
+                     JOIN _history_delta_change_sets AS delta ON delta.id = change_set.id
+                     WHERE change_set.id = ?",
+                params![&descriptor.change_set_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| AppError::FileIO("Unknown delta history change set".into()))?;
+        Self::validate_delta_snapshot_name(
+            &parsed,
+            &storage_kind,
+            &operation,
+            &descriptor.table_name,
+        )?;
+        if snapshot_table.as_deref() != Some(descriptor.table_name.as_str())
+            || self.delta_snapshot_schema(&descriptor.table_name)? != descriptor.columns
+        {
+            return Err(AppError::FileIO(
+                "Delta history snapshot schema changed during save".into(),
+            ));
+        }
+        let table = Self::quote_identifier(&descriptor.table_name);
+        let columns = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let name = Self::quote_identifier(&column.name);
+                format!("CAST({name} AS {}) AS {name}", column.duckdb_type)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!("COPY (SELECT {columns} FROM {table}) TO $1 (FORMAT PARQUET)"),
+            params![output_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn restore_delta_history(
+        &self,
+        archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+        snapshots: &[(
+            crate::services::spprj_archive::DeltaHistorySnapshotRef,
+            std::path::PathBuf,
+        )],
+    ) -> Result<(), AppError> {
+        if archive.version != 1 {
+            return Err(AppError::FileIO("Unsupported delta history version".into()));
+        }
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<(), AppError> {
+            for change_set in &archive.change_sets {
+                let parsed = uuid::Uuid::parse_str(&change_set.id)
+                    .map_err(|_| AppError::FileIO("Invalid delta history UUID".into()))?;
+                if let Some(table) = &change_set.snapshot_table {
+                    Self::validate_delta_snapshot_name(
+                        &parsed,
+                        &change_set.storage_kind,
+                        &change_set.operation,
+                        table,
+                    )?;
+                }
+                self.conn.execute(
+                    "INSERT INTO _history_change_sets
+                     (id, dataset_id, applied, generation, storage_kind)
+                     VALUES (?, ?, ?, ?, ?)",
+                    params![
+                        &change_set.id,
+                        &change_set.dataset_id,
+                        change_set.applied,
+                        change_set.generation,
+                        &change_set.storage_kind
+                    ],
+                )?;
+                self.conn.execute(
+                    "INSERT INTO _history_delta_change_sets
+                     (id, dataset_id, operation, before_generation, after_generation,
+                      snapshot_table, applied) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        &change_set.id,
+                        &change_set.dataset_id,
+                        &change_set.operation,
+                        change_set.before_generation,
+                        change_set.after_generation,
+                        &change_set.snapshot_table,
+                        change_set.applied
+                    ],
+                )?;
+                for row in &change_set.rows {
+                    self.conn.execute(
+                        "INSERT INTO _history_row_deltas
+                         (change_set_id, ordinal, row_id, row_order) VALUES (?, ?, ?, ?)",
+                        params![&change_set.id, row.ordinal, row.row_id, row.row_order],
+                    )?;
+                }
+                for column in &change_set.columns {
+                    self.conn.execute(
+                        "INSERT INTO _history_column_deltas
+                         (change_set_id, ordinal, column_id, col_index, col_name, col_type,
+                          calculated_definition_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        params![
+                            &change_set.id,
+                            column.ordinal,
+                            &column.column_id,
+                            column.col_index,
+                            &column.col_name,
+                            &column.col_type,
+                            &column.calculated_definition_json
+                        ],
+                    )?;
+                }
+            }
+            for (descriptor, path) in snapshots {
+                let table = Self::quote_identifier(&descriptor.table_name);
+                let path = path.to_str().ok_or_else(|| {
+                    AppError::FileIO("Delta history snapshot path is not valid UTF-8".into())
+                })?;
+                self.conn.execute(
+                    &format!("CREATE TABLE {table} AS SELECT * FROM read_parquet($1)"),
+                    params![path],
+                )?;
+                let actual_schema = self.delta_snapshot_schema(&descriptor.table_name)?;
+                if actual_schema != descriptor.columns {
+                    return Err(AppError::FileIO(format!(
+                        "Delta history snapshot schema mismatch for {}: expected {:?}, received {:?}",
+                        descriptor.change_set_id, descriptor.columns, actual_schema
+                    )));
+                }
+            }
+            let mut generations = std::collections::HashMap::<String, u64>::new();
+            for change_set in &archive.change_sets {
+                generations
+                    .entry(change_set.dataset_id.clone())
+                    .and_modify(|generation| *generation = (*generation).max(change_set.generation))
+                    .or_insert(change_set.generation);
+            }
+            for (dataset_id, generation) in generations {
+                self.conn.execute(
+                    "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
+                    params![generation, &dataset_id],
+                )?;
+                self.rebuild_natural_anchors(&dataset_id, generation)?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT").map_err(Into::into),
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(match error {
+                    AppError::FileIO(_) => error,
+                    other => AppError::FileIO(format!("Failed to restore delta history: {other}")),
+                })
+            }
+        }
+    }
+
     pub fn drop_change_set(&self, change_set_id: &str) -> Result<(), AppError> {
         let parsed_id = uuid::Uuid::parse_str(change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid change set ID".into()))?;
@@ -8829,12 +9248,57 @@ impl DuckDbEngine {
 
         self.conn.execute_batch("BEGIN TRANSACTION;")?;
         let result = (|| -> Result<(), AppError> {
+            let compact_snapshot: Option<Option<String>> = self
+                .conn
+                .query_row(
+                    "SELECT snapshot_table FROM _history_delta_change_sets WHERE id = ?",
+                    params![change_set_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(Some(snapshot_table)) = compact_snapshot {
+                let storage_kind: String = self.conn.query_row(
+                    "SELECT storage_kind FROM _history_change_sets WHERE id = ?",
+                    params![change_set_id],
+                    |row| row.get(0),
+                )?;
+                let operation: String = self.conn.query_row(
+                    "SELECT operation FROM _history_delta_change_sets WHERE id = ?",
+                    params![change_set_id],
+                    |row| row.get(0),
+                )?;
+                Self::validate_delta_snapshot_name(
+                    &parsed_id,
+                    &storage_kind,
+                    &operation,
+                    &snapshot_table,
+                )?;
+                self.conn.execute(
+                    &format!(
+                        "DROP TABLE IF EXISTS {}",
+                        Self::quote_identifier(&snapshot_table)
+                    ),
+                    [],
+                )?;
+            }
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {before_table}"), [])?;
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {after_table}"), [])?;
             self.conn.execute(
                 "DELETE FROM _history_change_set_columns WHERE change_set_id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_row_deltas WHERE change_set_id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_column_deltas WHERE change_set_id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_delta_change_sets WHERE id = ?",
                 params![change_set_id],
             )?;
             self.conn.execute(
@@ -11962,17 +12426,34 @@ mod tests {
 
     #[test]
     fn tabulate_dimension_labels_match_javascript_scalar_strings() {
-        assert_eq!(tabulate_dimension_label(serde_json::json!(1.0), "Missing"), "1");
-        assert_eq!(tabulate_dimension_label(serde_json::json!(1.25), "Missing"), "1.25");
-        assert_eq!(tabulate_dimension_label(serde_json::json!(-0.0), "Missing"), "0");
-        assert_eq!(tabulate_dimension_label(serde_json::json!(1e-7), "Missing"), "1e-7");
-        assert_eq!(tabulate_dimension_label(serde_json::Value::Null, "Missing"), "Missing");
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(1.0), "Missing"),
+            "1"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(1.25), "Missing"),
+            "1.25"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(-0.0), "Missing"),
+            "0"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::json!(1e-7), "Missing"),
+            "1e-7"
+        );
+        assert_eq!(
+            tabulate_dimension_label(serde_json::Value::Null, "Missing"),
+            "Missing"
+        );
 
         let engine = DuckDbEngine::new_in_memory().expect("engine");
         let expression = tabulate_dimension_sql_label("value", "DOUBLE");
         let mut statement = engine
             .conn()
-            .prepare(&format!("SELECT {expression} FROM (VALUES (1.0), (-0.0), (1e-7)) AS source(value)"))
+            .prepare(&format!(
+                "SELECT {expression} FROM (VALUES (1.0), (-0.0), (1e-7)) AS source(value)"
+            ))
             .expect("prepare labels");
         let labels = statement
             .query_map([], |row| row.get::<_, String>(0))
@@ -11988,8 +12469,11 @@ mod tests {
         engine.conn().execute_batch("CREATE TABLE secondary_probe(value BIGINT); INSERT INTO secondary_probe VALUES (42);")
             .expect("seed primary connection");
 
-        let secondary = engine.open_secondary_connection().expect("secondary connection");
-        let value: i64 = secondary.query_row("SELECT value FROM secondary_probe", [], |row| row.get(0))
+        let secondary = engine
+            .open_secondary_connection()
+            .expect("secondary connection");
+        let value: i64 = secondary
+            .query_row("SELECT value FROM secondary_probe", [], |row| row.get(0))
             .expect("read through secondary connection");
 
         assert_eq!(value, 42);
@@ -12450,28 +12934,40 @@ mod tests {
     #[test]
     fn row_order_legacy_rows_keep_row_id_order_without_materializing_override() {
         let db = DuckDbEngine::new_in_memory().expect("db");
-        db.seed_benchmark_table("order-legacy", "Legacy", 5, 1).expect("seed");
-        db.ensure_internal_row_order_column("order-legacy").expect("migration");
+        db.seed_benchmark_table("order-legacy", "Legacy", 5, 1)
+            .expect("seed");
+        db.ensure_internal_row_order_column("order-legacy")
+            .expect("migration");
 
-        let populated: i64 = db.conn().query_row(
-            "SELECT COUNT(*) FROM dataset_order_legacy WHERE \"_row_order\" IS NOT NULL",
-            [],
-            |row| row.get(0),
-        ).expect("count");
+        let populated: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM dataset_order_legacy WHERE \"_row_order\" IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
         assert_eq!(populated, 0);
-        assert_eq!(db.natural_row_ids_for_test("order-legacy"), vec![1, 2, 3, 4, 5]);
+        assert_eq!(
+            db.natural_row_ids_for_test("order-legacy"),
+            vec![1, 2, 3, 4, 5]
+        );
     }
 
     #[test]
     fn row_order_explicit_override_sorts_before_target_with_row_id_tiebreaker() {
         let db = DuckDbEngine::new_in_memory().expect("db");
-        db.seed_benchmark_table("order-override", "Override", 5, 1).expect("seed");
-        db.ensure_internal_row_order_column("order-override").expect("migration");
+        db.seed_benchmark_table("order-override", "Override", 5, 1)
+            .expect("seed");
+        db.ensure_internal_row_order_column("order-override")
+            .expect("migration");
         let between_two_and_three = 2 * NATURAL_ORDER_STRIDE + NATURAL_ORDER_STRIDE / 2;
-        db.conn().execute(
-            "UPDATE dataset_order_override SET \"_row_order\" = ? WHERE \"_row_id\" = 5",
-            params![between_two_and_three],
-        ).expect("set override");
+        db.conn()
+            .execute(
+                "UPDATE dataset_order_override SET \"_row_order\" = ? WHERE \"_row_id\" = 5",
+                params![between_two_and_three],
+            )
+            .expect("set override");
 
         assert_eq!(
             db.natural_row_ids_for_test("order-override"),
@@ -12489,8 +12985,7 @@ mod tests {
             .lines()
             .enumerate()
             .filter(|(_, line)| {
-                line.contains("ORDER BY \\\"_row_id\\\"")
-                    || line.contains("ORDER BY _row_id")
+                line.contains("ORDER BY \\\"_row_id\\\"") || line.contains("ORDER BY _row_id")
             })
             .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
             .collect::<Vec<_>>();
@@ -17104,10 +17599,7 @@ mod tests {
             };
             let result = DuckDbEngine::query_natural_navigation_window(db.conn(), &request)
                 .expect("natural csv navigation");
-            assert_eq!(
-                &result.columns[1..],
-                expected_names.as_slice(),
-            );
+            assert_eq!(&result.columns[1..], expected_names.as_slice(),);
             assert_eq!(result.rows.len(), 2);
             assert_eq!(result.rows[0][0], serde_json::json!(1));
             assert_eq!(&result.rows[0][1..], first_values.as_slice());
@@ -18850,6 +19342,117 @@ mod tests {
     }
 
     #[test]
+    fn drop_compact_change_set_removes_only_referenced_snapshot_and_metadata() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        let removed_id = "00000000-0000-4000-8000-000000000001";
+        let retained_id = "00000000-0000-4000-8000-000000000002";
+        let removed_snapshot = "_history_rows_00000000000040008000000000000001";
+        let retained_snapshot = "_history_rows_00000000000040008000000000000002";
+
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TABLE {removed_snapshot} (_row_id BIGINT, _row_order HUGEINT, value BIGINT);
+                 CREATE TABLE {retained_snapshot} (_row_id BIGINT, _row_order HUGEINT, value BIGINT);"
+            ))
+            .unwrap();
+        for (id, snapshot) in [
+            (removed_id, removed_snapshot),
+            (retained_id, retained_snapshot),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_change_sets
+                     (id, dataset_id, applied, generation, storage_kind)
+                     VALUES (?, 'dataset-id', true, 1, 'row_delta')",
+                    params![id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_delta_change_sets
+                     (id, dataset_id, operation, before_generation, after_generation,
+                      snapshot_table, applied)
+                     VALUES (?, 'dataset-id', 'delete_rows', 0, 1, ?, true)",
+                    params![id, snapshot],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_row_deltas
+                     (change_set_id, ordinal, row_id, row_order) VALUES (?, 0, 1, 10)",
+                    params![id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_column_deltas
+                     (change_set_id, ordinal, column_id, col_index, col_name, col_type)
+                     VALUES (?, 0, ?, 0, 'value', 'BIGINT')",
+                    params![id, uuid::Uuid::new_v4().to_string()],
+                )
+                .unwrap();
+        }
+
+        db.drop_change_set(removed_id).unwrap();
+
+        for table in [
+            "_history_change_sets",
+            "_history_delta_change_sets",
+            "_history_row_deltas",
+            "_history_column_deltas",
+        ] {
+            let removed: i64 = db
+                .conn()
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table} WHERE {}",
+                        if table == "_history_change_sets" || table == "_history_delta_change_sets"
+                        {
+                            "id = ?"
+                        } else {
+                            "change_set_id = ?"
+                        }
+                    ),
+                    params![removed_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let retained: i64 = db
+                .conn()
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table} WHERE {}",
+                        if table == "_history_change_sets" || table == "_history_delta_change_sets"
+                        {
+                            "id = ?"
+                        } else {
+                            "change_set_id = ?"
+                        }
+                    ),
+                    params![retained_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(removed, 0, "{table} retained discarded metadata");
+            assert_eq!(retained, 1, "{table} removed unrelated metadata");
+        }
+        let snapshots: Vec<String> = db
+            .conn()
+            .prepare(
+                "SELECT table_name FROM information_schema.tables
+                 WHERE table_name IN (?, ?) ORDER BY table_name",
+            )
+            .unwrap()
+            .query_map(params![removed_snapshot, retained_snapshot], |row| {
+                row.get(0)
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(snapshots, vec![retained_snapshot.to_string()]);
+    }
+
+    #[test]
     fn history_paste_rejects_unsafe_types_and_quotes_header_identifiers() {
         let db = DuckDbEngine::new_in_memory().unwrap();
         db.create_empty_table("safe-paste-id", "Safe Paste", &[], &[])
@@ -20292,59 +20895,97 @@ mod tests {
         let mut definition = definition.clone();
         definition.source_generation = engine.get_dataset_generation(&definition.dataset_id)?;
         let session = uuid::Uuid::new_v4();
-        let info = engine.prepare_tabulate_member_indexes(&definition, &session, 256 * 1024 * 1024)?;
+        let info =
+            engine.prepare_tabulate_member_indexes(&definition, &session, 256 * 1024 * 1024)?;
         assert!(info.row_member_count <= 128);
         assert!(info.column_member_count <= 64);
         assert!(info.logical_cell_count <= 16_384);
         let outcome = (|| {
             let cancelled = std::sync::atomic::AtomicBool::new(false);
             let window = engine.query_tabulate_window(
-                &definition, &session,
+                &definition,
+                &session,
                 &TabulateWindowRequest {
-                    request_id: "oracle-window".into(), session_id: session.to_string(),
+                    request_id: "oracle-window".into(),
+                    session_id: session.to_string(),
                     source_generation: definition.source_generation,
-                    row_start: 0, row_count: info.row_member_count.max(1) as u32,
-                    column_start: 0, column_count: info.column_member_count.max(1) as u32,
+                    row_start: 0,
+                    row_count: info.row_member_count.max(1) as u32,
+                    column_start: 0,
+                    column_count: info.column_member_count.max(1) as u32,
                 },
-                &info, "oracle", &cancelled,
+                &info,
+                "oracle",
+                &cancelled,
             )?;
             let statistic_count = definition.statistics.len();
             let mut cells = (0..info.logical_cell_count as usize)
-                .map(|index| default_missing_value(&definition.statistics[index % statistic_count].kind))
+                .map(|index| {
+                    default_missing_value(&definition.statistics[index % statistic_count].kind)
+                })
                 .collect::<Vec<_>>();
             for cell in &window.cells {
                 let index = ((cell.row_index as usize * window.column_members.len())
-                    + cell.column_index as usize) * statistic_count + cell.statistic_index as usize;
+                    + cell.column_index as usize)
+                    * statistic_count
+                    + cell.statistic_index as usize;
                 cells[index] = cell.value;
             }
-            let totals = |kind| engine.query_tabulate_totals(
-                &definition, &session,
-                &TabulateTotalsRequest {
-                    request_id: "oracle-totals".into(), session_id: session.to_string(),
-                    source_generation: definition.source_generation, totals: kind,
-                },
-                &info, "oracle", &cancelled,
-            );
+            let totals = |kind| {
+                engine.query_tabulate_totals(
+                    &definition,
+                    &session,
+                    &TabulateTotalsRequest {
+                        request_id: "oracle-totals".into(),
+                        session_id: session.to_string(),
+                        source_generation: definition.source_generation,
+                        totals: kind,
+                    },
+                    &info,
+                    "oracle",
+                    &cancelled,
+                )
+            };
             let mut row_totals = Vec::new();
             if definition.include_row_totals && info.row_member_count > 0 {
                 row_totals.resize(window.row_members.len() * statistic_count, None);
-                for total in totals(TabulateTotalsKind::Rows { start: 0, count: info.row_member_count as u32 })?.row_totals {
-                    row_totals[total.member_index as usize * statistic_count + total.statistic_index as usize] = total.value;
+                for total in totals(TabulateTotalsKind::Rows {
+                    start: 0,
+                    count: info.row_member_count as u32,
+                })?
+                .row_totals
+                {
+                    row_totals[total.member_index as usize * statistic_count
+                        + total.statistic_index as usize] = total.value;
                 }
             }
             let mut column_totals = Vec::new();
             if definition.include_column_totals && info.column_member_count > 0 {
                 column_totals.resize(window.column_members.len() * statistic_count, None);
-                for total in totals(TabulateTotalsKind::Columns { start: 0, count: info.column_member_count as u32 })?.column_totals {
-                    column_totals[total.member_index as usize * statistic_count + total.statistic_index as usize] = total.value;
+                for total in totals(TabulateTotalsKind::Columns {
+                    start: 0,
+                    count: info.column_member_count as u32,
+                })?
+                .column_totals
+                {
+                    column_totals[total.member_index as usize * statistic_count
+                        + total.statistic_index as usize] = total.value;
                 }
             }
-            let grand_totals = if definition.include_row_totals || definition.include_column_totals {
+            let grand_totals = if definition.include_row_totals || definition.include_column_totals
+            {
                 totals(TabulateTotalsKind::Grand)?.grand_totals
-            } else { Vec::new() };
+            } else {
+                Vec::new()
+            };
             Ok(BoundedTabulateOracle {
-                row_members: window.row_members, column_members: window.column_members,
-                statistics: window.statistics, cells, row_totals, column_totals, grand_totals,
+                row_members: window.row_members,
+                column_members: window.column_members,
+                statistics: window.statistics,
+                cells,
+                row_totals,
+                column_totals,
+                grand_totals,
                 cell_count: info.logical_cell_count,
             })
         })();
@@ -20380,7 +21021,11 @@ mod tests {
             [((row * result.column_members.len()) + column) * statistic_count + statistic_index]
     }
 
-    fn row_total_value(result: &BoundedTabulateOracle, row: usize, statistic_id: &str) -> Option<f64> {
+    fn row_total_value(
+        result: &BoundedTabulateOracle,
+        row: usize,
+        statistic_id: &str,
+    ) -> Option<f64> {
         let statistic_index = statistic_index(result, statistic_id);
         let statistic_count = result.statistics.len();
         result.row_totals[row * statistic_count + statistic_index]
@@ -20974,8 +21619,8 @@ mod tests {
             vec![make_statistic("count-sales", "sales", StatisticKind::Count)],
         );
 
-        let error = bounded_tabulate_oracle(&engine, &request)
-            .expect_err("unknown field must fail");
+        let error =
+            bounded_tabulate_oracle(&engine, &request).expect_err("unknown field must fail");
 
         assert!(
             matches!(error, AppError::InvalidParam(message) if message.contains("unknown_field"))
@@ -20991,8 +21636,8 @@ mod tests {
             vec![make_statistic("mean-region", "region", StatisticKind::Mean)],
         );
 
-        let error = bounded_tabulate_oracle(&engine, &request)
-            .expect_err("non-numeric field must fail");
+        let error =
+            bounded_tabulate_oracle(&engine, &request).expect_err("non-numeric field must fail");
 
         assert!(
             matches!(error, AppError::InvalidParam(message) if message.contains("region") && message.contains("numeric"))
