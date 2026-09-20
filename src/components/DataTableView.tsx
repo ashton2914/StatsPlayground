@@ -1388,6 +1388,12 @@ export function DataTableView({
 
   useLayoutEffect(() => {
     return () => {
+      currentDatasetIdRef.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    return () => {
       void tableNavigationSchedulerRef.current?.invalidate({ datasetId, generation: datasetGeneration });
       tableQuerySessionPollSeqRef.current += 1;
       clearPendingPrefetches();
@@ -1395,7 +1401,6 @@ export function DataTableView({
       const activeSessionId = tableQuerySessionRef.current.sessionId;
       resetTableQuerySession();
       void releaseTableQuerySession(activeSessionId);
-      currentDatasetIdRef.current = null;
     };
   }, [cancelActiveTransportMeasurement, clearPendingPrefetches, datasetGeneration, datasetId, releaseTableQuerySession, resetTableQuerySession]);
 
