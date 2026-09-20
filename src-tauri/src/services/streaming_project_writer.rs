@@ -389,7 +389,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 .map_err(|e| AppError::Database(e.to_string()))?;
             db.archive_unified_history()?
         };
-        if !history_timeline.entries.is_empty() {
+        if !history_timeline.datasets.is_empty() {
             bundle.manifest.history_timeline = Some(
                 crate::services::table_history_archive::HistoryTimelineRef {
                     timeline_file: "history/timeline.v2.json".into(),
@@ -899,7 +899,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             serde_json::to_writer(&mut zip, &snapshot.request.history)
                 .map_err(|e| AppError::FileIO(format!("failed to serialize history: {e}")))?;
         }
-        if !history_timeline.entries.is_empty() {
+        if !history_timeline.datasets.is_empty() {
             zip.start_file("history/timeline.v2.json", file_opts)
                 .map_err(|error| AppError::FileIO(error.to_string()))?;
             serde_json::to_writer(&mut zip, history_timeline).map_err(|error| {

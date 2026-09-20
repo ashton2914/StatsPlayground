@@ -679,6 +679,11 @@ impl DuckDbEngine {
                 UNIQUE (dataset_id, history_ordinal)
             );
 
+            CREATE TABLE IF NOT EXISTS _history_dataset_state (
+                dataset_id TEXT PRIMARY KEY,
+                next_history_ordinal BIGINT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS _table_navigation_anchors (
                 dataset_id TEXT NOT NULL,
                 generation BIGINT NOT NULL,
@@ -9185,22 +9190,29 @@ impl DuckDbEngine {
             });
         }
         let mut datasets = Vec::new();
-        for group in entries
-            .iter()
-            .map(|entry| entry.dataset_id.as_str())
-            .collect::<BTreeSet<_>>()
-        {
+        let history_states = self
+            .conn
+            .prepare(
+                "SELECT dataset_id, next_history_ordinal
+                 FROM _history_dataset_state ORDER BY dataset_id",
+            )?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (group, next_history_ordinal) in history_states {
             let dataset_entries = entries
                 .iter()
                 .filter(|entry| entry.dataset_id == group)
                 .collect::<Vec<_>>();
+            let current_generation = if let Some(entry) = dataset_entries.first() {
+                entry.current_generation
+            } else {
+                self.get_dataset_generation(&group)?
+            };
             datasets.push(HistoryDatasetCursor {
-                dataset_id: group.to_string(),
+                dataset_id: group,
                 applied_count: dataset_entries.iter().filter(|entry| entry.applied).count() as u64,
-                current_generation: dataset_entries
-                    .first()
-                    .map(|entry| entry.current_generation)
-                    .unwrap_or_default(),
+                current_generation,
+                next_history_ordinal,
             });
         }
         let archive = HistoryTimelineArchive {
@@ -10132,6 +10144,13 @@ impl DuckDbEngine {
                     ],
                 )?;
             }
+            for cursor in &archive.datasets {
+                self.conn.execute(
+                    "INSERT INTO _history_dataset_state
+                     (dataset_id, next_history_ordinal) VALUES (?, ?)",
+                    params![&cursor.dataset_id, cursor.next_history_ordinal],
+                )?;
+            }
             Ok(())
         })();
         match result {
@@ -10181,6 +10200,9 @@ impl DuckDbEngine {
                 .filter(|entry| entry.dataset_id == cursor.dataset_id)
                 .collect::<Vec<_>>();
             entries.sort_by_key(|entry| entry.history_ordinal);
+            if entries.is_empty() {
+                continue;
+            }
             let cursor_schema = if cursor.applied_count == 0 {
                 entries.first().map(|entry| &entry.before_schema)
             } else {
@@ -20629,6 +20651,126 @@ mod tests {
         assert!(!replayed[0].6 && !replayed[1].6);
         assert_eq!((&replayed[0].7, &replayed[0].8), (&created[0].7, &created[0].8));
         assert_eq!((&replayed[1].7, &replayed[1].8), (&created[1].7, &created[1].8));
+    }
+
+    #[test]
+    fn unified_history_timeline_never_reuses_dropped_suffix_ordinal_after_restore() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("ordinal-high-water", "Ordinal high water", 2, 1)
+            .unwrap();
+        let first = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-high-water",
+            1,
+            None,
+            0,
+        )
+        .unwrap();
+        let second = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-high-water",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        db.apply_change_set(&second.change_set_id, true).unwrap();
+        db.drop_change_set(&second.change_set_id).unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .seed_benchmark_table("ordinal-high-water", "Ordinal high water", 2, 1)
+            .unwrap();
+        restored
+            .conn()
+            .execute(
+                "UPDATE _meta_columns SET column_id = ?
+                 WHERE dataset_id = ? AND col_index = 0",
+                params![
+                    &archive.entries[0].after_schema[0].column_id,
+                    "ordinal-high-water"
+                ],
+            )
+            .unwrap();
+        restored
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = 3 WHERE id = ?",
+                params!["ordinal-high-water"],
+            )
+            .unwrap();
+        restored
+            .rebuild_natural_anchors("ordinal-high-water", 3)
+            .unwrap();
+        restored.restore_unified_history(&archive, &[]).unwrap();
+
+        let third = crate::services::table_delta_mutation::add_rows_compact(
+            &restored,
+            "ordinal-high-water",
+            1,
+            None,
+            3,
+        )
+        .unwrap();
+        let ordinals = restored
+            .conn()
+            .prepare(
+                "SELECT history_ordinal FROM _history_timeline
+                 WHERE dataset_id = ? ORDER BY history_ordinal",
+            )
+            .unwrap()
+            .query_map(params!["ordinal-high-water"], |row| row.get::<_, u64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(ordinals, vec![0, 2]);
+        assert_ne!(third.change_set_id, first.change_set_id);
+        restored
+            .archive_unified_history()
+            .expect("gapped retained ordinals must remain archivable");
+    }
+
+    #[test]
+    fn unified_history_timeline_accepts_max_history_prefix_pruning_before_next_mutation() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("ordinal-prefix", "Ordinal prefix", 2, 1)
+            .unwrap();
+        let first = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-prefix",
+            1,
+            None,
+            0,
+        )
+        .unwrap();
+        crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-prefix",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        db.drop_change_set(&first.change_set_id).unwrap();
+        crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "ordinal-prefix",
+            1,
+            None,
+            2,
+        )
+        .unwrap();
+
+        let archive = db.archive_unified_history().unwrap();
+        assert_eq!(
+            archive
+                .entries
+                .iter()
+                .map(|entry| entry.history_ordinal)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(archive.datasets[0].next_history_ordinal, 3);
     }
 
     fn detached_add_rows_archive(

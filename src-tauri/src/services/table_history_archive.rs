@@ -36,6 +36,7 @@ pub struct HistoryDatasetCursor {
     pub dataset_id: String,
     pub applied_count: u64,
     pub current_generation: u64,
+    pub next_history_ordinal: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -129,11 +130,24 @@ pub(crate) fn record_history_timeline(
     before_schema_json: &str,
     after_schema_json: &str,
 ) -> Result<(), AppError> {
+    engine.conn().execute(
+        "INSERT INTO _history_dataset_state (dataset_id, next_history_ordinal)
+         SELECT ?, 0 WHERE NOT EXISTS (
+             SELECT 1 FROM _history_dataset_state WHERE dataset_id = ?
+         )",
+        params![dataset_id, dataset_id],
+    )?;
     let history_ordinal: u64 = engine.conn().query_row(
-        "SELECT COALESCE(MAX(history_ordinal) + 1, 0)
-         FROM _history_timeline WHERE dataset_id = ?",
+        "SELECT next_history_ordinal FROM _history_dataset_state WHERE dataset_id = ?",
         params![dataset_id],
         |row| row.get(0),
+    )?;
+    let next_history_ordinal = history_ordinal
+        .checked_add(1)
+        .ok_or_else(|| AppError::Database("history ordinal is exhausted".into()))?;
+    engine.conn().execute(
+        "UPDATE _history_dataset_state SET next_history_ordinal = ? WHERE dataset_id = ?",
+        params![next_history_ordinal, dataset_id],
     )?;
     engine.conn().execute(
         "UPDATE _history_timeline SET current_generation = ? WHERE dataset_id = ?",
@@ -322,35 +336,39 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
             .or_default()
             .push(entry);
     }
-    if entries_by_dataset.len() != cursors.len()
-        || cursors
-            .keys()
-            .any(|dataset_id| !entries_by_dataset.contains_key(dataset_id))
+    if entries_by_dataset
+        .keys()
+        .any(|dataset_id| !cursors.contains_key(dataset_id))
     {
         return Err(AppError::FileIO(
             "History dataset cursors do not match timeline entries".into(),
         ));
     }
+    for cursor in archive
+        .datasets
+        .iter()
+        .filter(|cursor| !entries_by_dataset.contains_key(cursor.dataset_id.as_str()))
+    {
+        if cursor.applied_count != 0 || cursor.next_history_ordinal == 0 {
+            return Err(AppError::FileIO(
+                "Empty history cursor has invalid retained state".into(),
+            ));
+        }
+    }
     for (dataset_id, mut entries) in entries_by_dataset {
         entries.sort_by_key(|entry| entry.history_ordinal);
-        let first_ordinal = entries
-            .first()
-            .map(|entry| entry.history_ordinal)
-            .ok_or_else(|| AppError::FileIO("History dataset has no entries".into()))?;
         let cursor = cursors
             .get(dataset_id)
             .ok_or_else(|| AppError::FileIO("Missing history dataset cursor".into()))?;
+        let mut previous_ordinal = None;
         let mut saw_unapplied = false;
         for (ordinal, entry) in entries.iter().enumerate() {
-            if entry.history_ordinal
-                != first_ordinal
-                    .checked_add(ordinal as u64)
-                    .ok_or_else(|| AppError::FileIO("History ordinal overflow".into()))?
-            {
+            if previous_ordinal.is_some_and(|previous| entry.history_ordinal <= previous) {
                 return Err(AppError::FileIO(
-                    "History ordinals must be unique and contiguous".into(),
+                    "History ordinals must be strictly increasing and unique".into(),
                 ));
             }
+            previous_ordinal = Some(entry.history_ordinal);
             if entry.current_generation != cursor.current_generation {
                 return Err(AppError::FileIO("History replay fences disagree".into()));
             }
@@ -378,6 +396,14 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
         {
             return Err(AppError::FileIO(
                 "History cursor does not match applied state".into(),
+            ));
+        }
+        if entries
+            .last()
+            .is_some_and(|entry| cursor.next_history_ordinal <= entry.history_ordinal)
+        {
+            return Err(AppError::FileIO(
+                "History ordinal high-water does not exceed retained ordinals".into(),
             ));
         }
     }
@@ -685,6 +711,7 @@ mod tests {
                 dataset_id: dataset_id.into(),
                 applied_count: 2,
                 current_generation: 2,
+                next_history_ordinal: 2,
             }],
             entries: vec![
                 HistoryTimelineEntry {
@@ -739,15 +766,17 @@ mod tests {
         let mut truncated_prefix = valid_archive();
         truncated_prefix.entries[0].history_ordinal = 5;
         truncated_prefix.entries[1].history_ordinal = 6;
+        truncated_prefix.datasets[0].next_history_ordinal = 7;
         validate_history_timeline(&truncated_prefix).unwrap();
 
         assert_corrupt(valid_archive(), |archive| {
             archive.entries[1].history_ordinal = 0;
         });
-        assert_corrupt(valid_archive(), |archive| {
-            archive.entries[0].history_ordinal = 5;
-            archive.entries[1].history_ordinal = 7;
-        });
+        let mut pruned_middle = valid_archive();
+        pruned_middle.entries[0].history_ordinal = 5;
+        pruned_middle.entries[1].history_ordinal = 7;
+        pruned_middle.datasets[0].next_history_ordinal = 8;
+        validate_history_timeline(&pruned_middle).unwrap();
         assert_corrupt(valid_archive(), |archive| {
             archive.datasets[0].applied_count = 1;
         });
