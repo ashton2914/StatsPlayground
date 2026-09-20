@@ -987,10 +987,6 @@ export function DataTableView({
   const tableSort = useTableNavigationSortStore((state) => state.byDataset[datasetId] ?? null);
   const replaceDatasetFilters = useDatasetFilterStore((state) => state.replaceFilters);
   const replaceDatasetSort = useTableNavigationSortStore((state) => state.replaceSort);
-  const getTableCategoricalValues = useCallback(async (field: string, search: string) => {
-    const generation = await dataService.getDatasetGeneration(datasetId);
-    return dataService.queryTableFilterValues(datasetId, field, search, 500, generation);
-  }, [datasetId]);
   const persistedTableFilterWidth = useLayoutPreferencesStore((state) => state.sizes[TABLE_FILTER_PANEL_ID]);
   const persistedColsPanelWidth = useLayoutPreferencesStore((state) => state.sizes[TABLE_COLUMNS_PANEL_ID]);
   const setPanelSizePreference = useLayoutPreferencesStore((state) => state.setPanelSize);
@@ -1025,6 +1021,10 @@ export function DataTableView({
   const datasetColCount = activeDatasetMeta?.colCount ?? 0;
   const datasetGeneration = activeDatasetMeta?.generation ?? 0;
   const datasetUpdatedAt = activeDatasetMeta?.updatedAt ?? "";
+  const getTableCategoricalValues = useCallback(async (field: string, search: string) => {
+    const generation = await dataService.getDatasetGeneration(datasetId);
+    return dataService.queryTableFilterValues(datasetId, field, search, 500, generation);
+  }, [datasetGeneration, datasetId]);
   const datasetRevision = useMemo<DatasetRevision>(() => ({
     datasetId,
     generation: datasetGeneration,
@@ -1094,7 +1094,8 @@ export function DataTableView({
   const tableNavigationSchedulerRef = useRef<TableNavigationScheduler<ScheduledTableNavigationRequest, FrontendMeasuredTableNavigationResult> | null>(null);
   const navigationReloadRef = useRef<() => void>(() => {});
   const loadedFilterKeyRef = useRef(buildTableQuerySignature([], null));
-  const skipFilterReloadRef = useRef(false);
+  const loadedFilterGenerationRef = useRef<number | null>(null);
+  const inFlightLoadClaimsRef = useRef<Map<string, number>>(new Map());
   const pendingPrefetchPaintFramesRef = useRef<PendingAfterPaintState>({
     token: 0,
     handle: null,
@@ -1390,6 +1391,7 @@ export function DataTableView({
   }, [buildWindowRequest, clearPendingPrefetches, datasetId, scheduleNextPrefetch]);
 
   useLayoutEffect(() => {
+    currentDatasetIdRef.current = datasetId;
     return () => {
       currentDatasetIdRef.current = null;
     };
@@ -1455,7 +1457,22 @@ export function DataTableView({
     );
     generationDatasetIdRef.current = requestedDatasetId;
     generationRef.current = requestedGeneration;
+    const serializedFilters = serializeTableWindowFilters(filters);
+    const currentSort = tableSortRef.current;
+    const nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
+    const inFlightLoadKey = JSON.stringify([
+      requestedDatasetId,
+      requestedGeneration,
+      nextQueryKey,
+      start,
+    ]);
+    const existingClaim = inFlightLoadClaimsRef.current.get(inFlightLoadKey);
+    if (
+      existingClaim !== undefined
+      && requestEpochRef.current!.isCurrent(existingClaim)
+    ) return;
     const epoch = requestEpochRef.current!.advance();
+    inFlightLoadClaimsRef.current.set(inFlightLoadKey, epoch);
     setLoadedDataLoadToken(null);
     setLoadedDisplayPropsLoadToken(null);
     windowCacheRef.current!.clear();
@@ -1463,12 +1480,8 @@ export function DataTableView({
     updateTableCacheDiagnostics({ cacheHit: null, ...EMPTY_TABLE_TRANSPORT_METRICS });
     pendingWindowsRef.current.clear();
     clearPendingPrefetches();
-    const serializedFilters = serializeTableWindowFilters(filters);
-    const currentSort = tableSortRef.current;
     const requiresPreparedSession = serializedFilters.length > 0 || currentSort !== null;
     const previousQueryKey = loadedFilterKeyRef.current;
-    const nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
-    loadedFilterKeyRef.current = nextQueryKey;
     const provisionalTotalRows = nextQueryKey === previousQueryKey && requiresPreparedSession
       ? (tableQuerySessionRef.current.totalRows ?? datasetRowCount)
       : datasetRowCount;
@@ -1500,7 +1513,7 @@ export function DataTableView({
           count: TABLE_WINDOW_SIZE,
           sort: currentSort,
           filters: serializedFilters,
-          generation: generationRef.current,
+          generation: requestedGeneration,
           columnIds,
           querySignature: nextQueryKey,
           sessionId: readyStatus.sessionId,
@@ -1508,9 +1521,9 @@ export function DataTableView({
         const navigationResult: FrontendMeasuredTableNavigationResult = {
           ...(await dataService.queryTableNavigationWindow({
             version: 1,
-            requestId: `table-nav:${requestedDatasetId}:${generationRef.current}:${++tableNavigationRequestSeqRef.current}`,
+            requestId: `table-nav:${requestedDatasetId}:${requestedGeneration}:${++tableNavigationRequestSeqRef.current}`,
             datasetId: requestedDatasetId,
-            generation: generationRef.current,
+            generation: requestedGeneration,
             start,
             count: TABLE_WINDOW_SIZE,
             columnIds: [...columnIds],
@@ -1594,7 +1607,13 @@ export function DataTableView({
           }
           sessionStatus = await dataService.prepareTableQuerySession(sessionRequest);
           if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) {
-            void releaseTableQuerySession(sessionStatus.sessionId);
+            const currentSession = tableQuerySessionRef.current;
+            if (
+              currentSession.signature !== sessionSignature
+              || currentSession.sessionId !== sessionStatus.sessionId
+            ) {
+              void releaseTableQuerySession(sessionStatus.sessionId);
+            }
             return;
           }
           syncTableQuerySession(sessionSignature, sessionStatus);
@@ -1618,6 +1637,8 @@ export function DataTableView({
         dataService.queryTableWindow,
       );
       if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
+      loadedFilterKeyRef.current = nextQueryKey;
+      loadedFilterGenerationRef.current = result.generation;
       if (columnDescriptorsRef.current.length === 0) {
         try {
           columnDescriptorsRef.current = await dataService.getColumnDescriptors(requestedDatasetId);
@@ -1650,7 +1671,7 @@ export function DataTableView({
         rows: result.rows,
         totalRows: sessionStatus?.state === "ready"
           ? (sessionStatus.totalRows ?? result.totalRows)
-          : (requiresPreparedSession ? datasetRowCount : result.totalRows),
+          : (sessionStatus ? datasetRowCount : result.totalRows),
         page: 0,
         pageSize: result.rows.length,
       };
@@ -1673,6 +1694,12 @@ export function DataTableView({
         const descriptors = await dataService.getColumnDescriptors(requestedDatasetId);
         if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
         setColumnDescriptors(descriptors);
+        setCalculatedDialog((current) => {
+          if (!current?.outputColumnId) return current;
+          return descriptors.some((descriptor) => descriptor.columnId === current.outputColumnId)
+            ? current
+            : null;
+        });
       } catch {
         if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
         setColumnDescriptors([]);
@@ -1746,6 +1773,10 @@ export function DataTableView({
       columnDescriptorsRef.current = [];
       setData(null);
       dataRef.current = null;
+    } finally {
+      if (inFlightLoadClaimsRef.current.get(inFlightLoadKey) === epoch) {
+        inFlightLoadClaimsRef.current.delete(inFlightLoadKey);
+      }
     }
   }, [buildWindowRequest, cancelActiveTransportMeasurement, clearPendingPrefetches, datasetGeneration, datasetId, queueNeighborPrefetches, resolveColumnIds, scheduleActiveTransportDiagnostics, updateTableCacheDiagnostics]);
   navigationReloadRef.current = () => {
@@ -1873,7 +1904,6 @@ export function DataTableView({
   }, [datasetId, invalidateData]);
 
   useEffect(() => {
-    skipFilterReloadRef.current = true;
     columnDescriptorsRef.current = [];
     const followContext = logicalEndFollowContextRef.current;
     const preserveLogicalEnd = followContext?.datasetId === datasetId
@@ -1907,9 +1937,15 @@ export function DataTableView({
     setShowInsertMultiCols(false);
     setRenameCol(null);
     setShowAddCol(false);
-    setCalculatedDialog(null);
-    setShowTableFilters(false);
   }, [datasetGeneration, datasetId, load]);
+
+  useEffect(() => {
+    setCalculatedDialog(null);
+  }, [datasetId]);
+
+  useEffect(() => {
+    setShowTableFilters(false);
+  }, [datasetId]);
 
   const {
     showManageExtras,
@@ -1940,19 +1976,25 @@ export function DataTableView({
   }, [datasetRevision, load]);
 
   useEffect(() => {
-    if (skipFilterReloadRef.current) {
-      skipFilterReloadRef.current = false;
-      return;
-    }
     const queryKey = buildTableQuerySignature(
       serializeTableWindowFilters(tableFilters),
       tableSort,
     );
-    if (queryKey === loadedFilterKeyRef.current) return;
-    logicalEndFollowContextRef.current = null;
+    const queryChanged = queryKey !== loadedFilterKeyRef.current;
+    const generationChanged = datasetGeneration !== loadedFilterGenerationRef.current;
+    if (!queryChanged && !generationChanged) return;
+    const followContext = logicalEndFollowContextRef.current;
+    const preserveLogicalEnd = !queryChanged
+      && followContext?.datasetId === datasetId
+      && followContext.queryKey === queryKey;
+    if (!preserveLogicalEnd) {
+      logicalEndFollowContextRef.current = null;
+    }
     void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
-    setLogicalStart(0);
-    void load(tableFilters, 0);
+    const nextStart = preserveLogicalEnd ? windowStartRef.current : 0;
+    logicalStartRef.current = preserveLogicalEnd ? maxLogicalStartRef.current : 0;
+    setLogicalStart(logicalStartRef.current);
+    void load(tableFilters, nextStart);
   }, [datasetGeneration, datasetId, invalidateScheduledNavigation, load, tableFilters, tableSort]);
 
   // Apply pending restore from history store (undo/redo/jumpTo)

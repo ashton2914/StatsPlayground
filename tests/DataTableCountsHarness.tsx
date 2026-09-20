@@ -10,7 +10,7 @@ import { useProjectStore } from "../src/stores/useProjectStore";
 import type { DatasetMeta, TableFilterValue, TableWindowResult } from "../src/types/data";
 import type { FilterRuleItem } from "../src/types/filter";
 
-type DataTableCountsHarnessVariant = "unfiltered" | "filtered" | "zero-match";
+type DataTableCountsHarnessVariant = "unfiltered" | "filtered" | "zero-match" | "query-race" | "session-race";
 
 const DATASET: DatasetMeta = {
   id: "counts-dataset",
@@ -28,6 +28,17 @@ const UPDATED_DATASET: DatasetMeta = {
   ...DATASET,
   rowCount: 80,
   colCount: 3,
+  generation: 2,
+  updatedAt: "2026-09-16T00:05:00.000Z",
+};
+
+const SESSION_RACE_DATASET: DatasetMeta = {
+  ...DATASET,
+  rowCount: 10_000,
+};
+
+const UPDATED_SESSION_RACE_DATASET: DatasetMeta = {
+  ...SESSION_RACE_DATASET,
   generation: 2,
   updatedAt: "2026-09-16T00:05:00.000Z",
 };
@@ -92,6 +103,13 @@ interface HarnessState {
 }
 
 function createInitialHarnessState(variant: DataTableCountsHarnessVariant): HarnessState {
+  if (variant === "session-race") {
+    return {
+      activeDataset: SESSION_RACE_DATASET,
+      filters: [FILTER_RULE],
+      windowTotalRows: 6_000,
+    };
+  }
   if (variant === "filtered") {
     return {
       activeDataset: DATASET,
@@ -122,6 +140,15 @@ export function DataTableCountsHarness({
   const statusDimensions = useDataStore((state) => state.statusInfo?.dimensions ?? "");
   const [harnessState, setHarnessState] = useState<HarnessState>(() => createInitialHarnessState(variant));
   const [filterRequestGenerations, setFilterRequestGenerations] = useState<number[]>([]);
+  const [tableWindowQuerySignatures, setTableWindowQuerySignatures] = useState<string[]>([]);
+  const [descriptorRequestGenerations, setDescriptorRequestGenerations] = useState<number[]>([]);
+  const [preparedSessionGenerations, setPreparedSessionGenerations] = useState<number[]>([]);
+  const [releasedSessionIds, setReleasedSessionIds] = useState<string[]>([]);
+  const [navigationSessionIds, setNavigationSessionIds] = useState<string[]>([]);
+  const [navigationStarts, setNavigationStarts] = useState<number[]>([]);
+  const [delayedPrepareSettled, setDelayedPrepareSettled] = useState(false);
+  const delayedInitialQueryResolverRef = useRef<(() => void) | null>(null);
+  const delayedPrepareResolverRef = useRef<(() => void) | null>(null);
   const harnessStateRef = useRef(harnessState);
   harnessStateRef.current = harnessState;
 
@@ -147,9 +174,16 @@ export function DataTableCountsHarness({
     const previousLanguage = i18n.resolvedLanguage ?? i18n.language;
     const previousGetDatasetGeneration = dataService.getDatasetGeneration;
     const previousQueryTableWindow = dataService.queryTableWindow;
+    const previousQueryTableNavigationWindow = dataService.queryTableNavigationWindow;
+    const previousPrepareTableQuerySession = dataService.prepareTableQuerySession;
+    const previousGetTableQuerySessionStatus = dataService.getTableQuerySessionStatus;
+    const previousReleaseTableQuerySession = dataService.releaseTableQuerySession;
+    const previousGetColumnDescriptors = dataService.getColumnDescriptors;
     const previousGetColumnDisplayProps = dataService.getColumnDisplayProps;
     const previousQueryTableFilterValues = dataService.queryTableFilterValues;
     let active = true;
+    let tableWindowQueryCount = 0;
+    let sessionRacePrepareCount = 0;
 
     useDataStore.setState({
       ...previousDataState,
@@ -167,11 +201,88 @@ export function DataTableCountsHarness({
     });
 
     dataService.getDatasetGeneration = async () => harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
-    dataService.queryTableWindow = async () => {
-      return createTable(
+    dataService.queryTableWindow = async (request) => {
+      tableWindowQueryCount += 1;
+      const requestedTotalRows = harnessStateRef.current.windowTotalRows;
+      const requestedGeneration = harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
+      setTableWindowQuerySignatures((previous) => [
+        ...previous,
+        JSON.stringify({ filters: request.filters, sort: request.sort }),
+      ]);
+      if (variant === "query-race" && tableWindowQueryCount === 1) {
+        await new Promise<void>((resolve) => {
+          delayedInitialQueryResolverRef.current = resolve;
+        });
+      }
+      const table = createTable(requestedTotalRows, requestedGeneration);
+      if (variant !== "session-race") return table;
+      return {
+        ...table,
+        rows: table.rows.slice(request.start, request.start + request.count),
+        start: request.start,
+      };
+    };
+    dataService.getColumnDescriptors = async () => {
+      const generation = harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
+      setDescriptorRequestGenerations((previous) => [...previous, generation]);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 5));
+      return [
+        { columnId: "build-column", name: "Build", sqlType: "VARCHAR" },
+        { columnId: "value-column", name: "Value", sqlType: "DOUBLE" },
+      ];
+    };
+    dataService.prepareTableQuerySession = async (request) => {
+      setPreparedSessionGenerations((previous) => [...previous, request.generation]);
+      if (variant === "session-race") {
+        sessionRacePrepareCount += 1;
+        if (sessionRacePrepareCount === 2) {
+          await new Promise<void>((resolve) => {
+            delayedPrepareResolverRef.current = resolve;
+          });
+        }
+      } else {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+      }
+      return {
+        sessionId: `session-${request.generation}`,
+        state: "ready",
+        totalRows: harnessStateRef.current.windowTotalRows,
+        progress: 1,
+      };
+    };
+    dataService.getTableQuerySessionStatus = async (sessionId) => ({
+      sessionId,
+      state: "ready",
+      totalRows: harnessStateRef.current.windowTotalRows,
+      progress: 1,
+    });
+    dataService.releaseTableQuerySession = async (sessionId) => {
+      setReleasedSessionIds((previous) => [...previous, sessionId]);
+    };
+    dataService.queryTableNavigationWindow = async (request) => {
+      setNavigationSessionIds((previous) => [...previous, request.sessionId ?? "none"]);
+      setNavigationStarts((previous) => [...previous, request.start]);
+      const table = createTable(
         harnessStateRef.current.windowTotalRows,
         harnessStateRef.current.activeDataset?.generation ?? DATASET.generation,
       );
+      const rows = variant === "session-race"
+        ? table.rows.slice(request.start, request.start + request.count)
+        : table.rows;
+      return {
+        version: 1,
+        requestId: request.requestId,
+        datasetId: request.datasetId,
+        generation: table.generation,
+        start: request.start,
+        totalRows: table.totalRows,
+        totalRowsExact: true,
+        sessionId: request.sessionId,
+        columns: table.columns,
+        columnTypes: table.columnTypes,
+        rows,
+        timings: { totalMs: 0 },
+      };
     };
     dataService.getColumnDisplayProps = async () => [];
     dataService.queryTableFilterValues = async (_datasetId, _field, _search, _limit, generation) => {
@@ -190,6 +301,11 @@ export function DataTableCountsHarness({
       active = false;
       dataService.getDatasetGeneration = previousGetDatasetGeneration;
       dataService.queryTableWindow = previousQueryTableWindow;
+      dataService.queryTableNavigationWindow = previousQueryTableNavigationWindow;
+      dataService.prepareTableQuerySession = previousPrepareTableQuerySession;
+      dataService.getTableQuerySessionStatus = previousGetTableQuerySessionStatus;
+      dataService.releaseTableQuerySession = previousReleaseTableQuerySession;
+      dataService.getColumnDescriptors = previousGetColumnDescriptors;
       dataService.getColumnDisplayProps = previousGetColumnDisplayProps;
       dataService.queryTableFilterValues = previousQueryTableFilterValues;
       useDataStore.setState(previousDataState, true);
@@ -220,7 +336,9 @@ export function DataTableCountsHarness({
   const applyUpdatedMetadata = () => {
     applyState({
       ...harnessState,
-      activeDataset: UPDATED_DATASET,
+      activeDataset: variant === "session-race"
+        ? UPDATED_SESSION_RACE_DATASET
+        : UPDATED_DATASET,
     });
   };
 
@@ -241,6 +359,46 @@ export function DataTableCountsHarness({
     });
   };
 
+  const applyRaceFilter = () => {
+    applyState({
+      activeDataset: DATASET,
+      filters: [UPDATED_FILTER_RULE],
+      windowTotalRows: 11,
+    });
+  };
+
+  const restoreRaceQuery = () => {
+    applyState({
+      activeDataset: DATASET,
+      filters: [],
+      windowTotalRows: DATASET.rowCount,
+    });
+  };
+
+  const resolveInitialTableQuery = () => {
+    delayedInitialQueryResolverRef.current?.();
+    delayedInitialQueryResolverRef.current = null;
+  };
+
+  const resolveStaleSessionPrepare = () => {
+    delayedPrepareResolverRef.current?.();
+    delayedPrepareResolverRef.current = null;
+    window.setTimeout(() => setDelayedPrepareSettled(true), 0);
+  };
+
+  const reloadCurrentRevision = () => {
+    const activeDataset = harnessState.activeDataset ?? SESSION_RACE_DATASET;
+    applyState({
+      ...harnessState,
+      activeDataset: {
+        ...activeDataset,
+        updatedAt: activeDataset.updatedAt.endsWith(".001Z")
+          ? "2026-09-16T00:00:00.002Z"
+          : "2026-09-16T00:00:00.001Z",
+      },
+    });
+  };
+
   if (!ready) return null;
 
   return (
@@ -248,10 +406,22 @@ export function DataTableCountsHarness({
       <output aria-label="Status dimensions">{statusDimensions}</output>
       <output aria-label="Harness metadata state">{harnessState.activeDataset ? `${harnessState.activeDataset.rowCount}x${harnessState.activeDataset.colCount}@${harnessState.activeDataset.generation}` : "missing"}</output>
       <output aria-label="Filter request generations">{filterRequestGenerations.join(",")}</output>
+      <output aria-label="Table window query signatures">{tableWindowQuerySignatures.join("\n")}</output>
+      <output aria-label="Descriptor request generations">{descriptorRequestGenerations.join(",")}</output>
+      <output aria-label="Prepared session generations">{preparedSessionGenerations.join(",")}</output>
+      <output aria-label="Released session IDs">{releasedSessionIds.join(",") || "(none)"}</output>
+      <output aria-label="Navigation session IDs">{navigationSessionIds.join(",")}</output>
+      <output aria-label="Navigation starts">{navigationStarts.join(",") || "(none)"}</output>
+      <output aria-label="Delayed prepare settled">{String(delayedPrepareSettled)}</output>
       <button type="button" onClick={clearActiveMetadata}>Clear active metadata</button>
       <button type="button" onClick={applyUpdatedMetadata}>Apply updated metadata</button>
       <button type="button" onClick={applyUpdatedFilterResult}>Apply updated filter result</button>
       <button type="button" onClick={clearFilters}>Clear filters</button>
+      <button type="button" onClick={applyRaceFilter}>Apply race filter</button>
+      <button type="button" onClick={restoreRaceQuery}>Restore initial query</button>
+      <button type="button" onClick={resolveInitialTableQuery}>Resolve initial table query</button>
+      <button type="button" onClick={resolveStaleSessionPrepare}>Resolve stale session prepare</button>
+      <button type="button" onClick={reloadCurrentRevision}>Reload current revision</button>
       <DataTableView datasetId={DATASET.id} />
     </div>
   );

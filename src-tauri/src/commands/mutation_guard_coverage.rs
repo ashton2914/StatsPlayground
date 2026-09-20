@@ -433,6 +433,22 @@ mod tests {
                 CommandClass::ReadOnly,
             ),
             (
+                "commands::graph_new_commands::probe_graph_new_transport",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::graph_new_commands::render_graph_new",
+                CommandClass::ReadOnly,
+            ),
+            (
+                "commands::graph_new_commands::cancel_graph_new",
+                CommandClass::Mutation,
+            ),
+            (
+                "commands::graph_new_commands::close_graph_new",
+                CommandClass::Mutation,
+            ),
+            (
                 "commands::project_commands::init_project",
                 CommandClass::Mutation,
             ),

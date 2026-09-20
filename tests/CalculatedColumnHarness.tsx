@@ -47,6 +47,8 @@ type HarnessController = {
   setConfirmResult: (value: boolean) => void;
   setClipboardText: (value: string) => void;
   setNextValidationFailure: (value: unknown) => void;
+  holdNextValidation: () => void;
+  resolveHeldValidation: () => void;
   bumpGeneration: () => void;
   renameWidthAndRefresh: () => void;
   setLanguage: (value: string) => void;
@@ -325,6 +327,8 @@ export function CalculatedColumnHarness({
     let confirmResult = true;
     let clipboardText = "";
     let nextValidationFailure: unknown | null = null;
+    let holdNextValidation = false;
+    let resolveHeldValidation: (() => void) | null = null;
     let stagedHistoryRefresh: "undo" | "redo" | null = null;
     const snapshot: HarnessSnapshot = {
       validateRequests: [],
@@ -444,6 +448,13 @@ export function CalculatedColumnHarness({
     dataService.getColumnDescriptors = async () => currentDescriptors;
     dataService.validateCalculatedColumn = async (request): Promise<CalculatedColumnValidation> => {
       snapshot.validateRequests.push(request);
+      if (holdNextValidation) {
+        holdNextValidation = false;
+        await new Promise<void>((resolve) => {
+          resolveHeldValidation = resolve;
+        });
+        resolveHeldValidation = null;
+      }
       if (request.formulaText.includes("FORCE_VALIDATION_THROW")) {
         throw new Error(JSON.stringify({
           code: "validationFailed",
@@ -585,8 +596,15 @@ export function CalculatedColumnHarness({
       setNextValidationFailure: (value: unknown) => {
         nextValidationFailure = value;
       },
+      holdNextValidation: () => {
+        holdNextValidation = true;
+      },
+      resolveHeldValidation: () => {
+        resolveHeldValidation?.();
+      },
       bumpGeneration: () => {
         currentGeneration += 1;
+        currentDescriptors = cloneDescriptors(currentDescriptors);
         currentWindow = { ...currentWindow, generation: currentGeneration };
         setDatasetGeneration(currentGeneration);
       },
