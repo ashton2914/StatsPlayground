@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 
 import { AnalysisButton } from "@/components/analysis/presentation/AnalysisButton";
 import { AnalysisFrame } from "@/components/analysis/presentation/AnalysisFrame";
-import { AnalysisGraph } from "@/components/analysis/presentation/AnalysisGraph";
 import { AnalysisStack } from "@/components/analysis/presentation/AnalysisStack";
 import {
   AnalysisTable,
@@ -84,6 +83,8 @@ export function FitModelEffectSummary({
       <AnalysisStack>
         <AnalysisTable
           title={t("fitModel.report.effects", { defaultValue: "Effects" })}
+          ariaLabel={t("fitModel.report.effects", { defaultValue: "Effects" })}
+          framed={false}
           width="wide"
           columns={columns}
           rows={rows}
@@ -94,21 +95,13 @@ export function FitModelEffectSummary({
             onInvoke: () => onRemoveTerm(effectRow.key),
           }]}
         />
-        <AnalysisGraph
-          title={t("fitModel.report.logWorth", { defaultValue: "LogWorth" })}
-          graphRole="effectSummary"
-          frameClassName="sp-fit-model-analysis-graph-effect-summary"
-          strategy={{
-            mode: "custom",
-            render: () => (
-              <FitModelDiagnosticChart
-                title={title}
-                chartKind="effectSummary"
-                option={option}
-              />
-            ),
-          }}
-        />
+        <div className="sp-fit-model-analysis-graph-effect-summary" data-graph-role="effectSummary">
+          <FitModelDiagnosticChart
+            title={title}
+            chartKind="effectSummary"
+            option={option}
+          />
+        </div>
       </AnalysisStack>
     </AnalysisFrame>
   );

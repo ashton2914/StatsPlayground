@@ -170,12 +170,17 @@ const state: FitModelReportState = {
 function report(callbacks: {
   onAddEffect?: () => void;
   onRemoveTerm?: (termId: string) => void;
-} = {}) {
+} = {}, result: FitModelFittedResult = fittedResult) {
+  const reportState: FitModelReportState = {
+    ...state,
+    result,
+    configurationKey: result.effectTests.map((effect) => effect.termId).join("|"),
+  };
   return (
     <div style={{ width: "100%", height: "100vh", minWidth: 0 }}>
       <FitModelAnalysisReport
         item={item}
-        state={state}
+        state={reportState}
         datasetMissing={false}
         loadIssue={null}
         removeMessage={null}
@@ -194,9 +199,11 @@ test("renders approved report order and effect interactions", async ({ mount }) 
     onAddEffect: () => addCalls.push("add"),
     onRemoveTerm: (termId) => removeCalls.push(termId),
   }));
-  const sectionTitles = await component.locator(
-    "[data-fit-model-analysis-report] > [data-analysis-block] > button.analysis-ui-frame-title",
-  ).allTextContents();
+  const disclosureButtons = component.locator(
+    "[data-fit-model-analysis-report] .analysis-ui-frame-title",
+  );
+  await expect(disclosureButtons).toHaveCount(13);
+  const sectionTitles = await disclosureButtons.allTextContents();
   expect(sectionTitles.map((title) => title.replace(/^[▾▸]\s*/u, "").trim())).toEqual([
     "Model Specification",
     "Actual by Predicted",
@@ -212,6 +219,12 @@ test("renders approved report order and effect interactions", async ({ mount }) 
     "Prediction Profiler",
     "Warnings",
   ]);
+  const reportBlocks = component.locator("[data-fit-model-analysis-report] > [data-analysis-block]");
+  for (const blockIndex of [3, 10]) {
+    const frame = reportBlocks.nth(blockIndex);
+    await expect(frame).toHaveCount(1);
+    await expect(frame.locator(".analysis-ui-frame")).toHaveCount(0);
+  }
   await expect(component.getByRole("button", { name: "Residual Q-Q" })).toHaveCount(0);
   await expect(component.locator('[data-chart-kind="residualQq"]')).toHaveCount(0);
   await expect(component.getByText("Mean of Response", { exact: true })).toBeVisible();
@@ -239,6 +252,51 @@ test("renders approved report order and effect interactions", async ({ mount }) 
   await expect(rows.first()).toContainText("Residual warning");
 });
 
+test("reconciles leverage selection after refit and renders non-estimable reason without a chart", async ({ mount }) => {
+  const component = await mount(report());
+  const leverageSelector = component.getByLabel("Effect", { exact: true });
+  await leverageSelector.selectOption("B");
+  await expect(leverageSelector).toHaveValue("B");
+
+  const withoutB: FitModelFittedResult = {
+    ...fittedResult,
+    effectTests: fittedResult.effectTests.filter((effect) => effect.termId !== "B"),
+    leveragePlots: fittedResult.leveragePlots.filter((plot) => plot.termId !== "B"),
+  };
+  await component.update(report({}, withoutB));
+  await expect(component.getByLabel("Effect", { exact: true })).toHaveValue("A");
+  await expect(component.locator('[data-chart-kind="leveragePlot"]')).toHaveCount(1);
+
+  const mixedEstimability: FitModelFittedResult = {
+    ...fittedResult,
+    leveragePlots: fittedResult.leveragePlots.map((plot) => plot.termId === "A"
+      ? { ...plot, reason: "inferenceNotEstimable" }
+      : plot),
+  };
+  await component.update(report({}, mixedEstimability));
+  await expect(component.getByLabel("Effect", { exact: true })).toHaveValue("B");
+  await component.getByLabel("Effect", { exact: true }).selectOption("A");
+  await expect(component.locator('[data-chart-kind="leveragePlot"]')).toHaveCount(0);
+  await expect(component.getByText(/not estimable/i).last()).toBeVisible();
+
+  const allNonEstimable: FitModelFittedResult = {
+    ...fittedResult,
+    effectTests: [{
+      ...fittedResult.effectTests[0],
+      pValue: 0.0001,
+      reason: "inferenceNotEstimable",
+    }],
+    leveragePlots: [{
+      ...fittedResult.leveragePlots[0],
+      pValue: 0.0001,
+      reason: "inferenceNotEstimable",
+    }],
+  };
+  await component.update(report({}, allNonEstimable));
+  await expect(component.locator('[data-chart-kind="leveragePlot"]')).toHaveCount(0);
+  await expect(component.getByText(/not estimable/i).last()).toBeVisible();
+});
+
 for (const viewport of [
   { width: 1280, height: 800 },
   { width: 390, height: 844 },
@@ -264,6 +322,9 @@ for (const viewport of [
       expect(residual?.width ?? 0).toBeGreaterThan(680);
       expect(residual?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(820);
       expect(residual?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(residual?.frameWidth ?? 0);
+      for (const chart of chartBoxes) {
+        expect(chart.nestedFrameCount).toBe(0);
+      }
     }
 
     const profiler = component.locator('[data-graph-role="predictionProfiler"]');

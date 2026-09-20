@@ -253,8 +253,16 @@ function selectSmallestFinitePValue(
 
 export function selectDefaultLeverageTermId(
   effectTests: readonly FitModelEffectTest[],
+  plots: readonly FitModelLeveragePlot[],
 ): string | null {
-  return selectSmallestFinitePValue(effectTests);
+  const eligibleTermIds = new Set(
+    plots
+      .filter((plot) => plot.reason === null && finitePValue(plot.pValue))
+      .map((plot) => plot.termId),
+  );
+  return selectSmallestFinitePValue(
+    effectTests.filter((effect) => eligibleTermIds.has(effect.termId)),
+  );
 }
 
 export function reconcileLeverageTermId(
@@ -263,11 +271,15 @@ export function reconcileLeverageTermId(
 ): string | null {
   if (
     current !== null
-    && plots.some((plot) => plot.termId === current && finitePValue(plot.pValue))
+    && plots.some((plot) => (
+      plot.termId === current
+      && plot.reason === null
+      && finitePValue(plot.pValue)
+    ))
   ) {
     return current;
   }
-  return selectSmallestFinitePValue(plots);
+  return selectSmallestFinitePValue(plots.filter((plot) => plot.reason === null));
 }
 
 export function removeFitModelTerm(

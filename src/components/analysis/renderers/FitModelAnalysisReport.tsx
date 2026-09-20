@@ -208,6 +208,7 @@ export function FitModelAnalysisReport({
           >
             <AnalysisTable
               title={t("fitModel.report.specification", { defaultValue: "Specification" })}
+              framed={false}
               width="wide"
               columns={columns([
                 ["property", t("fitModel.report.column.property", { defaultValue: "Property" })],
@@ -258,6 +259,7 @@ export function FitModelAnalysisReport({
             <AnalysisStack>
               <AnalysisTable
                 title={t("fitModel.report.section.lackOfFit", { defaultValue: "Lack of Fit" })}
+                framed={false}
                 width="wide"
                 columns={columns([
                   ["source", t("fitModel.report.column.source", { defaultValue: "Source" })],
@@ -306,6 +308,7 @@ export function FitModelAnalysisReport({
               {equationText ? <AnalysisText aria-label="fitted-equation-inputs">{equationText}</AnalysisText> : null}
               <AnalysisTable
                 title={t("fitModel.report.section.summaryOfFit", { defaultValue: "Summary of Fit" })}
+                framed={false}
                 columns={columns([
                   ["metric", t("fitModel.report.column.metric", { defaultValue: "Metric" })],
                   ["value", t("fitModel.report.column.value", { defaultValue: "Value" }), true],
@@ -327,6 +330,7 @@ export function FitModelAnalysisReport({
           >
             <AnalysisTable
               title={t("fitModel.report.section.analysisOfVariance", { defaultValue: "Analysis of Variance" })}
+              framed={false}
               width="wide"
               columns={columns([
                 ["source", t("fitModel.report.column.source", { defaultValue: "Source" })],
@@ -353,6 +357,7 @@ export function FitModelAnalysisReport({
           >
             <AnalysisTable
               title={t("fitModel.report.section.parameterEstimates", { defaultValue: "Parameter Estimates" })}
+              framed={false}
               width="wide"
               columns={columns([
                 ["term", t("fitModel.report.column.term", { defaultValue: "Term" })],
@@ -388,6 +393,7 @@ export function FitModelAnalysisReport({
           >
             <AnalysisTable
               title={t("fitModel.report.section.effectTests", { defaultValue: "Effect Tests" })}
+              framed={false}
               width="wide"
               columns={columns([
                 ["source", t("fitModel.report.column.source", { defaultValue: "Source" })],
@@ -451,6 +457,7 @@ export function FitModelAnalysisReport({
               {diagnosticSampledSubtitle ? <AnalysisText>{diagnosticSampledSubtitle}</AnalysisText> : null}
               <AnalysisTable
                 title={t("fitModel.report.rows", { defaultValue: "Rows" })}
+                framed={false}
                 width="wide"
                 ariaLabel={t("fitModel.report.section.rowDiagnostics", { defaultValue: "Row Diagnostics" })}
                 columns={columns([

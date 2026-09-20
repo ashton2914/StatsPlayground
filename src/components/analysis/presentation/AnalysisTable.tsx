@@ -40,6 +40,7 @@ interface AnalysisTableProps {
   ariaLabel?: string;
   selection?: AnalysisTableSelection;
   getRowActions?: (row: AnalysisTableRow) => AnalysisTableRowAction[];
+  framed?: boolean;
 }
 
 export function AnalysisTable({
@@ -50,11 +51,10 @@ export function AnalysisTable({
   ariaLabel,
   selection,
   getRowActions,
+  framed = true,
 }: AnalysisTableProps) {
-  return (
-    <div className={`analysis-ui-table analysis-ui-table-${width}`}>
-      <AnalysisFrame title={title} contentPadding="none">
-        <div className="analysis-ui-table-scroll">
+  const table = (
+    <div className="analysis-ui-table-scroll">
           <table aria-label={ariaLabel}>
             <thead>
               <tr>
@@ -112,8 +112,18 @@ export function AnalysisTable({
               ))}
             </tbody>
           </table>
-        </div>
-      </AnalysisFrame>
+    </div>
+  );
+
+  return (
+    <div className={`analysis-ui-table analysis-ui-table-${width}`}>
+      {framed ? (
+        <AnalysisFrame title={title} contentPadding="none">
+          {table}
+        </AnalysisFrame>
+      ) : (
+        table
+      )}
     </div>
   );
 }

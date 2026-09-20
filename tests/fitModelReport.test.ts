@@ -482,7 +482,7 @@ function testLeverageSelectionIsDeterministic(): void {
     reason: effect.reason,
   }));
 
-  assert.equal(selectDefaultLeverageTermId(effectTests), "interaction:A*B");
+  assert.equal(selectDefaultLeverageTermId(effectTests, plots), "interaction:A*B");
   assert.equal(reconcileLeverageTermId("removed", plots), "interaction:A*B");
   assert.equal(reconcileLeverageTermId("A", plots), "A");
 }
@@ -532,7 +532,7 @@ function testLeverageSelectionReturnsNullWithoutFinitePValue(): void {
     reason: effect.reason,
   }));
 
-  assert.equal(selectDefaultLeverageTermId(effectTests), null);
+  assert.equal(selectDefaultLeverageTermId(effectTests, plots), null);
   assert.equal(reconcileLeverageTermId("A", plots), null);
 }
 
@@ -575,6 +575,58 @@ function testLeverageSelectionReplacesNonEstimableCurrent(): void {
 
   assert.equal(reconcileLeverageTermId("A", plots), "interaction:A*B");
   assert.equal(reconcileLeverageTermId("removed", plots), "interaction:A*B");
+}
+
+function testLeverageSelectionSkipsFinitePValueWithNonEstimablePlot(): void {
+  const effectTests = [
+    {
+      termId: "A",
+      termLabel: "A",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 12,
+      fRatio: 12,
+      pValue: 0.0001,
+      reason: null,
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 4,
+      fRatio: 4,
+      pValue: 0.02,
+      reason: null,
+    },
+  ] as const;
+  const plots = [
+    {
+      termId: "A",
+      termLabel: "A",
+      pValue: 0.0001,
+      points: [],
+      confidenceBand: [],
+      nullLineY: null,
+      rowsSampled: false,
+      sourceRowCount: 10,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      pValue: 0.02,
+      points: [],
+      confidenceBand: [],
+      nullLineY: 10,
+      rowsSampled: false,
+      sourceRowCount: 10,
+      reason: null,
+    },
+  ] as const;
+
+  assert.equal(selectDefaultLeverageTermId(effectTests, plots), "B");
+  assert.equal(reconcileLeverageTermId("A", plots), "B");
 }
 
 function testRemoveInteractionSucceeds(): void {
@@ -987,6 +1039,7 @@ testMeanCenteringDoesNotRelabelMainEffect();
 testLeverageSelectionIsDeterministic();
 testLeverageSelectionReturnsNullWithoutFinitePValue();
 testLeverageSelectionReplacesNonEstimableCurrent();
+testLeverageSelectionSkipsFinitePValueWithNonEstimablePlot();
 testRemoveInteractionSucceeds();
 testResolvedTermIdsMatchRustForPowerAndHigherOrderInteraction();
 testRemovePowerAndHigherOrderInteractionSucceeds();

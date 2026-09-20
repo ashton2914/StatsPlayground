@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { AnalysisFrame } from "@/components/analysis/presentation/AnalysisFrame";
-import { AnalysisGraph } from "@/components/analysis/presentation/AnalysisGraph";
 import { AnalysisStack } from "@/components/analysis/presentation/AnalysisStack";
 import { AnalysisText } from "@/components/analysis/presentation/AnalysisText";
 import {
@@ -35,7 +34,7 @@ export function FitModelLeveragePlot({
 }: FitModelLeveragePlotProps) {
   const { t } = useTranslation();
   const [selectedTermId, setSelectedTermId] = useState<string | null>(
-    () => selectDefaultLeverageTermId(effectTests),
+    () => selectDefaultLeverageTermId(effectTests, leveragePlots),
   );
 
   useEffect(() => {
@@ -53,8 +52,11 @@ export function FitModelLeveragePlot({
       })
     : null, [chartLabels, responseLabel, selectedPlot]);
   const selectedReason = selectedPlot?.reason;
-  const reasonText = selectedReason
-    ? t(`fitModel.report.reason.${selectedReason}`, { defaultValue: selectedReason })
+  const fallbackReason = selectedReason
+    ?? leveragePlots.find((plot) => plot.reason !== null)?.reason
+    ?? null;
+  const reasonText = fallbackReason
+    ? t(`fitModel.report.reason.${fallbackReason}`, { defaultValue: fallbackReason })
     : t("fitModel.report.leverageUnavailable", { defaultValue: "No estimable effect is available." });
 
   return (
@@ -74,21 +76,13 @@ export function FitModelLeveragePlot({
           </select>
         </label>
         {option && selectedPlot ? (
-          <AnalysisGraph
-            title={selectedPlot.termLabel}
-            graphRole="leveragePlot"
-            frameClassName="sp-fit-model-analysis-graph-leverage"
-            strategy={{
-              mode: "custom",
-              render: () => (
-                <FitModelDiagnosticChart
-                  title={`${title}: ${selectedPlot.termLabel}`}
-                  chartKind="leveragePlot"
-                  option={option}
-                />
-              ),
-            }}
-          />
+          <div className="sp-fit-model-analysis-graph-leverage" data-graph-role="leveragePlot">
+            <FitModelDiagnosticChart
+              title={`${title}: ${selectedPlot.termLabel}`}
+              chartKind="leveragePlot"
+              option={option}
+            />
+          </div>
         ) : (
           <AnalysisText>{reasonText}</AnalysisText>
         )}
