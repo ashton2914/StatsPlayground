@@ -8705,6 +8705,21 @@ impl DuckDbEngine {
                 params![!undo, generation + 1, change_set_id],
             )?;
             self.rebuild_natural_anchors(&dataset_id, generation + 1)?;
+            self.conn.execute(
+                "UPDATE _history_delta_change_sets
+                 SET after_generation = ? WHERE dataset_id = ? AND applied = TRUE",
+                params![generation + 1, &dataset_id],
+            )?;
+            self.conn.execute(
+                "UPDATE _history_delta_change_sets
+                 SET before_generation = ? WHERE dataset_id = ? AND applied = FALSE",
+                params![generation + 1, &dataset_id],
+            )?;
+            self.conn.execute(
+                "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?
+                 AND storage_kind IN ('row_delta', 'column_delta')",
+                params![generation + 1, &dataset_id],
+            )?;
             Ok(())
         })();
         match result {
@@ -8879,21 +8894,28 @@ impl DuckDbEngine {
             params![change_set_id],
             |row| row.get(0),
         )?;
+        self.refresh_delta_history_generations_for_dataset(&dataset_id)
+    }
+
+    fn refresh_delta_history_generations_for_dataset(
+        &self,
+        dataset_id: &str,
+    ) -> Result<(), AppError> {
         let generation = self.get_dataset_generation(&dataset_id)?;
         self.conn.execute(
             "UPDATE _history_delta_change_sets
              SET after_generation = ? WHERE dataset_id = ? AND applied = TRUE",
-            params![generation, &dataset_id],
+            params![generation, dataset_id],
         )?;
         self.conn.execute(
             "UPDATE _history_delta_change_sets
              SET before_generation = ? WHERE dataset_id = ? AND applied = FALSE",
-            params![generation, &dataset_id],
+            params![generation, dataset_id],
         )?;
         self.conn.execute(
             "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?
              AND storage_kind IN ('row_delta', 'column_delta')",
-            params![generation, &dataset_id],
+            params![generation, dataset_id],
         )?;
         Ok(())
     }
@@ -9062,10 +9084,15 @@ impl DuckDbEngine {
                 Ok(crate::services::spprj_archive::DeltaHistorySnapshotColumn {
                     name: row.get(0)?,
                     duckdb_type: if duckdb_type == "HUGEINT" {
-                        "DECIMAL(38,0)".into()
+                        "HUGEINT".into()
+                    } else {
+                        duckdb_type.clone()
+                    },
+                    transport_type: Some(if duckdb_type == "HUGEINT" {
+                        "VARCHAR".into()
                     } else {
                         duckdb_type
-                    },
+                    }),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -9109,7 +9136,11 @@ impl DuckDbEngine {
             .iter()
             .map(|column| {
                 let name = Self::quote_identifier(&column.name);
-                format!("CAST({name} AS {}) AS {name}", column.duckdb_type)
+                let transport_type = column
+                    .transport_type
+                    .as_deref()
+                    .unwrap_or(&column.duckdb_type);
+                format!("CAST({name} AS {transport_type}) AS {name}")
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -9131,19 +9162,133 @@ impl DuckDbEngine {
         if archive.version != 1 {
             return Err(AppError::FileIO("Unsupported delta history version".into()));
         }
+        let descriptors = snapshots
+            .iter()
+            .map(|(descriptor, _)| (descriptor.change_set_id.as_str(), descriptor))
+            .collect::<HashMap<_, _>>();
+        crate::services::spprj_archive::validate_delta_history_contract(
+            archive,
+            &snapshots
+                .iter()
+                .map(|(descriptor, _)| descriptor.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let mut authoritative_generations = HashMap::new();
+        for change_set in &archive.change_sets {
+            let generation = self
+                .get_dataset_generation(&change_set.dataset_id)
+                .map_err(|_| {
+                    AppError::FileIO(format!(
+                        "Delta history references unknown dataset {}",
+                        change_set.dataset_id
+                    ))
+                })?;
+            authoritative_generations.insert(change_set.dataset_id.clone(), generation);
+            if let Some(descriptor) = descriptors.get(change_set.id.as_str()) {
+                self.validate_delta_snapshot_descriptor(archive, change_set, descriptor)?;
+            }
+        }
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = (|| -> Result<(), AppError> {
-            for change_set in &archive.change_sets {
-                let parsed = uuid::Uuid::parse_str(&change_set.id)
+            for (descriptor, path) in snapshots {
+                let parsed = uuid::Uuid::parse_str(&descriptor.change_set_id)
                     .map_err(|_| AppError::FileIO("Invalid delta history UUID".into()))?;
-                if let Some(table) = &change_set.snapshot_table {
-                    Self::validate_delta_snapshot_name(
-                        &parsed,
-                        &change_set.storage_kind,
-                        &change_set.operation,
-                        table,
-                    )?;
+                let transport_name = format!("_history_transport_{}", parsed.simple());
+                let transport_table = Self::quote_identifier(&transport_name);
+                let final_table = Self::quote_identifier(&descriptor.table_name);
+                let path = path.to_str().ok_or_else(|| {
+                    AppError::FileIO("Delta history snapshot path is not valid UTF-8".into())
+                })?;
+                self.conn.execute(
+                    &format!("CREATE TABLE {transport_table} AS SELECT * FROM read_parquet($1)"),
+                    params![path],
+                )?;
+                let actual_transport = self.raw_table_schema(&transport_name)?;
+                let expected_transport = descriptor
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        (
+                            column.name.clone(),
+                            column
+                                .transport_type
+                                .clone()
+                                .unwrap_or_else(|| column.duckdb_type.clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if actual_transport != expected_transport {
+                    return Err(AppError::FileIO(format!(
+                        "Delta history snapshot transport schema mismatch for {}",
+                        descriptor.change_set_id
+                    )));
                 }
+                for column in &descriptor.columns {
+                    if column.duckdb_type == "HUGEINT" {
+                        let identifier = Self::quote_identifier(&column.name);
+                        let invalid: i64 = self.conn.query_row(
+                            &format!(
+                                "SELECT COUNT(*) FROM {transport_table}
+                                 WHERE {identifier} IS NOT NULL
+                                   AND (TRY_CAST({identifier} AS HUGEINT) IS NULL
+                                     OR CAST(TRY_CAST({identifier} AS HUGEINT) AS VARCHAR)
+                                        <> {identifier})"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        if invalid != 0 {
+                            return Err(AppError::FileIO(format!(
+                                "Delta history snapshot contains non-canonical HUGEINT values for {}",
+                                column.name
+                            )));
+                        }
+                    }
+                }
+                let projections = descriptor
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        let name = Self::quote_identifier(&column.name);
+                        format!("CAST({name} AS {}) AS {name}", column.duckdb_type)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.conn.execute(
+                    &format!(
+                        "CREATE TABLE {final_table} AS
+                         SELECT {projections} FROM {transport_table}"
+                    ),
+                    [],
+                )?;
+                self.conn
+                    .execute(&format!("DROP TABLE {transport_table}"), [])?;
+                let actual_logical = self.raw_table_schema(&descriptor.table_name)?;
+                let expected_logical = descriptor
+                    .columns
+                    .iter()
+                    .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+                    .collect::<Vec<_>>();
+                if actual_logical != expected_logical {
+                    return Err(AppError::FileIO(format!(
+                        "Delta history snapshot logical schema mismatch for {}",
+                        descriptor.change_set_id
+                    )));
+                }
+                let change_set = archive
+                    .change_sets
+                    .iter()
+                    .find(|change_set| change_set.id == descriptor.change_set_id)
+                    .ok_or_else(|| {
+                        AppError::FileIO("Snapshot has no delta history change set".into())
+                    })?;
+                self.validate_delta_snapshot_rows(change_set, &descriptor.table_name)?;
+            }
+
+            for change_set in &archive.change_sets {
+                let generation = *authoritative_generations
+                    .get(&change_set.dataset_id)
+                    .ok_or_else(|| AppError::FileIO("Missing dataset generation".into()))?;
                 self.conn.execute(
                     "INSERT INTO _history_change_sets
                      (id, dataset_id, applied, generation, storage_kind)
@@ -9152,10 +9297,15 @@ impl DuckDbEngine {
                         &change_set.id,
                         &change_set.dataset_id,
                         change_set.applied,
-                        change_set.generation,
+                        generation,
                         &change_set.storage_kind
                     ],
                 )?;
+                let (before_generation, after_generation) = if change_set.applied {
+                    (change_set.before_generation.min(generation), generation)
+                } else {
+                    (generation, change_set.after_generation.min(generation))
+                };
                 self.conn.execute(
                     "INSERT INTO _history_delta_change_sets
                      (id, dataset_id, operation, before_generation, after_generation,
@@ -9164,8 +9314,8 @@ impl DuckDbEngine {
                         &change_set.id,
                         &change_set.dataset_id,
                         &change_set.operation,
-                        change_set.before_generation,
-                        change_set.after_generation,
+                        before_generation,
+                        after_generation,
                         &change_set.snapshot_table,
                         change_set.applied
                     ],
@@ -9194,37 +9344,6 @@ impl DuckDbEngine {
                     )?;
                 }
             }
-            for (descriptor, path) in snapshots {
-                let table = Self::quote_identifier(&descriptor.table_name);
-                let path = path.to_str().ok_or_else(|| {
-                    AppError::FileIO("Delta history snapshot path is not valid UTF-8".into())
-                })?;
-                self.conn.execute(
-                    &format!("CREATE TABLE {table} AS SELECT * FROM read_parquet($1)"),
-                    params![path],
-                )?;
-                let actual_schema = self.delta_snapshot_schema(&descriptor.table_name)?;
-                if actual_schema != descriptor.columns {
-                    return Err(AppError::FileIO(format!(
-                        "Delta history snapshot schema mismatch for {}: expected {:?}, received {:?}",
-                        descriptor.change_set_id, descriptor.columns, actual_schema
-                    )));
-                }
-            }
-            let mut generations = std::collections::HashMap::<String, u64>::new();
-            for change_set in &archive.change_sets {
-                generations
-                    .entry(change_set.dataset_id.clone())
-                    .and_modify(|generation| *generation = (*generation).max(change_set.generation))
-                    .or_insert(change_set.generation);
-            }
-            for (dataset_id, generation) in generations {
-                self.conn.execute(
-                    "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
-                    params![generation, &dataset_id],
-                )?;
-                self.rebuild_natural_anchors(&dataset_id, generation)?;
-            }
             Ok(())
         })();
         match result {
@@ -9237,6 +9356,156 @@ impl DuckDbEngine {
                 })
             }
         }
+    }
+
+    fn raw_table_schema(&self, table_name: &str) -> Result<Vec<(String, String)>, AppError> {
+        let mut statement = self.conn.prepare(
+            "SELECT column_name, data_type FROM information_schema.columns
+                 WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
+        )?;
+        statement
+            .query_map(params![table_name], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn validate_delta_snapshot_descriptor(
+        &self,
+        archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+        change_set: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+        descriptor: &crate::services::spprj_archive::DeltaHistorySnapshotRef,
+    ) -> Result<(), AppError> {
+        let dataset_table = Self::internal_table_name(&change_set.dataset_id);
+        let dataset_schema = self.raw_table_schema(&dataset_table)?;
+        let expected = if change_set.storage_kind == "row_delta" {
+            let mut allowed = dataset_schema.iter().cloned().collect::<HashMap<_, _>>();
+            for column in archive
+                .change_sets
+                .iter()
+                .filter(|other| other.dataset_id == change_set.dataset_id)
+                .flat_map(|other| &other.columns)
+            {
+                allowed.insert(column.col_name.clone(), column.col_type.clone());
+            }
+            let logical = descriptor
+                .columns
+                .iter()
+                .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+                .collect::<Vec<_>>();
+            if !logical
+                .iter()
+                .all(|(name, column_type)| allowed.get(name) == Some(column_type))
+                || !logical.iter().any(|(name, _)| name == "_row_id")
+                || !logical.iter().any(|(name, _)| name == "_row_order")
+            {
+                return Err(AppError::FileIO(
+                    "Delta history row snapshot schema does not match the timeline".into(),
+                ));
+            }
+            logical
+        } else {
+            let row_id = dataset_schema
+                .iter()
+                .find(|(name, _)| name == "_row_id")
+                .cloned()
+                .ok_or_else(|| AppError::FileIO("Dataset is missing _row_id".into()))?;
+            std::iter::once(row_id)
+                .chain(
+                    change_set
+                        .columns
+                        .iter()
+                        .map(|column| (column.col_name.clone(), column.col_type.clone())),
+                )
+                .collect()
+        };
+        let logical = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let canonical = self.canonicalize_column_type(&column.duckdb_type)?;
+                if canonical != column.duckdb_type {
+                    return Err(AppError::FileIO(
+                        "Delta history snapshot uses a non-canonical logical type".into(),
+                    ));
+                }
+                let transport = column
+                    .transport_type
+                    .as_deref()
+                    .unwrap_or(&column.duckdb_type);
+                let expected_transport = if column.duckdb_type == "HUGEINT" {
+                    "VARCHAR"
+                } else {
+                    column.duckdb_type.as_str()
+                };
+                if transport != expected_transport {
+                    return Err(AppError::FileIO(
+                        "Delta history snapshot uses an invalid transport type".into(),
+                    ));
+                }
+                Ok((column.name.clone(), column.duckdb_type.clone()))
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        if change_set.storage_kind != "row_delta" && logical != expected {
+            return Err(AppError::FileIO(format!(
+                    "Delta history snapshot schema does not match the dataset for {}: expected {:?}, received {:?}",
+                    change_set.id, expected, logical
+                )));
+        }
+        Ok(())
+    }
+
+    fn validate_delta_snapshot_rows(
+        &self,
+        change_set: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+        snapshot_name: &str,
+    ) -> Result<(), AppError> {
+        let snapshot = Self::quote_identifier(snapshot_name);
+        if change_set.storage_kind == "row_delta" {
+            let count: i64 =
+                self.conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {snapshot}"), [], |row| {
+                        row.get(0)
+                    })?;
+            if usize::try_from(count).ok() != Some(change_set.rows.len()) {
+                return Err(AppError::FileIO(
+                    "Row snapshot does not match row delta metadata".into(),
+                ));
+            }
+            for row in &change_set.rows {
+                let found: i64 = self.conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {snapshot} WHERE \"_row_id\" = ?"),
+                    params![row.row_id],
+                    |result| result.get(0),
+                )?;
+                if found != 1 {
+                    return Err(AppError::FileIO(
+                        "Row snapshot does not match row delta metadata".into(),
+                    ));
+                }
+            }
+        } else {
+            let dataset =
+                Self::quote_identifier(&Self::internal_table_name(&change_set.dataset_id));
+            let mismatch: i64 = self.conn.query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM (
+                           (SELECT \"_row_id\" FROM {snapshot}
+                            EXCEPT SELECT \"_row_id\" FROM {dataset})
+                           UNION ALL
+                           (SELECT \"_row_id\" FROM {dataset}
+                            EXCEPT SELECT \"_row_id\" FROM {snapshot})
+                         )"
+                ),
+                [],
+                |row| row.get(0),
+            )?;
+            if mismatch != 0 {
+                return Err(AppError::FileIO(
+                    "Column snapshot row IDs do not match the dataset".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn drop_change_set(&self, change_set_id: &str) -> Result<(), AppError> {
@@ -19450,6 +19719,101 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(snapshots, vec![retained_snapshot.to_string()]);
+    }
+
+    #[test]
+    fn delta_history_archive_round_trips_lossless_hugeint_extrema_and_nulls() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            "huge-history",
+            "Huge History",
+            &["value".into()],
+            &["HUGEINT".into()],
+        )
+        .unwrap();
+        for (row_id, value, row_order) in [
+            (1_i64, None, Some(i128::MIN)),
+            (2, Some(i128::MIN), Some(-1)),
+            (3, Some(i128::MAX), Some(1)),
+            (4, Some(42), Some(i128::MAX)),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO dataset_huge_history (_row_id, value, _row_order)
+                     VALUES (?, ?, ?)",
+                    params![row_id, value, row_order],
+                )
+                .unwrap();
+        }
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 4, next_row_id = 5
+                 WHERE id = 'huge-history'",
+                [],
+            )
+            .unwrap();
+        db.rebuild_natural_anchors("huge-history", 0).unwrap();
+        let deleted = crate::services::table_delta_mutation::delete_rows_compact(
+            &db,
+            "huge-history",
+            &[1, 2, 3, 4],
+            0,
+        )
+        .unwrap();
+        let (archive, descriptors) = db.archive_delta_history().unwrap();
+        assert_eq!(descriptors.len(), 1);
+        let path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".task5-hugeint-{}.parquet", uuid::Uuid::new_v4()));
+        db.export_delta_history_snapshot(&descriptors[0], path.to_str().unwrap())
+            .unwrap();
+
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .create_empty_table(
+                "huge-history",
+                "Huge History",
+                &["value".into()],
+                &["HUGEINT".into()],
+            )
+            .unwrap();
+        restored
+            .restore_delta_history(&archive, &[(descriptors[0].clone(), path.clone())])
+            .unwrap();
+        restored
+            .apply_change_set(&deleted.change_set_id, true)
+            .unwrap();
+        let values = restored
+            .conn()
+            .prepare("SELECT value, _row_order FROM dataset_huge_history ORDER BY _row_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<i128>>(0)?,
+                    row.get::<_, Option<i128>>(1)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![
+                (None, Some(i128::MIN)),
+                (Some(i128::MIN), Some(-1)),
+                (Some(i128::MAX), Some(1)),
+                (Some(42), Some(i128::MAX)),
+            ]
+        );
+        let snapshot_types = restored
+            .delta_snapshot_schema(&descriptors[0].table_name)
+            .unwrap();
+        assert!(snapshot_types
+            .iter()
+            .filter(|column| column.name == "value" || column.name == "_row_order")
+            .all(|column| column.duckdb_type == "HUGEINT"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

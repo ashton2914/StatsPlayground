@@ -205,6 +205,8 @@ pub struct ProjectManifest {
     pub relationships: Vec<ProjectRelationship>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub dataset_filters: DatasetFilters,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub dataset_generations: HashMap<String, u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_history: Option<DeltaHistoryRef>,
 }
@@ -231,6 +233,8 @@ pub struct DeltaHistorySnapshotRef {
 pub struct DeltaHistorySnapshotColumn {
     pub name: String,
     pub duckdb_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1469,6 +1473,7 @@ fn read_delta_history<R: Read + Seek>(
             metadata.version
         )));
     }
+    validate_delta_history_contract(&metadata, &history_ref.snapshots)?;
 
     let mut descriptor_ids = HashSet::new();
     let mut snapshots = Vec::with_capacity(history_ref.snapshots.len());
@@ -1483,6 +1488,7 @@ fn read_delta_history<R: Read + Seek>(
                 "Invalid or duplicate delta history snapshot path".into(),
             ));
         }
+
         let bytes = read_entry_bytes(zip, &descriptor.file).ok_or_else(|| {
             AppError::FileIO(format!(
                 "Missing delta history snapshot for {}",
@@ -1531,6 +1537,173 @@ fn read_delta_history<R: Read + Seek>(
         metadata,
         snapshots,
     }))
+}
+
+pub(crate) fn validate_delta_history_contract(
+    archive: &DeltaHistoryArchive,
+    snapshots: &[DeltaHistorySnapshotRef],
+) -> Result<(), AppError> {
+    let snapshot_by_id = snapshots
+        .iter()
+        .map(|snapshot| (snapshot.change_set_id.as_str(), snapshot))
+        .collect::<HashMap<_, _>>();
+    if snapshot_by_id.len() != snapshots.len() {
+        return Err(AppError::FileIO(
+            "Duplicate delta history snapshot descriptor".into(),
+        ));
+    }
+    let mut change_set_ids = HashSet::new();
+    for change_set in &archive.change_sets {
+        let parsed = uuid::Uuid::parse_str(&change_set.id)
+            .map_err(|_| AppError::FileIO("Invalid delta history change-set UUID".into()))?;
+        if !change_set_ids.insert(change_set.id.as_str()) || change_set.dataset_id.trim().is_empty()
+        {
+            return Err(AppError::FileIO(
+                "Invalid or duplicate delta history change set".into(),
+            ));
+        }
+        let snapshot = snapshot_by_id.get(change_set.id.as_str()).copied();
+        let requires_snapshot = matches!(
+            (
+                change_set.storage_kind.as_str(),
+                change_set.operation.as_str()
+            ),
+            ("row_delta", "delete_rows") | ("column_delta", "delete_columns")
+        );
+        let forbids_snapshot = matches!(
+            (
+                change_set.storage_kind.as_str(),
+                change_set.operation.as_str()
+            ),
+            ("row_delta", "add_rows") | ("column_delta", "add_columns")
+        );
+        if !requires_snapshot && !forbids_snapshot {
+            return Err(AppError::FileIO(format!(
+                "Unsupported delta history operation {}:{}",
+                change_set.storage_kind, change_set.operation
+            )));
+        }
+        if requires_snapshot && (change_set.snapshot_table.is_none() || snapshot.is_none()) {
+            return Err(AppError::FileIO(format!(
+                "{} requires a snapshot",
+                change_set.operation
+            )));
+        }
+        if forbids_snapshot && (change_set.snapshot_table.is_some() || snapshot.is_some()) {
+            return Err(AppError::FileIO(format!(
+                "{} forbids a snapshot",
+                change_set.operation
+            )));
+        }
+
+        match change_set.storage_kind.as_str() {
+            "row_delta" => {
+                if change_set.rows.is_empty() || !change_set.columns.is_empty() {
+                    return Err(AppError::FileIO(
+                        "Row delta metadata has an invalid shape".into(),
+                    ));
+                }
+                let mut row_ids = HashSet::new();
+                if change_set
+                    .rows
+                    .iter()
+                    .any(|row| row.row_id <= 0 || !row_ids.insert(row.row_id))
+                {
+                    return Err(AppError::FileIO(
+                        "Row delta metadata contains invalid row IDs".into(),
+                    ));
+                }
+            }
+            "column_delta" => {
+                if !change_set.rows.is_empty() || change_set.columns.is_empty() {
+                    return Err(AppError::FileIO(
+                        "Column delta metadata has an invalid shape".into(),
+                    ));
+                }
+                let mut column_ids = HashSet::new();
+                let mut column_names = HashSet::new();
+                for column in &change_set.columns {
+                    uuid::Uuid::parse_str(&column.column_id).map_err(|_| {
+                        AppError::FileIO("Column delta contains an invalid column UUID".into())
+                    })?;
+                    if column.col_index < 0
+                        || column.col_name.trim().is_empty()
+                        || column.col_type.trim().is_empty()
+                        || !column_ids.insert(column.column_id.as_str())
+                        || !column_names.insert(column.col_name.as_str())
+                    {
+                        return Err(AppError::FileIO("Column delta metadata is invalid".into()));
+                    }
+                    if let Some(definition) = &column.calculated_definition_json {
+                        serde_json::from_str::<
+                            crate::models::calculated_column::ArchivedCalculatedColumn,
+                        >(definition)
+                        .map_err(|error| {
+                            AppError::FileIO(format!(
+                                "Invalid calculated-column delta metadata: {error}"
+                            ))
+                        })?;
+                    }
+                }
+            }
+            _ => {
+                return Err(AppError::FileIO(
+                    "Unsupported delta history storage kind".into(),
+                ))
+            }
+        }
+
+        if let (Some(table_name), Some(snapshot)) = (change_set.snapshot_table.as_deref(), snapshot)
+        {
+            let prefix = if change_set.storage_kind == "row_delta" {
+                "_history_rows_"
+            } else {
+                "_history_columns_"
+            };
+            if table_name != format!("{prefix}{}", parsed.simple())
+                || snapshot.table_name != table_name
+            {
+                return Err(AppError::FileIO(
+                    "Delta history snapshot identity does not match its change set".into(),
+                ));
+            }
+            let mut names = HashSet::new();
+            if snapshot.columns.is_empty()
+                || snapshot.columns.iter().any(|column| {
+                    column.name.trim().is_empty()
+                        || column.duckdb_type.trim().is_empty()
+                        || !names.insert(column.name.as_str())
+                })
+            {
+                return Err(AppError::FileIO(
+                    "Delta history snapshot schema is invalid".into(),
+                ));
+            }
+            let valid_schema = if change_set.storage_kind == "row_delta" {
+                names.contains("_row_id") && names.contains("_row_order")
+            } else {
+                snapshot.columns.first().map(|column| column.name.as_str()) == Some("_row_id")
+                    && snapshot.columns.len() == change_set.columns.len() + 1
+                    && change_set.columns.iter().all(|column| {
+                        snapshot.columns.iter().any(|snapshot_column| {
+                            snapshot_column.name == column.col_name
+                                && snapshot_column.duckdb_type == column.col_type
+                        })
+                    })
+            };
+            if !valid_schema {
+                return Err(AppError::FileIO(
+                    "Delta history snapshot schema does not match its operation".into(),
+                ));
+            }
+        }
+    }
+    if snapshot_by_id.keys().any(|id| !change_set_ids.contains(id)) {
+        return Err(AppError::FileIO(
+            "Delta history contains an unreferenced snapshot descriptor".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn read_indexed_table_transforms<R: Read + Seek>(
@@ -1794,6 +1967,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         lineage_graph: workflow_domain::ProjectLineageGraph::default(),
         relationships: Vec::new(),
         dataset_filters: HashMap::new(),
+        dataset_generations: HashMap::new(),
         delta_history: None,
     };
 
@@ -2393,6 +2567,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
             lineage_graph,
             relationships,
             dataset_filters,
+            dataset_generations: HashMap::new(),
             delta_history: None,
         },
         tables,
@@ -6331,6 +6506,72 @@ mod tests {
         bundle
     }
 
+    fn malformed_delta_history_archive(
+        change_set: Value,
+        snapshot_descriptors: Vec<Value>,
+    ) -> Vec<u8> {
+        let bundle = build_bundle(
+            "History Project".into(),
+            "4.0.0".into(),
+            "2026-09-20T00:00:00Z".into(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+        manifest["deltaHistory"] = serde_json::json!({
+            "changeSetsFile": "history/change_sets.json",
+            "snapshots": snapshot_descriptors
+        });
+        let snapshot_files = manifest["deltaHistory"]["snapshots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|snapshot| snapshot["file"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let mut bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            serde_json::to_writer(&mut zip, &manifest).unwrap();
+            zip.start_file("history/change_sets.json", opts).unwrap();
+            serde_json::to_writer(
+                &mut zip,
+                &serde_json::json!({"version": 1, "changeSets": [change_set]}),
+            )
+            .unwrap();
+            for file in snapshot_files {
+                zip.start_file(file, opts).unwrap();
+                zip.write_all(b"PAR1invalid-test-payloadPAR1").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn assert_delta_history_file_io(bytes: &[u8], expected: &str) {
+        let error = match read_zip_bundle(bytes) {
+            Ok(_) => panic!("malformed delta history must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains(expected)),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn native_graph_persistence_reference_bounds_match_renderer() {
         for field in ["id", "datasetId", "xColumnId", "yColumnId"] {
@@ -6437,6 +6678,130 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(error, AppError::FileIO(message) if message.contains("snapshot")));
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_delete_without_required_snapshot() {
+        let bytes = malformed_delta_history_archive(
+            serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000011",
+                "datasetId": "dataset-id",
+                "storageKind": "row_delta",
+                "generation": 1,
+                "operation": "delete_rows",
+                "beforeGeneration": 0,
+                "afterGeneration": 1,
+                "snapshotTable": null,
+                "applied": true,
+                "rows": [{"ordinal": 0, "rowId": 1, "rowOrder": 10}],
+                "columns": []
+            }),
+            vec![],
+        );
+        assert_delta_history_file_io(&bytes, "requires a snapshot");
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_matching_but_invalid_snapshot_schema() {
+        for (storage_kind, operation, table_name, rows, columns) in [
+            (
+                "row_delta",
+                "delete_rows",
+                "_history_rows_00000000000040008000000000000012",
+                serde_json::json!([{"ordinal": 0, "rowId": 1, "rowOrder": 10}]),
+                serde_json::json!([]),
+            ),
+            (
+                "column_delta",
+                "delete_columns",
+                "_history_columns_00000000000040008000000000000012",
+                serde_json::json!([]),
+                serde_json::json!([{
+                    "ordinal": 0,
+                    "columnId": "00000000-0000-4000-8000-000000000099",
+                    "colIndex": 0,
+                    "colName": "value",
+                    "colType": "BIGINT",
+                    "calculatedDefinitionJson": null
+                }]),
+            ),
+        ] {
+            let change_set_id = "00000000-0000-4000-8000-000000000012";
+            let bytes = malformed_delta_history_archive(
+                serde_json::json!({
+                    "id": change_set_id,
+                    "datasetId": "dataset-id",
+                    "storageKind": storage_kind,
+                    "generation": 1,
+                    "operation": operation,
+                    "beforeGeneration": 0,
+                    "afterGeneration": 1,
+                    "snapshotTable": table_name,
+                    "applied": true,
+                    "rows": rows,
+                    "columns": columns
+                }),
+                vec![serde_json::json!({
+                    "changeSetId": change_set_id,
+                    "file": format!("history/snapshots/{change_set_id}.parquet"),
+                    "tableName": table_name,
+                    "columns": [{"name": "wrong", "duckdbType": "BIGINT"}]
+                })],
+            );
+            assert_delta_history_file_io(&bytes, "snapshot schema");
+        }
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_add_operation_with_snapshot() {
+        for (storage_kind, operation, table_prefix, rows, columns) in [
+            (
+                "row_delta",
+                "add_rows",
+                "_history_rows_",
+                serde_json::json!([{"ordinal": 0, "rowId": 1, "rowOrder": 10}]),
+                serde_json::json!([]),
+            ),
+            (
+                "column_delta",
+                "add_columns",
+                "_history_columns_",
+                serde_json::json!([]),
+                serde_json::json!([{
+                    "ordinal": 0,
+                    "columnId": "00000000-0000-4000-8000-000000000098",
+                    "colIndex": 0,
+                    "colName": "value",
+                    "colType": "BIGINT",
+                    "calculatedDefinitionJson": null
+                }]),
+            ),
+        ] {
+            let change_set_id = "00000000-0000-4000-8000-000000000013";
+            let table_name = format!("{table_prefix}00000000000040008000000000000013");
+            let bytes = malformed_delta_history_archive(
+                serde_json::json!({
+                    "id": change_set_id,
+                    "datasetId": "dataset-id",
+                    "storageKind": storage_kind,
+                    "generation": 1,
+                    "operation": operation,
+                    "beforeGeneration": 0,
+                    "afterGeneration": 1,
+                    "snapshotTable": table_name,
+                    "applied": true,
+                    "rows": rows,
+                    "columns": columns
+                }),
+                vec![serde_json::json!({
+                    "changeSetId": change_set_id,
+                    "file": format!("history/snapshots/{change_set_id}.parquet"),
+                    "tableName": table_name,
+                    "columns": [{"name": "_row_id", "duckdbType": "BIGINT"}]
+                })],
+            );
+            assert_delta_history_file_io(&bytes, "forbids a snapshot");
+        }
     }
 
     #[test]
@@ -8714,6 +9079,7 @@ mod tests {
             lineage_graph: workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: HashMap::new(),
             delta_history: None,
         };
 
@@ -9148,6 +9514,7 @@ mod tests {
                     },
                 ],
             )]),
+            dataset_generations: HashMap::new(),
             delta_history: None,
         };
 

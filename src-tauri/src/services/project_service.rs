@@ -393,6 +393,24 @@ impl<'a> ProjectService<'a> {
                     .delete_dataset(&doc.id);
                 staged_service.restore_table_doc(doc)?;
             }
+            {
+                let db = staged_state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                for (dataset_id, generation) in &bundle.manifest.dataset_generations {
+                    db.get_dataset_meta(dataset_id).map_err(|_| {
+                        AppError::FileIO(format!(
+                            "Project generation references unknown dataset {dataset_id}"
+                        ))
+                    })?;
+                    db.conn().execute(
+                        "UPDATE _meta_datasets SET generation = ? WHERE id = ?",
+                        duckdb::params![generation, dataset_id],
+                    )?;
+                    db.rebuild_natural_anchors(dataset_id, *generation)?;
+                }
+            }
             if let Some(delta_history) = &bundle.delta_history {
                 let mut temporary_snapshots = Vec::with_capacity(delta_history.snapshots.len());
                 let mut restore_snapshots = Vec::with_capacity(delta_history.snapshots.len());
@@ -1955,6 +1973,62 @@ mod tests {
         db.apply_change_set(&column_change_set, false).unwrap();
         assert_eq!(db.get_dataset_meta("archive-history").unwrap().row_count, 3);
         assert_eq!(db.get_user_columns("archive-history").unwrap().len(), 1);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn delta_history_archive_preserves_generation_after_later_legacy_mutation() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-generation-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("History".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("generation-history", "Generation History", 4, 1)
+                .unwrap();
+            let deleted = crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "generation-history",
+                &[2],
+                0,
+            )
+            .unwrap();
+            db.paste_at_position_with_change_set(
+                "generation-history",
+                0,
+                0,
+                &[vec!["99".into()]],
+                None,
+                &[],
+                Some(1),
+            )
+            .unwrap();
+            deleted.change_set_id
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": change_set_id}}),
+        ];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened_state.db.lock().unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 2);
+        db.apply_change_set(&change_set_id, true).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 3);
+        db.apply_change_set(&change_set_id, false).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 4);
 
         drop(db);
         let _ = std::fs::remove_file(path);
@@ -4160,6 +4234,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: HashMap::new(),
             delta_history: None,
         };
 
@@ -4385,6 +4460,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: HashMap::new(),
             delta_history: None,
         };
 
@@ -4599,6 +4675,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
+            dataset_generations: HashMap::new(),
             delta_history: None,
         };
 
