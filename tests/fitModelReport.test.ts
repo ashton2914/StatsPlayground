@@ -276,6 +276,8 @@ function createFittedResult(overrides: Partial<FitModelFittedResult> = {}): FitM
         upperConfidenceLimit: null,
       },
     ],
+    effectTests: [],
+    leveragePlots: [],
     plotRows: [],
     plotRowsSampled: false,
     warnings: ["saturatedModel"],

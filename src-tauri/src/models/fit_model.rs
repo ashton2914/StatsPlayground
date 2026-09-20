@@ -198,6 +198,50 @@ pub enum FitModelInferenceReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct FitModelEffectTest {
+    pub term_id: String,
+    pub term_label: String,
+    pub number_of_parameters: u64,
+    pub degrees_of_freedom: u64,
+    pub sum_of_squares: Option<f64>,
+    pub f_ratio: Option<f64>,
+    pub p_value: Option<f64>,
+    pub reason: Option<FitModelInferenceReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelLeveragePoint {
+    pub row_index: u64,
+    pub effect_leverage: f64,
+    pub adjusted_response: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelLeverageBandPoint {
+    pub effect_leverage: f64,
+    pub fitted: f64,
+    pub lower: f64,
+    pub upper: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FitModelLeveragePlot {
+    pub term_id: String,
+    pub term_label: String,
+    pub p_value: Option<f64>,
+    pub points: Vec<FitModelLeveragePoint>,
+    pub confidence_band: Vec<FitModelLeverageBandPoint>,
+    pub null_line_y: Option<f64>,
+    pub rows_sampled: bool,
+    pub source_row_count: u64,
+    pub reason: Option<FitModelInferenceReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct FitModelLackOfFitResult {
     pub sum_of_squares_error: f64,
     pub sum_of_squares_pure_error: f64,
@@ -296,6 +340,8 @@ pub struct FitModelFittedResult {
     pub summary_of_fit: FitModelSummaryOfFit,
     pub anova: Vec<FitModelAnovaRow>,
     pub parameter_estimates: Vec<FitModelParameterEstimate>,
+    pub effect_tests: Vec<FitModelEffectTest>,
+    pub leverage_plots: Vec<FitModelLeveragePlot>,
     pub plot_rows: Vec<FitModelPlotRow>,
     pub plot_rows_sampled: bool,
     pub warnings: Vec<FitModelWarningCode>,
@@ -474,6 +520,36 @@ mod tests {
             },
             anova: vec![],
             parameter_estimates: vec![],
+            effect_tests: vec![FitModelEffectTest {
+                term_id: "A".into(),
+                term_label: "A".into(),
+                number_of_parameters: 1,
+                degrees_of_freedom: 1,
+                sum_of_squares: Some(4.0),
+                f_ratio: Some(4.0),
+                p_value: Some(0.05),
+                reason: None,
+            }],
+            leverage_plots: vec![FitModelLeveragePlot {
+                term_id: "A".into(),
+                term_label: "A".into(),
+                p_value: Some(0.05),
+                points: vec![FitModelLeveragePoint {
+                    row_index: 7,
+                    effect_leverage: 2.0,
+                    adjusted_response: 10.0,
+                }],
+                confidence_band: vec![FitModelLeverageBandPoint {
+                    effect_leverage: 2.0,
+                    fitted: 10.0,
+                    lower: 9.5,
+                    upper: 10.5,
+                }],
+                null_line_y: Some(10.0),
+                rows_sampled: false,
+                source_row_count: 1,
+                reason: None,
+            }],
             plot_rows: vec![],
             plot_rows_sampled: false,
             warnings: vec![],
@@ -493,6 +569,14 @@ mod tests {
             fitted_value["availableSavedMetrics"],
             serde_json::json!(["predicted", "residual"])
         );
+        assert_eq!(fitted_value["effectTests"][0]["termId"], "A");
+        assert_eq!(fitted_value["effectTests"][0]["numberOfParameters"], 1);
+        assert_eq!(fitted_value["leveragePlots"][0]["points"][0]["rowIndex"], 7);
+        assert_eq!(
+            fitted_value["leveragePlots"][0]["confidenceBand"][0]["lower"],
+            9.5
+        );
+        assert_eq!(fitted_value["leveragePlots"][0]["nullLineY"], 10.0);
         assert_eq!(not_value["kind"], "notComputable");
     }
 }

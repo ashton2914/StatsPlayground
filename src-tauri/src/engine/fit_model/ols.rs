@@ -378,6 +378,8 @@ pub(crate) fn fit_linear_model_with_diagnostics(
                 },
             ],
             parameter_estimates,
+            effect_tests: vec![],
+            leverage_plots: vec![],
             plot_rows,
             plot_rows_sampled: sampled,
             warnings,

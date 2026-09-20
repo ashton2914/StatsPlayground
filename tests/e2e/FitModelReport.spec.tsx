@@ -112,6 +112,8 @@ const fittedResult: FitModelFittedResult = {
     { termId: "Intercept", termLabel: "Intercept", estimate: 1, standardError: 0.1, tRatio: 10, pValue: 0.001, lowerConfidenceLimit: 0.8, upperConfidenceLimit: 1.2 },
     { termId: "A", termLabel: "A", estimate: 2, standardError: 0.2, tRatio: 10, pValue: 0.001, lowerConfidenceLimit: 1.6, upperConfidenceLimit: 2.4 },
   ],
+  effectTests: [],
+  leveragePlots: [],
   plotRows: [
     { rowIndex: 4, observed: 10, fitted: 8, residual: 2 },
     { rowIndex: 9, observed: 12, fitted: 11.8, residual: 0.2 },
