@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use duckdb::{params, OptionalExt};
+use duckdb::types::Value;
+use duckdb::{params, params_from_iter, OptionalExt};
 
 use crate::engine::duckdb_engine::{
     DuckDbEngine, NATURAL_ANCHOR_STRIDE, NATURAL_ORDER_SQL, NATURAL_ORDER_STRIDE,
@@ -9,6 +10,20 @@ use crate::error::AppError;
 
 const INITIAL_REBALANCE_WINDOW: usize = 256;
 const MAX_REBALANCE_WINDOW: usize = 8_192;
+
+#[cfg(test)]
+static ANCHOR_REFRESH_QUERY_COUNTER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn anchor_refresh_query_counter() -> usize {
+    ANCHOR_REFRESH_QUERY_COUNTER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn reset_anchor_refresh_query_counter() {
+    ANCHOR_REFRESH_QUERY_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RowOrderAllocation {
@@ -20,6 +35,16 @@ struct AllocationBoundary {
     predecessor_key: Option<i128>,
     target_key: Option<i128>,
     insertion_ordinal: i64,
+}
+
+enum AnchorMutation<'a> {
+    Insert {
+        insertion_ordinal: i64,
+        inserted_count: i64,
+    },
+    Delete {
+        deleted: &'a [(i64, i128, i64)],
+    },
 }
 
 pub(crate) fn allocate_before(
@@ -363,15 +388,9 @@ pub(crate) fn publish_inserted_anchors(
         source_generation,
         target_generation,
         &table_name,
-        |ordinal, _| {
-            ordinal
-                .checked_add(if ordinal >= insertion_ordinal {
-                    inserted_count
-                } else {
-                    0
-                })
-                .map(Some)
-                .ok_or_else(|| AppError::InvalidParam("anchor ordinal overflowed".into()))
+        AnchorMutation::Insert {
+            insertion_ordinal,
+            inserted_count,
         },
     )
 }
@@ -403,21 +422,7 @@ pub(crate) fn publish_deleted_anchors(
         source_generation,
         target_generation,
         &table_name,
-        |ordinal, row_id| {
-            if deleted_by_id.contains_key(&row_id) {
-                return Ok(None);
-            }
-            let preceding_deletions = deleted_by_id
-                .values()
-                .filter(|(_, deleted_ordinal)| *deleted_ordinal < ordinal)
-                .count();
-            let preceding_deletions = i64::try_from(preceding_deletions)
-                .map_err(|_| AppError::InvalidParam("deleted row count is too large".into()))?;
-            ordinal
-                .checked_sub(preceding_deletions)
-                .map(Some)
-                .ok_or_else(|| AppError::InvalidParam("anchor ordinal underflowed".into()))
-        },
+        AnchorMutation::Delete { deleted },
     )
 }
 
@@ -468,56 +473,196 @@ fn publish_transformed_anchors(
     source_generation: u64,
     target_generation: u64,
     table_name: &str,
-    mut transform: impl FnMut(i64, i64) -> Result<Option<i64>, AppError>,
+    mutation: AnchorMutation<'_>,
 ) -> Result<(), AppError> {
     let source_generation = generation_i64(source_generation)?;
     let target_generation = generation_i64(target_generation)?;
-    let source = {
-        let mut statement = engine.conn().prepare(
-            "SELECT ordinal, row_id FROM _table_navigation_anchors
-             WHERE dataset_id = ? AND generation = ? ORDER BY ordinal",
-        )?;
-        statement
-            .query_map(params![dataset_id, source_generation], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let effective_key_sql =
-        format!("SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?");
-    let mut transformed = Vec::with_capacity(source.len());
-    for (ordinal, row_id) in source {
-        let Some(ordinal) = transform(ordinal, row_id)? else {
-            continue;
-        };
-        let order_key = engine
-            .conn()
-            .query_row(&effective_key_sql, params![row_id], |row| {
-                row.get::<_, i128>(0)
-            })
-            .optional()?;
-        if let Some(order_key) = order_key {
-            transformed.push((ordinal, order_key, row_id));
-        }
-    }
+    validate_source_anchor_generation(
+        engine,
+        dataset_id,
+        source_generation,
+        table_name,
+        &mutation,
+    )?;
 
     engine.conn().execute(
         "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
         params![dataset_id, target_generation],
     )?;
-    for (ordinal, order_key, row_id) in transformed {
-        engine.conn().execute(
-            "INSERT INTO _table_navigation_anchors
-             (dataset_id, generation, ordinal, order_key, row_id)
-             VALUES (?, ?, ?, ?, ?)",
-            params![dataset_id, target_generation, ordinal, order_key, row_id],
-        )?;
+    #[cfg(test)]
+    ANCHOR_REFRESH_QUERY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    match mutation {
+        AnchorMutation::Insert {
+            insertion_ordinal,
+            inserted_count,
+        } => {
+            let copy_sql = format!(
+                "INSERT INTO _table_navigation_anchors
+                 (dataset_id, generation, ordinal, order_key, row_id)
+                 SELECT ?, ?,
+                        source.ordinal + CASE WHEN source.ordinal >= ? THEN ? ELSE 0 END,
+                        COALESCE(rows.\"_row_order\",
+                            CAST(rows.\"_row_id\" AS HUGEINT)
+                                * 18446744073709551616::HUGEINT),
+                        source.row_id
+                 FROM _table_navigation_anchors AS source
+                 JOIN {table_name} AS rows ON rows.\"_row_id\" = source.row_id
+                 WHERE source.dataset_id = ? AND source.generation = ?"
+            );
+            engine.conn().execute(
+                &copy_sql,
+                params![
+                    dataset_id,
+                    target_generation,
+                    insertion_ordinal,
+                    inserted_count,
+                    dataset_id,
+                    source_generation
+                ],
+            )?;
+        }
+        AnchorMutation::Delete { deleted } => {
+            copy_deleted_anchors_setwise(
+                engine,
+                dataset_id,
+                source_generation,
+                target_generation,
+                table_name,
+                deleted,
+            )?;
+        }
     }
     repair_anchor_gaps(engine, dataset_id, target_generation, table_name)?;
     engine.conn().execute(
         "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation <> ?",
         params![dataset_id, target_generation],
     )?;
+    Ok(())
+}
+
+fn validate_source_anchor_generation(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    source_generation: i64,
+    table_name: &str,
+    mutation: &AnchorMutation<'_>,
+) -> Result<(), AppError> {
+    let row_count: i64 =
+        engine
+            .conn()
+            .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
+                row.get(0)
+            })?;
+    let source_row_count = match mutation {
+        AnchorMutation::Insert { inserted_count, .. } => row_count
+            .checked_sub(*inserted_count)
+            .ok_or_else(|| AppError::InvalidParam("inserted row count exceeds dataset".into()))?,
+        AnchorMutation::Delete { deleted } => row_count
+            .checked_add(
+                i64::try_from(deleted.len())
+                    .map_err(|_| AppError::InvalidParam("deleted row count is too large".into()))?,
+            )
+            .ok_or_else(|| AppError::InvalidParam("source row count overflowed".into()))?,
+    };
+    let stride = i64::try_from(NATURAL_ANCHOR_STRIDE)
+        .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
+    let (anchor_count, first_ordinal, last_ordinal, null_keys, max_gap): (
+        i64,
+        Option<i64>,
+        Option<i64>,
+        i64,
+        i64,
+    ) = engine.conn().query_row(
+        "WITH source AS (
+                 SELECT ordinal, order_key,
+                        ordinal - lag(ordinal) OVER (ORDER BY ordinal) AS gap
+                 FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?
+             )
+             SELECT count(*), min(ordinal), max(ordinal),
+                    count(*) FILTER (WHERE order_key IS NULL),
+                    COALESCE(max(gap), 0)
+             FROM source",
+        params![dataset_id, source_generation],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    if source_row_count == 0 && anchor_count == 0 {
+        return Ok(());
+    }
+    let uncovered_tail = last_ordinal
+        .map(|ordinal| source_row_count - 1 - ordinal)
+        .unwrap_or(source_row_count);
+    if anchor_count == 0
+        || first_ordinal != Some(0)
+        || null_keys != 0
+        || max_gap > stride
+        || uncovered_tail >= stride
+    {
+        return Err(AppError::InvalidParam(format!(
+            "source anchor generation {source_generation} is missing or malformed for dataset {dataset_id}"
+        )));
+    }
+    Ok(())
+}
+
+fn copy_deleted_anchors_setwise(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    source_generation: i64,
+    target_generation: i64,
+    table_name: &str,
+    deleted: &[(i64, i128, i64)],
+) -> Result<(), AppError> {
+    let (deleted_cte, mut values) = if deleted.is_empty() {
+        (
+            "SELECT NULL::BIGINT AS row_id, NULL::BIGINT AS ordinal WHERE FALSE".to_string(),
+            Vec::new(),
+        )
+    } else {
+        let placeholders = std::iter::repeat_n("(?, ?)", deleted.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut values = Vec::with_capacity(deleted.len() * 2);
+        for &(row_id, _, ordinal) in deleted {
+            values.push(Value::BigInt(row_id));
+            values.push(Value::BigInt(ordinal));
+        }
+        (format!("VALUES {placeholders}"), values)
+    };
+    values.extend([
+        Value::Text(dataset_id.to_string()),
+        Value::BigInt(target_generation),
+        Value::Text(dataset_id.to_string()),
+        Value::BigInt(source_generation),
+    ]);
+    let copy_sql = format!(
+        "WITH deleted(row_id, ordinal) AS ({deleted_cte})
+         INSERT INTO _table_navigation_anchors
+         (dataset_id, generation, ordinal, order_key, row_id)
+         SELECT ?, ?,
+                source.ordinal - (
+                    SELECT count(*) FROM deleted AS preceding
+                    WHERE preceding.ordinal < source.ordinal
+                ),
+                COALESCE(rows.\"_row_order\",
+                    CAST(rows.\"_row_id\" AS HUGEINT)
+                        * 18446744073709551616::HUGEINT),
+                source.row_id
+         FROM _table_navigation_anchors AS source
+         JOIN {table_name} AS rows ON rows.\"_row_id\" = source.row_id
+         LEFT JOIN deleted AS removed ON removed.row_id = source.row_id
+         WHERE source.dataset_id = ? AND source.generation = ?
+           AND removed.row_id IS NULL"
+    );
+    engine.conn().execute(&copy_sql, params_from_iter(values))?;
     Ok(())
 }
 
@@ -574,30 +719,35 @@ fn repair_anchor_gaps(
         repair_ordinals.push(previous);
     }
 
-    let row_at_ordinal_sql = format!(
-        "SELECT \"_row_id\", order_key
-         FROM (
-             SELECT \"_row_id\", {NATURAL_ORDER_SQL} AS order_key,
-                    row_number() OVER (
-                        ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
-                    ) - 1 AS ordinal
-             FROM {table_name}
-         ) AS ordered_rows
-         WHERE ordinal = ?"
-    );
-    for ordinal in repair_ordinals {
-        let (row_id, order_key): (i64, i128) =
-            engine
-                .conn()
-                .query_row(&row_at_ordinal_sql, params![ordinal], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?;
-        engine.conn().execute(
-            "INSERT OR REPLACE INTO _table_navigation_anchors
+    if !repair_ordinals.is_empty() {
+        let placeholders = std::iter::repeat_n("(?)", repair_ordinals.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut values = repair_ordinals
+            .into_iter()
+            .map(Value::BigInt)
+            .collect::<Vec<_>>();
+        values.push(Value::Text(dataset_id.to_string()));
+        values.push(Value::BigInt(generation));
+        let repair_sql = format!(
+            "WITH wanted(ordinal) AS (VALUES {placeholders}),
+             ordered_rows AS (
+                 SELECT \"_row_id\",
+                        {NATURAL_ORDER_SQL} AS order_key,
+                        row_number() OVER (
+                            ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                        ) - 1 AS ordinal
+                 FROM {table_name}
+             )
+             INSERT OR REPLACE INTO _table_navigation_anchors
              (dataset_id, generation, ordinal, order_key, row_id)
-             VALUES (?, ?, ?, ?, ?)",
-            params![dataset_id, generation, ordinal, order_key, row_id],
-        )?;
+             SELECT ?, ?, ordered.ordinal, ordered.order_key, ordered.\"_row_id\"
+             FROM ordered_rows AS ordered
+             JOIN wanted ON wanted.ordinal = ordered.ordinal"
+        );
+        engine
+            .conn()
+            .execute(&repair_sql, params_from_iter(values))?;
     }
     Ok(())
 }
@@ -609,7 +759,10 @@ fn generation_i64(generation: u64) -> Result<i64, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{allocate_before, publish_deleted_anchors, publish_inserted_anchors};
+    use super::{
+        allocate_before, anchor_refresh_query_counter, publish_deleted_anchors,
+        publish_inserted_anchors, reset_anchor_refresh_query_counter,
+    };
     use crate::engine::duckdb_engine::{
         full_anchor_rebuild_counter, reset_full_anchor_rebuild_counter, DuckDbEngine,
         NATURAL_ANCHOR_STRIDE, NATURAL_ORDER_SQL, NATURAL_ORDER_STRIDE,
@@ -835,6 +988,25 @@ mod tests {
             .unwrap_or(0)
     }
 
+    fn anchors(db: &DuckDbEngine, dataset_id: &str) -> Vec<(i64, i64, i128, i64)> {
+        let mut statement = db
+            .conn()
+            .prepare(
+                "SELECT generation, ordinal, order_key, row_id
+                 FROM _table_navigation_anchors
+                 WHERE dataset_id = ?
+                 ORDER BY generation, ordinal",
+            )
+            .expect("prepare all anchors");
+        statement
+            .query_map(params![dataset_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("query all anchors")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect all anchors")
+    }
+
     fn publish_insert(
         db: &DuckDbEngine,
         dataset_id: &str,
@@ -922,5 +1094,121 @@ mod tests {
             expected_natural_row_ids,
         );
         assert_eq!(full_anchor_rebuild_counter(), 0);
+    }
+
+    #[test]
+    fn incremental_anchor_missing_source_fails_without_changing_any_generation() {
+        let dataset_id = "incremental_missing_source";
+        let db = seed(dataset_id, NATURAL_ANCHOR_STRIDE + 10);
+        let before = anchors(&db, dataset_id);
+
+        let error = publish_inserted_anchors(&db, dataset_id, 99, 100, 0, &[])
+            .expect_err("missing source generation");
+
+        assert!(error.to_string().contains("source anchor"));
+        assert_eq!(anchors(&db, dataset_id), before);
+    }
+
+    #[test]
+    fn incremental_anchor_malformed_source_fails_without_changing_any_generation() {
+        let dataset_id = "incremental_malformed_source";
+        let db = seed(dataset_id, NATURAL_ANCHOR_STRIDE + 10);
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        db.conn()
+            .execute(
+                "DELETE FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ? AND ordinal = 0",
+                params![dataset_id, source_generation as i64],
+            )
+            .expect("malform source anchors");
+        let before = anchors(&db, dataset_id);
+
+        let error = publish_inserted_anchors(
+            &db,
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+            0,
+            &[],
+        )
+        .expect_err("malformed source generation");
+
+        assert!(error.to_string().contains("source anchor"));
+        assert_eq!(anchors(&db, dataset_id), before);
+    }
+
+    #[test]
+    fn incremental_anchor_empty_dataset_transition_remains_valid() {
+        let dataset_id = "incremental_empty_transition";
+        let db = seed(dataset_id, 3);
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        let deleted = effective_keys(&db, dataset_id)
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, (row_id, order_key))| {
+                (row_id, order_key, i64::try_from(ordinal).expect("ordinal"))
+            })
+            .collect::<Vec<_>>();
+        db.conn()
+            .execute(&format!("DELETE FROM {}", table(dataset_id)), [])
+            .expect("delete all rows");
+        set_generation_and_row_count(&db, dataset_id, source_generation + 1, 0);
+
+        publish_deleted_anchors(
+            &db,
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+            &deleted,
+        )
+        .expect("publish empty transition");
+
+        assert!(anchors(&db, dataset_id).is_empty());
+        assert!(query_all_windows(&db, dataset_id, source_generation + 1).is_empty());
+    }
+
+    #[test]
+    fn incremental_anchor_insert_from_empty_dataset_remains_valid() {
+        let dataset_id = "incremental_insert_from_empty";
+        let db = seed(dataset_id, 0);
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        let allocation = allocate_before(&db, dataset_id, None, 1).expect("allocate first row");
+        insert_allocated(&db, dataset_id, 1, allocation.row_orders[0]);
+        set_generation_and_row_count(&db, dataset_id, source_generation + 1, 1);
+
+        publish_inserted_anchors(
+            &db,
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+            allocation.insertion_ordinal,
+            &[(1, allocation.row_orders[0])],
+        )
+        .expect("publish insertion from empty source");
+
+        assert_eq!(
+            query_all_windows(&db, dataset_id, source_generation + 1),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn incremental_anchor_refreshes_copied_anchors_with_one_set_query() {
+        let dataset_id = "incremental_set_refresh";
+        let db = seed(dataset_id, 2 * NATURAL_ANCHOR_STRIDE + 10);
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        reset_anchor_refresh_query_counter();
+
+        publish_inserted_anchors(
+            &db,
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+            0,
+            &[],
+        )
+        .expect("publish unchanged anchors");
+
+        assert_eq!(anchor_refresh_query_counter(), 1);
     }
 }
