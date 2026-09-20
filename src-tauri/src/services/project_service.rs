@@ -404,7 +404,14 @@ impl<'a> ProjectService<'a> {
                     .clone()
                     .unwrap_or_default();
                 if bundle.manifest.dataset_generations.is_none() {
-                    if let Some(delta_history) = &bundle.delta_history {
+                    if let Some(history_timeline) = &bundle.history_timeline {
+                        for cursor in &history_timeline.metadata.datasets {
+                            generations.insert(
+                                cursor.dataset_id.clone(),
+                                cursor.current_generation,
+                            );
+                        }
+                    } else if let Some(delta_history) = &bundle.delta_history {
                         for change_set in &delta_history.metadata.change_sets {
                             let restored_generation = db
                                 .get_dataset_generation(&change_set.dataset_id)
@@ -459,6 +466,38 @@ impl<'a> ProjectService<'a> {
                     .lock()
                     .map_err(|error| AppError::Database(error.to_string()))?
                     .restore_delta_history(&delta_history.metadata, &restore_snapshots)?;
+                drop(temporary_snapshots);
+            }
+            if let Some(history_timeline) = &bundle.history_timeline {
+                let parent = std::path::Path::new(file_path).parent().ok_or_else(|| {
+                    AppError::FileIO("Project archive has no parent directory".into())
+                })?;
+                let mut temporary_snapshots =
+                    Vec::with_capacity(history_timeline.snapshots.len());
+                let mut restore_snapshots =
+                    Vec::with_capacity(history_timeline.snapshots.len());
+                for (change_set_id, descriptor, bytes) in &history_timeline.snapshots {
+                    let mut file = tempfile::Builder::new()
+                        .prefix(".statsplayground-open-history-v2-")
+                        .suffix(".parquet")
+                        .tempfile_in(parent)?;
+                    file.write_all(bytes)?;
+                    file.as_file_mut().sync_all()?;
+                    restore_snapshots.push((
+                        change_set_id.clone(),
+                        descriptor.clone(),
+                        file.path().to_path_buf(),
+                    ));
+                    temporary_snapshots.push(file);
+                }
+                staged_state
+                    .db
+                    .lock()
+                    .map_err(|error| AppError::Database(error.to_string()))?
+                    .restore_unified_history(
+                        &history_timeline.metadata,
+                        &restore_snapshots,
+                    )?;
                 drop(temporary_snapshots);
             }
         }
@@ -2037,6 +2076,166 @@ mod tests {
         assert_eq!(db.get_dataset_meta("archive-history").unwrap().row_count, 3);
         assert_eq!(db.get_user_columns("archive-history").unwrap().len(), 1);
 
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_round_trips_interleaved_compact_and_legacy_replay() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-unified-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Unified History".into(), &path_string)
+            .unwrap();
+        let (row_id, legacy_id, column_id) = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("unified-archive", "Unified Archive", 4, 2)
+                .unwrap();
+            let row = crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "unified-archive",
+                &[2],
+                0,
+            )
+            .unwrap();
+            let legacy = db
+                .paste_at_position_with_change_set(
+                    "unified-archive",
+                    0,
+                    0,
+                    &[vec!["19".into()]],
+                    None,
+                    &["DOUBLE".into()],
+                    Some(1),
+                )
+                .unwrap();
+            let column = db.get_user_column_descriptors("unified-archive").unwrap()[0].clone();
+            let column = crate::services::table_delta_mutation::delete_columns_compact(
+                &db,
+                "unified-archive",
+                &[column],
+                2,
+            )
+            .unwrap();
+            (row.change_set_id, legacy, column.change_set_id)
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": column_id}}),
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": legacy_id}}),
+            serde_json::json!({"action": {"kind": "changeSet", "changeSetId": row_id}}),
+        ];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened_state.db.lock().unwrap();
+        db.apply_change_set(&column_id, true).unwrap();
+        db.apply_change_set(&legacy_id, true).unwrap();
+        db.apply_change_set(&row_id, true).unwrap();
+        assert_eq!(db.get_dataset_meta("unified-archive").unwrap().row_count, 4);
+        assert_eq!(db.get_user_columns("unified-archive").unwrap().len(), 2);
+        db.apply_change_set(&row_id, false).unwrap();
+        db.apply_change_set(&legacy_id, false).unwrap();
+        db.apply_change_set(&column_id, false).unwrap();
+        assert_eq!(db.get_dataset_meta("unified-archive").unwrap().row_count, 3);
+        assert_eq!(db.get_user_columns("unified-archive").unwrap().len(), 1);
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_round_trips_nullable_hugeint_extrema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-unified-hugeint-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Unified Hugeint".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.create_empty_table(
+                "unified-hugeint",
+                "Unified Hugeint",
+                &["value".into()],
+                &["HUGEINT".into()],
+            )
+            .unwrap();
+            for (row_id, value, row_order) in [
+                (1_i64, None, Some(i128::MIN)),
+                (2, Some(i128::MIN), Some(-1)),
+                (3, Some(i128::MAX), Some(1)),
+                (4, Some(42), Some(i128::MAX)),
+            ] {
+                db.conn()
+                    .execute(
+                        "INSERT INTO dataset_unified_hugeint (_row_id, value, _row_order)
+                         VALUES (?, ?, ?)",
+                        duckdb::params![row_id, value, row_order],
+                    )
+                    .unwrap();
+            }
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = 4, next_row_id = 5
+                     WHERE id = 'unified-hugeint'",
+                    [],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("unified-hugeint", 0).unwrap();
+            crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "unified-hugeint",
+                &[1, 2, 3, 4],
+                0,
+            )
+            .unwrap()
+            .change_set_id
+        };
+        service.save_project(empty_save_request(None), None).unwrap();
+
+        let reopened = AppState::new().unwrap();
+        ProjectService::new(&reopened)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened.db.lock().unwrap();
+        db.apply_change_set(&change_set_id, true).unwrap();
+        let rows = db
+            .conn()
+            .prepare(
+                "SELECT value, _row_order FROM dataset_unified_hugeint ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<i128>>(0)?,
+                    row.get::<_, Option<i128>>(1)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (None, Some(i128::MIN)),
+                (Some(i128::MIN), Some(-1)),
+                (Some(i128::MAX), Some(1)),
+                (Some(42), Some(i128::MAX)),
+            ]
+        );
         drop(db);
         let _ = std::fs::remove_file(path);
     }
@@ -4350,6 +4549,7 @@ mod tests {
             dataset_filters: HashMap::new(),
             dataset_generations: None,
             delta_history: None,
+            history_timeline: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -4576,6 +4776,7 @@ mod tests {
             dataset_filters: HashMap::new(),
             dataset_generations: None,
             delta_history: None,
+            history_timeline: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());
@@ -4791,6 +4992,7 @@ mod tests {
             dataset_filters: HashMap::new(),
             dataset_generations: None,
             delta_history: None,
+            history_timeline: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&file_path).unwrap());

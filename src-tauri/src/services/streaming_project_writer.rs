@@ -381,19 +381,21 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             snapshot.request.graph_new_folders.clone(),
         )?;
         bundle.manifest.dataset_generations = Some(snapshot.dataset_generations.clone());
-        let (delta_history, delta_snapshots) = {
+        let history_timeline = {
             let db = self
                 .state
                 .db
                 .lock()
                 .map_err(|e| AppError::Database(e.to_string()))?;
-            db.archive_delta_history()?
+            db.archive_unified_history()?
         };
-        if !delta_history.change_sets.is_empty() {
-            bundle.manifest.delta_history = Some(spprj_archive::DeltaHistoryRef {
-                change_sets_file: "history/change_sets.json".into(),
-                snapshots: delta_snapshots.clone(),
-            });
+        if !history_timeline.entries.is_empty() {
+            bundle.manifest.history_timeline = Some(
+                crate::services::table_history_archive::HistoryTimelineRef {
+                    timeline_file: "history/timeline.v2.json".into(),
+                },
+            );
+            bundle.manifest.delta_history = None;
         }
 
         thread::scope(|scope| {
@@ -424,8 +426,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                 &bundle.snapshots,
                 &bundle.workflows,
                 &bundle.table_transforms,
-                &delta_history,
-                &delta_snapshots,
+                &history_timeline,
                 &temp_path,
                 temp_file,
                 total_rows,
@@ -484,8 +485,8 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         snapshot_docs: &[serde_json::Value],
         workflow_docs: &[workflow_domain::WorkflowDefinition],
         table_transform_docs: &[crate::services::table_transform_domain::TableTransformDefinition],
-        delta_history: &spprj_archive::DeltaHistoryArchive,
-        delta_snapshots: &[spprj_archive::DeltaHistorySnapshotRef],
+        history_timeline:
+            &crate::services::table_history_archive::HistoryTimelineArchive,
         temp_path: &Path,
         temp_file: std::fs::File,
         total_rows: usize,
@@ -898,16 +899,20 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             serde_json::to_writer(&mut zip, &snapshot.request.history)
                 .map_err(|e| AppError::FileIO(format!("failed to serialize history: {e}")))?;
         }
-        if !delta_history.change_sets.is_empty() {
-            zip.start_file("history/change_sets.json", file_opts)
+        if !history_timeline.entries.is_empty() {
+            zip.start_file("history/timeline.v2.json", file_opts)
                 .map_err(|error| AppError::FileIO(error.to_string()))?;
-            serde_json::to_writer(&mut zip, delta_history).map_err(|error| {
-                AppError::FileIO(format!("failed to serialize delta history: {error}"))
+            serde_json::to_writer(&mut zip, history_timeline).map_err(|error| {
+                AppError::FileIO(format!("failed to serialize unified history: {error}"))
             })?;
             let parent = temp_path.parent().ok_or_else(|| {
                 AppError::FileIO("Project archive destination has no parent directory".into())
             })?;
-            for descriptor in delta_snapshots {
+            for descriptor in history_timeline
+                .entries
+                .iter()
+                .flat_map(|entry| &entry.snapshots)
+            {
                 let mut parquet = tempfile::Builder::new()
                     .prefix(".statsplayground-history-")
                     .suffix(".parquet")
@@ -921,7 +926,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
                     let path = parquet.path().to_str().ok_or_else(|| {
                         AppError::FileIO("Snapshot path is not valid UTF-8".into())
                     })?;
-                    db.export_delta_history_snapshot(descriptor, path)?;
+                    db.export_unified_history_snapshot(descriptor, path)?;
                 }
                 parquet.as_file_mut().sync_all()?;
                 let mut parquet_reader = std::fs::File::open(parquet.path())?;

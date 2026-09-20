@@ -209,6 +209,9 @@ pub struct ProjectManifest {
     pub dataset_generations: Option<HashMap<String, u64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_history: Option<DeltaHistoryRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_timeline:
+        Option<crate::services::table_history_archive::HistoryTimelineRef>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -793,6 +796,8 @@ pub struct ProjectBundle {
     pub workflows: Vec<workflow_domain::WorkflowDefinition>,
     pub table_transforms: Vec<crate::services::table_transform_domain::TableTransformDefinition>,
     pub delta_history: Option<DeltaHistoryBundle>,
+    pub history_timeline:
+        Option<crate::services::table_history_archive::HistoryTimelineBundle>,
 }
 
 // ----------------------------------------------------------------------------
@@ -1179,7 +1184,11 @@ pub fn validate_archive_manifest_and_entries(
             )));
         }
     }
-    read_delta_history(&mut zip, expected_manifest.delta_history.as_ref())?;
+    if expected_manifest.history_timeline.is_some() {
+        read_history_timeline(&mut zip, expected_manifest.history_timeline.as_ref())?;
+    } else {
+        read_delta_history(&mut zip, expected_manifest.delta_history.as_ref())?;
+    }
     for entry in expected_extra_entries {
         let mut extra_entry = zip
             .by_name(entry)
@@ -1424,7 +1433,13 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         &manifest.table_transform_files,
         strict_v4_name_checks,
     )?;
-    let delta_history = read_delta_history(&mut zip, manifest.delta_history.as_ref())?;
+    let history_timeline =
+        read_history_timeline(&mut zip, manifest.history_timeline.as_ref())?;
+    let delta_history = if history_timeline.is_some() {
+        None
+    } else {
+        read_delta_history(&mut zip, manifest.delta_history.as_ref())?
+    };
 
     validate_workflow_collections(
         &workflows,
@@ -1448,7 +1463,75 @@ fn read_zip_bundle(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         workflows,
         table_transforms,
         delta_history,
+        history_timeline,
     })
+}
+
+fn read_history_timeline<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    history_ref: Option<&crate::services::table_history_archive::HistoryTimelineRef>,
+) -> Result<
+    Option<crate::services::table_history_archive::HistoryTimelineBundle>,
+    AppError,
+> {
+    use crate::services::table_history_archive::{
+        validate_history_timeline, HistoryTimelineArchive, HistoryTimelineBundle,
+    };
+
+    let Some(history_ref) = history_ref else {
+        return Ok(None);
+    };
+    if history_ref.timeline_file != "history/timeline.v2.json" {
+        return Err(AppError::FileIO(
+            "Invalid unified history timeline path".into(),
+        ));
+    }
+    let bytes = read_entry_bytes(zip, &history_ref.timeline_file)
+        .ok_or_else(|| AppError::FileIO("Missing unified history timeline".into()))?;
+    let metadata: HistoryTimelineArchive = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::FileIO(format!("Malformed history timeline: {error}")))?;
+    validate_history_timeline(&metadata)?;
+    let mut snapshots = Vec::new();
+    let expected_files = metadata
+        .entries
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .snapshots
+                .iter()
+                .map(move |snapshot| (entry.change_set_id.as_str(), snapshot))
+        })
+        .collect::<Vec<_>>();
+    for (change_set_id, descriptor) in &expected_files {
+        let snapshot_bytes = read_entry_bytes(zip, &descriptor.file).ok_or_else(|| {
+            AppError::FileIO(format!(
+                "Missing history snapshot for {change_set_id}:{}",
+                descriptor.kind
+            ))
+        })?;
+        snapshots.push((
+            (*change_set_id).to_string(),
+            (*descriptor).clone(),
+            snapshot_bytes,
+        ));
+    }
+    let expected = expected_files
+        .iter()
+        .map(|(_, snapshot)| snapshot.file.as_str())
+        .collect::<HashSet<_>>();
+    if zip.file_names().any(|name| {
+        name.starts_with("history/snapshots/")
+            && name.ends_with(".parquet")
+            && !expected.contains(name)
+    }) {
+        return Err(AppError::FileIO(
+            "Unified history contains an unreferenced snapshot".into(),
+        ));
+    }
+    Ok(Some(HistoryTimelineBundle {
+        metadata,
+        snapshots,
+    }))
 }
 
 fn read_delta_history<R: Read + Seek>(
@@ -1969,6 +2052,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         dataset_filters: HashMap::new(),
         dataset_generations: None,
         delta_history: None,
+        history_timeline: None,
     };
 
     let mut bundle = ProjectBundle {
@@ -1987,6 +2071,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         workflows: Vec::new(),
         table_transforms: Vec::new(),
         delta_history: None,
+        history_timeline: None,
     };
     set_graph_builders_new(
         &mut bundle,
@@ -2569,6 +2654,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
             dataset_filters,
             dataset_generations: None,
             delta_history: None,
+            history_timeline: None,
         },
         tables,
         graphs,
@@ -2584,6 +2670,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
         workflows,
         table_transforms,
         delta_history: None,
+        history_timeline: None,
     })
 }
 
@@ -9081,6 +9168,7 @@ mod tests {
             dataset_filters: HashMap::new(),
             dataset_generations: None,
             delta_history: None,
+            history_timeline: None,
         };
 
         let json = serde_json::to_vec(&manifest).expect("serialize manifest");
@@ -9516,6 +9604,7 @@ mod tests {
             )]),
             dataset_generations: None,
             delta_history: None,
+            history_timeline: None,
         };
 
         let file = std::fs::File::create(&path).unwrap();

@@ -8729,8 +8729,7 @@ impl DuckDbEngine {
                 params![generation + 1, &dataset_id],
             )?;
             self.conn.execute(
-                "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?
-                 AND storage_kind IN ('row_delta', 'column_delta')",
+                "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?",
                 params![generation + 1, &dataset_id],
             )?;
             crate::services::table_history_archive::advance_history_timeline(
@@ -8924,8 +8923,7 @@ impl DuckDbEngine {
             params![generation, dataset_id],
         )?;
         self.conn.execute(
-            "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?
-             AND storage_kind IN ('row_delta', 'column_delta')",
+            "UPDATE _history_change_sets SET generation = ? WHERE dataset_id = ?",
             params![generation, dataset_id],
         )?;
         Ok(())
@@ -9058,6 +9056,193 @@ impl DuckDbEngine {
         ))
     }
 
+    pub fn archive_unified_history(
+        &self,
+    ) -> Result<crate::services::table_history_archive::HistoryTimelineArchive, AppError> {
+        use crate::services::table_history_archive::{
+            HistoryDatasetCursor, HistorySnapshotRef, HistoryTimelineArchive,
+            HistoryTimelineEntry, LegacyHistoryColumn,
+        };
+
+        let (delta_archive, delta_snapshots) = self.archive_delta_history()?;
+        let delta_by_id = delta_archive
+            .change_sets
+            .into_iter()
+            .map(|change_set| (change_set.id.clone(), change_set))
+            .collect::<HashMap<_, _>>();
+        let delta_snapshot_by_id = delta_snapshots
+            .into_iter()
+            .map(|snapshot| (snapshot.change_set_id.clone(), snapshot))
+            .collect::<HashMap<_, _>>();
+        let mut statement = self.conn.prepare(
+            "SELECT change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                    created_before_generation, created_after_generation, current_generation,
+                    applied, before_schema_json, after_schema_json
+             FROM _history_timeline ORDER BY dataset_id, history_ordinal",
+        )?;
+        let headers = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, u64>(6)?,
+                    row.get::<_, u64>(7)?,
+                    row.get::<_, bool>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut entries = Vec::with_capacity(headers.len());
+        for (
+            change_set_id,
+            dataset_id,
+            history_ordinal,
+            storage_kind,
+            operation,
+            created_before_generation,
+            created_after_generation,
+            current_generation,
+            applied,
+            before_schema_json,
+            after_schema_json,
+        ) in headers
+        {
+            let before_schema = serde_json::from_str(&before_schema_json)
+                .map_err(|error| AppError::FileIO(format!("Invalid history schema: {error}")))?;
+            let after_schema = serde_json::from_str(&after_schema_json)
+                .map_err(|error| AppError::FileIO(format!("Invalid history schema: {error}")))?;
+            let mut snapshots = Vec::new();
+            let mut legacy_columns = Vec::new();
+            let delta = delta_by_id.get(&change_set_id).cloned();
+            if storage_kind == "full" {
+                let suffix = change_set_id.replace('-', "_");
+                for kind in ["before", "after"] {
+                    let table_name = format!("_history_{kind}_{suffix}");
+                    snapshots.push(HistorySnapshotRef {
+                        kind: kind.into(),
+                        file: format!(
+                            "history/snapshots/{change_set_id}/{kind}.parquet"
+                        ),
+                        columns: self.delta_snapshot_schema(&table_name)?,
+                        table_name,
+                    });
+                }
+                legacy_columns = self
+                    .conn
+                    .prepare(
+                        "SELECT ordinal, column_index, before_column_id, before_name, before_type,
+                                before_calculated_definition_json, after_column_id, after_name,
+                                after_type, after_calculated_definition_json, after_present
+                         FROM _history_change_set_columns
+                         WHERE change_set_id = ? ORDER BY ordinal",
+                    )?
+                    .query_map(params![&change_set_id], |row| {
+                        Ok(LegacyHistoryColumn {
+                            ordinal: row.get(0)?,
+                            column_index: row.get(1)?,
+                            before_column_id: row.get(2)?,
+                            before_name: row.get(3)?,
+                            before_type: row.get(4)?,
+                            before_calculated_definition_json: row.get(5)?,
+                            after_column_id: row.get(6)?,
+                            after_name: row.get(7)?,
+                            after_type: row.get(8)?,
+                            after_calculated_definition_json: row.get(9)?,
+                            after_present: row.get(10)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+            } else if let Some(snapshot) = delta_snapshot_by_id.get(&change_set_id) {
+                snapshots.push(HistorySnapshotRef {
+                    kind: "delta".into(),
+                    file: format!("history/snapshots/{change_set_id}/delta.parquet"),
+                    table_name: snapshot.table_name.clone(),
+                    columns: snapshot.columns.clone(),
+                });
+            }
+            entries.push(HistoryTimelineEntry {
+                change_set_id,
+                dataset_id,
+                history_ordinal,
+                storage_kind,
+                operation,
+                created_before_generation,
+                created_after_generation,
+                current_generation,
+                applied,
+                before_schema,
+                after_schema,
+                delta,
+                legacy_columns,
+                snapshots,
+            });
+        }
+        let mut datasets = Vec::new();
+        for group in entries
+            .iter()
+            .map(|entry| entry.dataset_id.as_str())
+            .collect::<BTreeSet<_>>()
+        {
+            let dataset_entries = entries
+                .iter()
+                .filter(|entry| entry.dataset_id == group)
+                .collect::<Vec<_>>();
+            datasets.push(HistoryDatasetCursor {
+                dataset_id: group.to_string(),
+                applied_count: dataset_entries.iter().filter(|entry| entry.applied).count() as u64,
+                current_generation: dataset_entries
+                    .first()
+                    .map(|entry| entry.current_generation)
+                    .unwrap_or_default(),
+            });
+        }
+        let archive = HistoryTimelineArchive {
+            version: 2,
+            datasets,
+            entries,
+        };
+        crate::services::table_history_archive::validate_history_timeline(&archive)?;
+        Ok(archive)
+    }
+
+    pub fn export_unified_history_snapshot(
+        &self,
+        descriptor: &crate::services::table_history_archive::HistorySnapshotRef,
+        output_path: &str,
+    ) -> Result<(), AppError> {
+        if self.delta_snapshot_schema(&descriptor.table_name)? != descriptor.columns {
+            return Err(AppError::FileIO(
+                "History snapshot schema changed during save".into(),
+            ));
+        }
+        let table = Self::quote_identifier(&descriptor.table_name);
+        let columns = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let name = Self::quote_identifier(&column.name);
+                let transport_type = column
+                    .transport_type
+                    .as_deref()
+                    .unwrap_or(&column.duckdb_type);
+                format!("CAST({name} AS {transport_type}) AS {name}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!("COPY (SELECT {columns} FROM {table}) TO $1 (FORMAT PARQUET)"),
+            params![output_path],
+        )?;
+        Ok(())
+    }
+
     fn validate_delta_snapshot_name(
         id: &uuid::Uuid,
         storage_kind: &str,
@@ -9170,6 +9355,23 @@ impl DuckDbEngine {
             std::path::PathBuf,
         )],
     ) -> Result<(), AppError> {
+        self.restore_delta_history_with_schemas(archive, snapshots, None)
+    }
+
+    fn restore_delta_history_with_schemas(
+        &self,
+        archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+        snapshots: &[(
+            crate::services::spprj_archive::DeltaHistorySnapshotRef,
+            std::path::PathBuf,
+        )],
+        historical_schemas: Option<
+            &HashMap<
+                String,
+                Vec<crate::services::table_history_archive::HistorySchemaColumn>,
+            >,
+        >,
+    ) -> Result<(), AppError> {
         if archive.version != 1 {
             return Err(AppError::FileIO("Unsupported delta history version".into()));
         }
@@ -9215,7 +9417,12 @@ impl DuckDbEngine {
         }
         for change_set in &archive.change_sets {
             if let Some(descriptor) = descriptors.get(change_set.id.as_str()) {
-                self.validate_delta_snapshot_descriptor(archive, change_set, descriptor)?;
+                self.validate_delta_snapshot_descriptor(
+                    archive,
+                    change_set,
+                    descriptor,
+                    historical_schemas.and_then(|schemas| schemas.get(&change_set.id)),
+                )?;
             }
         }
         self.conn.execute_batch("BEGIN TRANSACTION")?;
@@ -9254,6 +9461,19 @@ impl DuckDbEngine {
                     )));
                 }
                 for column in &descriptor.columns {
+                    let canonical = self
+                        .canonicalize_column_type(&column.duckdb_type)
+                        .map_err(|error| {
+                            AppError::FileIO(format!(
+                                "Invalid history snapshot logical type {}: {error}",
+                                column.duckdb_type
+                            ))
+                        })?;
+                    if canonical != column.duckdb_type {
+                        return Err(AppError::FileIO(
+                            "History snapshot uses a non-canonical logical type".into(),
+                        ));
+                    }
                     if column.duckdb_type == "HUGEINT" {
                         let identifier = Self::quote_identifier(&column.name);
                         let invalid: i64 = self.conn.query_row(
@@ -9374,6 +9594,9 @@ impl DuckDbEngine {
                     )?;
                 }
             }
+            if historical_schemas.is_none() {
+                self.restore_v1_compact_timeline(archive, &authoritative_generations)?;
+            }
             Ok(())
         })();
         match result {
@@ -9387,6 +9610,151 @@ impl DuckDbEngine {
             }
         }
     }
+
+    fn restore_v1_compact_timeline(
+                &self,
+                archive: &crate::services::spprj_archive::DeltaHistoryArchive,
+                generations: &HashMap<String, u64>,
+            ) -> Result<(), AppError> {
+                use crate::services::table_history_archive::HistorySchemaColumn;
+
+                let dataset_ids = archive
+                    .change_sets
+                    .iter()
+                    .map(|change_set| change_set.dataset_id.as_str())
+                    .collect::<BTreeSet<_>>();
+                for dataset_id in dataset_ids {
+                    let entries = archive
+                        .change_sets
+                        .iter()
+                        .filter(|change_set| change_set.dataset_id == dataset_id)
+                        .collect::<Vec<_>>();
+                    let mut saw_unapplied = false;
+                    for entry in &entries {
+                        if entry.applied && saw_unapplied {
+                            return Err(AppError::FileIO(
+                                "Compact v1 applied state is not a provable prefix".into(),
+                            ));
+                        }
+                        saw_unapplied |= !entry.applied;
+                        if entry.after_generation != entry.before_generation.saturating_add(1) {
+                            return Err(AppError::FileIO(
+                                "Compact v1 created generations are not provable".into(),
+                            ));
+                        }
+                    }
+                    let mut schema = serde_json::from_str::<Vec<HistorySchemaColumn>>(
+                        &crate::services::table_history_archive::capture_history_schema(
+                            self,
+                            dataset_id,
+                        )?,
+                    )
+                    .map_err(|error| AppError::FileIO(error.to_string()))?;
+                    for entry in entries.iter().rev().filter(|entry| entry.applied) {
+                        Self::apply_v1_schema_transition(&mut schema, entry, true)?;
+                    }
+                    let generation = *generations
+                        .get(dataset_id)
+                        .ok_or_else(|| AppError::FileIO("Missing compact v1 generation".into()))?;
+                    for (ordinal, entry) in entries.iter().enumerate() {
+                        let before_schema = schema.clone();
+                        Self::apply_v1_schema_transition(&mut schema, entry, false)?;
+                        let after_schema = schema.clone();
+                        self.conn.execute(
+                            "INSERT INTO _history_timeline
+                             (change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                              created_before_generation, created_after_generation, current_generation,
+                              applied, before_schema_json, after_schema_json)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            params![
+                                &entry.id,
+                                dataset_id,
+                                ordinal as u64,
+                                &entry.storage_kind,
+                                &entry.operation,
+                                entry.before_generation,
+                                entry.after_generation,
+                                generation,
+                                entry.applied,
+                                serde_json::to_string(&before_schema)
+                                    .map_err(|error| AppError::FileIO(error.to_string()))?,
+                                serde_json::to_string(&after_schema)
+                                    .map_err(|error| AppError::FileIO(error.to_string()))?
+                            ],
+                        )?;
+                        if !entry.applied {
+                            schema = before_schema;
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            fn apply_v1_schema_transition(
+                schema: &mut Vec<crate::services::table_history_archive::HistorySchemaColumn>,
+                entry: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+                reverse: bool,
+            ) -> Result<(), AppError> {
+                use crate::services::table_history_archive::HistorySchemaColumn;
+
+                let inserting = (entry.operation == "add_columns" && !reverse)
+                    || (entry.operation == "delete_columns" && reverse);
+                let removing = (entry.operation == "delete_columns" && !reverse)
+                    || (entry.operation == "add_columns" && reverse);
+                if inserting {
+                    for column in &entry.columns {
+                        if schema
+                            .iter()
+                            .any(|current| current.column_id == column.column_id)
+                        {
+                            return Err(AppError::FileIO(
+                                "Compact v1 column transition is not provable".into(),
+                            ));
+                        }
+                        let index = usize::try_from(column.col_index).map_err(|_| {
+                            AppError::FileIO("Compact v1 column index is invalid".into())
+                        })?;
+                        if index > schema.len() {
+                            return Err(AppError::FileIO(
+                                "Compact v1 column transition is not contiguous".into(),
+                            ));
+                        }
+                        schema.insert(
+                            index,
+                            HistorySchemaColumn {
+                                column_id: column.column_id.clone(),
+                                col_index: column.col_index,
+                                name: column.col_name.clone(),
+                                duckdb_type: column.col_type.clone(),
+                                calculated_definition_json: column
+                                    .calculated_definition_json
+                                    .clone(),
+                            },
+                        );
+                    }
+                } else if removing {
+                    for column in entry.columns.iter().rev() {
+                        let index = schema
+                            .iter()
+                            .position(|current| current.column_id == column.column_id)
+                            .ok_or_else(|| {
+                                AppError::FileIO(
+                                    "Compact v1 column transition is not provable".into(),
+                                )
+                            })?;
+                        schema.remove(index);
+                    }
+                } else if !matches!(entry.operation.as_str(), "add_rows" | "delete_rows") {
+                    return Err(AppError::FileIO(
+                        "Unsupported compact v1 history operation".into(),
+                    ));
+                }
+                for (index, column) in schema.iter_mut().enumerate() {
+                    column.col_index = i32::try_from(index)
+                        .map_err(|_| AppError::FileIO("Compact v1 schema is too large".into()))?;
+                }
+                Ok(())
+            }
 
     fn validate_delta_column_metadata(
         &self,
@@ -9443,32 +9811,31 @@ impl DuckDbEngine {
         archive: &crate::services::spprj_archive::DeltaHistoryArchive,
         change_set: &crate::services::spprj_archive::DeltaHistoryChangeSet,
         descriptor: &crate::services::spprj_archive::DeltaHistorySnapshotRef,
+        historical_schema: Option<
+            &Vec<crate::services::table_history_archive::HistorySchemaColumn>,
+        >,
     ) -> Result<(), AppError> {
         let dataset_table = Self::internal_table_name(&change_set.dataset_id);
         let dataset_schema = self.raw_table_schema(&dataset_table)?;
-        let expected = if change_set.storage_kind == "row_delta" {
-            let mut required = dataset_schema.iter().cloned().collect::<HashMap<_, _>>();
-            for column in archive
-                .change_sets
-                .iter()
-                .filter(|other| other.dataset_id == change_set.dataset_id)
-                .flat_map(|other| &other.columns)
-            {
-                required.insert(column.col_name.clone(), column.col_type.clone());
+        let expected: Vec<(String, String)> = if change_set.storage_kind == "row_delta" {
+            if let Some(_historical_schema) = historical_schema {
+                descriptor
+                    .columns
+                    .iter()
+                    .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+                    .collect()
+            } else {
+                let mut required = dataset_schema.iter().cloned().collect::<HashMap<_, _>>();
+                for column in archive
+                    .change_sets
+                    .iter()
+                    .filter(|other| other.dataset_id == change_set.dataset_id)
+                    .flat_map(|other| &other.columns)
+                {
+                    required.insert(column.col_name.clone(), column.col_type.clone());
+                }
+                required.into_iter().collect()
             }
-            let logical = descriptor
-                .columns
-                .iter()
-                .map(|column| (column.name.clone(), column.duckdb_type.clone()))
-                .collect::<Vec<_>>();
-            let logical_by_name = logical.iter().cloned().collect::<HashMap<_, _>>();
-            if logical_by_name != required {
-                return Err(AppError::FileIO(
-                    "Delta history row snapshot schema does not contain every required physical column"
-                        .into(),
-                ));
-            }
-            logical
         } else {
             let row_id = dataset_schema
                 .iter()
@@ -9518,11 +9885,38 @@ impl DuckDbEngine {
                 Ok((column.name.clone(), column.duckdb_type.clone()))
             })
             .collect::<Result<Vec<_>, AppError>>()?;
-        if change_set.storage_kind != "row_delta" && logical != expected {
-            return Err(AppError::FileIO(format!(
+        let historical_row_mismatch =
+            change_set.storage_kind == "row_delta" && historical_schema.is_some_and(|schema| {
+            let mut actual = logical.iter().cloned().collect::<HashMap<_, _>>();
+            let row_id = actual.remove("_row_id");
+            let row_order = actual.remove("_row_order");
+            let expected_users = schema
+                .iter()
+                .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+                .collect::<HashMap<_, _>>();
+            !matches!(row_id.as_deref(), Some("TINYINT" | "SMALLINT" | "INTEGER" | "BIGINT"))
+                || row_order.as_deref() != Some("HUGEINT")
+                || actual != expected_users
+            });
+        let schema_mismatch = historical_row_mismatch
+            || if change_set.storage_kind == "row_delta" && historical_schema.is_none() {
+                logical.iter().cloned().collect::<HashMap<_, _>>()
+                    != expected.iter().cloned().collect::<HashMap<_, _>>()
+            } else {
+                logical != expected
+            };
+        if schema_mismatch {
+            return Err(AppError::FileIO(if change_set.storage_kind == "row_delta"
+                && historical_schema.is_none()
+            {
+                "Delta history row snapshot schema does not contain every required physical column"
+                    .into()
+            } else {
+                format!(
                     "Delta history snapshot schema does not match the dataset for {}: expected {:?}, received {:?}",
                     change_set.id, expected, logical
-                )));
+                )
+            }));
         }
         Ok(())
     }
@@ -9577,6 +9971,275 @@ impl DuckDbEngine {
                     "Column snapshot row IDs do not match the dataset".into(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    pub fn restore_unified_history(
+        &self,
+        archive: &crate::services::table_history_archive::HistoryTimelineArchive,
+        snapshots: &[(
+            String,
+            crate::services::table_history_archive::HistorySnapshotRef,
+            std::path::PathBuf,
+        )],
+    ) -> Result<(), AppError> {
+        use crate::services::spprj_archive::{
+            DeltaHistoryArchive, DeltaHistorySnapshotRef,
+        };
+
+        crate::services::table_history_archive::validate_history_timeline(archive)?;
+        for cursor in &archive.datasets {
+            let generation = self.get_dataset_generation(&cursor.dataset_id).map_err(|_| {
+                AppError::FileIO(format!(
+                    "History references unknown dataset {}",
+                    cursor.dataset_id
+                ))
+            })?;
+            if generation != cursor.current_generation {
+                return Err(AppError::FileIO(format!(
+                    "Project generation {generation} disagrees with history generation {}",
+                    cursor.current_generation
+                )));
+            }
+        }
+
+        let compact_entries = archive
+            .entries
+            .iter()
+            .filter(|entry| entry.storage_kind != "full")
+            .collect::<Vec<_>>();
+        if !compact_entries.is_empty() {
+            let compact_archive = DeltaHistoryArchive {
+                version: 1,
+                change_sets: compact_entries
+                    .iter()
+                    .filter_map(|entry| entry.delta.clone())
+                    .collect(),
+            };
+            let compact_snapshots = snapshots
+                .iter()
+                .filter(|(_, descriptor, _)| descriptor.kind == "delta")
+                .map(|(change_set_id, descriptor, path)| {
+                    (
+                        DeltaHistorySnapshotRef {
+                            change_set_id: change_set_id.clone(),
+                            file: descriptor.file.clone(),
+                            table_name: descriptor.table_name.clone(),
+                            columns: descriptor.columns.clone(),
+                        },
+                        path.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let historical_schemas = compact_entries
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.change_set_id.clone(),
+                        entry.before_schema.clone(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            self.restore_delta_history_with_schemas(
+                &compact_archive,
+                &compact_snapshots,
+                Some(&historical_schemas),
+            )?;
+        }
+
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<(), AppError> {
+            for (change_set_id, descriptor, path) in snapshots {
+                if descriptor.kind == "delta" {
+                    continue;
+                }
+                let entry = archive
+                    .entries
+                    .iter()
+                    .find(|entry| entry.change_set_id == *change_set_id)
+                    .ok_or_else(|| {
+                        AppError::FileIO("Snapshot has no history timeline entry".into())
+                    })?;
+                if entry.storage_kind != "full" {
+                    return Err(AppError::FileIO(
+                        "Non-legacy history owns a full snapshot".into(),
+                    ));
+                }
+                self.import_unified_history_snapshot(change_set_id, descriptor, path)?;
+            }
+            for entry in &archive.entries {
+                if entry.storage_kind == "full" {
+                    self.conn.execute(
+                        "INSERT INTO _history_change_sets
+                         (id, dataset_id, applied, generation, storage_kind)
+                         VALUES (?, ?, ?, ?, 'full')",
+                        params![
+                            &entry.change_set_id,
+                            &entry.dataset_id,
+                            entry.applied,
+                            entry.current_generation
+                        ],
+                    )?;
+                    for column in &entry.legacy_columns {
+                        self.conn.execute(
+                            "INSERT INTO _history_change_set_columns
+                             (change_set_id, ordinal, column_index, before_column_id,
+                              before_name, before_type, before_calculated_definition_json,
+                              after_column_id, after_name, after_type,
+                              after_calculated_definition_json, after_present)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            params![
+                                &entry.change_set_id,
+                                column.ordinal,
+                                column.column_index,
+                                &column.before_column_id,
+                                &column.before_name,
+                                &column.before_type,
+                                &column.before_calculated_definition_json,
+                                &column.after_column_id,
+                                &column.after_name,
+                                &column.after_type,
+                                &column.after_calculated_definition_json,
+                                column.after_present
+                            ],
+                        )?;
+                    }
+                }
+                let before_schema_json = serde_json::to_string(&entry.before_schema)
+                    .map_err(|error| AppError::FileIO(error.to_string()))?;
+                let after_schema_json = serde_json::to_string(&entry.after_schema)
+                    .map_err(|error| AppError::FileIO(error.to_string()))?;
+                self.conn.execute(
+                    "INSERT INTO _history_timeline
+                     (change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                      created_before_generation, created_after_generation, current_generation,
+                      applied, before_schema_json, after_schema_json)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        &entry.change_set_id,
+                        &entry.dataset_id,
+                        entry.history_ordinal,
+                        &entry.storage_kind,
+                        &entry.operation,
+                        entry.created_before_generation,
+                        entry.created_after_generation,
+                        entry.current_generation,
+                        entry.applied,
+                        before_schema_json,
+                        after_schema_json
+                    ],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT").map_err(Into::into),
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    fn import_unified_history_snapshot(
+        &self,
+        change_set_id: &str,
+        descriptor: &crate::services::table_history_archive::HistorySnapshotRef,
+        path: &std::path::Path,
+    ) -> Result<(), AppError> {
+        let parsed = uuid::Uuid::parse_str(change_set_id)
+            .map_err(|_| AppError::FileIO("Invalid history UUID".into()))?;
+        let transport_name = format!(
+            "_history_transport_{}_{}",
+            parsed.simple(),
+            descriptor.kind
+        );
+        let transport_table = Self::quote_identifier(&transport_name);
+        let final_table = Self::quote_identifier(&descriptor.table_name);
+        let path = path
+            .to_str()
+            .ok_or_else(|| AppError::FileIO("History snapshot path is not UTF-8".into()))?;
+        self.conn.execute(
+            &format!("CREATE TABLE {transport_table} AS SELECT * FROM read_parquet($1)"),
+            params![path],
+        )?;
+        let actual_transport = self.raw_table_schema(&transport_name)?;
+        let expected_transport = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                (
+                    column.name.clone(),
+                    column
+                        .transport_type
+                        .clone()
+                        .unwrap_or_else(|| column.duckdb_type.clone()),
+                )
+            })
+            .collect::<Vec<_>>();
+        if actual_transport != expected_transport {
+            return Err(AppError::FileIO(
+                "History snapshot transport schema mismatch".into(),
+            ));
+        }
+        for column in &descriptor.columns {
+            let canonical = self
+                .canonicalize_column_type(&column.duckdb_type)
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Invalid history snapshot logical type {}: {error}",
+                        column.duckdb_type
+                    ))
+                })?;
+            if canonical != column.duckdb_type {
+                return Err(AppError::FileIO(
+                    "History snapshot uses a non-canonical logical type".into(),
+                ));
+            }
+            if column.duckdb_type == "HUGEINT" {
+                let identifier = Self::quote_identifier(&column.name);
+                let invalid: i64 = self.conn.query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {transport_table}
+                         WHERE {identifier} IS NOT NULL
+                           AND (TRY_CAST({identifier} AS HUGEINT) IS NULL
+                             OR CAST(TRY_CAST({identifier} AS HUGEINT) AS VARCHAR) <> {identifier})"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )?;
+                if invalid != 0 {
+                    return Err(AppError::FileIO(
+                        "History snapshot contains non-canonical HUGEINT values".into(),
+                    ));
+                }
+            }
+        }
+        let projections = descriptor
+            .columns
+            .iter()
+            .map(|column| {
+                let name = Self::quote_identifier(&column.name);
+                format!("CAST({name} AS {}) AS {name}", column.duckdb_type)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!("CREATE TABLE {final_table} AS SELECT {projections} FROM {transport_table}"),
+            [],
+        )?;
+        self.conn
+            .execute(&format!("DROP TABLE {transport_table}"), [])?;
+        let expected_logical = descriptor
+            .columns
+            .iter()
+            .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+            .collect::<Vec<_>>();
+        if self.raw_table_schema(&descriptor.table_name)? != expected_logical {
+            return Err(AppError::FileIO(
+                "History snapshot logical schema mismatch".into(),
+            ));
         }
         Ok(())
     }
@@ -19685,6 +20348,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(snapshot_count, 0);
+        let timeline_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _history_timeline WHERE change_set_id = ?",
+                params![change_set_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(timeline_count, 0);
     }
 
     #[test]
@@ -19701,10 +20373,13 @@ mod tests {
                  CREATE TABLE {retained_snapshot} (_row_id BIGINT, _row_order HUGEINT, value BIGINT);"
             ))
             .unwrap();
-        for (id, snapshot) in [
+        for (ordinal, (id, snapshot)) in [
             (removed_id, removed_snapshot),
             (retained_id, retained_snapshot),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             db.conn()
                 .execute(
                     "INSERT INTO _history_change_sets
@@ -19737,6 +20412,17 @@ mod tests {
                     params![id, uuid::Uuid::new_v4().to_string()],
                 )
                 .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_timeline
+                     (change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+                      created_before_generation, created_after_generation, current_generation,
+                      applied, before_schema_json, after_schema_json)
+                     VALUES (?, 'dataset-id', ?, 'row_delta', 'delete_rows',
+                             ?, ?, 2, true, '[]', '[]')",
+                    params![id, ordinal as i64, ordinal as i64, ordinal as i64 + 1],
+                )
+                .unwrap();
         }
 
         db.drop_change_set(removed_id).unwrap();
@@ -19746,6 +20432,7 @@ mod tests {
             "_history_delta_change_sets",
             "_history_row_deltas",
             "_history_column_deltas",
+            "_history_timeline",
         ] {
             let removed: i64 = db
                 .conn()
@@ -19755,6 +20442,8 @@ mod tests {
                         if table == "_history_change_sets" || table == "_history_delta_change_sets"
                         {
                             "id = ?"
+                        } else if table == "_history_timeline" {
+                            "change_set_id = ?"
                         } else {
                             "change_set_id = ?"
                         }
@@ -19771,6 +20460,8 @@ mod tests {
                         if table == "_history_change_sets" || table == "_history_delta_change_sets"
                         {
                             "id = ?"
+                        } else if table == "_history_timeline" {
+                            "change_set_id = ?"
                         } else {
                             "change_set_id = ?"
                         }
