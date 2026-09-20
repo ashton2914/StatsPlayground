@@ -102,6 +102,22 @@ test("dragging the logical rail reuses stable slots and shows inert placeholders
   await expect.poll(() => slot0.evaluate((row) => row.getBoundingClientRect().height)).toBe(placeholderHeight);
 });
 
+test("reloads top rows after the current dataset generation changes from a nonzero window", async ({ mount, page }) => {
+  const component = await mount(<LogicalTableNavigationHarness />);
+  const rail = component.getByRole("scrollbar");
+  const slot0 = component.locator('[data-viewport-slot="0"]');
+
+  await dragRailToRatio(component, page, 0.9);
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBeGreaterThan(8_900_000);
+  await expect(slot0).not.toHaveClass(/sp-placeholder-row/);
+
+  await component.getByTestId("advance-dataset-generation").click();
+
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(0);
+  await expect(slot0).not.toHaveClass(/sp-placeholder-row/);
+  await expect(slot0.locator('td[data-row="0"][data-col="0"] .sp-val')).toHaveText("row-1-col-1");
+});
+
 test("wheel and keyboard navigation update logical position", async ({ mount, page }) => {
   const component = await mount(<LogicalTableNavigationHarness width={520} />);
   const rail = component.getByRole("scrollbar");

@@ -66,7 +66,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function createDataset(rowCount: number, dataColumnCount: number): DatasetMeta {
+function createDataset(
+  rowCount: number,
+  dataColumnCount: number,
+  generation = GENERATION,
+): DatasetMeta {
   return {
     id: "logical-scroll-dataset",
     name: "Logical scroll measurements",
@@ -74,7 +78,7 @@ function createDataset(rowCount: number, dataColumnCount: number): DatasetMeta {
     sourceType: "manual",
     rowCount,
     colCount: dataColumnCount,
-    generation: GENERATION,
+    generation,
     createdAt: "2026-09-17T00:00:00.000Z",
     updatedAt: "2026-09-17T00:00:00.000Z",
   };
@@ -116,6 +120,7 @@ function buildWindow(
   edits: Map<string, unknown>,
   mode: HarnessFilterMode,
   sortMode: HarnessSortMode,
+  generation = GENERATION,
 ): TableWindowResult {
   const maxStart = Math.max(0, totalRows - 1);
   const safeStart = clamp(start, 0, maxStart);
@@ -126,7 +131,7 @@ function buildWindow(
     rows: Array.from({ length: safeCount }, (_, index) => createRow(safeStart + index, dataColumnCount, edits, mode, sortMode)),
     totalRows,
     start: safeStart,
-    generation: GENERATION,
+    generation,
   };
 }
 
@@ -146,7 +151,16 @@ function buildNavigationWindow(
   mode: HarnessFilterMode,
   sortMode: HarnessSortMode,
 ): TableNavigationResult {
-  const window = buildWindow(totalRows, dataColumnCount, request.start, request.count, edits, mode, sortMode);
+  const window = buildWindow(
+    totalRows,
+    dataColumnCount,
+    request.start,
+    request.count,
+    edits,
+    mode,
+    sortMode,
+    request.generation,
+  );
   return {
     version: 1,
     requestId: request.requestId,
@@ -314,31 +328,32 @@ export function LogicalTableNavigationHarness({
     const previousUpdateCell = dataService.updateCell;
     const previousAddRow = dataService.addRow;
     const previousAddRows = dataService.addRows;
+    const currentDataset = datasetRef.current;
     let active = true;
 
     useDataStore.setState({
       ...previousDataState,
-      activeDatasetId: dataset.id,
-      datasets: [dataset],
+      activeDatasetId: currentDataset.id,
+      datasets: [currentDataset],
       statusInfo: null,
     });
     useDatasetFilterStore.setState({
       ...previousFilterState,
       byDataset: filterModeRef.current === "none"
         ? {}
-        : { [dataset.id]: FILTER_RULES[filterModeRef.current] },
+        : { [currentDataset.id]: FILTER_RULES[filterModeRef.current] },
     });
     useTableNavigationSortStore.setState({
       ...previousSortState,
       byDataset: sortModeRef.current === "natural"
         ? {}
-        : { [dataset.id]: { column: "Column 2", descending: true } },
+        : { [currentDataset.id]: { column: "Column 2", descending: true } },
     });
     useProjectStore.setState({ ...previousProjectState, readOnly: false, dirty: false, saving: false, saveError: null });
     useHistoryStore.setState({ ...previousHistoryState, historyRevision: 0, historyError: null, pendingRestore: null });
     useTableZoomStore.setState({ zoom: 1 });
 
-    dataService.getDatasetGeneration = async () => GENERATION;
+    dataService.getDatasetGeneration = async () => datasetRef.current.generation;
     dataService.queryTableWindow = async ({ start, count, filters }) => {
       const effectiveStart = typeof start === "number" ? start : 0;
       const effectiveCount = typeof count === "number" ? count : 500;
@@ -357,6 +372,7 @@ export function LogicalTableNavigationHarness({
         editsRef.current,
         mode,
         sortModeRef.current,
+        datasetRef.current.generation,
       );
     };
     dataService.queryTableNavigationWindow = async (request) => {
@@ -497,7 +513,7 @@ export function LogicalTableNavigationHarness({
       useTableZoomStore.setState({ zoom: previousZoom });
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [columnCount, dataset, rowCount]);
+  }, [columnCount, rowCount]);
 
   useEffect(() => {
     if (!ready) return;
@@ -546,6 +562,23 @@ export function LogicalTableNavigationHarness({
       <button type="button" data-testid="clear-filter" onClick={() => setFilterMode("none")}>Clear</button>
       <button type="button" data-testid="apply-sort-desc" onClick={() => setSortMode("value-desc")}>Sort desc</button>
       <button type="button" data-testid="clear-sort" onClick={() => setSortMode("natural")}>Sort clear</button>
+      <button
+        type="button"
+        data-testid="advance-dataset-generation"
+        onClick={() => {
+          const nextDataset = createDataset(
+            datasetRef.current.rowCount,
+            columnCount,
+            datasetRef.current.generation + 1,
+          );
+          datasetRef.current = nextDataset;
+          setDataset(nextDataset);
+          useDataStore.setState((current) => ({
+            ...current,
+            datasets: current.datasets.map((item) => item.id === nextDataset.id ? nextDataset : item),
+          }));
+        }}
+      >Advance generation</button>
       <DataTableView datasetId={dataset.id} />
     </div>
   );
