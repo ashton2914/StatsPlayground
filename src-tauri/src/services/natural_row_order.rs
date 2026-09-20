@@ -1,0 +1,926 @@
+use std::collections::BTreeMap;
+
+use duckdb::{params, OptionalExt};
+
+use crate::engine::duckdb_engine::{
+    DuckDbEngine, NATURAL_ANCHOR_STRIDE, NATURAL_ORDER_SQL, NATURAL_ORDER_STRIDE,
+};
+use crate::error::AppError;
+
+const INITIAL_REBALANCE_WINDOW: usize = 256;
+const MAX_REBALANCE_WINDOW: usize = 8_192;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RowOrderAllocation {
+    pub row_orders: Vec<i128>,
+    pub insertion_ordinal: i64,
+}
+
+struct AllocationBoundary {
+    predecessor_key: Option<i128>,
+    target_key: Option<i128>,
+    insertion_ordinal: i64,
+}
+
+pub(crate) fn allocate_before(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    before_row_id: Option<i64>,
+    count: usize,
+) -> Result<RowOrderAllocation, AppError> {
+    if count == 0 {
+        return Err(AppError::InvalidParam(
+            "row-order allocation count must be at least one".into(),
+        ));
+    }
+    engine.ensure_internal_row_order_column(dataset_id)?;
+    let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    let boundary = load_allocation_boundary(engine, &table_name, before_row_id)?;
+
+    if let Some(row_orders) =
+        allocate_open_interval(boundary.predecessor_key, boundary.target_key, count)?
+    {
+        return Ok(RowOrderAllocation {
+            row_orders,
+            insertion_ordinal: boundary.insertion_ordinal,
+        });
+    }
+
+    let mut window_size = INITIAL_REBALANCE_WINDOW;
+    loop {
+        if let Some(row_orders) = rebalance_window(
+            engine,
+            &table_name,
+            boundary.insertion_ordinal,
+            count,
+            window_size,
+        )? {
+            return Ok(RowOrderAllocation {
+                row_orders,
+                insertion_ordinal: boundary.insertion_ordinal,
+            });
+        }
+        if window_size == MAX_REBALANCE_WINDOW {
+            break;
+        }
+        window_size = (window_size * 2).min(MAX_REBALANCE_WINDOW);
+    }
+
+    Err(AppError::InvalidParam(format!(
+        "cannot allocate {count} row-order keys within a bounded {MAX_REBALANCE_WINDOW}-row window"
+    )))
+}
+
+fn load_allocation_boundary(
+    engine: &DuckDbEngine,
+    table_name: &str,
+    before_row_id: Option<i64>,
+) -> Result<AllocationBoundary, AppError> {
+    match before_row_id {
+        Some(row_id) => {
+            let sql = format!(
+                "SELECT predecessor_key, order_key, ordinal
+                 FROM (
+                     SELECT \"_row_id\",
+                            {NATURAL_ORDER_SQL} AS order_key,
+                            lag({NATURAL_ORDER_SQL}) OVER (
+                                ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                            ) AS predecessor_key,
+                            row_number() OVER (
+                                ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                            ) - 1 AS ordinal
+                     FROM {table_name}
+                 ) AS ordered_rows
+                 WHERE \"_row_id\" = ?"
+            );
+            engine
+                .conn()
+                .query_row(&sql, params![row_id], |row| {
+                    Ok(AllocationBoundary {
+                        predecessor_key: row.get(0)?,
+                        target_key: Some(row.get(1)?),
+                        insertion_ordinal: row.get(2)?,
+                    })
+                })
+                .optional()?
+                .ok_or_else(|| AppError::InvalidParam(format!("unknown row {row_id}")))
+        }
+        None => {
+            let sql = format!(
+                "SELECT {NATURAL_ORDER_SQL}, ordinal + 1
+                 FROM (
+                     SELECT \"_row_id\", \"_row_order\",
+                            row_number() OVER (
+                                ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                            ) - 1 AS ordinal
+                     FROM {table_name}
+                 ) AS ordered_rows
+                 ORDER BY ordinal DESC
+                 LIMIT 1"
+            );
+            let tail = engine
+                .conn()
+                .query_row(&sql, [], |row| {
+                    Ok((row.get::<_, i128>(0)?, row.get::<_, i64>(1)?))
+                })
+                .optional()?;
+            Ok(match tail {
+                Some((key, insertion_ordinal)) => AllocationBoundary {
+                    predecessor_key: Some(key),
+                    target_key: None,
+                    insertion_ordinal,
+                },
+                None => AllocationBoundary {
+                    predecessor_key: None,
+                    target_key: None,
+                    insertion_ordinal: 0,
+                },
+            })
+        }
+    }
+}
+
+fn allocate_open_interval(
+    predecessor_key: Option<i128>,
+    target_key: Option<i128>,
+    count: usize,
+) -> Result<Option<Vec<i128>>, AppError> {
+    let divisor = i128::try_from(count)
+        .map_err(|_| AppError::InvalidParam("row-order allocation count is too large".into()))?
+        .checked_add(1)
+        .ok_or_else(|| AppError::InvalidParam("row-order allocation count is too large".into()))?;
+    let (lower, upper) = match (predecessor_key, target_key) {
+        (Some(lower), Some(upper)) => (lower, upper),
+        (Some(lower), None) => {
+            let width = NATURAL_ORDER_STRIDE.checked_mul(divisor).ok_or_else(|| {
+                AppError::InvalidParam("row-order allocation exceeds key range".into())
+            })?;
+            let upper = lower.checked_add(width).ok_or_else(|| {
+                AppError::InvalidParam("row-order allocation exceeds key range".into())
+            })?;
+            (lower, upper)
+        }
+        (None, Some(upper)) => {
+            let width = NATURAL_ORDER_STRIDE.checked_mul(divisor).ok_or_else(|| {
+                AppError::InvalidParam("row-order allocation exceeds key range".into())
+            })?;
+            let lower = upper.checked_sub(width).ok_or_else(|| {
+                AppError::InvalidParam("row-order allocation exceeds key range".into())
+            })?;
+            (lower, upper)
+        }
+        (None, None) => {
+            let upper = NATURAL_ORDER_STRIDE.checked_mul(divisor).ok_or_else(|| {
+                AppError::InvalidParam("row-order allocation exceeds key range".into())
+            })?;
+            (0, upper)
+        }
+    };
+    let width = upper.checked_sub(lower).ok_or_else(|| {
+        AppError::Database("natural row-order keys are not strictly increasing".into())
+    })?;
+    let step = width / divisor;
+    if step == 0 {
+        return Ok(None);
+    }
+    let mut row_orders = Vec::with_capacity(count);
+    for index in 1..=count {
+        let offset = step
+            .checked_mul(i128::try_from(index).map_err(|_| {
+                AppError::InvalidParam("row-order allocation count is too large".into())
+            })?)
+            .and_then(|value| lower.checked_add(value))
+            .ok_or_else(|| {
+                AppError::InvalidParam("row-order allocation exceeds key range".into())
+            })?;
+        row_orders.push(offset);
+    }
+    Ok(Some(row_orders))
+}
+
+fn rebalance_window(
+    engine: &DuckDbEngine,
+    table_name: &str,
+    insertion_ordinal: i64,
+    count: usize,
+    window_size: usize,
+) -> Result<Option<Vec<i128>>, AppError> {
+    let half_window = i64::try_from(window_size / 2)
+        .map_err(|_| AppError::InvalidParam("rebalance window is too large".into()))?;
+    let start = insertion_ordinal.saturating_sub(half_window).max(0);
+    let window_size_i64 = i64::try_from(window_size)
+        .map_err(|_| AppError::InvalidParam("rebalance window is too large".into()))?;
+    let end = start
+        .checked_add(window_size_i64)
+        .ok_or_else(|| AppError::InvalidParam("rebalance window is too large".into()))?;
+    let sql = format!(
+        "SELECT \"_row_id\", order_key, ordinal
+         FROM (
+             SELECT \"_row_id\", {NATURAL_ORDER_SQL} AS order_key,
+                    row_number() OVER (
+                        ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                    ) - 1 AS ordinal
+             FROM {table_name}
+         ) AS ordered_rows
+         WHERE ordinal >= ? AND ordinal <= ?
+         ORDER BY ordinal"
+    );
+    let query_start = start.saturating_sub(1);
+    let mut statement = engine.conn().prepare(&sql)?;
+    let queried = statement
+        .query_map(params![query_start, end], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i128>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let left_boundary = queried
+        .iter()
+        .find(|row| row.2 == start - 1)
+        .map(|row| row.1);
+    let right_boundary = queried.iter().find(|row| row.2 == end).map(|row| row.1);
+    let window_rows = queried
+        .iter()
+        .filter(|row| row.2 >= start && row.2 < end)
+        .copied()
+        .collect::<Vec<_>>();
+    let relative_insertion = usize::try_from(insertion_ordinal - start)
+        .map_err(|_| AppError::Database("rebalance insertion ordinal is outside window".into()))?;
+    if relative_insertion > window_rows.len() {
+        return Err(AppError::Database(
+            "rebalance insertion ordinal exceeds loaded rows".into(),
+        ));
+    }
+    let total_positions = window_rows
+        .len()
+        .checked_add(count)
+        .ok_or_else(|| AppError::InvalidParam("rebalance window is too large".into()))?;
+    let divisor = i128::try_from(total_positions)
+        .map_err(|_| AppError::InvalidParam("rebalance window is too large".into()))?
+        .checked_add(1)
+        .ok_or_else(|| AppError::InvalidParam("rebalance window is too large".into()))?;
+    let (lower, upper) = bounded_rebalance_boundaries(left_boundary, right_boundary, divisor)?;
+    let step = upper
+        .checked_sub(lower)
+        .ok_or_else(|| AppError::Database("rebalance boundaries are reversed".into()))?
+        / divisor;
+    if step == 0 {
+        return Ok(None);
+    }
+
+    let mut assigned = Vec::with_capacity(total_positions);
+    for index in 1..=total_positions {
+        assigned.push(
+            lower
+                .checked_add(
+                    step.checked_mul(i128::try_from(index).map_err(|_| {
+                        AppError::InvalidParam("rebalance window is too large".into())
+                    })?)
+                    .ok_or_else(|| AppError::InvalidParam("rebalance exceeds key range".into()))?,
+                )
+                .ok_or_else(|| AppError::InvalidParam("rebalance exceeds key range".into()))?,
+        );
+    }
+    let inserted_end = relative_insertion
+        .checked_add(count)
+        .ok_or_else(|| AppError::InvalidParam("rebalance window is too large".into()))?;
+    let inserted_orders = assigned[relative_insertion..inserted_end].to_vec();
+    let update_sql = format!("UPDATE {table_name} SET \"_row_order\" = ? WHERE \"_row_id\" = ?");
+    let mut assigned_index = 0;
+    for (row_index, (row_id, _, _)) in window_rows.iter().enumerate() {
+        if row_index == relative_insertion {
+            assigned_index += count;
+        }
+        engine
+            .conn()
+            .execute(&update_sql, params![assigned[assigned_index], row_id])?;
+        assigned_index += 1;
+    }
+
+    Ok(Some(inserted_orders))
+}
+
+fn bounded_rebalance_boundaries(
+    left: Option<i128>,
+    right: Option<i128>,
+    divisor: i128,
+) -> Result<(i128, i128), AppError> {
+    match (left, right) {
+        (Some(left), Some(right)) => Ok((left, right)),
+        (Some(left), None) => {
+            let width = NATURAL_ORDER_STRIDE.checked_mul(divisor).ok_or_else(|| {
+                AppError::InvalidParam("rebalance exceeds row-order key range".into())
+            })?;
+            Ok((
+                left,
+                left.checked_add(width).ok_or_else(|| {
+                    AppError::InvalidParam("rebalance exceeds row-order key range".into())
+                })?,
+            ))
+        }
+        (None, Some(right)) => {
+            let width = NATURAL_ORDER_STRIDE.checked_mul(divisor).ok_or_else(|| {
+                AppError::InvalidParam("rebalance exceeds row-order key range".into())
+            })?;
+            Ok((
+                right.checked_sub(width).ok_or_else(|| {
+                    AppError::InvalidParam("rebalance exceeds row-order key range".into())
+                })?,
+                right,
+            ))
+        }
+        (None, None) => Ok((
+            0,
+            NATURAL_ORDER_STRIDE.checked_mul(divisor).ok_or_else(|| {
+                AppError::InvalidParam("rebalance exceeds row-order key range".into())
+            })?,
+        )),
+    }
+}
+
+pub(crate) fn publish_inserted_anchors(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    source_generation: u64,
+    target_generation: u64,
+    insertion_ordinal: i64,
+    inserted: &[(i64, i128)],
+) -> Result<(), AppError> {
+    if insertion_ordinal < 0 {
+        return Err(AppError::InvalidParam(
+            "insertion ordinal cannot be negative".into(),
+        ));
+    }
+    let inserted_count = i64::try_from(inserted.len())
+        .map_err(|_| AppError::InvalidParam("inserted row count is too large".into()))?;
+    let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    validate_inserted_rows(engine, &table_name, insertion_ordinal, inserted)?;
+    publish_transformed_anchors(
+        engine,
+        dataset_id,
+        source_generation,
+        target_generation,
+        &table_name,
+        |ordinal, _| {
+            ordinal
+                .checked_add(if ordinal >= insertion_ordinal {
+                    inserted_count
+                } else {
+                    0
+                })
+                .map(Some)
+                .ok_or_else(|| AppError::InvalidParam("anchor ordinal overflowed".into()))
+        },
+    )
+}
+
+pub(crate) fn publish_deleted_anchors(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    source_generation: u64,
+    target_generation: u64,
+    deleted: &[(i64, i128, i64)],
+) -> Result<(), AppError> {
+    let mut deleted_by_id = BTreeMap::new();
+    for &(row_id, order_key, ordinal) in deleted {
+        if ordinal < 0 {
+            return Err(AppError::InvalidParam(
+                "deleted row ordinal cannot be negative".into(),
+            ));
+        }
+        if deleted_by_id.insert(row_id, (order_key, ordinal)).is_some() {
+            return Err(AppError::InvalidParam(format!(
+                "duplicate deleted row {row_id}"
+            )));
+        }
+    }
+    let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    publish_transformed_anchors(
+        engine,
+        dataset_id,
+        source_generation,
+        target_generation,
+        &table_name,
+        |ordinal, row_id| {
+            if deleted_by_id.contains_key(&row_id) {
+                return Ok(None);
+            }
+            let preceding_deletions = deleted_by_id
+                .values()
+                .filter(|(_, deleted_ordinal)| *deleted_ordinal < ordinal)
+                .count();
+            let preceding_deletions = i64::try_from(preceding_deletions)
+                .map_err(|_| AppError::InvalidParam("deleted row count is too large".into()))?;
+            ordinal
+                .checked_sub(preceding_deletions)
+                .map(Some)
+                .ok_or_else(|| AppError::InvalidParam("anchor ordinal underflowed".into()))
+        },
+    )
+}
+
+fn validate_inserted_rows(
+    engine: &DuckDbEngine,
+    table_name: &str,
+    insertion_ordinal: i64,
+    inserted: &[(i64, i128)],
+) -> Result<(), AppError> {
+    if inserted.is_empty() {
+        return Ok(());
+    }
+    let end = insertion_ordinal
+        .checked_add(
+            i64::try_from(inserted.len())
+                .map_err(|_| AppError::InvalidParam("inserted row count is too large".into()))?,
+        )
+        .ok_or_else(|| AppError::InvalidParam("inserted row range overflowed".into()))?;
+    let sql = format!(
+        "SELECT \"_row_id\", order_key
+         FROM (
+             SELECT \"_row_id\", {NATURAL_ORDER_SQL} AS order_key,
+                    row_number() OVER (
+                        ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                    ) - 1 AS ordinal
+             FROM {table_name}
+         ) AS ordered_rows
+         WHERE ordinal >= ? AND ordinal < ?
+         ORDER BY ordinal"
+    );
+    let mut statement = engine.conn().prepare(&sql)?;
+    let actual = statement
+        .query_map(params![insertion_ordinal, end], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i128>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if actual != inserted {
+        return Err(AppError::InvalidParam(
+            "inserted rows do not match the published natural-order range".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn publish_transformed_anchors(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    source_generation: u64,
+    target_generation: u64,
+    table_name: &str,
+    mut transform: impl FnMut(i64, i64) -> Result<Option<i64>, AppError>,
+) -> Result<(), AppError> {
+    let source_generation = generation_i64(source_generation)?;
+    let target_generation = generation_i64(target_generation)?;
+    let source = {
+        let mut statement = engine.conn().prepare(
+            "SELECT ordinal, row_id FROM _table_navigation_anchors
+             WHERE dataset_id = ? AND generation = ? ORDER BY ordinal",
+        )?;
+        statement
+            .query_map(params![dataset_id, source_generation], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let effective_key_sql =
+        format!("SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?");
+    let mut transformed = Vec::with_capacity(source.len());
+    for (ordinal, row_id) in source {
+        let Some(ordinal) = transform(ordinal, row_id)? else {
+            continue;
+        };
+        let order_key = engine
+            .conn()
+            .query_row(&effective_key_sql, params![row_id], |row| {
+                row.get::<_, i128>(0)
+            })
+            .optional()?;
+        if let Some(order_key) = order_key {
+            transformed.push((ordinal, order_key, row_id));
+        }
+    }
+
+    engine.conn().execute(
+        "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
+        params![dataset_id, target_generation],
+    )?;
+    for (ordinal, order_key, row_id) in transformed {
+        engine.conn().execute(
+            "INSERT INTO _table_navigation_anchors
+             (dataset_id, generation, ordinal, order_key, row_id)
+             VALUES (?, ?, ?, ?, ?)",
+            params![dataset_id, target_generation, ordinal, order_key, row_id],
+        )?;
+    }
+    repair_anchor_gaps(engine, dataset_id, target_generation, table_name)?;
+    engine.conn().execute(
+        "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation <> ?",
+        params![dataset_id, target_generation],
+    )?;
+    Ok(())
+}
+
+fn repair_anchor_gaps(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    generation: i64,
+    table_name: &str,
+) -> Result<(), AppError> {
+    let row_count: i64 =
+        engine
+            .conn()
+            .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
+                row.get(0)
+            })?;
+    if row_count == 0 {
+        return Ok(());
+    }
+    let ordinals = {
+        let mut statement = engine.conn().prepare(
+            "SELECT ordinal FROM _table_navigation_anchors
+             WHERE dataset_id = ? AND generation = ? ORDER BY ordinal",
+        )?;
+        statement
+            .query_map(params![dataset_id, generation], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let stride = i64::try_from(NATURAL_ANCHOR_STRIDE)
+        .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
+    let mut repair_ordinals = Vec::new();
+    let mut previous = 0_i64;
+    if ordinals.first().copied() != Some(0) {
+        repair_ordinals.push(0);
+    } else {
+        previous = ordinals[0];
+    }
+    for ordinal in ordinals.iter().copied() {
+        if ordinal <= previous {
+            continue;
+        }
+        while ordinal - previous > stride {
+            previous = previous.checked_add(stride).ok_or_else(|| {
+                AppError::InvalidParam("navigation anchor ordinal overflowed".into())
+            })?;
+            repair_ordinals.push(previous);
+        }
+        previous = ordinal;
+    }
+    let last_ordinal = row_count - 1;
+    while last_ordinal - previous >= stride {
+        previous = previous
+            .checked_add(stride)
+            .ok_or_else(|| AppError::InvalidParam("navigation anchor ordinal overflowed".into()))?;
+        repair_ordinals.push(previous);
+    }
+
+    let row_at_ordinal_sql = format!(
+        "SELECT \"_row_id\", order_key
+         FROM (
+             SELECT \"_row_id\", {NATURAL_ORDER_SQL} AS order_key,
+                    row_number() OVER (
+                        ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                    ) - 1 AS ordinal
+             FROM {table_name}
+         ) AS ordered_rows
+         WHERE ordinal = ?"
+    );
+    for ordinal in repair_ordinals {
+        let (row_id, order_key): (i64, i128) =
+            engine
+                .conn()
+                .query_row(&row_at_ordinal_sql, params![ordinal], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?;
+        engine.conn().execute(
+            "INSERT OR REPLACE INTO _table_navigation_anchors
+             (dataset_id, generation, ordinal, order_key, row_id)
+             VALUES (?, ?, ?, ?, ?)",
+            params![dataset_id, generation, ordinal, order_key, row_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn generation_i64(generation: u64) -> Result<i64, AppError> {
+    i64::try_from(generation)
+        .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{allocate_before, publish_deleted_anchors, publish_inserted_anchors};
+    use crate::engine::duckdb_engine::{
+        full_anchor_rebuild_counter, reset_full_anchor_rebuild_counter, DuckDbEngine,
+        NATURAL_ANCHOR_STRIDE, NATURAL_ORDER_SQL, NATURAL_ORDER_STRIDE,
+    };
+    use crate::models::table::{TableNavigationRequest, TableNavigationResult};
+    use duckdb::params;
+
+    fn seed(dataset_id: &str, row_count: usize) -> DuckDbEngine {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        db.seed_benchmark_table(dataset_id, "Natural row order", row_count, 1)
+            .expect("seed");
+        db
+    }
+
+    fn table(dataset_id: &str) -> String {
+        DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id))
+    }
+
+    fn effective_keys(db: &DuckDbEngine, dataset_id: &str) -> Vec<(i64, i128)> {
+        let mut statement = db
+            .conn()
+            .prepare(&format!(
+                "SELECT \"_row_id\", {NATURAL_ORDER_SQL} FROM {} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"",
+                table(dataset_id)
+            ))
+            .expect("prepare effective keys");
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query effective keys")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect effective keys")
+    }
+
+    fn insert_allocated(db: &DuckDbEngine, dataset_id: &str, row_id: i64, order_key: i128) {
+        db.conn()
+            .execute(
+                &format!(
+                    "INSERT INTO {} (\"_row_id\", \"value_1\", \"_row_order\") VALUES (?, ?, ?)",
+                    table(dataset_id)
+                ),
+                params![row_id, row_id, order_key],
+            )
+            .expect("insert allocated row");
+    }
+
+    #[test]
+    fn natural_row_order_allocates_append_keys_after_the_effective_tail() {
+        let db = seed("allocate_append", 4);
+
+        let allocation = allocate_before(&db, "allocate_append", None, 2).expect("allocate");
+
+        assert_eq!(allocation.insertion_ordinal, 4);
+        assert_eq!(
+            allocation.row_orders,
+            vec![5 * NATURAL_ORDER_STRIDE, 6 * NATURAL_ORDER_STRIDE]
+        );
+    }
+
+    #[test]
+    fn natural_row_order_allocates_before_row_three_without_changing_existing_keys() {
+        let db = seed("allocate_before", 5);
+        let before = effective_keys(&db, "allocate_before");
+
+        let allocation = allocate_before(&db, "allocate_before", Some(3), 1).expect("allocate");
+
+        assert_eq!(allocation.insertion_ordinal, 2);
+        assert_eq!(
+            allocation.row_orders,
+            vec![2 * NATURAL_ORDER_STRIDE + NATURAL_ORDER_STRIDE / 2]
+        );
+        assert_eq!(effective_keys(&db, "allocate_before"), before);
+    }
+
+    #[test]
+    fn natural_row_order_evenly_allocates_a_three_row_batch() {
+        let db = seed("allocate_batch", 5);
+
+        let allocation = allocate_before(&db, "allocate_batch", Some(3), 3).expect("allocate");
+
+        assert_eq!(allocation.insertion_ordinal, 2);
+        assert_eq!(
+            allocation.row_orders,
+            vec![
+                2 * NATURAL_ORDER_STRIDE + NATURAL_ORDER_STRIDE / 4,
+                2 * NATURAL_ORDER_STRIDE + NATURAL_ORDER_STRIDE / 2,
+                2 * NATURAL_ORDER_STRIDE + 3 * NATURAL_ORDER_STRIDE / 4,
+            ]
+        );
+    }
+
+    #[test]
+    fn natural_row_order_repeated_midpoint_insertions_remain_strictly_ordered() {
+        let db = seed("allocate_repeated", 5);
+
+        for index in 0..80_i64 {
+            let allocation =
+                allocate_before(&db, "allocate_repeated", Some(3), 1).expect("allocate");
+            insert_allocated(
+                &db,
+                "allocate_repeated",
+                10_000 + index,
+                allocation.row_orders[0],
+            );
+        }
+
+        let rows = effective_keys(&db, "allocate_repeated");
+        assert!(rows.windows(2).all(|pair| pair[0].1 < pair[1].1));
+        assert_eq!(rows.last().map(|row| row.0), Some(5));
+    }
+
+    #[test]
+    fn natural_row_order_rejects_a_missing_target() {
+        let db = seed("allocate_missing", 5);
+
+        let error =
+            allocate_before(&db, "allocate_missing", Some(99), 1).expect_err("missing target");
+
+        assert!(error.to_string().contains("row 99"));
+    }
+
+    #[test]
+    fn natural_row_order_rebalance_is_bounded_and_preserves_unaffected_keys() {
+        let db = seed("allocate_rebalance", 9_000);
+        let constrained_predecessor = 299 * NATURAL_ORDER_STRIDE;
+        db.conn()
+            .execute(
+                &format!(
+                    "UPDATE {} SET \"_row_order\" = CASE \"_row_id\" WHEN 299 THEN ? WHEN 300 THEN ? END WHERE \"_row_id\" IN (299, 300)",
+                    table("allocate_rebalance")
+                ),
+                params![constrained_predecessor, constrained_predecessor + 1],
+            )
+            .expect("constrain interval");
+        let before = effective_keys(&db, "allocate_rebalance");
+
+        let allocation =
+            allocate_before(&db, "allocate_rebalance", Some(300), 3).expect("rebalance");
+        let after = effective_keys(&db, "allocate_rebalance");
+        let changed = before
+            .iter()
+            .zip(after.iter())
+            .filter(|(old, new)| old != new)
+            .count();
+
+        assert_eq!(allocation.insertion_ordinal, 299);
+        assert!(allocation
+            .row_orders
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+        assert!(
+            changed <= 8_192,
+            "rebalance changed {changed} existing rows"
+        );
+        assert_eq!(before.first(), after.first());
+        assert_eq!(before.last(), after.last());
+    }
+
+    fn set_generation_and_row_count(
+        db: &DuckDbEngine,
+        dataset_id: &str,
+        generation: u64,
+        row_count: i64,
+    ) {
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = ?, row_count = ? WHERE id = ?",
+                params![generation as i64, row_count, dataset_id],
+            )
+            .expect("publish metadata");
+    }
+
+    fn query_all_windows(db: &DuckDbEngine, dataset_id: &str, generation: u64) -> Vec<i64> {
+        let total: usize = db
+            .conn()
+            .query_row(
+                "SELECT CAST(row_count AS UBIGINT) FROM _meta_datasets WHERE id = ?",
+                params![dataset_id],
+                |row| row.get(0),
+            )
+            .expect("row count");
+        let mut ids = Vec::with_capacity(total);
+        for start in (0..total).step_by(2_000) {
+            let request = TableNavigationRequest {
+                version: 1,
+                request_id: format!("incremental-{start}"),
+                dataset_id: dataset_id.to_string(),
+                generation,
+                start,
+                count: (total - start).min(2_000),
+                column_ids: vec![],
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            };
+            let TableNavigationResult { rows, .. } =
+                DuckDbEngine::query_natural_navigation_window(db.conn(), &request)
+                    .expect("query natural window");
+            ids.extend(rows.into_iter().map(|row| row[0].as_i64().expect("row id")));
+        }
+        ids
+    }
+
+    fn max_anchor_gap(db: &DuckDbEngine, dataset_id: &str, generation: u64) -> usize {
+        let mut statement = db
+            .conn()
+            .prepare(
+                "SELECT ordinal FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ? ORDER BY ordinal",
+            )
+            .expect("prepare anchors");
+        let ordinals = statement
+            .query_map(params![dataset_id, generation as i64], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("query anchors")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect anchors");
+        ordinals
+            .windows(2)
+            .map(|pair| usize::try_from(pair[1] - pair[0]).expect("anchor gap"))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn publish_insert(
+        db: &DuckDbEngine,
+        dataset_id: &str,
+        source_generation: u64,
+        before_row_id: i64,
+        inserted_row_id: i64,
+    ) -> u64 {
+        let allocation =
+            allocate_before(db, dataset_id, Some(before_row_id), 1).expect("allocate insert");
+        insert_allocated(db, dataset_id, inserted_row_id, allocation.row_orders[0]);
+        let target_generation = source_generation + 1;
+        let row_count = effective_keys(db, dataset_id).len() as i64;
+        set_generation_and_row_count(db, dataset_id, target_generation, row_count);
+        publish_inserted_anchors(
+            db,
+            dataset_id,
+            source_generation,
+            target_generation,
+            allocation.insertion_ordinal,
+            &[(inserted_row_id, allocation.row_orders[0])],
+        )
+        .expect("publish inserted anchors");
+        target_generation
+    }
+
+    #[test]
+    fn incremental_anchor_insertions_repair_both_sides_of_a_boundary() {
+        let dataset_id = "incremental_insert";
+        let db = seed(dataset_id, 2 * NATURAL_ANCHOR_STRIDE + 10);
+        reset_full_anchor_rebuild_counter();
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        let generation = publish_insert(&db, dataset_id, source_generation, 4096, 90_001);
+        let next_generation = publish_insert(&db, dataset_id, generation, 4098, 90_002);
+        let expected_natural_row_ids = effective_keys(&db, dataset_id)
+            .into_iter()
+            .map(|row| row.0)
+            .collect::<Vec<_>>();
+
+        assert!(max_anchor_gap(&db, dataset_id, next_generation) <= NATURAL_ANCHOR_STRIDE);
+        assert_eq!(
+            query_all_windows(&db, dataset_id, next_generation),
+            expected_natural_row_ids,
+        );
+        assert_eq!(full_anchor_rebuild_counter(), 0);
+    }
+
+    #[test]
+    fn incremental_anchor_deletions_repair_both_sides_of_a_boundary() {
+        let dataset_id = "incremental_delete";
+        let db = seed(dataset_id, 2 * NATURAL_ANCHOR_STRIDE + 10);
+        reset_full_anchor_rebuild_counter();
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        let before = effective_keys(&db, dataset_id);
+        let deleted = [before[4094], before[4096]];
+        db.conn()
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE \"_row_id\" IN (?, ?)",
+                    table(dataset_id)
+                ),
+                params![deleted[0].0, deleted[1].0],
+            )
+            .expect("delete boundary rows");
+        let next_generation = source_generation + 1;
+        set_generation_and_row_count(&db, dataset_id, next_generation, before.len() as i64 - 2);
+        publish_deleted_anchors(
+            &db,
+            dataset_id,
+            source_generation,
+            next_generation,
+            &[
+                (deleted[0].0, deleted[0].1, 4094),
+                (deleted[1].0, deleted[1].1, 4096),
+            ],
+        )
+        .expect("publish deleted anchors");
+        let expected_natural_row_ids = effective_keys(&db, dataset_id)
+            .into_iter()
+            .map(|row| row.0)
+            .collect::<Vec<_>>();
+
+        assert!(max_anchor_gap(&db, dataset_id, next_generation) <= NATURAL_ANCHOR_STRIDE);
+        assert_eq!(
+            query_all_windows(&db, dataset_id, next_generation),
+            expected_natural_row_ids,
+        );
+        assert_eq!(full_anchor_rebuild_counter(), 0);
+    }
+}

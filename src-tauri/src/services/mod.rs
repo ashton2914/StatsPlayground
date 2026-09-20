@@ -23,6 +23,7 @@ pub mod graph_new_transport_service;
 pub mod hypothesis_test_service;
 pub mod io_service;
 pub mod normal_capability;
+pub(crate) mod natural_row_order;
 pub mod path_authorization_service;
 pub mod project_service;
 pub mod save_coordinator;
