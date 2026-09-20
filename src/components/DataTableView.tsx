@@ -1014,7 +1014,7 @@ export function DataTableView({
 
   // Excel-like formula bar state lives inside <FormulaBar /> now.
 
-  const { refreshDatasets, setStatusInfo } = useDataStore();
+  const { refreshDatasets, applyDatasetMutationMeta, setStatusInfo } = useDataStore();
   const activeDatasetMeta = useDataStore(
     (state) => state.datasets.find((item) => item.id === datasetId),
   );
@@ -1079,6 +1079,7 @@ export function DataTableView({
   const dataRef = useRef<TableQueryResult | null>(null);
   const generationRef = useRef(0);
   const generationDatasetIdRef = useRef(datasetId);
+  const localMutationGenerationRef = useRef<number | null>(null);
   const datasetRevisionRef = useRef<DatasetRevision | null>(null);
   const currentRenderedLoadTokenRef = useRef(currentRenderedLoadToken);
   const windowStartRef = useRef(0);
@@ -1634,7 +1635,9 @@ export function DataTableView({
       };
       const result = await queryTableWindowWithFreshGeneration(
         request,
-        () => dataService.getDatasetGeneration(requestedDatasetId),
+        generation === undefined
+          ? () => dataService.getDatasetGeneration(requestedDatasetId)
+          : async () => requestedGeneration,
         dataService.queryTableWindow,
       );
       if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
@@ -1790,6 +1793,68 @@ export function DataTableView({
     }
     clearPendingPrefetches();
   }, [clearPendingPrefetches]);
+
+  const refreshAfterStaleMutation = useCallback(async () => {
+    await refreshDatasets();
+    const authoritative = useDataStore.getState().datasets.find((item) => item.id === datasetId);
+    if (!authoritative) return;
+    localMutationGenerationRef.current = authoritative.generation;
+    generationDatasetIdRef.current = datasetId;
+    generationRef.current = authoritative.generation;
+    requestEpochRef.current!.advance();
+    const previousSessionId = tableQuerySessionRef.current.sessionId;
+    tableQuerySessionPollSeqRef.current += 1;
+    resetTableQuerySession();
+    await invalidateScheduledNavigation({
+      datasetId,
+      generation: authoritative.generation,
+    });
+    await releaseTableQuerySession(previousSessionId);
+    const desiredStart = Math.min(
+      windowStartRef.current,
+      Math.max(0, authoritative.rowCount - 1),
+    );
+    await load(tableFiltersRef.current, desiredStart, authoritative.generation);
+  }, [datasetId, invalidateScheduledNavigation, load, refreshDatasets]);
+
+  const applyTableMutationResult = useCallback(async (
+    result: { generation: number; rowCount?: number; columnCount?: number },
+  ) => {
+    localMutationGenerationRef.current = result.generation;
+    generationDatasetIdRef.current = datasetId;
+    generationRef.current = result.generation;
+    requestEpochRef.current!.advance();
+    applyDatasetMutationMeta(datasetId, {
+      generation: result.generation,
+      rowCount: result.rowCount,
+      colCount: result.columnCount,
+    });
+    const previousSessionId = tableQuerySessionRef.current.sessionId;
+    tableQuerySessionPollSeqRef.current += 1;
+    resetTableQuerySession();
+    await invalidateScheduledNavigation({ datasetId, generation: result.generation });
+    await releaseTableQuerySession(previousSessionId);
+    const desiredStart = result.rowCount === undefined
+      ? windowStartRef.current
+      : Math.min(windowStartRef.current, Math.max(0, result.rowCount - 1));
+    if (result.rowCount !== undefined) {
+      const lastRow = result.rowCount - 1;
+      setActiveCell((current) => current == null || lastRow < 0
+        ? null
+        : { ...current, row: Math.min(current.row, lastRow) });
+      setSelection((current) => current == null || lastRow < 0
+        ? null
+        : {
+            ...current,
+            startRow: Math.min(current.startRow, lastRow),
+            endRow: Math.min(current.endRow, lastRow),
+          });
+      logicalStartRef.current = Math.min(logicalStartRef.current, Math.max(0, lastRow));
+      setLogicalStart(logicalStartRef.current);
+    }
+    await load(tableFiltersRef.current, desiredStart, result.generation);
+    markDirty();
+  }, [applyDatasetMutationMeta, datasetId, invalidateScheduledNavigation, load, markDirty]);
   if (!tableNavigationSchedulerRef.current) {
     tableNavigationSchedulerRef.current = new TableNavigationScheduler<ScheduledTableNavigationRequest, FrontendMeasuredTableNavigationResult>({
       settleMs: TABLE_NAVIGATION_SETTLE_MS,
@@ -1972,6 +2037,7 @@ export function DataTableView({
         generation: datasetRevision.generation,
       });
     }
+    if (localMutationGenerationRef.current === datasetRevision.generation) return;
     if (!shouldReloadDatasetRevision(previous, datasetRevision)) return;
     void load(tableFiltersRef.current, windowStartRef.current);
   }, [datasetRevision, load]);
@@ -1984,6 +2050,10 @@ export function DataTableView({
     const queryChanged = queryKey !== loadedFilterKeyRef.current;
     const generationChanged = datasetGeneration !== loadedFilterGenerationRef.current;
     if (!queryChanged && !generationChanged) return;
+    if (!queryChanged && localMutationGenerationRef.current === datasetGeneration) {
+      localMutationGenerationRef.current = null;
+      return;
+    }
     const followContext = logicalEndFollowContextRef.current;
     const preserveLogicalEnd = !queryChanged
       && followContext?.datasetId === datasetId
@@ -2910,24 +2980,28 @@ export function DataTableView({
   ) => {
     if (!tryBeginTableMutation()) return false;
     try {
-      const expectedGeneration = await dataService.getDatasetGeneration(datasetId);
       const result = await dataService.addRows(
         datasetId,
         count,
         beforeRowId,
-        expectedGeneration,
+        generationRef.current,
       );
       recordTable(description, {
-        kind: "addedRows",
+        kind: "changeSet",
         datasetId,
-        generation: result.generation,
-        rowIds: result.rowIds,
+        changeSetId: result.changeSetId,
       });
-      await load(tableFiltersRef.current, windowStartRef.current, result.generation);
-      await refreshAndMarkDirty();
+      await applyTableMutationResult(result);
       return true;
     } catch (error) {
       setErrorMsg(String(error));
+      if (isStaleDatasetGenerationError(error)) {
+        try {
+          await refreshAfterStaleMutation();
+        } catch (refreshError) {
+          setErrorMsg(`${String(error)}\n${String(refreshError)}`);
+        }
+      }
       return false;
     } finally {
       endTableMutation();
@@ -2978,11 +3052,10 @@ export function DataTableView({
     );
     if (!tryBeginTableMutation()) return;
     try {
-      const generation = await dataService.getDatasetGeneration(datasetId);
       const result = await dataService.deleteRowsWithChangeSet(
         datasetId,
         rowIds,
-        generation,
+        generationRef.current,
       );
       recordTable(t("history.deleteRow"), {
         kind: "changeSet",
@@ -2991,10 +3064,10 @@ export function DataTableView({
       });
       setSelectedRows(EMPTY_NUM_SET);
       setRowMenu(null);
-      await load();
-      await refreshAndMarkDirty();
+      await applyTableMutationResult(result);
     } catch (error) {
       setErrorMsg(String(error));
+      if (isStaleDatasetGenerationError(error)) await refreshAfterStaleMutation();
       return;
     } finally {
       endTableMutation();
@@ -3013,11 +3086,10 @@ export function DataTableView({
     }
     if (!tryBeginTableMutation()) return;
     try {
-      const generation = await dataService.getDatasetGeneration(datasetId);
       const result = await dataService.deleteRowsWithChangeSet(
         datasetId,
         [getRowId(row)],
-        generation,
+        generationRef.current,
       );
       recordTable(t("history.deleteRow"), {
         kind: "changeSet",
@@ -3025,10 +3097,10 @@ export function DataTableView({
         changeSetId: result.changeSetId,
       });
       setRowMenu(null);
-      await load();
-      await refreshAndMarkDirty();
+      await applyTableMutationResult(result);
     } catch (error) {
       setErrorMsg(String(error));
+      if (isStaleDatasetGenerationError(error)) await refreshAfterStaleMutation();
       return;
     } finally {
       endTableMutation();
@@ -3089,7 +3161,6 @@ export function DataTableView({
   ) => {
     if (!tryBeginTableMutation()) return false;
     try {
-      const generation = await dataService.getDatasetGeneration(datasetId);
       const result = await dataService.addColumnsWithChangeSet(
         datasetId,
         [{
@@ -3098,18 +3169,18 @@ export function DataTableView({
           sqlType: columnType,
         }],
         atIndex,
-        generation,
+        generationRef.current,
       );
       recordTable(description, {
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
       });
-      await load();
-      await refreshAndMarkDirty();
+      await applyTableMutationResult(result);
       return true;
     } catch (error) {
       setErrorMsg(String(error));
+      if (isStaleDatasetGenerationError(error)) await refreshAfterStaleMutation();
       return false;
     } finally {
       endTableMutation();
@@ -3177,22 +3248,21 @@ export function DataTableView({
     }
     if (!tryBeginTableMutation()) return;
     try {
-      const generation = await dataService.getDatasetGeneration(datasetId);
       const result = await dataService.addColumnsWithChangeSet(
         datasetId,
         columns,
         anchor == null ? null : anchor + 1,
-        generation,
+        generationRef.current,
       );
       recordTable(t("history.addColumnsBatch"), {
         kind: "changeSet",
         datasetId,
         changeSetId: result.changeSetId,
       });
-      await load();
-      await refreshAndMarkDirty();
+      await applyTableMutationResult(result);
     } catch (error) {
       setErrorMsg(String(error));
+      if (isStaleDatasetGenerationError(error)) await refreshAfterStaleMutation();
       return;
     } finally {
       endTableMutation();
@@ -3251,11 +3321,10 @@ export function DataTableView({
     }
     if (!tryBeginTableMutation()) return;
     try {
-      const generation = await dataService.getDatasetGeneration(datasetId);
       const result = await dataService.deleteColumnsWithChangeSet(
         datasetId,
         [descriptor],
-        generation,
+        generationRef.current,
       );
       recordTable(t("history.deleteColumnNamed", { name: colName }), {
         kind: "changeSet",
@@ -3263,10 +3332,10 @@ export function DataTableView({
         changeSetId: result.changeSetId,
       });
       setColMenu(null);
-      await load();
-      await refreshAndMarkDirty();
+      await applyTableMutationResult(result);
     } catch (error) {
       setErrorMsg(formatCalculatedDependencyDeleteError(t, error) ?? String(error));
+      if (isStaleDatasetGenerationError(error)) await refreshAfterStaleMutation();
     } finally {
       endTableMutation();
     }
@@ -3295,11 +3364,10 @@ export function DataTableView({
     }
     if (!tryBeginTableMutation()) return;
     try {
-      const generation = await dataService.getDatasetGeneration(datasetId);
       const result = await dataService.deleteColumnsWithChangeSet(
         datasetId,
         descriptors.filter((descriptor): descriptor is ColumnDescriptor => !!descriptor),
-        generation,
+        generationRef.current,
       );
       recordTable(t("history.deleteColumn"), {
         kind: "changeSet",
@@ -3308,10 +3376,10 @@ export function DataTableView({
       });
       setSelectedCols(EMPTY_NUM_SET);
       setColMenu(null);
-      await load();
-      await refreshAndMarkDirty();
+      await applyTableMutationResult(result);
     } catch (error) {
       setErrorMsg(String(error));
+      if (isStaleDatasetGenerationError(error)) await refreshAfterStaleMutation();
     } finally {
       endTableMutation();
     }
@@ -3482,6 +3550,7 @@ export function DataTableView({
     if (e && (e.ctrlKey || e.metaKey)) return;
     // If a menu was just dismissed or resize just finished, don't change selection
     if (suppressSelectionRef.current || hasMenuOpen()) return;
+    logicalEndFollowContextRef.current = null;
     if (e && (e.shiftKey) && activeCell) {
       // Shift+click extends/creates selection from activeCell to clicked cell
       setSelection({

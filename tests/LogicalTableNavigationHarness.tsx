@@ -31,6 +31,7 @@ const FILTERED_TOTAL_ROWS = {
 } as const;
 
 const SORTED_TOTAL_ROWS = 37;
+const MAX_TRACKED_NATURAL_ROWS = 10_000;
 
 type HarnessFilterMode = keyof typeof FILTERED_TOTAL_ROWS;
 type HarnessSortMode = "natural" | "value-desc";
@@ -93,21 +94,28 @@ function resolveFilterModeFromRules(filters: readonly FilterRuleItem[] | TableWi
 
 function createRow(
   rowIndex: number,
+  totalRows: number,
   dataColumnCount: number,
   edits: Map<string, unknown>,
   mode: HarnessFilterMode,
   sortMode: HarnessSortMode,
+  naturalRowIds?: readonly number[],
 ): unknown[] {
   const logicalRowNumber = rowIndex + 1;
+  const stableRowId = sortMode === "value-desc"
+    ? totalRows - rowIndex
+    : mode === "none"
+      ? (naturalRowIds?.[rowIndex] ?? logicalRowNumber)
+      : logicalRowNumber * 2;
   const prefix = sortMode === "value-desc"
     ? "sort-desc-row"
     : (mode === "none" ? "row" : `${mode}-row`);
   return [
-    logicalRowNumber,
+    stableRowId,
     ...Array.from({ length: dataColumnCount }, (_, columnIndex) => {
       const columnName = `Column ${columnIndex + 1}`;
-      const valueKey = `${logicalRowNumber}:${columnName}`;
-      return String(edits.get(valueKey) ?? `${prefix}-${logicalRowNumber}-col-${columnIndex + 1}`);
+      const valueKey = `${stableRowId}:${columnName}`;
+      return String(edits.get(valueKey) ?? `${prefix}-${stableRowId}-col-${columnIndex + 1}`);
     }),
   ];
 }
@@ -121,6 +129,7 @@ function buildWindow(
   mode: HarnessFilterMode,
   sortMode: HarnessSortMode,
   generation = GENERATION,
+  naturalRowIds?: readonly number[],
 ): TableWindowResult {
   const maxStart = Math.max(0, totalRows - 1);
   const safeStart = clamp(start, 0, maxStart);
@@ -128,7 +137,15 @@ function buildWindow(
   return {
     columns: ["_row_id", ...Array.from({ length: dataColumnCount }, (_, columnIndex) => `Column ${columnIndex + 1}`)],
     columnTypes: ["BIGINT", ...Array.from({ length: dataColumnCount }, () => "VARCHAR")],
-    rows: Array.from({ length: safeCount }, (_, index) => createRow(safeStart + index, dataColumnCount, edits, mode, sortMode)),
+    rows: Array.from({ length: safeCount }, (_, index) => createRow(
+      safeStart + index,
+      totalRows,
+      dataColumnCount,
+      edits,
+      mode,
+      sortMode,
+      naturalRowIds,
+    )),
     totalRows,
     start: safeStart,
     generation,
@@ -150,6 +167,7 @@ function buildNavigationWindow(
   totalRows: number,
   mode: HarnessFilterMode,
   sortMode: HarnessSortMode,
+  naturalRowIds?: readonly number[],
 ): TableNavigationResult {
   const window = buildWindow(
     totalRows,
@@ -160,6 +178,7 @@ function buildNavigationWindow(
     mode,
     sortMode,
     request.generation,
+    naturalRowIds,
   );
   return {
     version: 1,
@@ -185,6 +204,7 @@ interface LogicalTableNavigationHarnessProps {
   zoom?: number;
   initialFilterMode?: HarnessFilterMode;
   rejectCancelledNavigation?: boolean;
+  staleAddRowsOnce?: boolean;
 }
 
 interface NavigationRequestObservation {
@@ -205,11 +225,19 @@ export function LogicalTableNavigationHarness({
   zoom = 1,
   initialFilterMode = "none",
   rejectCancelledNavigation = false,
+  staleAddRowsOnce = false,
 }: LogicalTableNavigationHarnessProps) {
   const [ready, setReady] = useState(false);
   const dirty = useProjectStore((state) => state.dirty);
   const statusInfo = useDataStore((state) => state.statusInfo);
   const pendingAction = useHistoryStore((state) => state.pendingAction);
+  const activeDataset = useDataStore((state) =>
+    state.datasets.find((item) => item.id === "logical-scroll-dataset"),
+  );
+  const unrelatedDataset = useDataStore((state) =>
+    state.datasets.find((item) => item.id === "unrelated-dataset"),
+  );
+  const latestHistoryAction = useHistoryStore((state) => state.history[0]?.action ?? null);
   const [dataset, setDataset] = useState(() => createDataset(rowCount, columnCount));
   const [navigationRequestStarts, setNavigationRequestStarts] = useState<number[]>([]);
   const [resolvedNavigationRequestStarts, setResolvedNavigationRequestStarts] = useState<number[]>([]);
@@ -225,6 +253,12 @@ export function LogicalTableNavigationHarness({
     beforeRowId: number | null;
     expectedGeneration: number;
   }>>([]);
+  const [tableWindowRequests, setTableWindowRequests] = useState<Array<{
+    start: number;
+    generation: number;
+  }>>([]);
+  const [refreshDatasetsCalls, setRefreshDatasetsCalls] = useState(0);
+  const [scopedMutationRequests, setScopedMutationRequests] = useState<string[]>([]);
   const [filterMode, setFilterMode] = useState<HarnessFilterMode>(initialFilterMode);
   const [sortMode, setSortMode] = useState<HarnessSortMode>("natural");
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -236,6 +270,12 @@ export function LogicalTableNavigationHarness({
   const navigationCancellersRef = useRef<Map<string, () => void>>(new Map());
   const navigationRequestStartsByIdRef = useRef<Map<string, number>>(new Map());
   const delayedWindowLoadsRef = useRef(0);
+  const staleAddRowsRemainingRef = useRef(staleAddRowsOnce ? 1 : 0);
+  const naturalRowIdsRef = useRef<number[] | null>(
+    rowCount <= MAX_TRACKED_NATURAL_ROWS
+      ? Array.from({ length: rowCount }, (_, index) => index + 1)
+      : null,
+  );
   const lastPaintedVisibleCellTextRef = useRef<string | null>(null);
 
   datasetRef.current = dataset;
@@ -250,6 +290,9 @@ export function LogicalTableNavigationHarness({
       return createDataset(rowCount, columnCount);
     });
     editsRef.current.clear();
+    naturalRowIdsRef.current = rowCount <= MAX_TRACKED_NATURAL_ROWS
+      ? Array.from({ length: rowCount }, (_, index) => index + 1)
+      : null;
     setNavigationRequestStarts([]);
     setResolvedNavigationRequestStarts([]);
     setCancelledNavigationRequestStarts([]);
@@ -260,6 +303,9 @@ export function LogicalTableNavigationHarness({
     setSessionExactCounts([]);
     setReleasedSessionIds([]);
     setAddRowsRequests([]);
+    setTableWindowRequests([]);
+    setRefreshDatasetsCalls(0);
+    setScopedMutationRequests([]);
     setFilterMode(initialFilterMode);
     setSortMode("natural");
     sessionReadyAtRef.current.clear();
@@ -332,6 +378,7 @@ export function LogicalTableNavigationHarness({
     const previousZoom = useTableZoomStore.getState().zoom;
     const previousLanguage = i18n.resolvedLanguage ?? i18n.language;
     const previousGetDatasetGeneration = dataService.getDatasetGeneration;
+    const previousListDatasets = dataService.listDatasets;
     const previousQueryTableWindow = dataService.queryTableWindow;
     const previousQueryTableNavigationWindow = dataService.queryTableNavigationWindow;
     const previousPrepareTableQuerySession = dataService.prepareTableQuerySession;
@@ -343,13 +390,19 @@ export function LogicalTableNavigationHarness({
     const previousUpdateCell = dataService.updateCell;
     const previousAddRow = dataService.addRow;
     const previousAddRows = dataService.addRows;
+    const previousDeleteRowsWithChangeSet = dataService.deleteRowsWithChangeSet;
+    const previousAddColumnsWithChangeSet = dataService.addColumnsWithChangeSet;
+    const previousDeleteColumnsWithChangeSet = dataService.deleteColumnsWithChangeSet;
     const currentDataset = datasetRef.current;
     let active = true;
 
+    const unrelatedDataset = createDataset(7, 2, 9);
+    unrelatedDataset.id = "unrelated-dataset";
+    unrelatedDataset.name = "Unrelated";
     useDataStore.setState({
       ...previousDataState,
       activeDatasetId: currentDataset.id,
-      datasets: [currentDataset],
+      datasets: [currentDataset, unrelatedDataset],
       statusInfo: null,
     });
     useDatasetFilterStore.setState({
@@ -369,9 +422,17 @@ export function LogicalTableNavigationHarness({
     useTableZoomStore.setState({ zoom });
 
     dataService.getDatasetGeneration = async () => datasetRef.current.generation;
-    dataService.queryTableWindow = async ({ start, count, filters }) => {
+    dataService.listDatasets = async () => {
+      setRefreshDatasetsCalls((current) => current + 1);
+      return [datasetRef.current, unrelatedDataset];
+    };
+    dataService.queryTableWindow = async ({ start, count, filters, generation }) => {
       const effectiveStart = typeof start === "number" ? start : 0;
       const effectiveCount = typeof count === "number" ? count : 500;
+      setTableWindowRequests((previous) => [
+        ...previous,
+        { start: effectiveStart, generation },
+      ]);
       const mode = resolveFilterModeFromRules(filters ?? []);
       if (delayedWindowLoadsRef.current > 0) {
         delayedWindowLoadsRef.current -= 1;
@@ -392,6 +453,7 @@ export function LogicalTableNavigationHarness({
         mode,
         sortModeRef.current,
         datasetRef.current.generation,
+        naturalRowIdsRef.current ?? undefined,
       );
     };
     dataService.queryTableNavigationWindow = async (request) => {
@@ -450,6 +512,7 @@ export function LogicalTableNavigationHarness({
             : FILTERED_TOTAL_ROWS[mode],
         mode,
         sortMode,
+        naturalRowIdsRef.current ?? undefined,
       );
       if (!request.requestId.startsWith("table-nav-prefetch:")) {
         setResolvedNavigationRequestStarts((previous) => [...previous, request.start]);
@@ -523,9 +586,30 @@ export function LogicalTableNavigationHarness({
         ...previous,
         { count, beforeRowId, expectedGeneration },
       ]);
+      if (staleAddRowsRemainingRef.current > 0) {
+        staleAddRowsRemainingRef.current -= 1;
+        const authoritative = createDataset(
+          datasetRef.current.rowCount,
+          columnCount,
+          datasetRef.current.generation + 1,
+        );
+        datasetRef.current = authoritative;
+        setDataset(authoritative);
+        throw new Error(
+          `stale dataset generation: expected ${expectedGeneration}, current ${authoritative.generation}`,
+        );
+      }
       const safeCount = Math.max(1, count);
-      const startRowId = datasetRef.current.rowCount + 1;
+      const naturalRowIds = naturalRowIdsRef.current;
+      const startRowId = naturalRowIds
+        ? Math.max(0, ...naturalRowIds) + 1
+        : datasetRef.current.rowCount + 1;
       const rowIds = Array.from({ length: safeCount }, (_, index) => startRowId + index);
+      const insertionIndex = beforeRowId == null
+        ? (naturalRowIds?.length ?? datasetRef.current.rowCount)
+        : (naturalRowIds?.indexOf(beforeRowId) ?? beforeRowId - 1);
+      if (insertionIndex < 0) throw new Error(`missing beforeRowId ${beforeRowId}`);
+      naturalRowIds?.splice(insertionIndex, 0, ...rowIds);
       const nextRowCount = datasetRef.current.rowCount + safeCount;
       const nextDataset = createDataset(
         nextRowCount,
@@ -534,10 +618,6 @@ export function LogicalTableNavigationHarness({
       );
       datasetRef.current = nextDataset;
       setDataset(nextDataset);
-      useDataStore.setState((current) => ({
-        ...current,
-        datasets: current.datasets.map((item) => item.id === nextDataset.id ? nextDataset : item),
-      }));
       return {
         rowIds,
         generation: nextDataset.generation,
@@ -546,6 +626,77 @@ export function LogicalTableNavigationHarness({
       };
     };
     dataService.addRow = async () => datasetRef.current.rowCount + 1;
+    dataService.deleteRowsWithChangeSet = async (_datasetId, rowIds, expectedGeneration) => {
+      setScopedMutationRequests((previous) => [
+        ...previous,
+        `deleteRows:${rowIds.join(",")}:${expectedGeneration}`,
+      ]);
+      const nextDataset = createDataset(
+        Math.max(0, datasetRef.current.rowCount - rowIds.length),
+        datasetRef.current.colCount,
+        datasetRef.current.generation + 1,
+      );
+      datasetRef.current = nextDataset;
+      if (naturalRowIdsRef.current) {
+        naturalRowIdsRef.current = naturalRowIdsRef.current.filter(
+          (rowId) => !rowIds.includes(rowId),
+        );
+      }
+      setDataset(nextDataset);
+      return {
+        rowIds,
+        generation: nextDataset.generation,
+        rowCount: nextDataset.rowCount,
+        changeSetId: `delete-rows-${nextDataset.generation}`,
+      };
+    };
+    dataService.addColumnsWithChangeSet = async (
+      _datasetId,
+      columns,
+      _atIndex,
+      expectedGeneration,
+    ) => {
+      setScopedMutationRequests((previous) => [
+        ...previous,
+        `addColumns:${columns.length}:${expectedGeneration}`,
+      ]);
+      const nextDataset = createDataset(
+        datasetRef.current.rowCount,
+        datasetRef.current.colCount + columns.length,
+        datasetRef.current.generation + 1,
+      );
+      datasetRef.current = nextDataset;
+      setDataset(nextDataset);
+      return {
+        columnIds: columns.map((column) => column.columnId),
+        generation: nextDataset.generation,
+        columnCount: nextDataset.colCount,
+        changeSetId: `add-columns-${nextDataset.generation}`,
+      };
+    };
+    dataService.deleteColumnsWithChangeSet = async (
+      _datasetId,
+      columns,
+      expectedGeneration,
+    ) => {
+      setScopedMutationRequests((previous) => [
+        ...previous,
+        `deleteColumns:${columns.map((column) => column.columnId).join(",")}:${expectedGeneration}`,
+      ]);
+      const nextDataset = createDataset(
+        datasetRef.current.rowCount,
+        Math.max(0, datasetRef.current.colCount - columns.length),
+        datasetRef.current.generation + 1,
+      );
+      datasetRef.current = nextDataset;
+      setDataset(nextDataset);
+      return {
+        columnIds: columns.map((column) => column.columnId),
+        generation: nextDataset.generation,
+        columnCount: nextDataset.colCount,
+        changeSetId: `delete-columns-${nextDataset.generation}`,
+      };
+    };
 
     void i18n.changeLanguage("en").then(() => {
       if (active) setReady(true);
@@ -554,6 +705,7 @@ export function LogicalTableNavigationHarness({
     return () => {
       active = false;
       dataService.getDatasetGeneration = previousGetDatasetGeneration;
+      dataService.listDatasets = previousListDatasets;
       dataService.queryTableWindow = previousQueryTableWindow;
       dataService.queryTableNavigationWindow = previousQueryTableNavigationWindow;
       dataService.prepareTableQuerySession = previousPrepareTableQuerySession;
@@ -565,6 +717,9 @@ export function LogicalTableNavigationHarness({
       dataService.updateCell = previousUpdateCell;
       dataService.addRow = previousAddRow;
       dataService.addRows = previousAddRows;
+      dataService.deleteRowsWithChangeSet = previousDeleteRowsWithChangeSet;
+      dataService.addColumnsWithChangeSet = previousAddColumnsWithChangeSet;
+      dataService.deleteColumnsWithChangeSet = previousDeleteColumnsWithChangeSet;
       navigationCancellersRef.current.clear();
       navigationRequestStartsByIdRef.current.clear();
       useDataStore.setState(previousDataState, true);
@@ -575,7 +730,7 @@ export function LogicalTableNavigationHarness({
       useTableZoomStore.setState({ zoom: previousZoom });
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [columnCount, rejectCancelledNavigation, rowCount, zoom]);
+  }, [columnCount, rejectCancelledNavigation, rowCount, staleAddRowsOnce, zoom]);
 
   useEffect(() => {
     if (!ready) return;
@@ -598,8 +753,16 @@ export function LogicalTableNavigationHarness({
   return (
     <div ref={rootRef} style={{ width, height }}>
       <div data-testid="project-dirty">{dirty ? "true" : "false"}</div>
-      <div data-testid="dataset-row-count">{dataset.rowCount}</div>
+      <div data-testid="dataset-row-count">{activeDataset?.rowCount ?? -1}</div>
+      <div data-testid="dataset-column-count">{activeDataset?.colCount ?? -1}</div>
+      <div data-testid="dataset-generation">{activeDataset?.generation ?? -1}</div>
+      <div data-testid="dataset-count">{useDataStore.getState().datasets.length}</div>
+      <div data-testid="unrelated-dataset-generation">{unrelatedDataset?.generation ?? -1}</div>
       <div data-testid="add-rows-requests">{JSON.stringify(addRowsRequests)}</div>
+      <div data-testid="table-window-requests">{JSON.stringify(tableWindowRequests)}</div>
+      <div data-testid="refresh-datasets-calls">{refreshDatasetsCalls}</div>
+      <div data-testid="scoped-mutation-requests">{scopedMutationRequests.join("|")}</div>
+      <div data-testid="latest-history-action">{JSON.stringify(latestHistoryAction)}</div>
       <div data-testid="mutation-pending">{pendingAction ?? ""}</div>
       <div data-testid="nav-request-starts">{navigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-resolved-starts">{resolvedNavigationRequestStarts.join(",")}</div>
