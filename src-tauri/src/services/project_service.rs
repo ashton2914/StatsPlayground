@@ -398,7 +398,37 @@ impl<'a> ProjectService<'a> {
                     .db
                     .lock()
                     .map_err(|error| AppError::Database(error.to_string()))?;
-                for (dataset_id, generation) in &bundle.manifest.dataset_generations {
+                let mut generations = bundle
+                    .manifest
+                    .dataset_generations
+                    .clone()
+                    .unwrap_or_default();
+                if bundle.manifest.dataset_generations.is_none() {
+                    if let Some(delta_history) = &bundle.delta_history {
+                        for change_set in &delta_history.metadata.change_sets {
+                            let restored_generation = db
+                                .get_dataset_generation(&change_set.dataset_id)
+                                .map_err(|_| {
+                                    AppError::FileIO(format!(
+                                        "Delta history references unknown dataset {}",
+                                        change_set.dataset_id
+                                    ))
+                                })?;
+                            let required_generation = change_set
+                                .generation
+                                .max(change_set.before_generation)
+                                .max(change_set.after_generation)
+                                .max(restored_generation);
+                            generations
+                                .entry(change_set.dataset_id.clone())
+                                .and_modify(|generation| {
+                                    *generation = (*generation).max(required_generation)
+                                })
+                                .or_insert(required_generation);
+                        }
+                    }
+                }
+                for (dataset_id, generation) in &generations {
                     db.get_dataset_meta(dataset_id).map_err(|_| {
                         AppError::FileIO(format!(
                             "Project generation references unknown dataset {dataset_id}"
@@ -1919,6 +1949,39 @@ mod tests {
         )
     }
 
+    fn rewrite_project_manifest(
+        path: &std::path::Path,
+        edit: impl FnOnce(&mut serde_json::Value),
+    ) {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entries = Vec::with_capacity(archive.len());
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+        drop(archive);
+
+        let mut edit = Some(edit);
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, mut bytes) in entries {
+            if name == "manifest.json" {
+                let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                edit.take().unwrap()(&mut manifest);
+                bytes = serde_json::to_vec(&manifest).unwrap();
+            }
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
     #[test]
     fn delta_history_archive_round_trips_row_and_column_replay() {
         let path = std::env::current_dir().unwrap().join(format!(
@@ -1979,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn delta_history_archive_preserves_generation_after_later_legacy_mutation() {
+    fn delta_history_archive_pre_generation_field_preserves_later_legacy_generation() {
         let path = std::env::current_dir().unwrap().join(format!(
             ".task5-generation-history-{}.spprj",
             uuid::Uuid::new_v4()
@@ -2001,16 +2064,6 @@ mod tests {
                 0,
             )
             .unwrap();
-            db.paste_at_position_with_change_set(
-                "generation-history",
-                0,
-                0,
-                &[vec!["99".into()]],
-                None,
-                &[],
-                Some(1),
-            )
-            .unwrap();
             deleted.change_set_id
         };
         let mut request = empty_save_request(None);
@@ -2018,19 +2071,80 @@ mod tests {
             serde_json::json!({"action": {"kind": "changeSet", "changeSetId": change_set_id}}),
         ];
         service.save_project(request, None).unwrap();
+        rewrite_project_manifest(&path, |manifest| {
+            manifest.as_object_mut().unwrap().remove("datasetGenerations");
+        });
 
         let reopened_state = AppState::new().unwrap();
         ProjectService::new(&reopened_state)
             .open_project(&path_string, None)
             .unwrap();
         let db = reopened_state.db.lock().unwrap();
-        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 2);
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 1);
         db.apply_change_set(&change_set_id, true).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 2);
+        let legacy_change_set = db
+            .paste_at_position_with_change_set(
+                "generation-history",
+                0,
+                0,
+                &[vec!["99".into()]],
+                None,
+                &[],
+                Some(2),
+            )
+            .unwrap();
         assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 3);
-        db.apply_change_set(&change_set_id, false).unwrap();
+        db.apply_change_set(&legacy_change_set, true).unwrap();
         assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 4);
+        db.apply_change_set(&legacy_change_set, false).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 5);
+        db.apply_change_set(&change_set_id, false).unwrap();
+        assert_eq!(db.get_dataset_generation("generation-history").unwrap(), 6);
 
         drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_explicit_generation_below_compact_history() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-low-generation-history-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("History".into(), &path_string)
+            .unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("low-generation-history", "Low Generation History", 4, 1)
+                .unwrap();
+            crate::services::table_delta_mutation::delete_rows_compact(
+                &db,
+                "low-generation-history",
+                &[2],
+                0,
+            )
+            .unwrap();
+        }
+        service.save_project(empty_save_request(None), None).unwrap();
+        rewrite_project_manifest(&path, |manifest| {
+            manifest["datasetGenerations"]["low-generation-history"] = serde_json::json!(0);
+        });
+
+        let reopened_state = AppState::new().unwrap();
+        let error = match ProjectService::new(&reopened_state).open_project(&path_string, None) {
+            Ok(_) => panic!("generation below compact history must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains("generation")),
+            "unexpected error: {error}"
+        );
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -4234,7 +4348,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
-            dataset_generations: HashMap::new(),
+            dataset_generations: None,
             delta_history: None,
         };
 
@@ -4460,7 +4574,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
-            dataset_generations: HashMap::new(),
+            dataset_generations: None,
             delta_history: None,
         };
 
@@ -4675,7 +4789,7 @@ mod tests {
             lineage_graph: crate::services::workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
-            dataset_generations: HashMap::new(),
+            dataset_generations: None,
             delta_history: None,
         };
 

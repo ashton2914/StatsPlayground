@@ -205,8 +205,8 @@ pub struct ProjectManifest {
     pub relationships: Vec<ProjectRelationship>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub dataset_filters: DatasetFilters,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub dataset_generations: HashMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_generations: Option<HashMap<String, u64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_history: Option<DeltaHistoryRef>,
 }
@@ -1967,7 +1967,7 @@ fn read_legacy_json(bytes: &[u8]) -> Result<ProjectBundle, AppError> {
         lineage_graph: workflow_domain::ProjectLineageGraph::default(),
         relationships: Vec::new(),
         dataset_filters: HashMap::new(),
-        dataset_generations: HashMap::new(),
+        dataset_generations: None,
         delta_history: None,
     };
 
@@ -2567,7 +2567,7 @@ pub fn build_bundle_with_workflows_and_fit_models(
             lineage_graph,
             relationships,
             dataset_filters,
-            dataset_generations: HashMap::new(),
+            dataset_generations: None,
             delta_history: None,
         },
         tables,
@@ -9079,7 +9079,7 @@ mod tests {
             lineage_graph: workflow_domain::ProjectLineageGraph::default(),
             relationships: vec![],
             dataset_filters: HashMap::new(),
-            dataset_generations: HashMap::new(),
+            dataset_generations: None,
             delta_history: None,
         };
 
@@ -9514,7 +9514,7 @@ mod tests {
                     },
                 ],
             )]),
-            dataset_generations: HashMap::new(),
+            dataset_generations: None,
             delta_history: None,
         };
 

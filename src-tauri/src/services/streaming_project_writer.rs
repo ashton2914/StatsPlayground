@@ -380,7 +380,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             snapshot.request.graph_builders_new.clone(),
             snapshot.request.graph_new_folders.clone(),
         )?;
-        bundle.manifest.dataset_generations = snapshot.dataset_generations.clone();
+        bundle.manifest.dataset_generations = Some(snapshot.dataset_generations.clone());
         let (delta_history, delta_snapshots) = {
             let db = self
                 .state

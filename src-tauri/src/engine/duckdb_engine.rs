@@ -9173,17 +9173,36 @@ impl DuckDbEngine {
                 .map(|(descriptor, _)| descriptor.clone())
                 .collect::<Vec<_>>(),
         )?;
-        let mut authoritative_generations = HashMap::new();
+        let mut required_generations = HashMap::new();
         for change_set in &archive.change_sets {
+            let required = change_set
+                .generation
+                .max(change_set.before_generation)
+                .max(change_set.after_generation);
+            required_generations
+                .entry(change_set.dataset_id.as_str())
+                .and_modify(|generation: &mut u64| *generation = (*generation).max(required))
+                .or_insert(required);
+            self.validate_delta_column_metadata(change_set)?;
+        }
+        let mut authoritative_generations = HashMap::new();
+        for (dataset_id, required_generation) in required_generations {
             let generation = self
-                .get_dataset_generation(&change_set.dataset_id)
+                .get_dataset_generation(dataset_id)
                 .map_err(|_| {
                     AppError::FileIO(format!(
                         "Delta history references unknown dataset {}",
-                        change_set.dataset_id
+                        dataset_id
                     ))
                 })?;
-            authoritative_generations.insert(change_set.dataset_id.clone(), generation);
+            if generation < required_generation {
+                return Err(AppError::FileIO(format!(
+                    "Project generation {generation} for dataset {dataset_id} is below compact history generation {required_generation}"
+                )));
+            }
+            authoritative_generations.insert(dataset_id.to_string(), generation);
+        }
+        for change_set in &archive.change_sets {
             if let Some(descriptor) = descriptors.get(change_set.id.as_str()) {
                 self.validate_delta_snapshot_descriptor(archive, change_set, descriptor)?;
             }
@@ -9302,9 +9321,9 @@ impl DuckDbEngine {
                     ],
                 )?;
                 let (before_generation, after_generation) = if change_set.applied {
-                    (change_set.before_generation.min(generation), generation)
+                    (change_set.before_generation, generation)
                 } else {
-                    (generation, change_set.after_generation.min(generation))
+                    (generation, change_set.after_generation)
                 };
                 self.conn.execute(
                     "INSERT INTO _history_delta_change_sets
@@ -9358,6 +9377,45 @@ impl DuckDbEngine {
         }
     }
 
+    fn validate_delta_column_metadata(
+        &self,
+        change_set: &crate::services::spprj_archive::DeltaHistoryChangeSet,
+    ) -> Result<(), AppError> {
+        for column in &change_set.columns {
+            let canonical = self
+                .canonicalize_column_type(&column.col_type)
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Invalid delta history column type {}: {error}",
+                        column.col_type
+                    ))
+                })?;
+            if canonical != column.col_type {
+                return Err(AppError::FileIO(format!(
+                    "Delta history column type {} is not canonical",
+                    column.col_type
+                )));
+            }
+            if let Some(definition_json) = &column.calculated_definition_json {
+                let definition = serde_json::from_str::<
+                    crate::models::calculated_column::ArchivedCalculatedColumn,
+                >(definition_json)
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Invalid calculated-column delta metadata: {error}"
+                    ))
+                })?;
+                if definition.output_column_id() != column.column_id {
+                    return Err(AppError::FileIO(
+                        "Calculated-column delta definition does not own its archived column"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn raw_table_schema(&self, table_name: &str) -> Result<Vec<(String, String)>, AppError> {
         let mut statement = self.conn.prepare(
             "SELECT column_name, data_type FROM information_schema.columns
@@ -9378,28 +9436,25 @@ impl DuckDbEngine {
         let dataset_table = Self::internal_table_name(&change_set.dataset_id);
         let dataset_schema = self.raw_table_schema(&dataset_table)?;
         let expected = if change_set.storage_kind == "row_delta" {
-            let mut allowed = dataset_schema.iter().cloned().collect::<HashMap<_, _>>();
+            let mut required = dataset_schema.iter().cloned().collect::<HashMap<_, _>>();
             for column in archive
                 .change_sets
                 .iter()
                 .filter(|other| other.dataset_id == change_set.dataset_id)
                 .flat_map(|other| &other.columns)
             {
-                allowed.insert(column.col_name.clone(), column.col_type.clone());
+                required.insert(column.col_name.clone(), column.col_type.clone());
             }
             let logical = descriptor
                 .columns
                 .iter()
                 .map(|column| (column.name.clone(), column.duckdb_type.clone()))
                 .collect::<Vec<_>>();
-            if !logical
-                .iter()
-                .all(|(name, column_type)| allowed.get(name) == Some(column_type))
-                || !logical.iter().any(|(name, _)| name == "_row_id")
-                || !logical.iter().any(|(name, _)| name == "_row_order")
-            {
+            let logical_by_name = logical.iter().cloned().collect::<HashMap<_, _>>();
+            if logical_by_name != required {
                 return Err(AppError::FileIO(
-                    "Delta history row snapshot schema does not match the timeline".into(),
+                    "Delta history row snapshot schema does not contain every required physical column"
+                        .into(),
                 ));
             }
             logical
@@ -9422,7 +9477,14 @@ impl DuckDbEngine {
             .columns
             .iter()
             .map(|column| {
-                let canonical = self.canonicalize_column_type(&column.duckdb_type)?;
+                let canonical = self
+                    .canonicalize_column_type(&column.duckdb_type)
+                    .map_err(|error| {
+                        AppError::FileIO(format!(
+                            "Invalid delta history snapshot column type {}: {error}",
+                            column.duckdb_type
+                        ))
+                    })?;
                 if canonical != column.duckdb_type {
                     return Err(AppError::FileIO(
                         "Delta history snapshot uses a non-canonical logical type".into(),
@@ -19778,6 +19840,14 @@ mod tests {
             )
             .unwrap();
         restored
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = 1 WHERE id = 'huge-history'",
+                [],
+            )
+            .unwrap();
+        restored.rebuild_natural_anchors("huge-history", 1).unwrap();
+        restored
             .restore_delta_history(&archive, &[(descriptors[0].clone(), path.clone())])
             .unwrap();
         restored
@@ -19814,6 +19884,139 @@ mod tests {
             .all(|column| column.duckdb_type == "HUGEINT"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_incomplete_row_snapshot_schema() {
+        let source = DuckDbEngine::new_in_memory().unwrap();
+        source
+            .create_empty_table(
+                "incomplete-row-history",
+                "Incomplete Row History",
+                &["value".into()],
+                &["BIGINT".into()],
+            )
+            .unwrap();
+        source
+            .conn()
+            .execute(
+                "INSERT INTO dataset_incomplete_row_history (_row_id, value) VALUES (1, 42)",
+                [],
+            )
+            .unwrap();
+        source
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET row_count = 1, next_row_id = 2
+                 WHERE id = 'incomplete-row-history'",
+                [],
+            )
+            .unwrap();
+        source
+            .rebuild_natural_anchors("incomplete-row-history", 0)
+            .unwrap();
+        crate::services::table_delta_mutation::delete_rows_compact(
+            &source,
+            "incomplete-row-history",
+            &[1],
+            0,
+        )
+        .unwrap();
+        let (archive, mut descriptors) = source.archive_delta_history().unwrap();
+        let descriptor = &mut descriptors[0];
+        descriptor
+            .columns
+            .retain(|column| column.name == "_row_id" || column.name == "_row_order");
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-incomplete-row-{}.parquet",
+            uuid::Uuid::new_v4()
+        ));
+        source
+            .conn()
+            .execute(
+                &format!(
+                    "COPY (
+                       SELECT \"_row_id\", CAST(\"_row_order\" AS VARCHAR) AS \"_row_order\"
+                       FROM {}
+                     ) TO $1 (FORMAT PARQUET)",
+                    DuckDbEngine::quote_identifier(&descriptor.table_name)
+                ),
+                params![path.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .create_empty_table(
+                "incomplete-row-history",
+                "Incomplete Row History",
+                &["value".into()],
+                &["BIGINT".into()],
+            )
+            .unwrap();
+        restored
+            .conn()
+            .execute(
+                "UPDATE _meta_datasets SET generation = 1
+                 WHERE id = 'incomplete-row-history'",
+                [],
+            )
+            .unwrap();
+        restored
+            .rebuild_natural_anchors("incomplete-row-history", 1)
+            .unwrap();
+        let error = restored
+            .restore_delta_history(&archive, &[(descriptor.clone(), path.clone())])
+            .expect_err("incomplete row snapshot must fail");
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains("row snapshot schema")),
+            "unexpected error: {error}"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn delta_history_archive_rejects_snapshot_free_invalid_column_type() {
+        use crate::services::spprj_archive::{
+            DeltaHistoryArchive, DeltaHistoryChangeSet, DeltaHistoryColumn,
+        };
+
+        let restored = DuckDbEngine::new_in_memory().unwrap();
+        restored
+            .create_empty_table("invalid-column-history", "Invalid Column History", &[], &[])
+            .unwrap();
+        let archive = DeltaHistoryArchive {
+            version: 1,
+            change_sets: vec![DeltaHistoryChangeSet {
+                id: "00000000-0000-4000-8000-000000000021".into(),
+                dataset_id: "invalid-column-history".into(),
+                storage_kind: "column_delta".into(),
+                generation: 0,
+                operation: "add_columns".into(),
+                before_generation: 0,
+                after_generation: 0,
+                snapshot_table: None,
+                applied: true,
+                rows: vec![],
+                columns: vec![DeltaHistoryColumn {
+                    ordinal: 0,
+                    column_id: "00000000-0000-4000-8000-000000000022".into(),
+                    col_index: 0,
+                    col_name: "value".into(),
+                    col_type: "NOT_A_DUCKDB_TYPE".into(),
+                    calculated_definition_json: None,
+                }],
+            }],
+        };
+
+        let error = restored
+            .restore_delta_history(&archive, &[])
+            .expect_err("invalid snapshot-free column type must fail");
+        assert!(
+            matches!(error, AppError::FileIO(ref message) if message.contains("column type")),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
