@@ -24,6 +24,18 @@ async function bumpGeneration(page: import("@playwright/test").Page) {
   });
 }
 
+async function holdNextValidation(page: import("@playwright/test").Page) {
+  await page.evaluate(() => {
+    window.__calculatedColumnHarness?.holdNextValidation();
+  });
+}
+
+async function resolveHeldValidation(page: import("@playwright/test").Page) {
+  await page.evaluate(() => {
+    window.__calculatedColumnHarness?.resolveHeldValidation();
+  });
+}
+
 async function setLanguage(page: import("@playwright/test").Page, language: string) {
   await page.evaluate((nextLanguage) => {
     (window as Window & {
@@ -242,6 +254,40 @@ test("preserves the draft on stale generation, offers revalidate, and only re-en
   const after = await readSnapshot(page);
   expect(after?.validateRequests.at(-1)?.formulaText).toBe("ROUND([Length] * [Width], 2)");
   expect(after?.validateRequests.at(-1)?.expectedGeneration).toBe(8);
+});
+
+test("keeps stale revalidation required when the draft changes during an explicit validation", async ({ mount, page }) => {
+  await mount(<CalculatedColumnHarness scenario="matrix" />);
+
+  await page.getByRole("button", { name: "Calculated Column" }).click();
+  await formulaTextbox(page).fill("ROUND([Length] * [Width], 2)");
+  await expect(page.getByRole("button", { name: "Apply" })).toBeEnabled();
+  await bumpGeneration(page);
+  await expect(page.getByRole("button", { name: "Revalidate" })).toBeVisible();
+
+  await holdNextValidation(page);
+  const beforeRevalidation = await readSnapshot(page);
+  await page.getByRole("button", { name: "Revalidate" }).click();
+  await expect.poll(async () => (await readSnapshot(page))?.validateRequests.length)
+    .toBe((beforeRevalidation?.validateRequests.length ?? 0) + 1);
+
+  await page.getByLabel("Output name").fill("Updated Calculation");
+  await formulaTextbox(page).fill("ROUND([Length] + [Width], 2)");
+  await resolveHeldValidation(page);
+
+  const staleMessage = page.getByText("Validation is stale because the table changed. Revalidate before applying.");
+  await expect(staleMessage).toBeVisible();
+  await expect(page.getByRole("button", { name: "Revalidate" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Apply" })).toBeDisabled();
+
+  await page.getByRole("button", { name: "Revalidate" }).click();
+  await expect(page.getByRole("button", { name: "Apply" })).toBeEnabled();
+  const after = await readSnapshot(page);
+  expect(after?.validateRequests.at(-1)).toMatchObject({
+    outputName: "Updated Calculation",
+    formulaText: "ROUND([Length] + [Width], 2)",
+    expectedGeneration: 8,
+  });
 });
 
 test("guards cut before clipboard write when the selection intersects calculated columns", async ({ mount, page }) => {
