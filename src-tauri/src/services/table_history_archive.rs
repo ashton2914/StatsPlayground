@@ -669,7 +669,9 @@ mod tests {
     use crate::models::calculated_column::{
         ArchivedCalculatedColumn, PreservedCalculatedColumnDefinition,
     };
-    use crate::services::spprj_archive::{DeltaHistoryRow, DeltaHistorySnapshotColumn};
+    use crate::services::spprj_archive::{
+        DeltaHistoryColumn, DeltaHistoryRow, DeltaHistorySnapshotColumn,
+    };
 
     fn schema() -> Vec<HistorySchemaColumn> {
         vec![HistorySchemaColumn {
@@ -839,5 +841,55 @@ mod tests {
                 }],
             });
         });
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_changed_calculated_definition_on_compact_delete() {
+        let definition = |marker: &str| {
+            serde_json::to_string(&ArchivedCalculatedColumn::Preserved {
+                definition: PreservedCalculatedColumnDefinition {
+                    formula_id: "formula-a".into(),
+                    schema_version: "future-v9".into(),
+                    output_column_id: "column-a".into(),
+                    archived_definition: serde_json::json!({
+                        "kind": "ready",
+                        "definition": {
+                            "formulaId": "formula-a",
+                            "schemaVersion": "future-v9",
+                            "outputColumnId": "column-a",
+                            "opaque": {"marker": marker}
+                        }
+                    }),
+                },
+            })
+            .unwrap()
+        };
+        let mut current = schema();
+        current[0].calculated_definition_json = Some(definition("before"));
+        let delta = DeltaHistoryChangeSet {
+            id: "00000000-0000-4000-8000-000000000013".into(),
+            dataset_id: "dataset-a".into(),
+            storage_kind: "column_delta".into(),
+            generation: 1,
+            operation: "delete_columns".into(),
+            before_generation: 0,
+            after_generation: 1,
+            snapshot_table: Some("_history_columns_00000000000040008000000000000013".into()),
+            applied: true,
+            rows: Vec::new(),
+            columns: vec![DeltaHistoryColumn {
+                ordinal: 0,
+                column_id: "column-a".into(),
+                col_index: 0,
+                col_name: "value".into(),
+                col_type: "HUGEINT".into(),
+                calculated_definition_json: Some(definition("after")),
+            }],
+        };
+
+        assert!(matches!(
+            apply_compact_schema_transition(&mut current, &delta),
+            Err(AppError::FileIO(_))
+        ));
     }
 }

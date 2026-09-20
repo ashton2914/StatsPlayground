@@ -20773,6 +20773,96 @@ mod tests {
         assert_eq!(archive.datasets[0].next_history_ordinal, 3);
     }
 
+    #[test]
+    fn unified_history_timeline_orders_legacy_before_compact() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("legacy-first", "Legacy first", 2, 1)
+            .unwrap();
+        let legacy = db
+            .paste_at_position_with_change_set(
+                "legacy-first",
+                0,
+                0,
+                &[vec!["8".into()]],
+                None,
+                &["DOUBLE".into()],
+                Some(0),
+            )
+            .unwrap();
+        let compact = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "legacy-first",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        assert_eq!(
+            archive
+                .entries
+                .iter()
+                .map(|entry| (entry.change_set_id.as_str(), entry.storage_kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (legacy.as_str(), "full"),
+                (compact.change_set_id.as_str(), "row_delta"),
+            ]
+        );
+    }
+
+    #[test]
+    fn unified_history_archive_uses_exact_historical_schema_for_row_snapshot() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("historical-row-schema", "Historical row schema", 3, 3)
+            .unwrap();
+        let removed = db.get_user_column_descriptors("historical-row-schema").unwrap()[1].clone();
+        crate::services::table_delta_mutation::delete_columns_compact(
+            &db,
+            "historical-row-schema",
+            &[removed],
+            0,
+        )
+        .unwrap();
+        let row = crate::services::table_delta_mutation::delete_rows_compact(
+            &db,
+            "historical-row-schema",
+            &[2],
+            1,
+        )
+        .unwrap();
+        crate::services::table_delta_mutation::add_columns_compact(
+            &db,
+            "historical-row-schema",
+            &[UserColumnDescriptor {
+                column_id: uuid::Uuid::new_v4().to_string(),
+                col_index: 1,
+                name: "later_value".into(),
+                sql_type: "BIGINT".into(),
+            }],
+            1,
+            2,
+        )
+        .unwrap();
+
+        let archive = db.archive_unified_history().unwrap();
+        let row_entry = archive
+            .entries
+            .iter()
+            .find(|entry| entry.change_set_id == row.change_set_id)
+            .unwrap();
+        assert_eq!(row_entry.before_schema.len(), 2);
+        assert_eq!(row_entry.after_schema.len(), 2);
+        assert_eq!(row_entry.snapshots.len(), 1);
+        let user_snapshot_columns = row_entry.snapshots[0]
+            .columns
+            .iter()
+            .filter(|column| !column.name.starts_with("_row"))
+            .count();
+        assert_eq!(user_snapshot_columns, 2);
+        assert_eq!(archive.entries.last().unwrap().after_schema.len(), 3);
+    }
+
     fn detached_add_rows_archive(
         dataset_id: &str,
     ) -> (
@@ -20872,6 +20962,29 @@ mod tests {
 
         let error = crate::services::table_history_archive::validate_history_timeline(&archive)
             .expect_err("legacy descriptor must be bound to the timeline schema");
+        assert!(matches!(error, AppError::FileIO(_)));
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_self_consistent_noncanonical_legacy_type() {
+        let (db, mut archive) = detached_legacy_archive("noncanonical-legacy");
+        archive.entries[0].before_schema[0].duckdb_type = "bigint".into();
+        archive.entries[0].after_schema[0].duckdb_type = "bigint".into();
+        archive.entries[0].legacy_columns[0].before_type = Some("bigint".into());
+        archive.entries[0].legacy_columns[0].after_type = "bigint".into();
+        for snapshot in &mut archive.entries[0].snapshots {
+            let column = snapshot
+                .columns
+                .iter_mut()
+                .find(|column| !column.name.starts_with("_row"))
+                .unwrap();
+            column.duckdb_type = "bigint".into();
+            column.transport_type = Some("bigint".into());
+        }
+
+        let error = db
+            .restore_unified_history(&archive, &[])
+            .expect_err("legacy types must pass canonical DuckDB admission");
         assert!(matches!(error, AppError::FileIO(_)));
     }
 
