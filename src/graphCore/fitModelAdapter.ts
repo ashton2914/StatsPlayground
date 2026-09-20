@@ -1,7 +1,12 @@
 import type { EChartsOption } from "echarts";
 
 import type { FitModelProfilerPoint } from "@/components/fitModel/fitModelPrediction";
-import type { FitModelPlotRow, FitModelQqRow } from "@/types/fitModel";
+import type { FitModelEffectRow } from "@/components/fitModel/fitModelReportModel";
+import type {
+  FitModelLeveragePlot,
+  FitModelPlotRow,
+  FitModelQqRow,
+} from "@/types/fitModel";
 import { getGraphTheme } from "./theme";
 
 const POINT_SYMBOL_SIZE = 6;
@@ -39,6 +44,40 @@ export interface FitModelQqChartLabels {
   studentizedResidualAxisName: string;
   residualSeriesName: string;
   referenceSeriesName: string;
+  tooltipXLabel: string;
+  tooltipYLabel: string;
+}
+
+export interface FitModelEffectSummaryChartInput {
+  title: string;
+  effects: readonly FitModelEffectRow[];
+  labels: FitModelEffectSummaryChartLabels;
+}
+
+export interface FitModelEffectSummaryChartLabels {
+  logWorthAxisName: string;
+  effectAxisName: string;
+  effectSeriesName: string;
+  significanceReferenceName: string;
+  tooltipXLabel: string;
+  tooltipYLabel: string;
+}
+
+export interface FitModelLeverageChartInput {
+  title: string;
+  responseName: string;
+  plot: FitModelLeveragePlot;
+  labels: FitModelLeverageChartLabels;
+}
+
+export interface FitModelLeverageChartLabels {
+  leverageAxisName: string;
+  adjustedResponseAxisName: string;
+  pointSeriesName: string;
+  fittedSeriesName: string;
+  confidenceSeriesName: string;
+  nullSeriesName: string;
+  pValueLabel: string;
   tooltipXLabel: string;
   tooltipYLabel: string;
 }
@@ -360,6 +399,178 @@ export function buildResidualQqOption(input: FitModelQqChartInput): EChartsOptio
           [extent.min, extent.min],
           [extent.max, extent.max],
         ],
+      },
+    ],
+  };
+}
+
+export function buildEffectSummaryOption(input: FitModelEffectSummaryChartInput): EChartsOption {
+  const theme = getGraphTheme();
+  const categories = input.effects.map((effect) => effect.termLabel);
+  const values = input.effects.map((effect, index) => (
+    effect.logWorth === null
+      ? 0
+      : ensureFinite(effect.logWorth, "logWorth", index)
+  ));
+  const significanceLogWorth = -Math.log10(0.05);
+
+  return {
+    ...baseOption(input.title, undefined, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
+    tooltip: {
+      trigger: "item",
+      formatter: (params: unknown) => {
+        const payload = (params ?? {}) as { dataIndex?: number; value?: unknown };
+        const index = typeof payload.dataIndex === "number" ? payload.dataIndex : -1;
+        const effect = input.effects[index];
+        const value = typeof payload.value === "number" ? payload.value : Number.NaN;
+        return `${input.labels.tooltipYLabel}: ${effect?.termLabel ?? ""}<br/>${input.labels.tooltipXLabel}: ${tooltipValue(value)}`;
+      },
+    },
+    grid: { left: 20, right: 24, top: 36, bottom: 18, containLabel: true },
+    xAxis: {
+      type: "value",
+      min: 0,
+      name: input.labels.logWorthAxisName,
+      nameLocation: "middle",
+      nameGap: 30,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
+    },
+    yAxis: {
+      type: "category",
+      name: input.labels.effectAxisName,
+      nameLocation: "middle",
+      nameGap: 42,
+      inverse: true,
+      data: categories,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+    },
+    series: [
+      {
+        name: input.labels.effectSeriesName,
+        type: "bar",
+        clip: true,
+        itemStyle: { color: theme.accent },
+        data: values,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          label: { show: true, color: theme.fgDim, formatter: input.labels.significanceReferenceName },
+          lineStyle: { color: theme.fgDim, width: 1.5, type: "dashed" },
+          data: [{ name: input.labels.significanceReferenceName, xAxis: significanceLogWorth }],
+        },
+      },
+    ],
+  };
+}
+
+export function buildFitModelLeverageOption(input: FitModelLeverageChartInput): EChartsOption {
+  const theme = getGraphTheme();
+  const points = input.plot.points.map((point, index) => [
+    ensureFinite(point.effectLeverage, "effectLeverage", index),
+    ensureFinite(point.adjustedResponse, "adjustedResponse", index),
+  ] as [number, number]);
+  const fitted = input.plot.confidenceBand.map((point, index) => [
+    ensureFinite(point.effectLeverage, "effectLeverage", index),
+    ensureFinite(point.fitted, "fitted", index),
+  ] as [number, number]);
+  const lower = input.plot.confidenceBand.map((point, index) => [
+    ensureFinite(point.effectLeverage, "effectLeverage", index),
+    ensureFinite(point.lower, "lower", index),
+  ] as [number, number]);
+  const width = input.plot.confidenceBand.map((point, index) => [
+    ensureFinite(point.effectLeverage, "effectLeverage", index),
+    ensureFinite(point.upper - point.lower, "confidenceWidth", index),
+  ] as [number, number]);
+  const xValues = [...points, ...fitted].map(([x]) => x);
+  const nullExtent = xValues.length === 0
+    ? { min: FALLBACK_MIN, max: FALLBACK_MAX }
+    : axisExtentFromRaw(Math.min(...xValues), Math.max(...xValues));
+  const subtitle = input.plot.pValue === null
+    ? undefined
+    : `${input.labels.pValueLabel}: ${tooltipValue(ensureFinite(input.plot.pValue, "pValue", 0))}`;
+  const nullSeries = input.plot.nullLineY === null
+    ? []
+    : [{
+        name: input.labels.nullSeriesName,
+        type: "line" as const,
+        clip: true,
+        showSymbol: false,
+        silent: true,
+        lineStyle: { color: theme.fgDim, width: 1.5, type: "dashed" as const },
+        data: [
+          [nullExtent.min, ensureFinite(input.plot.nullLineY, "nullLineY", 0)],
+          [nullExtent.max, ensureFinite(input.plot.nullLineY, "nullLineY", 0)],
+        ],
+      }];
+
+  return {
+    ...baseOption(input.title, subtitle, input.labels.tooltipXLabel, input.labels.tooltipYLabel),
+    xAxis: {
+      type: "value",
+      name: input.labels.leverageAxisName,
+      nameLocation: "middle",
+      nameGap: 30,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
+    },
+    yAxis: {
+      type: "value",
+      name: input.labels.adjustedResponseAxisName || input.responseName,
+      nameLocation: "middle",
+      nameGap: 42,
+      axisLine: { show: true, lineStyle: { color: theme.axisLine } },
+      axisTick: { show: true, lineStyle: { color: theme.axisLine } },
+      axisLabel: { color: theme.fgSecondary, fontSize: 10 },
+      splitLine: { show: true, lineStyle: { color: theme.gridLine, type: "dashed" } },
+    },
+    series: [
+      {
+        name: input.labels.confidenceSeriesName,
+        type: "line",
+        clip: true,
+        stack: "leverage-confidence",
+        showSymbol: false,
+        silent: true,
+        lineStyle: { opacity: 0 },
+        areaStyle: { opacity: 0 },
+        data: lower,
+      },
+      {
+        name: input.labels.confidenceSeriesName,
+        type: "line",
+        clip: true,
+        stack: "leverage-confidence",
+        showSymbol: false,
+        silent: true,
+        lineStyle: { opacity: 0 },
+        areaStyle: { color: theme.accent, opacity: 0.16 },
+        data: width,
+      },
+      {
+        name: input.labels.fittedSeriesName,
+        type: "line",
+        clip: true,
+        showSymbol: false,
+        lineStyle: { color: theme.accent, width: 2 },
+        data: fitted,
+      },
+      ...nullSeries,
+      {
+        name: input.labels.pointSeriesName,
+        type: "scatter",
+        clip: true,
+        symbolSize: POINT_SYMBOL_SIZE,
+        progressive: 400,
+        progressiveThreshold: 3000,
+        itemStyle: { color: theme.accent },
+        data: points,
       },
     ],
   };

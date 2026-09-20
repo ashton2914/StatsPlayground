@@ -1,7 +1,9 @@
 import { canonicalizeFitModelTerms } from "@/components/fitModel/fitModelConfig";
 import type {
   FitModelCenteringMethod,
+  FitModelEffectTest,
   FitModelFittedResult,
+  FitModelLeveragePlot,
   FitModelRowDiagnostic,
   FitModelTerm,
 } from "@/types/fitModel";
@@ -193,17 +195,17 @@ export function logWorth(pValue: number | null): number | null {
 }
 
 export function buildEffectSummary(result: FitModelFittedResult): FitModelEffectRow[] {
-  const parameterByTermId = new Map(
-    result.parameterEstimates.map((parameter) => [parameter.termId, parameter]),
+  const effectByTermId = new Map(
+    result.effectTests.map((effect) => [effect.termId, effect]),
   );
-  const parameterByLabel = new Map(
-    result.parameterEstimates.map((parameter) => [parameter.termLabel, parameter]),
+  const effectByLabel = new Map(
+    result.effectTests.map((effect) => [effect.termLabel, effect]),
   );
 
   return result.terms
     .map((term) => {
-      const parameter = parameterByTermId.get(term.termId) ?? parameterByLabel.get(term.label);
-      const pValue = parameter?.pValue ?? null;
+      const effect = effectByTermId.get(term.termId) ?? effectByLabel.get(term.label);
+      const pValue = effect?.pValue ?? null;
 
       return {
         termId: term.termId,
@@ -228,6 +230,52 @@ export function buildEffectSummary(result: FitModelFittedResult): FitModelEffect
       }
       return left.termLabel.localeCompare(right.termLabel);
     });
+}
+
+function finitePValue(value: number | null): value is number {
+  return value !== null && Number.isFinite(value);
+}
+
+export function selectDefaultLeverageTermId(
+  effectTests: readonly FitModelEffectTest[],
+): string | null {
+  if (effectTests.length === 0) {
+    return null;
+  }
+
+  let selected = effectTests[0];
+  for (const effect of effectTests) {
+    if (
+      finitePValue(effect.pValue)
+      && (!finitePValue(selected.pValue) || effect.pValue < selected.pValue)
+    ) {
+      selected = effect;
+    }
+  }
+  return selected.termId;
+}
+
+export function reconcileLeverageTermId(
+  current: string | null,
+  plots: readonly FitModelLeveragePlot[],
+): string | null {
+  if (current !== null && plots.some((plot) => plot.termId === current)) {
+    return current;
+  }
+  if (plots.length === 0) {
+    return null;
+  }
+
+  let selected = plots[0];
+  for (const plot of plots) {
+    if (
+      finitePValue(plot.pValue)
+      && (!finitePValue(selected.pValue) || plot.pValue < selected.pValue)
+    ) {
+      selected = plot;
+    }
+  }
+  return selected.termId;
 }
 
 export function removeFitModelTerm(

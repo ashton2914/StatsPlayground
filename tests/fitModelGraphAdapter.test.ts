@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 
 import {
   buildActualByPredictedOption,
+  buildEffectSummaryOption,
+  buildFitModelLeverageOption,
   buildFitModelProfilerOption,
   buildResidualByPredictedOption,
   buildResidualQqOption,
@@ -288,6 +290,93 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
 }
 
+function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
+  const option = buildEffectSummaryOption({
+    title: "Effect Summary",
+    effects: [
+      { termId: "interaction:A*B", termLabel: "A*B", kind: "interaction", pValue: 0.001, logWorth: 3 },
+      { termId: "A", termLabel: "A", kind: "main", pValue: 0.05, logWorth: -Math.log10(0.05) },
+      { termId: "B", termLabel: "B", kind: "main", pValue: null, logWorth: null },
+    ],
+    labels: {
+      logWorthAxisName: "LogWorth",
+      effectAxisName: "Effect",
+      effectSeriesName: "LogWorth",
+      significanceReferenceName: "p = 0.05",
+      tooltipXLabel: "LogWorth",
+      tooltipYLabel: "Effect",
+    },
+  }) as {
+    xAxis: { type: string };
+    yAxis: { type: string; data: string[] };
+    series: Array<{
+      type: string;
+      data: number[];
+      markLine?: { data?: Array<{ name?: string; xAxis?: number }> };
+    }>;
+  };
+
+  assert.equal(option.xAxis.type, "value");
+  assert.equal(option.yAxis.type, "category");
+  assert.deepEqual(option.yAxis.data, ["A*B", "A", "B"]);
+  assert.deepEqual(option.series[0]?.data, [3, -Math.log10(0.05), 0]);
+  assert.equal(option.series[0]?.markLine?.data?.[0]?.name, "p = 0.05");
+  assert.equal(option.series[0]?.markLine?.data?.[0]?.xAxis, -Math.log10(0.05));
+  assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
+}
+
+function testLeveragePointsFittedBandAndNullSeries(): void {
+  const option = buildFitModelLeverageOption({
+    title: "Leverage Plot",
+    responseName: "Y",
+    plot: {
+      termId: "interaction:A*B",
+      termLabel: "A*B",
+      pValue: 0.001,
+      points: [
+        { rowIndex: 1, effectLeverage: -1, adjustedResponse: 8 },
+        { rowIndex: 2, effectLeverage: 1, adjustedResponse: 12 },
+      ],
+      confidenceBand: [
+        { effectLeverage: -1, fitted: 9, lower: 8.5, upper: 9.5 },
+        { effectLeverage: 1, fitted: 11, lower: 10.5, upper: 11.5 },
+      ],
+      nullLineY: 10,
+      rowsSampled: false,
+      sourceRowCount: 2,
+      reason: null,
+    },
+    labels: {
+      leverageAxisName: "Effect leverage",
+      adjustedResponseAxisName: "Adjusted Y",
+      pointSeriesName: "Observed",
+      fittedSeriesName: "Fitted",
+      confidenceSeriesName: "Confidence band",
+      nullSeriesName: "Null effect",
+      pValueLabel: "Prob > F",
+      tooltipXLabel: "Effect leverage",
+      tooltipYLabel: "Adjusted Y",
+    },
+  }) as {
+    title?: { subtext?: string };
+    series: Array<{
+      name?: string;
+      type?: string;
+      clip?: boolean;
+      stack?: string;
+      data?: Array<[number, number]>;
+    }>;
+  };
+
+  assert.match(option.title?.subtext ?? "", /0\.001/);
+  assert.deepEqual(option.series.find((series) => series.name === "Observed")?.data, [[-1, 8], [1, 12]]);
+  assert.deepEqual(option.series.find((series) => series.name === "Fitted")?.data, [[-1, 9], [1, 11]]);
+  assert.equal(option.series.filter((series) => series.name === "Confidence band").length, 2);
+  assert.deepEqual(option.series.find((series) => series.name === "Null effect")?.data, [[-1, 10], [1, 10]]);
+  assert.ok(option.series.every((series) => series.clip === true));
+  assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
+}
+
 function testChartLayoutContainsAxisText(): void {
   const rows: FitModelPlotRow[] = [
     { rowIndex: 0, observed: 2, fitted: 1.5, residual: 0.5 },
@@ -340,6 +429,8 @@ testSinglePointReferenceLinesUseExpandedFiniteExtent();
 testResidualQqPointsAndReferenceLine();
 testResidualQqBoundaryInputs();
 testPredictionProfilerCurveAndConfidenceBand();
+testEffectSummaryHorizontalBarsAndSignificanceReference();
+testLeveragePointsFittedBandAndNullSeries();
 testChartLayoutContainsAxisText();
 
 console.log("fitModel graph adapter contract passed");

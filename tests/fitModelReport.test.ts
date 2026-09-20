@@ -7,6 +7,11 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 
+import {
+  reconcileLeverageTermId,
+  selectDefaultLeverageTermId,
+} from "../src/components/fitModel/fitModelReportModel.ts";
+
 const {
   applyFitModelTermRemoval,
   applyFitModelTermUndo,
@@ -329,12 +334,45 @@ function testLogWorthContracts(): void {
 }
 
 function testEffectSummarySortAndPValueMapping(): void {
-  const result = createFittedResult();
+  const result = createFittedResult({
+    effectTests: [
+      {
+        termId: "A",
+        termLabel: "A",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 4,
+        fRatio: 2,
+        pValue: 0.1,
+        reason: null,
+      },
+      {
+        termId: "B",
+        termLabel: "B",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 8,
+        fRatio: 4,
+        pValue: 0.02,
+        reason: null,
+      },
+      {
+        termId: "interaction:A*B",
+        termLabel: "A*B",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: null,
+        fRatio: null,
+        pValue: null,
+        reason: "inferenceNotEstimable",
+      },
+    ],
+  });
   const effects = buildEffectSummary(result);
 
   assert.deepEqual(effects.map((row) => row.termLabel), ["B", "A", "A*B"]);
-  assert.equal(effects[0]?.pValue, 0.001);
-  assert.equal(effects[1]?.pValue, 0.05);
+  assert.equal(effects[0]?.pValue, 0.02);
+  assert.equal(effects[1]?.pValue, 0.1);
   assert.equal(effects[2]?.pValue, null);
 }
 
@@ -366,11 +404,83 @@ function testMeanCenteringDoesNotRelabelMainEffect(): void {
         upperConfidenceLimit: null,
       },
     ],
+    effectTests: [
+      {
+        termId: "main:A",
+        termLabel: "A",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 4,
+        fRatio: 2,
+        pValue: 0.02,
+        reason: null,
+      },
+      {
+        termId: "interaction:A*B",
+        termLabel: "A*B",
+        numberOfParameters: 1,
+        degreesOfFreedom: 1,
+        sumOfSquares: 3,
+        fRatio: 1.5,
+        pValue: 0.03,
+        reason: null,
+      },
+    ],
   });
 
   const effects = buildEffectSummary(result);
   const main = effects.find((row) => row.termId === "main:A");
   assert.equal(main?.pValue, 0.02);
+}
+
+function testLeverageSelectionIsDeterministic(): void {
+  const effectTests = [
+    {
+      termId: "A",
+      termLabel: "A",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 2,
+      fRatio: 1,
+      pValue: 0.05,
+      reason: null,
+    },
+    {
+      termId: "interaction:A*B",
+      termLabel: "A*B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 1,
+      sumOfSquares: 8,
+      fRatio: 4,
+      pValue: 0.001,
+      reason: null,
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: null,
+      reason: "inferenceNotEstimable",
+    },
+  ] as const;
+  const plots = effectTests.map((effect) => ({
+    termId: effect.termId,
+    termLabel: effect.termLabel,
+    pValue: effect.pValue,
+    points: [],
+    confidenceBand: [],
+    nullLineY: null,
+    rowsSampled: false,
+    sourceRowCount: 0,
+    reason: effect.reason,
+  }));
+
+  assert.equal(selectDefaultLeverageTermId(effectTests), "interaction:A*B");
+  assert.equal(reconcileLeverageTermId("removed", plots), "interaction:A*B");
+  assert.equal(reconcileLeverageTermId("A", plots), "A");
 }
 
 function testRemoveInteractionSucceeds(): void {
@@ -768,6 +878,7 @@ function testViewSourceContracts(): void {
 testLogWorthContracts();
 testEffectSummarySortAndPValueMapping();
 testMeanCenteringDoesNotRelabelMainEffect();
+testLeverageSelectionIsDeterministic();
 testRemoveInteractionSucceeds();
 testResolvedTermIdsMatchRustForPowerAndHigherOrderInteraction();
 testRemovePowerAndHigherOrderInteractionSucceeds();
