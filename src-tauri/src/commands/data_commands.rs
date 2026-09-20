@@ -865,4 +865,69 @@ mod tests {
             .expect_err("stale expected generation must be forwarded");
         assert!(matches!(stale, crate::error::AppError::InvalidParam(_)));
     }
+
+    #[test]
+    fn add_columns_rejects_calculated_descriptors_without_mutation() {
+        use crate::models::calculated_column::{
+            CalculatedColumnDescriptor, CalculatedColumnStatus, CalculatedOutputTypeV1,
+        };
+
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let dataset = service
+            .create_table(
+                "ipc-calculated-rejection",
+                &["first".to_string()],
+                &["DOUBLE".to_string()],
+            )
+            .expect("dataset");
+        let descriptor = crate::models::table::ColumnDescriptor {
+            column_id: uuid::Uuid::new_v4().to_string(),
+            name: "calculated".to_string(),
+            sql_type: "DOUBLE".to_string(),
+            calculated: Some(CalculatedColumnDescriptor {
+                formula_id: uuid::Uuid::new_v4().to_string(),
+                schema_version: "1".to_string(),
+                output_column_id: uuid::Uuid::new_v4().to_string(),
+                display_formula_text: "first * 2".to_string(),
+                status: CalculatedColumnStatus::Ready,
+                dependency_column_ids: Vec::new(),
+                inferred_output_type: CalculatedOutputTypeV1::Continuous,
+                fingerprint: "fingerprint".to_string(),
+            }),
+        };
+        let before_columns = service
+            .get_column_descriptors(&dataset.id)
+            .expect("before columns");
+
+        let error = super::add_columns_with_change_set_entry(
+            &state,
+            &dataset.id,
+            &[descriptor],
+            None,
+            dataset.generation,
+        )
+        .expect_err("physical column addition must reject calculated descriptors");
+
+        assert!(matches!(
+            error,
+            crate::error::AppError::InvalidParam(message)
+                if message.contains("calculated")
+        ));
+        assert_eq!(
+            service
+                .get_dataset_generation(&dataset.id)
+                .expect("generation"),
+            dataset.generation
+        );
+        assert_eq!(
+            serde_json::to_value(
+                service
+                    .get_column_descriptors(&dataset.id)
+                    .expect("after columns")
+            )
+            .expect("serialize after columns"),
+            serde_json::to_value(before_columns).expect("serialize before columns")
+        );
+    }
 }

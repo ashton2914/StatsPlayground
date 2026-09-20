@@ -220,6 +220,11 @@ export function LogicalTableNavigationHarness({
   const [sessionStatusCalls, setSessionStatusCalls] = useState<string[]>([]);
   const [sessionExactCounts, setSessionExactCounts] = useState<number[]>([]);
   const [releasedSessionIds, setReleasedSessionIds] = useState<string[]>([]);
+  const [addRowsRequests, setAddRowsRequests] = useState<Array<{
+    count: number;
+    beforeRowId: number | null;
+    expectedGeneration: number;
+  }>>([]);
   const [filterMode, setFilterMode] = useState<HarnessFilterMode>(initialFilterMode);
   const [sortMode, setSortMode] = useState<HarnessSortMode>("natural");
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -254,6 +259,7 @@ export function LogicalTableNavigationHarness({
     setSessionStatusCalls([]);
     setSessionExactCounts([]);
     setReleasedSessionIds([]);
+    setAddRowsRequests([]);
     setFilterMode(initialFilterMode);
     setSortMode("natural");
     sessionReadyAtRef.current.clear();
@@ -512,7 +518,11 @@ export function LogicalTableNavigationHarness({
     dataService.updateCell = async (_datasetId, rowId, columnName, value) => {
       editsRef.current.set(`${rowId}:${columnName}`, value === "" ? null : value);
     };
-    dataService.addRows = async (_datasetId, count) => {
+    dataService.addRows = async (_datasetId, count, beforeRowId, expectedGeneration) => {
+      setAddRowsRequests((previous) => [
+        ...previous,
+        { count, beforeRowId, expectedGeneration },
+      ]);
       const safeCount = Math.max(1, count);
       const startRowId = datasetRef.current.rowCount + 1;
       const rowIds = Array.from({ length: safeCount }, (_, index) => startRowId + index);
@@ -528,7 +538,12 @@ export function LogicalTableNavigationHarness({
         ...current,
         datasets: current.datasets.map((item) => item.id === nextDataset.id ? nextDataset : item),
       }));
-      return { rowIds, generation: nextDataset.generation };
+      return {
+        rowIds,
+        generation: nextDataset.generation,
+        rowCount: nextDataset.rowCount,
+        changeSetId: `add-rows-${nextDataset.generation}`,
+      };
     };
     dataService.addRow = async () => datasetRef.current.rowCount + 1;
 
@@ -584,6 +599,7 @@ export function LogicalTableNavigationHarness({
     <div ref={rootRef} style={{ width, height }}>
       <div data-testid="project-dirty">{dirty ? "true" : "false"}</div>
       <div data-testid="dataset-row-count">{dataset.rowCount}</div>
+      <div data-testid="add-rows-requests">{JSON.stringify(addRowsRequests)}</div>
       <div data-testid="mutation-pending">{pendingAction ?? ""}</div>
       <div data-testid="nav-request-starts">{navigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-resolved-starts">{resolvedNavigationRequestStarts.join(",")}</div>

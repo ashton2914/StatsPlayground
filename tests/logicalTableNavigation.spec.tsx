@@ -401,6 +401,9 @@ test("scopes logical-end follow to the active filter query", async ({ mount, pag
   await expect(addRow).toBeVisible();
   await addRow.click();
   await expect(component.getByTestId("dataset-row-count")).toHaveText("201");
+  await expect(component.getByTestId("add-rows-requests")).toHaveText(
+    JSON.stringify([{ count: 1, beforeRowId: null, expectedGeneration: 1 }]),
+  );
   await expect(component.getByTestId("mutation-pending")).toHaveText("");
   await expect(component.locator(".sp-toast-error")).toHaveCount(0);
   await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow")))

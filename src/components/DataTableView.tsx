@@ -918,6 +918,7 @@ export function DataTableView({
   const [batchColFormat, setBatchColFormat] = useState<ColumnFormat>(DEFAULT_FORMAT);
   const [showInsertMultiRows, setShowInsertMultiRows] = useState(false);
   const [insertRowCount, setInsertRowCount] = useState("5");
+  const [insertRowBeforeId, setInsertRowBeforeId] = useState<number | null>(null);
   const [showInsertMultiCols, setShowInsertMultiCols] = useState(false);
   const [insertColCount, setInsertColCount] = useState("3");
   const [insertColType, setInsertColType] = useState("VARCHAR");
@@ -2902,10 +2903,20 @@ export function DataTableView({
   };
 
   // ---- Row operations ----
-  const addRowsWithHistory = async (count: number, description: string) => {
+  const addRowsWithHistory = async (
+    count: number,
+    description: string,
+    beforeRowId: number | null,
+  ) => {
     if (!tryBeginTableMutation()) return false;
     try {
-      const result = await dataService.addRows(datasetId, count);
+      const expectedGeneration = await dataService.getDatasetGeneration(datasetId);
+      const result = await dataService.addRows(
+        datasetId,
+        count,
+        beforeRowId,
+        expectedGeneration,
+      );
       recordTable(description, {
         kind: "addedRows",
         datasetId,
@@ -2930,7 +2941,7 @@ export function DataTableView({
       ? { datasetId, queryKey: loadedFilterKeyRef.current }
       : null;
     logicalEndFollowContextRef.current = followContext;
-    const added = await addRowsWithHistory(1, t("history.addRow"));
+    const added = await addRowsWithHistory(1, t("history.addRow"), null);
     if (!added && logicalEndFollowContextRef.current === followContext) {
       logicalEndFollowContextRef.current = null;
     }
@@ -2941,10 +2952,15 @@ export function DataTableView({
     if (pendingAction) return;
     const count = parseInt(insertRowCount, 10);
     if (isNaN(count) || count < 1) return;
-    const added = await addRowsWithHistory(count, t("history.addRowsBatch"));
+    const added = await addRowsWithHistory(
+      count,
+      t("history.addRowsBatch"),
+      insertRowBeforeId,
+    );
     if (!added) return;
     setShowInsertMultiRows(false);
     setInsertRowCount("5");
+    setInsertRowBeforeId(null);
   };
 
   const handleDeleteRows = async () => {
@@ -2963,12 +2979,16 @@ export function DataTableView({
     if (!tryBeginTableMutation()) return;
     try {
       const generation = await dataService.getDatasetGeneration(datasetId);
-      const changeSetId = await dataService.deleteRowsWithChangeSet(
+      const result = await dataService.deleteRowsWithChangeSet(
         datasetId,
         rowIds,
         generation,
       );
-      recordTable(t("history.deleteRow"), { kind: "changeSet", datasetId, changeSetId });
+      recordTable(t("history.deleteRow"), {
+        kind: "changeSet",
+        datasetId,
+        changeSetId: result.changeSetId,
+      });
       setSelectedRows(EMPTY_NUM_SET);
       setRowMenu(null);
       await load();
@@ -2994,12 +3014,16 @@ export function DataTableView({
     if (!tryBeginTableMutation()) return;
     try {
       const generation = await dataService.getDatasetGeneration(datasetId);
-      const changeSetId = await dataService.deleteRowsWithChangeSet(
+      const result = await dataService.deleteRowsWithChangeSet(
         datasetId,
         [getRowId(row)],
         generation,
       );
-      recordTable(t("history.deleteRow"), { kind: "changeSet", datasetId, changeSetId });
+      recordTable(t("history.deleteRow"), {
+        kind: "changeSet",
+        datasetId,
+        changeSetId: result.changeSetId,
+      });
       setRowMenu(null);
       await load();
       await refreshAndMarkDirty();
@@ -3014,8 +3038,37 @@ export function DataTableView({
   const handleInsertRowAbove = async () => {
     if (readOnly) return;
     if (pendingAction) return;
-    const added = await addRowsWithHistory(1, t("history.insertRow"));
+    const target = rowMenu ? data.rows[toDataIdx(rowMenu.rowIdx)] as unknown[] | undefined : undefined;
+    if (!target) {
+      setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
+        defaultValue: "This operation requires rows outside the loaded window.",
+      }));
+      return;
+    }
+    const added = await addRowsWithHistory(
+      1,
+      t("history.insertRow"),
+      getRowId(target),
+    );
     if (!added) return;
+    setRowMenu(null);
+  };
+
+  const openInsertMultiRows = (rowIdx: number | null) => {
+    if (rowIdx == null) {
+      setInsertRowBeforeId(null);
+      setShowInsertMultiRows(true);
+      return;
+    }
+    const target = data.rows[toDataIdx(rowIdx)] as unknown[] | undefined;
+    if (!target) {
+      setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
+        defaultValue: "This operation requires rows outside the loaded window.",
+      }));
+      return;
+    }
+    setInsertRowBeforeId(getRowId(target));
+    setShowInsertMultiRows(true);
     setRowMenu(null);
   };
 
@@ -3029,14 +3082,21 @@ export function DataTableView({
     if (!tryBeginTableMutation()) return false;
     try {
       const generation = await dataService.getDatasetGeneration(datasetId);
-      const changeSetId = await dataService.addColumnWithChangeSet(
+      const result = await dataService.addColumnsWithChangeSet(
         datasetId,
-        name,
-        columnType,
+        [{
+          columnId: crypto.randomUUID(),
+          name,
+          sqlType: columnType,
+        }],
         atIndex,
         generation,
       );
-      recordTable(description, { kind: "changeSet", datasetId, changeSetId });
+      recordTable(description, {
+        kind: "changeSet",
+        datasetId,
+        changeSetId: result.changeSetId,
+      });
       await load();
       await refreshAndMarkDirty();
       return true;
@@ -3096,17 +3156,21 @@ export function DataTableView({
     if (isNaN(count) || count < 1) return;
     const anchor = insertColAnchor;
     const currentNames = [...cols];
-    const columns: Array<{ name: string; columnType: string }> = [];
+    const columns: ColumnDescriptor[] = [];
     for (let i = 0; i < count; i++) {
       const name = generateColName(currentNames);
       const at = anchor == null ? currentNames.length : anchor + 1 + i;
       currentNames.splice(at, 0, name);
-      columns.push({ name, columnType: insertColType });
+      columns.push({
+        columnId: crypto.randomUUID(),
+        name,
+        sqlType: insertColType,
+      });
     }
     if (!tryBeginTableMutation()) return;
     try {
       const generation = await dataService.getDatasetGeneration(datasetId);
-      const changeSetId = await dataService.addColumnsWithChangeSet(
+      const result = await dataService.addColumnsWithChangeSet(
         datasetId,
         columns,
         anchor == null ? null : anchor + 1,
@@ -3115,7 +3179,7 @@ export function DataTableView({
       recordTable(t("history.addColumnsBatch"), {
         kind: "changeSet",
         datasetId,
-        changeSetId,
+        changeSetId: result.changeSetId,
       });
       await load();
       await refreshAndMarkDirty();
@@ -3168,18 +3232,27 @@ export function DataTableView({
     if (readOnly) return;
     if (pendingAction) return;
     if (cols.length <= 1) return;
+    const descriptor = columnDescriptorsRef.current.find(
+      (column) => column.name === colName,
+    );
+    if (!descriptor) {
+      setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
+        defaultValue: "This operation requires column metadata that is not loaded.",
+      }));
+      return;
+    }
     if (!tryBeginTableMutation()) return;
     try {
       const generation = await dataService.getDatasetGeneration(datasetId);
-      const changeSetId = await dataService.deleteColumnsWithChangeSet(
+      const result = await dataService.deleteColumnsWithChangeSet(
         datasetId,
-        [colName],
+        [descriptor],
         generation,
       );
       recordTable(t("history.deleteColumnNamed", { name: colName }), {
         kind: "changeSet",
         datasetId,
-        changeSetId,
+        changeSetId: result.changeSetId,
       });
       setColMenu(null);
       await load();
@@ -3200,21 +3273,30 @@ export function DataTableView({
       setColMenu(null);
       return;
     }
-    const columnNames = Array.from(selectedCols)
+    const descriptorsByName = new Map(
+      columnDescriptorsRef.current.map((descriptor) => [descriptor.name, descriptor]),
+    );
+    const descriptors = Array.from(selectedCols)
       .sort((left, right) => left - right)
-      .map((columnIndex) => cols[columnIndex]);
+      .map((columnIndex) => descriptorsByName.get(cols[columnIndex]));
+    if (descriptors.some((descriptor) => !descriptor)) {
+      setErrorMsg(t("dataTable.unloadedRangeUnsupported", {
+        defaultValue: "This operation requires column metadata that is not loaded.",
+      }));
+      return;
+    }
     if (!tryBeginTableMutation()) return;
     try {
       const generation = await dataService.getDatasetGeneration(datasetId);
-      const changeSetId = await dataService.deleteColumnsWithChangeSet(
+      const result = await dataService.deleteColumnsWithChangeSet(
         datasetId,
-        columnNames,
+        descriptors.filter((descriptor): descriptor is ColumnDescriptor => !!descriptor),
         generation,
       );
       recordTable(t("history.deleteColumn"), {
         kind: "changeSet",
         datasetId,
-        changeSetId,
+        changeSetId: result.changeSetId,
       });
       setSelectedCols(EMPTY_NUM_SET);
       setColMenu(null);
@@ -5829,7 +5911,7 @@ export function DataTableView({
           <div className="sp-ctx-item" onClick={() => { handleInsertRowAbove(); setCornerMenu(null); }}>
             {t("dataTable.ctxInsertRow")}
           </div>
-          <div className="sp-ctx-item" onClick={() => { setShowInsertMultiRows(true); setCornerMenu(null); }}>
+          <div className="sp-ctx-item" onClick={() => { openInsertMultiRows(null); setCornerMenu(null); }}>
             {t("dataTable.ctxInsertMultiRows")}
           </div>
           <div className="sp-ctx-sep" />
@@ -5863,7 +5945,7 @@ export function DataTableView({
           <div className="sp-ctx-item" onClick={handleInsertRowAbove}>
             {t("dataTable.ctxInsertRow")}
           </div>
-          <div className="sp-ctx-item" onClick={() => { setShowInsertMultiRows(true); setRowMenu(null); }}>
+          <div className="sp-ctx-item" onClick={() => openInsertMultiRows(rowMenu.rowIdx)}>
             {t("dataTable.ctxInsertMultiRows")}
           </div>
           <div className="sp-ctx-sep" />

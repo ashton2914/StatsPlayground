@@ -1483,6 +1483,11 @@ impl<'a> DataService<'a> {
         at_index: Option<i32>,
         expected_generation: u64,
     ) -> Result<ColumnMutationResult, AppError> {
+        if columns.iter().any(|column| column.calculated.is_some()) {
+            return Err(AppError::InvalidParam(
+                "physical column addition does not accept calculated descriptors".to_string(),
+            ));
+        }
         let db = self
             .state
             .db
