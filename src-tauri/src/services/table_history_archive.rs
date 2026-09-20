@@ -383,6 +383,15 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
             }
             if ordinal > 0 {
                 let previous = entries[ordinal - 1];
+                let ordinals_are_consecutive = previous
+                    .history_ordinal
+                    .checked_add(1)
+                    .is_some_and(|next| next == entry.history_ordinal);
+                if ordinals_are_consecutive && previous.after_schema != entry.before_schema {
+                    return Err(AppError::FileIO(
+                        "Consecutive history schemas are discontinuous".into(),
+                    ));
+                }
                 if entry.created_before_generation < previous.created_after_generation {
                     return Err(AppError::FileIO(
                         "History generation transition mismatch".into(),
@@ -784,6 +793,10 @@ mod tests {
         });
         assert_corrupt(valid_archive(), |archive| {
             archive.entries[1].created_before_generation = 0;
+        });
+        assert_corrupt(valid_archive(), |archive| {
+            archive.entries[1].before_schema[0].name = "discontinuous".into();
+            archive.entries[1].after_schema[0].name = "discontinuous".into();
         });
         assert_corrupt(valid_archive(), |archive| {
             archive.entries[1].before_schema.clear();

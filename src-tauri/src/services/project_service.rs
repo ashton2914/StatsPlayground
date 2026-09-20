@@ -2264,6 +2264,222 @@ mod tests {
     }
 
     #[test]
+    fn unified_history_archive_reopens_gapped_partial_cursor_at_first_unapplied_before_schema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-gapped-cursor-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Gapped Cursor".into(), &path_string)
+            .unwrap();
+        let (first_id, pruned_id, last_id) = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("gapped-cursor", "Gapped Cursor", 3, 1)
+                .unwrap();
+            let first = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "gapped-cursor",
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+            let added = crate::engine::duckdb_engine::UserColumnDescriptor {
+                column_id: uuid::Uuid::new_v4().to_string(),
+                col_index: 1,
+                name: "added_between".into(),
+                sql_type: "BIGINT".into(),
+            };
+            let pruned = crate::services::table_delta_mutation::add_columns_compact(
+                &db,
+                "gapped-cursor",
+                &[added],
+                1,
+                1,
+            )
+            .unwrap();
+            let last = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "gapped-cursor",
+                1,
+                None,
+                2,
+            )
+            .unwrap();
+            db.apply_change_set(&last.change_set_id, true).unwrap();
+            db.drop_change_set(&pruned.change_set_id).unwrap();
+            (first.change_set_id, pruned.change_set_id, last.change_set_id)
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![
+            serde_json::json!({
+                "id": "last",
+                "action": {
+                    "kind": "changeSet",
+                    "datasetId": "gapped-cursor",
+                    "changeSetId": last_id
+                }
+            }),
+            serde_json::json!({
+                "id": "first",
+                "action": {
+                    "kind": "changeSet",
+                    "datasetId": "gapped-cursor",
+                    "changeSetId": first_id
+                }
+            }),
+        ];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let opened = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .expect("gapped partial cursor must reopen");
+        assert_eq!(opened.history_current_idx, 1);
+        assert_eq!(
+            opened.history[0].pointer("/action/changeSetId"),
+            Some(&serde_json::Value::String(last_id.clone()))
+        );
+        assert_eq!(
+            opened.history[1].pointer("/action/changeSetId"),
+            Some(&serde_json::Value::String(first_id))
+        );
+        let db = reopened_state.db.lock().unwrap();
+        let retained = db
+            .archive_unified_history()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.history_ordinal, entry.applied))
+            .collect::<Vec<_>>();
+        assert_eq!(retained, vec![(0, true), (2, false)]);
+        db.apply_change_set(&last_id, false).unwrap();
+        db.apply_change_set(&last_id, true).unwrap();
+        drop(db);
+
+        assert_ne!(pruned_id, last_id);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_reopens_all_applied_schema_change_at_last_after_schema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-all-applied-schema-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("All Applied Schema".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("all-applied-schema", "All Applied Schema", 2, 1)
+                .unwrap();
+            crate::services::table_delta_mutation::add_columns_compact(
+                &db,
+                "all-applied-schema",
+                &[crate::engine::duckdb_engine::UserColumnDescriptor {
+                    column_id: uuid::Uuid::new_v4().to_string(),
+                    col_index: 1,
+                    name: "applied_column".into(),
+                    sql_type: "BIGINT".into(),
+                }],
+                1,
+                0,
+            )
+            .unwrap()
+            .change_set_id
+        };
+        let mut request = empty_save_request(None);
+        request.history = vec![serde_json::json!({
+            "id": "applied",
+            "action": {
+                "kind": "changeSet",
+                "datasetId": "all-applied-schema",
+                "changeSetId": change_set_id
+            }
+        })];
+        service.save_project(request, None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let opened = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        assert_eq!(opened.history_current_idx, 0);
+        assert_eq!(
+            reopened_state
+                .db
+                .lock()
+                .unwrap()
+                .get_user_columns("all-applied-schema")
+                .unwrap()
+                .len(),
+            2
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_reopens_allocator_only_state_without_inventing_schema() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".task5-allocator-only-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Allocator Only".into(), &path_string)
+            .unwrap();
+        {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table("allocator-only", "Allocator Only", 2, 1)
+                .unwrap();
+            let change = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "allocator-only",
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+            db.drop_change_set(&change.change_set_id).unwrap();
+        }
+        service.save_project(empty_save_request(None), None).unwrap();
+
+        let reopened_state = AppState::new().unwrap();
+        let opened = ProjectService::new(&reopened_state)
+            .open_project(&path_string, None)
+            .unwrap();
+        assert_eq!(opened.history_current_idx, -1);
+        let db = reopened_state.db.lock().unwrap();
+        let next = crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            "allocator-only",
+            1,
+            None,
+            1,
+        )
+        .unwrap();
+        let ordinal: u64 = db
+            .conn()
+            .query_row(
+                "SELECT history_ordinal FROM _history_timeline WHERE change_set_id = ?",
+                duckdb::params![next.change_set_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ordinal, 1);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn unified_history_archive_round_trips_nullable_hugeint_extrema() {
         let path = std::env::current_dir().unwrap().join(format!(
             ".task5-unified-hugeint-{}.spprj",

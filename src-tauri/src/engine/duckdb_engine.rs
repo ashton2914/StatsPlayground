@@ -10203,12 +10203,12 @@ impl DuckDbEngine {
             if entries.is_empty() {
                 continue;
             }
-            let cursor_schema = if cursor.applied_count == 0 {
-                entries.first().map(|entry| &entry.before_schema)
+            let cursor_schema = if let Some(first_unapplied) =
+                entries.iter().find(|entry| !entry.applied)
+            {
+                Some(&first_unapplied.before_schema)
             } else {
-                let applied_index = usize::try_from(cursor.applied_count - 1)
-                    .map_err(|_| AppError::FileIO("History cursor is too large".into()))?;
-                entries.get(applied_index).map(|entry| &entry.after_schema)
+                entries.last().map(|entry| &entry.after_schema)
             }
             .ok_or_else(|| AppError::FileIO("History cursor schema is unavailable".into()))?;
             let live_json =
