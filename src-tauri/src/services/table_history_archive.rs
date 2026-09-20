@@ -291,7 +291,10 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
         }
         if let Some(delta) = &entry.delta {
             for column in &delta.columns {
-                validate_calculated_definition(column.calculated_definition_json.as_deref())?;
+                validate_calculated_definition(
+                    column.calculated_definition_json.as_deref(),
+                    Some(&column.column_id),
+                )?;
             }
             let mut expected_after = entry.before_schema.clone();
             apply_compact_schema_transition(&mut expected_after, delta)?;
@@ -302,8 +305,17 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
             }
         }
         for column in &entry.legacy_columns {
-            validate_calculated_definition(column.before_calculated_definition_json.as_deref())?;
-            validate_calculated_definition(column.after_calculated_definition_json.as_deref())?;
+            validate_calculated_definition(
+                column.before_calculated_definition_json.as_deref(),
+                column.before_column_id.as_deref(),
+            )?;
+            validate_calculated_definition(
+                column.after_calculated_definition_json.as_deref(),
+                column.after_column_id.as_deref(),
+            )?;
+        }
+        if entry.storage_kind == "full" {
+            validate_legacy_transition(entry)?;
         }
         entries_by_dataset
             .entry(entry.dataset_id.as_str())
@@ -353,11 +365,9 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
             }
             if ordinal > 0 {
                 let previous = entries[ordinal - 1];
-                if previous.after_schema != entry.before_schema
-                    || entry.created_before_generation < previous.created_after_generation
-                {
+                if entry.created_before_generation < previous.created_after_generation {
                     return Err(AppError::FileIO(
-                        "History schema or generation transition mismatch".into(),
+                        "History generation transition mismatch".into(),
                     ));
                 }
             }
@@ -386,19 +396,153 @@ fn validate_schema(columns: &[HistorySchemaColumn]) -> Result<(), AppError> {
                 "Invalid stable-column history schema".into(),
             ));
         }
-        validate_calculated_definition(column.calculated_definition_json.as_deref())?;
+        validate_calculated_definition(
+            column.calculated_definition_json.as_deref(),
+            Some(&column.column_id),
+        )?;
     }
     Ok(())
 }
 
-fn validate_calculated_definition(value: Option<&str>) -> Result<(), AppError> {
+fn validate_calculated_definition(
+    value: Option<&str>,
+    owner_column_id: Option<&str>,
+) -> Result<(), AppError> {
     if let Some(value) = value {
-        serde_json::from_str::<crate::models::calculated_column::ArchivedCalculatedColumn>(value)
-            .map_err(|error| {
+        let definition = serde_json::from_str::<
+            crate::models::calculated_column::ArchivedCalculatedColumn,
+        >(value)
+        .map_err(|error| {
             AppError::FileIO(format!(
                 "Malformed calculated-column history definition: {error}"
             ))
         })?;
+        if owner_column_id != Some(definition.output_column_id()) {
+            return Err(AppError::FileIO(
+                "Calculated-column history definition does not own its stable column".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn calculated_definitions_equal(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            let left = serde_json::from_str::<
+                crate::models::calculated_column::ArchivedCalculatedColumn,
+            >(left);
+            let right = serde_json::from_str::<
+                crate::models::calculated_column::ArchivedCalculatedColumn,
+            >(right);
+            matches!((left, right), (Ok(left), Ok(right)) if left == right)
+        }
+        _ => false,
+    }
+}
+
+fn validate_legacy_transition(entry: &HistoryTimelineEntry) -> Result<(), AppError> {
+    let before_by_id = entry
+        .before_schema
+        .iter()
+        .map(|column| (column.column_id.as_str(), column))
+        .collect::<std::collections::HashMap<_, _>>();
+    let after_by_id = entry
+        .after_schema
+        .iter()
+        .map(|column| (column.column_id.as_str(), column))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut represented_before = std::collections::HashSet::new();
+    let mut represented_after = std::collections::HashSet::new();
+
+    for (expected_ordinal, column) in entry.legacy_columns.iter().enumerate() {
+        if column.ordinal != expected_ordinal as i32 {
+            return Err(AppError::FileIO(
+                "Legacy history column ordinals are invalid".into(),
+            ));
+        }
+        if let Some(column_id) = column.before_column_id.as_deref() {
+            let schema = before_by_id.get(column_id).ok_or_else(|| {
+                AppError::FileIO("Legacy before-column is absent from timeline schema".into())
+            })?;
+            if column.before_name.as_deref() != Some(schema.name.as_str())
+                || column.before_type.as_deref() != Some(schema.duckdb_type.as_str())
+                || column.column_index != schema.col_index
+                || !calculated_definitions_equal(
+                    column.before_calculated_definition_json.as_deref(),
+                    schema.calculated_definition_json.as_deref(),
+                )
+                || !represented_before.insert(column_id)
+            {
+                return Err(AppError::FileIO(
+                    "Legacy before-column metadata disagrees with timeline schema".into(),
+                ));
+            }
+        } else if column.before_name.is_some()
+            || column.before_type.is_some()
+            || column.before_calculated_definition_json.is_some()
+        {
+            return Err(AppError::FileIO(
+                "Legacy before-column metadata is incomplete".into(),
+            ));
+        }
+        if column.after_present {
+            let column_id = column.after_column_id.as_deref().ok_or_else(|| {
+                AppError::FileIO("Legacy after-column stable ID is missing".into())
+            })?;
+            let schema = after_by_id.get(column_id).ok_or_else(|| {
+                AppError::FileIO("Legacy after-column is absent from timeline schema".into())
+            })?;
+            if column.after_name != schema.name
+                || column.after_type != schema.duckdb_type
+                || column.column_index != schema.col_index
+                || !calculated_definitions_equal(
+                    column.after_calculated_definition_json.as_deref(),
+                    schema.calculated_definition_json.as_deref(),
+                )
+                || !represented_after.insert(column_id)
+            {
+                return Err(AppError::FileIO(
+                    "Legacy after-column metadata disagrees with timeline schema".into(),
+                ));
+            }
+        }
+    }
+    if represented_before.len() != entry.before_schema.len()
+        || represented_after.len() != entry.after_schema.len()
+    {
+        return Err(AppError::FileIO(
+            "Legacy history metadata does not cover the exact timeline schemas".into(),
+        ));
+    }
+
+    for snapshot in &entry.snapshots {
+        let value_columns = snapshot
+            .columns
+            .iter()
+            .filter(|column| !column.name.starts_with("_row"))
+            .collect::<Vec<_>>();
+        if value_columns.len() != entry.legacy_columns.len() {
+            return Err(AppError::FileIO(
+                "Legacy snapshot descriptor does not cover its column metadata".into(),
+            ));
+        }
+        for (descriptor, legacy) in value_columns.into_iter().zip(&entry.legacy_columns) {
+            let expected_name = format!("c{}", legacy.ordinal);
+            let expected_type = if snapshot.kind == "before" {
+                legacy.before_type.as_deref().unwrap_or("VARCHAR")
+            } else if legacy.after_present {
+                legacy.after_type.as_str()
+            } else {
+                "VARCHAR"
+            };
+            if descriptor.name != expected_name || descriptor.duckdb_type != expected_type {
+                return Err(AppError::FileIO(
+                    "Legacy snapshot descriptor disagrees with timeline schema".into(),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -469,6 +613,10 @@ fn apply_compact_schema_transition(
                 if removed.name != column.col_name
                     || removed.duckdb_type != column.col_type
                     || removed.col_index != column.col_index
+                    || !calculated_definitions_equal(
+                        removed.calculated_definition_json.as_deref(),
+                        column.calculated_definition_json.as_deref(),
+                    )
                 {
                     return Err(AppError::FileIO(
                         "History deleted-column metadata does not match schema".into(),
@@ -492,6 +640,9 @@ fn apply_compact_schema_transition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::calculated_column::{
+        ArchivedCalculatedColumn, PreservedCalculatedColumnDefinition,
+    };
     use crate::services::spprj_archive::{DeltaHistoryRow, DeltaHistorySnapshotColumn};
 
     fn schema() -> Vec<HistorySchemaColumn> {
@@ -615,6 +766,32 @@ mod tests {
         });
         assert_corrupt(valid_archive(), |archive| {
             archive.entries[0].before_schema[0].calculated_definition_json = Some("{}".into());
+        });
+        assert_corrupt(valid_archive(), |archive| {
+            let definition = ArchivedCalculatedColumn::Preserved {
+                definition: PreservedCalculatedColumnDefinition {
+                    formula_id: "formula-a".into(),
+                    schema_version: "future-v9".into(),
+                    output_column_id: "another-column".into(),
+                    archived_definition: serde_json::json!({
+                        "kind": "ready",
+                        "definition": {
+                            "formulaId": "formula-a",
+                            "schemaVersion": "future-v9",
+                            "outputColumnId": "another-column",
+                            "opaque": {"keep": true}
+                        }
+                    }),
+                },
+            };
+            let encoded = serde_json::to_string(&definition).unwrap();
+            archive.entries[0].before_schema[0].calculated_definition_json =
+                Some(encoded.clone());
+            archive.entries[0].after_schema[0].calculated_definition_json =
+                Some(encoded.clone());
+            archive.entries[1].before_schema[0].calculated_definition_json =
+                Some(encoded.clone());
+            archive.entries[1].after_schema[0].calculated_definition_json = Some(encoded);
         });
         assert_corrupt(valid_archive(), |archive| {
             let entry = &mut archive.entries[0];

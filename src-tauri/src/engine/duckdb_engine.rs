@@ -9989,6 +9989,7 @@ impl DuckDbEngine {
         };
 
         crate::services::table_history_archive::validate_history_timeline(archive)?;
+        self.validate_unified_history_against_live(archive)?;
         for cursor in &archive.datasets {
             let generation = self.get_dataset_generation(&cursor.dataset_id).map_err(|_| {
                 AppError::FileIO(format!(
@@ -10140,6 +10141,75 @@ impl DuckDbEngine {
                 Err(error)
             }
         }
+    }
+
+    fn validate_unified_history_against_live(
+        &self,
+        archive: &crate::services::table_history_archive::HistoryTimelineArchive,
+    ) -> Result<(), AppError> {
+        use crate::services::table_history_archive::HistorySchemaColumn;
+
+        let validate_type = |column_type: &str| -> Result<(), AppError> {
+            let canonical = self.canonicalize_column_type(column_type).map_err(|error| {
+                AppError::FileIO(format!(
+                    "Invalid history timeline column type {column_type}: {error}"
+                ))
+            })?;
+            if canonical != column_type {
+                return Err(AppError::FileIO(format!(
+                    "History timeline column type {column_type} is not canonical"
+                )));
+            }
+            Ok(())
+        };
+        for entry in &archive.entries {
+            for column in entry.before_schema.iter().chain(&entry.after_schema) {
+                validate_type(&column.duckdb_type)?;
+            }
+            for column in &entry.legacy_columns {
+                if let Some(column_type) = column.before_type.as_deref() {
+                    validate_type(column_type)?;
+                }
+                validate_type(&column.after_type)?;
+            }
+        }
+
+        for cursor in &archive.datasets {
+            let mut entries = archive
+                .entries
+                .iter()
+                .filter(|entry| entry.dataset_id == cursor.dataset_id)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.history_ordinal);
+            let cursor_schema = if cursor.applied_count == 0 {
+                entries.first().map(|entry| &entry.before_schema)
+            } else {
+                let applied_index = usize::try_from(cursor.applied_count - 1)
+                    .map_err(|_| AppError::FileIO("History cursor is too large".into()))?;
+                entries.get(applied_index).map(|entry| &entry.after_schema)
+            }
+            .ok_or_else(|| AppError::FileIO("History cursor schema is unavailable".into()))?;
+            let live_json =
+                crate::services::table_history_archive::capture_history_schema(
+                    self,
+                    &cursor.dataset_id,
+                )
+                .map_err(|error| {
+                    AppError::FileIO(format!(
+                        "Unable to inspect staged history dataset schema: {error}"
+                    ))
+                })?;
+            let live_schema =
+                serde_json::from_str::<Vec<HistorySchemaColumn>>(&live_json).map_err(|error| {
+                    AppError::FileIO(format!("Invalid staged dataset schema: {error}"))
+                })?;
+            if &live_schema != cursor_schema {
+                return Err(AppError::FileIO(
+                    "Staged dataset schema disagrees with the persisted history cursor".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn import_unified_history_snapshot(
@@ -20559,6 +20629,120 @@ mod tests {
         assert!(!replayed[0].6 && !replayed[1].6);
         assert_eq!((&replayed[0].7, &replayed[0].8), (&created[0].7, &created[0].8));
         assert_eq!((&replayed[1].7, &replayed[1].8), (&created[1].7, &created[1].8));
+    }
+
+    fn detached_add_rows_archive(
+        dataset_id: &str,
+    ) -> (
+        DuckDbEngine,
+        crate::services::table_history_archive::HistoryTimelineArchive,
+    ) {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.create_empty_table(
+            dataset_id,
+            "History schema validation",
+            &["value".into()],
+            &["BIGINT".into()],
+        )
+        .unwrap();
+        crate::services::table_delta_mutation::add_rows_compact(&db, dataset_id, 1, None, 0)
+            .unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM _history_timeline;
+                 DELETE FROM _history_row_deltas;
+                 DELETE FROM _history_change_sets;",
+            )
+            .unwrap();
+        (db, archive)
+    }
+
+    fn detached_legacy_archive(
+        dataset_id: &str,
+    ) -> (
+        DuckDbEngine,
+        crate::services::table_history_archive::HistoryTimelineArchive,
+    ) {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table(dataset_id, "Legacy schema validation", 2, 1)
+            .unwrap();
+        db.paste_at_position_with_change_set(
+            dataset_id,
+            0,
+            0,
+            &[vec!["7".into()]],
+            None,
+            &["DOUBLE".into()],
+            Some(0),
+        )
+        .unwrap();
+        let archive = db.archive_unified_history().unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM _history_timeline;
+                 DELETE FROM _history_change_set_columns;
+                 DELETE FROM _history_change_sets;",
+            )
+            .unwrap();
+        (db, archive)
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_cursor_schema_unrelated_to_staged_dataset() {
+        let (db, archive) = detached_legacy_archive("cursor-schema-mismatch");
+        db.conn()
+            .execute(
+                "ALTER TABLE dataset_cursor_schema_mismatch
+                 ALTER COLUMN value_1 SET DATA TYPE VARCHAR",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE _meta_columns SET col_type = 'VARCHAR'
+                 WHERE dataset_id = ? AND col_index = 0",
+                params!["cursor-schema-mismatch"],
+            )
+            .unwrap();
+
+        let error = db
+            .restore_unified_history(&archive, &[])
+            .expect_err("cursor schema mismatch must be rejected");
+        assert!(matches!(error, AppError::FileIO(_)));
+        let inserted: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM _history_change_sets", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(inserted, 0, "validation must precede metadata insertion");
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_legacy_descriptor_unbound_from_timeline() {
+        let (_db, mut archive) = detached_legacy_archive("legacy-descriptor-mismatch");
+        let column = archive.entries[0].snapshots[0]
+            .columns
+            .iter_mut()
+            .find(|column| !column.name.starts_with("_row"))
+            .expect("legacy value column");
+        column.duckdb_type = "VARCHAR".into();
+        column.transport_type = Some("VARCHAR".into());
+
+        let error = crate::services::table_history_archive::validate_history_timeline(&archive)
+            .expect_err("legacy descriptor must be bound to the timeline schema");
+        assert!(matches!(error, AppError::FileIO(_)));
+    }
+
+    #[test]
+    fn unified_history_archive_rejects_noncanonical_timeline_type() {
+        let (db, mut archive) = detached_add_rows_archive("noncanonical-timeline");
+        archive.entries[0].before_schema[0].duckdb_type = "bigint".into();
+        archive.entries[0].after_schema[0].duckdb_type = "bigint".into();
+
+        let error = db
+            .restore_unified_history(&archive, &[])
+            .expect_err("timeline types must be canonical DuckDB types");
+        assert!(matches!(error, AppError::FileIO(_)));
     }
 
     #[test]

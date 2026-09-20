@@ -79,7 +79,11 @@ pub(crate) fn execute_table_mutation<T>(
         let after_columns = column_history_by_id(engine, dataset_id)?;
         let after_schema_json = capture_history_schema(engine, dataset_id)?;
 
-        let mut tracked_column_ids = effects.changed_column_ids.clone();
+        let mut tracked_column_ids = before_columns
+            .keys()
+            .chain(after_columns.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
         tracked_column_ids.extend(
             before_columns
                 .values()
