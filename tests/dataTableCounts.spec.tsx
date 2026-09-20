@@ -147,3 +147,29 @@ test("reissues a query restored while its stale predecessor is still in flight",
   await component.getByRole("button", { name: "Resolve initial table query" }).click();
   await expect(component.getByLabel("Status dimensions")).toHaveText("100 rows × 2 cols");
 });
+
+test("does not release a shared prepared session adopted by a newer start", async ({ mount }) => {
+  const component = await mount(<DataTableCountsHarness variant="session-race" />);
+  const scrollbar = component.getByRole("scrollbar", { name: "Logical table rows" });
+
+  await expect(component.getByLabel("Status dimensions")).toHaveText("6000 / 10000 rows × 2 cols");
+  await scrollbar.focus();
+  await scrollbar.press("End");
+  await expect(component.getByLabel("Navigation starts")).toContainText("500");
+  await scrollbar.press("End");
+  await expect(component.getByLabel("Navigation starts")).toContainText("5500");
+  await expect(component.locator(".sp-row-hdr").filter({ hasText: "6000" })).toBeVisible();
+
+  await component.getByRole("button", { name: "Reload current revision" }).click();
+  await expect(component.getByLabel("Prepared session generations")).toHaveText("1,1");
+
+  await scrollbar.press("Home");
+  await expect(component.getByLabel("Navigation starts")).toContainText("5500,0,500");
+  await component.getByRole("button", { name: "Reload current revision" }).click();
+  await expect(component.getByLabel("Prepared session generations")).toHaveText("1,1,1");
+  await expect(component.getByLabel("Navigation session IDs")).toContainText("session-1");
+
+  await component.getByRole("button", { name: "Resolve stale session prepare" }).click();
+  await expect(component.getByLabel("Delayed prepare settled")).toHaveText("true");
+  await expect(component.getByLabel("Released session IDs")).toHaveText("(none)");
+});

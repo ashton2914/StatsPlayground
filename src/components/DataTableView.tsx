@@ -1596,7 +1596,13 @@ export function DataTableView({
           }
           sessionStatus = await dataService.prepareTableQuerySession(sessionRequest);
           if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) {
-            void releaseTableQuerySession(sessionStatus.sessionId);
+            const currentSession = tableQuerySessionRef.current;
+            if (
+              currentSession.signature !== sessionSignature
+              || currentSession.sessionId !== sessionStatus.sessionId
+            ) {
+              void releaseTableQuerySession(sessionStatus.sessionId);
+            }
             return;
           }
           syncTableQuerySession(sessionSignature, sessionStatus);
