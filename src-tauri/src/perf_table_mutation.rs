@@ -1,0 +1,474 @@
+fn duckdb_retained_memory_bytes(db: &DuckDbEngine) -> Result<u64, AppError> {
+    let bytes: i64 = db.conn().query_row(
+        "SELECT COALESCE(sum(memory_usage_bytes), 0) FROM duckdb_memory()",
+        [],
+        |row| row.get(0),
+    )?;
+    u64::try_from(bytes)
+        .map_err(|_| AppError::Database("DuckDB retained memory became negative".into()))
+}
+
+fn execute_table_mutation_sample(
+    operation: Operation,
+    rows: usize,
+    columns: usize,
+) -> Result<TableMutationSampleReport, AppError> {
+    const DATASET_ID: &str = "performance-table-mutation";
+
+    let sample_started = Instant::now();
+    let state = AppState::new()?;
+    let (generation, target_row_id, deleted_column, retained_memory_before_bytes) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        db.seed_benchmark_table(DATASET_ID, "Performance Table Mutation", rows, columns)?;
+        let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(DATASET_ID));
+        let target_row_id = db.conn().query_row(
+            &format!(
+                "SELECT \"_row_id\" FROM {table}
+                 ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\" LIMIT 1 OFFSET ?"
+            ),
+            params![rows / 2],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let deleted_column = db
+            .get_user_column_descriptors(DATASET_ID)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::InvalidParam("mutation fixture requires a column".into()))?;
+        (
+            db.get_dataset_generation(DATASET_ID)?,
+            target_row_id,
+            ColumnDescriptor {
+                column_id: deleted_column.column_id,
+                name: deleted_column.name,
+                sql_type: deleted_column.sql_type,
+                calculated: None,
+            },
+            duckdb_retained_memory_bytes(&db)?,
+        )
+    };
+    let setup_ms = sample_started.elapsed().as_millis();
+
+    reset_full_anchor_rebuild_counter();
+    reset_rebalanced_rows();
+    reset_table_mutation_perf_metrics();
+    let total_started = Instant::now();
+    let service = DataService::new(&state);
+    let (mutation_result, process_memory) =
+        measure_peak_working_set_during(|| -> Result<(String, Option<i64>), AppError> {
+            match operation {
+                Operation::AppendRow => {
+                    let result = service.add_rows(DATASET_ID, 1, None, generation)?;
+                    Ok((result.change_set_id, result.row_ids.first().copied()))
+                }
+                Operation::InsertMiddleRow => {
+                    let result =
+                        service.add_rows(DATASET_ID, 1, Some(target_row_id), generation)?;
+                    Ok((result.change_set_id, result.row_ids.first().copied()))
+                }
+                Operation::AddColumn => {
+                    let result = service.add_columns_with_change_set(
+                        DATASET_ID,
+                        &[ColumnDescriptor {
+                            column_id: uuid::Uuid::new_v4().to_string(),
+                            name: "qualification_empty_column".into(),
+                            sql_type: "VARCHAR".into(),
+                            calculated: None,
+                        }],
+                        None,
+                        generation,
+                    )?;
+                    Ok((result.change_set_id, None))
+                }
+                Operation::DeleteRows => {
+                    let result = service.delete_rows_with_change_set(
+                        DATASET_ID,
+                        &[target_row_id],
+                        generation,
+                    )?;
+                    Ok((result.change_set_id, None))
+                }
+                Operation::DeleteColumn => {
+                    let result = service.delete_columns_with_change_set(
+                        DATASET_ID,
+                        std::slice::from_ref(&deleted_column),
+                        generation,
+                    )?;
+                    Ok((result.change_set_id, None))
+                }
+                _ => Err(AppError::InvalidParam(
+                    "operation is not a table mutation qualification".into(),
+                )),
+            }
+        });
+    let (change_set_id, inserted_row_id) = mutation_result?;
+    let phase_metrics = table_mutation_perf_metrics();
+
+    let reload_started = Instant::now();
+    let _ = service.query_table_navigation_window(&TableNavigationRequest {
+        version: 1,
+        request_id: "performance-table-mutation-reload".into(),
+        dataset_id: DATASET_ID.into(),
+        generation: generation + 1,
+        start: 0,
+        count: 500,
+        column_ids: service
+            .get_column_descriptors(DATASET_ID)?
+            .into_iter()
+            .map(|column| column.column_id)
+            .collect(),
+        sort: None,
+        filters: Vec::new(),
+        session_id: None,
+        include_transport_diagnostics: false,
+    })?;
+    let reload_ms = reload_started.elapsed().as_millis();
+    let total_wall_ms = total_started.elapsed().as_millis();
+
+    let (
+        full_snapshot_tables,
+        sparse_anchor_integrity,
+        compact_snapshot_shape,
+        inserted_precedes_target,
+        retained_memory_after_bytes,
+    ) = {
+        let db = state
+            .db
+            .lock()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let full_snapshot_tables: usize = db.conn().query_row(
+            "SELECT count(*) FROM information_schema.tables
+             WHERE table_name LIKE '_history_full_before_%'",
+            [],
+            |row| row.get(0),
+        )?;
+        let current_generation = db.get_dataset_generation(DATASET_ID)?;
+        let meta = db.get_dataset_meta(DATASET_ID)?;
+        let row_count = usize::try_from(meta.row_count)
+            .map_err(|_| AppError::Database("row count does not fit usize".into()))?;
+        let manifest_valid = db
+            .validate_natural_anchor_manifest(
+                DATASET_ID,
+                i64::try_from(current_generation)
+                    .map_err(|_| AppError::Database("generation does not fit i64".into()))?,
+                meta.row_count,
+            )
+            .is_ok();
+        let anchor_count: usize = db.conn().query_row(
+            "SELECT count(*) FROM _table_navigation_anchors
+             WHERE dataset_id = ? AND generation = ?",
+            params![DATASET_ID, current_generation],
+            |row| row.get(0),
+        )?;
+        let sparse_anchor_integrity = manifest_valid
+            && anchor_count <= row_count.div_ceil(NATURAL_ANCHOR_STRIDE).saturating_add(2);
+        let (recorded_operation, storage_kind, snapshot_table): (
+            String,
+            String,
+            Option<String>,
+        ) = db.conn().query_row(
+            "SELECT delta.operation, changes.storage_kind, delta.snapshot_table
+             FROM _history_delta_change_sets AS delta
+             JOIN _history_change_sets AS changes ON changes.id = delta.id
+             WHERE delta.id = ?",
+            params![&change_set_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let expected_operation = match operation {
+            Operation::AppendRow | Operation::InsertMiddleRow => "add_rows",
+            Operation::AddColumn => "add_columns",
+            Operation::DeleteRows => "delete_rows",
+            Operation::DeleteColumn => "delete_columns",
+            _ => unreachable!("validated table mutation operation"),
+        };
+        let expected_storage = match operation {
+            Operation::AppendRow | Operation::InsertMiddleRow | Operation::DeleteRows => {
+                "row_delta"
+            }
+            Operation::AddColumn | Operation::DeleteColumn => "column_delta",
+            _ => unreachable!("validated table mutation operation"),
+        };
+        let compact_snapshot_shape = match (operation, snapshot_table.as_deref()) {
+            (Operation::AppendRow | Operation::InsertMiddleRow | Operation::AddColumn, None) => true,
+            (Operation::DeleteRows, Some(snapshot)) if snapshot.starts_with("_history_rows_") => {
+                let snapshot = DuckDbEngine::quote_identifier(snapshot);
+                let snapshot_rows: usize = db.conn().query_row(
+                    &format!("SELECT count(*) FROM {snapshot}"),
+                    [],
+                    |row| row.get(0),
+                )?;
+                snapshot_rows == 1
+            }
+            (Operation::DeleteColumn, Some(snapshot))
+                if snapshot.starts_with("_history_columns_") =>
+            {
+                let snapshot_columns: usize = db.conn().query_row(
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = ?",
+                    params![snapshot],
+                    |row| row.get(0),
+                )?;
+                let snapshot = DuckDbEngine::quote_identifier(snapshot);
+                let snapshot_rows: usize = db.conn().query_row(
+                    &format!("SELECT count(*) FROM {snapshot}"),
+                    [],
+                    |row| row.get(0),
+                )?;
+                snapshot_columns == 2 && snapshot_rows == rows
+            }
+            _ => false,
+        } && recorded_operation == expected_operation
+            && storage_kind == expected_storage;
+        let inserted_precedes_target = if operation == Operation::InsertMiddleRow {
+            let inserted_row_id = inserted_row_id.ok_or_else(|| {
+                AppError::Database("middle insertion did not return a row ID".into())
+            })?;
+            let table =
+                DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(DATASET_ID));
+            let adjacent: usize = db.conn().query_row(
+                &format!(
+                    "SELECT count(*) FROM (
+                         SELECT \"_row_id\", lead(\"_row_id\") OVER (
+                             ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                         ) AS next_row_id FROM {table}
+                     ) AS ordered_rows
+                     WHERE \"_row_id\" = ? AND next_row_id = ?"
+                ),
+                params![inserted_row_id, target_row_id],
+                |row| row.get(0),
+            )?;
+            Some(adjacent == 1)
+        } else {
+            None
+        };
+        (
+            full_snapshot_tables,
+            sparse_anchor_integrity,
+            compact_snapshot_shape,
+            inserted_precedes_target,
+            duckdb_retained_memory_bytes(&db)?,
+        )
+    };
+
+    Ok(TableMutationSampleReport {
+        setup_ms,
+        mutation_ms: u128::from(phase_metrics.mutation_ns).div_ceil(1_000_000),
+        history_ms: u128::from(phase_metrics.history_ns).div_ceil(1_000_000),
+        anchor_ms: u128::from(phase_metrics.anchor_ns).div_ceil(1_000_000),
+        metadata_ms: u128::from(phase_metrics.metadata_ns).div_ceil(1_000_000),
+        reload_ms: Some(reload_ms),
+        total_wall_ms,
+        full_snapshot_tables,
+        full_anchor_rebuilds: full_anchor_rebuild_counter(),
+        full_table_row_updates: 0,
+        rebalanced_rows: rebalanced_rows(),
+        sparse_anchor_integrity,
+        compact_snapshot_shape,
+        inserted_precedes_target,
+        retained_memory_before_bytes,
+        retained_memory_after_bytes,
+        process_memory,
+    })
+}
+
+fn source_commit() -> Result<String, AppError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .map_err(|error| AppError::FileIO(error.to_string()))?;
+    if !output.status.success() {
+        return Err(AppError::FileIO(
+            "git rev-parse HEAD failed while recording benchmark provenance".into(),
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|error| AppError::FileIO(error.to_string()))
+}
+
+fn execute_table_mutation_qualification(
+    operation: Operation,
+    rows: usize,
+    columns: usize,
+    sample_count: usize,
+    warmup_count: usize,
+) -> Result<TableMutationPerformanceReport, AppError> {
+    if !operation.is_table_mutation() || sample_count == 0 {
+        return Err(AppError::InvalidParam(
+            "table mutation qualification requires a mutation and at least one sample".into(),
+        ));
+    }
+    for _ in 0..warmup_count {
+        execute_table_mutation_sample(operation, rows, columns)?;
+    }
+    let mut samples = Vec::with_capacity(sample_count);
+    for _ in 0..sample_count {
+        samples.push(execute_table_mutation_sample(operation, rows, columns)?);
+    }
+    let total_wall_ms = samples
+        .iter()
+        .map(|sample| sample.total_wall_ms)
+        .collect::<Vec<_>>();
+    let median_ms = median(&total_wall_ms)
+        .ok_or_else(|| AppError::Stats("mutation samples unexpectedly empty".into()))?;
+    let stage_median = |select: fn(&TableMutationSampleReport) -> u128| {
+        median(&samples.iter().map(select).collect::<Vec<_>>()).unwrap_or_default()
+    };
+    let max_of = |select: fn(&TableMutationSampleReport) -> usize| {
+        samples.iter().map(select).max().unwrap_or_default()
+    };
+    let inserted_precedes_target = (operation == Operation::InsertMiddleRow).then(|| {
+        samples
+            .iter()
+            .all(|sample| sample.inserted_precedes_target == Some(true))
+    });
+    let memory_near_doubling = samples.iter().any(|sample| {
+        let process = sample.process_memory.as_ref().is_some_and(|memory| {
+            u128::from(memory.peak_working_set_bytes) * 10
+                >= u128::from(memory.baseline_working_set_bytes) * 18
+        });
+        let retained = sample.retained_memory_before_bytes > 0
+            && u128::from(sample.retained_memory_after_bytes) * 10
+                >= u128::from(sample.retained_memory_before_bytes) * 18;
+        process || retained
+    });
+    Ok(TableMutationPerformanceReport {
+        mutation_ms: stage_median(|sample| sample.mutation_ms),
+        history_ms: stage_median(|sample| sample.history_ms),
+        anchor_ms: stage_median(|sample| sample.anchor_ms),
+        metadata_ms: stage_median(|sample| sample.metadata_ms),
+        reload_ms: median(
+            &samples
+                .iter()
+                .filter_map(|sample| sample.reload_ms)
+                .collect::<Vec<_>>(),
+        ),
+        median_ms,
+        max_ms: total_wall_ms.iter().copied().max().unwrap_or(median_ms),
+        threshold_ms: operation
+            .qualification_threshold_ms()
+            .ok_or_else(|| AppError::InvalidParam("missing mutation threshold".into()))?,
+        sample_count,
+        warmup_count,
+        full_snapshot_tables: max_of(|sample| sample.full_snapshot_tables),
+        full_anchor_rebuilds: max_of(|sample| sample.full_anchor_rebuilds),
+        full_table_row_updates: max_of(|sample| sample.full_table_row_updates),
+        rebalanced_rows: max_of(|sample| sample.rebalanced_rows),
+        sparse_anchor_integrity: samples.iter().all(|sample| sample.sparse_anchor_integrity),
+        compact_snapshot_shape: samples.iter().all(|sample| sample.compact_snapshot_shape),
+        inserted_precedes_target,
+        memory_near_doubling,
+        source_commit: source_commit()?,
+        build_profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+        process_memory_method: process_memory_method(),
+        samples,
+    })
+}
+
+fn execute_table_mutation_report(options: Options) -> Result<PerformanceReport, AppError> {
+    let total_started = Instant::now();
+    if options.rows != 2_000_000 {
+        return Err(AppError::InvalidParam(
+            "table mutation qualification requires exactly 2000000 rows".into(),
+        ));
+    }
+    let table_mutation = execute_table_mutation_qualification(
+        options.operation,
+        options.rows,
+        options.columns,
+        options.runs,
+        1,
+    )?;
+    let mut failures = Vec::new();
+    if table_mutation.max_ms > table_mutation.threshold_ms {
+        failures.push(format!(
+            "maximum wall {} ms exceeds {} ms threshold",
+            table_mutation.max_ms, table_mutation.threshold_ms
+        ));
+    }
+    for (count, label) in [
+        (table_mutation.full_snapshot_tables, "full history snapshots"),
+        (table_mutation.full_anchor_rebuilds, "full anchor rebuilds"),
+        (table_mutation.full_table_row_updates, "full-table row updates"),
+    ] {
+        if count != 0 {
+            failures.push(format!("{count} {label} observed"));
+        }
+    }
+    if table_mutation.rebalanced_rows > 8_192 {
+        failures.push(format!(
+            "local rebalance touched {} rows, exceeding 8192",
+            table_mutation.rebalanced_rows
+        ));
+    }
+    if !table_mutation.sparse_anchor_integrity {
+        failures.push("sparse anchor manifest integrity failed".into());
+    }
+    if !table_mutation.compact_snapshot_shape {
+        failures.push("compact history snapshot shape failed".into());
+    }
+    if table_mutation.inserted_precedes_target == Some(false) {
+        failures.push("middle insertion did not precede its target".into());
+    }
+    if table_mutation.memory_near_doubling {
+        failures.push("retained or process memory approached dataset-copy doubling".into());
+    }
+    let qualification_failure = (!failures.is_empty()).then(|| failures.join("; "));
+    let runs_ms = table_mutation
+        .samples
+        .iter()
+        .map(|sample| sample.total_wall_ms)
+        .collect::<Vec<_>>();
+    let process_memory = table_mutation
+        .samples
+        .iter()
+        .filter_map(|sample| sample.process_memory.clone())
+        .max_by_key(|memory| memory.peak_working_set_bytes);
+    let setup_ms = median(
+        &table_mutation
+            .samples
+            .iter()
+            .map(|sample| sample.setup_ms)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_default();
+    let operation_ms = table_mutation.max_ms;
+    let anchor_ms = table_mutation.anchor_ms;
+    let median_ms = table_mutation.median_ms;
+    let result_rows = match options.operation {
+        Operation::AppendRow | Operation::InsertMiddleRow => options.rows + 1,
+        Operation::DeleteRows => options.rows - 1,
+        _ => options.rows,
+    };
+    let selected_columns = match options.operation {
+        Operation::AddColumn => options.columns + 1,
+        Operation::DeleteColumn => options.columns - 1,
+        _ => options.columns,
+    };
+    Ok(PerformanceReport {
+        rows: options.rows, columns: options.columns, operation: options.operation,
+        setup_ms, operation_ms, position_percent: None, target_start: None,
+        lock_wait_ms: None, count_ms: None, anchor_ms: Some(anchor_ms),
+        total_ms: total_started.elapsed().as_millis(), result_rows, selected_columns,
+        query_ms: None, encode_ms: None, stdout_write_ms: None, decode_ms: None,
+        draw_ms: None, processed_rows: None, source_rows: Some(options.rows as u64),
+        chunks: None, transferred_bytes: None, projection_passes: None,
+        invalid_x_count: None, archive_bytes: 0, max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None, max_combined_batch_bytes: None,
+        save_stage_ms: None, process_memory, graph_new: None, chain_depth: None,
+        runs_ms: Some(runs_ms), median_ms: Some(median_ms),
+        process_memory_method: process_memory_method(), physical_input_bytes: None,
+        calculated_result_bytes: None, memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: Some(qualification_failure.is_none()),
+        qualification_failure,
+        machine: Some({
+            let db = DuckDbEngine::new_in_memory()?;
+            machine_report(duckdb_version(&db))
+        }),
+        tabulate: None,
+        table_mutation: Some(table_mutation),
+    })
+}

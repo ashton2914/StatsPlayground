@@ -17,6 +17,77 @@ const MAX_ADDED_ROWS: usize = 100_000;
 const MAX_DELETED_ROWS: usize = 5_000;
 const MAX_MUTATED_COLUMNS: usize = 1_000;
 
+#[derive(Clone, Copy)]
+enum MutationPerfStage {
+    Mutation,
+    History,
+    Anchor,
+    Metadata,
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+static MUTATION_STAGE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(any(test, feature = "perf-harness"))]
+static HISTORY_STAGE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(any(test, feature = "perf-harness"))]
+static ANCHOR_STAGE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(any(test, feature = "perf-harness"))]
+static METADATA_STAGE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "perf-harness"))]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TableMutationPerfMetrics {
+    pub mutation_ns: u64,
+    pub history_ns: u64,
+    pub anchor_ns: u64,
+    pub metadata_ns: u64,
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn reset_table_mutation_perf_metrics() {
+    for metric in [
+        &MUTATION_STAGE_NS,
+        &HISTORY_STAGE_NS,
+        &ANCHOR_STAGE_NS,
+        &METADATA_STAGE_NS,
+    ] {
+        metric.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn table_mutation_perf_metrics() -> TableMutationPerfMetrics {
+    TableMutationPerfMetrics {
+        mutation_ns: MUTATION_STAGE_NS.load(std::sync::atomic::Ordering::Relaxed),
+        history_ns: HISTORY_STAGE_NS.load(std::sync::atomic::Ordering::Relaxed),
+        anchor_ns: ANCHOR_STAGE_NS.load(std::sync::atomic::Ordering::Relaxed),
+        metadata_ns: METADATA_STAGE_NS.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+#[inline]
+fn measure_mutation_stage<T>(stage: MutationPerfStage, run: impl FnOnce() -> T) -> T {
+    #[cfg(any(test, feature = "perf-harness"))]
+    {
+        let started = std::time::Instant::now();
+        let result = run();
+        let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let metric = match stage {
+            MutationPerfStage::Mutation => &MUTATION_STAGE_NS,
+            MutationPerfStage::History => &HISTORY_STAGE_NS,
+            MutationPerfStage::Anchor => &ANCHOR_STAGE_NS,
+            MutationPerfStage::Metadata => &METADATA_STAGE_NS,
+        };
+        metric.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
+        result
+    }
+    #[cfg(not(any(test, feature = "perf-harness")))]
+    {
+        let _ = stage;
+        run()
+    }
+}
+
 pub(crate) fn add_columns_compact(
     engine: &DuckDbEngine,
     dataset_id: &str,
@@ -29,58 +100,76 @@ pub(crate) fn add_columns_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
-        let before_schema_json = capture_history_schema(engine, dataset_id)?;
+        let before_schema_json = measure_mutation_stage(MutationPerfStage::History, || {
+            capture_history_schema(engine, dataset_id)
+        })?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
-        for column in &columns {
-            engine.conn().execute(
-                "UPDATE _meta_columns SET col_index = col_index + 1
-                 WHERE dataset_id = ? AND col_index >= ?",
-                params![dataset_id, column.col_index],
-            )?;
-            engine.conn().execute(
-                &format!(
-                    "ALTER TABLE {table} ADD COLUMN {} {}",
-                    DuckDbEngine::quote_identifier(&column.name),
-                    column.sql_type
-                ),
-                [],
-            )?;
-            engine.conn().execute(
-                "INSERT INTO _meta_columns
-                 (dataset_id, column_id, col_index, col_name, col_type)
-                 VALUES (?, ?, ?, ?, ?)",
-                params![
-                    dataset_id,
-                    &column.column_id,
-                    column.col_index,
-                    &column.name,
-                    &column.sql_type
-                ],
-            )?;
-        }
-        let column_count = updated_column_count(
-            engine,
-            dataset_id,
-            i64::try_from(columns.len())
-                .map_err(|_| AppError::InvalidParam("column count is too large".into()))?,
+        measure_mutation_stage(
+            MutationPerfStage::Mutation,
+            || -> Result<(), AppError> {
+                for column in &columns {
+                    engine.conn().execute(
+                        "UPDATE _meta_columns SET col_index = col_index + 1
+                         WHERE dataset_id = ? AND col_index >= ?",
+                        params![dataset_id, column.col_index],
+                    )?;
+                    engine.conn().execute(
+                        &format!(
+                            "ALTER TABLE {table} ADD COLUMN {} {}",
+                            DuckDbEngine::quote_identifier(&column.name),
+                            column.sql_type
+                        ),
+                        [],
+                    )?;
+                    engine.conn().execute(
+                        "INSERT INTO _meta_columns
+                         (dataset_id, column_id, col_index, col_name, col_type)
+                         VALUES (?, ?, ?, ?, ?)",
+                        params![
+                            dataset_id,
+                            &column.column_id,
+                            column.col_index,
+                            &column.name,
+                            &column.sql_type
+                        ],
+                    )?;
+                }
+                Ok(())
+            },
         )?;
+        let column_count = measure_mutation_stage(MutationPerfStage::Metadata, || {
+            updated_column_count(
+                engine,
+                dataset_id,
+                i64::try_from(columns.len())
+                    .map_err(|_| AppError::InvalidParam("column count is too large".into()))?,
+            )
+        })?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        let after_schema_json = capture_history_schema(engine, dataset_id)?;
-        record_column_delta_change_set(
-            engine,
-            &change_set_id,
-            dataset_id,
-            "add_columns",
-            expected_generation,
-            next_generation,
-            None,
-            &columns,
-            &[],
-            &before_schema_json,
-            &after_schema_json,
-        )?;
-        copy_unchanged_anchors(engine, dataset_id, expected_generation, next_generation)?;
-        publish_generation(engine, dataset_id, next_generation)?;
+        let after_schema_json = measure_mutation_stage(MutationPerfStage::History, || {
+            capture_history_schema(engine, dataset_id)
+        })?;
+        measure_mutation_stage(MutationPerfStage::History, || {
+            record_column_delta_change_set(
+                engine,
+                &change_set_id,
+                dataset_id,
+                "add_columns",
+                expected_generation,
+                next_generation,
+                None,
+                &columns,
+                &[],
+                &before_schema_json,
+                &after_schema_json,
+            )
+        })?;
+        measure_mutation_stage(MutationPerfStage::Anchor, || {
+            copy_unchanged_anchors(engine, dataset_id, expected_generation, next_generation)
+        })?;
+        measure_mutation_stage(MutationPerfStage::Metadata, || {
+            publish_generation(engine, dataset_id, next_generation)
+        })?;
         Ok(ColumnMutationResult {
             column_ids: columns
                 .iter()
@@ -111,7 +200,9 @@ pub(crate) fn delete_columns_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
-        let before_schema_json = capture_history_schema(engine, dataset_id)?;
+        let before_schema_json = measure_mutation_stage(MutationPerfStage::History, || {
+            capture_history_schema(engine, dataset_id)
+        })?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
         let parsed_id = uuid::Uuid::parse_str(&change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid generated change set ID".into()))?;
@@ -123,37 +214,51 @@ pub(crate) fn delete_columns_compact(
             .map(|column| DuckDbEngine::quote_identifier(&column.name))
             .collect::<Vec<_>>()
             .join(", ");
-        engine.conn().execute(
-            &format!(
-                "CREATE TABLE {snapshot} AS
-                 SELECT \"_row_id\", {selected_columns}
-                 FROM {table} ORDER BY \"_row_id\""
-            ),
-            [],
-        )?;
-        drop_columns(engine, dataset_id, &table, &columns)?;
-        let after_schema_json = capture_history_schema(engine, dataset_id)?;
-        record_column_delta_change_set(
-            engine,
-            &change_set_id,
-            dataset_id,
-            "delete_columns",
-            expected_generation,
-            next_generation,
-            Some(&snapshot_name),
-            &columns,
-            &archived,
-            &before_schema_json,
-            &after_schema_json,
-        )?;
-        let column_count = updated_column_count(
-            engine,
-            dataset_id,
-            -i64::try_from(columns.len())
-                .map_err(|_| AppError::InvalidParam("column count is too large".into()))?,
-        )?;
-        copy_unchanged_anchors(engine, dataset_id, expected_generation, next_generation)?;
-        publish_generation(engine, dataset_id, next_generation)?;
+        measure_mutation_stage(MutationPerfStage::History, || {
+            engine.conn().execute(
+                &format!(
+                    "CREATE TABLE {snapshot} AS
+                     SELECT \"_row_id\", {selected_columns}
+                     FROM {table} ORDER BY \"_row_id\""
+                ),
+                [],
+            )
+        })?;
+        measure_mutation_stage(MutationPerfStage::Mutation, || {
+            drop_columns(engine, dataset_id, &table, &columns)
+        })?;
+        let after_schema_json = measure_mutation_stage(MutationPerfStage::History, || {
+            capture_history_schema(engine, dataset_id)
+        })?;
+        measure_mutation_stage(MutationPerfStage::History, || {
+            record_column_delta_change_set(
+                engine,
+                &change_set_id,
+                dataset_id,
+                "delete_columns",
+                expected_generation,
+                next_generation,
+                Some(&snapshot_name),
+                &columns,
+                &archived,
+                &before_schema_json,
+                &after_schema_json,
+            )
+        })?;
+        let column_count = measure_mutation_stage(MutationPerfStage::Metadata, || {
+            updated_column_count(
+                engine,
+                dataset_id,
+                -i64::try_from(columns.len())
+                    .map_err(|_| AppError::InvalidParam("column count is too large".into()))?,
+            )
+        })?;
+        measure_mutation_stage(MutationPerfStage::Anchor, || {
+            copy_unchanged_anchors(engine, dataset_id, expected_generation, next_generation)
+        })?;
+        measure_mutation_stage(MutationPerfStage::Metadata, || {
+            publish_generation(engine, dataset_id, next_generation)
+        })?;
         Ok(ColumnMutationResult {
             column_ids: columns
                 .iter()
@@ -704,58 +809,78 @@ pub(crate) fn add_rows_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
-        let schema_json = capture_history_schema(engine, dataset_id)?;
-        let allocation = allocate_before(engine, dataset_id, before_row_id, count)?;
+        let schema_json = measure_mutation_stage(MutationPerfStage::History, || {
+            capture_history_schema(engine, dataset_id)
+        })?;
+        let allocation = measure_mutation_stage(MutationPerfStage::Anchor, || {
+            allocate_before(engine, dataset_id, before_row_id, count)
+        })?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
-        let reserved_ids = engine.reserve_row_ids(dataset_id, count)?;
-        let mut inserted = Vec::with_capacity(count);
-        for (row_id, row_order) in reserved_ids
-            .into_iter()
-            .zip(allocation.row_orders.iter().copied())
-        {
-            engine.conn().execute(
-                &format!("INSERT INTO {table} (\"_row_id\", \"_row_order\") VALUES (?, ?)"),
-                params![row_id, row_order],
-            )?;
-            inserted.push((row_id, row_order));
-        }
-        let row_count = updated_row_count(engine, dataset_id, count as i64)?;
+        let inserted = measure_mutation_stage(
+            MutationPerfStage::Mutation,
+            || -> Result<Vec<(i64, i128)>, AppError> {
+                let reserved_ids = engine.reserve_row_ids(dataset_id, count)?;
+                let mut inserted = Vec::with_capacity(count);
+                for (row_id, row_order) in reserved_ids
+                    .into_iter()
+                    .zip(allocation.row_orders.iter().copied())
+                {
+                    engine.conn().execute(
+                        &format!(
+                            "INSERT INTO {table} (\"_row_id\", \"_row_order\") VALUES (?, ?)"
+                        ),
+                        params![row_id, row_order],
+                    )?;
+                    inserted.push((row_id, row_order));
+                }
+                Ok(inserted)
+            },
+        )?;
+        let row_count = measure_mutation_stage(MutationPerfStage::Metadata, || {
+            updated_row_count(engine, dataset_id, count as i64)
+        })?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
-        record_delta_change_set(
-            engine,
-            &change_set_id,
-            dataset_id,
-            "add_rows",
-            expected_generation,
-            next_generation,
-            None,
-            inserted
-                .iter()
-                .enumerate()
-                .map(|(index, &(row_id, row_order))| {
-                    Ok((
-                        allocation.insertion_ordinal
-                            + i64::try_from(index).map_err(|_| {
-                                AppError::InvalidParam("row count is too large".into())
-                            })?,
-                        row_id,
-                        Some(row_order),
-                    ))
-                })
-                .collect::<Result<Vec<_>, AppError>>()?
-                .as_slice(),
-            &schema_json,
-            &schema_json,
-        )?;
-        publish_inserted_anchors(
-            engine,
-            dataset_id,
-            expected_generation,
-            next_generation,
-            allocation.insertion_ordinal,
-            &inserted,
-        )?;
-        publish_generation(engine, dataset_id, next_generation)?;
+        measure_mutation_stage(MutationPerfStage::History, || {
+            record_delta_change_set(
+                engine,
+                &change_set_id,
+                dataset_id,
+                "add_rows",
+                expected_generation,
+                next_generation,
+                None,
+                inserted
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &(row_id, row_order))| {
+                        Ok((
+                            allocation.insertion_ordinal
+                                + i64::try_from(index).map_err(|_| {
+                                    AppError::InvalidParam("row count is too large".into())
+                                })?,
+                            row_id,
+                            Some(row_order),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, AppError>>()?
+                    .as_slice(),
+                &schema_json,
+                &schema_json,
+            )
+        })?;
+        measure_mutation_stage(MutationPerfStage::Anchor, || {
+            publish_inserted_anchors(
+                engine,
+                dataset_id,
+                expected_generation,
+                next_generation,
+                allocation.insertion_ordinal,
+                &inserted,
+            )
+        })?;
+        measure_mutation_stage(MutationPerfStage::Metadata, || {
+            publish_generation(engine, dataset_id, next_generation)
+        })?;
         Ok(RowMutationResult {
             row_ids: inserted.into_iter().map(|row| row.0).collect(),
             generation: next_generation,
@@ -789,63 +914,78 @@ pub(crate) fn delete_rows_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
-        let schema_json = capture_history_schema(engine, dataset_id)?;
+        let schema_json = measure_mutation_stage(MutationPerfStage::History, || {
+            capture_history_schema(engine, dataset_id)
+        })?;
         engine.ensure_internal_row_order_column(dataset_id)?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
         let placeholders = std::iter::repeat_n("?", unique_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let deleted =
-            resolve_natural_row_positions(engine, dataset_id, expected_generation, &unique_ids)?;
+        let deleted = measure_mutation_stage(MutationPerfStage::Anchor, || {
+            resolve_natural_row_positions(engine, dataset_id, expected_generation, &unique_ids)
+        })?;
 
         let change_set_id = uuid::Uuid::new_v4().to_string();
         let snapshot_name = format!("_history_rows_{}", change_set_id.replace('-', ""));
         let snapshot = DuckDbEngine::quote_identifier(&snapshot_name);
-        engine.conn().execute(
-            &format!(
-                "CREATE TABLE {snapshot} AS
-                 SELECT * FROM {table} WHERE \"_row_id\" IN ({placeholders})"
-            ),
-            params_from_iter(unique_ids.iter()),
-        )?;
+        measure_mutation_stage(MutationPerfStage::History, || {
+            engine.conn().execute(
+                &format!(
+                    "CREATE TABLE {snapshot} AS
+                     SELECT * FROM {table} WHERE \"_row_id\" IN ({placeholders})"
+                ),
+                params_from_iter(unique_ids.iter()),
+            )
+        })?;
         let delta_rows = deleted
             .iter()
             .map(|row| (row.ordinal, row.row_id, row.row_order))
             .collect::<Vec<_>>();
-        record_delta_change_set(
-            engine,
-            &change_set_id,
-            dataset_id,
-            "delete_rows",
-            expected_generation,
-            next_generation,
-            Some(&snapshot_name),
-            &delta_rows,
-            &schema_json,
-            &schema_json,
-        )?;
-        engine.conn().execute(
-            &format!("DELETE FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
-            params_from_iter(unique_ids.iter()),
-        )?;
-        let row_count = updated_row_count(
-            engine,
-            dataset_id,
-            -i64::try_from(unique_ids.len())
-                .map_err(|_| AppError::InvalidParam("row count is too large".into()))?,
-        )?;
+        measure_mutation_stage(MutationPerfStage::History, || {
+            record_delta_change_set(
+                engine,
+                &change_set_id,
+                dataset_id,
+                "delete_rows",
+                expected_generation,
+                next_generation,
+                Some(&snapshot_name),
+                &delta_rows,
+                &schema_json,
+                &schema_json,
+            )
+        })?;
+        measure_mutation_stage(MutationPerfStage::Mutation, || {
+            engine.conn().execute(
+                &format!("DELETE FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
+                params_from_iter(unique_ids.iter()),
+            )
+        })?;
+        let row_count = measure_mutation_stage(MutationPerfStage::Metadata, || {
+            updated_row_count(
+                engine,
+                dataset_id,
+                -i64::try_from(unique_ids.len())
+                    .map_err(|_| AppError::InvalidParam("row count is too large".into()))?,
+            )
+        })?;
         let deleted_anchors = deleted
             .iter()
             .map(|row| (row.row_id, row.order_key, row.ordinal))
             .collect::<Vec<_>>();
-        publish_deleted_anchors(
-            engine,
-            dataset_id,
-            expected_generation,
-            next_generation,
-            &deleted_anchors,
-        )?;
-        publish_generation(engine, dataset_id, next_generation)?;
+        measure_mutation_stage(MutationPerfStage::Anchor, || {
+            publish_deleted_anchors(
+                engine,
+                dataset_id,
+                expected_generation,
+                next_generation,
+                &deleted_anchors,
+            )
+        })?;
+        measure_mutation_stage(MutationPerfStage::Metadata, || {
+            publish_generation(engine, dataset_id, next_generation)
+        })?;
         Ok(RowMutationResult {
             row_ids: unique_ids,
             generation: next_generation,

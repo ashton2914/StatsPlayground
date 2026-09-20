@@ -65,16 +65,16 @@ pub(crate) const NATURAL_ORDER_STRIDE: i128 = 1_i128 << 64;
 pub(crate) const NATURAL_ORDER_SQL: &str =
     "COALESCE(\"_row_order\", CAST(\"_row_id\" AS HUGEINT) * 18446744073709551616::HUGEINT)";
 
-#[cfg(test)]
+#[cfg(any(test, feature = "perf-harness"))]
 static FULL_ANCHOR_REBUILD_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "perf-harness"))]
 pub(crate) fn full_anchor_rebuild_counter() -> usize {
     FULL_ANCHOR_REBUILD_COUNTER.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "perf-harness"))]
 pub(crate) fn reset_full_anchor_rebuild_counter() {
     FULL_ANCHOR_REBUILD_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
 }
@@ -791,7 +791,7 @@ impl DuckDbEngine {
         dataset_id: &str,
         generation: u64,
     ) -> Result<(), AppError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "perf-harness"))]
         FULL_ANCHOR_REBUILD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         self.ensure_internal_row_order_column(dataset_id)?;

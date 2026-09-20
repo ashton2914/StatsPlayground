@@ -19,6 +19,20 @@ static ANCHOR_REFRESH_QUERY_COUNTER: std::sync::atomic::AtomicUsize =
 static REPAIR_ROWS_EXAMINED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(any(test, feature = "perf-harness"))]
+static REBALANCED_ROWS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn rebalanced_rows() -> usize {
+    REBALANCED_ROWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn reset_rebalanced_rows() {
+    REBALANCED_ROWS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(test)]
 fn anchor_refresh_query_counter() -> usize {
     ANCHOR_REFRESH_QUERY_COUNTER.load(std::sync::atomic::Ordering::Relaxed)
@@ -296,6 +310,8 @@ fn rebalance_window(
         .filter(|row| row.2 >= start && row.2 < end)
         .copied()
         .collect::<Vec<_>>();
+    #[cfg(any(test, feature = "perf-harness"))]
+    REBALANCED_ROWS.fetch_max(window_rows.len(), std::sync::atomic::Ordering::Relaxed);
     let relative_insertion = usize::try_from(insertion_ordinal - start)
         .map_err(|_| AppError::Database("rebalance insertion ordinal is outside window".into()))?;
     if relative_insertion > window_rows.len() {
