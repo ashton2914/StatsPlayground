@@ -1209,6 +1209,163 @@ mod tests {
             .expect("column descriptors")
     }
 
+    #[derive(Debug, PartialEq)]
+    struct ColumnReplayState {
+        physical_schema: Vec<(String, String, i32)>,
+        meta_columns: Vec<(String, i32, String, String)>,
+        calculated_definitions: Vec<(String, String)>,
+        dataset: (u64, i64),
+        history_change_set: (bool, u64, String),
+        history_delta: (String, u64, u64, Option<String>, bool),
+        column_deltas: Vec<(i32, String, i32, String, String, Option<String>)>,
+        target_anchors: Vec<(i64, i128, i64)>,
+        target_manifests: Vec<(i64, i64, String)>,
+    }
+
+    fn column_replay_state(
+        engine: &DuckDbEngine,
+        dataset_id: &str,
+        change_set_id: &str,
+        target_generation: u64,
+    ) -> ColumnReplayState {
+        let table_name = DuckDbEngine::internal_table_name(dataset_id);
+        let physical_schema = engine
+            .conn()
+            .prepare(
+                "SELECT column_name, data_type, ordinal_position
+                 FROM information_schema.columns
+                 WHERE table_name = ? ORDER BY ordinal_position",
+            )
+            .expect("prepare physical schema")
+            .query_map(params![table_name], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("query physical schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect physical schema");
+        let meta_columns = engine
+            .conn()
+            .prepare(
+                "SELECT column_id, col_index, col_name, col_type
+                 FROM _meta_columns WHERE dataset_id = ? ORDER BY col_index",
+            )
+            .expect("prepare metadata columns")
+            .query_map(params![dataset_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("query metadata columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect metadata columns");
+        let calculated_definitions = engine
+            .conn()
+            .prepare(
+                "SELECT column_id, archived_definition_json
+                 FROM _meta_calculated_columns
+                 WHERE dataset_id = ? ORDER BY column_id",
+            )
+            .expect("prepare calculated definitions")
+            .query_map(params![dataset_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query calculated definitions")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect calculated definitions");
+        let dataset = engine
+            .conn()
+            .query_row(
+                "SELECT generation, col_count FROM _meta_datasets WHERE id = ?",
+                params![dataset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("dataset metadata");
+        let history_change_set = engine
+            .conn()
+            .query_row(
+                "SELECT applied, generation, storage_kind
+                 FROM _history_change_sets WHERE id = ?",
+                params![change_set_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("history change set");
+        let history_delta = engine
+            .conn()
+            .query_row(
+                "SELECT operation, before_generation, after_generation,
+                        snapshot_table, applied
+                 FROM _history_delta_change_sets WHERE id = ?",
+                params![change_set_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("history delta");
+        let column_deltas = engine
+            .conn()
+            .prepare(
+                "SELECT ordinal, column_id, col_index, col_name, col_type,
+                        calculated_definition_json
+                 FROM _history_column_deltas
+                 WHERE change_set_id = ? ORDER BY ordinal",
+            )
+            .expect("prepare column deltas")
+            .query_map(params![change_set_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .expect("query column deltas")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect column deltas");
+        let target_anchors = engine
+            .conn()
+            .prepare(
+                "SELECT ordinal, order_key, row_id
+                 FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ? ORDER BY ordinal",
+            )
+            .expect("prepare target anchors")
+            .query_map(params![dataset_id, target_generation], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("query target anchors")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect target anchors");
+        let target_manifests = engine
+            .conn()
+            .prepare(
+                "SELECT row_count, anchor_count, checksum
+                 FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+            )
+            .expect("prepare target manifests")
+            .query_map(params![dataset_id, target_generation], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("query target manifests")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect target manifests");
+        ColumnReplayState {
+            physical_schema,
+            meta_columns,
+            calculated_definitions,
+            dataset,
+            history_change_set,
+            history_delta,
+            column_deltas,
+            target_anchors,
+            target_manifests,
+        }
+    }
+
     #[test]
     fn compact_column_mutation_adds_one_and_many_without_value_snapshots() {
         let db = DuckDbEngine::new_in_memory().expect("engine");
@@ -1425,6 +1582,79 @@ mod tests {
             }]
         );
         assert_eq!(history_table_count(&db, "_history_full_before_%"), 0);
+    }
+
+    #[test]
+    fn compact_column_mutation_failed_undo_rolls_back_started_schema_replay() {
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        db.seed_benchmark_table(
+            "compact-column-replay-atomic",
+            "Compact column replay atomic",
+            4,
+            3,
+        )
+        .expect("seed");
+        let original = column_descriptors(&db, "compact-column-replay-atomic");
+        let formula_id = uuid::Uuid::new_v4().to_string();
+        let preserved = ArchivedCalculatedColumn::Preserved {
+            definition: PreservedCalculatedColumnDefinition {
+                formula_id: formula_id.clone(),
+                schema_version: "future-v9".into(),
+                output_column_id: original[1].column_id.clone(),
+                archived_definition: serde_json::json!({
+                    "kind": "ready",
+                    "definition": {
+                        "formulaId": formula_id,
+                        "schemaVersion": "future-v9",
+                        "outputColumnId": original[1].column_id,
+                        "opaque": {"atomic": true}
+                    }
+                }),
+            },
+        };
+        db.upsert_archived_calculated_column(
+            "compact-column-replay-atomic",
+            &original[1].column_id,
+            &preserved,
+        )
+        .expect("archive calculated definition");
+        let deleted = delete_columns_compact(
+            &db,
+            "compact-column-replay-atomic",
+            &[original[0].clone(), original[1].clone()],
+            0,
+        )
+        .expect("delete columns");
+        db.conn()
+            .execute(
+                "UPDATE _history_delta_change_sets
+                 SET snapshot_table = '_history_columns_mismatched'
+                 WHERE id = ?",
+                params![&deleted.change_set_id],
+            )
+            .expect("corrupt snapshot metadata");
+        let before = column_replay_state(
+            &db,
+            "compact-column-replay-atomic",
+            &deleted.change_set_id,
+            2,
+        );
+
+        let error = db
+            .apply_change_set(&deleted.change_set_id, true)
+            .expect_err("mismatched snapshot must fail after schema restore starts");
+        assert!(
+            matches!(error, AppError::Database(message) if message.contains("snapshot name does not match"))
+        );
+        assert_eq!(
+            column_replay_state(
+                &db,
+                "compact-column-replay-atomic",
+                &deleted.change_set_id,
+                2,
+            ),
+            before
+        );
     }
 
     #[test]
