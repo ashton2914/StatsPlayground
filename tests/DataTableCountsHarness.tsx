@@ -122,6 +122,7 @@ export function DataTableCountsHarness({
   const statusDimensions = useDataStore((state) => state.statusInfo?.dimensions ?? "");
   const [harnessState, setHarnessState] = useState<HarnessState>(() => createInitialHarnessState(variant));
   const [filterRequestGenerations, setFilterRequestGenerations] = useState<number[]>([]);
+  const [tableWindowQuerySignatures, setTableWindowQuerySignatures] = useState<string[]>([]);
   const harnessStateRef = useRef(harnessState);
   harnessStateRef.current = harnessState;
 
@@ -167,7 +168,11 @@ export function DataTableCountsHarness({
     });
 
     dataService.getDatasetGeneration = async () => harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
-    dataService.queryTableWindow = async () => {
+    dataService.queryTableWindow = async (request) => {
+      setTableWindowQuerySignatures((previous) => [
+        ...previous,
+        JSON.stringify({ filters: request.filters, sort: request.sort }),
+      ]);
       return createTable(
         harnessStateRef.current.windowTotalRows,
         harnessStateRef.current.activeDataset?.generation ?? DATASET.generation,
@@ -248,6 +253,7 @@ export function DataTableCountsHarness({
       <output aria-label="Status dimensions">{statusDimensions}</output>
       <output aria-label="Harness metadata state">{harnessState.activeDataset ? `${harnessState.activeDataset.rowCount}x${harnessState.activeDataset.colCount}@${harnessState.activeDataset.generation}` : "missing"}</output>
       <output aria-label="Filter request generations">{filterRequestGenerations.join(",")}</output>
+      <output aria-label="Table window query signatures">{tableWindowQuerySignatures.join("\n")}</output>
       <button type="button" onClick={clearActiveMetadata}>Clear active metadata</button>
       <button type="button" onClick={applyUpdatedMetadata}>Apply updated metadata</button>
       <button type="button" onClick={applyUpdatedFilterResult}>Apply updated filter result</button>

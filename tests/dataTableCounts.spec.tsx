@@ -2,6 +2,19 @@ import { expect, test } from "@playwright/experimental-ct-react";
 
 import { DataTableCountsHarness } from "./DataTableCountsHarness";
 
+const INITIAL_FILTER_QUERY_SIGNATURE = JSON.stringify({
+  filters: [{
+    op: "AND",
+    rule: {
+      kind: "categorical",
+      field: "Build",
+      selected: ["DV", "EV"],
+      exclude: false,
+    },
+  }],
+  sort: null,
+});
+
 test("shows source totals without displayed rows when no table filter is active", async ({ mount }) => {
   const component = await mount(<DataTableCountsHarness variant="unfiltered" />);
 
@@ -17,6 +30,9 @@ test("shows displayed rows and source totals when a filter is active", async ({ 
   await expect(component.getByText("Total columns").locator("..")).toContainText("2");
   await expect(component.getByLabel("Status dimensions")).toHaveText("24 / 100 rows × 2 cols");
   await expect(component.getByText("Displayed rows").locator("..")).toContainText("24");
+  await expect(component.getByLabel("Table window query signatures")).toHaveText(
+    INITIAL_FILTER_QUERY_SIGNATURE,
+  );
 });
 
 test("shows zero displayed rows when a filter returns no matches", async ({ mount }) => {
@@ -24,6 +40,9 @@ test("shows zero displayed rows when a filter returns no matches", async ({ moun
 
   await expect(component.getByLabel("Status dimensions")).toHaveText("0 / 100 rows × 2 cols");
   await expect(component.getByText("Displayed rows").locator("..")).toContainText("0");
+  await expect(component.getByLabel("Table window query signatures")).toHaveText(
+    INITIAL_FILTER_QUERY_SIGNATURE,
+  );
 });
 
 test("suppresses unknown metadata totals and refreshes summary and status when metadata or filters change", async ({ mount }) => {
