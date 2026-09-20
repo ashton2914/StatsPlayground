@@ -30,6 +30,19 @@ fn binary_build_profile() -> &'static str {
     env!("STATSPLAYGROUND_BINARY_BUILD_PROFILE")
 }
 
+fn binary_qualification_available() -> bool {
+    env!("STATSPLAYGROUND_QUALIFICATION_AVAILABLE") == "true"
+}
+
+fn validate_binary_qualification_available(available: bool) -> Result<(), AppError> {
+    if !available {
+        return Err(AppError::InvalidParam(
+            "perf-harness source provenance is unavailable; qualification is refused".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn git_output(args: &[&str]) -> Result<String, AppError> {
     let output = std::process::Command::new("git")
         .args(args)
@@ -598,6 +611,7 @@ fn execute_table_mutation_qualification(
             "mutation qualification protocol requires 2000000 rows, 8 columns, 5 samples, and 1 warmup".into(),
         ));
     }
+    validate_binary_qualification_available(binary_qualification_available())?;
     let runtime_provenance = runtime_source_provenance()?;
     validate_source_provenance(
         binary_source_commit(),

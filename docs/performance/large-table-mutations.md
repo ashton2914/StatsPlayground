@@ -29,12 +29,15 @@ reported; five samples are not labeled P95. `maxMs`, not the median, is the
 qualification value. Mutation mode fixes `--runs` at 5; other harness
 operations retain their one-run default.
 
-The build script records the authoritative Git commit, dirty state, and build
-profile in the executable at compile time. Before launching children and again
-after collecting them, the parent requires the embedded source to have been
-clean (`binarySourceClean`), runtime `HEAD` to equal `binarySourceCommit`, and
-the runtime worktree to remain clean (`runtimeSourceClean`). Children must
-report the same compile-time provenance.
+With `perf-harness`, the build script requires Git and records its authoritative
+commit, dirty state, and build profile in the executable at compile time.
+Without that feature, it does not invoke Git and emits explicit
+`unavailable`/not-qualified metadata so ordinary source-archive and package
+builds remain supported. Before launching children and again after collecting
+them, the qualification parent requires available metadata, clean embedded
+source (`binarySourceClean`), runtime `HEAD` equal to `binarySourceCommit`, and
+a clean runtime worktree (`runtimeSourceClean`). Children must report the same
+compile-time provenance.
 
 The example target is required. Running the package binary without
 `--example performance_baseline` starts the Tauri desktop application rather
@@ -66,6 +69,13 @@ than the CLI harness.
   rebuild, no observed unbounded/global row-order update, no bounded update
   affecting at least 90% of the dataset, at most 8,192 locally rebalanced rows,
   valid sparse anchor/manifest state, and the expected compact delta snapshot.
+- `services/row_order_update_boundary.rs` is the sole production authority for
+  SQL that updates `_row_order`. A test recursively scans every Rust source
+  below `src-tauri/src`, excluding `target`, `generated`, and content after the
+  conventional top-level `#[cfg(test)]` module boundary. It canonicalizes each
+  Rust statement's string literals, so direct SQL and split `concat!`/macro
+  fragments are rejected outside the authority, and requires exactly one
+  canonical update construction inside it.
 - `memoryNearDoubling` fails when retained memory or RSS reaches at least 1.8×
   its pre-mutation baseline.
 

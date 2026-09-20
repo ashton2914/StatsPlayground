@@ -26,6 +26,7 @@ pub mod normal_capability;
 pub(crate) mod natural_row_order;
 pub mod path_authorization_service;
 pub mod project_service;
+pub(crate) mod row_order_update_boundary;
 pub mod save_coordinator;
 pub mod spprj_archive;
 pub mod stats_service;

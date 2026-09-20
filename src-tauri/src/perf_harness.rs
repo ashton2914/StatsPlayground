@@ -38,8 +38,8 @@ use crate::services::graph_data_service::GraphDataService;
 use crate::services::graph_new_lod::GraphCamera;
 use crate::services::graph_new_service::GraphNewService;
 #[cfg(test)]
-use crate::services::natural_row_order::execute_global_row_order_update_for_test;
-use crate::services::natural_row_order::{
+use crate::services::row_order_update_boundary::execute_global_row_order_update_for_test;
+use crate::services::row_order_update_boundary::{
     full_table_row_updates, rebalanced_rows, reset_full_table_row_updates, reset_rebalanced_rows,
 };
 use crate::services::project_service::{seed_save_project, ProjectService};
@@ -3920,6 +3920,13 @@ mod tests {
                     .expect_err("dirty source must be rejected");
             assert!(error.to_string().contains("clean source tree"));
         }
+    }
+
+    #[test]
+    fn qualification_rejects_unavailable_binary_provenance() {
+        let error = validate_binary_qualification_available(false)
+            .expect_err("unavailable build metadata must not qualify");
+        assert!(error.to_string().contains("unavailable"));
     }
 
     #[test]
