@@ -146,6 +146,7 @@ pub(crate) use source_contract::{
 #[cfg(test)]
 mod source_contract {
     use std::collections::HashSet;
+    use std::path::{Path as FsPath, PathBuf};
 
     use proc_macro2::{TokenStream, TokenTree};
     use syn::parse::Parser;
@@ -220,6 +221,31 @@ mod source_contract {
         }
     }
 
+    fn evaluate_include_path(expression: &Expr) -> Option<String> {
+        match expression {
+            Expr::Lit(expression) => literal_value(&expression.lit),
+            Expr::Group(expression) => evaluate_include_path(&expression.expr),
+            Expr::Paren(expression) => evaluate_include_path(&expression.expr),
+            Expr::Macro(expression) if expression.mac.path.is_ident("concat") => {
+                let arguments = Punctuated::<Expr, Token![,]>::parse_terminated
+                    .parse2(expression.mac.tokens.clone())
+                    .ok()?;
+                let mut value = String::new();
+                for argument in arguments {
+                    value.push_str(&evaluate_include_path(&argument)?);
+                }
+                Some(value)
+            }
+            Expr::Macro(expression) if expression.mac.path.is_ident("env") => {
+                let variable = syn::parse2::<syn::LitStr>(expression.mac.tokens.clone())
+                    .ok()?
+                    .value();
+                (variable == "CARGO_MANIFEST_DIR").then(|| env!("CARGO_MANIFEST_DIR").to_string())
+            }
+            _ => None,
+        }
+    }
+
     #[derive(Default)]
     struct ExpressionTokens {
         literals: Vec<String>,
@@ -289,26 +315,64 @@ mod source_contract {
             .map(|segment| segment.ident.to_string())
     }
 
-    fn external_content_macro_is_unsafe(name: &str, tokens: TokenStream) -> bool {
+    #[derive(Clone, Copy)]
+    struct SourceContext<'a> {
+        source_file: &'a FsPath,
+        allowed_root: &'a FsPath,
+    }
+
+    fn included_content_is_unsafe(tokens: TokenStream, context: Option<SourceContext<'_>>) -> bool {
+        let Some(context) = context else {
+            return true;
+        };
+        let Some(path) = syn::parse2::<Expr>(tokens)
+            .ok()
+            .and_then(|expression| evaluate_include_path(&expression))
+        else {
+            return true;
+        };
+        let path = FsPath::new(&path);
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            let Some(parent) = context.source_file.parent() else {
+                return true;
+            };
+            parent.join(path)
+        };
+        let Ok(candidate) = candidate.canonicalize() else {
+            return true;
+        };
+        if !candidate.starts_with(context.allowed_root) {
+            return true;
+        }
+        let Ok(content) = std::fs::read_to_string(candidate) else {
+            return true;
+        };
+        let content = canonical(&content);
+        content.contains("_row_order") && content.replace("_row_order", "").contains("update")
+    }
+
+    fn external_content_macro_is_unsafe(
+        name: &str,
+        tokens: TokenStream,
+        context: Option<SourceContext<'_>>,
+    ) -> bool {
         match name {
             "include" => true,
-            "include_str" | "include_bytes" => {
-                let mut content = ExpressionTokens::default();
-                content.collect_macro_tokens(tokens);
-                !content
-                    .literals
-                    .last()
-                    .is_some_and(|path| path.to_ascii_lowercase().ends_with(".json"))
-            }
+            "include_str" | "include_bytes" => included_content_is_unsafe(tokens, context),
             _ => false,
         }
     }
 
-    fn tokens_contain_unsafe_external_macro(tokens: TokenStream) -> bool {
+    fn tokens_contain_unsafe_external_macro(
+        tokens: TokenStream,
+        context: Option<SourceContext<'_>>,
+    ) -> bool {
         let tokens = tokens.into_iter().collect::<Vec<_>>();
         for (index, token) in tokens.iter().enumerate() {
             if let TokenTree::Group(group) = token {
-                if tokens_contain_unsafe_external_macro(group.stream()) {
+                if tokens_contain_unsafe_external_macro(group.stream(), context) {
                     return true;
                 }
             }
@@ -322,7 +386,11 @@ mod source_contract {
                 continue;
             };
             if punctuation.as_char() == '!'
-                && external_content_macro_is_unsafe(&identifier.to_string(), arguments.stream())
+                && external_content_macro_is_unsafe(
+                    &identifier.to_string(),
+                    arguments.stream(),
+                    context,
+                )
             {
                 return true;
             }
@@ -330,11 +398,11 @@ mod source_contract {
         false
     }
 
-    fn macro_definition_is_unsafe(item: &ItemMacro) -> bool {
+    fn macro_definition_is_unsafe(item: &ItemMacro, context: Option<SourceContext<'_>>) -> bool {
         let mut tokens = ExpressionTokens::default();
         tokens.collect_macro_tokens(item.mac.tokens.clone());
         tokens.contains_row_order_update()
-            || tokens_contain_unsafe_external_macro(item.mac.tokens.clone())
+            || tokens_contain_unsafe_external_macro(item.mac.tokens.clone(), context)
     }
 
     #[derive(Default)]
@@ -374,6 +442,7 @@ mod source_contract {
     struct ProductionUpdateVisitor<'a> {
         occurrences: usize,
         local_macros: &'a HashSet<String>,
+        context: Option<SourceContext<'a>>,
     }
 
     impl<'ast> Visit<'ast> for ProductionUpdateVisitor<'_> {
@@ -383,7 +452,7 @@ mod source_contract {
             }
             if let Item::Macro(item) = item {
                 if item.mac.path.is_ident("macro_rules") {
-                    if macro_definition_is_unsafe(item) {
+                    if macro_definition_is_unsafe(item, self.context) {
                         self.occurrences += 1;
                     }
                     return;
@@ -404,7 +473,11 @@ mod source_contract {
                     && !is_local
                     && !safe_empty_macro(&expression.mac.path);
                 let unresolved_external = name.as_ref().is_some_and(|name| {
-                    external_content_macro_is_unsafe(name, expression.mac.tokens.clone())
+                    external_content_macro_is_unsafe(
+                        name,
+                        expression.mac.tokens.clone(),
+                        self.context,
+                    )
                 });
                 if unresolved_empty || unresolved_external {
                     self.occurrences += 1;
@@ -423,20 +496,24 @@ mod source_contract {
         }
     }
 
-    fn row_order_update_occurrences(source: &str) -> Result<usize, String> {
+    fn row_order_update_occurrences(
+        source: &str,
+        context: Option<SourceContext<'_>>,
+    ) -> Result<usize, String> {
         let syntax = syn::parse_file(source).map_err(|error| error.to_string())?;
         let mut macros = ProductionMacroCollector::default();
         macros.visit_file(&syntax);
         let mut visitor = ProductionUpdateVisitor {
             occurrences: 0,
             local_macros: &macros.names,
+            context,
         };
         visitor.visit_file(&syntax);
         Ok(visitor.occurrences)
     }
 
     pub(crate) fn source_contains_row_order_update(source: &str) -> bool {
-        match row_order_update_occurrences(source) {
+        match row_order_update_occurrences(source, None) {
             Ok(count) => count > 0,
             Err(_) => true,
         }
@@ -448,7 +525,7 @@ mod source_contract {
         let mut violations = sources
             .into_iter()
             .filter_map(
-                |(path, source)| match row_order_update_occurrences(source) {
+                |(path, source)| match row_order_update_occurrences(source, None) {
                     Ok(0) if path != AUTHORITY_PATH => None,
                     Ok(_) if path != AUTHORITY_PATH => Some(path.to_string()),
                     Err(error) => Some(format!("{path}: Rust parse failed: {error}")),
@@ -466,7 +543,7 @@ mod source_contract {
         fn collect(
             root: &std::path::Path,
             directory: &std::path::Path,
-            sources: &mut Vec<(String, String)>,
+            sources: &mut Vec<(String, PathBuf, String)>,
         ) -> Result<(), String> {
             let mut entries = std::fs::read_dir(directory)
                 .map_err(|error| format!("read {}: {error}", directory.display()))?
@@ -488,7 +565,7 @@ mod source_contract {
                         .replace('\\', "/");
                     let source = std::fs::read_to_string(&path)
                         .map_err(|error| format!("read {}: {error}", path.display()))?;
-                    sources.push((relative, source));
+                    sources.push((relative, path, source));
                 }
             }
             Ok(())
@@ -496,17 +573,40 @@ mod source_contract {
 
         let mut sources = Vec::new();
         collect(source_root, source_root, &mut sources)?;
+        let allowed_root = source_root
+            .parent()
+            .and_then(FsPath::parent)
+            .ok_or_else(|| format!("invalid source root {}", source_root.display()))?
+            .canonicalize()
+            .map_err(|error| format!("resolve source root: {error}"))?;
         let authority = sources
             .iter()
-            .find(|(path, _)| path == AUTHORITY_PATH)
+            .find(|(path, _, _)| path == AUTHORITY_PATH)
             .ok_or_else(|| format!("missing row-order UPDATE authority {AUTHORITY_PATH}"))?;
-        let authority_count = row_order_update_occurrences(&authority.1)
-            .map_err(|error| format!("parse {AUTHORITY_PATH}: {error}"))?;
-        let borrowed = sources
+        let authority_count = row_order_update_occurrences(
+            &authority.2,
+            Some(SourceContext {
+                source_file: &authority.1,
+                allowed_root: &allowed_root,
+            }),
+        )
+        .map_err(|error| format!("parse {AUTHORITY_PATH}: {error}"))?;
+        let mut violations = sources
             .iter()
-            .map(|(path, source)| (path.as_str(), source.as_str()))
+            .filter_map(|(path, source_file, source)| {
+                let context = Some(SourceContext {
+                    source_file,
+                    allowed_root: &allowed_root,
+                });
+                match row_order_update_occurrences(source, context) {
+                    Ok(0) if path != AUTHORITY_PATH => None,
+                    Ok(_) if path != AUTHORITY_PATH => Some(path.clone()),
+                    Err(error) => Some(format!("{path}: Rust parse failed: {error}")),
+                    Ok(_) => None,
+                }
+            })
             .collect::<Vec<_>>();
-        let mut violations = source_contract_violations_for_sources(borrowed);
+        violations.sort();
         if authority_count != 1 {
             violations.push(format!(
                 "{AUTHORITY_PATH}: expected one canonical UPDATE, found {authority_count}"

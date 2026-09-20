@@ -79,8 +79,12 @@ than the CLI harness.
   are discarded by the Rust parser, while comment-like text inside strings
   remains data. Production `macro_rules!` bodies are inspected before their
   invocations, unresolved empty code-generating macros fail closed, and
-  `include!` plus non-JSON `include_str!`/`include_bytes!` inputs fail closed.
-  Static JSON includes remain permitted as data. The authority must contain
+  `include!` fails closed. Literal and literal-`concat!` paths passed to
+  `include_str!`/`include_bytes!` are resolved relative to the containing Rust
+  source (including `CARGO_MANIFEST_DIR`), constrained to the repository root,
+  read, and scanned. Missing, nonliteral, unreadable, non-UTF-8, or out-of-root
+  inputs fail closed. Legitimate JSON includes are permitted only because their
+  verified content contains no row-order UPDATE. The authority must contain
   exactly one production construction; every other production module must
   contain zero.
 - `memoryNearDoubling` fails when retained memory or RSS reaches at least 1.8×

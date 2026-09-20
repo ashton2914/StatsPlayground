@@ -1969,8 +1969,82 @@ mod tests {
                 connection.execute(include_str!("query.sql"), []).unwrap();
             }
         "#;
+        let disguised_json = r#"
+            fn bypass(connection: &Connection) {
+                connection.execute(include_str!("query.json"), []).unwrap();
+            }
+        "#;
         assert!(
             crate::services::row_order_update_boundary::source_contains_row_order_update(source)
+        );
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(
+                disguised_json
+            )
+        );
+    }
+
+    #[test]
+    fn row_order_source_contract_resolves_and_scans_included_content() {
+        let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("row-order-include-contract-{}", std::process::id()));
+        let services = fixture_root.join("services");
+        std::fs::create_dir_all(&services).expect("include fixture");
+        std::fs::write(
+            services.join("row_order_update_boundary.rs"),
+            r#"fn update() { let sql = "UPDATE dataset SET \"_row_order\" = ?"; }"#,
+        )
+        .expect("authority fixture");
+        std::fs::write(
+            services.join("benign.rs"),
+            r#"const FIXTURE: &str = include_str!("fixture.json");"#,
+        )
+        .expect("benign include source");
+        std::fs::write(
+            services.join("fixture.json"),
+            r#"{"label":"row display metadata"}"#,
+        )
+        .expect("benign included content");
+        std::fs::write(
+            services.join("rogue.rs"),
+            r#"const QUERY: &str = include_str!(concat!("query", ".json"));"#,
+        )
+        .expect("rogue include source");
+        std::fs::write(
+            services.join("query.json"),
+            r#"{"query":"UPDATE dataset SET \"_row_order\" = 1"}"#,
+        )
+        .expect("rogue included content");
+        std::fs::write(
+            services.join("unresolved.rs"),
+            r#"const QUERY: &str = include_str!(QUERY_PATH);"#,
+        )
+        .expect("unresolved include source");
+        let outside_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root")
+            .join("package.json");
+        std::fs::write(
+            services.join("outside.rs"),
+            format!(
+                "const FIXTURE: &str = include_str!({:?});",
+                outside_root.to_string_lossy()
+            ),
+        )
+        .expect("outside-root include source");
+
+        let violations =
+            crate::services::row_order_update_boundary::source_contract_violations(&fixture_root)
+                .expect("recursive include scan");
+        std::fs::remove_dir_all(&fixture_root).expect("remove include fixture");
+        assert_eq!(
+            violations,
+            vec![
+                "services/outside.rs",
+                "services/rogue.rs",
+                "services/unresolved.rs",
+            ]
         );
     }
 
@@ -2007,7 +2081,6 @@ mod tests {
             macro_rules! benign_label {
                 () => { "row label" };
             }
-            const FIXTURE: &str = include_str!("fixture.json");
             fn label() -> &'static str { benign_label!() }
         "#;
         assert!(
