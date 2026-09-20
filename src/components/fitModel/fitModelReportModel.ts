@@ -236,46 +236,38 @@ function finitePValue(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
 }
 
+function selectSmallestFinitePValue(
+  candidates: readonly { termId: string; pValue: number | null }[],
+): string | null {
+  let selected: { termId: string; pValue: number } | null = null;
+  for (const candidate of candidates) {
+    if (
+      finitePValue(candidate.pValue)
+      && (selected === null || candidate.pValue < selected.pValue)
+    ) {
+      selected = { termId: candidate.termId, pValue: candidate.pValue };
+    }
+  }
+  return selected?.termId ?? null;
+}
+
 export function selectDefaultLeverageTermId(
   effectTests: readonly FitModelEffectTest[],
 ): string | null {
-  if (effectTests.length === 0) {
-    return null;
-  }
-
-  let selected = effectTests[0];
-  for (const effect of effectTests) {
-    if (
-      finitePValue(effect.pValue)
-      && (!finitePValue(selected.pValue) || effect.pValue < selected.pValue)
-    ) {
-      selected = effect;
-    }
-  }
-  return selected.termId;
+  return selectSmallestFinitePValue(effectTests);
 }
 
 export function reconcileLeverageTermId(
   current: string | null,
   plots: readonly FitModelLeveragePlot[],
 ): string | null {
-  if (current !== null && plots.some((plot) => plot.termId === current)) {
+  if (
+    current !== null
+    && plots.some((plot) => plot.termId === current && finitePValue(plot.pValue))
+  ) {
     return current;
   }
-  if (plots.length === 0) {
-    return null;
-  }
-
-  let selected = plots[0];
-  for (const plot of plots) {
-    if (
-      finitePValue(plot.pValue)
-      && (!finitePValue(selected.pValue) || plot.pValue < selected.pValue)
-    ) {
-      selected = plot;
-    }
-  }
-  return selected.termId;
+  return selectSmallestFinitePValue(plots);
 }
 
 export function removeFitModelTerm(

@@ -483,6 +483,96 @@ function testLeverageSelectionIsDeterministic(): void {
   assert.equal(reconcileLeverageTermId("A", plots), "A");
 }
 
+function testLeverageSelectionReturnsNullWithoutFinitePValue(): void {
+  const effectTests = [
+    {
+      termId: "A",
+      termLabel: "A",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: null,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: Number.NaN,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "interaction:A*B",
+      termLabel: "A*B",
+      numberOfParameters: 1,
+      degreesOfFreedom: 0,
+      sumOfSquares: null,
+      fRatio: null,
+      pValue: Number.POSITIVE_INFINITY,
+      reason: "inferenceNotEstimable",
+    },
+  ] as const;
+  const plots = effectTests.map((effect) => ({
+    termId: effect.termId,
+    termLabel: effect.termLabel,
+    pValue: effect.pValue,
+    points: [],
+    confidenceBand: [],
+    nullLineY: null,
+    rowsSampled: false,
+    sourceRowCount: 0,
+    reason: effect.reason,
+  }));
+
+  assert.equal(selectDefaultLeverageTermId(effectTests), null);
+  assert.equal(reconcileLeverageTermId("A", plots), null);
+}
+
+function testLeverageSelectionReplacesNonEstimableCurrent(): void {
+  const plots = [
+    {
+      termId: "A",
+      termLabel: "A",
+      pValue: null,
+      points: [],
+      confidenceBand: [],
+      nullLineY: null,
+      rowsSampled: false,
+      sourceRowCount: 0,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      pValue: Number.NEGATIVE_INFINITY,
+      points: [],
+      confidenceBand: [],
+      nullLineY: null,
+      rowsSampled: false,
+      sourceRowCount: 0,
+      reason: "inferenceNotEstimable",
+    },
+    {
+      termId: "interaction:A*B",
+      termLabel: "A*B",
+      pValue: 0.001,
+      points: [],
+      confidenceBand: [],
+      nullLineY: 10,
+      rowsSampled: false,
+      sourceRowCount: 10,
+      reason: null,
+    },
+  ] as const;
+
+  assert.equal(reconcileLeverageTermId("A", plots), "interaction:A*B");
+  assert.equal(reconcileLeverageTermId("removed", plots), "interaction:A*B");
+}
+
 function testRemoveInteractionSucceeds(): void {
   const terms = createItem().terms;
   const interactionId = fitModelTermId({ kind: "interaction", columnNames: ["B", "A"] });
@@ -879,6 +969,8 @@ testLogWorthContracts();
 testEffectSummarySortAndPValueMapping();
 testMeanCenteringDoesNotRelabelMainEffect();
 testLeverageSelectionIsDeterministic();
+testLeverageSelectionReturnsNullWithoutFinitePValue();
+testLeverageSelectionReplacesNonEstimableCurrent();
 testRemoveInteractionSucceeds();
 testResolvedTermIdsMatchRustForPowerAndHigherOrderInteraction();
 testRemovePowerAndHigherOrderInteractionSucceeds();
