@@ -574,6 +574,7 @@ impl DuckDbEngine {
                 row_count   BIGINT DEFAULT 0,
                 col_count   INTEGER DEFAULT 0,
                 generation  BIGINT DEFAULT 0,
+                next_row_id BIGINT,
                 created_at  TEXT DEFAULT (CAST(current_timestamp AS VARCHAR)),
                 updated_at  TEXT DEFAULT (CAST(current_timestamp AS VARCHAR))
             );
@@ -691,6 +692,10 @@ impl DuckDbEngine {
             [],
         )?;
         conn.execute(
+            "ALTER TABLE _meta_datasets ADD COLUMN IF NOT EXISTS next_row_id BIGINT",
+            [],
+        )?;
+        conn.execute(
             "ALTER TABLE _history_change_sets ADD COLUMN IF NOT EXISTS storage_kind TEXT DEFAULT 'full'",
             [],
         )?;
@@ -765,6 +770,23 @@ impl DuckDbEngine {
         let stride_i64 = i64::try_from(NATURAL_ANCHOR_STRIDE)
             .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let next_row_id: i64 = self.conn.query_row(
+            &format!(
+                "SELECT COALESCE(max(\"_row_id\"), 0) + 1
+                 FROM {table_name}"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE _meta_datasets
+             SET next_row_id = CASE
+                 WHEN next_row_id IS NULL OR next_row_id < ? THEN ?
+                 ELSE next_row_id
+             END
+             WHERE id = ?",
+            params![next_row_id, next_row_id, dataset_id],
+        )?;
 
         self.conn.execute(
             "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation <> ?",
@@ -801,6 +823,44 @@ impl DuckDbEngine {
         )?;
 
         Ok(())
+    }
+
+    pub(crate) fn reserve_row_ids(
+        &self,
+        dataset_id: &str,
+        count: usize,
+    ) -> Result<Vec<i64>, AppError> {
+        let count = i64::try_from(count)
+            .map_err(|_| AppError::InvalidParam("row count is too large".into()))?;
+        if count <= 0 {
+            return Err(AppError::InvalidParam(
+                "row count must be at least one".into(),
+            ));
+        }
+        let first_id: Option<i64> = self.conn.query_row(
+            "SELECT next_row_id FROM _meta_datasets WHERE id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        let first_id = first_id.ok_or_else(|| {
+            AppError::InvalidParam(format!(
+                "next row ID is not initialized for dataset {dataset_id}; controlled rebuild required"
+            ))
+        })?;
+        let next_id = first_id
+            .checked_add(count)
+            .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
+        let changed = self.conn.execute(
+            "UPDATE _meta_datasets SET next_row_id = ?
+             WHERE id = ? AND next_row_id = ?",
+            params![next_id, dataset_id, first_id],
+        )?;
+        if changed != 1 {
+            return Err(AppError::InvalidParam(
+                "row ID reservation raced with another mutation".into(),
+            ));
+        }
+        Ok((first_id..next_id).collect())
     }
 
     pub(crate) fn publish_natural_anchor_manifest(

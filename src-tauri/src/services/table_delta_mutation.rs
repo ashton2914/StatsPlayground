@@ -6,6 +6,7 @@ use crate::error::AppError;
 use crate::models::table::RowMutationResult;
 use crate::services::natural_row_order::{
     allocate_before, publish_deleted_anchors, publish_inserted_anchors, publish_restored_anchors,
+    resolve_natural_row_positions,
 };
 
 const MAX_ADDED_ROWS: usize = 100_000;
@@ -29,22 +30,12 @@ pub(crate) fn add_rows_compact(
         let next_generation = next_generation(expected_generation)?;
         let allocation = allocate_before(engine, dataset_id, before_row_id, count)?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
-        let max_id: Option<i64> = engine.conn().query_row(
-            &format!("SELECT max(\"_row_id\") FROM {table}"),
-            [],
-            |row| row.get(0),
-        )?;
-        let first_id = max_id
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
+        let reserved_ids = engine.reserve_row_ids(dataset_id, count)?;
         let mut inserted = Vec::with_capacity(count);
-        for (offset, row_order) in allocation.row_orders.iter().copied().enumerate() {
-            let offset = i64::try_from(offset)
-                .map_err(|_| AppError::InvalidParam("row count is too large".into()))?;
-            let row_id = first_id
-                .checked_add(offset)
-                .ok_or_else(|| AppError::InvalidParam("row ID range is exhausted".into()))?;
+        for (row_id, row_order) in reserved_ids
+            .into_iter()
+            .zip(allocation.row_orders.iter().copied())
+        {
             engine.conn().execute(
                 &format!("INSERT INTO {table} (\"_row_id\", \"_row_order\") VALUES (?, ?)"),
                 params![row_id, row_order],
@@ -124,37 +115,8 @@ pub(crate) fn delete_rows_compact(
         let placeholders = std::iter::repeat_n("?", unique_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let deleted_sql = format!(
-            "SELECT \"_row_id\", \"_row_order\", order_key, ordinal
-             FROM (
-                 SELECT \"_row_id\", \"_row_order\",
-                        {natural_order} AS order_key,
-                        row_number() OVER (
-                            ORDER BY {natural_order}, \"_row_id\"
-                        ) - 1 AS ordinal
-                 FROM {table}
-             ) AS ordered
-             WHERE \"_row_id\" IN ({placeholders})
-             ORDER BY ordinal",
-            natural_order = crate::engine::duckdb_engine::NATURAL_ORDER_SQL
-        );
-        let mut statement = engine.conn().prepare(&deleted_sql)?;
-        let deleted = statement
-            .query_map(params_from_iter(unique_ids.iter()), |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Option<i128>>(1)?,
-                    row.get::<_, i128>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
-        if deleted.len() != unique_ids.len() {
-            return Err(AppError::InvalidParam(
-                "one or more rows do not exist".into(),
-            ));
-        }
+        let deleted =
+            resolve_natural_row_positions(engine, dataset_id, expected_generation, &unique_ids)?;
 
         let change_set_id = uuid::Uuid::new_v4().to_string();
         let snapshot_name = format!("_history_rows_{}", change_set_id.replace('-', ""));
@@ -168,7 +130,7 @@ pub(crate) fn delete_rows_compact(
         )?;
         let delta_rows = deleted
             .iter()
-            .map(|&(row_id, row_order, _, ordinal)| (ordinal, row_id, row_order))
+            .map(|row| (row.ordinal, row.row_id, row.row_order))
             .collect::<Vec<_>>();
         record_delta_change_set(
             engine,
@@ -192,7 +154,7 @@ pub(crate) fn delete_rows_compact(
         )?;
         let deleted_anchors = deleted
             .iter()
-            .map(|&(row_id, _, order_key, ordinal)| (row_id, order_key, ordinal))
+            .map(|row| (row.row_id, row.order_key, row.ordinal))
             .collect::<Vec<_>>();
         publish_deleted_anchors(
             engine,
@@ -395,6 +357,14 @@ fn validate_generation(
             "stale dataset generation: expected {generation}, received {expected_generation}"
         )));
     }
+    let row_count: i64 = engine.conn().query_row(
+        "SELECT row_count FROM _meta_datasets WHERE id = ?",
+        params![dataset_id],
+        |row| row.get(0),
+    )?;
+    let generation = i64::try_from(generation)
+        .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+    engine.validate_natural_anchor_manifest(dataset_id, generation, row_count)?;
     Ok(())
 }
 
@@ -761,5 +731,122 @@ mod tests {
             .expect("collect anchors");
         assert_eq!(anchor_rows.first(), Some(&1));
         assert!(anchor_rows.len() <= 6);
+    }
+
+    #[test]
+    fn compact_row_mutation_delete_uses_bounded_anchor_navigation() {
+        let production = include_str!("table_delta_mutation.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let deletion = production
+            .split("pub(crate) fn delete_rows_compact")
+            .nth(1)
+            .expect("compact delete")
+            .split("pub(crate) fn apply_row_delta_change_set")
+            .next()
+            .expect("compact delete section");
+
+        assert!(!deletion.contains("row_number()"));
+        assert!(deletion.contains("resolve_natural_row_positions"));
+    }
+
+    #[test]
+    fn compact_row_mutation_reserves_monotonic_ids_from_metadata() {
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        db.seed_benchmark_table("compact-id-reserve", "Compact ID reserve", 3, 1)
+            .expect("seed");
+        let next_row_id: i64 = db
+            .conn()
+            .query_row(
+                "SELECT next_row_id FROM _meta_datasets WHERE id = ?",
+                params!["compact-id-reserve"],
+                |row| row.get(0),
+            )
+            .expect("maintained next row ID");
+        assert_eq!(next_row_id, 4);
+
+        let first =
+            add_rows_compact(&db, "compact-id-reserve", 2, None, 0).expect("first reservation");
+        let second =
+            add_rows_compact(&db, "compact-id-reserve", 2, None, 1).expect("second reservation");
+        assert_eq!(first.row_ids, vec![4, 5]);
+        assert_eq!(second.row_ids, vec![6, 7]);
+        let reserved_tail: i64 = db
+            .conn()
+            .query_row(
+                "SELECT next_row_id FROM _meta_datasets WHERE id = ?",
+                params!["compact-id-reserve"],
+                |row| row.get(0),
+            )
+            .expect("reserved tail");
+        assert_eq!(reserved_tail, 8);
+
+        let production = include_str!("table_delta_mutation.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let addition = production
+            .split("pub(crate) fn add_rows_compact")
+            .nth(1)
+            .expect("compact add")
+            .split("pub(crate) fn delete_rows_compact")
+            .next()
+            .expect("compact add section");
+        assert!(!addition.to_ascii_lowercase().contains("max(\"_row_id\")"));
+    }
+
+    #[test]
+    fn compact_row_mutation_controlled_rebuild_initializes_existing_id_metadata() {
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        db.seed_benchmark_table("compact-id-migrate", "Compact ID migrate", 4, 1)
+            .expect("seed");
+        db.conn()
+            .execute(
+                "UPDATE _meta_datasets SET next_row_id = NULL WHERE id = ?",
+                params!["compact-id-migrate"],
+            )
+            .expect("simulate legacy metadata");
+
+        db.rebuild_natural_anchors("compact-id-migrate", 0)
+            .expect("controlled rebuild");
+        let added =
+            add_rows_compact(&db, "compact-id-migrate", 1, None, 0).expect("post-migration add");
+        assert_eq!(added.row_ids, vec![5]);
+    }
+
+    #[test]
+    fn compact_row_mutation_controlled_rebuild_keeps_id_metadata_monotonic() {
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        db.seed_benchmark_table("compact-id-monotonic", "Compact ID monotonic", 3, 1)
+            .expect("seed");
+        let added =
+            add_rows_compact(&db, "compact-id-monotonic", 2, None, 0).expect("reserve 4 and 5");
+        assert_eq!(added.row_ids, vec![4, 5]);
+        delete_rows_compact(&db, "compact-id-monotonic", &[5], 1).expect("delete reserved tail");
+
+        db.rebuild_natural_anchors("compact-id-monotonic", 2)
+            .expect("controlled rebuild");
+        let next = add_rows_compact(&db, "compact-id-monotonic", 1, None, 2)
+            .expect("reserve after rebuild");
+        assert_eq!(next.row_ids, vec![6]);
+    }
+
+    #[test]
+    fn compact_row_mutation_restore_anchor_shift_is_additive() {
+        let production = include_str!("natural_row_order.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let restoration = production
+            .split("fn copy_restored_anchors_setwise")
+            .nth(1)
+            .expect("restore anchors")
+            .split("fn copy_deleted_anchors_setwise")
+            .next()
+            .expect("restore section");
+
+        assert!(!restoration.contains("SELECT count(*) FROM restored"));
+        assert!(restoration.contains("ASOF"));
     }
 }

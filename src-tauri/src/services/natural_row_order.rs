@@ -45,6 +45,14 @@ pub(crate) struct RowOrderAllocation {
     pub insertion_ordinal: i64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NaturalRowPosition {
+    pub row_id: i64,
+    pub row_order: Option<i128>,
+    pub order_key: i128,
+    pub ordinal: i64,
+}
+
 struct AllocationBoundary {
     predecessor_key: Option<i128>,
     target_key: Option<i128>,
@@ -461,6 +469,124 @@ pub(crate) fn publish_restored_anchors(
     )
 }
 
+pub(crate) fn resolve_natural_row_positions(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    generation: u64,
+    row_ids: &[i64],
+) -> Result<Vec<NaturalRowPosition>, AppError> {
+    let generation_i64 = generation_i64(generation)?;
+    let row_count: i64 = engine.conn().query_row(
+        "SELECT row_count FROM _meta_datasets WHERE id = ?",
+        params![dataset_id],
+        |row| row.get(0),
+    )?;
+    engine.validate_natural_anchor_manifest(dataset_id, generation_i64, row_count)?;
+    if row_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    let placeholders = std::iter::repeat_n("?", row_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let selected_sql = format!(
+        "SELECT \"_row_id\", \"_row_order\", {NATURAL_ORDER_SQL} AS order_key
+         FROM {table_name}
+         WHERE \"_row_id\" IN ({placeholders})"
+    );
+    let mut selected_statement = engine.conn().prepare(&selected_sql)?;
+    let mut selected = selected_statement
+        .query_map(params_from_iter(row_ids.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<i128>>(1)?,
+                row.get::<_, i128>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(selected_statement);
+    if selected.len() != row_ids.len() {
+        return Err(AppError::InvalidParam(
+            "one or more rows do not exist".into(),
+        ));
+    }
+    selected.sort_by_key(|row| (row.2, row.0));
+
+    let mut anchor_statement = engine.conn().prepare(
+        "SELECT ordinal, order_key, row_id
+         FROM _table_navigation_anchors
+         WHERE dataset_id = ? AND generation = ?
+         ORDER BY ordinal",
+    )?;
+    let anchors = anchor_statement
+        .query_map(params![dataset_id, generation_i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i128>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(anchor_statement);
+
+    let local_limit = i64::try_from(NATURAL_ANCHOR_STRIDE + 1)
+        .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
+    let mut positions = Vec::with_capacity(selected.len());
+    for (row_id, row_order, order_key) in selected {
+        let anchor_index =
+            anchors.partition_point(|anchor| (anchor.1, anchor.2) <= (order_key, row_id));
+        let anchor = anchor_index
+            .checked_sub(1)
+            .and_then(|index| anchors.get(index))
+            .ok_or_else(|| {
+                AppError::InvalidParam(format!(
+                    "source anchors do not cover row {row_id} in dataset {dataset_id}"
+                ))
+            })?;
+        let local_sql = format!(
+            "SELECT count(*) FROM (
+                 SELECT 1
+                 FROM {table_name}
+                 WHERE ({NATURAL_ORDER_SQL} > ?
+                        OR ({NATURAL_ORDER_SQL} = ? AND \"_row_id\" >= ?))
+                   AND ({NATURAL_ORDER_SQL} < ?
+                        OR ({NATURAL_ORDER_SQL} = ? AND \"_row_id\" <= ?))
+                 ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+                 LIMIT ?
+             ) AS bounded_rows"
+        );
+        let local_count: i64 = engine.conn().query_row(
+            &local_sql,
+            params![
+                anchor.1,
+                anchor.1,
+                anchor.2,
+                order_key,
+                order_key,
+                row_id,
+                local_limit
+            ],
+            |row| row.get(0),
+        )?;
+        if local_count <= 0 || local_count >= local_limit {
+            return Err(AppError::InvalidParam(format!(
+                "row {row_id} is outside its bounded anchor window"
+            )));
+        }
+        positions.push(NaturalRowPosition {
+            row_id,
+            row_order,
+            order_key,
+            ordinal: anchor
+                .0
+                .checked_add(local_count - 1)
+                .ok_or_else(|| AppError::InvalidParam("row ordinal overflowed".into()))?,
+        });
+    }
+    positions.sort_by_key(|position| position.ordinal);
+    Ok(positions)
+}
+
 fn validate_inserted_rows(
     engine: &DuckDbEngine,
     table_name: &str,
@@ -625,8 +751,9 @@ fn validate_source_anchor_generation(
             .ok_or_else(|| AppError::InvalidParam("source row count overflowed".into()))?,
         AnchorMutation::Restore { restored } => row_count
             .checked_sub(
-                i64::try_from(restored.len())
-                    .map_err(|_| AppError::InvalidParam("restored row count is too large".into()))?,
+                i64::try_from(restored.len()).map_err(|_| {
+                    AppError::InvalidParam("restored row count is too large".into())
+                })?,
             )
             .ok_or_else(|| AppError::InvalidParam("restored row count exceeds dataset".into()))?,
     };
@@ -690,7 +817,7 @@ fn copy_restored_anchors_setwise(
     restored: &[(i64, i128, i64)],
 ) -> Result<(), AppError> {
     let placeholders = if restored.is_empty() {
-        "SELECT NULL::BIGINT AS ordinal, NULL::BIGINT AS restored_rank WHERE FALSE".to_string()
+        "SELECT NULL::BIGINT AS threshold, NULL::BIGINT AS shift WHERE FALSE".to_string()
     } else {
         std::iter::repeat_n("(?, ?)", restored.len())
             .collect::<Vec<_>>()
@@ -698,8 +825,12 @@ fn copy_restored_anchors_setwise(
     };
     let mut values = Vec::with_capacity(restored.len() * 2 + 4);
     for (rank, row) in restored.iter().enumerate() {
-        values.push(Value::BigInt(row.2));
-        values.push(Value::BigInt(i64::try_from(rank).map_err(|_| {
+        let rank = i64::try_from(rank)
+            .map_err(|_| AppError::InvalidParam("restored row count is too large".into()))?;
+        values.push(Value::BigInt(row.2.checked_sub(rank).ok_or_else(|| {
+            AppError::InvalidParam("restored row threshold underflowed".into())
+        })?));
+        values.push(Value::BigInt(rank.checked_add(1).ok_or_else(|| {
             AppError::InvalidParam("restored row count is too large".into())
         })?));
     }
@@ -710,19 +841,22 @@ fn copy_restored_anchors_setwise(
         Value::BigInt(source_generation),
     ]);
     let sql = format!(
-        "WITH restored(ordinal, restored_rank) AS ({values_sql})
+        "WITH restored_values(threshold, shift) AS ({values_sql}),
+              restored AS (
+                  SELECT threshold, max(shift) AS shift
+                  FROM restored_values
+                  GROUP BY threshold
+              )
          INSERT INTO _table_navigation_anchors
          (dataset_id, generation, ordinal, order_key, row_id)
          SELECT ?, ?,
-                source.ordinal + (
-                    SELECT count(*) FROM restored
-                    WHERE ordinal - restored_rank <= source.ordinal
-                ),
+                source.ordinal + COALESCE(restored.shift, 0),
                 COALESCE(rows.\"_row_order\",
                     CAST(rows.\"_row_id\" AS HUGEINT)
                         * 18446744073709551616::HUGEINT),
                 source.row_id
          FROM _table_navigation_anchors AS source
+         ASOF LEFT JOIN restored ON source.ordinal >= restored.threshold
          JOIN {table_name} AS rows ON rows.\"_row_id\" = source.row_id
          WHERE source.dataset_id = ? AND source.generation = ?",
         values_sql = if restored.is_empty() {
