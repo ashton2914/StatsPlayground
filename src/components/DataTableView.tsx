@@ -1088,6 +1088,7 @@ export function DataTableView({
   const logicalStartRef = useRef(0);
   const windowCacheRef = useRef<TableWindowCache | null>(null);
   const requestEpochRef = useRef<RequestEpoch | null>(null);
+  const queryRefreshEffectEpochRef = useRef(0);
   const pendingWindowsRef = useRef<Set<string>>(new Set());
   const pendingPrefetchRequestsRef = useRef<ScheduledTableNavigationRequest[]>([]);
   const columnDescriptorsRef = useRef<ColumnDescriptor[]>([]);
@@ -1935,6 +1936,8 @@ export function DataTableView({
         windowStartRef.current,
         Math.max(0, authoritative.rowCount - 1),
       );
+      logicalStartRef.current = desiredStart;
+      setLogicalStart(desiredStart);
       try {
         await load(
           tableFiltersRef.current,
@@ -2264,11 +2267,35 @@ export function DataTableView({
     if (!preserveLogicalEnd) {
       logicalEndFollowContextRef.current = null;
     }
-    void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
-    const nextStart = preserveLogicalEnd ? windowStartRef.current : 0;
-    logicalStartRef.current = preserveLogicalEnd ? maxLogicalStartRef.current : 0;
-    setLogicalStart(logicalStartRef.current);
-    void load(tableFilters, nextStart);
+    const effectEpoch = ++queryRefreshEffectEpochRef.current;
+    let disposed = false;
+    const isCurrentEffect = () => (
+      !disposed
+      && queryRefreshEffectEpochRef.current === effectEpoch
+      && currentDatasetIdRef.current === datasetId
+      && generationRef.current === datasetGeneration
+    );
+    void (async () => {
+      try {
+        await invalidateScheduledNavigation({
+          datasetId,
+          generation: datasetGeneration,
+        });
+      } catch (error) {
+        if (!isCurrentEffect()) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setErrorMsg(`Table refresh failed: ${message}`);
+        return;
+      }
+      if (!isCurrentEffect()) return;
+      const nextStart = preserveLogicalEnd ? windowStartRef.current : 0;
+      logicalStartRef.current = preserveLogicalEnd ? maxLogicalStartRef.current : 0;
+      setLogicalStart(logicalStartRef.current);
+      void load(tableFilters, nextStart);
+    })();
+    return () => {
+      disposed = true;
+    };
   }, [
     datasetGeneration,
     datasetId,

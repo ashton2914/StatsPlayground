@@ -206,6 +206,7 @@ interface LogicalTableNavigationHarnessProps {
   rejectCancelledNavigation?: boolean;
   staleAddRowsOnce?: boolean;
   failNavigationInvalidation?: boolean;
+  failDeferredQueryInvalidation?: boolean;
   failSessionRelease?: boolean;
   failMutationReload?: boolean;
   failDatasetRefresh?: boolean;
@@ -234,6 +235,7 @@ export function LogicalTableNavigationHarness({
   rejectCancelledNavigation = false,
   staleAddRowsOnce = false,
   failNavigationInvalidation = false,
+  failDeferredQueryInvalidation = false,
   failSessionRelease = false,
   failMutationReload = false,
   failDatasetRefresh = false,
@@ -510,7 +512,7 @@ export function LogicalTableNavigationHarness({
       ]);
       if (request.start > 0) {
         await new Promise<void>((resolve, reject) => {
-          const navigationDelayMs = failNavigationInvalidation
+          const navigationDelayMs = failNavigationInvalidation || failDeferredQueryInvalidation
             ? WINDOW_DELAY_MS * 5
             : delayDatasetRefresh
               ? WINDOW_DELAY_MS * 1.5
@@ -608,7 +610,10 @@ export function LogicalTableNavigationHarness({
     };
     dataService.cancelTableNavigationRequest = async (requestId) => {
       setCancelAttempts((current) => current + 1);
-      if (failNavigationInvalidation) {
+      if (
+        failNavigationInvalidation
+        || (failDeferredQueryInvalidation && filterModeRef.current !== initialFilterMode)
+      ) {
         throw new Error("scheduled navigation invalidation failed");
       }
       const cancelledStart = navigationRequestStartsByIdRef.current.get(requestId);
@@ -790,9 +795,11 @@ export function LogicalTableNavigationHarness({
     delayDatasetRefresh,
     delayMutationDescriptors,
     failDatasetRefresh,
+    failDeferredQueryInvalidation,
     failMutationReload,
     failNavigationInvalidation,
     failSessionRelease,
+    initialFilterMode,
     rejectCancelledNavigation,
     reportZeroColumnsOnDelete,
     rowCount,

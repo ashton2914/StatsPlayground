@@ -243,6 +243,48 @@ test("retains committed mutation state when current-window reload fails", async 
   await expect(component.locator(".sp-ctx-menu")).toHaveCount(0);
 });
 
+test("surfaces deferred query invalidation failure without an unhandled rejection", async ({ mount, page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const component = await mount(
+    <LogicalTableNavigationHarness
+      rowCount={1_000}
+      delayMutationDescriptors
+      failDeferredQueryInvalidation
+      rejectCancelledNavigation
+    />,
+  );
+
+  await component.locator(".sp-corner").click({ button: "right" });
+  await component.locator(".sp-ctx-menu .sp-ctx-item").first().click();
+  await expect(component.getByTestId("dataset-generation")).toHaveText("2");
+  await expect.poll(async () => readJson<TableWindowRequest[]>(
+    await component.getByTestId("table-window-requests").textContent(),
+  ).some((request) => request.generation === 2)).toBe(true);
+  await component.getByTestId("apply-ev-filter").click();
+  await component.getByTestId("apply-ev-filter").click();
+  await expect(component.getByTestId("cancel-attempts")).toHaveText("2");
+  await expect(component.locator(".sp-toast-error")).toContainText(
+    "Table refresh failed: scheduled navigation invalidation failed",
+  );
+  expect(pageErrors).toEqual([]);
+  await expectCommittedAppend(component);
+  await expect(component.getByTestId("dataset-row-count")).toHaveText("1001");
+  await expect(component.getByTestId("refresh-datasets-calls")).toHaveText("0");
+  expect(readJson<TableWindowRequest[]>(
+    await component.getByTestId("table-window-requests").textContent(),
+  ).filter((request) => request.generation === 2)).toEqual([
+    { start: 0, generation: 2 },
+  ]);
+
+  await component.locator(".sp-toast-error button").click();
+  await component.getByTestId("apply-sort-desc").click();
+  await expect(component.locator('[data-viewport-slot="0"]')).toContainText("sort-desc-row");
+  await expect.poll(async () => readJson<AddRowsRequest[]>(
+    await component.getByTestId("add-rows-requests").textContent(),
+  )).toHaveLength(1);
+});
+
 test("add and delete columns use the same result-driven metadata path", async ({ mount }) => {
   const added = await mount(<LogicalTableNavigationHarness rowCount={20} columnCount={3} />);
 
