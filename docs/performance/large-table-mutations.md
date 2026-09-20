@@ -2,7 +2,8 @@
 
 The native performance harness qualifies the production compact row and column
 mutation paths against a fixture of exactly 2,000,000 rows and eight physical
-columns. Mutation qualification rejects any other row count.
+columns. Mutation qualification rejects any other row count, column count,
+measured-sample count, or warmup count.
 
 ## Run policy
 
@@ -15,10 +16,14 @@ cargo run --manifest-path src-tauri/Cargo.toml --release \
 ```
 
 Replace `append-row` with `insert-middle-row`, `add-column`, `delete-rows`,
-or `delete-column`. Each invocation performs one unreported warmup and five
-measured samples on independently seeded fixtures. `medianMs` and `maxMs` are
+or `delete-column`. The parent launches one warmup child process and five
+measured child processes via `current_exe`; every child seeds one fixture,
+runs one production mutation/reload, emits one sample, and exits. The parent
+rejects repeated PIDs, child failures, or source/build/platform provenance
+mismatches. Each sample records its PID and role. `medianMs` and `maxMs` are
 reported; five samples are not labeled P95. `maxMs`, not the median, is the
-qualification value.
+qualification value. Mutation mode fixes `--runs` at 5; other harness
+operations retain their one-run default.
 
 The example target is required. Running the package binary without
 `--example performance_baseline` starts the Tauri desktop application rather
@@ -26,15 +31,29 @@ than the CLI harness.
 
 ## Metrics
 
-- `mutationMs`, `historyMs`, `anchorMs`, and `metadataMs` are median native
-  timings observed at production compact-mutation phase boundaries.
-- `reloadMs` is the median production current-window reload.
+- Mutation qualification is nested under `mutationQualification`; it is not
+  flattened into the common report, so JSON keys are unambiguous.
+- `mutationMs`, `historyMs`, `anchorMs`, `metadataMs`, and `reloadMs` are
+  independently aggregated medians. Their corresponding `*MaxMs` fields are
+  independent maxima. Phase statistics are not additive and must not be
+  summed to reconstruct `medianMs` or `maxMs`.
+- Production phase spans are disjoint: mutation covers the physical row/schema
+  mutation; history covers schema capture and compact delta/snapshot writes;
+  anchor covers natural-order allocation/resolution and sparse-anchor
+  publication/copy; metadata covers row/column counts and generation
+  publication; reload covers the production current-window query.
+- `totalWallMs` additionally includes transaction begin/commit, generation
+  validation/fencing, descriptor/dependency resolution, orchestration between
+  measured spans, memory-sampler startup/join, and other production work not
+  assigned to a phase. Fixture setup and post-run structural audits are
+  excluded from `totalWallMs`.
 - Each `samples[]` entry contains `totalWallMs`, all phase timings, DuckDB
   retained memory before/after, and whole-process RSS baseline/peak/delta.
 - `processMemoryMethod` identifies the platform RSS API.
 - `setupMs` is fixture creation and is excluded from the mutation threshold.
 - Structural fields must show no `_history_full_before_*` table, no full anchor
-  rebuild, no full-table row update, at most 8,192 locally rebalanced rows,
+  rebuild, no observed unbounded/global row-order update affecting at least
+  90% of the dataset, at most 8,192 locally rebalanced rows,
   valid sparse anchor/manifest state, and the expected compact delta snapshot.
 - `memoryNearDoubling` fails when retained memory or RSS reaches at least 1.8×
   its pre-mutation baseline.
@@ -44,7 +63,11 @@ Thresholds are append row 1,000 ms; middle insert 2,000 ms; add empty column
 Any timing, memory, fixture, or structural failure sets
 `qualificationPassed = false` and makes the harness exit unsuccessfully.
 
-## Baseline: 2026-09-21
+## Superseded initial baseline
+
+The figures below came from the initial same-process sampler and are retained
+only for historical comparison. They are not current qualification evidence;
+the fix-round independent-process baseline follows after source freeze.
 
 Source commit: `8f60b4e88da056e3bd7eafa08944b4f9fae2152e`  
 Profile: release  

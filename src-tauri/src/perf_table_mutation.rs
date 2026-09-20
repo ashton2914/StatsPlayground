@@ -53,6 +53,7 @@ fn execute_table_mutation_sample(
 
     reset_full_anchor_rebuild_counter();
     reset_rebalanced_rows();
+    reset_full_table_row_updates();
     reset_table_mutation_perf_metrics();
     let total_started = Instant::now();
     let service = DataService::new(&state);
@@ -252,6 +253,19 @@ fn execute_table_mutation_sample(
     };
 
     Ok(TableMutationSampleReport {
+        process_id: std::process::id(),
+        sample_kind: std::env::var("STATSPLAYGROUND_MUTATION_SAMPLE_KIND")
+            .unwrap_or_else(|_| "direct".into()),
+        source_commit: source_commit()?,
+        build_profile: if cfg!(debug_assertions) {
+            "debug".into()
+        } else {
+            "release".into()
+        },
+        machine: {
+            let db = DuckDbEngine::new_in_memory()?;
+            machine_report(duckdb_version(&db))
+        },
         setup_ms,
         mutation_ms: u128::from(phase_metrics.mutation_ns).div_ceil(1_000_000),
         history_ms: u128::from(phase_metrics.history_ns).div_ceil(1_000_000),
@@ -261,7 +275,7 @@ fn execute_table_mutation_sample(
         total_wall_ms,
         full_snapshot_tables,
         full_anchor_rebuilds: full_anchor_rebuild_counter(),
-        full_table_row_updates: 0,
+        full_table_row_updates: full_table_row_updates(),
         rebalanced_rows: rebalanced_rows(),
         sparse_anchor_integrity,
         compact_snapshot_shape,
@@ -288,6 +302,90 @@ fn source_commit() -> Result<String, AppError> {
         .map_err(|error| AppError::FileIO(error.to_string()))
 }
 
+fn validate_distinct_child_processes(process_ids: &[u32]) -> Result<(), AppError> {
+    let unique = process_ids.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    if unique.len() != process_ids.len() {
+        return Err(AppError::Stats(
+            "mutation qualification samples did not use distinct child processes".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn structural_qualification_failures(
+    full_snapshot_tables: usize,
+    full_anchor_rebuilds: usize,
+    full_table_row_updates: usize,
+    rebalanced_rows: usize,
+    sparse_anchor_integrity: bool,
+    compact_snapshot_shape: bool,
+    inserted_precedes_target: Option<bool>,
+    memory_near_doubling: bool,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (count, label) in [
+        (full_snapshot_tables, "full history snapshots"),
+        (full_anchor_rebuilds, "full anchor rebuilds"),
+        (full_table_row_updates, "full-table row updates"),
+    ] {
+        if count != 0 {
+            failures.push(format!("{count} {label} observed"));
+        }
+    }
+    if rebalanced_rows > 8_192 {
+        failures.push(format!("local rebalance touched {rebalanced_rows} rows, exceeding 8192"));
+    }
+    if !sparse_anchor_integrity {
+        failures.push("sparse anchor manifest integrity failed".into());
+    }
+    if !compact_snapshot_shape {
+        failures.push("compact history snapshot shape failed".into());
+    }
+    if inserted_precedes_target == Some(false) {
+        failures.push("middle insertion did not precede its target".into());
+    }
+    if memory_near_doubling {
+        failures.push("retained or process memory approached dataset-copy doubling".into());
+    }
+    failures
+}
+
+fn launch_table_mutation_child(
+    operation: Operation,
+    rows: usize,
+    columns: usize,
+    sample_kind: &str,
+) -> Result<TableMutationSampleReport, AppError> {
+    let operation_arg = serde_json::to_value(operation)
+        .map_err(|error| AppError::Stats(error.to_string()))?
+        .as_str()
+        .ok_or_else(|| AppError::Stats("mutation operation did not serialize as text".into()))?
+        .replace('_', "-");
+    let output = std::process::Command::new(
+        std::env::current_exe().map_err(|error| AppError::FileIO(error.to_string()))?,
+    )
+    .args([
+        "--mutation-child",
+        "--rows",
+        &rows.to_string(),
+        "--columns",
+        &columns.to_string(),
+        "--operation",
+        &operation_arg,
+    ])
+    .env("STATSPLAYGROUND_MUTATION_SAMPLE_KIND", sample_kind)
+    .output()
+    .map_err(|error| AppError::FileIO(error.to_string()))?;
+    if !output.status.success() {
+        return Err(AppError::Stats(format!(
+            "mutation child failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| AppError::Stats(format!("invalid mutation child report: {error}")))
+}
+
 fn execute_table_mutation_qualification(
     operation: Operation,
     rows: usize,
@@ -295,17 +393,43 @@ fn execute_table_mutation_qualification(
     sample_count: usize,
     warmup_count: usize,
 ) -> Result<TableMutationPerformanceReport, AppError> {
-    if !operation.is_table_mutation() || sample_count == 0 {
+    if !operation.is_table_mutation()
+        || rows != 2_000_000
+        || columns != 8
+        || sample_count != 5
+        || warmup_count != 1
+    {
         return Err(AppError::InvalidParam(
-            "table mutation qualification requires a mutation and at least one sample".into(),
+            "mutation qualification protocol requires 2000000 rows, 8 columns, 5 samples, and 1 warmup".into(),
         ));
     }
-    for _ in 0..warmup_count {
-        execute_table_mutation_sample(operation, rows, columns)?;
-    }
+    let parent_commit = source_commit()?;
+    let parent_profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let warmup_sample = launch_table_mutation_child(operation, rows, columns, "warmup")?;
     let mut samples = Vec::with_capacity(sample_count);
-    for _ in 0..sample_count {
-        samples.push(execute_table_mutation_sample(operation, rows, columns)?);
+    for index in 0..sample_count {
+        samples.push(launch_table_mutation_child(
+            operation,
+            rows,
+            columns,
+            &format!("measured-{}", index + 1),
+        )?);
+    }
+    let all_samples = std::iter::once(&warmup_sample).chain(samples.iter()).collect::<Vec<_>>();
+    validate_distinct_child_processes(
+        &all_samples.iter().map(|sample| sample.process_id).collect::<Vec<_>>(),
+    )?;
+    let parent_machine = all_samples[0].machine.clone();
+    let parent_machine_json = serde_json::to_value(&parent_machine)
+        .map_err(|error| AppError::Stats(error.to_string()))?;
+    if all_samples.iter().any(|sample| {
+        sample.source_commit != parent_commit
+            || sample.build_profile != parent_profile
+            || serde_json::to_value(&sample.machine).ok().as_ref() != Some(&parent_machine_json)
+    }) {
+        return Err(AppError::Stats(
+            "mutation child provenance does not match parent provenance".into(),
+        ));
     }
     let total_wall_ms = samples
         .iter()
@@ -317,6 +441,9 @@ fn execute_table_mutation_qualification(
         median(&samples.iter().map(select).collect::<Vec<_>>()).unwrap_or_default()
     };
     let max_of = |select: fn(&TableMutationSampleReport) -> usize| {
+        samples.iter().map(select).max().unwrap_or_default()
+    };
+    let max_timing = |select: fn(&TableMutationSampleReport) -> u128| {
         samples.iter().map(select).max().unwrap_or_default()
     };
     let inserted_precedes_target = (operation == Operation::InsertMiddleRow).then(|| {
@@ -336,15 +463,20 @@ fn execute_table_mutation_qualification(
     });
     Ok(TableMutationPerformanceReport {
         mutation_ms: stage_median(|sample| sample.mutation_ms),
+        mutation_max_ms: max_timing(|sample| sample.mutation_ms),
         history_ms: stage_median(|sample| sample.history_ms),
+        history_max_ms: max_timing(|sample| sample.history_ms),
         anchor_ms: stage_median(|sample| sample.anchor_ms),
+        anchor_max_ms: max_timing(|sample| sample.anchor_ms),
         metadata_ms: stage_median(|sample| sample.metadata_ms),
+        metadata_max_ms: max_timing(|sample| sample.metadata_ms),
         reload_ms: median(
             &samples
                 .iter()
                 .filter_map(|sample| sample.reload_ms)
                 .collect::<Vec<_>>(),
         ),
+        reload_max_ms: samples.iter().filter_map(|sample| sample.reload_ms).max(),
         median_ms,
         max_ms: total_wall_ms.iter().copied().max().unwrap_or(median_ms),
         threshold_ms: operation
@@ -352,6 +484,7 @@ fn execute_table_mutation_qualification(
             .ok_or_else(|| AppError::InvalidParam("missing mutation threshold".into()))?,
         sample_count,
         warmup_count,
+        warmup_sample: Box::new(warmup_sample),
         full_snapshot_tables: max_of(|sample| sample.full_snapshot_tables),
         full_anchor_rebuilds: max_of(|sample| sample.full_anchor_rebuilds),
         full_table_row_updates: max_of(|sample| sample.full_table_row_updates),
@@ -360,8 +493,8 @@ fn execute_table_mutation_qualification(
         compact_snapshot_shape: samples.iter().all(|sample| sample.compact_snapshot_shape),
         inserted_precedes_target,
         memory_near_doubling,
-        source_commit: source_commit()?,
-        build_profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+        source_commit: parent_commit,
+        build_profile: parent_profile,
         process_memory_method: process_memory_method(),
         samples,
     })
@@ -381,39 +514,21 @@ fn execute_table_mutation_report(options: Options) -> Result<PerformanceReport, 
         options.runs,
         1,
     )?;
-    let mut failures = Vec::new();
+    let mut failures = structural_qualification_failures(
+        table_mutation.full_snapshot_tables,
+        table_mutation.full_anchor_rebuilds,
+        table_mutation.full_table_row_updates,
+        table_mutation.rebalanced_rows,
+        table_mutation.sparse_anchor_integrity,
+        table_mutation.compact_snapshot_shape,
+        table_mutation.inserted_precedes_target,
+        table_mutation.memory_near_doubling,
+    );
     if table_mutation.max_ms > table_mutation.threshold_ms {
         failures.push(format!(
             "maximum wall {} ms exceeds {} ms threshold",
             table_mutation.max_ms, table_mutation.threshold_ms
         ));
-    }
-    for (count, label) in [
-        (table_mutation.full_snapshot_tables, "full history snapshots"),
-        (table_mutation.full_anchor_rebuilds, "full anchor rebuilds"),
-        (table_mutation.full_table_row_updates, "full-table row updates"),
-    ] {
-        if count != 0 {
-            failures.push(format!("{count} {label} observed"));
-        }
-    }
-    if table_mutation.rebalanced_rows > 8_192 {
-        failures.push(format!(
-            "local rebalance touched {} rows, exceeding 8192",
-            table_mutation.rebalanced_rows
-        ));
-    }
-    if !table_mutation.sparse_anchor_integrity {
-        failures.push("sparse anchor manifest integrity failed".into());
-    }
-    if !table_mutation.compact_snapshot_shape {
-        failures.push("compact history snapshot shape failed".into());
-    }
-    if table_mutation.inserted_precedes_target == Some(false) {
-        failures.push("middle insertion did not precede its target".into());
-    }
-    if table_mutation.memory_near_doubling {
-        failures.push("retained or process memory approached dataset-copy doubling".into());
     }
     let qualification_failure = (!failures.is_empty()).then(|| failures.join("; "));
     let runs_ms = table_mutation

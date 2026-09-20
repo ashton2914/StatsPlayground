@@ -37,7 +37,10 @@ use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
 use crate::services::graph_new_lod::GraphCamera;
 use crate::services::graph_new_service::GraphNewService;
-use crate::services::natural_row_order::{rebalanced_rows, reset_rebalanced_rows};
+use crate::services::natural_row_order::{
+    full_table_row_updates, observe_row_order_update, rebalanced_rows,
+    reset_full_table_row_updates, reset_rebalanced_rows,
+};
 use crate::services::project_service::{seed_save_project, ProjectService};
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
@@ -174,23 +177,32 @@ struct PerformanceReport {
     machine: Option<MachineReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tabulate: Option<TabulatePerformanceReport>,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "mutationQualification",
+        skip_serializing_if = "Option::is_none"
+    )]
     table_mutation: Option<TableMutationPerformanceReport>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TableMutationPerformanceReport {
     mutation_ms: u128,
+    mutation_max_ms: u128,
     history_ms: u128,
+    history_max_ms: u128,
     anchor_ms: u128,
+    anchor_max_ms: u128,
     metadata_ms: u128,
+    metadata_max_ms: u128,
     reload_ms: Option<u128>,
+    reload_max_ms: Option<u128>,
     median_ms: u128,
     max_ms: u128,
     threshold_ms: u128,
     sample_count: usize,
     warmup_count: usize,
+    warmup_sample: Box<TableMutationSampleReport>,
     samples: Vec<TableMutationSampleReport>,
     full_snapshot_tables: usize,
     full_anchor_rebuilds: usize,
@@ -205,9 +217,14 @@ struct TableMutationPerformanceReport {
     process_memory_method: Option<&'static str>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TableMutationSampleReport {
+    process_id: u32,
+    sample_kind: String,
+    source_commit: String,
+    build_profile: String,
+    machine: MachineReport,
     setup_ms: u128,
     mutation_ms: u128,
     history_ms: u128,
@@ -507,7 +524,7 @@ struct SaveStageReport {
     replacement: u128,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProcessMemoryReport {
     baseline_working_set_bytes: u64,
@@ -515,7 +532,7 @@ struct ProcessMemoryReport {
     delta_working_set_bytes: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MachineReport {
     os: String,
@@ -789,11 +806,12 @@ where
         graph_new_csv: None,
         graph_new_axis: None,
         chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
-        runs: 5,
+        runs: 1,
         position_percent: None,
         payload_stdout: false,
     };
     let mut args = args.into_iter();
+    let mut runs_explicit = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--graph-new-axis" => {
@@ -812,7 +830,10 @@ where
             "--rows" => options.rows = parse_positive_usize(&flag, args.next())?,
             "--columns" => options.columns = parse_positive_usize(&flag, args.next())?,
             "--chain-depth" => options.chain_depth = parse_positive_usize(&flag, args.next())?,
-            "--runs" => options.runs = parse_positive_usize(&flag, args.next())?,
+            "--runs" => {
+                options.runs = parse_positive_usize(&flag, args.next())?;
+                runs_explicit = true;
+            }
             "--position-percent" => {
                 options.position_percent = Some(parse_position_percent(&flag, args.next())?);
             }
@@ -895,15 +916,20 @@ where
             "--payload-stdout is only valid with table-navigation".into(),
         ));
     }
-    if options.operation.is_table_mutation() && options.rows != 2_000_000 {
+    if options.operation.is_table_mutation()
+        && (options.rows != 2_000_000 || options.columns != 8)
+    {
         return Err(AppError::InvalidParam(
-            "table mutation qualification requires exactly 2000000 rows".into(),
+            "table mutation qualification requires exactly 2000000 rows and 8 columns".into(),
         ));
     }
-    if options.operation.is_table_mutation() && options.runs < 3 {
-        return Err(AppError::InvalidParam(
-            "table mutation qualification requires at least 3 measured samples".into(),
-        ));
+    if options.operation.is_table_mutation() {
+        if runs_explicit && options.runs != 5 {
+            return Err(AppError::InvalidParam(
+                "table mutation qualification requires exactly 5 measured samples".into(),
+            ));
+        }
+        options.runs = 5;
     }
 
     Ok(options)
@@ -3359,7 +3385,28 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 }
 
 pub fn run_cli() -> Result<(), String> {
-    let options = parse_args(std::env::args().skip(1)).map_err(|error| error.to_string())?;
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mutation_child = args
+        .iter()
+        .position(|argument| argument == "--mutation-child")
+        .map(|index| {
+            args.remove(index);
+        })
+        .is_some();
+    let options = parse_args(args).map_err(|error| error.to_string())?;
+    if mutation_child {
+        let sample = execute_table_mutation_sample(
+            options.operation,
+            options.rows,
+            options.columns,
+        )
+        .map_err(|error| error.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string(&sample).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
     let payload_stdout = options.payload_stdout;
     if let Some((source, artifacts)) = &options.graph_new_csv {
         let report = execute_graph_new_csv(source, artifacts, options.graph_new_axis.as_ref()).map_err(|error| error.to_string())?;
@@ -3703,7 +3750,15 @@ mod tests {
             "delete-column",
         ] {
             let options = parse_args(
-                ["--rows", "2000000", "--operation", operation].map(String::from),
+                [
+                    "--rows",
+                    "2000000",
+                    "--columns",
+                    "8",
+                    "--operation",
+                    operation,
+                ]
+                .map(String::from),
             )
             .unwrap_or_else(|error| panic!("{operation} must parse: {error}"));
             assert_eq!(
@@ -3720,6 +3775,72 @@ mod tests {
         )
         .expect_err("qualification must reject an undersized fixture");
         assert!(error.to_string().contains("exactly 2000000 rows"));
+    }
+
+    #[test]
+    fn non_mutation_cli_preserves_single_run_default() {
+        let options = parse_args(["--operation", "query"].map(String::from)).expect("query");
+        assert_eq!(options.runs, 1);
+    }
+
+    #[test]
+    fn table_mutation_cli_enforces_fixed_columns_and_samples() {
+        for args in [
+            vec!["--rows", "2000000", "--columns", "7", "--operation", "append-row"],
+            vec![
+                "--rows",
+                "2000000",
+                "--columns",
+                "8",
+                "--runs",
+                "4",
+                "--operation",
+                "append-row",
+            ],
+        ] {
+            assert!(parse_args(args.into_iter().map(String::from)).is_err());
+        }
+        let options = parse_args(
+            ["--rows", "2000000", "--columns", "8", "--operation", "append-row"]
+                .map(String::from),
+        )
+        .expect("fixed mutation protocol");
+        assert_eq!(options.runs, 5);
+    }
+
+    #[test]
+    fn table_mutation_json_nests_qualification_without_flattening() {
+        let source = include_str!("perf_harness.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production harness");
+        assert!(!source.contains("#[serde(flatten, skip_serializing_if"));
+        assert!(source.contains("rename = \"mutationQualification\""));
+    }
+
+    #[test]
+    fn duplicate_child_processes_are_rejected() {
+        assert!(validate_distinct_child_processes(&[41, 42, 42, 43, 44, 45]).is_err());
+        assert!(validate_distinct_child_processes(&[41, 42, 43, 44, 45, 46]).is_ok());
+    }
+
+    #[test]
+    fn observed_full_table_row_update_fails_structure() {
+        reset_full_table_row_updates();
+        observe_row_order_update(2_000_000, 2_000_000, false);
+        let failures = structural_qualification_failures(
+            0,
+            0,
+            full_table_row_updates(),
+            0,
+            true,
+            true,
+            None,
+            false,
+        );
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("full-table row updates")));
     }
 
     #[test]
@@ -3784,21 +3905,16 @@ mod tests {
 
     #[test]
     fn table_mutation_harness_serializes_sample_statistics_and_provenance() {
-        let report = execute_table_mutation_qualification(Operation::AppendRow, 64, 8, 2, 1)
-            .expect("small qualification contract run");
+        let report =
+            execute_table_mutation_sample(Operation::AppendRow, 64, 8).expect("small sample");
         let payload = serde_json::to_value(report).expect("serialize report");
 
-        assert_eq!(payload["sampleCount"], 2);
-        assert_eq!(payload["warmupCount"], 1);
-        assert_eq!(payload["thresholdMs"], 1_000);
-        assert_eq!(payload["samples"].as_array().map(Vec::len), Some(2));
-        assert!(payload["medianMs"].as_u64().is_some());
-        assert!(payload["maxMs"].as_u64().is_some());
+        assert_eq!(payload["processId"], std::process::id());
         assert!(payload["sourceCommit"]
             .as_str()
             .is_some_and(|value| !value.is_empty()));
         assert!(payload["buildProfile"].as_str().is_some());
-        assert!(payload["processMemoryMethod"].as_str().is_some());
+        assert!(payload["machine"]["os"].as_str().is_some());
     }
 
     #[test]

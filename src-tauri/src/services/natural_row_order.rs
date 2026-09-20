@@ -22,6 +22,9 @@ static REPAIR_ROWS_EXAMINED: std::sync::atomic::AtomicUsize =
 #[cfg(any(test, feature = "perf-harness"))]
 static REBALANCED_ROWS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "perf-harness"))]
+static FULL_TABLE_ROW_UPDATES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(any(test, feature = "perf-harness"))]
 pub(crate) fn rebalanced_rows() -> usize {
@@ -31,6 +34,29 @@ pub(crate) fn rebalanced_rows() -> usize {
 #[cfg(any(test, feature = "perf-harness"))]
 pub(crate) fn reset_rebalanced_rows() {
     REBALANCED_ROWS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn full_table_row_updates() -> usize {
+    FULL_TABLE_ROW_UPDATES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn reset_full_table_row_updates() {
+    FULL_TABLE_ROW_UPDATES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn observe_row_order_update(
+    affected_rows: usize,
+    dataset_rows: usize,
+    bounded_local_rebalance: bool,
+) {
+    let near_dataset_size = dataset_rows > 0
+        && affected_rows.saturating_mul(10) >= dataset_rows.saturating_mul(9);
+    if !bounded_local_rebalance && near_dataset_size {
+        FULL_TABLE_ROW_UPDATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -311,7 +337,15 @@ fn rebalance_window(
         .copied()
         .collect::<Vec<_>>();
     #[cfg(any(test, feature = "perf-harness"))]
-    REBALANCED_ROWS.fetch_max(window_rows.len(), std::sync::atomic::Ordering::Relaxed);
+    {
+        REBALANCED_ROWS.fetch_max(window_rows.len(), std::sync::atomic::Ordering::Relaxed);
+        let dataset_rows: usize = engine.conn().query_row(
+            &format!("SELECT count(*) FROM {table_name}"),
+            [],
+            |row| row.get(0),
+        )?;
+        observe_row_order_update(window_rows.len(), dataset_rows, true);
+    }
     let relative_insertion = usize::try_from(insertion_ordinal - start)
         .map_err(|_| AppError::Database("rebalance insertion ordinal is outside window".into()))?;
     if relative_insertion > window_rows.len() {
