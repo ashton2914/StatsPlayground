@@ -497,6 +497,7 @@
       "graph-1": "Analysis"
     },
     "history": [],
+    "historyCurrentIdx": -1,
     "lineageGraph": {
       "edges": [
         {

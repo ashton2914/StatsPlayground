@@ -65,18 +65,39 @@ pub(crate) const NATURAL_ORDER_STRIDE: i128 = 1_i128 << 64;
 pub(crate) const NATURAL_ORDER_SQL: &str =
     "COALESCE(\"_row_order\", CAST(\"_row_id\" AS HUGEINT) * 18446744073709551616::HUGEINT)";
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+thread_local! {
+    static FULL_ANCHOR_REBUILD_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
 static FULL_ANCHOR_REBUILD_COUNTER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+pub(crate) fn full_anchor_rebuild_counter() -> usize {
+    FULL_ANCHOR_REBUILD_COUNTER.with(std::cell::Cell::get)
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
 pub(crate) fn full_anchor_rebuild_counter() -> usize {
     FULL_ANCHOR_REBUILD_COUNTER.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+pub(crate) fn reset_full_anchor_rebuild_counter() {
+    FULL_ANCHOR_REBUILD_COUNTER.with(|counter| counter.set(0));
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
 pub(crate) fn reset_full_anchor_rebuild_counter() {
     FULL_ANCHOR_REBUILD_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn record_full_anchor_rebuild() {
+    FULL_ANCHOR_REBUILD_COUNTER.with(|counter| counter.set(counter.get().saturating_add(1)));
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
+fn record_full_anchor_rebuild() {
+    FULL_ANCHOR_REBUILD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub(crate) struct DatasetReplacement {
@@ -792,7 +813,7 @@ impl DuckDbEngine {
         generation: u64,
     ) -> Result<(), AppError> {
         #[cfg(any(test, feature = "perf-harness"))]
-        FULL_ANCHOR_REBUILD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        record_full_anchor_rebuild();
 
         self.ensure_internal_row_order_column(dataset_id)?;
         let current_generation = self.get_dataset_generation(dataset_id)?;
@@ -5979,11 +6000,11 @@ impl DuckDbEngine {
                 )?;
 
                 if append_target_id.is_some() {
+                    self.bump_dataset_generation(&id)?;
                     self.conn.execute(
                     "UPDATE _meta_datasets SET row_count = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
                     params![row_count, id],
                 )?;
-                    self.bump_dataset_generation(&id)?;
                     let generation = self.get_dataset_generation(&id)?;
                     self.rebuild_natural_anchors(&id, generation)?;
                 } else {
@@ -8848,6 +8869,12 @@ impl DuckDbEngine {
         )],
         undo: bool,
     ) -> Result<(), AppError> {
+        if columns
+            .iter()
+            .any(|column| column.3.is_none() || !column.10)
+        {
+            return Ok(());
+        }
         let target_columns = columns
             .iter()
             .filter_map(
@@ -19376,7 +19403,6 @@ mod tests {
             db.get_dataset_generation("history-add-column-id").unwrap(),
             1
         );
-
         db.apply_change_set(&change_set_id, true).unwrap();
         assert_eq!(
             db.get_user_columns("history-add-column-id").unwrap(),
@@ -19763,6 +19789,11 @@ mod tests {
         assert_eq!(
             history_rows,
             vec![
+                (
+                    Some(existing_id.clone()),
+                    Some(existing_id.clone()),
+                    "existing".into(),
+                ),
                 (None, Some(predicted_id.clone()), "Predicted".into()),
                 (None, Some(residual_id.clone()), "Residual".into()),
             ]

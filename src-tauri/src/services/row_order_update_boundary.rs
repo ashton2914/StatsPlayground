@@ -5,9 +5,14 @@ use crate::engine::duckdb_engine::DuckDbEngine;
 use crate::engine::duckdb_engine::NATURAL_ORDER_SQL;
 use crate::error::AppError;
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+thread_local! {
+    static REBALANCED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FULL_TABLE_ROW_UPDATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(all(not(test), feature = "perf-harness"))]
 static REBALANCED_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(all(not(test), feature = "perf-harness"))]
 static FULL_TABLE_ROW_UPDATES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
@@ -90,29 +95,69 @@ fn observe_row_order_update(affected_rows: usize, scope: RowOrderUpdateScope) {
     let near_dataset_size =
         dataset_rows > 0 && affected_rows.saturating_mul(10) >= dataset_rows.saturating_mul(9);
     if bounded_local_rebalance {
-        REBALANCED_ROWS.fetch_add(affected_rows, std::sync::atomic::Ordering::Relaxed);
+        add_rebalanced_rows(affected_rows);
     }
     if !bounded_local_rebalance || near_dataset_size {
-        FULL_TABLE_ROW_UPDATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        add_full_table_row_update();
     }
 }
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+fn add_rebalanced_rows(rows: usize) {
+    REBALANCED_ROWS.with(|counter| counter.set(counter.get().saturating_add(rows)));
+}
+
+#[cfg(all(not(test), feature = "perf-harness"))]
+fn add_rebalanced_rows(rows: usize) {
+    REBALANCED_ROWS.fetch_add(rows, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn add_full_table_row_update() {
+    FULL_TABLE_ROW_UPDATES.with(|counter| counter.set(counter.get().saturating_add(1)));
+}
+
+#[cfg(all(not(test), feature = "perf-harness"))]
+fn add_full_table_row_update() {
+    FULL_TABLE_ROW_UPDATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn rebalanced_rows() -> usize {
+    REBALANCED_ROWS.with(std::cell::Cell::get)
+}
+
+#[cfg(all(not(test), feature = "perf-harness"))]
 pub(crate) fn rebalanced_rows() -> usize {
     REBALANCED_ROWS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+pub(crate) fn reset_rebalanced_rows() {
+    REBALANCED_ROWS.with(|counter| counter.set(0));
+}
+
+#[cfg(all(not(test), feature = "perf-harness"))]
 pub(crate) fn reset_rebalanced_rows() {
     REBALANCED_ROWS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+pub(crate) fn full_table_row_updates() -> usize {
+    FULL_TABLE_ROW_UPDATES.with(std::cell::Cell::get)
+}
+
+#[cfg(all(not(test), feature = "perf-harness"))]
 pub(crate) fn full_table_row_updates() -> usize {
     FULL_TABLE_ROW_UPDATES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(any(test, feature = "perf-harness"))]
+#[cfg(test)]
+pub(crate) fn reset_full_table_row_updates() {
+    FULL_TABLE_ROW_UPDATES.with(|counter| counter.set(0));
+}
+
+#[cfg(all(not(test), feature = "perf-harness"))]
 pub(crate) fn reset_full_table_row_updates() {
     FULL_TABLE_ROW_UPDATES.store(0, std::sync::atomic::Ordering::Relaxed);
 }

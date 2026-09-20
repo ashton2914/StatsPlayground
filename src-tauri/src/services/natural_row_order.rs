@@ -13,31 +13,29 @@ const INITIAL_REBALANCE_WINDOW: usize = 256;
 const MAX_REBALANCE_WINDOW: usize = 8_192;
 
 #[cfg(test)]
-static ANCHOR_REFRESH_QUERY_COUNTER: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(test)]
-static REPAIR_ROWS_EXAMINED: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static ANCHOR_REFRESH_QUERY_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REPAIR_ROWS_EXAMINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[cfg(test)]
 fn anchor_refresh_query_counter() -> usize {
-    ANCHOR_REFRESH_QUERY_COUNTER.load(std::sync::atomic::Ordering::Relaxed)
+    ANCHOR_REFRESH_QUERY_COUNTER.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
 fn reset_anchor_refresh_query_counter() {
-    ANCHOR_REFRESH_QUERY_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+    ANCHOR_REFRESH_QUERY_COUNTER.with(|counter| counter.set(0));
 }
 
 #[cfg(test)]
 fn repair_rows_examined() -> usize {
-    REPAIR_ROWS_EXAMINED.load(std::sync::atomic::Ordering::Relaxed)
+    REPAIR_ROWS_EXAMINED.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
 fn reset_repair_rows_examined() {
-    REPAIR_ROWS_EXAMINED.store(0, std::sync::atomic::Ordering::Relaxed);
+    REPAIR_ROWS_EXAMINED.with(|counter| counter.set(0));
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -657,7 +655,7 @@ fn publish_transformed_anchors(
         params![dataset_id, target_generation],
     )?;
     #[cfg(test)]
-    ANCHOR_REFRESH_QUERY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ANCHOR_REFRESH_QUERY_COUNTER.with(|counter| counter.set(counter.get().saturating_add(1)));
     match mutation {
         AnchorMutation::Insert {
             insertion_ordinal,
@@ -1114,7 +1112,7 @@ fn insert_repair_anchor(
 
 fn record_repair_rows_examined(rows: usize) {
     #[cfg(test)]
-    REPAIR_ROWS_EXAMINED.fetch_add(rows, std::sync::atomic::Ordering::Relaxed);
+    REPAIR_ROWS_EXAMINED.with(|counter| counter.set(counter.get().saturating_add(rows)));
     #[cfg(not(test))]
     let _ = rows;
 }

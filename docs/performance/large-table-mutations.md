@@ -126,3 +126,37 @@ bytes; DuckDB retained memory after mutation ranged from 34,508,800 to
 
 Raw JSON evidence and the detailed run report are durable ignored SDD artifacts
 under `.superpowers/sdd/2026-09-20-issue-241-large-table-mutations/`.
+
+## Task 9 release-gate repair: 2026-09-21
+
+The deterministic serial gate initially reported 12 failures. Nine were legacy
+generation-zero fixtures without controlled natural-anchor manifests. The
+tabulate fixture now uses the managed-table helper and publishes rebuilt
+manifests after fixture mutations; SQLite append now advances the generation
+before replacing the old row-count metadata, then rebuilds the new generation.
+
+The remaining failures were unified-history v2 contract gaps: full-history
+column replay no longer reapplies ordinal metadata after add/delete replay,
+unchanged columns are expected in the complete history schema, and the
+canonical archive result now includes the empty-history cursor (`-1`).
+
+Parallel execution exposed process-global test state. Test builds now isolate
+Graph New cache pools, benchmark cache directories, anchor observers, and
+row-order counters per test/thread. Production and `perf-harness` builds retain
+the process-global memory budget and atomic qualification counters.
+
+Final Rust results:
+
+- `cargo test -- --test-threads=1`: 1,407 passed, 18 ignored; integration
+  suites also passed (3 build-provenance and 7 MCP HTTP tests).
+- `cargo test`: the same 1,407 passed and 18 ignored under ordinary parallel
+  execution; integration suites also passed.
+- The existing MCP HTTP start test intermittently reset its loopback connection
+  on the first full-suite attempt. Its exact isolated rerun passed (1/1), and
+  both final full commands passed on retry; no issue-241 code touches that
+  server path.
+- `cargo fmt -- --check`: blocked by pre-existing repository-wide formatting
+  drift, beginning in `src/commands/graph_new_commands.rs`.
+- `cargo clippy --all-targets --all-features -- -D warnings`: blocked by the
+  pre-existing warning baseline (including unused `TabulateTotalsKind`,
+  `validation_result_hash`, and unrelated dead code). No suppression was added.

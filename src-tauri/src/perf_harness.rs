@@ -1096,6 +1096,8 @@ fn benchmark_cache_directory(dataset_id: &str, overlay_groups: Option<u16>) -> R
     let suffix = overlay_groups
         .map(|groups| format!("overlay-{groups}"))
         .unwrap_or_else(|| "plain".to_string());
+    #[cfg(test)]
+    let suffix = format!("{suffix}-{}", uuid::Uuid::new_v4());
     let directory = std::env::current_dir()
         .map_err(|error| AppError::FileIO(error.to_string()))?
         .join(".cache/issue235-overlay/performance/harness")
