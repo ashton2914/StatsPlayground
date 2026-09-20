@@ -71,11 +71,14 @@ than the CLI harness.
   valid sparse anchor/manifest state, and the expected compact delta snapshot.
 - `services/row_order_update_boundary.rs` is the sole production authority for
   SQL that updates `_row_order`. A test recursively scans every Rust source
-  below `src-tauri/src`, excluding `target`, `generated`, and content after the
-  conventional top-level `#[cfg(test)]` module boundary. It canonicalizes each
-  Rust statement's string literals, so direct SQL and split `concat!`/macro
-  fragments are rejected outside the authority, and requires exactly one
-  canonical update construction inside it.
+  below `src-tauri/src`, excluding `target`, `generated`, and AST items marked
+  `#[cfg(test)]`. The test uses `syn` to parse Rust syntax and visit production
+  expressions. It decodes normal, raw, byte, and raw-byte literals, recursively
+  evaluates literal-only `concat!`, and treats unresolved macros containing
+  `_row_order` plus update-building tokens as update constructions. Comments
+  are discarded by the Rust parser, while comment-like text inside strings
+  remains data. The authority must contain exactly one production construction;
+  every other production module must contain zero.
 - `memoryNearDoubling` fails when retained memory or RSS reaches at least 1.8×
   its pre-mutation baseline.
 
@@ -84,9 +87,9 @@ Thresholds are append row 1,000 ms; middle insert 2,000 ms; add empty column
 Any timing, memory, fixture, or structural failure sets
 `qualificationPassed = false` and makes the harness exit unsuccessfully.
 
-## Independent-process baseline: 2026-09-21 (fix round 3)
+## Independent-process baseline: 2026-09-21 (fix round 4)
 
-Measured source commit: `5dd241f3071bf28ab02c133e7a9f903e428d53a4`
+Measured source commit: `e5da17e97bdb10afbfa56e991a3ca0779e913c5c`
 
 Profile: release
 
@@ -100,18 +103,18 @@ Phase columns show median/max milliseconds.
 
 | Operation | Runs (ms) | Median | Max / threshold | Mutation | History | Anchor | Metadata | Reload |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Append row | 69, 77, 75, 74, 78 | 75 | 78 / 1,000 | 1/1 | 3/3 | 50/51 | 1/1 | 14/14 |
-| Insert middle row | 84, 83, 82, 83, 84 | 83 | 84 / 2,000 | 1/1 | 3/3 | 58/60 | 1/1 | 14/15 |
-| Add empty column | 35, 37, 36, 38, 36 | 36 | 38 / 2,000 | 8/10 | 4/4 | 3/3 | 1/1 | 15/15 |
-| Delete one row | 44, 45, 37, 42, 43 | 43 | 45 / 2,000 | 1/1 | 4/4 | 17/18 | 1/1 | 14/15 |
-| Delete one column | 43, 40, 44, 42, 40 | 42 | 44 / 5,000 | 1/1 | 20/20 | 3/3 | 1/1 | 13/15 |
+| Append row | 71, 74, 74, 77, 68 | 74 | 77 / 1,000 | 1/1 | 3/3 | 50/51 | 1/1 | 14/14 |
+| Insert middle row | 87, 85, 79, 83, 84 | 84 | 87 / 2,000 | 1/1 | 3/3 | 59/60 | 1/1 | 14/15 |
+| Add empty column | 38, 37, 36, 37, 37 | 37 | 38 / 2,000 | 8/8 | 4/4 | 3/3 | 1/1 | 14/16 |
+| Delete one row | 42, 36, 36, 37, 37 | 37 | 42 / 2,000 | 1/1 | 4/4 | 17/17 | 1/1 | 14/14 |
+| Delete one column | 44, 43, 46, 47, 40 | 44 | 47 / 5,000 | 1/2 | 20/21 | 3/3 | 1/1 | 14/14 |
 
 All five operations passed every structural assertion. Middle insertion
 preceded its requested target. No operation approached a retained-memory or RSS
 doubling. Every operation records six distinct child PIDs and one sample per
-child. Maximum observed RSS deltas ranged from 425,984 bytes to 81,838,080
-bytes; DuckDB retained memory after mutation ranged from 34,770,944 to
-47,749,120 bytes from a 30,353,408-byte baseline.
+child. Maximum observed RSS deltas ranged from 376,832 bytes to 81,657,856
+bytes; DuckDB retained memory after mutation ranged from 34,508,800 to
+47,749,120 bytes from 30,091,264–30,353,408-byte baselines.
 
 Raw JSON evidence and the detailed run report are durable ignored SDD artifacts
 under `.superpowers/sdd/2026-09-20-issue-241-large-table-mutations/`.
