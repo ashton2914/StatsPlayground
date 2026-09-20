@@ -1268,18 +1268,6 @@
   overflow: hidden;
 }
 
-.sp-grid-footer {
-  flex: 0 0 auto;
-  min-width: 0;
-  overflow: hidden;
-  border-top: 1px solid var(--border-cell);
-  background: var(--bg-panel);
-}
-
-.sp-grid-footer-table {
-  margin-top: -1px;
-}
-
 .sp-logical-scrollbar {
   position: relative;
   flex: 0 0 18px;
@@ -2276,6 +2264,7 @@
 
 /* "Add row" bottom row */
 .sp-add-row-tr {
+  height: var(--sp-row-height);
 }
 
 .sp-add-row-hdr {
@@ -2288,7 +2277,8 @@
   border-right: 1px solid var(--border-header);
   text-align: center;
   color: var(--fg-dim);
-  font-size: 16px;
+  font-size: calc(16px * var(--sp-zoom, 1));
+  line-height: var(--sp-row-height);
   cursor: pointer;
   user-select: none;
   padding: 0;

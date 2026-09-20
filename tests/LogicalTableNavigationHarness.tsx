@@ -182,6 +182,7 @@ interface LogicalTableNavigationHarnessProps {
   columnCount?: number;
   width?: number;
   height?: number;
+  zoom?: number;
   initialFilterMode?: HarnessFilterMode;
   rejectCancelledNavigation?: boolean;
 }
@@ -201,12 +202,14 @@ export function LogicalTableNavigationHarness({
   columnCount = 8,
   width = 920,
   height = 588,
+  zoom = 1,
   initialFilterMode = "none",
   rejectCancelledNavigation = false,
 }: LogicalTableNavigationHarnessProps) {
   const [ready, setReady] = useState(false);
   const dirty = useProjectStore((state) => state.dirty);
   const statusInfo = useDataStore((state) => state.statusInfo);
+  const pendingAction = useHistoryStore((state) => state.pendingAction);
   const [dataset, setDataset] = useState(() => createDataset(rowCount, columnCount));
   const [navigationRequestStarts, setNavigationRequestStarts] = useState<number[]>([]);
   const [resolvedNavigationRequestStarts, setResolvedNavigationRequestStarts] = useState<number[]>([]);
@@ -357,7 +360,7 @@ export function LogicalTableNavigationHarness({
     });
     useProjectStore.setState({ ...previousProjectState, readOnly: false, dirty: false, saving: false, saveError: null });
     useHistoryStore.setState({ ...previousHistoryState, historyRevision: 0, historyError: null, pendingRestore: null });
-    useTableZoomStore.setState({ zoom: 1 });
+    useTableZoomStore.setState({ zoom });
 
     dataService.getDatasetGeneration = async () => datasetRef.current.generation;
     dataService.queryTableWindow = async ({ start, count, filters }) => {
@@ -371,7 +374,11 @@ export function LogicalTableNavigationHarness({
         await new Promise((resolve) => window.setTimeout(resolve, WINDOW_DELAY_MS));
       }
       return buildWindow(
-        sortModeRef.current === "value-desc" ? SORTED_TOTAL_ROWS : FILTERED_TOTAL_ROWS[mode],
+        sortModeRef.current === "value-desc"
+          ? SORTED_TOTAL_ROWS
+          : mode === "none"
+            ? datasetRef.current.rowCount
+            : FILTERED_TOTAL_ROWS[mode],
         columnCount,
         effectiveStart,
         effectiveCount,
@@ -430,7 +437,11 @@ export function LogicalTableNavigationHarness({
         request,
         columnCount,
         editsRef.current,
-        sortMode === "value-desc" ? SORTED_TOTAL_ROWS : FILTERED_TOTAL_ROWS[mode],
+        sortMode === "value-desc"
+          ? SORTED_TOTAL_ROWS
+          : mode === "none"
+            ? datasetRef.current.rowCount
+            : FILTERED_TOTAL_ROWS[mode],
         mode,
         sortMode,
       );
@@ -440,6 +451,11 @@ export function LogicalTableNavigationHarness({
       return result;
     };
     dataService.prepareTableQuerySession = async (request: TableQuerySessionRequest) => {
+      if (request.generation !== datasetRef.current.generation) {
+        throw new Error(
+          `stale generation ${request.generation}; current generation is ${datasetRef.current.generation}`,
+        );
+      }
       const mode = resolveFilterModeFromRules(request.filters);
       const sortSuffix = request.sort?.column === "Column 2" && request.sort.descending
         ? "sort-desc"
@@ -501,14 +517,18 @@ export function LogicalTableNavigationHarness({
       const startRowId = datasetRef.current.rowCount + 1;
       const rowIds = Array.from({ length: safeCount }, (_, index) => startRowId + index);
       const nextRowCount = datasetRef.current.rowCount + safeCount;
-      const nextDataset = createDataset(nextRowCount, columnCount);
+      const nextDataset = createDataset(
+        nextRowCount,
+        columnCount,
+        datasetRef.current.generation + 1,
+      );
       datasetRef.current = nextDataset;
       setDataset(nextDataset);
       useDataStore.setState((current) => ({
         ...current,
         datasets: current.datasets.map((item) => item.id === nextDataset.id ? nextDataset : item),
       }));
-      return { rowIds, generation: GENERATION };
+      return { rowIds, generation: nextDataset.generation };
     };
     dataService.addRow = async () => datasetRef.current.rowCount + 1;
 
@@ -540,7 +560,7 @@ export function LogicalTableNavigationHarness({
       useTableZoomStore.setState({ zoom: previousZoom });
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [columnCount, rejectCancelledNavigation, rowCount]);
+  }, [columnCount, rejectCancelledNavigation, rowCount, zoom]);
 
   useEffect(() => {
     if (!ready) return;
@@ -564,6 +584,7 @@ export function LogicalTableNavigationHarness({
     <div ref={rootRef} style={{ width, height }}>
       <div data-testid="project-dirty">{dirty ? "true" : "false"}</div>
       <div data-testid="dataset-row-count">{dataset.rowCount}</div>
+      <div data-testid="mutation-pending">{pendingAction ?? ""}</div>
       <div data-testid="nav-request-starts">{navigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-resolved-starts">{resolvedNavigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-cancelled-starts">{cancelledNavigationRequestStarts.join(",")}</div>

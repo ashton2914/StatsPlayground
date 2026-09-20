@@ -34,6 +34,7 @@ export interface TableViewportRowsProps {
   visibleColumnEnd: number;
   leftSpacerW: number;
   rightSpacerW: number;
+  renderEmptyPlaceholder?: boolean;
   onEditValueChange: (value: string) => void;
   onCommitEdit: (direction: "none" | "down" | "right" | "left") => void;
   onCancelEdit: () => void;
@@ -61,6 +62,7 @@ export function TableViewportRows({
   visibleColumnEnd,
   leftSpacerW,
   rightSpacerW,
+  renderEmptyPlaceholder = true,
   onEditValueChange,
   onCommitEdit,
   onCancelEdit,
@@ -159,7 +161,7 @@ export function TableViewportRows({
           </tr>
         );
       })}
-      {actualSlotCount === 0 && totalRows === 0 && (
+      {renderEmptyPlaceholder && actualSlotCount === 0 && totalRows === 0 && (
         <tr data-viewport-slot={0} className="sp-placeholder-row" aria-hidden="true">
           <td className="sp-row-hdr">1</td>
           {leftSpacerW > 0 && (
