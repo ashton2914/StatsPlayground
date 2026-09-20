@@ -356,7 +356,7 @@ impl DuckDbEngine {
         Ok(())
     }
 
-    fn copy_natural_anchors_between_generations(
+    pub(crate) fn copy_natural_anchors_between_generations(
         &self,
         dataset_id: &str,
         source_generation: u64,
@@ -629,6 +629,17 @@ impl DuckDbEngine {
                 ordinal       INTEGER NOT NULL,
                 row_id        BIGINT NOT NULL,
                 row_order     HUGEINT,
+                PRIMARY KEY (change_set_id, ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_column_deltas (
+                change_set_id TEXT NOT NULL,
+                ordinal       INTEGER NOT NULL,
+                column_id     TEXT NOT NULL,
+                col_index     INTEGER NOT NULL,
+                col_name      TEXT NOT NULL,
+                col_type      TEXT NOT NULL,
+                calculated_definition_json TEXT,
                 PRIMARY KEY (change_set_id, ordinal)
             );
 
@@ -8211,6 +8222,13 @@ impl DuckDbEngine {
             .optional()?;
         if storage_kind.as_deref() == Some("row_delta") {
             return crate::services::table_delta_mutation::apply_row_delta_change_set(
+                self,
+                change_set_id,
+                undo,
+            );
+        }
+        if storage_kind.as_deref() == Some("column_delta") {
+            return crate::services::table_delta_mutation::apply_column_delta_change_set(
                 self,
                 change_set_id,
                 undo,
