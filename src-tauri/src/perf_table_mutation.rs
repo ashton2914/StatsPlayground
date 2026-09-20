@@ -1,3 +1,207 @@
+const MUTATION_CHILD_NONCE_ENV: &str = "STATSPLAYGROUND_MUTATION_CHILD_NONCE";
+const MUTATION_CHILD_PARENT_PID_ENV: &str = "STATSPLAYGROUND_MUTATION_CHILD_PARENT_PID";
+
+#[derive(Debug, PartialEq, Eq)]
+struct MutationChildRequest {
+    parent_process_id: u32,
+    nonce: String,
+}
+
+#[derive(Clone)]
+struct MutationParentAuthorization {
+    parent_process_id: u32,
+    nonce: String,
+}
+
+struct RuntimeSourceProvenance {
+    head: String,
+    dirty: bool,
+}
+
+fn binary_source_commit() -> &'static str {
+    env!("STATSPLAYGROUND_BINARY_SOURCE_COMMIT")
+}
+
+fn binary_source_dirty() -> bool {
+    env!("STATSPLAYGROUND_BINARY_SOURCE_DIRTY") == "true"
+}
+
+fn binary_build_profile() -> &'static str {
+    env!("STATSPLAYGROUND_BINARY_BUILD_PROFILE")
+}
+
+fn git_output(args: &[&str]) -> Result<String, AppError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .map_err(|error| AppError::FileIO(error.to_string()))?;
+    if !output.status.success() {
+        return Err(AppError::FileIO(format!(
+            "git {} failed while validating benchmark provenance: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|error| AppError::FileIO(error.to_string()))
+}
+
+fn runtime_source_provenance() -> Result<RuntimeSourceProvenance, AppError> {
+    Ok(RuntimeSourceProvenance {
+        head: git_output(&["rev-parse", "HEAD"])?,
+        dirty: !git_output(&["status", "--porcelain=v1", "--untracked-files=normal"])?.is_empty(),
+    })
+}
+
+fn validate_source_provenance(
+    binary_commit: &str,
+    binary_dirty: bool,
+    runtime_head: &str,
+    runtime_dirty: bool,
+) -> Result<(), AppError> {
+    if binary_commit != runtime_head {
+        return Err(AppError::InvalidParam(format!(
+            "binary source commit {binary_commit} does not match runtime HEAD {runtime_head}"
+        )));
+    }
+    if binary_dirty || runtime_dirty {
+        return Err(AppError::InvalidParam(
+            "mutation qualification requires a clean source tree at compile time and runtime"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn take_mutation_child_request(
+    args: &mut Vec<String>,
+) -> Result<Option<MutationChildRequest>, AppError> {
+    let Some(child_index) = args
+        .iter()
+        .position(|argument| argument == "--mutation-child")
+    else {
+        return Ok(None);
+    };
+    args.remove(child_index);
+    if child_index >= args.len() {
+        return Err(AppError::InvalidParam(
+            "--mutation-child requires a parent nonce".into(),
+        ));
+    }
+    let nonce = args.remove(child_index);
+    let parent_flag_index = args
+        .iter()
+        .position(|argument| argument == "--mutation-parent-pid")
+        .ok_or_else(|| {
+            AppError::InvalidParam("--mutation-child requires --mutation-parent-pid".into())
+        })?;
+    args.remove(parent_flag_index);
+    if parent_flag_index >= args.len() {
+        return Err(AppError::InvalidParam(
+            "--mutation-parent-pid requires a value".into(),
+        ));
+    }
+    let parent_process_id = args
+        .remove(parent_flag_index)
+        .parse::<u32>()
+        .map_err(|_| AppError::InvalidParam("mutation parent PID must be an integer".into()))?;
+    Ok(Some(MutationChildRequest {
+        parent_process_id,
+        nonce,
+    }))
+}
+
+fn validate_mutation_child_authorization(
+    request: &MutationChildRequest,
+    environment_nonce: Option<&str>,
+    environment_parent_pid: Option<&str>,
+    actual_parent_process_id: Option<u32>,
+    current_process_id: u32,
+) -> Result<(), AppError> {
+    let expected_parent_pid = environment_parent_pid
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value != 0 && *value != current_process_id);
+    if environment_nonce != Some(request.nonce.as_str())
+        || expected_parent_pid != Some(request.parent_process_id)
+        || actual_parent_process_id != Some(request.parent_process_id)
+    {
+        return Err(AppError::InvalidParam(
+            "mutation child parent authorization is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn actual_parent_process_id() -> Option<u32> {
+    unsafe extern "C" {
+        fn getppid() -> i32;
+    }
+    u32::try_from(unsafe { getppid() }).ok().filter(|value| *value != 0)
+}
+
+#[cfg(windows)]
+fn actual_parent_process_id() -> Option<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry = std::mem::zeroed::<PROCESSENTRY32W>();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let current_process_id = std::process::id();
+        let mut result = None;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                if entry.th32ProcessID == current_process_id {
+                    result = Some(entry.th32ParentProcessID);
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        result.filter(|value| *value != 0)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn actual_parent_process_id() -> Option<u32> {
+    None
+}
+
+fn mutation_sample_plan(sample_count: usize, warmup_count: usize) -> Result<Vec<String>, AppError> {
+    if sample_count != 5 || warmup_count != 1 {
+        return Err(AppError::InvalidParam(
+            "mutation qualification requires one warmup and five measured child processes".into(),
+        ));
+    }
+    let mut plan = vec!["warmup".into()];
+    plan.extend((1..=sample_count).map(|index| format!("measured-{index}")));
+    Ok(plan)
+}
+
+fn mutation_parent_authorization() -> MutationParentAuthorization {
+    let nonce = rand::random::<[u8; 32]>()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    MutationParentAuthorization {
+        parent_process_id: std::process::id(),
+        nonce,
+    }
+}
+
 fn duckdb_retained_memory_bytes(db: &DuckDbEngine) -> Result<u64, AppError> {
     let bytes: i64 = db.conn().query_row(
         "SELECT COALESCE(sum(memory_usage_bytes), 0) FROM duckdb_memory()",
@@ -253,15 +457,13 @@ fn execute_table_mutation_sample(
     };
 
     Ok(TableMutationSampleReport {
+        report_kind: "sample".into(),
         process_id: std::process::id(),
         sample_kind: std::env::var("STATSPLAYGROUND_MUTATION_SAMPLE_KIND")
             .unwrap_or_else(|_| "direct".into()),
-        source_commit: source_commit()?,
-        build_profile: if cfg!(debug_assertions) {
-            "debug".into()
-        } else {
-            "release".into()
-        },
+        binary_source_commit: binary_source_commit().into(),
+        binary_source_clean: !binary_source_dirty(),
+        build_profile: binary_build_profile().into(),
         machine: {
             let db = DuckDbEngine::new_in_memory()?;
             machine_report(duckdb_version(&db))
@@ -284,22 +486,6 @@ fn execute_table_mutation_sample(
         retained_memory_after_bytes,
         process_memory,
     })
-}
-
-fn source_commit() -> Result<String, AppError> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .map_err(|error| AppError::FileIO(error.to_string()))?;
-    if !output.status.success() {
-        return Err(AppError::FileIO(
-            "git rev-parse HEAD failed while recording benchmark provenance".into(),
-        ));
-    }
-    String::from_utf8(output.stdout)
-        .map(|value| value.trim().to_string())
-        .map_err(|error| AppError::FileIO(error.to_string()))
 }
 
 fn validate_distinct_child_processes(process_ids: &[u32]) -> Result<(), AppError> {
@@ -355,6 +541,7 @@ fn launch_table_mutation_child(
     rows: usize,
     columns: usize,
     sample_kind: &str,
+    authorization: &MutationParentAuthorization,
 ) -> Result<TableMutationSampleReport, AppError> {
     let operation_arg = serde_json::to_value(operation)
         .map_err(|error| AppError::Stats(error.to_string()))?
@@ -366,6 +553,9 @@ fn launch_table_mutation_child(
     )
     .args([
         "--mutation-child",
+        &authorization.nonce,
+        "--mutation-parent-pid",
+        &authorization.parent_process_id.to_string(),
         "--rows",
         &rows.to_string(),
         "--columns",
@@ -374,6 +564,11 @@ fn launch_table_mutation_child(
         &operation_arg,
     ])
     .env("STATSPLAYGROUND_MUTATION_SAMPLE_KIND", sample_kind)
+    .env(MUTATION_CHILD_NONCE_ENV, &authorization.nonce)
+    .env(
+        MUTATION_CHILD_PARENT_PID_ENV,
+        authorization.parent_process_id.to_string(),
+    )
     .output()
     .map_err(|error| AppError::FileIO(error.to_string()))?;
     if !output.status.success() {
@@ -403,18 +598,28 @@ fn execute_table_mutation_qualification(
             "mutation qualification protocol requires 2000000 rows, 8 columns, 5 samples, and 1 warmup".into(),
         ));
     }
-    let parent_commit = source_commit()?;
-    let parent_profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-    let warmup_sample = launch_table_mutation_child(operation, rows, columns, "warmup")?;
-    let mut samples = Vec::with_capacity(sample_count);
-    for index in 0..sample_count {
-        samples.push(launch_table_mutation_child(
+    let runtime_provenance = runtime_source_provenance()?;
+    validate_source_provenance(
+        binary_source_commit(),
+        binary_source_dirty(),
+        &runtime_provenance.head,
+        runtime_provenance.dirty,
+    )?;
+    let parent_profile = binary_build_profile();
+    let authorization = mutation_parent_authorization();
+    let sample_plan = mutation_sample_plan(sample_count, warmup_count)?;
+    let mut child_samples = Vec::with_capacity(sample_plan.len());
+    for sample_kind in &sample_plan {
+        child_samples.push(launch_table_mutation_child(
             operation,
             rows,
             columns,
-            &format!("measured-{}", index + 1),
+            sample_kind,
+            &authorization,
         )?);
     }
+    let warmup_sample = child_samples.remove(0);
+    let samples = child_samples;
     let all_samples = std::iter::once(&warmup_sample).chain(samples.iter()).collect::<Vec<_>>();
     validate_distinct_child_processes(
         &all_samples.iter().map(|sample| sample.process_id).collect::<Vec<_>>(),
@@ -422,8 +627,11 @@ fn execute_table_mutation_qualification(
     let parent_machine = all_samples[0].machine.clone();
     let parent_machine_json = serde_json::to_value(&parent_machine)
         .map_err(|error| AppError::Stats(error.to_string()))?;
-    if all_samples.iter().any(|sample| {
-        sample.source_commit != parent_commit
+    if all_samples.iter().zip(sample_plan.iter()).any(|(sample, sample_kind)| {
+        sample.report_kind != "sample"
+            || &sample.sample_kind != sample_kind
+            || sample.binary_source_commit != binary_source_commit()
+            || sample.binary_source_clean != !binary_source_dirty()
             || sample.build_profile != parent_profile
             || serde_json::to_value(&sample.machine).ok().as_ref() != Some(&parent_machine_json)
     }) {
@@ -431,6 +639,13 @@ fn execute_table_mutation_qualification(
             "mutation child provenance does not match parent provenance".into(),
         ));
     }
+    let final_runtime_provenance = runtime_source_provenance()?;
+    validate_source_provenance(
+        binary_source_commit(),
+        binary_source_dirty(),
+        &final_runtime_provenance.head,
+        final_runtime_provenance.dirty,
+    )?;
     let total_wall_ms = samples
         .iter()
         .map(|sample| sample.total_wall_ms)
@@ -493,8 +708,11 @@ fn execute_table_mutation_qualification(
         compact_snapshot_shape: samples.iter().all(|sample| sample.compact_snapshot_shape),
         inserted_precedes_target,
         memory_near_doubling,
-        source_commit: parent_commit,
-        build_profile: parent_profile,
+        binary_source_commit: binary_source_commit().into(),
+        binary_source_clean: !binary_source_dirty(),
+        runtime_head: final_runtime_provenance.head,
+        runtime_source_clean: !final_runtime_provenance.dirty,
+        build_profile: parent_profile.into(),
         process_memory_method: process_memory_method(),
         samples,
     })

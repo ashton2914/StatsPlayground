@@ -46,16 +46,91 @@ pub(crate) fn reset_full_table_row_updates() {
     FULL_TABLE_ROW_UPDATES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[derive(Clone, Copy)]
+enum RowOrderUpdateScope {
+    BoundedLocal { dataset_rows: usize },
+    GlobalUnbounded { dataset_rows: usize },
+}
+
+#[derive(Clone, Copy)]
+enum RowOrderUpdateKind {
+    BoundedLocal,
+    GlobalUnbounded,
+}
+
 #[cfg(any(test, feature = "perf-harness"))]
-pub(crate) fn observe_row_order_update(
-    affected_rows: usize,
-    dataset_rows: usize,
-    bounded_local_rebalance: bool,
-) {
+fn observe_row_order_update(affected_rows: usize, scope: RowOrderUpdateScope) {
+    let (dataset_rows, bounded_local_rebalance) = match scope {
+        RowOrderUpdateScope::BoundedLocal { dataset_rows } => (dataset_rows, true),
+        RowOrderUpdateScope::GlobalUnbounded { dataset_rows } => (dataset_rows, false),
+    };
     let near_dataset_size = dataset_rows > 0
         && affected_rows.saturating_mul(10) >= dataset_rows.saturating_mul(9);
-    if !bounded_local_rebalance && near_dataset_size {
+    if bounded_local_rebalance {
+        REBALANCED_ROWS.fetch_add(affected_rows, std::sync::atomic::Ordering::Relaxed);
+    }
+    if !bounded_local_rebalance || near_dataset_size {
         FULL_TABLE_ROW_UPDATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn row_order_update_scope(
+    engine: &DuckDbEngine,
+    table_name: &str,
+    kind: RowOrderUpdateKind,
+) -> Result<RowOrderUpdateScope, AppError> {
+    #[cfg(any(test, feature = "perf-harness"))]
+    let dataset_rows = engine.conn().query_row(
+        &format!("SELECT count(*) FROM {table_name}"),
+        [],
+        |row| row.get(0),
+    )?;
+    #[cfg(not(any(test, feature = "perf-harness")))]
+    let dataset_rows = {
+        let _ = (engine, table_name);
+        0
+    };
+    Ok(match kind {
+        RowOrderUpdateKind::BoundedLocal => RowOrderUpdateScope::BoundedLocal { dataset_rows },
+        RowOrderUpdateKind::GlobalUnbounded => {
+            RowOrderUpdateScope::GlobalUnbounded { dataset_rows }
+        }
+    })
+}
+
+struct RowOrderUpdateBoundary {
+    scope: RowOrderUpdateScope,
+    affected_rows: usize,
+}
+
+impl RowOrderUpdateBoundary {
+    fn new(scope: RowOrderUpdateScope) -> Self {
+        Self {
+            scope,
+            affected_rows: 0,
+        }
+    }
+
+    fn update_by_id(
+        &mut self,
+        engine: &DuckDbEngine,
+        table_name: &str,
+        row_id: i64,
+        row_order: i128,
+    ) -> Result<(), AppError> {
+        let sql = format!("UPDATE {table_name} SET \"_row_order\" = ? WHERE \"_row_id\" = ?");
+        self.affected_rows = self.affected_rows.saturating_add(
+            engine.conn().execute(&sql, params![row_order, row_id])?,
+        );
+        Ok(())
+    }
+
+    fn finish(self) -> usize {
+        #[cfg(any(test, feature = "perf-harness"))]
+        observe_row_order_update(self.affected_rows, self.scope);
+        #[cfg(not(any(test, feature = "perf-harness")))]
+        let _ = self.scope;
+        self.affected_rows
     }
 }
 
@@ -336,16 +411,8 @@ fn rebalance_window(
         .filter(|row| row.2 >= start && row.2 < end)
         .copied()
         .collect::<Vec<_>>();
-    #[cfg(any(test, feature = "perf-harness"))]
-    {
-        REBALANCED_ROWS.fetch_max(window_rows.len(), std::sync::atomic::Ordering::Relaxed);
-        let dataset_rows: usize = engine.conn().query_row(
-            &format!("SELECT count(*) FROM {table_name}"),
-            [],
-            |row| row.get(0),
-        )?;
-        observe_row_order_update(window_rows.len(), dataset_rows, true);
-    }
+    let update_scope =
+        row_order_update_scope(engine, table_name, RowOrderUpdateKind::BoundedLocal)?;
     let relative_insertion = usize::try_from(insertion_ordinal - start)
         .map_err(|_| AppError::Database("rebalance insertion ordinal is outside window".into()))?;
     if relative_insertion > window_rows.len() {
@@ -387,17 +454,21 @@ fn rebalance_window(
         .checked_add(count)
         .ok_or_else(|| AppError::InvalidParam("rebalance window is too large".into()))?;
     let inserted_orders = assigned[relative_insertion..inserted_end].to_vec();
-    let update_sql = format!("UPDATE {table_name} SET \"_row_order\" = ? WHERE \"_row_id\" = ?");
     let mut assigned_index = 0;
+    let mut update_boundary = RowOrderUpdateBoundary::new(update_scope);
     for (row_index, (row_id, _, _)) in window_rows.iter().enumerate() {
         if row_index == relative_insertion {
             assigned_index += count;
         }
-        engine
-            .conn()
-            .execute(&update_sql, params![assigned[assigned_index], row_id])?;
+        update_boundary.update_by_id(
+            engine,
+            table_name,
+            *row_id,
+            assigned[assigned_index],
+        )?;
         assigned_index += 1;
     }
+    update_boundary.finish();
 
     Ok(Some(inserted_orders))
 }
@@ -1178,7 +1249,9 @@ mod tests {
     use super::{
         allocate_before, anchor_refresh_query_counter, publish_deleted_anchors,
         publish_inserted_anchors, repair_rows_examined, reset_anchor_refresh_query_counter,
-        reset_repair_rows_examined,
+        reset_repair_rows_examined, full_table_row_updates,
+        rebalanced_rows, reset_full_table_row_updates, reset_rebalanced_rows,
+        row_order_update_scope, RowOrderUpdateBoundary, RowOrderUpdateKind,
     };
     use crate::engine::duckdb_engine::{
         full_anchor_rebuild_counter, reset_full_anchor_rebuild_counter, DuckDbEngine,
@@ -1889,4 +1962,133 @@ mod tests {
         assert!(!manifest_validation.contains("NATURAL_ORDER_SQL"));
         assert!(!manifest_validation.contains("internal_table_name"));
     }
+
+    #[test]
+    fn production_row_order_updates_are_centralized() {
+        fn string_literals(source: &str) -> Vec<String> {
+            let bytes = source.as_bytes();
+            let mut literals = Vec::new();
+            let mut index = 0;
+            while index < bytes.len() {
+                if bytes[index..].starts_with(b"//") {
+                    index += 2;
+                    while index < bytes.len() && bytes[index] != b'\n' {
+                        index += 1;
+                    }
+                } else if bytes[index..].starts_with(b"/*") {
+                    index += 2;
+                    while index + 1 < bytes.len() && !bytes[index..].starts_with(b"*/") {
+                        index += 1;
+                    }
+                    index = (index + 2).min(bytes.len());
+                } else if bytes[index] == b'"' {
+                    index += 1;
+                    let mut literal = String::new();
+                    while index < bytes.len() {
+                        if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                            literal.push(bytes[index + 1] as char);
+                            index += 2;
+                        } else if bytes[index] == b'"' {
+                            index += 1;
+                            break;
+                        } else {
+                            literal.push(bytes[index] as char);
+                            index += 1;
+                        }
+                    }
+                    literals.push(literal);
+                } else {
+                    index += 1;
+                }
+            }
+            literals
+        }
+
+        let natural_order = include_str!("natural_row_order.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("natural-order production source");
+        let table_mutation = include_str!("table_delta_mutation.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("table-mutation production source");
+        let engine = include_str!("../engine/duckdb_engine.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("engine production source");
+        assert!(natural_order.contains("struct RowOrderUpdateBoundary"));
+        let direct_boundaries = [natural_order, table_mutation, engine]
+            .iter()
+            .flat_map(|source| string_literals(source))
+            .filter(|literal| {
+                let normalized = literal.split_whitespace().collect::<Vec<_>>().join(" ");
+                let normalized = normalized.to_ascii_lowercase();
+                normalized.contains("update ") && normalized.contains("_row_order")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(direct_boundaries.len(), 1, "{direct_boundaries:?}");
+        let rebalance = natural_order
+            .split("fn rebalance_window")
+            .nth(1)
+            .expect("rebalance implementation")
+            .split("fn bounded_rebalance_boundaries")
+            .next()
+            .expect("rebalance section");
+        assert!(rebalance.contains("update_boundary.update_by_id("));
+        assert!(!rebalance.contains(".execute(&update_sql"));
+    }
+
+    #[test]
+    fn bounded_row_order_update_records_actual_rows_and_rejects_near_dataset_scope() {
+        let db = seed("bounded-update-observer", 10);
+        let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(
+            "bounded-update-observer",
+        ));
+        let updates = effective_keys(&db, "bounded-update-observer")
+            .into_iter()
+            .map(|(row_id, order_key)| (row_id, order_key))
+            .collect::<Vec<_>>();
+        reset_rebalanced_rows();
+        reset_full_table_row_updates();
+        let scope = row_order_update_scope(
+            &db,
+            &table_name,
+            RowOrderUpdateKind::BoundedLocal,
+        )
+        .expect("scope");
+
+        let mut boundary = RowOrderUpdateBoundary::new(scope);
+        for (row_id, row_order) in updates {
+            boundary
+                .update_by_id(&db, &table_name, row_id, row_order)
+                .expect("bounded update");
+        }
+        assert_eq!(boundary.finish(), 10);
+        assert_eq!(rebalanced_rows(), 10);
+        assert_eq!(full_table_row_updates(), 1);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn execute_global_row_order_update_for_test(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+) -> Result<usize, AppError> {
+    let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    let scope = row_order_update_scope(
+        engine,
+        &table_name,
+        RowOrderUpdateKind::GlobalUnbounded,
+    )?;
+    let mut statement = engine.conn().prepare(&format!(
+        "SELECT \"_row_id\", {NATURAL_ORDER_SQL} FROM {table_name}"
+    ))?;
+    let updates = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut boundary = RowOrderUpdateBoundary::new(scope);
+    for (row_id, row_order) in updates {
+        boundary.update_by_id(engine, &table_name, row_id, row_order)?;
+    }
+    Ok(boundary.finish())
 }

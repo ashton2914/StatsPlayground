@@ -37,9 +37,10 @@ use crate::services::graph_data_service::GraphDataChunk;
 use crate::services::graph_data_service::GraphDataService;
 use crate::services::graph_new_lod::GraphCamera;
 use crate::services::graph_new_service::GraphNewService;
+#[cfg(test)]
+use crate::services::natural_row_order::execute_global_row_order_update_for_test;
 use crate::services::natural_row_order::{
-    full_table_row_updates, observe_row_order_update, rebalanced_rows,
-    reset_full_table_row_updates, reset_rebalanced_rows,
+    full_table_row_updates, rebalanced_rows, reset_full_table_row_updates, reset_rebalanced_rows,
 };
 use crate::services::project_service::{seed_save_project, ProjectService};
 use crate::services::spprj_archive;
@@ -212,17 +213,22 @@ struct TableMutationPerformanceReport {
     compact_snapshot_shape: bool,
     inserted_precedes_target: Option<bool>,
     memory_near_doubling: bool,
-    source_commit: String,
-    build_profile: &'static str,
+    binary_source_commit: String,
+    binary_source_clean: bool,
+    runtime_head: String,
+    runtime_source_clean: bool,
+    build_profile: String,
     process_memory_method: Option<&'static str>,
 }
 
 #[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TableMutationSampleReport {
+    report_kind: String,
     process_id: u32,
     sample_kind: String,
-    source_commit: String,
+    binary_source_commit: String,
+    binary_source_clean: bool,
     build_profile: String,
     machine: MachineReport,
     setup_ms: u128,
@@ -3386,15 +3392,22 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 
 pub fn run_cli() -> Result<(), String> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
-    let mutation_child = args
-        .iter()
-        .position(|argument| argument == "--mutation-child")
-        .map(|index| {
-            args.remove(index);
-        })
-        .is_some();
+    let mutation_child =
+        take_mutation_child_request(&mut args).map_err(|error| error.to_string())?;
+    if let Some(request) = &mutation_child {
+        let environment_nonce = std::env::var(MUTATION_CHILD_NONCE_ENV).ok();
+        let environment_parent_pid = std::env::var(MUTATION_CHILD_PARENT_PID_ENV).ok();
+        validate_mutation_child_authorization(
+            request,
+            environment_nonce.as_deref(),
+            environment_parent_pid.as_deref(),
+            actual_parent_process_id(),
+            std::process::id(),
+        )
+        .map_err(|error| error.to_string())?;
+    }
     let options = parse_args(args).map_err(|error| error.to_string())?;
-    if mutation_child {
+    if mutation_child.is_some() {
         let sample = execute_table_mutation_sample(
             options.operation,
             options.rows,
@@ -3825,9 +3838,98 @@ mod tests {
     }
 
     #[test]
+    fn direct_mutation_child_requires_parent_authorization() {
+        let mut bare_args = vec!["--mutation-child".into()];
+        assert!(take_mutation_child_request(&mut bare_args).is_err());
+        let request = MutationChildRequest {
+            parent_process_id: 41,
+            nonce: "parent-secret".into(),
+        };
+        let error = validate_mutation_child_authorization(
+            &request, None, None, Some(41), 42,
+        )
+        .expect_err("direct child invocation must be rejected");
+        assert!(error.to_string().contains("parent authorization"));
+        let parent_error = validate_mutation_child_authorization(
+            &request,
+            Some("parent-secret"),
+            Some("41"),
+            Some(40),
+            42,
+        )
+        .expect_err("wrong operating-system parent PID must be rejected");
+        assert!(parent_error.to_string().contains("parent authorization"));
+    }
+
+    #[test]
+    fn mutation_child_rejects_wrong_parent_token() {
+        let request = MutationChildRequest {
+            parent_process_id: 41,
+            nonce: "wrong-secret".into(),
+        };
+        let error = validate_mutation_child_authorization(
+            &request,
+            Some("parent-secret"),
+            Some("41"),
+            Some(41),
+            42,
+        )
+        .expect_err("wrong child token must be rejected");
+        assert!(error.to_string().contains("parent authorization"));
+        let valid = MutationChildRequest {
+            parent_process_id: 41,
+            nonce: "parent-secret".into(),
+        };
+        validate_mutation_child_authorization(
+            &valid,
+            Some("parent-secret"),
+            Some("41"),
+            Some(41),
+            42,
+        )
+        .expect("matching nonce and operating-system parent PID");
+    }
+
+    #[test]
+    fn mutation_parent_protocol_plans_one_warmup_and_five_measured_children() {
+        assert_eq!(
+            mutation_sample_plan(5, 1).expect("fixed protocol"),
+            vec![
+                "warmup",
+                "measured-1",
+                "measured-2",
+                "measured-3",
+                "measured-4",
+                "measured-5",
+            ]
+        );
+    }
+
+    #[test]
+    fn source_provenance_rejects_binary_runtime_commit_mismatch() {
+        let error = validate_source_provenance("compiled-commit", false, "runtime-commit", false)
+            .expect_err("stale binary must be rejected");
+        assert!(error.to_string().contains("does not match runtime HEAD"));
+    }
+
+    #[test]
+    fn source_provenance_rejects_compile_or_runtime_dirty_state() {
+        for (binary_dirty, runtime_dirty) in [(true, false), (false, true)] {
+            let error =
+                validate_source_provenance("same-commit", binary_dirty, "same-commit", runtime_dirty)
+                    .expect_err("dirty source must be rejected");
+            assert!(error.to_string().contains("clean source tree"));
+        }
+    }
+
+    #[test]
     fn observed_full_table_row_update_fails_structure() {
         reset_full_table_row_updates();
-        observe_row_order_update(2_000_000, 2_000_000, false);
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        db.seed_benchmark_table("global-row-update", "Global row update", 10, 1)
+            .expect("seed");
+        execute_global_row_order_update_for_test(&db, "global-row-update")
+            .expect("production row-order update wrapper");
         let failures = structural_qualification_failures(
             0,
             0,
@@ -3858,6 +3960,11 @@ mod tests {
             "reload_ms",
             "full_snapshot_tables",
             "full_anchor_rebuilds",
+            "binary_source_commit",
+            "binary_source_clean",
+            "runtime_head",
+            "runtime_source_clean",
+            "report_kind",
             "qualification_passed",
             "qualification_failure",
         ] {
@@ -3909,10 +4016,13 @@ mod tests {
             execute_table_mutation_sample(Operation::AppendRow, 64, 8).expect("small sample");
         let payload = serde_json::to_value(report).expect("serialize report");
 
+        assert_eq!(payload["reportKind"], "sample");
+        assert!(payload.get("qualificationPassed").is_none());
         assert_eq!(payload["processId"], std::process::id());
-        assert!(payload["sourceCommit"]
+        assert!(payload["binarySourceCommit"]
             .as_str()
             .is_some_and(|value| !value.is_empty()));
+        assert!(payload["binarySourceClean"].as_bool().is_some());
         assert!(payload["buildProfile"].as_str().is_some());
         assert!(payload["machine"]["os"].as_str().is_some());
     }

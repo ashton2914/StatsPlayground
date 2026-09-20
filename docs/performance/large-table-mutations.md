@@ -19,11 +19,22 @@ Replace `append-row` with `insert-middle-row`, `add-column`, `delete-rows`,
 or `delete-column`. The parent launches one warmup child process and five
 measured child processes via `current_exe`; every child seeds one fixture,
 runs one production mutation/reload, emits one sample, and exits. The parent
-rejects repeated PIDs, child failures, or source/build/platform provenance
-mismatches. Each sample records its PID and role. `medianMs` and `maxMs` are
+authorizes child mode with a per-parent random nonce and the operating-system
+parent PID. Direct or incorrectly authorized `--mutation-child` invocations
+fail before fixture creation. Children emit `reportKind: "sample"` and never
+emit `qualificationPassed`; only the parent applies qualification thresholds.
+The parent rejects repeated PIDs, child failures, or source/build/platform
+provenance mismatches. Each sample records its PID and role. `medianMs` and `maxMs` are
 reported; five samples are not labeled P95. `maxMs`, not the median, is the
 qualification value. Mutation mode fixes `--runs` at 5; other harness
 operations retain their one-run default.
+
+The build script records the authoritative Git commit, dirty state, and build
+profile in the executable at compile time. Before launching children and again
+after collecting them, the parent requires the embedded source to have been
+clean (`binarySourceClean`), runtime `HEAD` to equal `binarySourceCommit`, and
+the runtime worktree to remain clean (`runtimeSourceClean`). Children must
+report the same compile-time provenance.
 
 The example target is required. Running the package binary without
 `--example performance_baseline` starts the Tauri desktop application rather
@@ -52,8 +63,8 @@ than the CLI harness.
 - `processMemoryMethod` identifies the platform RSS API.
 - `setupMs` is fixture creation and is excluded from the mutation threshold.
 - Structural fields must show no `_history_full_before_*` table, no full anchor
-  rebuild, no observed unbounded/global row-order update affecting at least
-  90% of the dataset, at most 8,192 locally rebalanced rows,
+  rebuild, no observed unbounded/global row-order update, no bounded update
+  affecting at least 90% of the dataset, at most 8,192 locally rebalanced rows,
   valid sparse anchor/manifest state, and the expected compact delta snapshot.
 - `memoryNearDoubling` fails when retained memory or RSS reaches at least 1.8×
   its pre-mutation baseline.
