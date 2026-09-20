@@ -57,6 +57,8 @@ function createTestI18n(): I18nInstance {
                 section: {
                   modelSpecification: "Model Specification",
                   effectSummary: "Effect Summary",
+                  effectTests: "Effect Tests",
+                  leveragePlot: "Leverage Plot",
                   summaryOfFit: "Summary of Fit",
                   analysisOfVariance: "Analysis of Variance",
                   lackOfFit: "Lack of Fit",
@@ -64,7 +66,6 @@ function createTestI18n(): I18nInstance {
                   actualByPredicted: "Actual by Predicted",
                   residualByPredicted: "Residual by Predicted",
                   featureVif: "Feature VIF",
-                  residualQq: "Residual Q-Q",
                   rowDiagnostics: "Row Diagnostics",
                   predictionProfiler: "Prediction Profiler",
                   warnings: "Warnings",
@@ -95,6 +96,7 @@ function createTestI18n(): I18nInstance {
                   },
                 },
                 remove: "Remove",
+                add: "Add",
                 undo: "Undo",
                 chartPlaceholder: "Chart placeholder",
                 notComputable: "Not Computable",
@@ -301,6 +303,7 @@ function renderReport(state: FitModelReportState): string {
         datasetMissing: false,
         loadIssue: null,
         removeMessage: null,
+        onAddEffect: () => undefined,
         onRemoveTerm: () => undefined,
         onUndoRemove: () => undefined,
       }),
@@ -319,6 +322,7 @@ function renderReportWithItem(item: FitModelItem, state: FitModelReportState): s
         datasetMissing: false,
         loadIssue: null,
         removeMessage: null,
+        onAddEffect: () => undefined,
         onRemoveTerm: () => undefined,
         onUndoRemove: () => undefined,
       }),
@@ -766,7 +770,11 @@ function testRenderFittedContracts(): void {
   assert.match(html, /Feature VIF/);
   assert.match(html, />A<\/td><td[^>]*>2<\/td><td[^>]*>0\.2<\/td><td[^>]*>10<\/td><td[^>]*>0\.0500<\/td><td[^>]*>1<\/td><td[^>]*>3<\/td><td[^>]*>1<\/td>/);
   assert.match(html, /auxiliaryRankDeficient|fitModel\.report\.reason\.auxiliaryRankDeficient/);
-  assert.match(html, /Residual Q-Q/);
+  assert.doesNotMatch(html, /Residual Q-Q/);
+  assert.match(html, /Mean of Response/);
+  assert.match(html, /Observations/);
+  assert.match(html, /Effect Tests/);
+  assert.match(html, /Leverage Plot/);
   assert.match(html, /Row Diagnostics/);
   assert.match(html, /Prediction Profiler/);
   assert.match(html, /Sampled: 1 \/ 12 rows/);
@@ -777,14 +785,15 @@ function testRenderFittedContracts(): void {
   assert.match(html, /data-diagnostic-filter="flagged"/);
   const orderedSections = [
     "Model Specification",
+    "Actual by Predicted",
     "Effect Summary",
+    "Lack of Fit",
+    "Residual by Predicted",
     "Summary of Fit",
     "Analysis of Variance",
-    "Lack of Fit",
     "Parameter Estimates",
-    "Actual by Predicted",
-    "Residual by Predicted",
-    "Residual Q-Q",
+    "Effect Tests",
+    "Leverage Plot",
     "Row Diagnostics",
     "Prediction Profiler",
     "Warnings",
@@ -799,6 +808,7 @@ function testRenderFittedContracts(): void {
   assert.match(html, />Y = 1 \+ 2 A/);
   assert.match(html, /saturatedModel|fitModel\.report\.warning\.saturatedModel/);
   assert.match(html, /Remove/);
+  assert.match(html, /Add/);
   assert.match(html, /Undo/);
   assert.match(html, /aria-expanded="true"/);
   assert.match(html, /Actual by Predicted/);
@@ -941,6 +951,12 @@ function testViewSourceContracts(): void {
     /useAnalysisExecution\(item, dataset \?\? null, runtime\)/,
     "FitModelAnalysisResults must execute through the native Analysis lifecycle.",
   );
+  assert.match(
+    viewSource,
+    /onAddEffect=\{canEditInputs \? onEditInputs : undefined\}/,
+    "FitModelAnalysisResults must wire Effect Summary Add to the existing editor only when editing is allowed.",
+  );
+  assert.doesNotMatch(reportSource, /buildResidualQqOption|residualQqOption/, "Fit Model report must not construct the hidden Q-Q chart.");
   assert.doesNotMatch(
     source,
     /(?:from\s+["'][^"']*\/FitModelReport["']|<FitModelReport\b)/,

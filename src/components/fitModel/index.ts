@@ -9,6 +9,16 @@ export {
 } from "./FitModelProfiler";
 
 export {
+  FitModelEffectSummary,
+  type FitModelEffectSummaryProps,
+} from "./FitModelEffectSummary";
+
+export {
+  FitModelLeveragePlot,
+  type FitModelLeveragePlotProps,
+} from "./FitModelLeveragePlot";
+
+export {
   predictFitModelPoint,
   scanFitModelPredictor,
   type FitModelPointPrediction,

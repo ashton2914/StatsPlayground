@@ -235,13 +235,6 @@
   height: 340px;
 }
 
-.sp-fit-model-diagnostic-chart-residualQq {
-  width: min(100%, 520px);
-  max-width: 520px;
-  height: auto;
-  aspect-ratio: 1;
-}
-
 .sp-fit-model-diagnostic-chart-predictionProfiler {
   max-width: none;
   height: 360px;
@@ -251,9 +244,39 @@
   width: min(100%, 680px);
 }
 
-.sp-fit-model-analysis-graph-qq,
 .sp-fit-model-analysis-graph-profiler-1 {
   width: min(100%, 520px);
+}
+
+.sp-fit-model-analysis-graph-residual {
+  width: min(100%, 820px);
+}
+
+.sp-fit-model-analysis-graph-residual .sp-fit-model-diagnostic-chart {
+  max-width: none;
+}
+
+.sp-fit-model-analysis-graph-effect-summary,
+.sp-fit-model-analysis-graph-leverage {
+  width: min(100%, 820px);
+}
+
+.sp-fit-model-diagnostic-chart-effectSummary,
+.sp-fit-model-diagnostic-chart-leveragePlot {
+  max-width: none;
+}
+
+.sp-fit-model-leverage-selector {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 320px);
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-secondary);
+  font-size: 12px;
+}
+
+.sp-fit-model-leverage-selector select {
+  min-width: 0;
 }
 
 .sp-fit-model-analysis-graph-profiler-2 {
@@ -270,6 +293,10 @@
   }
 
   .sp-fit-model-profiler-result {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-fit-model-leverage-selector {
     grid-template-columns: 1fr;
   }
 }

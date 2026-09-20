@@ -112,8 +112,46 @@ const fittedResult: FitModelFittedResult = {
     { termId: "Intercept", termLabel: "Intercept", estimate: 1, standardError: 0.1, tRatio: 10, pValue: 0.001, lowerConfidenceLimit: 0.8, upperConfidenceLimit: 1.2 },
     { termId: "A", termLabel: "A", estimate: 2, standardError: 0.2, tRatio: 10, pValue: 0.001, lowerConfidenceLimit: 1.6, upperConfidenceLimit: 2.4 },
   ],
-  effectTests: [],
-  leveragePlots: [],
+  effectTests: [
+    { termId: "A", termLabel: "A", numberOfParameters: 1, degreesOfFreedom: 1, sumOfSquares: 90, fRatio: 90, pValue: 0.0001, reason: null },
+    { termId: "B", termLabel: "B", numberOfParameters: 1, degreesOfFreedom: 1, sumOfSquares: 4, fRatio: 4, pValue: 0.08, reason: null },
+  ],
+  leveragePlots: [
+    {
+      termId: "A",
+      termLabel: "A",
+      pValue: 0.0001,
+      points: [
+        { rowIndex: 4, effectLeverage: -1, adjustedResponse: 8 },
+        { rowIndex: 9, effectLeverage: 1, adjustedResponse: 12 },
+      ],
+      confidenceBand: [
+        { effectLeverage: -1, fitted: 8, lower: 7, upper: 9 },
+        { effectLeverage: 1, fitted: 12, lower: 11, upper: 13 },
+      ],
+      nullLineY: 10,
+      rowsSampled: false,
+      sourceRowCount: 12,
+      reason: null,
+    },
+    {
+      termId: "B",
+      termLabel: "B",
+      pValue: 0.08,
+      points: [
+        { rowIndex: 4, effectLeverage: -2, adjustedResponse: 7 },
+        { rowIndex: 9, effectLeverage: 2, adjustedResponse: 13 },
+      ],
+      confidenceBand: [
+        { effectLeverage: -2, fitted: 7, lower: 6, upper: 8 },
+        { effectLeverage: 2, fitted: 13, lower: 12, upper: 14 },
+      ],
+      nullLineY: 10,
+      rowsSampled: false,
+      sourceRowCount: 12,
+      reason: null,
+    },
+  ],
   plotRows: [
     { rowIndex: 4, observed: 10, fitted: 8, residual: 2 },
     { rowIndex: 9, observed: 12, fitted: 11.8, residual: 0.2 },
@@ -129,7 +167,10 @@ const state: FitModelReportState = {
   configurationKey: "fit-model-report-test",
 };
 
-function report() {
+function report(callbacks: {
+  onAddEffect?: () => void;
+  onRemoveTerm?: (termId: string) => void;
+} = {}) {
   return (
     <div style={{ width: "100%", height: "100vh", minWidth: 0 }}>
       <FitModelAnalysisReport
@@ -138,17 +179,53 @@ function report() {
         datasetMissing={false}
         loadIssue={null}
         removeMessage={null}
-        onRemoveTerm={() => undefined}
+        onAddEffect={callbacks.onAddEffect}
+        onRemoveTerm={callbacks.onRemoveTerm ?? (() => undefined)}
         onUndoRemove={null}
       />
     </div>
   );
 }
 
-test("toggles report sections and filters diagnostic rows", async ({ mount }) => {
-  const component = await mount(report());
-  await expect(component.locator("[data-graph-strategy='custom']")).toHaveCount(4);
-  await expect(component.getByRole("button", { name: "Residual Q-Q" })).toHaveCount(1);
+test("renders approved report order and effect interactions", async ({ mount }) => {
+  const addCalls: string[] = [];
+  const removeCalls: string[] = [];
+  const component = await mount(report({
+    onAddEffect: () => addCalls.push("add"),
+    onRemoveTerm: (termId) => removeCalls.push(termId),
+  }));
+  const sectionTitles = await component.locator(
+    "[data-fit-model-analysis-report] > [data-analysis-block] > button.analysis-ui-frame-title",
+  ).allTextContents();
+  expect(sectionTitles.map((title) => title.replace(/^[▾▸]\s*/u, "").trim())).toEqual([
+    "Model Specification",
+    "Actual by Predicted",
+    "Effect Summary",
+    "Lack of Fit",
+    "Residual by Predicted",
+    "Summary of Fit",
+    "Analysis of Variance",
+    "Parameter Estimates",
+    "Effect Tests",
+    "Leverage Plot",
+    "Row Diagnostics",
+    "Prediction Profiler",
+    "Warnings",
+  ]);
+  await expect(component.getByRole("button", { name: "Residual Q-Q" })).toHaveCount(0);
+  await expect(component.locator('[data-chart-kind="residualQq"]')).toHaveCount(0);
+  await expect(component.getByText("Mean of Response", { exact: true })).toBeVisible();
+  await expect(component.getByText("Observations", { exact: true })).toBeVisible();
+
+  await component.getByRole("button", { name: "Add" }).click();
+  expect(addCalls).toEqual(["add"]);
+  await component.getByRole("button", { name: "Remove" }).click();
+  expect(removeCalls).toEqual(["A"]);
+  const leverageSelector = component.getByLabel("Effect", { exact: true });
+  await leverageSelector.selectOption("B");
+  await expect(leverageSelector).toHaveValue("B");
+  await expect(component.locator('[data-chart-kind="leveragePlot"]')).toHaveCount(1);
+
   const rowDiagnostics = component.getByRole("button", { name: "Row Diagnostics" });
   await expect(rowDiagnostics).toHaveAttribute("aria-expanded", "true");
   await rowDiagnostics.click();
@@ -169,20 +246,7 @@ for (const viewport of [
   test(`renders diagnostics without page overflow at ${viewport.width}x${viewport.height}`, async ({ mount, page }) => {
     await page.setViewportSize(viewport);
     const component = await mount(report());
-    const qqCanvas = component.locator('[data-chart-kind="residualQq"] canvas');
-    await expect(qqCanvas).toBeVisible();
-    await expect.poll(async () => qqCanvas.evaluate((canvas) => {
-      const context = (canvas as HTMLCanvasElement).getContext("2d");
-      if (!context) return 0;
-      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-      let visible = 0;
-      for (let index = 3; index < pixels.length; index += 4) {
-        if (pixels[index] > 0) visible += 1;
-      }
-      return visible;
-    })).toBeGreaterThan(100);
-
-    const chartBoxes = await component.locator('[data-chart-kind="actualByPredicted"], [data-chart-kind="residualByPredicted"], [data-chart-kind="residualQq"]').evaluateAll((elements) => elements.map((element) => {
+    const chartBoxes = await component.locator('[data-chart-kind="actualByPredicted"], [data-chart-kind="residualByPredicted"]').evaluateAll((elements) => elements.map((element) => {
       const box = element.getBoundingClientRect();
       const frame = element.closest<HTMLElement>(".analysis-ui-frame");
       const frameBox = frame?.getBoundingClientRect();
@@ -194,18 +258,12 @@ for (const viewport of [
         nestedFrameCount: frame?.querySelectorAll(".analysis-ui-frame").length ?? 0,
       };
     }));
-    expect(chartBoxes).toHaveLength(3);
+    expect(chartBoxes).toHaveLength(2);
     if (viewport.width >= 1000) {
-      for (const chart of chartBoxes.filter((entry) => entry.kind !== "residualQq")) {
-        expect(chart.width).toBeLessThanOrEqual(680);
-        expect(Math.abs(chart.frameWidth - chart.width)).toBeLessThanOrEqual(2);
-      }
-      const qq = chartBoxes.find((entry) => entry.kind === "residualQq");
-      expect(qq?.width ?? 0).toBeGreaterThanOrEqual(480);
-      expect(qq?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(560);
-      expect(Math.abs((qq?.width ?? 0) - (qq?.height ?? 0))).toBeLessThanOrEqual(80);
-      expect(Math.abs((qq?.frameWidth ?? 0) - (qq?.width ?? 0))).toBeLessThanOrEqual(2);
-      expect(qq?.nestedFrameCount).toBe(0);
+      const residual = chartBoxes.find((entry) => entry.kind === "residualByPredicted");
+      expect(residual?.width ?? 0).toBeGreaterThan(680);
+      expect(residual?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(820);
+      expect(residual?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(residual?.frameWidth ?? 0);
     }
 
     const profiler = component.locator('[data-graph-role="predictionProfiler"]');

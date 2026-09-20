@@ -174,6 +174,7 @@ export function FitModelAnalysisResults({
             datasetMissing={dataset == null}
             loadIssue={editorItem.loadIssue ?? null}
             removeMessage={removeMessage}
+            onAddEffect={canEditInputs ? onEditInputs : undefined}
             onRemoveTerm={handleRemoveTerm}
             onUndoRemove={undoSnapshot && onDefinitionChange ? handleUndo : null}
             onSaveColumns={canEditInputs ? () => setSaveDialogOpen(true) : undefined}

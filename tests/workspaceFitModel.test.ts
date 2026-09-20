@@ -42,16 +42,15 @@ assertSourceIncludes(workspaceSource, "construct: definition.construct", "Worksp
 assertSourceIncludes(workspaceSource, "menu.fitModel", "Analysis menu must include menu.fitModel");
 assertSourceIncludes(workspaceSource, "handleCreateFitModel", "Fit Model menu entry must open the creation flow");
 
-assertSourceIncludes(workspaceSource, "createFitModelAnalysisDocument", "Workspace creation must produce an Analysis document");
+assertSourceIncludes(workspaceSource, 'type: "analysis.create"', "Workspace creation must use the shared Analysis command");
+assertSourceIncludes(workspaceSource, 'analysisKind: "fitModel"', "Workspace creation must identify the Fit Model Analysis kind");
 assertSourceIncludes(workspaceSource, "fitModels: result.fitModels ?? []", "Project open must migrate saved Fit Model analyses");
 assertSourceIncludes(workspaceSource, "analysisFolders: analysisProjectPayload.analysisFolders", "Migrated Fit Model folders must use Analysis folder assignments");
 
 assert.equal(workspaceSource.includes("activeFitModelId"), false, "Workspace selection must use activeAnalysisId");
 assertSourceIncludes(workspaceSource, "showFitModelDialog", "Workspace must track the Fit Model creation dialog");
-assertSourceIncludes(workspaceSource, "addAnalysis(analysis)", "Workspace must add new Fit Model documents to the Analysis store");
-assertSourceIncludes(workspaceSource, "activateWorkspaceDocument(\"analysis\", id)", "Creating a Fit Model must activate its Analysis document");
+assertSourceIncludes(workspaceSource, "applicationRuntime.execute(", "Workspace must route Fit Model creation through the application runtime");
 assertSourceIncludes(workspaceSource, "getRetainedActiveAnalysisIdAfterDatasetDeletion", "Source deletion must preserve the Analysis document for source-missing state");
-assertSourceIncludes(workspaceSource, "history.newFitModel", "Creation must record Fit Model history");
 assertSourceIncludes(workspaceSource, "<AnalysisView item={item}", "Main pane must dispatch Fit Model through AnalysisView");
 assertSourceIncludes(workspaceSource, "initialDefinition={editorItem}", "Fit Model input editing must initialize from the persisted Analysis definition");
 assertSourceIncludes(workspaceSource, "fsPrune(dsIds, gbIds, tabulateIds, fitYByXIds, distributionIds, reportIds, fitModelIds, analysisIds,", "Folder prune must preserve Fit Model IDs alongside Analysis IDs");
@@ -62,7 +61,9 @@ assertSourceIncludes(fitModelCssSource, "grid-template-columns", "Fit Model CSS 
 assert.equal(fitModelCssSource.includes(".sp-fit-model-report-shell"), false, "AnalysisShell must own Fit Model report scrolling");
 assert.equal(fitModelCssSource.includes(".sp-fit-model-report-table"), false, "AnalysisTable must own Fit Model report table styling");
 assertSourceIncludes(fitModelCssSource, ".sp-fit-model-diagnostic-chart", "Fit Model CSS must size the mounted diagnostic charts");
-assertSourceIncludes(fitModelCssSource, ".sp-fit-model-diagnostic-chart-residualQq", "Fit Model CSS must give Q-Q a bounded square plot");
+assert.equal(fitModelCssSource.includes(".sp-fit-model-diagnostic-chart-residualQq"), false, "Fit Model CSS must not retain report-only Q-Q sizing");
+assertSourceIncludes(fitModelCssSource, ".sp-fit-model-analysis-graph-residual", "Fit Model CSS must give the residual graph a wider bounded frame");
+assertSourceIncludes(fitModelCssSource, "width: min(100%, 820px)", "Residual graph must use the approved wider desktop width");
 assertSourceIncludes(fitModelCssSource, ".sp-fit-model-diagnostic-chart-predictionProfiler", "Fit Model CSS must size profiler charts independently");
 assertSourceIncludes(fitModelCssSource, "@media (max-width: 900px)", "Fit Model CSS must wrap layout for narrow viewports");
 
