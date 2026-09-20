@@ -55,7 +55,7 @@ try {
   assert.equal(useGraphBuilderNewStore.getState().items.length, 2, "close retains the durable definition");
   const saved = JSON.parse(JSON.stringify(useGraphBuilderNewStore.getState().items));
   assert.equal("datasetGeneration" in saved[0], false);
-  assert.deepEqual(Object.keys(saved[0]).sort(), ["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "showMean", "xMode", "rawMode", "camera"].sort());
+  assert.deepEqual(Object.keys(saved[0]).sort(), ["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "overlayColumnId", "hiddenOverlayGroupIds", "showMean", "xMode", "rawMode", "camera"].sort());
   useGraphBuilderNewStore.getState().reset();
   useProjectStore.setState({ dirty: false });
   useGraphBuilderNewStore.getState().loadFromProject(saved);
@@ -128,7 +128,8 @@ try {
   assert.equal(useGraphBuilderNewStore.getState().sessions.find(({ id }) => id === first)?.xColumnId, "missing-column");
   const beforeInvalid = useGraphBuilderNewStore.getState();
   assert.throws(() => useGraphBuilderNewStore.getState().setCamera(first, { xMin: NaN, xMax: 1, yMin: 0, yMax: 1 }), /invalid_camera/);
-  assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([{ ...saved[0], version: 2 }]), /unsupported_document_version/);
+  assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([{ ...saved[0], version: 3 } as any]), /unsupported_document_version/);
+  assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([{ ...saved[0], overlayColumnId: null, hiddenOverlayGroupIds: ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }]), /invalid_overlay_state/);
   assert.throws(() => useGraphBuilderNewStore.getState().loadFromProject([saved[0], saved[0]]), /duplicate_document_id/);
   assert.strictEqual(useGraphBuilderNewStore.getState(), beforeInvalid, "invalid loads are atomic");
   useGraphBuilderNewStore.getState().loadFromProject(saved);
@@ -154,7 +155,7 @@ try {
 
   assert.equal(openedId, sessionId);
   assert.deepEqual(useGraphBuilderNewStore.getState().sessions, [{
-    version: 1,
+    version: 2,
     id: sessionId,
     transportId: useGraphBuilderNewStore.getState().sessions[0].transportId,
     runtimeEpoch: useGraphBuilderNewStore.getState().sessions[0].runtimeEpoch,
@@ -164,6 +165,8 @@ try {
     datasetGeneration: 17,
     xColumnId: null,
     yColumnId: null,
+    overlayColumnId: null,
+    hiddenOverlayGroupIds: [],
     showMean: true,
     xMode: "auto",
     rawMode: "scatter",
@@ -172,7 +175,7 @@ try {
   useGraphBuilderNewStore.getState().setMean(sessionId, false);
   useGraphBuilderNewStore.getState().setColumns(sessionId, "column-x", "column-y");
   assert.deepEqual(useGraphBuilderNewStore.getState().sessions[0], {
-    version: 1,
+    version: 2,
     id: sessionId,
     transportId: useGraphBuilderNewStore.getState().sessions[0].transportId,
     runtimeEpoch: useGraphBuilderNewStore.getState().sessions[0].runtimeEpoch,
@@ -182,6 +185,8 @@ try {
     datasetGeneration: 17,
     xColumnId: "column-x",
     yColumnId: "column-y",
+    overlayColumnId: null,
+    hiddenOverlayGroupIds: [],
     showMean: false,
     xMode: "auto",
     rawMode: "scatter",
@@ -202,7 +207,7 @@ try {
   assert.equal(replacementId, replacementSessionId);
   assert.equal(useGraphBuilderNewStore.getState().sessions.length, 2);
   assert.deepEqual(useGraphBuilderNewStore.getState().sessions[1], {
-    version: 1,
+    version: 2,
     id: replacementSessionId,
     transportId: useGraphBuilderNewStore.getState().sessions[1].transportId,
     runtimeEpoch: useGraphBuilderNewStore.getState().sessions[1].runtimeEpoch,
@@ -212,6 +217,8 @@ try {
     datasetGeneration: 4,
     xColumnId: null,
     yColumnId: null,
+    overlayColumnId: null,
+    hiddenOverlayGroupIds: [],
     showMean: true,
     xMode: "auto",
     rawMode: "scatter",
@@ -246,6 +253,72 @@ const beforeLongCollision = useGraphBuilderNewStore.getState();
 assert.throws(() => useGraphBuilderNewStore.getState().renameItem(collidingId, "a".repeat(255)), /project_name_tooLong/);
 assert.strictEqual(useGraphBuilderNewStore.getState(), beforeLongCollision);
 assert.equal(useProjectStore.getState().dirty, false);
+useGraphBuilderNewStore.getState().reset();
+
+const legacy = {
+  version: 1,
+  id: "legacy",
+  name: "Legacy",
+  datasetId: "dataset-1",
+  xColumnId: "x",
+  yColumnId: "y",
+  showMean: true,
+  xMode: "auto",
+  rawMode: "scatter",
+  camera: { xMin: 1, xMax: 9, yMin: -2, yMax: 4 },
+} as const;
+useProjectStore.setState({ dirty: false, readOnly: false });
+useGraphBuilderNewStore.getState().loadFromProject([legacy]);
+assert.deepEqual(useGraphBuilderNewStore.getState().items[0], {
+  ...legacy,
+  version: 2,
+  overlayColumnId: null,
+  hiddenOverlayGroupIds: [],
+});
+assert.equal(useProjectStore.getState().dirty, false);
+const legacyId = useGraphBuilderNewStore.getState().items[0].id;
+const legacyCamera = useGraphBuilderNewStore.getState().items[0].camera;
+useGraphBuilderNewStore.getState().setOverlay(legacyId, "overlay");
+useGraphBuilderNewStore.getState().setHiddenOverlayGroups(legacyId, [
+  `sha256:${"a".repeat(64)}`,
+]);
+assert.equal(useGraphBuilderNewStore.getState().items[0].overlayColumnId, "overlay");
+assert.deepEqual(useGraphBuilderNewStore.getState().items[0].hiddenOverlayGroupIds, [
+  `sha256:${"a".repeat(64)}`,
+]);
+assert.deepEqual(useGraphBuilderNewStore.getState().items[0].camera, legacyCamera);
+useProjectStore.setState({ dirty: false });
+useGraphBuilderNewStore.getState().setOverlay(legacyId, "overlay-2");
+assert.equal(useProjectStore.getState().dirty, true);
+assert.equal(useGraphBuilderNewStore.getState().items[0].overlayColumnId, "overlay-2");
+assert.deepEqual(useGraphBuilderNewStore.getState().items[0].hiddenOverlayGroupIds, []);
+assert.deepEqual(useGraphBuilderNewStore.getState().items[0].camera, legacyCamera, "changing Overlay preserves camera");
+useProjectStore.setState({ dirty: false });
+const beforeSortedHiddenGroups = useGraphBuilderNewStore.getState().items[0].hiddenOverlayGroupIds;
+useGraphBuilderNewStore.getState().setHiddenOverlayGroups(legacyId, [
+  `sha256:${"c".repeat(64)}`,
+  `sha256:${"b".repeat(64)}`,
+]);
+assert.deepEqual(useGraphBuilderNewStore.getState().items[0].hiddenOverlayGroupIds, [
+  `sha256:${"b".repeat(64)}`,
+  `sha256:${"c".repeat(64)}`,
+]);
+assert.notStrictEqual(useGraphBuilderNewStore.getState().items[0].hiddenOverlayGroupIds, beforeSortedHiddenGroups);
+assert.equal(useProjectStore.getState().dirty, true);
+useProjectStore.setState({ dirty: false, readOnly: true });
+assert.throws(
+  () => useGraphBuilderNewStore.getState().setHiddenOverlayGroups(legacyId, [`sha256:${"d".repeat(64)}`]),
+  /read-only/,
+);
+useProjectStore.setState({ dirty: false, readOnly: false });
+assert.throws(
+  () => useGraphBuilderNewStore.getState().setHiddenOverlayGroups(legacyId, ["sha256:not-a-hash"]),
+  /invalid_overlay_state/,
+);
+assert.throws(
+  () => useGraphBuilderNewStore.getState().setHiddenOverlayGroups(legacyId, Array.from({ length: 65 }, (_, index) => `sha256:${index.toString(16).padStart(64, "0")}`)),
+  /invalid_overlay_state/,
+);
 useGraphBuilderNewStore.getState().reset();
 
 useFolderStore.getState().loadFromProject({

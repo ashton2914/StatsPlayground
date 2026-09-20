@@ -190,6 +190,55 @@
 .graph-new-layers { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 0 0 8px; min-height: 28px; text-align: left; }
 .graph-new-mean-toggle, .graph-new-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .graph-new-mean-toggle input { margin: 0; accent-color: #dc2626; }
+.graph-new-overlay-legend {
+  min-width: min(100%, 240px);
+  max-width: min(100%, 320px);
+  max-height: 240px;
+  margin: 0;
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--gbn-border);
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--gbn-panel) 94%, #edf3f5);
+  contain: inline-size;
+}
+.graph-new-overlay-legend label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--gbn-text);
+}
+.graph-new-overlay-legend label[data-hidden="true"] {
+  opacity: 0.64;
+}
+.graph-new-overlay-legend input {
+  margin: 0;
+}
+.graph-new-overlay-legend input:focus-visible {
+  outline: 2px solid #1f6feb;
+  outline-offset: 2px;
+}
+.graph-new-overlay-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--gbn-text) 18%, transparent);
+}
+.graph-new-overlay-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-new-overlay-legend output {
+  color: var(--gbn-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 .graph-new-point-swatch { width: 7px; height: 7px; border-radius: 50%; background-color: #1f6feb; }
 .graph-new-mean-swatch { width: 20px; height: 0; border-top: 2px solid #dc2626; }
 .graph-new-line-swatch { width: 20px; height: 0; border-top: 1px solid #1f6feb; }

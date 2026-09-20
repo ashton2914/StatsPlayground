@@ -14,7 +14,7 @@ interface GraphBuilderNewHarnessProps {
   savedCamera?: GraphBuilderNewCamera;
   locale?: "en" | "zh-CN";
   axisFixture?: "nanoTime" | "microTime" | "microDuration" | "unicode";
-  mode?: "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "slow" | "renderError" | "unknownCount" | "largeExact" | "mixedFields" | "unsupportedFields" | "deferredFields";
+  mode?: "live" | "stale" | "missing" | "empty" | "error" | "invalid" | "render" | "slow" | "renderError" | "renderCachePressure" | "renderGpuValidation" | "unknownCount" | "largeExact" | "mixedFields" | "unsupportedFields" | "deferredFields" | "overlay" | "overlayMean" | "overlayMany";
 }
 
 const SESSION_ID = "graph-builder-new-session";
@@ -42,6 +42,31 @@ const REPLACEMENT_FIELDS: ColumnDescriptor[] = [
   { columnId: "new-x", name: "New X", sqlType: "DOUBLE" },
   { columnId: "new-text", name: "New text", sqlType: "VARCHAR" },
 ];
+const OVERLAY_FIELDS: ColumnDescriptor[] = [
+  { columnId: "column-x", name: "Diameter", sqlType: "DOUBLE" },
+  { columnId: "column-y", name: "Height", sqlType: "INTEGER" },
+  { columnId: "column-label", name: "Cavity", sqlType: "VARCHAR" },
+  { columnId: "lot-column", name: "Lot", sqlType: "VARCHAR" },
+];
+export const OVERLAY_A_ID = `sha256:${"a".repeat(64)}`;
+export const OVERLAY_B_ID = `sha256:${"b".repeat(64)}`;
+export const OVERLAY_MISSING_ID = `sha256:${"c".repeat(64)}`;
+const OVERLAY_GROUPS = [
+  { id: OVERLAY_A_ID, code: 1, label: "A", color: [31, 111, 235, 128] as [number, number, number, number], totalRows: 2_000_000, missing: false },
+  { id: OVERLAY_B_ID, code: 2, label: "B", color: [220, 38, 38, 255] as [number, number, number, number], totalRows: 32_292, missing: false },
+  { id: OVERLAY_MISSING_ID, code: 65_535, label: "", color: [107, 114, 128, 160] as [number, number, number, number], totalRows: 1, missing: true },
+];
+
+function createOverlayGroups(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `sha256:${(index + 1).toString(16).padStart(64, "0")}`,
+    code: index + 1,
+    label: `Group ${String(index + 1).padStart(2, "0")}`,
+    color: [31 + (index % 5) * 20, 111 + (index % 3) * 20, 235 - (index % 4) * 24, 255] as [number, number, number, number],
+    totalRows: index + 1,
+    missing: false,
+  }));
+}
 
 export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixture, savedCamera, deferClose = false }: GraphBuilderNewHarnessProps) {
   const [ready, setReady] = useState(false);
@@ -53,7 +78,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
   const [closedIds, setClosedIds] = useState<string[]>([]);
   const [cancelledIds, setCancelledIds] = useState<string[]>([]);
   const pendingCloses = useRef<(() => void)[]>([]);
-  const [metrics, setMetrics] = useState({ renders: 0, cancels: 0, closes: 0, presented: 0, maximumActive: 0, settled: 0 });
+  const [metrics, setMetrics] = useState({ renders: 0, cancels: 0, closes: 0, presented: 0, maximumActive: 0, settled: 0, sourceProjectionQueries: -1 });
   const [width, setWidth] = useState(960);
   const [invalidated, setInvalidated] = useState(false);
   const [visible, setVisible] = useState(true);
@@ -79,7 +104,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
     const previousInternals = (window as any).__TAURI_INTERNALS__;
     let active = 0;
     const closedSessions = new Set<string>();
-    if (["render", "slow", "renderError", "unknownCount", "largeExact", "mixedFields", "unsupportedFields", "deferredFields"].includes(mode)) {
+    if (["render", "slow", "renderError", "renderCachePressure", "renderGpuValidation", "unknownCount", "largeExact", "mixedFields", "unsupportedFields", "deferredFields", "overlay", "overlayMean", "overlayMany"].includes(mode)) {
       (window as any).__TAURI_INTERNALS__ = {};
       graphNewService.close = async (sessionId) => {
         setClosedIds((value) => [...value, sessionId]);
@@ -103,6 +128,8 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
           setMetrics((value) => ({ ...value, settled: value.settled + 1 }));
           if (closedSessions.has(request.sessionId)) { handlers.onError("graph_new_cancelled"); reject(new Error("graph_new_cancelled")); return; }
           if (mode === "renderError") { handlers.onError("graph_new_render_failed"); reject(new Error("private /user/source.db")); return; }
+          if (mode === "renderCachePressure") { handlers.onError("graph_new_cache_pressure"); reject(new Error("graph_new_cache_pressure")); return; }
+          if (mode === "renderGpuValidation") { handlers.onError("graph_new_gpu_validation"); reject(new Error("graph_new_gpu_validation")); return; }
           const pixels = new Uint8Array(header.byteLength).fill(255);
           for (let row = Math.floor(frameHeight / 3); row < Math.floor(frameHeight * 2 / 3); row++) {
             for (let column = Math.floor(frameWidth / 3); column < Math.floor(frameWidth * 2 / 3); column++) {
@@ -123,26 +150,59 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
               : axisFixture === "unicode" ? { kind: "category", utc: false,
                 ticks: [{ value: 0, position: 0, label: "\u6e29\u5ea6" }, { value: 1, position: 1, label: "\u00e9\u0394" }] } : null;
           const domain = request.cameraDomain ?? (fixtureAxis ? { xMin: fixtureAxis.ticks[0].value, xMax: fixtureAxis.ticks[1].value, yMin: 0, yMax: 100 } : typedDomain);
-          resolve({ requestId: request.requestId, processedRows: mode === "largeExact" ? 2_032_294 : 4,
+          const overlayGroups = mode === "overlayMany"
+            ? createOverlayGroups(64)
+            : (mode === "overlay" || mode === "overlayMean") && request.overlayColumnId === "lot-column"
+              ? OVERLAY_GROUPS
+              : [];
+          const finiteRows = mode === "overlayMany"
+            ? overlayGroups.reduce((sum, group) => sum + group.totalRows, 0)
+            : mode === "overlay" || mode === "overlayMean"
+              ? request.overlayColumnId === "lot-column"
+                ? overlayGroups.reduce((sum, group) => sum + group.totalRows, 0)
+                : 2_032_293
+              : mode === "largeExact" ? 2_032_293 : 3;
+          const hiddenRows = request.hiddenOverlayGroupIds == null
+            ? 0
+            : overlayGroups
+              .filter((group) => request.hiddenOverlayGroupIds?.includes(group.id))
+              .reduce((sum, group) => sum + group.totalRows, 0);
+          const selectedMarks = mode === "overlayMany" || mode === "overlay" || mode === "overlayMean"
+            ? request.cameraDomain ? finiteRows - hiddenRows : finiteRows
+            : mode === "largeExact" ? 2_032_293 : request.cameraDomain ? (mode === "unknownCount" ? 0 : 1) : 2;
+          const visibleRows = mode === "overlayMany" || mode === "overlay" || mode === "overlayMean"
+            ? selectedMarks
+            : mode === "largeExact" ? (request.cameraDomain ? 7 : 2_032_293) : request.cameraDomain ? (mode === "unknownCount" ? null : 1) : 3;
+          resolve({ requestId: request.requestId, processedRows: finiteRows + 1,
             rawMode: request.rawMode ?? "scatter", rawLineAvailable: mode !== "unknownCount", rawLineSegments: request.rawMode === "scatter" ? 0 : 2,
             xAxis: fixtureAxis ?? (["duration", "time", "category"].includes(request.xMode ?? "") ? { kind: request.xMode, utc: request.xMode === "time",
               ticks: [0, 0.25, 0.5, 0.75, 1].map((position, index) => ({ value: domain.xMin + position * (domain.xMax - domain.xMin), position,
                 label: request.xMode === "category" ? `Category ${index + 1} with a deliberately long descriptive label` : null })) }
               : { kind: "numeric", utc: false, ticks: [] }),
-            finiteRows: mode === "largeExact" ? 2_032_293 : 3, excludedNonFiniteRows: 1,
-            meanAvailable: mode === "largeExact", meanGroups: mode === "largeExact" && request.showMean ? 2 : null,
-            meanVisible: mode === "largeExact" && request.showMean === true,
-            selectedMarks: mode === "largeExact" ? 2_032_293 : request.cameraDomain ? (mode === "unknownCount" ? 0 : 1) : 2,
-            exactVisible: mode === "largeExact" || (Boolean(request.cameraDomain) && mode !== "unknownCount"),
-            visibleRows: mode === "largeExact" ? (request.cameraDomain ? 7 : 2_032_293) : request.cameraDomain ? (mode === "unknownCount" ? null : 1) : 3,
+            finiteRows, excludedNonFiniteRows: 1,
+            meanAvailable: mode === "largeExact" || mode === "overlayMean",
+            meanGroups: mode === "largeExact" && request.showMean ? 2
+              : mode === "overlayMean" && request.showMean ? selectedMarks : null,
+            meanVisible: (mode === "largeExact" || mode === "overlayMean") && request.showMean === true,
+            selectedMarks,
+            exactVisible: mode === "overlayMany" || mode === "overlay" || mode === "largeExact" || (Boolean(request.cameraDomain) && mode !== "unknownCount"),
+            visibleRows,
             rawIndexEntriesInspected: 0, rawBlocksInspected: 0, rawPointsInspected: 0,
             buildMs: 1, renderMs: 1, readbackMs: 1, width: frameWidth, height: frameHeight,
             cameraDomain: domain,
             plotRect: { x: Math.ceil(64 * request.devicePixelRatio), y: Math.ceil(16 * request.devicePixelRatio),
               width: Math.floor((request.width - 16) * request.devicePixelRatio) - Math.ceil(64 * request.devicePixelRatio),
               height: Math.floor((request.height - 32) * request.devicePixelRatio) - Math.ceil(16 * request.devicePixelRatio) },
-            sourceProjectionQueryCount: request.cameraDomain ? 0 : 1, renderGenerationCheckCount: 4 });
+            sourceProjectionQueryCount: request.cameraDomain ? 0 : 1,
+            renderGenerationCheckCount: 4,
+            overlayActive: overlayGroups.length > 0,
+            overlayGroups,
+            hiddenOverlayGroups: request.hiddenOverlayGroupIds?.length ?? 0,
+          });
         }, mode === "slow" ? 400 : 60));
+        void completion.then((result: { sourceProjectionQueryCount: number }) => {
+          setMetrics((value) => ({ ...value, sourceProjectionQueries: result.sourceProjectionQueryCount }));
+        }).catch(() => {});
         return { completion, canPresent: () => !cancelled && !presented && !closedSessions.has(request.sessionId),
           markPresented: () => { presented = true; setMetrics((value) => ({ ...value, presented: value.presented + 1 })); },
           cancel: async (preserveCache = false) => {
@@ -156,15 +216,33 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
     }
 
     useProjectStore.setState({ dirty: false, readOnly: false });
-    useGraphBuilderNewStore.getState().loadFromProject([{
+    useGraphBuilderNewStore.getState().loadFromProject([mode === "invalid"
+      ? {
+        version: 2,
+        id: SESSION_ID,
+        name: "Graph Builder-new 1",
+        datasetId: DATASET.id,
+        xColumnId: "removed-x",
+        yColumnId: "column-label",
+        overlayColumnId: "removed-overlay",
+        hiddenOverlayGroupIds: [],
+        showMean: true,
+        xMode: "auto",
+        rawMode: "scatter",
+        camera: savedCamera ?? null,
+      }
+      : {
         version: 1,
         id: SESSION_ID,
         name: "Graph Builder-new 1",
         datasetId: DATASET.id,
-        xColumnId: mode === "invalid" ? "removed-x" : savedCamera ? "column-x" : null,
-        yColumnId: mode === "invalid" ? "column-label" : savedCamera ? "column-y" : null,
-        showMean: true, xMode: "auto", rawMode: "scatter", camera: savedCamera ?? null,
-    }]);
+        xColumnId: savedCamera ? "column-x" : null,
+        yColumnId: savedCamera ? "column-y" : null,
+        showMean: true,
+        xMode: "auto",
+        rawMode: "scatter",
+        camera: savedCamera ?? null,
+      }]);
     useGraphBuilderNewStore.getState().reopen(SESSION_ID, mode === "stale" ? DATASET.generation - 1 : DATASET.generation);
     dataService.getColumnDescriptors = async (datasetId) => {
       setDescriptorCalls((count) => count + 1);
@@ -180,6 +258,7 @@ export function GraphBuilderNewHarness({ mode = "live", locale = "en", axisFixtu
           column.columnId === "column-x" ? { ...column, sqlType: "VARCHAR" } : column
         ))
         : MIXED_FIELDS;
+      if (mode === "overlay" || mode === "overlayMean" || mode === "overlayMany") return OVERLAY_FIELDS;
       return [
         { columnId: "column-x", name: "Diameter", sqlType: "DOUBLE" },
         { columnId: "column-y", name: "Height", sqlType: "INTEGER" },

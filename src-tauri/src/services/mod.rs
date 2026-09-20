@@ -11,6 +11,7 @@ pub mod fit_model_service;
 pub mod fit_y_by_x_service;
 pub mod graph_data_service;
 pub mod graph_new_key;
+pub mod graph_new_overlay;
 pub mod graph_new_lod;
 pub mod graph_new_raw;
 pub(crate) mod graph_new_renderer;

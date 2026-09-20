@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { graphNewService, type GraphNewAxis, type GraphNewRenderController, type GraphNewRenderRequest } from "@/services/graphNewService";
+import {
+  graphNewService,
+  type GraphNewAxis,
+  type GraphNewOverlayGroup,
+  type GraphNewRenderController,
+  type GraphNewRenderRequest,
+} from "@/services/graphNewService";
 import type { GraphNewFrame } from "@/types/graphNew";
+import { GraphNewOverlayLegend } from "./GraphNewOverlayLegend";
 import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
 
 interface RenderJob { run: () => Promise<void>; cancel: (preserveCache?: boolean) => void }
@@ -25,12 +32,14 @@ function enqueue(job: RenderJob) {
   pump();
 }
 
-type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode"> & {
+type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xColumnId" | "yColumnId" | "xMode" | "rawMode" | "overlayColumnId"> & {
   transportId: string;
   xTitle: string;
   yTitle: string;
   showMean: boolean;
+  hiddenOverlayGroupIds?: string[];
   onMeanChange: (enabled: boolean) => void;
+  onHiddenOverlayGroupIdsChange?: (ids: string[]) => void;
   savedCamera?: CameraDomain | null;
   readOnly?: boolean;
   onCameraChange?: (camera: CameraDomain | null) => void;
@@ -68,9 +77,10 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
   return String(tick.value);
 }
 
-export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xTitle, yTitle, showMean, onMeanChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
+export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, xTitle, yTitle, showMean, hiddenOverlayGroupIds = [], onMeanChange, onHiddenOverlayGroupIdsChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
   const { t } = useTranslation();
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
+  const [overlayState, setOverlayState] = useState<{ active: boolean; groups: GraphNewOverlayGroup[] }>({ active: false, groups: [] });
   const [rawAvailable, setRawAvailable] = useState(true);
   const [axisLabels, setAxisLabels] = useState<{ label: string; left: number; top: number; width: number }[]>([]);
   const host = useRef<HTMLDivElement>(null);
@@ -124,7 +134,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
     const element = host.current;
     const plotElement = plotHost.current;
     if (!element || !plotElement) return;
-    const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, xMode]);
+    const identity = JSON.stringify([sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, xMode]);
     if (cameraState.current?.identity !== identity) {
       cameraState.current = { identity, full: null, desired: null, presented: null, resetPending: false, restorePending: true, gesturePending: false };
       setCameraRestoreRejected(false);
@@ -255,7 +265,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
         setReason(null);
         const generation = ++rendererGeneration;
         const request: GraphNewRenderRequest = {
-          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, showMean, xMode, rawMode, ...size,
+          sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, showMean, xMode, rawMode, overlayColumnId, hiddenOverlayGroupIds: [...hiddenOverlayGroupIds], ...size,
           requestId: `${sessionId}:${generation}`, rendererGeneration: generation, cameraGeneration, cameraDomain,
         };
         let bitmap: ImageBitmap | null = null;
@@ -308,6 +318,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
             return [{ label, left: position, top: top + (plot!.y + plot!.height) * scale + 5, width }];
           }) : []);
           setRawAvailable(completion.rawLineAvailable !== false);
+          setOverlayState({ active: completion.overlayActive, groups: completion.overlayGroups });
           plotElement.style.left = `${left + plot.x * scale}px`;
           plotElement.style.top = `${top + plot.y * scale}px`;
           plotElement.style.width = `${plot.width * scale}px`;
@@ -341,9 +352,36 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
           if (!cancelled) {
             const missing = error instanceof Error && error.message === "graph_new_missing_cache";
             const unrepresentable = error instanceof Error && error.message === "graph_new_x_unrepresentable";
-            setReason(missing ? "graph_new_missing_cache" : unrepresentable ? "graph_new_x_unrepresentable" : "graph_new_render_failed");
-            setStatus(missing ? "Camera cache unavailable. Reset view to rebuild." : unrepresentable
-              ? t("graphNew.xUnrepresentable", { defaultValue: "X values exceed the bounded categorical axis capacity." }) : "Plot could not be rendered.");
+            const cachePressure = error instanceof Error && error.message === "graph_new_cache_pressure";
+            const gpuValidation = error instanceof Error && error.message === "graph_new_gpu_validation";
+            const overlayTooMany = error instanceof Error && error.message === "graph_new_overlay_too_many_groups";
+            const overlayValueTooLarge = error instanceof Error && error.message === "graph_new_overlay_value_too_large";
+            setReason(missing
+              ? "graph_new_missing_cache"
+              : unrepresentable
+                ? "graph_new_x_unrepresentable"
+                : cachePressure
+                  ? "graph_new_cache_pressure"
+                  : gpuValidation
+                    ? "graph_new_gpu_validation"
+                : overlayTooMany
+                  ? "graph_new_overlay_too_many_groups"
+                  : overlayValueTooLarge
+                    ? "graph_new_overlay_value_too_large"
+                    : "graph_new_render_failed");
+            setStatus(missing
+              ? "Camera cache unavailable. Reset view to rebuild."
+              : unrepresentable
+                ? t("graphNew.xUnrepresentable", { defaultValue: "X values exceed the bounded categorical axis capacity." })
+                : cachePressure
+                  ? t("graphNew.cachePressure", { defaultValue: "Plot exceeded the render memory budget. Hide layers or reset the view." })
+                  : gpuValidation
+                    ? t("graphNew.gpuValidation", { defaultValue: "Plot rendering failed GPU validation. Hide layers or reset the view." })
+                : overlayTooMany
+                  ? t("graphNew.overlayTooManyGroups")
+                  : overlayValueTooLarge
+                    ? t("graphNew.overlayValueTooLarge")
+                    : "Plot could not be rendered.");
           }
         } finally {
           clearTimeout(timer);
@@ -367,7 +405,7 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
       plotElement.removeEventListener("lostpointercapture", end); plotElement.removeEventListener("wheel", wheel);
       resetView.current = () => {};
     };
-  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, size, showMean, xMode, rawMode, t]);
+  }, [sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId, hiddenOverlayGroupIds, size, showMean, xMode, rawMode, t]);
 
   return (
     <div className="graph-new-chart">
@@ -386,6 +424,14 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
         {meanFrame?.available === false && <span className="graph-new-mean-reason" data-testid="mean-unavailable">{t("graphNew.meanUnavailable")}</span>}
         {showMean && meanFrame?.available && meanFrame.groups !== null && meanFrame.groups < 2
           && <span className="graph-new-mean-reason">{t("graphNew.meanNeedsGroups")}</span>}
+        {overlayState.active && (
+          <GraphNewOverlayLegend
+            groups={overlayState.groups}
+            hiddenIds={hiddenOverlayGroupIds}
+            readOnly={readOnly}
+            onHiddenIdsChange={(ids) => onHiddenOverlayGroupIdsChange?.(ids)}
+          />
+        )}
       </div>
       <span className="graph-new-y-title" data-testid="y-axis-title">{yTitle}</span>
       <div className="graph-new-canvas-host" ref={host}>

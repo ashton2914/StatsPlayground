@@ -1,5 +1,80 @@
 # Performance Baselines
 
+## Issue 235 Native Overlay Qualification (2026-09-19)
+
+Required 2M source SHA: `555aa3247cfd67a38d4c48465e68c2e6db9d3c90`  
+Stretch 10M source SHA: `2441e9f2a99082e6a7c438c06b7cd15ead7152af`
+(10M was not rerun after the later backend regression fix, Fix Round 1, or the
+final review fix wave; its single controlled-refusal sample remains tied to
+that earlier reviewed SHA)  
+Platform: macOS 27.0 (`Darwin arm64`), Apple M3 Pro  
+Evidence: `.cache/issue235-overlay/performance/overlay-2m-555aa3247cfd67a38d4c48465e68c2e6db9d3c90.json`,
+`.cache/issue235-overlay/performance/overlay-10m.json`
+
+This section records single release-harness samples from
+`src-tauri/target/release/examples/performance_baseline` with
+`--features perf-harness`. These are not P95 measurements. The CLI harness
+measures native backend/build, native render, and GPU readback separately.
+WebView presentation is separate and **unmeasured** here
+(`webviewPresentationMetric = "unmeasured_cli_harness_no_webview_presentation"`).
+`accountedMemoryBytes` is graph-owned in-memory tile accounting only.
+`cpuCacheBytes`, `persistentCacheBytes`, and `gpuAllocatedBytes` are layer-local
+cache allocations. `processRssBytes` is whole-process RSS sampled from the OS.
+
+### Required 2M qualification
+
+- Request: `--operation graph --graph-new-rows 2000000 --graph-new-overlay-groups 8`
+- Qualification result: `qualificationPassed = true`
+- Source/finite shape: `sourceRows = 2,000,000`, `processedRows = 2,000,000`,
+  `finiteRows = 2,000,000`, `excludedNonFiniteRows = 0`
+- Build summary: `operationMs = 12,187`, `scanCompleteMs = 3539`,
+  `overviewReadyMs = 3917`, `pyramidCompleteMs = 3917`,
+  `spoolBytes = 52,000,000`, `accountedMemoryBytes = 248,462,336`,
+  `tileCount = 1`, `tileBytes = 60,000,100`, `levels = 1`,
+  build-time `processRssBytes = 523,829,248`
+- Overlay shape: 9 groups total (8 nonmissing + Missing), with exact counts:
+  `group-0..group-6 = 285,714` each, `group-7 = 1`, `(Missing) = 1`
+- Minority evidence: `minorityGroupRows = 1` (<0.1% of finite rows);
+  `missingGroupRows = 1`
+- Identity stability: `coldGraphKey = hiddenGraphKey = shownGraphKey =
+  d69f792a3d8fb402372234763915617bfeaed8c90282f52ba8dbaee367b2ac04`
+- Cold phase camera/domain:
+  `{"xMin":0.0,"xMax":1.0,"yMin":0.050000000000001266,"yMax":0.9499999999999884}`
+- Camera stability across the bounded camera + hide/show interaction:
+  `{"xMin":0.25,"xMax":0.75,"yMin":0.274999999999998,"yMax":0.7249999999999917}`
+- Query counts: warm/camera/hide/show `sourceProjectionQueryCount = 0`
+- Marks: cold `selectedMarks = 2,000,000`, hide `selectedMarks = 1,999,999`,
+  show `selectedMarks = 2,000,000`; every phase remained `exactVisible = true`
+- Required overlay layer evidence also passed on the same 2M build:
+  grouped Raw Line completed with `rawMode = "line"` and
+  `rawLineSegments = 1,999,991`; grouped Mean completed with
+  `meanVisible = true` and `meanGroups = 1,794`
+
+| Phase | wallMs | buildMs | renderMs | readbackMs | projection queries | selectedMarks | visibleRows | cpuCacheBytes | persistentCacheBytes | gpuAllocatedBytes | processCpuReservedBytes | processRssBytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| cold | 4951.188417 | 3916.191542 | 310.001125 | 70.94933300000001 | 1 | 2000000 | 2000000 | 60007792 | 60001905 | 96591020 | 260011888 | 910000128 |
+| warm | 361.375541 | 0.0 | 296.33675 | 47.106791 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591020 | 260011888 | 830013440 |
+| camera | 323.12383300000005 | 0.0 | 285.376875 | 17.142417000000002 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591420 | 260011888 | 830046208 |
+| hide | 343.590125 | 0.0 | 308.1715 | 17.142999999999997 | 0 | 1999999 | 1999999 | 60007792 | 60001905 | 96591420 | 260011888 | 987463680 |
+| show | 347.782916 | 0.0 | 310.045167 | 20.624582999999998 | 0 | 2000000 | 2000000 | 60007792 | 60001905 | 96591420 | 260011888 | 1064845312 |
+| raw | 687.621125 | 0.0 | 428.30237500000004 | 30.580834000000003 | 0 | 2000000 | 2000000 | 84007780 | 60001905 | 144591192 | 260011888 | 1102118912 |
+| mean | 397.709834 | 0.0 | 310.796958 | 16.885542 | 0 | 2000000 | 2000000 | 132007780 | 60001905 | 144634008 | 260011888 | 1213628416 |
+
+### Bounded 10M stretch
+
+- Request: `--operation graph --graph-new-rows 10000000 --graph-new-overlay-groups 8`
+- Result: controlled refusal before a cold completion was emitted
+- `groupedOverlay.outcome = "controlled_refusal"`
+- `groupedOverlay.refusalCode = "graph_new_cache_pressure"`
+- Top-level harness fields remained:
+  `sourceRows = 10,000,000`, `rows = 10,000,000`, `operationMs = 2106`,
+  `processRssBytes = 180,649,984`
+
+This single 10M sample is stretch evidence only, not a percentile. Because the
+run refused with `graph_new_cache_pressure`, there are no cold/warm/camera/hide/show
+phase timings for the 10M JSON. The bottleneck is the existing graph cache /
+GPU admission budget, not DuckDB projection cardinality.
+
 ## Tabulate Viewport Qualification
 
 The Tabulate viewport benchmark generates its source table in an in-memory

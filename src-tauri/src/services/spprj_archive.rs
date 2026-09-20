@@ -2245,14 +2245,60 @@ fn validate_native_graph_string(value: &str, field: &str, limit: usize) -> Resul
     Ok(())
 }
 
+fn validate_graph_builder_new_hidden_overlay_group_ids(
+    overlay_column_id: Option<&str>,
+    value: &Value,
+) -> Result<(), AppError> {
+    let ids = value
+        .as_array()
+        .ok_or_else(|| AppError::InvalidParam("Invalid graphBuildersNew hiddenOverlayGroupIds".into()))?;
+    if ids.len() > 64 {
+        return Err(AppError::InvalidParam(
+            "Invalid graphBuildersNew hiddenOverlayGroupIds".into(),
+        ));
+    }
+    let mut unique = HashSet::new();
+    for id in ids {
+        let id = id
+            .as_str()
+            .ok_or_else(|| AppError::InvalidParam("Invalid graphBuildersNew hiddenOverlayGroupIds".into()))?;
+        let valid_group_id = id.len() == 71
+            && id.starts_with("sha256:")
+            && id
+                .as_bytes()
+                .iter()
+                .skip(7)
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        if !valid_group_id || !unique.insert(id) {
+            return Err(AppError::InvalidParam(
+                "Invalid graphBuildersNew hiddenOverlayGroupIds".into(),
+            ));
+        }
+    }
+    if overlay_column_id.is_none() && !ids.is_empty() {
+        return Err(AppError::InvalidParam(
+            "Invalid graphBuildersNew hiddenOverlayGroupIds".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
-    let fields = ["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "showMean", "xMode", "rawMode", "camera"];
     let object = value.as_object().ok_or_else(|| AppError::InvalidParam("graphBuildersNew document must be an object".into()))?;
+    let version = value["version"]
+        .as_u64()
+        .ok_or_else(|| AppError::InvalidParam("Unsupported graphBuildersNew document version (expected 1 or 2)".into()))?;
+    let fields: &[&str] = match version {
+        1 => &["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "showMean", "xMode", "rawMode", "camera"],
+        2 => &["version", "id", "name", "datasetId", "xColumnId", "yColumnId", "overlayColumnId", "hiddenOverlayGroupIds", "showMean", "xMode", "rawMode", "camera"],
+        _ => {
+            return Err(AppError::InvalidParam(
+                "Unsupported graphBuildersNew document version (expected 1 or 2)".into(),
+            ))
+        }
+    };
     if object.len() != fields.len() || fields.iter().any(|field| !object.contains_key(*field)) {
         return Err(AppError::InvalidParam("graphBuildersNew document has missing or unknown fields; runtime fields must not be persisted".into()));
-    }
-    if value["version"].as_u64() != Some(1) {
-        return Err(AppError::InvalidParam("Unsupported graphBuildersNew document version (expected 1)".into()));
     }
     for field in ["id", "name", "datasetId", "xColumnId", "yColumnId"] {
         if matches!(field, "xColumnId" | "yColumnId") && value[field].is_null() {
@@ -2274,6 +2320,21 @@ fn validate_graph_builder_new_value(value: &Value) -> Result<(), AppError> {
         let camera: crate::models::graph_new::GraphNewCameraDomain = serde_json::from_value(value["camera"].clone())
             .map_err(|error| AppError::InvalidParam(format!("Invalid graphBuildersNew camera: {error}")))?;
         camera.validate().map_err(|_| AppError::InvalidParam("graphBuildersNew camera must have finite increasing bounds and spans".into()))?;
+    }
+    if version == 2 {
+        let overlay_column_id = if value["overlayColumnId"].is_null() {
+            None
+        } else {
+            let overlay_column_id = value["overlayColumnId"]
+                .as_str()
+                .ok_or_else(|| AppError::InvalidParam("Invalid graphBuildersNew overlayColumnId".into()))?;
+            validate_native_graph_string(overlay_column_id, "overlayColumnId", 256)?;
+            Some(overlay_column_id)
+        };
+        validate_graph_builder_new_hidden_overlay_group_ids(
+            overlay_column_id,
+            &value["hiddenOverlayGroupIds"],
+        )?;
     }
     Ok(())
 }
@@ -5975,6 +6036,16 @@ mod tests {
         })
     }
 
+    fn native_graph_document_v2() -> Value {
+        serde_json::json!({
+            "version": 2, "id": "native-1", "name": "Native Graph",
+            "datasetId": "missing-dataset", "xColumnId": "missing-x", "yColumnId": "missing-y",
+            "overlayColumnId": "group-column",
+            "hiddenOverlayGroupIds": ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+            "showMean": true, "xMode": "numeric", "rawMode": "line", "camera": null
+        })
+    }
+
     fn native_graph_bundle() -> ProjectBundle {
         let mut bundle = build_bundle(
             "Native Project".into(), "4.0.0".into(), "now".into(),
@@ -6033,6 +6104,57 @@ mod tests {
                 document["rawMode"] = serde_json::json!(raw_mode);
                 validate_graph_builder_new_value(&document).unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn graph_builder_new_archive_accepts_v1_document() {
+        validate_graph_builder_new_value(&native_graph_document()).unwrap();
+    }
+
+    #[test]
+    fn graph_builder_new_archive_roundtrips_v2_document() {
+        let mut bundle = native_graph_bundle();
+        let document = native_graph_document_v2();
+        set_graph_builders_new(
+            &mut bundle,
+            vec![document.clone()],
+            HashMap::from([("native-1".into(), "Graphs".into())]),
+        )
+        .unwrap();
+        let path = temp_project_path("native-graph-v2-roundtrip");
+        write_project_archive(&bundle, path.to_str().unwrap()).unwrap();
+        let reopened = read_project_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.graph_builders_new, vec![document]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn graph_builder_new_archive_rejects_malformed_v2_overlay_state() {
+        for document in [
+            serde_json::json!({
+                "version": 2, "id": "native-1", "name": "Native Graph",
+                "datasetId": "missing-dataset", "xColumnId": "missing-x", "yColumnId": "missing-y",
+                "overlayColumnId": null,
+                "hiddenOverlayGroupIds": ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+                "showMean": true, "xMode": "numeric", "rawMode": "line", "camera": null
+            }),
+            serde_json::json!({
+                "version": 2, "id": "native-1", "name": "Native Graph",
+                "datasetId": "missing-dataset", "xColumnId": "missing-x", "yColumnId": "missing-y",
+                "overlayColumnId": "group-column",
+                "hiddenOverlayGroupIds": ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+                "showMean": true, "xMode": "numeric", "rawMode": "line", "camera": null
+            }),
+            serde_json::json!({
+                "version": 2, "id": "native-1", "name": "Native Graph",
+                "datasetId": "missing-dataset", "xColumnId": "missing-x", "yColumnId": "missing-y",
+                "overlayColumnId": "group-column",
+                "hiddenOverlayGroupIds": ["sha256:not-a-hash"],
+                "showMean": true, "xMode": "numeric", "rawMode": "line", "camera": null
+            }),
+        ] {
+            assert!(validate_graph_builder_new_value(&document).is_err(), "accepted {document}");
         }
     }
 

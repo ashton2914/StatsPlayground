@@ -528,7 +528,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     fn planned_gpu_bytes(&self, width: u32, height: u32, scene: Option<&GraphNewScene>) -> Result<u64, AppError> {
         let target_bytes = if self.target.as_ref().is_some_and(|target| target.width == width && target.height == height) { 0 }
             else { u64::from(width) * u64::from(height) * 4 + u64::from(padded_bytes_per_row(width)?) * u64::from(height) };
-        let upload_bytes = scene.map_or(0, |scene| (scene.points.len().max(1) as u64 + 1024) * 40 + 64
+        let upload_bytes = scene.map_or(0, |scene| scene.point_upload_bytes() + 1024 * 40 + 64
             + scene.mean.as_ref().map_or(16, |mean| mean.len().saturating_sub(1).max(1) as u64 * 16)
             + scene.raw_upload_bytes()
             + u64::from(super::graph_new_text::ATLAS_WIDTH) * u64::from(super::graph_new_text::ATLAS_HEIGHT));
@@ -697,6 +697,33 @@ fn fs_main() -> @location(0) vec4<f32> {
 mod tests {
     use std::cell::Cell;
 
+    use crate::models::graph_new::GraphNewOverlayGroup;
+    use crate::services::graph_new_overlay::{
+        EnabledOverlayMask, GroupedLineSegment, GroupedMeanPoint, OverlayCatalog,
+    };
+
+    fn all_rows_overlay() -> (OverlayCatalog, EnabledOverlayMask) {
+        let overlay = OverlayCatalog::default();
+        let enabled = EnabledOverlayMask::from_hidden(&overlay, &[]).expect("enabled");
+        (overlay, enabled)
+    }
+
+    fn grouped_overlay(total_rows: u64) -> (OverlayCatalog, EnabledOverlayMask) {
+        let overlay = OverlayCatalog {
+            active: true,
+            groups: vec![GraphNewOverlayGroup {
+                id: "group-0".into(),
+                code: 0,
+                label: "group-0".into(),
+                color: [31, 111, 235, 255],
+                total_rows,
+                missing: false,
+            }],
+        };
+        let enabled = EnabledOverlayMask::from_hidden(&overlay, &[]).expect("enabled");
+        (overlay, enabled)
+    }
+
     #[test]
     fn graph_new_recovery_releases_before_one_device_loss_retry() {
         struct Device<'a>(&'a Cell<usize>);
@@ -786,10 +813,12 @@ mod tests {
             let guard = super::session_renderer().lock().expect("renderer");
             guard.as_ref().expect("retained").failure.store(super::GpuFailure::DeviceLost as u8, std::sync::atomic::Ordering::Release);
         }
+        let (overlay, enabled_groups) = all_rows_overlay();
         let scene = super::GraphNewScene { width: 128, height: 96, device_pixel_ratio: 1.0,
             presentation: Default::default(),
             domain: crate::services::graph_new_lod::GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 },
-            points: vec![crate::services::graph_new_lod::SourcePoint::new(1, 0.5, 0.5)], mean: None };
+            points: vec![crate::services::graph_new_lod::SourcePoint::new(1, 0.5, 0.5)],
+            overlay, enabled_groups, mean: None };
         let frame = crate::services::graph_new_renderer::GraphNewRenderer::render_current(&scene, || true).expect("production scene");
         assert!(frame.rgba.chunks_exact(4).any(|pixel| pixel[2] > 180 && pixel[0] < 100));
         assert!(crate::services::graph_new_renderer::GraphNewRenderer::render_current(&scene, || false).is_err());
@@ -811,12 +840,18 @@ mod tests {
         use crate::services::graph_new_lod::{GraphDomain, SourcePoint};
 
         let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("GPU");
+        let (overlay, enabled_groups) = all_rows_overlay();
         let mut scene = super::GraphNewScene {
             presentation: Default::default(),
             width: 128, height: 96, device_pixel_ratio: 1.0,
             domain: GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 },
             points: vec![SourcePoint::new(1, 0.5, 0.25)],
-            mean: Some(std::sync::Arc::new(vec![[0.0, 0.5], [1.0, 0.5]])),
+            overlay,
+            enabled_groups,
+            mean: Some(std::sync::Arc::new(vec![
+                GroupedMeanPoint { group_code: 0, x: 0.0, y: 0.5 },
+                GroupedMeanPoint { group_code: 0, x: 1.0, y: 0.5 },
+            ])),
         };
         pollster::block_on(renderer.render_scene(&scene)).expect("retained Mean scene");
         assert_eq!(renderer.cache_stats().mean_geometry_uploads, 1);
@@ -1004,13 +1039,16 @@ mod tests {
         use crate::services::graph_new_renderer::GraphNewScene;
         let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("GPU context");
         let mean = std::sync::Arc::new((0..2_000_000).map(|index|
-            [index as f64 / 1_999_999.0, 0.5]).collect::<Vec<_>>());
+            GroupedMeanPoint { group_code: 0, x: index as f64 / 1_999_999.0, y: 0.5 }).collect::<Vec<_>>());
+        let (overlay, enabled_groups) = all_rows_overlay();
         let mut scene = GraphNewScene {
             presentation: Default::default(),
             width: 1280, height: 720, device_pixel_ratio: 1.0,
             domain: GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 },
             points: (0..2_000_000).map(|index|
                 SourcePoint::new(index + 1, index as f64 / 1_999_999.0, 0.25)).collect(),
+            overlay,
+            enabled_groups,
             mean: Some(mean.clone()),
         };
         let original = pollster::block_on(renderer.render_scene(&scene)).expect("2M with mean fits");
@@ -1030,7 +1068,7 @@ mod tests {
         assert_eq!(renderer.cache_stats().geometry_uploads, 1);
         scene.mean = None;
         let planned = renderer.planned_gpu_bytes(1280, 720, Some(&scene)).unwrap();
-        let released = (2_000_000 - 1) * 16 - 16;
+        let released = (2_000_000 - 1) * 24 - 24;
         assert!(planned > DEFAULT_GPU_BYTES);
         assert!(planned - released <= DEFAULT_GPU_BYTES);
         let off = pollster::block_on(renderer.render_scene(&scene)).expect("inactive mean must not refuse feasible 2.1M scatter");
@@ -1053,13 +1091,22 @@ mod tests {
         use crate::services::graph_new_renderer::GraphNewScene;
         for show_points in [false, true] {
             let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).unwrap();
-            let indices = std::sync::Arc::new((0..1_999_999).map(|index| [index, index + 1]).collect::<Vec<_>>());
+            let indices = std::sync::Arc::new((0..1_999_999).map(|index| GroupedLineSegment {
+                indices: [index, index + 1],
+                group_code: 0,
+            }).collect::<Vec<_>>());
+            let (overlay, enabled_groups) = all_rows_overlay();
             let mut scene = GraphNewScene {
                 presentation: super::super::graph_new_renderer::ScenePresentation { raw_line: Some(indices.clone()), show_points, x_axis: None },
                 width: 1920, height: 1080, device_pixel_ratio: 1.0,
                 domain: GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 },
                 points: (0..2_000_000).map(|index| SourcePoint::new(index + 1, index as f64 / 1_999_999.0, 0.5)).collect(),
-                mean: Some(std::sync::Arc::new(vec![[0.0, 0.25], [1.0, 0.75]])),
+                overlay,
+                enabled_groups,
+                mean: Some(std::sync::Arc::new(vec![
+                    GroupedMeanPoint { group_code: 0, x: 0.0, y: 0.25 },
+                    GroupedMeanPoint { group_code: 0, x: 1.0, y: 0.75 },
+                ])),
             };
             let before = pollster::block_on(renderer.render_scene(&scene)).unwrap();
             let capacity = renderer.cache_stats().geometry_capacity_bytes;
@@ -1067,11 +1114,16 @@ mod tests {
             scene.presentation.raw_line = None;
             scene.presentation.show_points = true;
             pollster::block_on(renderer.render_scene(&scene)).unwrap();
-            assert_eq!(renderer.cache_stats().geometry_capacity_bytes, capacity, "normal toggle keeps indices");
+            let toggled_capacity = renderer.cache_stats().geometry_capacity_bytes;
+            assert_eq!(
+                toggled_capacity,
+                capacity,
+                "normal toggle keeps hidden point backing and raw indices resident without pressure"
+            );
             scene.points.extend((2_000_000..2_100_000).map(|index| SourcePoint::new(index + 1, (index - 2_000_000) as f64 / 99_999.0, 0.5)));
             assert!(renderer.planned_gpu_bytes(1920, 1080, Some(&scene)).unwrap() > super::super::graph_new_cache::DEFAULT_GPU_BYTES);
             pollster::block_on(renderer.render_scene(&scene)).expect("inactive raw storage must be reclaimed under pressure");
-            assert!(renderer.cache_stats().geometry_capacity_bytes < capacity + 100_000 * 40);
+            assert!(renderer.cache_stats().geometry_capacity_bytes < toggled_capacity + 100_000 * 40);
             scene.presentation.raw_line = Some(indices);
             scene.presentation.show_points = show_points;
             let restored = pollster::block_on(renderer.render_scene(&scene)).unwrap();
@@ -1081,25 +1133,82 @@ mod tests {
     }
 
     #[test]
+    fn graph_new_grouped_raw_line_mode_skips_hidden_point_upload_budget() {
+        use crate::services::graph_new_lod::{GraphDomain, SourcePoint};
+        use crate::services::graph_new_renderer::GraphNewScene;
+
+        let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).unwrap();
+        let indices = std::sync::Arc::new(
+            (0..1_999_999)
+                .map(|index| GroupedLineSegment {
+                    indices: [index, index + 1],
+                    group_code: 0,
+                })
+                .collect::<Vec<_>>(),
+        );
+        let (overlay, enabled_groups) = grouped_overlay(2_000_000);
+        let scene = GraphNewScene {
+            presentation: super::super::graph_new_renderer::ScenePresentation {
+                raw_line: Some(indices),
+                show_points: false,
+                x_axis: None,
+            },
+            width: 1920,
+            height: 1080,
+            device_pixel_ratio: 1.0,
+            domain: GraphDomain {
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: 0.0,
+                y_max: 1.0,
+            },
+            points: (0..2_000_000)
+                .map(|index| SourcePoint::with_group(index + 1, index as f64 / 1_999_999.0, 0.5, 0))
+                .collect(),
+            overlay,
+            enabled_groups,
+            mean: None,
+        };
+
+        let planned = renderer.planned_gpu_bytes(1920, 1080, Some(&scene)).unwrap();
+        assert!(
+            planned <= super::super::graph_new_cache::DEFAULT_GPU_BYTES,
+            "grouped line-only render should fit budget, planned {planned}"
+        );
+        pollster::block_on(renderer.render_scene(&scene)).expect("line-only grouped raw render fits");
+        assert_eq!(renderer.cache_stats().geometry_uploads, 0, "point buffer stays idle in line-only mode");
+    }
+
+    #[test]
     fn graph_new_mean_gpu_budget_includes_uploads_and_replacement_buffers() {
         use crate::services::graph_new_lod::{GraphDomain, SourcePoint};
         use crate::services::graph_new_renderer::GraphNewScene;
         let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("GPU context");
+        let (overlay, enabled_groups) = all_rows_overlay();
         let mut scene = GraphNewScene {
             presentation: Default::default(),
             width: 240, height: 160, device_pixel_ratio: 1.0,
             domain: GraphDomain { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0 },
             points: vec![SourcePoint::new(1, 0.5, 0.5); 100],
-            mean: Some(std::sync::Arc::new(vec![[0.0, 0.0], [1.0, 1.0]])),
+            overlay,
+            enabled_groups,
+            mean: Some(std::sync::Arc::new(vec![
+                GroupedMeanPoint { group_code: 0, x: 0.0, y: 0.0 },
+                GroupedMeanPoint { group_code: 0, x: 1.0, y: 1.0 },
+            ])),
         };
         let target = 240 * 160 * 4 + u64::from(padded_bytes_per_row(240).unwrap()) * 160;
-        assert!(renderer.planned_gpu_bytes(240, 160, Some(&scene)).unwrap() >= 2 * (100 * 40 + 16) + target);
+        assert!(renderer.planned_gpu_bytes(240, 160, Some(&scene)).unwrap() >= 2 * (100 * 40 + 24) + target);
         pollster::block_on(renderer.render_scene(&scene)).expect("first scene");
         let retained = renderer.cache_stats().allocated_bytes;
         scene.points.resize(1000, SourcePoint::new(2, 0.5, 0.5));
-        scene.mean = Some(std::sync::Arc::new(vec![[0.5, 0.5]; 1000]));
+        scene.mean = Some(std::sync::Arc::new(
+            std::iter::repeat(GroupedMeanPoint { group_code: 0, x: 0.5, y: 0.5 })
+                .take(1000)
+                .collect(),
+        ));
         assert!(renderer.planned_gpu_bytes(240, 160, Some(&scene)).unwrap()
-            >= retained + 2 * (1000 * 40 + 999 * 16));
+            >= retained + 2 * (1000 * 40 + 999 * 24));
         assert!(renderer.planned_gpu_bytes(480, 320, Some(&scene)).unwrap()
             >= renderer.planned_gpu_bytes(240, 160, Some(&scene)).unwrap() + 480 * 320 * 8);
     }
@@ -1111,6 +1220,7 @@ mod tests {
 
         let mut renderer = pollster::block_on(SyntheticFrameRenderer::new()).expect("GPU context");
         let before = pollster::block_on(renderer.render(240, 160)).expect("probe before scene");
+        let (overlay, enabled_groups) = all_rows_overlay();
         let scene = GraphNewScene {
             presentation: Default::default(),
             width: 240,
@@ -1123,6 +1233,8 @@ mod tests {
                 y_max: 1.0,
             },
             points: vec![],
+            overlay,
+            enabled_groups,
             mean: None,
         };
         let first = pollster::block_on(renderer.render_scene(&scene)).expect("first scene");

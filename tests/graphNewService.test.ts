@@ -80,7 +80,8 @@ async function main() {
   const cameraCompletion = { requestId: request.requestId, processedRows: 4, finiteRows: 3,
     exactVisible: true, visibleRows: 2, rawIndexEntriesInspected: 1, rawBlocksInspected: 1, rawPointsInspected: 3,
     excludedNonFiniteRows: 1, selectedMarks: 2, buildMs: 0, renderMs: 1, readbackMs: 1, width: 96, height: 64,
-    cameraDomain, plotRect: { x: 64, y: 16, width: 16, height: 16 }, sourceProjectionQueryCount: 0, renderGenerationCheckCount: 4 };
+    cameraDomain, plotRect: { x: 64, y: 16, width: 16, height: 16 }, sourceProjectionQueryCount: 0, renderGenerationCheckCount: 4,
+    overlayActive: false, overlayGroups: [], hiddenOverlayGroups: 0 };
   const handlers = { activeIdentity: () => cameraRequest, onFrame: () => {}, onError: () => {} };
   for (const invalid of [{ xMode: "guessLocale" }, { rawMode: "mean" }, { rawMode: false }]) {
     assert.throws(() => graphNewService.render({ ...cameraRequest, ...invalid } as any, handlers), /graph_new_invalid_request/);
@@ -100,6 +101,60 @@ async function main() {
   const typed = graphNewService.render(typedRequest, handlers);
   resolveRender(typedCompletion);
   assert.deepEqual(await typed.completion, typedCompletion);
+  const overlayId = `sha256:${"1".repeat(64)}`;
+  const overlayGroup = {
+    id: overlayId,
+    code: 1,
+    label: "A",
+    color: [31, 111, 235, 255],
+    totalRows: 3,
+    missing: false,
+  };
+  const overlayRequest = {
+    ...cameraRequest,
+    overlayColumnId: "group-column",
+    hiddenOverlayGroupIds: [overlayId],
+  };
+  const overlayCompletion = {
+    ...cameraCompletion,
+    overlayActive: true,
+    overlayGroups: [overlayGroup],
+    hiddenOverlayGroups: 1,
+  };
+  const overlay = graphNewService.render(overlayRequest, {
+    activeIdentity: () => overlayRequest,
+    onFrame: () => {},
+    onError: () => {},
+  });
+  resolveRender(overlayCompletion);
+  assert.deepEqual(await overlay.completion, overlayCompletion);
+  assert.deepEqual(calls.findLast((call) => call.command === "render_graph_new")?.args.request.hiddenOverlayGroupIds, [overlayId]);
+  for (const invalid of [
+    { hiddenOverlayGroupIds: [overlayId, overlayId] },
+    { hiddenOverlayGroupIds: ["sha256:not-a-hash"] },
+    { hiddenOverlayGroupIds: Array.from({ length: 65 }, (_, index) => `sha256:${index.toString(16).padStart(64, "0")}`) },
+    { overlayColumnId: undefined, hiddenOverlayGroupIds: [overlayId] },
+  ]) {
+    assert.throws(() => graphNewService.render({ ...overlayRequest, ...invalid } as any, handlers), /graph_new_invalid_request/);
+  }
+  for (const invalid of [
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, id: overlayId }, { ...overlayGroup, code: 2 }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup }, { ...overlayGroup, id: `sha256:${"2".repeat(64)}`, code: 1 }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, id: "sha256:not-a-hash" }] },
+    { ...overlayCompletion, hiddenOverlayGroups: 65 },
+    { ...cameraCompletion, overlayActive: false, overlayGroups: [overlayGroup], hiddenOverlayGroups: 1 },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, color: [256, 0, 0, 255] }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, label: "界".repeat(171) }] },
+    { ...overlayCompletion, overlayGroups: [{ ...overlayGroup, totalRows: 4 }] },
+  ]) {
+    const pending = graphNewService.render(overlayRequest, {
+      activeIdentity: () => overlayRequest,
+      onFrame: () => {},
+      onError: () => {},
+    });
+    resolveRender(invalid);
+    await assert.rejects(pending.completion, /graph_new_render_failed/);
+  }
   const extremeCompletion = { ...cameraCompletion, cameraDomain: { xMin: -1e308, xMax: 1e308, yMin: 0, yMax: 1 },
     xAxis: { kind: "numeric", utc: false, ticks: [-1e308, -5e307, 0, 5e307, 1e308].map((value, index) => ({ value, position: index / 4, label: null })) } };
   const extreme = graphNewService.render({ ...request, xMode: "numeric" }, handlers);
@@ -167,10 +222,42 @@ async function main() {
     assert.deepEqual(await mean.completion, completion);
     assert.equal(calls.findLast((call) => call.command === "render_graph_new")?.args.request.showMean, true);
   }
+  const overlayMeanRequest = {
+    ...meanRequest,
+    overlayColumnId: "group-column",
+    hiddenOverlayGroupIds: [overlayId],
+  };
+  const overlayMeanCompletion = {
+    ...overlayCompletion,
+    selectedMarks: 2,
+    visibleRows: 2,
+    exactVisible: true,
+    meanAvailable: true,
+    meanGroups: 2,
+    meanVisible: true,
+  };
+  const overlayMean = graphNewService.render(overlayMeanRequest, {
+    activeIdentity: () => overlayMeanRequest,
+    onFrame: () => {},
+    onError: () => {},
+  });
+  resolveRender(overlayMeanCompletion);
+  assert.deepEqual(await overlayMean.completion, overlayMeanCompletion,
+    "overlay mean completions stay valid when hidden groups reduce submitted marks");
   assert.throws(() => graphNewService.render({ ...cameraRequest, showMean: "yes" } as any, handlers), /graph_new_invalid_request/);
   const camera = graphNewService.render(cameraRequest, handlers);
   resolveRender(cameraCompletion);
   assert.deepEqual(await camera.completion, cameraCompletion);
+  for (const invalid of [
+    (({ overlayActive, ...rest }) => rest)(cameraCompletion),
+    (({ overlayGroups, ...rest }) => rest)(cameraCompletion),
+    (({ hiddenOverlayGroups, ...rest }) => rest)(cameraCompletion),
+    { ...cameraCompletion, overlayActive: true, overlayGroups: [], hiddenOverlayGroups: 0 },
+  ]) {
+    const pending = graphNewService.render(cameraRequest, handlers);
+    resolveRender(invalid);
+    await assert.rejects(pending.completion, /graph_new_render_failed/, "reject partial no-overlay metadata");
+  }
   const approximateCompletion = { ...cameraCompletion, exactVisible: false, visibleRows: null,
     rawIndexEntriesInspected: 0, rawBlocksInspected: 0, rawPointsInspected: 0 };
   const approximate = graphNewService.render(cameraRequest, handlers);
@@ -235,6 +322,19 @@ async function main() {
   const missing = graphNewService.render(cameraRequest, handlers);
   rejectRender("Stats error: graph_new_missing_cache");
   await assert.rejects(missing.completion, /graph_new_missing_cache/);
+  for (const [message, safe] of [
+    ["Stats error: graph_new_cache_pressure", "graph_new_cache_pressure"],
+    ["Stats error: graph_new_gpu_validation", "graph_new_gpu_validation"],
+  ] as const) {
+    const safeFailure = graphNewService.render(cameraRequest, {
+      activeIdentity: () => cameraRequest,
+      onFrame: () => {},
+      onError: (error) => errors.push(error),
+    });
+    rejectRender(message);
+    await assert.rejects(safeFailure.completion, new RegExp(safe));
+    assert.equal(errors.at(-1), safe);
+  }
   assert.throws(() => graphNewService.render({ ...cameraRequest, cameraDomain: { ...cameraDomain, xMax: NaN } }, handlers), /graph_new_invalid_request/);
   const nativeReportPath = process.argv[2];
   if (nativeReportPath) {
