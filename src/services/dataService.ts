@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnDisplayProps,
   ColumnDescriptor,
+  ColumnMutationResult,
   CalculatedColumnMutationResult,
   CalculatedColumnValidation,
   CellPosition,
@@ -22,6 +23,7 @@ import type {
   TableQueryResult,
   TableWindowRequest,
   TableWindowResult,
+  RowMutationResult,
   UpsertCalculatedColumnRequest,
   ValidateCalculatedColumnRequest,
 } from "@/types/data";
@@ -125,8 +127,17 @@ export const dataService = {
   addRow: (datasetId: string) => invoke<number>("add_row", { datasetId }),
 
   /** 原子添加多个空行，并返回 compact history 所需的行 ID 和版本 */
-  addRows: (datasetId: string, count: number) =>
-    invoke<{ rowIds: number[]; generation: number }>("add_rows", { datasetId, count }),
+  addRows: (
+    datasetId: string,
+    count: number,
+    beforeRowId: number | null,
+    expectedGeneration: number,
+  ) => invoke<RowMutationResult>("add_rows", {
+    datasetId,
+    count,
+    beforeRowId,
+    expectedGeneration,
+  }),
 
   /** 撤销或重做一次新增空行操作 */
   applyAddedRows: (datasetId: string, rowIds: number[], undo: boolean, expectedGeneration: number) =>
@@ -154,16 +165,20 @@ export const dataService = {
 
   /** 原子删除多行，并在后端保留完整 before image */
   deleteRowsWithChangeSet: (datasetId: string, rowIds: number[], expectedGeneration: number) =>
-    invoke<string>("delete_rows_with_change_set", { datasetId, rowIds, expectedGeneration }),
+    invoke<RowMutationResult>("delete_rows_with_change_set", {
+      datasetId,
+      rowIds,
+      expectedGeneration,
+    }),
 
   /** 删除列并在后端保留完整列 before image */
   deleteColumnsWithChangeSet: (
     datasetId: string,
-    columnNames: string[],
+    columns: ColumnDescriptor[],
     expectedGeneration: number,
-  ) => invoke<string>("delete_columns_with_change_set", {
+  ) => invoke<ColumnMutationResult>("delete_columns_with_change_set", {
     datasetId,
-    columnNames,
+    columns,
     expectedGeneration,
   }),
 
@@ -221,10 +236,10 @@ export const dataService = {
   /** 原子添加多列并返回一个 metadata-only history change set */
   addColumnsWithChangeSet: (
     datasetId: string,
-    columns: Array<{ name: string; columnType: string }>,
+    columns: ColumnDescriptor[],
     atIndex: number | null,
     expectedGeneration: number,
-  ) => invoke<string>("add_columns_with_change_set", {
+  ) => invoke<ColumnMutationResult>("add_columns_with_change_set", {
     datasetId,
     columns,
     atIndex,

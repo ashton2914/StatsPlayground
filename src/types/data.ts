@@ -27,6 +27,20 @@ export interface ColumnDescriptor {
   calculated?: CalculatedColumnDescriptor;
 }
 
+export interface RowMutationResult {
+  rowIds: number[];
+  generation: number;
+  rowCount: number;
+  changeSetId: string;
+}
+
+export interface ColumnMutationResult {
+  columnIds: string[];
+  generation: number;
+  columnCount: number;
+  changeSetId: string;
+}
+
 export type CalculatedNumberV1 = number;
 
 export type CalculatedUnaryOperatorV1 = "plus" | "minus" | "not";

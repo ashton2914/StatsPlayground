@@ -1,9 +1,10 @@
 use crate::error::AppError;
 use crate::models::table::{
-    ColumnDisplayProps, ColumnDisplayPropsWithoutIndex, CreateManagedTableRequest,
-    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateColumn, ManagedTableCreateResult,
-    SqlQueryResult, TableFilterValue, TableNavigationRequest, TableNavigationResult,
-    TableQueryResult, TableWindowRequest, TableWindowResult,
+    ColumnDescriptor, ColumnDisplayProps, ColumnDisplayPropsWithoutIndex, ColumnMutationResult,
+    CreateManagedTableRequest, CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateColumn,
+    ManagedTableCreateResult, RowMutationResult, SqlQueryResult, TableFilterValue,
+    TableNavigationRequest, TableNavigationResult, TableQueryResult, TableWindowRequest,
+    TableWindowResult,
 };
 #[cfg(any(test, feature = "perf-harness"))]
 use crate::models::table::{TableNavigationBenchmarkFixture, TableNavigationBenchmarkRequest};
@@ -1226,18 +1227,21 @@ impl<'a> DataService<'a> {
         &self,
         dataset_id: &str,
         count: usize,
-    ) -> Result<crate::models::table::AddedRowsResult, AppError> {
+        before_row_id: Option<i64>,
+        expected_generation: u64,
+    ) -> Result<RowMutationResult, AppError> {
         let db = self
             .state
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        let row_ids = db.add_rows(dataset_id, count)?;
-        let generation = db.get_dataset_generation(dataset_id)?;
-        Ok(crate::models::table::AddedRowsResult {
-            row_ids,
-            generation,
-        })
+        crate::services::table_delta_mutation::add_rows_compact(
+            &db,
+            dataset_id,
+            count,
+            before_row_id,
+            expected_generation,
+        )
     }
 
     pub fn apply_added_rows(
@@ -1330,28 +1334,59 @@ impl<'a> DataService<'a> {
         &self,
         dataset_id: &str,
         row_ids: &[i64],
-        expected_generation: Option<u64>,
-    ) -> Result<String, AppError> {
+        expected_generation: u64,
+    ) -> Result<RowMutationResult, AppError> {
         let db = self
             .state
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        db.delete_rows_with_change_set(dataset_id, row_ids, expected_generation)
+        crate::services::table_delta_mutation::delete_rows_compact(
+            &db,
+            dataset_id,
+            row_ids,
+            expected_generation,
+        )
     }
 
     pub fn delete_columns_with_change_set(
         &self,
         dataset_id: &str,
-        column_names: &[String],
-        expected_generation: Option<u64>,
-    ) -> Result<String, AppError> {
+        columns: &[ColumnDescriptor],
+        expected_generation: u64,
+    ) -> Result<ColumnMutationResult, AppError> {
         let db = self
             .state
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        db.delete_columns_with_change_set(dataset_id, column_names, expected_generation)
+        let existing = db.get_user_column_descriptors(dataset_id)?;
+        let by_id = existing
+            .iter()
+            .map(|column| (column.column_id.as_str(), column))
+            .collect::<std::collections::HashMap<_, _>>();
+        let resolved = columns
+            .iter()
+            .map(|column| {
+                let current = by_id.get(column.column_id.as_str()).ok_or_else(|| {
+                    AppError::InvalidParam(
+                        "one or more column descriptors do not exist".to_string(),
+                    )
+                })?;
+                if current.name != column.name || current.sql_type != column.sql_type {
+                    return Err(AppError::InvalidParam(
+                        "one or more column descriptors are stale or mismatched".to_string(),
+                    ));
+                }
+                Ok((*current).clone())
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        crate::services::table_delta_mutation::delete_columns_compact(
+            &db,
+            dataset_id,
+            &resolved,
+            expected_generation,
+        )
     }
 
     pub fn alter_column_with_change_set(
@@ -1444,20 +1479,42 @@ impl<'a> DataService<'a> {
     pub fn add_columns_with_change_set(
         &self,
         dataset_id: &str,
-        columns: &[crate::models::table::ColumnDefinition],
+        columns: &[ColumnDescriptor],
         at_index: Option<i32>,
-        expected_generation: Option<u64>,
-    ) -> Result<String, AppError> {
+        expected_generation: u64,
+    ) -> Result<ColumnMutationResult, AppError> {
         let db = self
             .state
             .db
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
+        let existing_count = i32::try_from(db.get_user_column_descriptors(dataset_id)?.len())
+            .map_err(|_| AppError::InvalidParam("column count is too large".to_string()))?;
+        let insertion_index = at_index.unwrap_or(existing_count);
         let engine_columns = columns
             .iter()
-            .map(|column| (column.name.clone(), column.column_type.clone()))
-            .collect::<Vec<_>>();
-        db.add_columns_with_change_set(dataset_id, &engine_columns, at_index, expected_generation)
+            .enumerate()
+            .map(|(offset, column)| {
+                let offset = i32::try_from(offset)
+                    .map_err(|_| AppError::InvalidParam("column count is too large".to_string()))?;
+                let col_index = insertion_index.checked_add(offset).ok_or_else(|| {
+                    AppError::InvalidParam("column insertion index overflowed".to_string())
+                })?;
+                Ok(crate::engine::duckdb_engine::UserColumnDescriptor {
+                    column_id: column.column_id.clone(),
+                    col_index,
+                    name: column.name.clone(),
+                    sql_type: column.sql_type.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?;
+        crate::services::table_delta_mutation::add_columns_compact(
+            &db,
+            dataset_id,
+            &engine_columns,
+            insertion_index,
+            expected_generation,
+        )
     }
 
     /// Insert a column at a specific visible index and shift any stored display

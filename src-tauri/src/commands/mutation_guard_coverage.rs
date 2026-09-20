@@ -759,10 +759,16 @@ mod tests {
     fn tabulate_registered_commands_preserve_read_only_and_export_classification() {
         let registered = parse_registered_commands(include_str!("../lib.rs"));
         let classifications = command_classes();
-        let registered_tabulate: BTreeSet<&str> = registered.iter().map(String::as_str)
-            .filter(|command| command.starts_with("commands::tabulate_commands::")).collect();
-        let classified_tabulate: BTreeSet<&str> = classifications.keys().copied()
-            .filter(|command| command.starts_with("commands::tabulate_commands::")).collect();
+        let registered_tabulate: BTreeSet<&str> = registered
+            .iter()
+            .map(String::as_str)
+            .filter(|command| command.starts_with("commands::tabulate_commands::"))
+            .collect();
+        let classified_tabulate: BTreeSet<&str> = classifications
+            .keys()
+            .copied()
+            .filter(|command| command.starts_with("commands::tabulate_commands::"))
+            .collect();
         assert_eq!(registered_tabulate, classified_tabulate);
         assert_eq!(registered_tabulate.len(), 7);
         for command in registered_tabulate {
@@ -772,6 +778,28 @@ mod tests {
                 CommandClass::ReadOnly
             };
             assert_eq!(classifications[command], expected);
+        }
+    }
+
+    #[test]
+    fn compact_table_mutations_remain_registered_serialized_mutations() {
+        let registered = parse_registered_commands(include_str!("../lib.rs"));
+        let classifications = command_classes();
+        let data_source = include_str!("data_commands.rs");
+
+        for command in [
+            "add_rows",
+            "delete_rows_with_change_set",
+            "add_columns_with_change_set",
+            "delete_columns_with_change_set",
+        ] {
+            let qualified = format!("commands::data_commands::{command}");
+            assert!(registered.contains(&qualified));
+            assert_eq!(
+                classifications.get(qualified.as_str()),
+                Some(&CommandClass::Mutation)
+            );
+            assert_has_permit_statement(data_source, command, "data_commands.rs");
         }
     }
 

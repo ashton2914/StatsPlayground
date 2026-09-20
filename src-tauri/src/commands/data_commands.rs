@@ -4,11 +4,12 @@ use tauri::State;
 
 use crate::error::AppError;
 use crate::models::table::{
-    CellPosition, CellUpdate, ColumnDisplayProps, CreateManagedTableRequest,
-    CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateResult, TableFilterValue,
-    TableNavigationBenchmarkFixture, TableNavigationBenchmarkRequest, TableNavigationRequest,
-    TableNavigationResult, TableQueryResult, TableQuerySessionRequest, TableQuerySessionStatus,
-    TableWindowRequest, TableWindowResult,
+    CellPosition, CellUpdate, ColumnDescriptor, ColumnDisplayProps, ColumnMutationResult,
+    CreateManagedTableRequest, CreateTableFromRowsRequest, DatasetMeta, ManagedTableCreateResult,
+    RowMutationResult, TableFilterValue, TableNavigationBenchmarkFixture,
+    TableNavigationBenchmarkRequest, TableNavigationRequest, TableNavigationResult,
+    TableQueryResult, TableQuerySessionRequest, TableQuerySessionStatus, TableWindowRequest,
+    TableWindowResult,
 };
 use crate::services::data_service::DataService;
 use crate::state::AppState;
@@ -23,6 +24,49 @@ pub(crate) fn delete_dataset_entry(state: &AppState, dataset_id: &str) -> Result
     let _permit = acquire_mutation_permit(state)?;
     let service = DataService::new(state);
     service.delete_dataset(dataset_id)
+}
+
+pub(crate) fn add_rows_entry(
+    state: &AppState,
+    dataset_id: &str,
+    count: usize,
+    before_row_id: Option<i64>,
+    expected_generation: u64,
+) -> Result<RowMutationResult, AppError> {
+    DataService::new(state).add_rows(dataset_id, count, before_row_id, expected_generation)
+}
+
+pub(crate) fn delete_rows_with_change_set_entry(
+    state: &AppState,
+    dataset_id: &str,
+    row_ids: &[i64],
+    expected_generation: u64,
+) -> Result<RowMutationResult, AppError> {
+    DataService::new(state).delete_rows_with_change_set(dataset_id, row_ids, expected_generation)
+}
+
+pub(crate) fn add_columns_with_change_set_entry(
+    state: &AppState,
+    dataset_id: &str,
+    columns: &[ColumnDescriptor],
+    at_index: Option<i32>,
+    expected_generation: u64,
+) -> Result<ColumnMutationResult, AppError> {
+    DataService::new(state).add_columns_with_change_set(
+        dataset_id,
+        columns,
+        at_index,
+        expected_generation,
+    )
+}
+
+pub(crate) fn delete_columns_with_change_set_entry(
+    state: &AppState,
+    dataset_id: &str,
+    columns: &[ColumnDescriptor],
+    expected_generation: u64,
+) -> Result<ColumnMutationResult, AppError> {
+    DataService::new(state).delete_columns_with_change_set(dataset_id, columns, expected_generation)
 }
 
 pub(crate) fn query_table_window_entry(
@@ -301,10 +345,17 @@ pub fn add_rows(
     state: State<'_, AppState>,
     dataset_id: String,
     count: usize,
-) -> Result<crate::models::table::AddedRowsResult, AppError> {
+    before_row_id: Option<i64>,
+    expected_generation: u64,
+) -> Result<RowMutationResult, AppError> {
     let _permit = acquire_mutation_permit(state.inner())?;
-    let service = DataService::new(&state);
-    service.add_rows(&dataset_id, count)
+    add_rows_entry(
+        state.inner(),
+        &dataset_id,
+        count,
+        before_row_id,
+        expected_generation,
+    )
 }
 
 #[tauri::command]
@@ -383,23 +434,21 @@ pub fn delete_rows_with_change_set(
     state: State<'_, AppState>,
     dataset_id: String,
     row_ids: Vec<i64>,
-    expected_generation: Option<u64>,
-) -> Result<String, AppError> {
+    expected_generation: u64,
+) -> Result<RowMutationResult, AppError> {
     let _permit = acquire_mutation_permit(state.inner())?;
-    let service = DataService::new(&state);
-    service.delete_rows_with_change_set(&dataset_id, &row_ids, expected_generation)
+    delete_rows_with_change_set_entry(state.inner(), &dataset_id, &row_ids, expected_generation)
 }
 
 #[tauri::command]
 pub fn delete_columns_with_change_set(
     state: State<'_, AppState>,
     dataset_id: String,
-    column_names: Vec<String>,
-    expected_generation: Option<u64>,
-) -> Result<String, AppError> {
+    columns: Vec<ColumnDescriptor>,
+    expected_generation: u64,
+) -> Result<ColumnMutationResult, AppError> {
     let _permit = acquire_mutation_permit(state.inner())?;
-    let service = DataService::new(&state);
-    service.delete_columns_with_change_set(&dataset_id, &column_names, expected_generation)
+    delete_columns_with_change_set_entry(state.inner(), &dataset_id, &columns, expected_generation)
 }
 
 #[tauri::command]
@@ -487,13 +536,18 @@ pub fn add_column_with_change_set(
 pub fn add_columns_with_change_set(
     state: State<'_, AppState>,
     dataset_id: String,
-    columns: Vec<crate::models::table::ColumnDefinition>,
+    columns: Vec<ColumnDescriptor>,
     at_index: Option<i32>,
-    expected_generation: Option<u64>,
-) -> Result<String, AppError> {
+    expected_generation: u64,
+) -> Result<ColumnMutationResult, AppError> {
     let _permit = acquire_mutation_permit(state.inner())?;
-    let service = DataService::new(&state);
-    service.add_columns_with_change_set(&dataset_id, &columns, at_index, expected_generation)
+    add_columns_with_change_set_entry(
+        state.inner(),
+        &dataset_id,
+        &columns,
+        at_index,
+        expected_generation,
+    )
 }
 
 #[tauri::command]
@@ -675,4 +729,140 @@ pub fn set_column_display_props(
         .map_err(|e| AppError::Database(e.to_string()))?;
     display.insert(dataset_id, props);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::models::table::{ColumnMutationResult, RowMutationResult};
+    use crate::services::data_service::DataService;
+    use crate::state::AppState;
+
+    #[test]
+    fn data_commands_expose_compact_mutation_contracts() {
+        let source = include_str!("data_commands.rs");
+        let command = |name: &str| {
+            source
+                .split(&format!("pub fn {name}("))
+                .nth(1)
+                .expect("command declaration")
+                .split("#[tauri::command]")
+                .next()
+                .expect("command body")
+        };
+        let add_rows = command("add_rows");
+        let delete_rows = command("delete_rows_with_change_set");
+        let add_columns = command("add_columns_with_change_set");
+        let delete_columns = command("delete_columns_with_change_set");
+
+        assert!(add_rows.contains("before_row_id: Option<i64>"));
+        assert!(add_rows.contains("expected_generation: u64"));
+        assert!(add_rows.contains("Result<RowMutationResult, AppError>"));
+        assert!(delete_rows.contains("expected_generation: u64"));
+        assert!(delete_rows.contains("Result<RowMutationResult, AppError>"));
+        assert!(add_columns.contains("columns: Vec<ColumnDescriptor>"));
+        assert!(add_columns.contains("expected_generation: u64"));
+        assert!(add_columns.contains("Result<ColumnMutationResult, AppError>"));
+        assert!(delete_columns.contains("columns: Vec<ColumnDescriptor>"));
+        assert!(delete_columns.contains("expected_generation: u64"));
+        assert!(delete_columns.contains("Result<ColumnMutationResult, AppError>"));
+    }
+
+    #[test]
+    fn compact_mutation_results_serialize_with_exact_camel_case_fields() {
+        let row = RowMutationResult {
+            row_ids: vec![41, 42],
+            generation: 8,
+            row_count: 102,
+            change_set_id: "rows-change".to_string(),
+        };
+        let column = ColumnMutationResult {
+            column_ids: vec!["column-new".to_string()],
+            generation: 9,
+            column_count: 4,
+            change_set_id: "columns-change".to_string(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(row).expect("serialize row mutation result"),
+            json!({
+                "rowIds": [41, 42],
+                "generation": 8,
+                "rowCount": 102,
+                "changeSetId": "rows-change",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(column).expect("serialize column mutation result"),
+            json!({
+                "columnIds": ["column-new"],
+                "generation": 9,
+                "columnCount": 4,
+                "changeSetId": "columns-change",
+            })
+        );
+    }
+
+    #[test]
+    fn data_command_entries_route_compact_mutations_and_forward_generation() {
+        let state = AppState::new().expect("state");
+        let service = DataService::new(&state);
+        let dataset = service
+            .create_table(
+                "ipc-routing",
+                &["first".to_string(), "second".to_string()],
+                &["VARCHAR".to_string(), "INTEGER".to_string()],
+            )
+            .expect("dataset");
+
+        let added_rows = super::add_rows_entry(&state, &dataset.id, 2, None, dataset.generation)
+            .expect("compact row add");
+        assert_eq!(added_rows.row_count, 2);
+        assert_eq!(added_rows.generation, dataset.generation + 1);
+
+        let deleted_rows = super::delete_rows_with_change_set_entry(
+            &state,
+            &dataset.id,
+            &[added_rows.row_ids[0]],
+            added_rows.generation,
+        )
+        .expect("compact row delete");
+        assert_eq!(deleted_rows.row_count, 1);
+        assert_eq!(deleted_rows.generation, added_rows.generation + 1);
+
+        let added_descriptor = crate::models::table::ColumnDescriptor {
+            column_id: uuid::Uuid::new_v4().to_string(),
+            name: "third".to_string(),
+            sql_type: "DOUBLE".to_string(),
+            calculated: None,
+        };
+        let added_columns = super::add_columns_with_change_set_entry(
+            &state,
+            &dataset.id,
+            std::slice::from_ref(&added_descriptor),
+            Some(1),
+            deleted_rows.generation,
+        )
+        .expect("compact column add");
+        assert_eq!(
+            added_columns.column_ids,
+            vec![added_descriptor.column_id.clone()]
+        );
+        assert_eq!(added_columns.column_count, 3);
+
+        let deleted_columns = super::delete_columns_with_change_set_entry(
+            &state,
+            &dataset.id,
+            &[added_descriptor],
+            added_columns.generation,
+        )
+        .expect("compact column delete");
+        assert_eq!(deleted_columns.column_count, 2);
+        assert_eq!(deleted_columns.generation, added_columns.generation + 1);
+
+        let stale = super::add_rows_entry(&state, &dataset.id, 1, None, added_columns.generation)
+            .expect_err("stale expected generation must be forwarded");
+        assert!(matches!(stale, crate::error::AppError::InvalidParam(_)));
+    }
 }
