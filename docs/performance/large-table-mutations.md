@@ -84,9 +84,9 @@ Thresholds are append row 1,000 ms; middle insert 2,000 ms; add empty column
 Any timing, memory, fixture, or structural failure sets
 `qualificationPassed = false` and makes the harness exit unsuccessfully.
 
-## Independent-process baseline: 2026-09-21 (fix round 2)
+## Independent-process baseline: 2026-09-21 (fix round 3)
 
-Measured source commit: `2ac7363d6c393d81ab1cb851fe4300913fc4476d`
+Measured source commit: `5dd241f3071bf28ab02c133e7a9f903e428d53a4`
 
 Profile: release
 
@@ -100,16 +100,16 @@ Phase columns show median/max milliseconds.
 
 | Operation | Runs (ms) | Median | Max / threshold | Mutation | History | Anchor | Metadata | Reload |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Append row | 77, 76, 71, 70, 74 | 74 | 77 / 1,000 | 1/1 | 3/3 | 50/51 | 1/1 | 14/15 |
-| Insert middle row | 82, 84, 81, 81, 83 | 82 | 84 / 2,000 | 1/1 | 3/3 | 57/60 | 1/1 | 15/15 |
-| Add empty column | 37, 37, 36, 37, 35 | 37 | 37 / 2,000 | 8/8 | 4/4 | 3/3 | 1/1 | 15/16 |
-| Delete one row | 42, 36, 43, 44, 44 | 43 | 44 / 2,000 | 1/1 | 4/4 | 17/18 | 1/1 | 14/15 |
-| Delete one column | 44, 47, 48, 40, 44 | 44 | 48 / 5,000 | 1/2 | 20/20 | 3/3 | 1/1 | 14/15 |
+| Append row | 69, 77, 75, 74, 78 | 75 | 78 / 1,000 | 1/1 | 3/3 | 50/51 | 1/1 | 14/14 |
+| Insert middle row | 84, 83, 82, 83, 84 | 83 | 84 / 2,000 | 1/1 | 3/3 | 58/60 | 1/1 | 14/15 |
+| Add empty column | 35, 37, 36, 38, 36 | 36 | 38 / 2,000 | 8/10 | 4/4 | 3/3 | 1/1 | 15/15 |
+| Delete one row | 44, 45, 37, 42, 43 | 43 | 45 / 2,000 | 1/1 | 4/4 | 17/18 | 1/1 | 14/15 |
+| Delete one column | 43, 40, 44, 42, 40 | 42 | 44 / 5,000 | 1/1 | 20/20 | 3/3 | 1/1 | 13/15 |
 
 All five operations passed every structural assertion. Middle insertion
 preceded its requested target. No operation approached a retained-memory or RSS
 doubling. Every operation records six distinct child PIDs and one sample per
-child. Maximum observed RSS deltas ranged from 507,904 bytes to 79,888,384
+child. Maximum observed RSS deltas ranged from 425,984 bytes to 81,838,080
 bytes; DuckDB retained memory after mutation ranged from 34,770,944 to
 47,749,120 bytes from a 30,353,408-byte baseline.
 
