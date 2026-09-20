@@ -143,6 +143,32 @@ test("keeps the add-row affordance visible and usable with an empty dataset", as
   await expect(empty.locator('td[data-row="0"][data-col="0"]')).toBeVisible();
 });
 
+test("corner-menu insert row appends without a row target", async ({ mount }) => {
+  const component = await mount(<LogicalTableNavigationHarness rowCount={20} />);
+
+  await component.locator(".sp-corner").click({ button: "right" });
+  await component.locator(".sp-ctx-menu .sp-ctx-item").first().click();
+
+  await expect(component.getByTestId("dataset-row-count")).toHaveText("21");
+  await expect(component.getByTestId("add-rows-requests")).toHaveText(
+    JSON.stringify([{ count: 1, beforeRowId: null, expectedGeneration: 1 }]),
+  );
+  await expect(component.locator(".sp-toast-error")).toHaveCount(0);
+});
+
+test("row-menu insert row uses the clicked row's stable target", async ({ mount }) => {
+  const component = await mount(<LogicalTableNavigationHarness rowCount={20} />);
+
+  await component.locator('td[data-row-hdr="2"]').click({ button: "right" });
+  await component.locator(".sp-ctx-menu .sp-ctx-item").first().click();
+
+  await expect(component.getByTestId("dataset-row-count")).toHaveText("21");
+  await expect(component.getByTestId("add-rows-requests")).toHaveText(
+    JSON.stringify([{ count: 1, beforeRowId: 3, expectedGeneration: 1 }]),
+  );
+  await expect(component.locator(".sp-toast-error")).toHaveCount(0);
+});
+
 test("dragging the logical rail reuses stable slots and shows inert placeholders until rows load", async ({ mount, page }) => {
   const component = await mount(<LogicalTableNavigationHarness />);
   const rail = component.getByRole("scrollbar");

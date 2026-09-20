@@ -3054,6 +3054,14 @@ export function DataTableView({
     setRowMenu(null);
   };
 
+  const handleAppendRowFromCorner = async () => {
+    if (readOnly) return;
+    if (pendingAction) return;
+    const added = await addRowsWithHistory(1, t("history.insertRow"), null);
+    if (!added) return;
+    setCornerMenu(null);
+  };
+
   const openInsertMultiRows = (rowIdx: number | null) => {
     if (rowIdx == null) {
       setInsertRowBeforeId(null);
@@ -5908,7 +5916,7 @@ export function DataTableView({
           style={{ left: cornerMenu.x, top: cornerMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="sp-ctx-item" onClick={() => { handleInsertRowAbove(); setCornerMenu(null); }}>
+          <div className="sp-ctx-item" onClick={handleAppendRowFromCorner}>
             {t("dataTable.ctxInsertRow")}
           </div>
           <div className="sp-ctx-item" onClick={() => { openInsertMultiRows(null); setCornerMenu(null); }}>
