@@ -10,6 +10,7 @@ test-results/
 # ----- Rust / Cargo -----
 src-tauri/target*/
 .superpowers/
+.worktrees/
 
 # ----- Local test artifacts -----
 playwright/.cache/
