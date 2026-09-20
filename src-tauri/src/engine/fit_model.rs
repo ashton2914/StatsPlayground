@@ -1,4 +1,5 @@
 pub mod diagnostics;
+pub mod effects;
 pub mod matrix;
 pub mod ols;
 pub mod prediction;

@@ -3,6 +3,7 @@ use nalgebra::{DMatrix, DVector, Dyn};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
 use crate::engine::fit_model::diagnostics::compute_diagnostics_with_rows;
+use crate::engine::fit_model::effects::compute_effect_tests;
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
@@ -287,6 +288,14 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         ill_conditioned,
     );
     let resolved = resolved_terms(&input.model_matrix_spec);
+    let effect_tests = compute_effect_tests(
+        &input.design_matrix,
+        &response,
+        &resolved,
+        sse,
+        mse,
+        df_error as u64,
+    )?;
     let centering = FitModelCentering {
         method: input.model_matrix_spec.centering_method().clone(),
         centers: input.model_matrix_spec.centers().to_vec(),
@@ -378,7 +387,7 @@ pub(crate) fn fit_linear_model_with_diagnostics(
                 },
             ],
             parameter_estimates,
-            effect_tests: vec![],
+            effect_tests,
             leverage_plots: vec![],
             plot_rows,
             plot_rows_sampled: sampled,
