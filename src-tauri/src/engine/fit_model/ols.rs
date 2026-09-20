@@ -3,7 +3,7 @@ use nalgebra::{DMatrix, DVector, Dyn};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
 use crate::engine::fit_model::diagnostics::compute_diagnostics_with_rows;
-use crate::engine::fit_model::effects::compute_effect_tests;
+use crate::engine::fit_model::effects::{compute_effect_leverage_plots, compute_effect_tests};
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
     FitModelAnovaRow, FitModelCentering, FitModelNotComputableReason, FitModelNotComputableResult,
@@ -296,6 +296,16 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         mse,
         df_error as u64,
     )?;
+    let leverage_plots = compute_effect_leverage_plots(
+        &input.design_matrix,
+        &response,
+        &input.row_indexes,
+        &resolved,
+        &effect_tests,
+        mse,
+        df_error as u64,
+        confidence_level,
+    )?;
     let centering = FitModelCentering {
         method: input.model_matrix_spec.centering_method().clone(),
         centers: input.model_matrix_spec.centers().to_vec(),
@@ -388,7 +398,7 @@ pub(crate) fn fit_linear_model_with_diagnostics(
             ],
             parameter_estimates,
             effect_tests,
-            leverage_plots: vec![],
+            leverage_plots,
             plot_rows,
             plot_rows_sampled: sampled,
             warnings,
@@ -636,7 +646,7 @@ fn warnings(
     values
 }
 
-fn deterministic_rank_grid(logical_n: u64, max_points: usize) -> Vec<u64> {
+pub(crate) fn deterministic_rank_grid(logical_n: u64, max_points: usize) -> Vec<u64> {
     if logical_n == 0 {
         return Vec::new();
     }
@@ -1080,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn fitted_result_populates_effect_tests_before_leverage_plots() {
+    fn fitted_result_populates_effect_tests_and_leverage_plots() {
         let input = build_input(
             "Y",
             vec![term(FitModelTermKind::Main, &["X"])],
@@ -1103,7 +1113,11 @@ mod tests {
         assert!(fitted.effect_tests[0].sum_of_squares.is_some());
         assert!(fitted.effect_tests[0].f_ratio.is_some());
         assert!(fitted.effect_tests[0].p_value.is_some());
-        assert!(fitted.leverage_plots.is_empty());
+        assert_eq!(fitted.leverage_plots.len(), 1);
+        assert_eq!(fitted.leverage_plots[0].term_id, "X");
+        assert_eq!(fitted.leverage_plots[0].points.len(), 6);
+        assert!(!fitted.leverage_plots[0].confidence_band.is_empty());
+        assert_eq!(fitted.leverage_plots[0].reason, None);
     }
 
     #[test]
