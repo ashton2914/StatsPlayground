@@ -183,6 +183,7 @@ interface LogicalTableNavigationHarnessProps {
   width?: number;
   height?: number;
   initialFilterMode?: HarnessFilterMode;
+  rejectCancelledNavigation?: boolean;
 }
 
 interface NavigationRequestObservation {
@@ -201,6 +202,7 @@ export function LogicalTableNavigationHarness({
   width = 920,
   height = 588,
   initialFilterMode = "none",
+  rejectCancelledNavigation = false,
 }: LogicalTableNavigationHarnessProps) {
   const [ready, setReady] = useState(false);
   const dirty = useProjectStore((state) => state.dirty);
@@ -208,6 +210,7 @@ export function LogicalTableNavigationHarness({
   const [dataset, setDataset] = useState(() => createDataset(rowCount, columnCount));
   const [navigationRequestStarts, setNavigationRequestStarts] = useState<number[]>([]);
   const [resolvedNavigationRequestStarts, setResolvedNavigationRequestStarts] = useState<number[]>([]);
+  const [cancelledNavigationRequestStarts, setCancelledNavigationRequestStarts] = useState<number[]>([]);
   const [navigationRequestSessionIds, setNavigationRequestSessionIds] = useState<string[]>([]);
   const [navigationRequestObservations, setNavigationRequestObservations] = useState<NavigationRequestObservation[]>([]);
   const [preparedSessionIds, setPreparedSessionIds] = useState<string[]>([]);
@@ -222,6 +225,8 @@ export function LogicalTableNavigationHarness({
   const filterModeRef = useRef(filterMode);
   const sortModeRef = useRef(sortMode);
   const sessionReadyAtRef = useRef<Map<string, number>>(new Map());
+  const navigationCancellersRef = useRef<Map<string, () => void>>(new Map());
+  const navigationRequestStartsByIdRef = useRef<Map<string, number>>(new Map());
   const delayedWindowLoadsRef = useRef(0);
   const lastPaintedVisibleCellTextRef = useRef<string | null>(null);
 
@@ -239,6 +244,7 @@ export function LogicalTableNavigationHarness({
     editsRef.current.clear();
     setNavigationRequestStarts([]);
     setResolvedNavigationRequestStarts([]);
+    setCancelledNavigationRequestStarts([]);
     setNavigationRequestSessionIds([]);
     setNavigationRequestObservations([]);
     setPreparedSessionIds([]);
@@ -376,6 +382,7 @@ export function LogicalTableNavigationHarness({
       );
     };
     dataService.queryTableNavigationWindow = async (request) => {
+      navigationRequestStartsByIdRef.current.set(request.requestId, request.start);
       setNavigationRequestStarts((previous) => [...previous, request.start]);
       setNavigationRequestSessionIds((previous) => [...previous, request.sessionId ?? "natural"]);
       const visibleCellTextAtRequest = rootRef.current
@@ -397,7 +404,19 @@ export function LogicalTableNavigationHarness({
         },
       ]);
       if (request.start > 0) {
-        await new Promise((resolve) => window.setTimeout(resolve, WINDOW_DELAY_MS));
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(() => {
+            navigationCancellersRef.current.delete(request.requestId);
+            resolve();
+          }, WINDOW_DELAY_MS);
+          if (rejectCancelledNavigation) {
+            navigationCancellersRef.current.set(request.requestId, () => {
+              window.clearTimeout(timeout);
+              navigationCancellersRef.current.delete(request.requestId);
+              reject(new Error(`Cancelled: table navigation request ${request.requestId} was cancelled`));
+            });
+          }
+        });
       }
       const mode = request.sessionId?.includes("session-dv")
         ? "dv"
@@ -465,7 +484,13 @@ export function LogicalTableNavigationHarness({
       setReleasedSessionIds((previous) => [...previous, sessionId]);
       sessionReadyAtRef.current.delete(sessionId);
     };
-    dataService.cancelTableNavigationRequest = async () => {};
+    dataService.cancelTableNavigationRequest = async (requestId) => {
+      const cancelledStart = navigationRequestStartsByIdRef.current.get(requestId);
+      if (cancelledStart != null) {
+        setCancelledNavigationRequestStarts((previous) => [...previous, cancelledStart]);
+      }
+      navigationCancellersRef.current.get(requestId)?.();
+    };
     dataService.getColumnDescriptors = async () => buildDescriptors(columnCount);
     dataService.getColumnDisplayProps = async () => [];
     dataService.updateCell = async (_datasetId, rowId, columnName, value) => {
@@ -505,6 +530,8 @@ export function LogicalTableNavigationHarness({
       dataService.updateCell = previousUpdateCell;
       dataService.addRow = previousAddRow;
       dataService.addRows = previousAddRows;
+      navigationCancellersRef.current.clear();
+      navigationRequestStartsByIdRef.current.clear();
       useDataStore.setState(previousDataState, true);
       useDatasetFilterStore.setState(previousFilterState, true);
       useTableNavigationSortStore.setState(previousSortState, true);
@@ -513,7 +540,7 @@ export function LogicalTableNavigationHarness({
       useTableZoomStore.setState({ zoom: previousZoom });
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [columnCount, rowCount]);
+  }, [columnCount, rejectCancelledNavigation, rowCount]);
 
   useEffect(() => {
     if (!ready) return;
@@ -539,6 +566,7 @@ export function LogicalTableNavigationHarness({
       <div data-testid="dataset-row-count">{dataset.rowCount}</div>
       <div data-testid="nav-request-starts">{navigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-resolved-starts">{resolvedNavigationRequestStarts.join(",")}</div>
+      <div data-testid="nav-request-cancelled-starts">{cancelledNavigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-session-ids">{navigationRequestSessionIds.join(",")}</div>
       <div data-testid="nav-request-observations">{JSON.stringify(navigationRequestObservations)}</div>
       <div data-testid="prepared-session-ids">{preparedSessionIds.join(",")}</div>
