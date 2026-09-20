@@ -213,7 +213,9 @@ mod tests {
         FitModelInferenceReason, FitModelResolvedTerm, FitModelTermKind,
     };
 
-    use super::{compute_effect_tests, directed_effect_df};
+    use super::{
+        compute_effect_tests, directed_effect_df, rank_from_singular_values, rank_tolerance,
+    };
 
     const TOLERANCE: f64 = 1e-9;
 
@@ -469,6 +471,22 @@ mod tests {
             super::FitModelEngineError::NumericalFailure(message)
                 if message.contains("reduced-model rank")
         ));
+    }
+
+    #[test]
+    fn rank_classification_uses_exact_svd_tolerance_boundary() {
+        let n = 10;
+        let p = 4;
+        let sigma_max = 8.0;
+        let expected_tolerance = n.max(p) as f64 * f64::EPSILON * sigma_max;
+        let just_below = f64::from_bits(expected_tolerance.to_bits() - 1);
+        let just_above = f64::from_bits(expected_tolerance.to_bits() + 1);
+        let singular_values = [sigma_max, just_above, expected_tolerance, just_below];
+
+        assert!(just_below < expected_tolerance);
+        assert!(just_above > expected_tolerance);
+        assert_eq!(rank_tolerance(&singular_values, n, p), expected_tolerance);
+        assert_eq!(rank_from_singular_values(&singular_values, n, p), 2);
     }
 
     #[test]
