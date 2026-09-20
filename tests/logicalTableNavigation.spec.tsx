@@ -102,6 +102,22 @@ test("dragging the logical rail reuses stable slots and shows inert placeholders
   await expect.poll(() => slot0.evaluate((row) => row.getBoundingClientRect().height)).toBe(placeholderHeight);
 });
 
+test("reloads top rows after the current dataset generation changes from a nonzero window", async ({ mount, page }) => {
+  const component = await mount(<LogicalTableNavigationHarness />);
+  const rail = component.getByRole("scrollbar");
+  const slot0 = component.locator('[data-viewport-slot="0"]');
+
+  await dragRailToRatio(component, page, 0.9);
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBeGreaterThan(8_900_000);
+  await expect(slot0).not.toHaveClass(/sp-placeholder-row/);
+
+  await component.getByTestId("advance-dataset-generation").click();
+
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(0);
+  await expect(slot0).not.toHaveClass(/sp-placeholder-row/);
+  await expect(slot0.locator('td[data-row="0"][data-col="0"] .sp-val')).toHaveText("row-1-col-1");
+});
+
 test("wheel and keyboard navigation update logical position", async ({ mount, page }) => {
   const component = await mount(<LogicalTableNavigationHarness width={520} />);
   const rail = component.getByRole("scrollbar");
@@ -188,6 +204,57 @@ test("selection stays attached to the logical row when slots are reused", async 
   await expect(targetCell).toHaveClass(/sp-cell-active/);
 });
 
+test("keeps the released scrollbar position after selecting a cell between drags", async ({ mount, page }) => {
+  await page.evaluate(() => {
+    class ScrollbarInsetResizeObserver {
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+      }
+
+      observe(target: Element) {
+        const rect = target.getBoundingClientRect();
+        queueMicrotask(() => {
+          this.callback([{
+            target,
+            contentRect: {
+              ...rect.toJSON(),
+              width: rect.width,
+              height: Math.max(0, rect.height - 16),
+            },
+          } as ResizeObserverEntry], this as unknown as ResizeObserver);
+        });
+      }
+
+      unobserve() {}
+
+      disconnect() {}
+    }
+
+    window.ResizeObserver = ScrollbarInsetResizeObserver as unknown as typeof ResizeObserver;
+  });
+
+  const component = await mount(<LogicalTableNavigationHarness width={520} />);
+  const rail = component.getByRole("scrollbar");
+  const slot0 = component.locator('[data-viewport-slot="0"]');
+  const resolvedStarts = component.getByTestId("nav-request-resolved-starts");
+
+  await dragRailToRatio(component, page, 0.25);
+  await expect.poll(() => slot0.evaluate((row) => row.classList.contains("sp-placeholder-row"))).toBe(false);
+  await slot0.locator('td[data-col="0"]').click();
+
+  await dragRailToRatio(component, page, 0.75);
+  const releasedPosition = Number(await rail.getAttribute("aria-valuenow"));
+  expect(releasedPosition).toBeGreaterThan(7_000_000);
+
+  await expect.poll(async () => parseStartList(await resolvedStarts.textContent()).some((start) => (
+    start > 7_000_000
+  ))).toBe(true);
+  await page.waitForTimeout(250);
+  expect(Number(await rail.getAttribute("aria-valuenow"))).toBe(releasedPosition);
+});
+
 test("revisiting a superseded uncached range issues and resolves a fresh navigation request", async ({ mount, page }) => {
   const component = await mount(<LogicalTableNavigationHarness />);
   const resolvedStarts = component.getByTestId("nav-request-resolved-starts");
@@ -210,6 +277,36 @@ test("revisiting a superseded uncached range issues and resolves a fresh navigat
   const slot0 = component.locator('[data-viewport-slot="0"]');
   await expect.poll(() => slot0.evaluate((row) => row.classList.contains("sp-placeholder-row"))).toBe(false);
   await expect(slot0).toContainText(/row-/);
+});
+
+test("revisiting an actively cancelled range issues and resolves a fresh navigation request", async ({ mount, page }) => {
+  const component = await mount(<LogicalTableNavigationHarness rejectCancelledNavigation />);
+  const starts = component.getByTestId("nav-request-starts");
+  const resolvedStarts = component.getByTestId("nav-request-resolved-starts");
+  const cancelledStarts = component.getByTestId("nav-request-cancelled-starts");
+
+  await dragRailToRatio(component, page, 0.45);
+  await expect.poll(async () => parseStartList(await starts.textContent()).some((start) => (
+    start > 4_000_000 && start < 5_000_000
+  ))).toBe(true);
+  const originalStart = parseStartList(await starts.textContent()).find((start) => (
+    start > 4_000_000 && start < 5_000_000
+  ));
+  expect(originalStart).toBeDefined();
+
+  await dragRailToRatio(component, page, 0.85);
+  await expect.poll(async () => parseStartList(await cancelledStarts.textContent())).toContain(originalStart);
+  await expect.poll(async () => parseStartList(await resolvedStarts.textContent()).some((start) => (
+    start > 8_000_000
+  ))).toBe(true);
+
+  await component.getByTestId("reset-navigation-telemetry").click();
+  await dragRailToRatio(component, page, 0.45);
+
+  await expect.poll(async () => parseStartList(await starts.textContent())).toContain(originalStart);
+  await expect.poll(async () => parseStartList(await resolvedStarts.textContent())).toContain(originalStart);
+  await expect(component.locator('[data-viewport-slot="0"]')).toContainText(/row-/);
+  await expect(component.locator(".sp-toast-error")).toHaveCount(0);
 });
 
 test("filtered navigation prepares a session before switching to the exact logical count and session-backed windows", async ({ mount, page }) => {

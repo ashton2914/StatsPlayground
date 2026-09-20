@@ -1390,6 +1390,12 @@ export function DataTableView({
   useLayoutEffect(() => {
     currentDatasetIdRef.current = datasetId;
     return () => {
+      currentDatasetIdRef.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    return () => {
       void tableNavigationSchedulerRef.current?.invalidate({ datasetId, generation: datasetGeneration });
       tableQuerySessionPollSeqRef.current += 1;
       clearPendingPrefetches();
@@ -1397,7 +1403,6 @@ export function DataTableView({
       const activeSessionId = tableQuerySessionRef.current.sessionId;
       resetTableQuerySession();
       void releaseTableQuerySession(activeSessionId);
-      currentDatasetIdRef.current = null;
     };
   }, [cancelActiveTransportMeasurement, clearPendingPrefetches, datasetGeneration, datasetId, releaseTableQuerySession, resetTableQuerySession]);
 
@@ -1776,6 +1781,9 @@ export function DataTableView({
       },
       cancel: (requestId) => dataService.cancelTableNavigationRequest(requestId),
       isCancelledError: (error) => String(error).includes("Cancelled:"),
+      onDiscarded: (request) => {
+        pendingWindowsRef.current.delete(request.cacheKey);
+      },
       onResult: (result, request) => {
         pendingWindowsRef.current.delete(request.cacheKey);
         if (!requestEpochRef.current!.isCurrent(request.localEpoch)) return;
@@ -2507,12 +2515,19 @@ export function DataTableView({
     if (!el || typeof ResizeObserver === "undefined") return;
     // Seed with current size so virtualization is correct before the first
     // ResizeObserver callback fires.
-    const initRect = el.getBoundingClientRect();
-    setWrapperSize((prev) => (prev.width === initRect.width && prev.height === initRect.height ? prev : { width: initRect.width, height: initRect.height }));
+    setWrapperSize((prev) => (
+      prev.width === el.clientWidth && prev.height === el.clientHeight
+        ? prev
+        : { width: el.clientWidth, height: el.clientHeight }
+    ));
     const obs = new ResizeObserver((entries) => {
       for (const ent of entries) {
-        const r = ent.contentRect;
-        setWrapperSize((prev) => (prev.width === r.width && prev.height === r.height ? prev : { width: r.width, height: r.height }));
+        const target = ent.target as HTMLDivElement;
+        setWrapperSize((prev) => (
+          prev.width === target.clientWidth && prev.height === target.clientHeight
+            ? prev
+            : { width: target.clientWidth, height: target.clientHeight }
+        ));
       }
     });
     obs.observe(el);

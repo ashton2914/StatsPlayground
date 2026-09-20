@@ -21,7 +21,7 @@ export function createIoCommandHandlers(
   dependencyOverrides: Partial<IoCommandDependencies> = {},
 ) {
   const dependencies: IoCommandDependencies = {
-    createSnapshot: async (name) => {
+    createSnapshot: dependencyOverrides.createSnapshot ?? (async (name) => {
       const historyStore = useHistoryStore.getState();
       const beforeCount = historyStore.snapshots.length;
       await historyStore.createSnapshot(name);
@@ -31,13 +31,12 @@ export function createIoCommandHandlers(
         name: latestSnapshot?.name ?? null,
         createdAt: latestSnapshot?.timestamp ?? null,
       };
-    },
-    inspectCsvTarget: (input) =>
-      ioService.inspectAuthorizedCsvTarget(input.datasetId, input.rootId, input.relativePath),
-    exportCsv: async (input, trusted) => {
+    }),
+    inspectCsvTarget: dependencyOverrides.inspectCsvTarget ?? ((input) =>
+      ioService.inspectAuthorizedCsvTarget(input.datasetId, input.rootId, input.relativePath)),
+    exportCsv: dependencyOverrides.exportCsv ?? (async (input, trusted) => {
       await ioService.exportCsvAuthorized(input.datasetId, input.rootId, input.relativePath, trusted.overwriteConfirmed);
-    },
-    ...dependencyOverrides,
+    }),
   };
 
   async function createSnapshot(input: SnapshotCreateInput): Promise<SnapshotCreateResult> {

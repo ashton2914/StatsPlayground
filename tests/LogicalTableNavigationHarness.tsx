@@ -66,7 +66,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function createDataset(rowCount: number, dataColumnCount: number): DatasetMeta {
+function createDataset(
+  rowCount: number,
+  dataColumnCount: number,
+  generation = GENERATION,
+): DatasetMeta {
   return {
     id: "logical-scroll-dataset",
     name: "Logical scroll measurements",
@@ -74,7 +78,7 @@ function createDataset(rowCount: number, dataColumnCount: number): DatasetMeta {
     sourceType: "manual",
     rowCount,
     colCount: dataColumnCount,
-    generation: GENERATION,
+    generation,
     createdAt: "2026-09-17T00:00:00.000Z",
     updatedAt: "2026-09-17T00:00:00.000Z",
   };
@@ -116,6 +120,7 @@ function buildWindow(
   edits: Map<string, unknown>,
   mode: HarnessFilterMode,
   sortMode: HarnessSortMode,
+  generation = GENERATION,
 ): TableWindowResult {
   const maxStart = Math.max(0, totalRows - 1);
   const safeStart = clamp(start, 0, maxStart);
@@ -126,7 +131,7 @@ function buildWindow(
     rows: Array.from({ length: safeCount }, (_, index) => createRow(safeStart + index, dataColumnCount, edits, mode, sortMode)),
     totalRows,
     start: safeStart,
-    generation: GENERATION,
+    generation,
   };
 }
 
@@ -146,7 +151,16 @@ function buildNavigationWindow(
   mode: HarnessFilterMode,
   sortMode: HarnessSortMode,
 ): TableNavigationResult {
-  const window = buildWindow(totalRows, dataColumnCount, request.start, request.count, edits, mode, sortMode);
+  const window = buildWindow(
+    totalRows,
+    dataColumnCount,
+    request.start,
+    request.count,
+    edits,
+    mode,
+    sortMode,
+    request.generation,
+  );
   return {
     version: 1,
     requestId: request.requestId,
@@ -169,6 +183,7 @@ interface LogicalTableNavigationHarnessProps {
   width?: number;
   height?: number;
   initialFilterMode?: HarnessFilterMode;
+  rejectCancelledNavigation?: boolean;
 }
 
 interface NavigationRequestObservation {
@@ -187,6 +202,7 @@ export function LogicalTableNavigationHarness({
   width = 920,
   height = 588,
   initialFilterMode = "none",
+  rejectCancelledNavigation = false,
 }: LogicalTableNavigationHarnessProps) {
   const [ready, setReady] = useState(false);
   const dirty = useProjectStore((state) => state.dirty);
@@ -194,6 +210,7 @@ export function LogicalTableNavigationHarness({
   const [dataset, setDataset] = useState(() => createDataset(rowCount, columnCount));
   const [navigationRequestStarts, setNavigationRequestStarts] = useState<number[]>([]);
   const [resolvedNavigationRequestStarts, setResolvedNavigationRequestStarts] = useState<number[]>([]);
+  const [cancelledNavigationRequestStarts, setCancelledNavigationRequestStarts] = useState<number[]>([]);
   const [navigationRequestSessionIds, setNavigationRequestSessionIds] = useState<string[]>([]);
   const [navigationRequestObservations, setNavigationRequestObservations] = useState<NavigationRequestObservation[]>([]);
   const [preparedSessionIds, setPreparedSessionIds] = useState<string[]>([]);
@@ -208,6 +225,8 @@ export function LogicalTableNavigationHarness({
   const filterModeRef = useRef(filterMode);
   const sortModeRef = useRef(sortMode);
   const sessionReadyAtRef = useRef<Map<string, number>>(new Map());
+  const navigationCancellersRef = useRef<Map<string, () => void>>(new Map());
+  const navigationRequestStartsByIdRef = useRef<Map<string, number>>(new Map());
   const delayedWindowLoadsRef = useRef(0);
   const lastPaintedVisibleCellTextRef = useRef<string | null>(null);
 
@@ -225,6 +244,7 @@ export function LogicalTableNavigationHarness({
     editsRef.current.clear();
     setNavigationRequestStarts([]);
     setResolvedNavigationRequestStarts([]);
+    setCancelledNavigationRequestStarts([]);
     setNavigationRequestSessionIds([]);
     setNavigationRequestObservations([]);
     setPreparedSessionIds([]);
@@ -314,31 +334,32 @@ export function LogicalTableNavigationHarness({
     const previousUpdateCell = dataService.updateCell;
     const previousAddRow = dataService.addRow;
     const previousAddRows = dataService.addRows;
+    const currentDataset = datasetRef.current;
     let active = true;
 
     useDataStore.setState({
       ...previousDataState,
-      activeDatasetId: dataset.id,
-      datasets: [dataset],
+      activeDatasetId: currentDataset.id,
+      datasets: [currentDataset],
       statusInfo: null,
     });
     useDatasetFilterStore.setState({
       ...previousFilterState,
       byDataset: filterModeRef.current === "none"
         ? {}
-        : { [dataset.id]: FILTER_RULES[filterModeRef.current] },
+        : { [currentDataset.id]: FILTER_RULES[filterModeRef.current] },
     });
     useTableNavigationSortStore.setState({
       ...previousSortState,
       byDataset: sortModeRef.current === "natural"
         ? {}
-        : { [dataset.id]: { column: "Column 2", descending: true } },
+        : { [currentDataset.id]: { column: "Column 2", descending: true } },
     });
     useProjectStore.setState({ ...previousProjectState, readOnly: false, dirty: false, saving: false, saveError: null });
     useHistoryStore.setState({ ...previousHistoryState, historyRevision: 0, historyError: null, pendingRestore: null });
     useTableZoomStore.setState({ zoom: 1 });
 
-    dataService.getDatasetGeneration = async () => GENERATION;
+    dataService.getDatasetGeneration = async () => datasetRef.current.generation;
     dataService.queryTableWindow = async ({ start, count, filters }) => {
       const effectiveStart = typeof start === "number" ? start : 0;
       const effectiveCount = typeof count === "number" ? count : 500;
@@ -357,9 +378,11 @@ export function LogicalTableNavigationHarness({
         editsRef.current,
         mode,
         sortModeRef.current,
+        datasetRef.current.generation,
       );
     };
     dataService.queryTableNavigationWindow = async (request) => {
+      navigationRequestStartsByIdRef.current.set(request.requestId, request.start);
       setNavigationRequestStarts((previous) => [...previous, request.start]);
       setNavigationRequestSessionIds((previous) => [...previous, request.sessionId ?? "natural"]);
       const visibleCellTextAtRequest = rootRef.current
@@ -381,7 +404,19 @@ export function LogicalTableNavigationHarness({
         },
       ]);
       if (request.start > 0) {
-        await new Promise((resolve) => window.setTimeout(resolve, WINDOW_DELAY_MS));
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(() => {
+            navigationCancellersRef.current.delete(request.requestId);
+            resolve();
+          }, WINDOW_DELAY_MS);
+          if (rejectCancelledNavigation) {
+            navigationCancellersRef.current.set(request.requestId, () => {
+              window.clearTimeout(timeout);
+              navigationCancellersRef.current.delete(request.requestId);
+              reject(new Error(`Cancelled: table navigation request ${request.requestId} was cancelled`));
+            });
+          }
+        });
       }
       const mode = request.sessionId?.includes("session-dv")
         ? "dv"
@@ -449,7 +484,13 @@ export function LogicalTableNavigationHarness({
       setReleasedSessionIds((previous) => [...previous, sessionId]);
       sessionReadyAtRef.current.delete(sessionId);
     };
-    dataService.cancelTableNavigationRequest = async () => {};
+    dataService.cancelTableNavigationRequest = async (requestId) => {
+      const cancelledStart = navigationRequestStartsByIdRef.current.get(requestId);
+      if (cancelledStart != null) {
+        setCancelledNavigationRequestStarts((previous) => [...previous, cancelledStart]);
+      }
+      navigationCancellersRef.current.get(requestId)?.();
+    };
     dataService.getColumnDescriptors = async () => buildDescriptors(columnCount);
     dataService.getColumnDisplayProps = async () => [];
     dataService.updateCell = async (_datasetId, rowId, columnName, value) => {
@@ -489,6 +530,8 @@ export function LogicalTableNavigationHarness({
       dataService.updateCell = previousUpdateCell;
       dataService.addRow = previousAddRow;
       dataService.addRows = previousAddRows;
+      navigationCancellersRef.current.clear();
+      navigationRequestStartsByIdRef.current.clear();
       useDataStore.setState(previousDataState, true);
       useDatasetFilterStore.setState(previousFilterState, true);
       useTableNavigationSortStore.setState(previousSortState, true);
@@ -497,7 +540,7 @@ export function LogicalTableNavigationHarness({
       useTableZoomStore.setState({ zoom: previousZoom });
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [columnCount, dataset, rowCount]);
+  }, [columnCount, rejectCancelledNavigation, rowCount]);
 
   useEffect(() => {
     if (!ready) return;
@@ -523,6 +566,7 @@ export function LogicalTableNavigationHarness({
       <div data-testid="dataset-row-count">{dataset.rowCount}</div>
       <div data-testid="nav-request-starts">{navigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-resolved-starts">{resolvedNavigationRequestStarts.join(",")}</div>
+      <div data-testid="nav-request-cancelled-starts">{cancelledNavigationRequestStarts.join(",")}</div>
       <div data-testid="nav-request-session-ids">{navigationRequestSessionIds.join(",")}</div>
       <div data-testid="nav-request-observations">{JSON.stringify(navigationRequestObservations)}</div>
       <div data-testid="prepared-session-ids">{preparedSessionIds.join(",")}</div>
@@ -546,6 +590,23 @@ export function LogicalTableNavigationHarness({
       <button type="button" data-testid="clear-filter" onClick={() => setFilterMode("none")}>Clear</button>
       <button type="button" data-testid="apply-sort-desc" onClick={() => setSortMode("value-desc")}>Sort desc</button>
       <button type="button" data-testid="clear-sort" onClick={() => setSortMode("natural")}>Sort clear</button>
+      <button
+        type="button"
+        data-testid="advance-dataset-generation"
+        onClick={() => {
+          const nextDataset = createDataset(
+            datasetRef.current.rowCount,
+            columnCount,
+            datasetRef.current.generation + 1,
+          );
+          datasetRef.current = nextDataset;
+          setDataset(nextDataset);
+          useDataStore.setState((current) => ({
+            ...current,
+            datasets: current.datasets.map((item) => item.id === nextDataset.id ? nextDataset : item),
+          }));
+        }}
+      >Advance generation</button>
       <DataTableView datasetId={dataset.id} />
     </div>
   );

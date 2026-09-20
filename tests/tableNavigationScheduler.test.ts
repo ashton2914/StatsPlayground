@@ -96,9 +96,10 @@ async function run() {
   await testSettlesToLatestDragTarget();
   await testFlushStartsImmediatelyOnRelease();
   await testCancelsObsoleteActiveRequestWithoutSurfacingCancelledError();
+  await testDiscardsActiveRequestWhenCancellationRejectsBeforeAcknowledgement();
   await testStartsLatestRequestAfterCancellationAcknowledgement();
   await testGenerationChangeCancelsActiveAndPendingWork();
-  console.log("table navigation scheduler contract passed (6 tests)");
+  console.log("table navigation scheduler contract passed (7 tests)");
 }
 
 async function testReturnsSupersededPendingRequestBeforeStart() {
@@ -225,6 +226,43 @@ async function testCancelsObsoleteActiveRequestWithoutSurfacingCancelledError() 
   secondRequest.resolve(makeResult(makeRequest("req-3", 300)));
   await Promise.resolve();
   assert.deepEqual(surfacedErrors, [], "cancelled requests must not surface as user-facing errors");
+}
+
+async function testDiscardsActiveRequestWhenCancellationRejectsBeforeAcknowledgement() {
+  const clock = new FakeClock();
+  const obsoleteRequest = deferred<TableNavigationResult>();
+  const cancellationAcknowledgement = deferred<void>();
+  const discarded: string[] = [];
+  const scheduler = new TableNavigationScheduler<TableNavigationRequest, TableNavigationResult>({
+    settleMs: 75,
+    clock,
+    start: (request) => request.requestId === "req-obsolete"
+      ? obsoleteRequest.promise
+      : Promise.resolve(makeResult(request)),
+    cancel: () => cancellationAcknowledgement.promise,
+    isCancelledError: (error) => error instanceof Error && error.message === "cancelled",
+    onDiscarded: (request) => {
+      discarded.push(request.requestId);
+    },
+    onResult: () => {},
+    onError: (error) => {
+      throw error;
+    },
+  });
+
+  scheduler.schedule(makeRequest("req-obsolete", 100));
+  await clock.advanceBy(75);
+  scheduler.schedule(makeRequest("req-latest", 900));
+
+  obsoleteRequest.reject(new Error("cancelled"));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(discarded, ["req-obsolete"], "a cancelled active request must be discarded when its rejection arrives first");
+
+  cancellationAcknowledgement.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(discarded, ["req-obsolete"], "cancellation acknowledgement must not discard the same request twice");
 }
 
 async function testStartsLatestRequestAfterCancellationAcknowledgement() {

@@ -27,6 +27,7 @@ export interface TableNavigationSchedulerOptions<TRequest extends SchedulerReque
   cancel: (requestId: string) => Promise<void>;
   onResult: (result: TResult, request: TRequest) => void;
   onError: (error: unknown, request: TRequest) => void;
+  onDiscarded?: (request: TRequest) => void;
   isCancelledError?: (error: unknown) => boolean;
 }
 
@@ -40,6 +41,7 @@ export class TableNavigationScheduler<
   private readonly cancelRequest: (requestId: string) => Promise<void>;
   private readonly onResult: (result: TResult, request: TRequest) => void;
   private readonly onError: (error: unknown, request: TRequest) => void;
+  private readonly onDiscarded: (request: TRequest) => void;
   private readonly isCancelledError: (error: unknown) => boolean;
 
   private active: ActiveRequest<TRequest> | null = null;
@@ -53,6 +55,7 @@ export class TableNavigationScheduler<
     this.cancelRequest = options.cancel;
     this.onResult = options.onResult;
     this.onError = options.onError;
+    this.onDiscarded = options.onDiscarded ?? (() => {});
     this.isCancelledError = options.isCancelledError ?? (() => false);
   }
 
@@ -77,7 +80,9 @@ export class TableNavigationScheduler<
           if (this.active?.request.requestId !== cancelledRequestId || !this.active.cancelling) {
             return;
           }
+          const discardedRequest = this.active.request;
           this.active = null;
+          this.onDiscarded(discardedRequest);
           this.maybeStartPending();
         });
     }
@@ -163,7 +168,9 @@ export class TableNavigationScheduler<
           return;
         }
         this.active = null;
-        if (!this.isCancelledError(error)) {
+        if (this.isCancelledError(error)) {
+          this.onDiscarded(request);
+        } else {
           this.onError(error, request);
         }
         this.maybeStartPending();
