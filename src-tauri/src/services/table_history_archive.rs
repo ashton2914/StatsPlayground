@@ -321,12 +321,20 @@ pub(crate) fn validate_history_timeline(archive: &HistoryTimelineArchive) -> Res
     }
     for (dataset_id, mut entries) in entries_by_dataset {
         entries.sort_by_key(|entry| entry.history_ordinal);
+        let first_ordinal = entries
+            .first()
+            .map(|entry| entry.history_ordinal)
+            .ok_or_else(|| AppError::FileIO("History dataset has no entries".into()))?;
         let cursor = cursors
             .get(dataset_id)
             .ok_or_else(|| AppError::FileIO("Missing history dataset cursor".into()))?;
         let mut saw_unapplied = false;
         for (ordinal, entry) in entries.iter().enumerate() {
-            if entry.history_ordinal != ordinal as u64 {
+            if entry.history_ordinal
+                != first_ordinal
+                    .checked_add(ordinal as u64)
+                    .ok_or_else(|| AppError::FileIO("History ordinal overflow".into()))?
+            {
                 return Err(AppError::FileIO(
                     "History ordinals must be unique and contiguous".into(),
                 ));
@@ -577,8 +585,17 @@ mod tests {
 
     #[test]
     fn unified_history_archive_rejects_invalid_state_machine_and_descriptors() {
+        let mut truncated_prefix = valid_archive();
+        truncated_prefix.entries[0].history_ordinal = 5;
+        truncated_prefix.entries[1].history_ordinal = 6;
+        validate_history_timeline(&truncated_prefix).unwrap();
+
         assert_corrupt(valid_archive(), |archive| {
             archive.entries[1].history_ordinal = 0;
+        });
+        assert_corrupt(valid_archive(), |archive| {
+            archive.entries[0].history_ordinal = 5;
+            archive.entries[1].history_ordinal = 7;
         });
         assert_corrupt(valid_archive(), |archive| {
             archive.datasets[0].applied_count = 1;
