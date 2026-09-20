@@ -63,29 +63,32 @@ Thresholds are append row 1,000 ms; middle insert 2,000 ms; add empty column
 Any timing, memory, fixture, or structural failure sets
 `qualificationPassed = false` and makes the harness exit unsuccessfully.
 
-## Superseded initial baseline
+## Independent-process baseline: 2026-09-21
 
-The figures below came from the initial same-process sampler and are retained
-only for historical comparison. They are not current qualification evidence;
-the fix-round independent-process baseline follows after source freeze.
+Source commit: `101f89ca5b8b3c080beb0c4e0f86e7351fdd6c24`
 
-Source commit: `8f60b4e88da056e3bd7eafa08944b4f9fae2152e`  
-Profile: release  
-Platform: macOS 27.0, aarch64, Apple M3 Pro, 36 GiB physical memory  
-DuckDB: v1.5.5  
-Samples: one warmup plus five measured samples per operation
+Profile: release
+
+Platform: macOS 27.0, aarch64, Apple M3 Pro, 36 GiB physical memory
+
+DuckDB: v1.5.5
+
+Samples: one warmup child plus five measured child processes per operation
+
+Phase columns show median/max milliseconds.
 
 | Operation | Runs (ms) | Median | Max / threshold | Mutation | History | Anchor | Metadata | Reload |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Append row | 69, 67, 67, 67, 67 | 67 | 69 / 1,000 | 1 | 3 | 47 | 1 | 14 |
-| Insert middle row | 82, 73, 77, 77, 75 | 77 | 82 / 2,000 | 1 | 3 | 55 | 1 | 14 |
-| Add empty column | 36, 35, 35, 36, 36 | 36 | 36 / 2,000 | 8 | 3 | 3 | 1 | 14 |
-| Delete one row | 36, 36, 37, 36, 36 | 36 | 37 / 2,000 | 1 | 4 | 17 | 1 | 14 |
-| Delete one column | 46, 44, 39, 45, 45 | 45 | 46 / 5,000 | 1 | 19 | 3 | 1 | 13 |
+| Append row | 67, 68, 68, 75, 69 | 68 | 75 / 1,000 | 1/1 | 3/3 | 48/48 | 1/1 | 14/15 |
+| Insert middle row | 85, 85, 84, 85, 85 | 85 | 85 / 2,000 | 1/1 | 3/3 | 59/60 | 1/1 | 14/15 |
+| Add empty column | 39, 37, 38, 37, 37 | 37 | 39 / 2,000 | 8/8 | 4/4 | 3/3 | 1/1 | 15/16 |
+| Delete one row | 44, 44, 37, 36, 37 | 37 | 44 / 2,000 | 1/1 | 4/4 | 17/17 | 1/1 | 14/14 |
+| Delete one column | 44, 43, 43, 45, 41 | 43 | 45 / 5,000 | 1/2 | 20/21 | 3/3 | 1/1 | 14/15 |
 
 All five operations passed every structural assertion. Middle insertion
 preceded its requested target. No operation approached a retained-memory or RSS
-doubling. Maximum observed RSS deltas ranged from 49,152 bytes to 4,653,056
+doubling. Every operation records six distinct child PIDs and one sample per
+child. Maximum observed RSS deltas ranged from 507,904 bytes to 79,642,624
 bytes; DuckDB retained memory after mutation ranged from 34,770,944 to
 47,749,120 bytes from a 30,353,408-byte baseline.
 
