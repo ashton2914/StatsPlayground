@@ -145,11 +145,13 @@ pub(crate) use source_contract::{
 
 #[cfg(test)]
 mod source_contract {
+    use std::collections::HashSet;
+
     use proc_macro2::{TokenStream, TokenTree};
     use syn::parse::Parser;
     use syn::punctuated::Punctuated;
     use syn::visit::{self, Visit};
-    use syn::{Attribute, Expr, ExprMacro, Item, Lit, Macro, Token};
+    use syn::{Attribute, Expr, ExprMacro, Item, ItemMacro, Lit, Macro, Path, Token};
 
     const AUTHORITY_PATH: &str = "services/row_order_update_boundary.rs";
 
@@ -241,6 +243,16 @@ mod source_contract {
                 }
             }
         }
+
+        fn contains_row_order_update(&self) -> bool {
+            let literal_text = canonical(&self.literals.join(""));
+            if !literal_text.contains("_row_order") {
+                return false;
+            }
+            let mut construction_text = literal_text.replace("_row_order", "");
+            construction_text.push_str(&canonical(&self.identifiers.join("")));
+            construction_text.contains("update")
+        }
     }
 
     impl<'ast> Visit<'ast> for ExpressionTokens {
@@ -268,28 +280,137 @@ mod source_contract {
     fn expression_contains_row_order_update(expression: &Expr) -> bool {
         let mut tokens = ExpressionTokens::default();
         tokens.visit_expr(expression);
-        let literal_text = canonical(&tokens.literals.join(""));
-        if !literal_text.contains("_row_order") {
-            return false;
+        tokens.contains_row_order_update()
+    }
+
+    fn macro_name(path: &Path) -> Option<String> {
+        path.segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+    }
+
+    fn external_content_macro_is_unsafe(name: &str, tokens: TokenStream) -> bool {
+        match name {
+            "include" => true,
+            "include_str" | "include_bytes" => {
+                let mut content = ExpressionTokens::default();
+                content.collect_macro_tokens(tokens);
+                !content
+                    .literals
+                    .last()
+                    .is_some_and(|path| path.to_ascii_lowercase().ends_with(".json"))
+            }
+            _ => false,
         }
-        let mut construction_text = literal_text.replace("_row_order", "");
-        construction_text.push_str(&canonical(&tokens.identifiers.join("")));
-        construction_text.contains("update")
+    }
+
+    fn tokens_contain_unsafe_external_macro(tokens: TokenStream) -> bool {
+        let tokens = tokens.into_iter().collect::<Vec<_>>();
+        for (index, token) in tokens.iter().enumerate() {
+            if let TokenTree::Group(group) = token {
+                if tokens_contain_unsafe_external_macro(group.stream()) {
+                    return true;
+                }
+            }
+            let Some(TokenTree::Ident(identifier)) = tokens.get(index) else {
+                continue;
+            };
+            let Some(TokenTree::Punct(punctuation)) = tokens.get(index + 1) else {
+                continue;
+            };
+            let Some(TokenTree::Group(arguments)) = tokens.get(index + 2) else {
+                continue;
+            };
+            if punctuation.as_char() == '!'
+                && external_content_macro_is_unsafe(&identifier.to_string(), arguments.stream())
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn macro_definition_is_unsafe(item: &ItemMacro) -> bool {
+        let mut tokens = ExpressionTokens::default();
+        tokens.collect_macro_tokens(item.mac.tokens.clone());
+        tokens.contains_row_order_update()
+            || tokens_contain_unsafe_external_macro(item.mac.tokens.clone())
     }
 
     #[derive(Default)]
-    struct ProductionUpdateVisitor {
-        occurrences: usize,
+    struct ProductionMacroCollector {
+        names: HashSet<String>,
     }
 
-    impl<'ast> Visit<'ast> for ProductionUpdateVisitor {
+    impl<'ast> Visit<'ast> for ProductionMacroCollector {
         fn visit_item(&mut self, item: &'ast Item) {
-            if !is_test_only(item) {
-                visit::visit_item(self, item);
+            if is_test_only(item) {
+                return;
             }
+            if let Item::Macro(item) = item {
+                if item.mac.path.is_ident("macro_rules") {
+                    if let Some(identifier) = &item.ident {
+                        self.names.insert(identifier.to_string());
+                    }
+                }
+            }
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn safe_empty_macro(path: &Path) -> bool {
+        let full_path = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        matches!(
+            full_path.as_str(),
+            "vec" | "unreachable" | "todo" | "panic" | "tauri::generate_context"
+        )
+    }
+
+    struct ProductionUpdateVisitor<'a> {
+        occurrences: usize,
+        local_macros: &'a HashSet<String>,
+    }
+
+    impl<'ast> Visit<'ast> for ProductionUpdateVisitor<'_> {
+        fn visit_item(&mut self, item: &'ast Item) {
+            if is_test_only(item) {
+                return;
+            }
+            if let Item::Macro(item) = item {
+                if item.mac.path.is_ident("macro_rules") {
+                    if macro_definition_is_unsafe(item) {
+                        self.occurrences += 1;
+                    }
+                    return;
+                }
+            }
+            visit::visit_item(self, item);
         }
 
         fn visit_expr(&mut self, expression: &'ast Expr) {
+            if let Expr::Macro(expression) = expression {
+                let name = macro_name(&expression.mac.path);
+                let is_local = expression.mac.path.leading_colon.is_none()
+                    && expression.mac.path.segments.len() == 1
+                    && name
+                        .as_ref()
+                        .is_some_and(|name| self.local_macros.contains(name));
+                let unresolved_empty = expression.mac.tokens.is_empty()
+                    && !is_local
+                    && !safe_empty_macro(&expression.mac.path);
+                let unresolved_external = name.as_ref().is_some_and(|name| {
+                    external_content_macro_is_unsafe(name, expression.mac.tokens.clone())
+                });
+                if unresolved_empty || unresolved_external {
+                    self.occurrences += 1;
+                    return;
+                }
+            }
             let can_construct_sql = matches!(
                 expression,
                 Expr::Array(_) | Expr::Binary(_) | Expr::Lit(_) | Expr::Macro(_) | Expr::Tuple(_)
@@ -304,7 +425,12 @@ mod source_contract {
 
     fn row_order_update_occurrences(source: &str) -> Result<usize, String> {
         let syntax = syn::parse_file(source).map_err(|error| error.to_string())?;
-        let mut visitor = ProductionUpdateVisitor::default();
+        let mut macros = ProductionMacroCollector::default();
+        macros.visit_file(&syntax);
+        let mut visitor = ProductionUpdateVisitor {
+            occurrences: 0,
+            local_macros: &macros.names,
+        };
         visitor.visit_file(&syntax);
         Ok(visitor.occurrences)
     }

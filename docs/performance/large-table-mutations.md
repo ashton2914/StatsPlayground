@@ -77,8 +77,12 @@ than the CLI harness.
   evaluates literal-only `concat!`, and treats unresolved macros containing
   `_row_order` plus update-building tokens as update constructions. Comments
   are discarded by the Rust parser, while comment-like text inside strings
-  remains data. The authority must contain exactly one production construction;
-  every other production module must contain zero.
+  remains data. Production `macro_rules!` bodies are inspected before their
+  invocations, unresolved empty code-generating macros fail closed, and
+  `include!` plus non-JSON `include_str!`/`include_bytes!` inputs fail closed.
+  Static JSON includes remain permitted as data. The authority must contain
+  exactly one production construction; every other production module must
+  contain zero.
 - `memoryNearDoubling` fails when retained memory or RSS reaches at least 1.8×
   its pre-mutation baseline.
 

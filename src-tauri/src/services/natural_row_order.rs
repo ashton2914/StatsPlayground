@@ -1948,6 +1948,74 @@ mod tests {
     }
 
     #[test]
+    fn row_order_source_contract_detects_macro_rules_empty_invocation_bypass() {
+        let source = r#"
+            macro_rules! update_sql {
+                () => { "UPDATE dataset SET \"_row_order\" = 1" };
+            }
+            fn bypass(connection: &Connection) {
+                connection.execute(update_sql!(), []).unwrap();
+            }
+        "#;
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(source)
+        );
+    }
+
+    #[test]
+    fn row_order_source_contract_fails_closed_on_sql_include_str() {
+        let source = r#"
+            fn bypass(connection: &Connection) {
+                connection.execute(include_str!("query.sql"), []).unwrap();
+            }
+        "#;
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(source)
+        );
+    }
+
+    #[test]
+    fn row_order_source_contract_fails_closed_on_unresolved_empty_macro() {
+        let source = r#"
+            fn bypass(connection: &Connection) {
+                connection.execute(external_update_sql!(), []).unwrap();
+            }
+        "#;
+        let namespaced_collision = r#"
+            macro_rules! label { () => { "label" }; }
+            fn bypass(connection: &Connection) {
+                connection.execute(external::label!(), []).unwrap();
+            }
+        "#;
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(source)
+        );
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(
+                namespaced_collision
+            )
+        );
+    }
+
+    #[test]
+    fn row_order_source_contract_allows_test_only_and_benign_macros() {
+        let source = r#"
+            #[cfg(test)]
+            macro_rules! test_update_sql {
+                () => { "UPDATE dataset SET \"_row_order\" = 1" };
+            }
+            macro_rules! benign_label {
+                () => { "row label" };
+            }
+            const FIXTURE: &str = include_str!("fixture.json");
+            fn label() -> &'static str { benign_label!() }
+        "#;
+        assert!(
+            !crate::services::row_order_update_boundary::source_contains_row_order_update(source)
+        );
+    }
+
+    #[test]
     fn row_order_source_contract_ignores_comments_and_separate_benign_literals() {
         let benign = r#"
             // UPDATE dataset SET "_row_order" = 1
