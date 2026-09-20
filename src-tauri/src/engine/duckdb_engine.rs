@@ -1588,12 +1588,33 @@ impl DuckDbEngine {
 
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let result = (|| -> Result<DatasetMeta, AppError> {
+            let mut csv_schema = self
+                .conn
+                .prepare("DESCRIBE SELECT * FROM read_csv($1, auto_detect=true)")?;
+            let csv_column_names = csv_schema
+                .query_map(params![file_path], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let storage_column_names =
+                Self::remap_internal_user_column_names(&csv_column_names)?;
+            let csv_projection = csv_column_names
+                .iter()
+                .zip(storage_column_names.iter())
+                .map(|(source, target)| {
+                    format!(
+                        "__csv__.{} AS {}",
+                        Self::quote_identifier(source),
+                        Self::quote_identifier(target)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
             // Create table from CSV with the stable row identity required by
             // bounded windows, edits, history, and project serialization.
             let create_sql = format!(
-            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __csv__.*, NULL::HUGEINT AS \"_row_order\" FROM read_csv($1, auto_detect=true) AS __csv__",
-            table_name
-        );
+                "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", {}, NULL::HUGEINT AS \"_row_order\" FROM read_csv($1, auto_detect=true) AS __csv__",
+                table_name, csv_projection
+            );
             self.conn.execute(&create_sql, params![file_path])?;
 
             // Get row count
@@ -4931,6 +4952,50 @@ impl DuckDbEngine {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn remap_internal_user_column_names(
+        columns: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        let mut used = columns
+            .iter()
+            .filter(|name| {
+                !name.eq_ignore_ascii_case("_row_id")
+                    && !name.eq_ignore_ascii_case("_row_order")
+            })
+            .map(|name| name.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let mut remapped = Vec::with_capacity(columns.len());
+        for name in columns {
+            let base = if name.eq_ignore_ascii_case("_row_id") {
+                Some("_row_id_user")
+            } else if name.eq_ignore_ascii_case("_row_order") {
+                Some("_row_order_user")
+            } else {
+                None
+            };
+            let Some(base) = base else {
+                remapped.push(name.clone());
+                continue;
+            };
+
+            if used.insert(base.to_string()) {
+                remapped.push(base.to_string());
+                continue;
+            }
+            let mut suffix = 2usize;
+            loop {
+                let candidate = format!("{base}-{suffix}");
+                if used.insert(candidate.to_ascii_lowercase()) {
+                    remapped.push(candidate);
+                    break;
+                }
+                suffix = suffix.checked_add(1).ok_or_else(|| {
+                    AppError::InvalidParam("column name suffix space is exhausted".into())
+                })?;
+            }
+        }
+        Ok(remapped)
     }
 
     pub(crate) fn resolve_navigation_projection_on_connection(
@@ -16503,6 +16568,95 @@ mod tests {
                 serde_json::json!(20)
             ]
         );
+    }
+
+    #[test]
+    fn imported_csv_remaps_internal_name_collisions_and_keeps_natural_navigation() {
+        let cases = [
+            (
+                "_row_order,_row_order_user\n11,12\n21,22\n",
+                vec!["_row_order_user-2", "_row_order_user"],
+                vec![serde_json::json!(11), serde_json::json!(12)],
+            ),
+            (
+                "_RoW_OrDeR,value\n31,32\n41,42\n",
+                vec!["_row_order_user", "value"],
+                vec![serde_json::json!(31), serde_json::json!(32)],
+            ),
+            (
+                "_ROW_ID,value\n51,52\n61,62\n",
+                vec!["_row_id_user", "value"],
+                vec![serde_json::json!(51), serde_json::json!(52)],
+            ),
+        ];
+
+        for (case_index, (csv, expected_names, first_values)) in cases.into_iter().enumerate() {
+            let db = DuckDbEngine::new_in_memory().expect("db");
+            let dataset_id = format!("csv-reserved-{case_index}");
+            let file_path = std::env::current_dir()
+                .expect("current directory")
+                .join(format!(".statsplayground-{dataset_id}.csv"));
+            std::fs::write(&file_path, csv).expect("write csv fixture");
+
+            let imported = db.import_csv(
+                &dataset_id,
+                &format!("CSV Reserved {case_index}"),
+                file_path.to_str().expect("utf-8 fixture path"),
+            );
+            std::fs::remove_file(&file_path).expect("remove csv fixture");
+            let meta = imported.expect("import reserved-name csv");
+
+            assert_eq!(meta.col_count, 2);
+            assert_eq!(
+                db.get_user_columns(&dataset_id)
+                    .expect("visible csv columns")
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+                expected_names,
+            );
+
+            let table_name = DuckDbEngine::internal_table_name(&dataset_id);
+            let internal: (i64, String) = db
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*), min(data_type)
+                     FROM information_schema.columns
+                     WHERE table_name = ? AND lower(column_name) = '_row_order'",
+                    params![table_name],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("internal order schema");
+            assert_eq!(internal, (1, "HUGEINT".to_string()));
+
+            let column_ids = navigation_column_descriptors(&db, &dataset_id)
+                .into_iter()
+                .map(|(column_id, _, _)| column_id)
+                .collect();
+            let request = TableNavigationRequest {
+                version: 1,
+                request_id: format!("csv-reserved-{case_index}"),
+                dataset_id: dataset_id.clone(),
+                generation: 0,
+                start: 0,
+                count: 10,
+                column_ids,
+                sort: None,
+                filters: vec![],
+                session_id: None,
+                include_transport_diagnostics: false,
+            };
+            let result = DuckDbEngine::query_natural_navigation_window(db.conn(), &request)
+                .expect("natural csv navigation");
+            assert_eq!(
+                &result.columns[1..],
+                expected_names.as_slice(),
+            );
+            assert_eq!(result.rows.len(), 2);
+            assert_eq!(result.rows[0][0], serde_json::json!(1));
+            assert_eq!(&result.rows[0][1..], first_values.as_slice());
+            assert_eq!(result.rows[1][0], serde_json::json!(2));
+        }
     }
 
     #[test]

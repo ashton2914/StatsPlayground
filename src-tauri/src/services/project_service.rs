@@ -777,7 +777,10 @@ impl<'a> ProjectService<'a> {
             .lock()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        let col_names: Vec<String> = doc.columns.iter().map(|c| c.name.clone()).collect();
+        let archived_col_names: Vec<String> =
+            doc.columns.iter().map(|column| column.name.clone()).collect();
+        let col_names =
+            DuckDbEngine::remap_internal_user_column_names(&archived_col_names)?;
         let col_types: Vec<String> = doc.columns.iter().map(|c| c.col_type.clone()).collect();
         db.conn().execute_batch("BEGIN TRANSACTION")?;
         let restore_result = (|| -> Result<(), AppError> {
@@ -3111,6 +3114,138 @@ mod tests {
             .unwrap();
         assert_eq!(first, (1, 10));
         assert_eq!(last, (row_count as i64, (row_count * 10) as i64));
+    }
+
+    #[test]
+    fn open_project_remaps_legacy_row_order_column_without_losing_metadata_or_values() {
+        let legacy = TableDoc {
+            id: "legacy-row-order".into(),
+            name: "Legacy Row Order".into(),
+            source_type: "manual".into(),
+            version: "2".into(),
+            columns: vec![
+                TableColumn {
+                    name: "_row_order".into(),
+                    col_type: "BIGINT".into(),
+                    width: Some(140.0),
+                    format: None,
+                    extras: Some(BTreeMap::from([(
+                        "notes".into(),
+                        serde_json::json!("legacy user data"),
+                    )])),
+                    ..Default::default()
+                },
+                TableColumn {
+                    name: "_row_order_user".into(),
+                    col_type: "VARCHAR".into(),
+                    width: None,
+                    format: None,
+                    extras: None,
+                    ..Default::default()
+                },
+            ],
+            rows: vec![
+                vec![
+                    serde_json::json!(1),
+                    serde_json::json!(101),
+                    serde_json::json!("alpha"),
+                ],
+                vec![
+                    serde_json::json!(2),
+                    serde_json::json!(202),
+                    serde_json::json!("beta"),
+                ],
+            ],
+        };
+        let folders = HashMap::new();
+        let bundle = spprj_archive::build_bundle(
+            "Legacy Collision".into(),
+            "2.0.0".into(),
+            "2026-09-20T00:00:00Z".into(),
+            vec![legacy],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            Vec::new(),
+            vec![],
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            &folders,
+            vec![],
+            vec![],
+        )
+        .expect("legacy bundle");
+        let project_path = std::env::current_dir()
+            .expect("current directory")
+            .join(format!(".legacy-row-order-{}.spprj", uuid::Uuid::new_v4()));
+        spprj_archive::write_project_archive(
+            &bundle,
+            project_path.to_str().expect("utf-8 project path"),
+        )
+        .expect("write legacy project");
+
+        let state = AppState::new().expect("state");
+        let opened = ProjectService::new(&state).open_project(
+            project_path.to_str().expect("utf-8 project path"),
+            None,
+        );
+        std::fs::remove_file(&project_path).expect("remove legacy project");
+        opened.expect("open legacy project");
+
+        let service = ProjectService::new(&state);
+        let restored = service
+            .compose_table_doc("legacy-row-order")
+            .expect("compose restored table");
+        assert_eq!(
+            restored
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["_row_order_user-2", "_row_order_user"],
+        );
+        assert_eq!(restored.columns[0].width, Some(140.0));
+        assert_eq!(
+            restored.columns[0]
+                .extras
+                .as_ref()
+                .and_then(|extras| extras.get("notes")),
+            Some(&serde_json::json!("legacy user data")),
+        );
+        assert_eq!(
+            restored.rows,
+            vec![
+                vec![
+                    serde_json::json!(1),
+                    serde_json::json!(101),
+                    serde_json::json!("alpha"),
+                ],
+                vec![
+                    serde_json::json!(2),
+                    serde_json::json!(202),
+                    serde_json::json!("beta"),
+                ],
+            ],
+        );
+
+        let db = state.db.lock().expect("database");
+        let internal_type: String = db
+            .conn()
+            .query_row(
+                "SELECT data_type FROM information_schema.columns
+                 WHERE table_name = 'dataset_legacy_row_order'
+                   AND column_name = '_row_order'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("internal row order type");
+        assert_eq!(internal_type, "HUGEINT");
     }
 
     #[test]
