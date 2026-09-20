@@ -1667,6 +1667,12 @@ export function DataTableView({
         const descriptors = await dataService.getColumnDescriptors(requestedDatasetId);
         if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
         setColumnDescriptors(descriptors);
+        setCalculatedDialog((current) => {
+          if (!current?.outputColumnId) return current;
+          return descriptors.some((descriptor) => descriptor.columnId === current.outputColumnId)
+            ? current
+            : null;
+        });
       } catch {
         if (!requestEpochRef.current!.isCurrent(epoch) || !isCurrentDatasetLoad()) return;
         setColumnDescriptors([]);
@@ -1883,8 +1889,11 @@ export function DataTableView({
     setShowInsertMultiCols(false);
     setRenameCol(null);
     setShowAddCol(false);
-    setCalculatedDialog(null);
   }, [datasetGeneration, datasetId, load]);
+
+  useEffect(() => {
+    setCalculatedDialog(null);
+  }, [datasetId]);
 
   useEffect(() => {
     setShowTableFilters(false);
