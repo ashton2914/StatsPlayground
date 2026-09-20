@@ -170,3 +170,26 @@ rewriting generation zero with post-delete state. The focused regression passed
 (1/1), all tabulate session tests passed (46/46), and the final ordinary
 parallel Rust gate passed (1,407 passed, 18 ignored, plus all integration
 tests).
+
+### Final release qualification
+
+The release gate reran all five qualifications from clean source commit
+`4d4917e325ee7c44ad94692d2ee417a25263826d` using a fresh external Cargo target
+directory so compile-time provenance could not reuse an earlier dirty build
+script result.
+
+| Operation | Runs (ms) | Median | Max / threshold |
+| --- | --- | ---: | ---: |
+| Append row | 75, 77, 72, 76, 71 | 75 | 77 / 1,000 |
+| Insert middle row | 86, 84, 79, 81, 86 | 84 | 86 / 2,000 |
+| Add empty column | 37, 37, 37, 37, 38 | 37 | 38 / 2,000 |
+| Delete one row | 44, 36, 41, 38, 42 | 41 | 44 / 2,000 |
+| Delete one column | 42, 40, 44, 44, 45 | 44 | 45 / 5,000 |
+
+Every report records one warmup and five measured child processes with unique
+PIDs, clean matching compile/runtime provenance, zero full snapshots, zero full
+anchor rebuilds, zero forbidden row-order updates, zero rebalanced rows, valid
+sparse anchors/manifests, the expected compact snapshot shape, and no
+near-doubling of retained memory or RSS. Middle insertion precedes its stable
+target. The raw reports are stored outside the repository in the session
+artifact directory.
