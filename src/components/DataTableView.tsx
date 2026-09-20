@@ -1092,7 +1092,7 @@ export function DataTableView({
   const navigationReloadRef = useRef<() => void>(() => {});
   const loadedFilterKeyRef = useRef(buildTableQuerySignature([], null));
   const loadedFilterGenerationRef = useRef<number | null>(null);
-  const inFlightLoadKeysRef = useRef<Set<string>>(new Set());
+  const inFlightLoadClaimsRef = useRef<Map<string, number>>(new Map());
   const pendingPrefetchPaintFramesRef = useRef<PendingAfterPaintState>({
     token: 0,
     handle: null,
@@ -1453,10 +1453,15 @@ export function DataTableView({
       requestedDatasetId,
       datasetGeneration,
       nextQueryKey,
+      start,
     ]);
-    if (inFlightLoadKeysRef.current.has(inFlightLoadKey)) return;
-    inFlightLoadKeysRef.current.add(inFlightLoadKey);
+    const existingClaim = inFlightLoadClaimsRef.current.get(inFlightLoadKey);
+    if (
+      existingClaim !== undefined
+      && requestEpochRef.current!.isCurrent(existingClaim)
+    ) return;
     const epoch = requestEpochRef.current!.advance();
+    inFlightLoadClaimsRef.current.set(inFlightLoadKey, epoch);
     setLoadedDataLoadToken(null);
     setLoadedDisplayPropsLoadToken(null);
     windowCacheRef.current!.clear();
@@ -1752,7 +1757,9 @@ export function DataTableView({
       setData(null);
       dataRef.current = null;
     } finally {
-      inFlightLoadKeysRef.current.delete(inFlightLoadKey);
+      if (inFlightLoadClaimsRef.current.get(inFlightLoadKey) === epoch) {
+        inFlightLoadClaimsRef.current.delete(inFlightLoadKey);
+      }
     }
   }, [buildWindowRequest, cancelActiveTransportMeasurement, clearPendingPrefetches, datasetGeneration, datasetId, queueNeighborPrefetches, resolveColumnIds, scheduleActiveTransportDiagnostics, updateTableCacheDiagnostics]);
   navigationReloadRef.current = () => {

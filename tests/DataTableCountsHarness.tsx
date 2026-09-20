@@ -10,7 +10,7 @@ import { useProjectStore } from "../src/stores/useProjectStore";
 import type { DatasetMeta, TableFilterValue, TableWindowResult } from "../src/types/data";
 import type { FilterRuleItem } from "../src/types/filter";
 
-type DataTableCountsHarnessVariant = "unfiltered" | "filtered" | "zero-match";
+type DataTableCountsHarnessVariant = "unfiltered" | "filtered" | "zero-match" | "query-race";
 
 const DATASET: DatasetMeta = {
   id: "counts-dataset",
@@ -127,6 +127,7 @@ export function DataTableCountsHarness({
   const [preparedSessionGenerations, setPreparedSessionGenerations] = useState<number[]>([]);
   const [releasedSessionIds, setReleasedSessionIds] = useState<string[]>([]);
   const [navigationSessionIds, setNavigationSessionIds] = useState<string[]>([]);
+  const delayedInitialQueryResolverRef = useRef<(() => void) | null>(null);
   const harnessStateRef = useRef(harnessState);
   harnessStateRef.current = harnessState;
 
@@ -160,6 +161,7 @@ export function DataTableCountsHarness({
     const previousGetColumnDisplayProps = dataService.getColumnDisplayProps;
     const previousQueryTableFilterValues = dataService.queryTableFilterValues;
     let active = true;
+    let tableWindowQueryCount = 0;
 
     useDataStore.setState({
       ...previousDataState,
@@ -178,14 +180,19 @@ export function DataTableCountsHarness({
 
     dataService.getDatasetGeneration = async () => harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
     dataService.queryTableWindow = async (request) => {
+      tableWindowQueryCount += 1;
+      const requestedTotalRows = harnessStateRef.current.windowTotalRows;
+      const requestedGeneration = harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
       setTableWindowQuerySignatures((previous) => [
         ...previous,
         JSON.stringify({ filters: request.filters, sort: request.sort }),
       ]);
-      return createTable(
-        harnessStateRef.current.windowTotalRows,
-        harnessStateRef.current.activeDataset?.generation ?? DATASET.generation,
-      );
+      if (variant === "query-race" && tableWindowQueryCount === 1) {
+        await new Promise<void>((resolve) => {
+          delayedInitialQueryResolverRef.current = resolve;
+        });
+      }
+      return createTable(requestedTotalRows, requestedGeneration);
     };
     dataService.getColumnDescriptors = async () => {
       const generation = harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
@@ -309,6 +316,27 @@ export function DataTableCountsHarness({
     });
   };
 
+  const applyRaceFilter = () => {
+    applyState({
+      activeDataset: DATASET,
+      filters: [UPDATED_FILTER_RULE],
+      windowTotalRows: 11,
+    });
+  };
+
+  const restoreRaceQuery = () => {
+    applyState({
+      activeDataset: DATASET,
+      filters: [],
+      windowTotalRows: DATASET.rowCount,
+    });
+  };
+
+  const resolveInitialTableQuery = () => {
+    delayedInitialQueryResolverRef.current?.();
+    delayedInitialQueryResolverRef.current = null;
+  };
+
   if (!ready) return null;
 
   return (
@@ -325,6 +353,9 @@ export function DataTableCountsHarness({
       <button type="button" onClick={applyUpdatedMetadata}>Apply updated metadata</button>
       <button type="button" onClick={applyUpdatedFilterResult}>Apply updated filter result</button>
       <button type="button" onClick={clearFilters}>Clear filters</button>
+      <button type="button" onClick={applyRaceFilter}>Apply race filter</button>
+      <button type="button" onClick={restoreRaceQuery}>Restore initial query</button>
+      <button type="button" onClick={resolveInitialTableQuery}>Resolve initial table query</button>
       <DataTableView datasetId={DATASET.id} />
     </div>
   );

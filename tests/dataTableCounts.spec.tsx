@@ -15,6 +15,24 @@ const INITIAL_FILTER_QUERY_SIGNATURE = JSON.stringify({
   sort: null,
 });
 
+const UNFILTERED_QUERY_SIGNATURE = JSON.stringify({
+  filters: [],
+  sort: null,
+});
+
+const UPDATED_FILTER_QUERY_SIGNATURE = JSON.stringify({
+  filters: [{
+    op: "AND",
+    rule: {
+      kind: "categorical",
+      field: "Build",
+      selected: ["DV"],
+      exclude: false,
+    },
+  }],
+  sort: null,
+});
+
 test("shows source totals without displayed rows when no table filter is active", async ({ mount }) => {
   const component = await mount(<DataTableCountsHarness variant="unfiltered" />);
 
@@ -107,4 +125,25 @@ test("refetches filter counts for a new generation and ignores the delayed old r
   await new Promise<void>((resolve) => setTimeout(resolve, 450));
   await expect(optionList.getByText("11", { exact: true })).toBeVisible();
   await expect(optionList.getByText("69", { exact: true })).toBeVisible();
+});
+
+test("reissues a query restored while its stale predecessor is still in flight", async ({ mount }) => {
+  const component = await mount(<DataTableCountsHarness variant="query-race" />);
+  const signatures = component.getByLabel("Table window query signatures");
+
+  await expect(signatures).toHaveText(UNFILTERED_QUERY_SIGNATURE);
+
+  await component.getByRole("button", { name: "Apply race filter" }).click();
+  await expect(signatures).toHaveText(
+    `${UNFILTERED_QUERY_SIGNATURE}\n${UPDATED_FILTER_QUERY_SIGNATURE}`,
+  );
+
+  await component.getByRole("button", { name: "Restore initial query" }).click();
+  await expect(signatures).toHaveText(
+    `${UNFILTERED_QUERY_SIGNATURE}\n${UPDATED_FILTER_QUERY_SIGNATURE}\n${UNFILTERED_QUERY_SIGNATURE}`,
+  );
+  await expect(component.getByLabel("Status dimensions")).toHaveText("100 rows × 2 cols");
+
+  await component.getByRole("button", { name: "Resolve initial table query" }).click();
+  await expect(component.getByLabel("Status dimensions")).toHaveText("100 rows × 2 cols");
 });
