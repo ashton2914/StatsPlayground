@@ -40,6 +40,15 @@ pub struct AddedRowsResult {
     pub generation: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowMutationResult {
+    pub row_ids: Vec<i64>,
+    pub generation: u64,
+    pub row_count: usize,
+    pub change_set_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnDefinition {

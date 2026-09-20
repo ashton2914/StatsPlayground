@@ -59,6 +59,9 @@ enum AnchorMutation<'a> {
     Delete {
         deleted: &'a [(i64, i128, i64)],
     },
+    Restore {
+        restored: &'a [(i64, i128, i64)],
+    },
 }
 
 pub(crate) fn allocate_before(
@@ -440,6 +443,24 @@ pub(crate) fn publish_deleted_anchors(
     )
 }
 
+pub(crate) fn publish_restored_anchors(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    source_generation: u64,
+    target_generation: u64,
+    restored: &[(i64, i128, i64)],
+) -> Result<(), AppError> {
+    let table_name = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
+    publish_transformed_anchors(
+        engine,
+        dataset_id,
+        source_generation,
+        target_generation,
+        &table_name,
+        AnchorMutation::Restore { restored },
+    )
+}
+
 fn validate_inserted_rows(
     engine: &DuckDbEngine,
     table_name: &str,
@@ -550,6 +571,16 @@ fn publish_transformed_anchors(
                 deleted,
             )?;
         }
+        AnchorMutation::Restore { restored } => {
+            copy_restored_anchors_setwise(
+                engine,
+                dataset_id,
+                source_generation,
+                target_generation,
+                table_name,
+                restored,
+            )?;
+        }
     }
     repair_anchor_gaps(engine, dataset_id, target_generation, table_name)?;
     let target_row_count: i64 = engine.conn().query_row(
@@ -592,6 +623,12 @@ fn validate_source_anchor_generation(
                     .map_err(|_| AppError::InvalidParam("deleted row count is too large".into()))?,
             )
             .ok_or_else(|| AppError::InvalidParam("source row count overflowed".into()))?,
+        AnchorMutation::Restore { restored } => row_count
+            .checked_sub(
+                i64::try_from(restored.len())
+                    .map_err(|_| AppError::InvalidParam("restored row count is too large".into()))?,
+            )
+            .ok_or_else(|| AppError::InvalidParam("restored row count exceeds dataset".into()))?,
     };
     let stride = i64::try_from(NATURAL_ANCHOR_STRIDE)
         .map_err(|_| AppError::InvalidParam("navigation anchor stride is too large".into()))?;
@@ -641,6 +678,60 @@ fn validate_source_anchor_generation(
         )));
     }
     engine.validate_natural_anchor_manifest(dataset_id, source_generation, source_row_count)?;
+    Ok(())
+}
+
+fn copy_restored_anchors_setwise(
+    engine: &DuckDbEngine,
+    dataset_id: &str,
+    source_generation: i64,
+    target_generation: i64,
+    table_name: &str,
+    restored: &[(i64, i128, i64)],
+) -> Result<(), AppError> {
+    let placeholders = if restored.is_empty() {
+        "SELECT NULL::BIGINT AS ordinal, NULL::BIGINT AS restored_rank WHERE FALSE".to_string()
+    } else {
+        std::iter::repeat_n("(?, ?)", restored.len())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut values = Vec::with_capacity(restored.len() * 2 + 4);
+    for (rank, row) in restored.iter().enumerate() {
+        values.push(Value::BigInt(row.2));
+        values.push(Value::BigInt(i64::try_from(rank).map_err(|_| {
+            AppError::InvalidParam("restored row count is too large".into())
+        })?));
+    }
+    values.extend([
+        Value::Text(dataset_id.to_string()),
+        Value::BigInt(target_generation),
+        Value::Text(dataset_id.to_string()),
+        Value::BigInt(source_generation),
+    ]);
+    let sql = format!(
+        "WITH restored(ordinal, restored_rank) AS ({values_sql})
+         INSERT INTO _table_navigation_anchors
+         (dataset_id, generation, ordinal, order_key, row_id)
+         SELECT ?, ?,
+                source.ordinal + (
+                    SELECT count(*) FROM restored
+                    WHERE ordinal - restored_rank <= source.ordinal
+                ),
+                COALESCE(rows.\"_row_order\",
+                    CAST(rows.\"_row_id\" AS HUGEINT)
+                        * 18446744073709551616::HUGEINT),
+                source.row_id
+         FROM _table_navigation_anchors AS source
+         JOIN {table_name} AS rows ON rows.\"_row_id\" = source.row_id
+         WHERE source.dataset_id = ? AND source.generation = ?",
+        values_sql = if restored.is_empty() {
+            placeholders
+        } else {
+            format!("VALUES {placeholders}")
+        }
+    );
+    engine.conn().execute(&sql, params_from_iter(values))?;
     Ok(())
 }
 

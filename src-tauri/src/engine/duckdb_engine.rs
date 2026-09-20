@@ -609,7 +609,26 @@ impl DuckDbEngine {
                 dataset_id  TEXT NOT NULL,
                 applied     BOOLEAN NOT NULL DEFAULT TRUE,
                 generation  BIGINT NOT NULL,
+                storage_kind TEXT NOT NULL DEFAULT 'full',
                 created_at  TEXT DEFAULT (CAST(current_timestamp AS VARCHAR))
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_delta_change_sets (
+                id                TEXT PRIMARY KEY,
+                dataset_id        TEXT NOT NULL,
+                operation         TEXT NOT NULL,
+                before_generation BIGINT NOT NULL,
+                after_generation  BIGINT NOT NULL,
+                snapshot_table    TEXT,
+                applied           BOOLEAN NOT NULL DEFAULT TRUE
+            );
+
+            CREATE TABLE IF NOT EXISTS _history_row_deltas (
+                change_set_id TEXT NOT NULL,
+                ordinal       INTEGER NOT NULL,
+                row_id        BIGINT NOT NULL,
+                row_order     HUGEINT,
+                PRIMARY KEY (change_set_id, ordinal)
             );
 
             CREATE TABLE IF NOT EXISTS _history_change_set_columns (
@@ -669,6 +688,18 @@ impl DuckDbEngine {
         )?;
         conn.execute(
             "UPDATE _meta_calculated_columns SET schema_version = COALESCE(NULLIF(schema_version, ''), '1')",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_sets ADD COLUMN IF NOT EXISTS storage_kind TEXT DEFAULT 'full'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE _history_change_sets SET storage_kind = 'full' WHERE storage_kind IS NULL",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE _history_change_sets ALTER COLUMN storage_kind SET NOT NULL",
             [],
         )?;
         conn.execute(
@@ -8110,6 +8141,21 @@ impl DuckDbEngine {
     pub fn apply_change_set(&self, change_set_id: &str, undo: bool) -> Result<(), AppError> {
         let parsed_id = uuid::Uuid::parse_str(change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid change set ID".into()))?;
+        let storage_kind = self
+            .conn
+            .query_row(
+                "SELECT storage_kind FROM _history_change_sets WHERE id = ?",
+                params![change_set_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if storage_kind.as_deref() == Some("row_delta") {
+            return crate::services::table_delta_mutation::apply_row_delta_change_set(
+                self,
+                change_set_id,
+                undo,
+            );
+        }
         let suffix = parsed_id.to_string().replace('-', "_");
         let before_table = Self::quote_identifier(&format!("_history_before_{suffix}"));
         let after_table = Self::quote_identifier(&format!("_history_after_{suffix}"));
@@ -11799,6 +11845,42 @@ mod tests {
     use crate::services::data_service::DataService;
     use crate::state::AppState;
     use duckdb::types::Decimal;
+
+    #[test]
+    fn compact_row_mutation_schema_is_initialized() {
+        let db = DuckDbEngine::new_in_memory().expect("engine");
+        let tables = db
+            .conn()
+            .prepare(
+                "SELECT table_name FROM information_schema.tables
+                 WHERE table_name IN ('_history_delta_change_sets', '_history_row_deltas')
+                 ORDER BY table_name",
+            )
+            .expect("prepare schema query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect schema");
+        assert_eq!(
+            tables,
+            vec![
+                "_history_delta_change_sets".to_string(),
+                "_history_row_deltas".to_string()
+            ]
+        );
+
+        let storage_kind: String = db
+            .conn()
+            .query_row(
+                "SELECT column_default FROM information_schema.columns
+                 WHERE table_name = '_history_change_sets'
+                   AND column_name = 'storage_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("storage_kind column");
+        assert!(storage_kind.contains("full"));
+    }
 
     #[test]
     fn tabulate_dimension_labels_match_javascript_scalar_strings() {
@@ -18677,8 +18759,12 @@ mod tests {
         let snapshot_count: i64 = db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE '_history_%' AND table_name NOT LIKE '_history_change_%'",
-                [],
+                "SELECT COUNT(*) FROM information_schema.tables
+                 WHERE table_name IN (?, ?)",
+                params![
+                    format!("_history_before_{}", change_set_id.replace('-', "_")),
+                    format!("_history_after_{}", change_set_id.replace('-', "_"))
+                ],
                 |row| row.get(0),
             )
             .unwrap();
