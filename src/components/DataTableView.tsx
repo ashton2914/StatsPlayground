@@ -940,6 +940,8 @@ export function DataTableView({
   const [tableQuerySession, setTableQuerySession] = useState<TableQuerySessionViewState>(IDLE_TABLE_QUERY_SESSION_STATE);
   const [loadedDisplayPropsLoadToken, setLoadedDisplayPropsLoadToken] = useState<string | null>(null);
   const [logicalStart, setLogicalStart] = useState(0);
+  const logicalEndFollowContextRef = useRef<{ datasetId: string; queryKey: string } | null>(null);
+  const maxLogicalStartRef = useRef(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   // rAF coalesce scroll updates: one state commit per animation frame instead
   // of one per scroll event (which can fire 60–120Hz on smooth wheels and was
@@ -1075,6 +1077,7 @@ export function DataTableView({
   // Refs for tracking latest state (used by recordAction and pendingRestore)
   const dataRef = useRef<TableQueryResult | null>(null);
   const generationRef = useRef(0);
+  const generationDatasetIdRef = useRef(datasetId);
   const datasetRevisionRef = useRef<DatasetRevision | null>(null);
   const currentRenderedLoadTokenRef = useRef(currentRenderedLoadToken);
   const windowStartRef = useRef(0);
@@ -1438,6 +1441,7 @@ export function DataTableView({
   const load = useCallback(async (
     filters = tableFiltersRef.current,
     start = windowStartRef.current,
+    generation?: number,
   ) => {
     const requestedDatasetId = datasetId;
     const loadToken = currentRenderedLoadTokenRef.current;
@@ -1446,12 +1450,19 @@ export function DataTableView({
       currentDatasetId: currentDatasetIdRef.current,
     });
     if (!isCurrentDatasetLoad()) return;
+    const requestedGeneration = generation ?? (
+      generationDatasetIdRef.current === requestedDatasetId
+        ? Math.max(datasetGeneration, generationRef.current)
+        : datasetGeneration
+    );
+    generationDatasetIdRef.current = requestedDatasetId;
+    generationRef.current = requestedGeneration;
     const serializedFilters = serializeTableWindowFilters(filters);
     const currentSort = tableSortRef.current;
     const nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
     const inFlightLoadKey = JSON.stringify([
       requestedDatasetId,
-      datasetGeneration,
+      requestedGeneration,
       nextQueryKey,
       start,
     ]);
@@ -1502,7 +1513,7 @@ export function DataTableView({
           count: TABLE_WINDOW_SIZE,
           sort: currentSort,
           filters: serializedFilters,
-          generation: generationRef.current,
+          generation: requestedGeneration,
           columnIds,
           querySignature: nextQueryKey,
           sessionId: readyStatus.sessionId,
@@ -1510,9 +1521,9 @@ export function DataTableView({
         const navigationResult: FrontendMeasuredTableNavigationResult = {
           ...(await dataService.queryTableNavigationWindow({
             version: 1,
-            requestId: `table-nav:${requestedDatasetId}:${generationRef.current}:${++tableNavigationRequestSeqRef.current}`,
+            requestId: `table-nav:${requestedDatasetId}:${requestedGeneration}:${++tableNavigationRequestSeqRef.current}`,
             datasetId: requestedDatasetId,
-            generation: generationRef.current,
+            generation: requestedGeneration,
             start,
             count: TABLE_WINDOW_SIZE,
             columnIds: [...columnIds],
@@ -1576,7 +1587,7 @@ export function DataTableView({
         if (columnIds.length > 0) {
           const sessionRequest: TableQuerySessionRequest = {
             datasetId: requestedDatasetId,
-            generation: datasetGeneration,
+            generation: requestedGeneration,
             sort: currentSort,
             filters: serializedFilters,
             columnIds,
@@ -1894,9 +1905,25 @@ export function DataTableView({
 
   useEffect(() => {
     columnDescriptorsRef.current = [];
+    const followContext = logicalEndFollowContextRef.current;
+    const preserveLogicalEnd = followContext?.datasetId === datasetId
+      && followContext.queryKey === loadedFilterKeyRef.current;
+    if (followContext && !preserveLogicalEnd) {
+      logicalEndFollowContextRef.current = null;
+    }
     void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
-    void load(tableFiltersRef.current, 0);
-    setLogicalStart(0);
+    void load(
+      tableFiltersRef.current,
+      preserveLogicalEnd ? windowStartRef.current : 0,
+    );
+    if (preserveLogicalEnd) {
+      const nextLogicalStart = maxLogicalStartRef.current;
+      logicalStartRef.current = nextLogicalStart;
+      setLogicalStart(nextLogicalStart);
+    } else {
+      logicalStartRef.current = 0;
+      setLogicalStart(0);
+    }
     setActiveCell(null);
     setEditCell(null);
     setSelectedRows(EMPTY_NUM_SET);
@@ -1957,6 +1984,7 @@ export function DataTableView({
       queryKey === loadedFilterKeyRef.current
       && datasetGeneration === loadedFilterGenerationRef.current
     ) return;
+    logicalEndFollowContextRef.current = null;
     void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
     setLogicalStart(0);
     void load(tableFilters, 0);
@@ -2551,9 +2579,13 @@ export function DataTableView({
   const headerHeight = Math.max(1, Math.round(BASE_HEADER_HEIGHT * zoom));
   const visibleAreaHeight = wrapperHeight - headerHeight;
   const totalRowCount = data?.totalRows ?? 0;
+  const logicalRowCount = totalRowCount + 1;
   const activePreparedSessionId = tableQuerySession.state === "ready" ? tableQuerySession.sessionId : null;
-  const visibleSlotCount = Math.max(1, Math.ceil(Math.max(0, visibleAreaHeight) / ROW_HEIGHT));
-  const maxLogicalStart = Math.max(0, totalRowCount - visibleSlotCount);
+  const visibleSlotCount = Math.max(1, Math.floor(Math.max(0, visibleAreaHeight) / ROW_HEIGHT));
+  const maxLogicalStart = Math.max(0, logicalRowCount - visibleSlotCount);
+  maxLogicalStartRef.current = maxLogicalStart;
+  const showAddRow = logicalStart + visibleSlotCount >= logicalRowCount;
+  const viewportDataSlotCount = Math.max(0, visibleSlotCount - (showAddRow ? 1 : 0));
 
   const setLogicalStartClamped = useCallback((next: number | ((previous: number) => number)) => {
     setLogicalStart((previous) => {
@@ -2563,6 +2595,24 @@ export function DataTableView({
       return clampedValue;
     });
   }, [maxLogicalStart]);
+
+  useEffect(() => {
+    const followContext = logicalEndFollowContextRef.current;
+    if (
+      followContext?.datasetId !== datasetId
+      || followContext.queryKey !== loadedFilterKeyRef.current
+    ) {
+      return;
+    }
+    setLogicalStartClamped(maxLogicalStart);
+  }, [datasetId, maxLogicalStart, setLogicalStartClamped, totalRowCount]);
+
+  const setLogicalStartFromUser = useCallback((
+    next: number | ((previous: number) => number),
+  ) => {
+    logicalEndFollowContextRef.current = null;
+    setLogicalStartClamped(next);
+  }, [setLogicalStartClamped]);
 
   useEffect(() => {
     setLogicalStartClamped((previous) => previous);
@@ -2584,8 +2634,8 @@ export function DataTableView({
     const rawDelta = event.deltaMode === 1 ? event.deltaY : event.deltaY / ROW_HEIGHT;
     const deltaRows = rawDelta === 0 ? 0 : (Math.abs(rawDelta) < 1 ? Math.sign(rawDelta) : Math.round(rawDelta));
     if (deltaRows === 0) return;
-    setLogicalStartClamped((previous) => previous + deltaRows);
-  }, [ROW_HEIGHT, setLogicalStartClamped]);
+    setLogicalStartFromUser((previous) => previous + deltaRows);
+  }, [ROW_HEIGHT, setLogicalStartFromUser]);
 
   useEffect(() => {
     if (!data || data.totalRows === 0) return;
@@ -2717,10 +2767,12 @@ export function DataTableView({
   const selRangeNorm = useMemo(() => selection ? normalizeRange(selection) : null, [selection]);
 
   useEffect(() => {
+    if (logicalEndFollowContextRef.current) return;
     if (activeCell) ensureLogicalRowVisible(activeCell.row);
   }, [activeCell, ensureLogicalRowVisible]);
 
   useEffect(() => {
+    if (logicalEndFollowContextRef.current) return;
     if (selection) ensureLogicalRowVisible(selection.endRow);
   }, [selection, ensureLogicalRowVisible]);
 
@@ -2853,7 +2905,7 @@ export function DataTableView({
         generation: result.generation,
         rowIds: result.rowIds,
       });
-      await load();
+      await load(tableFiltersRef.current, windowStartRef.current, result.generation);
       await refreshAndMarkDirty();
       return true;
     } catch (error) {
@@ -2866,7 +2918,15 @@ export function DataTableView({
 
   const handleAddRow = async () => {
     if (readOnly) return;
-    await addRowsWithHistory(1, t("history.addRow"));
+    const preserveLogicalEnd = showAddRow;
+    const followContext = preserveLogicalEnd
+      ? { datasetId, queryKey: loadedFilterKeyRef.current }
+      : null;
+    logicalEndFollowContextRef.current = followContext;
+    const added = await addRowsWithHistory(1, t("history.addRow"));
+    if (!added && logicalEndFollowContextRef.current === followContext) {
+      logicalEndFollowContextRef.current = null;
+    }
   };
 
   const handleInsertMultiRows = async () => {
@@ -5133,6 +5193,7 @@ export function DataTableView({
     return r === true;
   };
   jumpToCellRef.current = (row: number, col: number) => {
+    logicalEndFollowContextRef.current = null;
     ensureLogicalRowVisible(row);
     setActiveCell({ row, col });
     setSelection({ startRow: row, startCol: col, endRow: row, endCol: col });
@@ -5580,7 +5641,7 @@ export function DataTableView({
           >
             <TableViewportRows
               totalRows={totalRowCount}
-              slotCount={visibleSlotCount}
+              slotCount={viewportDataSlotCount}
               logicalStart={logicalStart}
               loadedWindowStart={windowStart}
               loadedRows={displayRows}
@@ -5600,55 +5661,43 @@ export function DataTableView({
               visibleColumnEnd={colVirtRange.endIdx}
               leftSpacerW={colVirtRange.leftSpacerW}
               rightSpacerW={colVirtRange.rightSpacerW}
+              renderEmptyPlaceholder={!showAddRow}
               onEditValueChange={stableSetEditValue}
               onCommitEdit={stableCommitEdit}
               onCancelEdit={stableCancelEdit}
             />
+            {showAddRow && (
+              <tr className="sp-add-row-tr">
+                <td
+                  className="sp-add-row-hdr"
+                  onClick={handleAddRow}
+                  title={t("dataTable.addRowTitle")}
+                >
+                  +
+                </td>
+                {colVirtRange.leftSpacerW > 0 && (
+                  <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
+                )}
+                {visibleColIdxs.map((ci) => (
+                  <td key={ci} className="sp-add-row-cell" />
+                ))}
+                {colVirtRange.rightSpacerW > 0 && (
+                  <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
+                )}
+                <td className="sp-add-corner" />
+              </tr>
+            )}
           </tbody>
         </table>
               </div>
-              <div className="sp-grid-footer" aria-label="Add row affordance">
-                <table className="sp-grid sp-grid-footer-table" style={{ width: ROW_HDR_WIDTH + totalColsWidth + ADD_COL_WIDTH, transform: `translateX(${-scrollLeft}px)` }}>
-                  <colgroup>
-                    <col style={{ width: ROW_HDR_WIDTH }} />
-                    {colVirtRange.leftSpacerW > 0 && <col style={{ width: colVirtRange.leftSpacerW }} />}
-                    {visibleColIdxs.map((ci) => (
-                      <col key={ci} style={{ width: (colWidths[ci] ?? BASE_DEFAULT_COL_WIDTH) * zoom }} />
-                    ))}
-                    {colVirtRange.rightSpacerW > 0 && <col style={{ width: colVirtRange.rightSpacerW }} />}
-                    <col style={{ width: ADD_COL_WIDTH }} />
-                  </colgroup>
-                  <tbody>
-                    <tr className="sp-add-row-tr">
-                      <td
-                        className="sp-add-row-hdr"
-                        onClick={handleAddRow}
-                        title={t("dataTable.addRowTitle")}
-                      >
-                        +
-                      </td>
-                      {colVirtRange.leftSpacerW > 0 && (
-                        <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
-                      )}
-                      {visibleColIdxs.map((ci) => (
-                        <td key={ci} className="sp-add-row-cell" />
-                      ))}
-                      {colVirtRange.rightSpacerW > 0 && (
-                        <td className="sp-col-spacer" style={{ padding: 0, border: "none" }} aria-hidden="true" />
-                      )}
-                      <td className="sp-add-corner" />
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
             </div>
             <LogicalVerticalScrollbar
-              totalRows={totalRowCount}
+              totalRows={logicalRowCount}
               visibleRows={visibleSlotCount}
               logicalStart={logicalStart}
-              onLogicalStartChange={setLogicalStartClamped}
+              onLogicalStartChange={setLogicalStartFromUser}
               onInteractionEnd={handleLogicalInteractionEnd}
-              disabled={totalRowCount <= visibleSlotCount}
+              disabled={logicalRowCount <= visibleSlotCount}
             />
           </div>
         </div>

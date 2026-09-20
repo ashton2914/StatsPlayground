@@ -60,13 +60,75 @@ test("renders a logical rail and viewport slots without giant vertical spacers",
   }))).toBe(false);
 });
 
-test("keeps the add-row affordance visible and usable with a populated dataset", async ({ mount }) => {
+test("shows the add-row affordance only at the logical dataset end", async ({ mount, page }) => {
   const populated = await mount(<LogicalTableNavigationHarness rowCount={200} width={920} height={420} />);
+  const rail = populated.getByRole("scrollbar");
   const populatedAddRow = populated.locator(".sp-add-row-hdr");
 
+  await expect(populatedAddRow).toHaveCount(0);
+  await populated.locator('td[data-row="2"][data-col="0"]').click();
+  await expect(populated.locator('td[data-row="2"][data-col="0"]')).toHaveClass(/sp-cell-active/);
+  await rail.focus();
+  await page.keyboard.press("End");
+  const maxValue = Number(await rail.getAttribute("aria-valuemax"));
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(maxValue);
   await expect(populatedAddRow).toBeVisible();
+  await expect(populated.locator('td[data-row="199"]').first()).toBeVisible();
+  await expect(populated.locator(".sp-grid-wrapper > .sp-grid > tbody > tr").last()).toHaveClass(/sp-add-row-tr/);
+
+  await page.keyboard.press("Home");
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(0);
+  await expect(populatedAddRow).toHaveCount(0);
+
+  await page.keyboard.press("End");
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(maxValue);
   await populatedAddRow.click();
   await expect(populated.getByTestId("dataset-row-count")).toHaveText("201");
+  await expect(populatedAddRow).toBeVisible();
+  await expect(populated.locator('td[data-row="200"]').first()).toBeVisible();
+
+  await populatedAddRow.click();
+  await expect(populated.getByTestId("dataset-row-count")).toHaveText("202");
+  await expect(populated.getByTestId("mutation-pending")).toHaveText("");
+  await expect(populatedAddRow).toBeVisible();
+
+  const logicalStartAfterAppend = Number(await rail.getAttribute("aria-valuenow"));
+  const firstVisibleCell = populated.locator('[data-viewport-slot="0"] td[data-col="0"]');
+  await firstVisibleCell.click();
+  await expect(firstVisibleCell).toHaveClass(/sp-cell-active/);
+  await expect(populated.locator(".sp-spreadsheet")).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBeLessThan(logicalStartAfterAppend);
+
+  await populated.getByTestId("advance-dataset-generation").click();
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(0);
+});
+
+test("renders the logical add-row fully inside the viewport at minimum zoom", async ({ mount, page }) => {
+  const component = await mount(<LogicalTableNavigationHarness rowCount={200} width={520} height={420} zoom={0.5} />);
+  const rail = component.getByRole("scrollbar");
+  const wrapper = component.locator(".sp-grid-wrapper");
+
+  await expect(component.locator(".sp-add-row-hdr")).toHaveCount(0);
+  await rail.focus();
+  await page.keyboard.press("End");
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(Number(await rail.getAttribute("aria-valuemax")));
+  const finalRow = component.locator(".sp-grid-wrapper > .sp-grid > tbody > tr").last();
+  await expect(finalRow).toHaveClass(/sp-add-row-tr/);
+  await expect(finalRow.locator(".sp-add-row-hdr")).toBeVisible();
+  const layout = await wrapper.evaluate((element) => {
+    const addRow = element.querySelector(".sp-add-row-tr");
+    if (!(addRow instanceof HTMLElement)) throw new Error("add-row is missing");
+    const wrapperRect = element.getBoundingClientRect();
+    return {
+      addRowBottom: addRow.getBoundingClientRect().bottom,
+      clientBottom: wrapperRect.top + element.clientHeight,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    };
+  });
+  expect(layout.scrollWidth).toBeGreaterThan(layout.clientWidth);
+  expect(layout.addRowBottom).toBeLessThanOrEqual(layout.clientBottom);
 });
 
 test("keeps the add-row affordance visible and usable with an empty dataset", async ({ mount }) => {
@@ -74,6 +136,8 @@ test("keeps the add-row affordance visible and usable with an empty dataset", as
   const emptyAddRow = empty.locator(".sp-add-row-hdr");
 
   await expect(emptyAddRow).toBeVisible();
+  await expect(empty.locator(".sp-grid > tbody > tr")).toHaveCount(1);
+  await expect(empty.locator(".sp-grid > tbody > tr").first()).toHaveClass(/sp-add-row-tr/);
   await emptyAddRow.click();
   await expect(empty.getByTestId("dataset-row-count")).toHaveText("1");
   await expect(empty.locator('td[data-row="0"][data-col="0"]')).toBeVisible();
@@ -324,6 +388,29 @@ test("filtered navigation prepares a session before switching to the exact logic
 
   await expect.poll(async () => (await component.getByTestId("nav-request-session-ids").textContent()) ?? "").toContain("session-ev");
   await expect(component.locator('[data-viewport-slot="0"]')).toContainText(/ev-row-/);
+});
+
+test("scopes logical-end follow to the active filter query", async ({ mount, page }) => {
+  const component = await mount(<LogicalTableNavigationHarness rowCount={200} initialFilterMode="ev" />);
+  const rail = component.getByRole("scrollbar");
+  const addRow = component.locator(".sp-add-row-hdr");
+
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuemax"))).toBeLessThan(100);
+  await rail.focus();
+  await page.keyboard.press("End");
+  await expect(addRow).toBeVisible();
+  await addRow.click();
+  await expect(component.getByTestId("dataset-row-count")).toHaveText("201");
+  await expect(component.getByTestId("mutation-pending")).toHaveText("");
+  await expect(component.locator(".sp-toast-error")).toHaveCount(0);
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow")))
+    .toBe(Number(await rail.getAttribute("aria-valuemax")));
+  await expect(addRow).toBeVisible();
+
+  await component.getByTestId("clear-filter").click();
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(0);
+  await expect(addRow).toHaveCount(0);
+  await expect(component.locator('td[data-row="0"][data-col="0"]')).toBeVisible();
 });
 
 test("superseding a filtered signature releases the old session and never shows stale rows", async ({ mount, page }) => {
