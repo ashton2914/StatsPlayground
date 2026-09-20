@@ -205,6 +205,13 @@ interface LogicalTableNavigationHarnessProps {
   initialFilterMode?: HarnessFilterMode;
   rejectCancelledNavigation?: boolean;
   staleAddRowsOnce?: boolean;
+  failNavigationInvalidation?: boolean;
+  failSessionRelease?: boolean;
+  failMutationReload?: boolean;
+  failDatasetRefresh?: boolean;
+  delayDatasetRefresh?: boolean;
+  delayMutationDescriptors?: boolean;
+  reportZeroColumnsOnDelete?: boolean;
 }
 
 interface NavigationRequestObservation {
@@ -226,6 +233,13 @@ export function LogicalTableNavigationHarness({
   initialFilterMode = "none",
   rejectCancelledNavigation = false,
   staleAddRowsOnce = false,
+  failNavigationInvalidation = false,
+  failSessionRelease = false,
+  failMutationReload = false,
+  failDatasetRefresh = false,
+  delayDatasetRefresh = false,
+  delayMutationDescriptors = false,
+  reportZeroColumnsOnDelete = false,
 }: LogicalTableNavigationHarnessProps) {
   const [ready, setReady] = useState(false);
   const dirty = useProjectStore((state) => state.dirty);
@@ -259,6 +273,9 @@ export function LogicalTableNavigationHarness({
   }>>([]);
   const [refreshDatasetsCalls, setRefreshDatasetsCalls] = useState(0);
   const [scopedMutationRequests, setScopedMutationRequests] = useState<string[]>([]);
+  const [releaseAttempts, setReleaseAttempts] = useState(0);
+  const [cancelAttempts, setCancelAttempts] = useState(0);
+  const [mutationRefreshEvents, setMutationRefreshEvents] = useState<string[]>([]);
   const [filterMode, setFilterMode] = useState<HarnessFilterMode>(initialFilterMode);
   const [sortMode, setSortMode] = useState<HarnessSortMode>("natural");
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -306,6 +323,9 @@ export function LogicalTableNavigationHarness({
     setTableWindowRequests([]);
     setRefreshDatasetsCalls(0);
     setScopedMutationRequests([]);
+    setReleaseAttempts(0);
+    setCancelAttempts(0);
+    setMutationRefreshEvents([]);
     setFilterMode(initialFilterMode);
     setSortMode("natural");
     sessionReadyAtRef.current.clear();
@@ -424,6 +444,10 @@ export function LogicalTableNavigationHarness({
     dataService.getDatasetGeneration = async () => datasetRef.current.generation;
     dataService.listDatasets = async () => {
       setRefreshDatasetsCalls((current) => current + 1);
+      if (delayDatasetRefresh) {
+        await new Promise((resolve) => window.setTimeout(resolve, WINDOW_DELAY_MS * 2));
+      }
+      if (failDatasetRefresh) throw new Error("authoritative dataset refresh failed");
       return [datasetRef.current, unrelatedDataset];
     };
     dataService.queryTableWindow = async ({ start, count, filters, generation }) => {
@@ -433,6 +457,12 @@ export function LogicalTableNavigationHarness({
         ...previous,
         { start: effectiveStart, generation },
       ]);
+      if (failMutationReload && generation > GENERATION) {
+        throw new Error("post-commit window reload failed");
+      }
+      if (generation > GENERATION) {
+        setMutationRefreshEvents((previous) => [...previous, `window:${generation}`]);
+      }
       const mode = resolveFilterModeFromRules(filters ?? []);
       if (delayedWindowLoadsRef.current > 0) {
         delayedWindowLoadsRef.current -= 1;
@@ -446,7 +476,7 @@ export function LogicalTableNavigationHarness({
           : mode === "none"
             ? datasetRef.current.rowCount
             : FILTERED_TOTAL_ROWS[mode],
-        columnCount,
+        datasetRef.current.colCount,
         effectiveStart,
         effectiveCount,
         editsRef.current,
@@ -480,10 +510,15 @@ export function LogicalTableNavigationHarness({
       ]);
       if (request.start > 0) {
         await new Promise<void>((resolve, reject) => {
+          const navigationDelayMs = failNavigationInvalidation
+            ? WINDOW_DELAY_MS * 5
+            : delayDatasetRefresh
+              ? WINDOW_DELAY_MS * 1.5
+              : WINDOW_DELAY_MS;
           const timeout = window.setTimeout(() => {
             navigationCancellersRef.current.delete(request.requestId);
             resolve();
-          }, WINDOW_DELAY_MS);
+          }, navigationDelayMs);
           if (rejectCancelledNavigation) {
             navigationCancellersRef.current.set(request.requestId, () => {
               window.clearTimeout(timeout);
@@ -503,7 +538,7 @@ export function LogicalTableNavigationHarness({
         : "natural";
       const result = buildNavigationWindow(
         request,
-        columnCount,
+        datasetRef.current.colCount,
         editsRef.current,
         sortMode === "value-desc"
           ? SORTED_TOTAL_ROWS
@@ -566,17 +601,35 @@ export function LogicalTableNavigationHarness({
       } satisfies TableQuerySessionStatus;
     };
     dataService.releaseTableQuerySession = async (sessionId: string) => {
+      setReleaseAttempts((current) => current + 1);
+      if (failSessionRelease) throw new Error("table query session release failed");
       setReleasedSessionIds((previous) => [...previous, sessionId]);
       sessionReadyAtRef.current.delete(sessionId);
     };
     dataService.cancelTableNavigationRequest = async (requestId) => {
+      setCancelAttempts((current) => current + 1);
+      if (failNavigationInvalidation) {
+        throw new Error("scheduled navigation invalidation failed");
+      }
       const cancelledStart = navigationRequestStartsByIdRef.current.get(requestId);
       if (cancelledStart != null) {
         setCancelledNavigationRequestStarts((previous) => [...previous, cancelledStart]);
       }
       navigationCancellersRef.current.get(requestId)?.();
     };
-    dataService.getColumnDescriptors = async () => buildDescriptors(columnCount);
+    dataService.getColumnDescriptors = async () => {
+      const descriptors = buildDescriptors(datasetRef.current.colCount);
+      if (datasetRef.current.generation > GENERATION) {
+        setMutationRefreshEvents((previous) => [
+          ...previous,
+          `descriptors:${datasetRef.current.generation}`,
+        ]);
+      }
+      if (delayMutationDescriptors && datasetRef.current.generation > GENERATION) {
+        await new Promise((resolve) => window.setTimeout(resolve, WINDOW_DELAY_MS * 3));
+      }
+      return descriptors;
+    };
     dataService.getColumnDisplayProps = async () => [];
     dataService.updateCell = async (_datasetId, rowId, columnName, value) => {
       editsRef.current.set(`${rowId}:${columnName}`, value === "" ? null : value);
@@ -590,7 +643,7 @@ export function LogicalTableNavigationHarness({
         staleAddRowsRemainingRef.current -= 1;
         const authoritative = createDataset(
           datasetRef.current.rowCount,
-          columnCount,
+          datasetRef.current.colCount,
           datasetRef.current.generation + 1,
         );
         datasetRef.current = authoritative;
@@ -613,7 +666,7 @@ export function LogicalTableNavigationHarness({
       const nextRowCount = datasetRef.current.rowCount + safeCount;
       const nextDataset = createDataset(
         nextRowCount,
-        columnCount,
+        datasetRef.current.colCount,
         datasetRef.current.generation + 1,
       );
       datasetRef.current = nextDataset;
@@ -685,7 +738,9 @@ export function LogicalTableNavigationHarness({
       ]);
       const nextDataset = createDataset(
         datasetRef.current.rowCount,
-        Math.max(0, datasetRef.current.colCount - columns.length),
+        reportZeroColumnsOnDelete
+          ? 0
+          : Math.max(0, datasetRef.current.colCount - columns.length),
         datasetRef.current.generation + 1,
       );
       datasetRef.current = nextDataset;
@@ -730,7 +785,20 @@ export function LogicalTableNavigationHarness({
       useTableZoomStore.setState({ zoom: previousZoom });
       void i18n.changeLanguage(previousLanguage);
     };
-  }, [columnCount, rejectCancelledNavigation, rowCount, staleAddRowsOnce, zoom]);
+  }, [
+    columnCount,
+    delayDatasetRefresh,
+    delayMutationDescriptors,
+    failDatasetRefresh,
+    failMutationReload,
+    failNavigationInvalidation,
+    failSessionRelease,
+    rejectCancelledNavigation,
+    reportZeroColumnsOnDelete,
+    rowCount,
+    staleAddRowsOnce,
+    zoom,
+  ]);
 
   useEffect(() => {
     if (!ready) return;
@@ -762,6 +830,9 @@ export function LogicalTableNavigationHarness({
       <div data-testid="table-window-requests">{JSON.stringify(tableWindowRequests)}</div>
       <div data-testid="refresh-datasets-calls">{refreshDatasetsCalls}</div>
       <div data-testid="scoped-mutation-requests">{scopedMutationRequests.join("|")}</div>
+      <div data-testid="release-attempts">{releaseAttempts}</div>
+      <div data-testid="cancel-attempts">{cancelAttempts}</div>
+      <div data-testid="mutation-refresh-events">{mutationRefreshEvents.join(",")}</div>
       <div data-testid="latest-history-action">{JSON.stringify(latestHistoryAction)}</div>
       <div data-testid="mutation-pending">{pendingAction ?? ""}</div>
       <div data-testid="nav-request-starts">{navigationRequestStarts.join(",")}</div>
