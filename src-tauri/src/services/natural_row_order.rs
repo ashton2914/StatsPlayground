@@ -1879,7 +1879,7 @@ mod tests {
         std::fs::create_dir_all(&nested).expect("nested fixture");
         std::fs::write(
             fixture_root.join("services/row_order_update_boundary.rs"),
-            r#"let sql = "UPDATE dataset SET \"_row_order\" = ?";"#,
+            r#"fn update() { let sql = "UPDATE dataset SET \"_row_order\" = ?"; }"#,
         )
         .expect("authority fixture");
         std::fs::write(nested.join("rogue.rs"), source).expect("nested rogue fixture");
@@ -1888,6 +1888,76 @@ mod tests {
                 .expect("recursive fixture scan");
         std::fs::remove_dir_all(&fixture_root).expect("remove fixture");
         assert_eq!(recursive, vec!["services/nested/rogue.rs"]);
+    }
+
+    #[test]
+    fn row_order_source_contract_detects_raw_string_authority() {
+        let raw = r####"
+            fn bypass(connection: &Connection) {
+                connection.execute(r#"UPDATE dataset SET "_row_order" = 1"#, []).unwrap();
+            }
+        "####;
+        assert!(crate::services::row_order_update_boundary::source_contains_row_order_update(raw));
+    }
+
+    #[test]
+    fn row_order_source_contract_detects_multi_hash_raw_and_comment_text_in_strings() {
+        let multiple_hashes = r####"
+            fn bypass(connection: &Connection) {
+                connection.execute(r###"UPDATE dataset SET "_row_order" = 1"###, []).unwrap();
+            }
+        "####;
+        let comment_text = r#"
+            fn bypass(connection: &Connection) {
+                connection.execute("UPDATE dataset SET // _row_order = 1", []).unwrap();
+            }
+        "#;
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(
+                multiple_hashes
+            )
+        );
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(
+                comment_text
+            )
+        );
+    }
+
+    #[test]
+    fn row_order_source_contract_decodes_byte_strings_and_fails_closed_on_macros() {
+        let raw_bytes = r####"
+            fn bypass(connection: &Connection) {
+                connection.execute(br##"UPDATE dataset SET "_row_order" = 1"##, []).unwrap();
+            }
+        "####;
+        let dynamic_macro = r#"
+            fn bypass(connection: &Connection, update_keyword: &str) {
+                let sql = format!("{} dataset SET \"_row_order\" = 1", update_keyword);
+                connection.execute(&sql, []).unwrap();
+            }
+        "#;
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(raw_bytes)
+        );
+        assert!(
+            crate::services::row_order_update_boundary::source_contains_row_order_update(
+                dynamic_macro
+            )
+        );
+    }
+
+    #[test]
+    fn row_order_source_contract_ignores_comments_and_separate_benign_literals() {
+        let benign = r#"
+            // UPDATE dataset SET "_row_order" = 1
+            /* UPDATE dataset SET "_row_order" = 1 */
+            const COLUMN_LABEL: &str = "_row_order";
+            const UI_ACTION: &str = "update selection";
+        "#;
+        assert!(
+            !crate::services::row_order_update_boundary::source_contains_row_order_update(benign)
+        );
     }
 
     #[test]

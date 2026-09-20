@@ -145,86 +145,175 @@ pub(crate) use source_contract::{
 
 #[cfg(test)]
 mod source_contract {
+    use proc_macro2::{TokenStream, TokenTree};
+    use syn::parse::Parser;
+    use syn::punctuated::Punctuated;
+    use syn::visit::{self, Visit};
+    use syn::{Attribute, Expr, ExprMacro, Item, Lit, Macro, Token};
+
     const AUTHORITY_PATH: &str = "services/row_order_update_boundary.rs";
 
-    fn production_portion(source: &str) -> &str {
-        source
-            .split("\n#[cfg(test)]\nmod ")
-            .next()
-            .unwrap_or(source)
-    }
-
-    fn without_comments(source: &str) -> String {
-        let bytes = source.as_bytes();
-        let mut result = String::with_capacity(source.len());
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index..].starts_with(b"//") {
-                index += 2;
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-                result.push('\n');
-            } else if bytes[index..].starts_with(b"/*") {
-                index += 2;
-                while index + 1 < bytes.len() && !bytes[index..].starts_with(b"*/") {
-                    index += 1;
-                }
-                index = (index + 2).min(bytes.len());
-                result.push(' ');
-            } else {
-                result.push(bytes[index] as char);
-                index += 1;
-            }
+    fn item_attributes(item: &Item) -> &[Attribute] {
+        match item {
+            Item::Const(item) => &item.attrs,
+            Item::Enum(item) => &item.attrs,
+            Item::ExternCrate(item) => &item.attrs,
+            Item::Fn(item) => &item.attrs,
+            Item::ForeignMod(item) => &item.attrs,
+            Item::Impl(item) => &item.attrs,
+            Item::Macro(item) => &item.attrs,
+            Item::Mod(item) => &item.attrs,
+            Item::Static(item) => &item.attrs,
+            Item::Struct(item) => &item.attrs,
+            Item::Trait(item) => &item.attrs,
+            Item::TraitAlias(item) => &item.attrs,
+            Item::Type(item) => &item.attrs,
+            Item::Union(item) => &item.attrs,
+            Item::Use(item) => &item.attrs,
+            _ => &[],
         }
-        result
     }
 
-    fn canonical_statement(statement: &str) -> String {
-        statement
+    fn is_test_only(item: &Item) -> bool {
+        item_attributes(item).iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute
+                    .parse_args::<syn::Path>()
+                    .is_ok_and(|path| path.is_ident("test"))
+        })
+    }
+
+    fn canonical(value: &str) -> String {
+        value
             .chars()
             .filter(|character| character.is_ascii_alphanumeric() || *character == '_')
             .flat_map(char::to_lowercase)
             .collect()
     }
 
-    fn string_literal_content(source: &str) -> String {
-        let bytes = source.as_bytes();
-        let mut result = String::new();
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] == b'"' {
-                index += 1;
-                while index < bytes.len() {
-                    if bytes[index] == b'\\' && index + 1 < bytes.len() {
-                        result.push(bytes[index + 1] as char);
-                        index += 2;
-                    } else if bytes[index] == b'"' {
-                        index += 1;
-                        break;
-                    } else {
-                        result.push(bytes[index] as char);
-                        index += 1;
-                    }
-                }
-            } else {
-                index += 1;
-            }
+    fn literal_value(literal: &Lit) -> Option<String> {
+        match literal {
+            Lit::Str(value) => Some(value.value()),
+            Lit::ByteStr(value) => Some(String::from_utf8_lossy(&value.value()).into_owned()),
+            _ => None,
         }
-        result
     }
 
-    fn row_order_update_occurrences(source: &str) -> usize {
-        without_comments(production_portion(source))
-            .split(';')
-            .map(string_literal_content)
-            .map(|statement| canonical_statement(&statement))
-            .filter(|statement| statement.contains("update") && statement.contains("_row_order"))
-            .count()
+    fn evaluate_literal_expression(expression: &Expr) -> Option<String> {
+        match expression {
+            Expr::Lit(expression) => literal_value(&expression.lit),
+            Expr::Group(expression) => evaluate_literal_expression(&expression.expr),
+            Expr::Paren(expression) => evaluate_literal_expression(&expression.expr),
+            Expr::Macro(expression) if expression.mac.path.is_ident("concat") => {
+                let arguments = Punctuated::<Expr, Token![,]>::parse_terminated
+                    .parse2(expression.mac.tokens.clone())
+                    .ok()?;
+                let mut value = String::new();
+                for argument in arguments {
+                    value.push_str(&evaluate_literal_expression(&argument)?);
+                }
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    #[derive(Default)]
+    struct ExpressionTokens {
+        literals: Vec<String>,
+        identifiers: Vec<String>,
+    }
+
+    impl ExpressionTokens {
+        fn collect_macro_tokens(&mut self, tokens: TokenStream) {
+            for token in tokens {
+                match token {
+                    TokenTree::Group(group) => self.collect_macro_tokens(group.stream()),
+                    TokenTree::Ident(identifier) => self.identifiers.push(identifier.to_string()),
+                    TokenTree::Literal(literal) => {
+                        if let Ok(literal) = syn::parse_str::<Lit>(&literal.to_string()) {
+                            if let Some(value) = literal_value(&literal) {
+                                self.literals.push(value);
+                            }
+                        }
+                    }
+                    TokenTree::Punct(_) => {}
+                }
+            }
+        }
+    }
+
+    impl<'ast> Visit<'ast> for ExpressionTokens {
+        fn visit_expr_macro(&mut self, expression: &'ast ExprMacro) {
+            if expression.mac.path.is_ident("concat") {
+                if let Some(value) = evaluate_literal_expression(&Expr::Macro(expression.clone())) {
+                    self.literals.push(value);
+                    return;
+                }
+            }
+            self.collect_macro_tokens(expression.mac.tokens.clone());
+        }
+
+        fn visit_lit(&mut self, literal: &'ast Lit) {
+            if let Some(value) = literal_value(literal) {
+                self.literals.push(value);
+            }
+        }
+
+        fn visit_macro(&mut self, node: &'ast Macro) {
+            self.collect_macro_tokens(node.tokens.clone());
+        }
+    }
+
+    fn expression_contains_row_order_update(expression: &Expr) -> bool {
+        let mut tokens = ExpressionTokens::default();
+        tokens.visit_expr(expression);
+        let literal_text = canonical(&tokens.literals.join(""));
+        if !literal_text.contains("_row_order") {
+            return false;
+        }
+        let mut construction_text = literal_text.replace("_row_order", "");
+        construction_text.push_str(&canonical(&tokens.identifiers.join("")));
+        construction_text.contains("update")
+    }
+
+    #[derive(Default)]
+    struct ProductionUpdateVisitor {
+        occurrences: usize,
+    }
+
+    impl<'ast> Visit<'ast> for ProductionUpdateVisitor {
+        fn visit_item(&mut self, item: &'ast Item) {
+            if !is_test_only(item) {
+                visit::visit_item(self, item);
+            }
+        }
+
+        fn visit_expr(&mut self, expression: &'ast Expr) {
+            let can_construct_sql = matches!(
+                expression,
+                Expr::Array(_) | Expr::Binary(_) | Expr::Lit(_) | Expr::Macro(_) | Expr::Tuple(_)
+            );
+            if can_construct_sql && expression_contains_row_order_update(expression) {
+                self.occurrences += 1;
+            } else {
+                visit::visit_expr(self, expression);
+            }
+        }
+    }
+
+    fn row_order_update_occurrences(source: &str) -> Result<usize, String> {
+        let syntax = syn::parse_file(source).map_err(|error| error.to_string())?;
+        let mut visitor = ProductionUpdateVisitor::default();
+        visitor.visit_file(&syntax);
+        Ok(visitor.occurrences)
     }
 
     pub(crate) fn source_contains_row_order_update(source: &str) -> bool {
-        row_order_update_occurrences(source) > 0
+        match row_order_update_occurrences(source) {
+            Ok(count) => count > 0,
+            Err(_) => true,
+        }
     }
 
     pub(crate) fn source_contract_violations_for_sources<'a>(
@@ -232,10 +321,14 @@ mod source_contract {
     ) -> Vec<String> {
         let mut violations = sources
             .into_iter()
-            .filter(|(path, source)| {
-                *path != AUTHORITY_PATH && source_contains_row_order_update(source)
-            })
-            .map(|(path, _)| path.to_string())
+            .filter_map(
+                |(path, source)| match row_order_update_occurrences(source) {
+                    Ok(0) if path != AUTHORITY_PATH => None,
+                    Ok(_) if path != AUTHORITY_PATH => Some(path.to_string()),
+                    Err(error) => Some(format!("{path}: Rust parse failed: {error}")),
+                    Ok(_) => None,
+                },
+            )
             .collect::<Vec<_>>();
         violations.sort();
         violations
@@ -281,7 +374,8 @@ mod source_contract {
             .iter()
             .find(|(path, _)| path == AUTHORITY_PATH)
             .ok_or_else(|| format!("missing row-order UPDATE authority {AUTHORITY_PATH}"))?;
-        let authority_count = row_order_update_occurrences(&authority.1);
+        let authority_count = row_order_update_occurrences(&authority.1)
+            .map_err(|error| format!("parse {AUTHORITY_PATH}: {error}"))?;
         let borrowed = sources
             .iter()
             .map(|(path, source)| (path.as_str(), source.as_str()))
