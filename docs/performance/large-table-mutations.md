@@ -160,3 +160,13 @@ Final Rust results:
 - `cargo clippy --all-targets --all-features -- -D warnings`: blocked by the
   pre-existing warning baseline (including unused `TabulateTotalsKind`,
   `validation_result_hash`, and unrelated dead code). No suppression was added.
+
+### Review follow-up
+
+The empty-source tabulate fixture now advances generation zero before its
+controlled rebuild. The rebuild therefore publishes the empty-table manifest
+for generation one and removes the stale generation-zero manifest instead of
+rewriting generation zero with post-delete state. The focused regression passed
+(1/1), all tabulate session tests passed (46/46), and the final ordinary
+parallel Rust gate passed (1,407 passed, 18 ignored, plus all integration
+tests).

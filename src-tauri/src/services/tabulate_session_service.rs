@@ -1102,8 +1102,17 @@ mod tests {
         assert_eq!(&table.rows[0][2..5], &[serde_json::json!(1.0), serde_json::json!(0.5), serde_json::json!(1.0 / 3.0)]);
         assert_eq!(&table.rows[0][5..8], &[serde_json::json!(0.0), serde_json::json!(0.0), serde_json::json!(0.0)]);
         harness.source.conn().execute_batch("DELETE FROM dataset_session_test").unwrap();
-        harness.rebuild_source_anchors(0);
         harness.source.bump_dataset_generation("session-test").unwrap();
+        harness.rebuild_source_anchors(0);
+        let previous_manifest = harness
+            .source
+            .validate_natural_anchor_manifest("session-test", 0, 3)
+            .expect_err("controlled rebuild removes stale manifests");
+        assert!(previous_manifest.to_string().contains("manifest is missing"));
+        harness
+            .source
+            .validate_natural_anchor_manifest("session-test", 1, 0)
+            .expect("empty source manifest");
         definition.source_generation += 1;
         definition.row_fields.clear();
         definition.column_fields.clear();
