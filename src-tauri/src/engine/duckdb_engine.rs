@@ -366,6 +366,12 @@ impl DuckDbEngine {
             .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
         let target_generation_i64 = i64::try_from(target_generation)
             .map_err(|_| AppError::InvalidParam("dataset generation is too large".into()))?;
+        let row_count: i64 = self.conn.query_row(
+            "SELECT row_count FROM _meta_datasets WHERE id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        self.validate_natural_anchor_manifest(dataset_id, source_generation_i64, row_count)?;
         self.conn.execute(
             "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
             params![dataset_id, target_generation_i64],
@@ -381,11 +387,6 @@ impl DuckDbEngine {
              FROM _table_navigation_anchors
              WHERE dataset_id = ? AND generation = ?",
             params![target_generation_i64, dataset_id, source_generation_i64],
-        )?;
-        let row_count: i64 = self.conn.query_row(
-            "SELECT row_count FROM _meta_datasets WHERE id = ?",
-            params![dataset_id],
-            |row| row.get(0),
         )?;
         self.publish_natural_anchor_manifest(dataset_id, target_generation_i64, row_count)?;
         Ok(())
@@ -12339,6 +12340,155 @@ mod tests {
             "direct natural row-id ordering bypasses NATURAL_ORDER_SQL:\n{}",
             direct_natural_order_lines.join("\n")
         );
+    }
+
+    #[test]
+    fn natural_row_order_generation_copy_rejects_missing_source_manifest_atomically() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        let dataset_id = "copy_missing_manifest";
+        db.seed_benchmark_table(dataset_id, "Missing manifest", 32, 1)
+            .expect("seed");
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        db.conn()
+            .execute(
+                "DELETE FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64],
+            )
+            .expect("remove source manifest");
+
+        let error = db
+            .copy_natural_anchors_between_generations(
+                dataset_id,
+                source_generation,
+                source_generation + 1,
+            )
+            .expect_err("missing manifest must fail");
+
+        assert!(error.to_string().contains("controlled rebuild"));
+        let source_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64],
+                |row| row.get(0),
+            )
+            .expect("source anchors");
+        let target_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target anchors");
+        let target_manifests: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target manifests");
+        assert!(source_anchors > 0);
+        assert_eq!(target_anchors, 0);
+        assert_eq!(target_manifests, 0);
+    }
+
+    #[test]
+    fn natural_row_order_generation_copy_rejects_corrupt_source_manifest_atomically() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        let dataset_id = "copy_corrupt_manifest";
+        db.seed_benchmark_table(dataset_id, "Corrupt manifest", 32, 1)
+            .expect("seed");
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        db.conn()
+            .execute(
+                "UPDATE _table_navigation_anchor_manifests SET checksum = ?
+                 WHERE dataset_id = ? AND generation = ?",
+                params!["corrupt", dataset_id, source_generation as i64],
+            )
+            .expect("corrupt source manifest");
+
+        let error = db
+            .copy_natural_anchors_between_generations(
+                dataset_id,
+                source_generation,
+                source_generation + 1,
+            )
+            .expect_err("corrupt manifest must fail");
+
+        assert!(error.to_string().contains("controlled rebuild"));
+        let target_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target anchors");
+        let target_manifests: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target manifests");
+        let source_checksum: String = db
+            .conn()
+            .query_row(
+                "SELECT checksum FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64],
+                |row| row.get(0),
+            )
+            .expect("source checksum");
+        assert_eq!(target_anchors, 0);
+        assert_eq!(target_manifests, 0);
+        assert_eq!(source_checksum, "corrupt");
+    }
+
+    #[test]
+    fn natural_row_order_generation_copy_accepts_valid_empty_manifest() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        let dataset_id = "copy_empty_manifest";
+        db.seed_benchmark_table(dataset_id, "Empty manifest", 0, 1)
+            .expect("seed");
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+
+        db.copy_natural_anchors_between_generations(
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+        )
+        .expect("copy empty generation");
+
+        let target_anchors: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchors
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target anchors");
+        let target_manifests: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64 + 1],
+                |row| row.get(0),
+            )
+            .expect("target manifests");
+        assert_eq!(target_anchors, 0);
+        assert_eq!(target_manifests, 1);
     }
 
     #[test]
