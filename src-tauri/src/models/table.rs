@@ -294,6 +294,13 @@ pub struct TableNavigationResult {
     pub timings: TableNavigationTimings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NaturalNavigationAnchor {
+    pub ordinal: i64,
+    pub order_key: i128,
+    pub row_id: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableNavigationBenchmarkRequest {

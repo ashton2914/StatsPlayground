@@ -2388,6 +2388,7 @@ fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
             .map_err(|_| AppError::InvalidParam("logical cell count is too large".into()))?;
         db.conn().execute(
             r#"INSERT INTO "dataset_performance_tabulate_baseline"
+                      ("_row_id", "row_group", "column_group", "value")
                SELECT i + 1,
                       'row_' || CAST((i // ?1) % ?2 AS VARCHAR),
                       'column_' || CAST(i % ?1 AS VARCHAR),

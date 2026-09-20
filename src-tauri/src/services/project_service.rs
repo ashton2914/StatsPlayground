@@ -790,7 +790,7 @@ impl<'a> ProjectService<'a> {
                 let rows_total = doc.rows.len();
 
                 for (row_index, row) in doc.rows.iter().enumerate() {
-                    let values = row
+                    let mut values = row
                         .iter()
                         .enumerate()
                         .map(|(index, value)| {
@@ -803,6 +803,7 @@ impl<'a> ProjectService<'a> {
                             json_to_duckdb_param(value, decode_archive_tag, column_type)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
+                    values.push(DuckValue::Null);
                     appender.append_row(appender_params_from_iter(values))?;
                     let rows_done = row_index + 1;
                     if rows_done % 5_000 == 0 || rows_done == rows_total {

@@ -32,10 +32,10 @@ use crate::models::graph_data::{
 };
 use crate::models::hypothesis_test::{HypothesisTestFieldRef, HypothesisTestRoles};
 use crate::models::table::{
-    CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, SqlQueryResult,
-    TableFilterValue, TableNavigationRequest, TableNavigationResult, TableNavigationTimings,
-    TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule, TableWindowRequest,
-    TableWindowResult,
+    CellPosition, CellUpdate, CreateTableFromRowsRequest, DatasetMeta, NaturalNavigationAnchor,
+    SqlQueryResult, TableFilterValue, TableNavigationRequest, TableNavigationResult,
+    TableNavigationTimings, TableQueryResult, TableQuerySessionRequest, TableWindowFilterRule,
+    TableWindowRequest, TableWindowResult,
 };
 use crate::models::tabulate::{StatisticKind, TabulateSessionRequest, TabulateStatistic, TabulateSparseCell, TabulateWindowRequest, TabulateWindowResult};
 use crate::models::tabulate::{TabulateSparseTotal, TabulateTotalsKind, TabulateTotalsRequest, TabulateTotalsResult};
@@ -55,6 +55,9 @@ pub struct DuckDbEngine {
 }
 
 pub const NATURAL_ANCHOR_STRIDE: usize = 4096;
+pub(crate) const NATURAL_ORDER_STRIDE: i128 = 1_i128 << 64;
+pub(crate) const NATURAL_ORDER_SQL: &str =
+    "COALESCE(\"_row_order\", CAST(\"_row_id\" AS HUGEINT) * 18446744073709551616::HUGEINT)";
 
 pub(crate) struct DatasetReplacement {
     pub stable_id: String,
@@ -353,8 +356,8 @@ impl DuckDbEngine {
             params![dataset_id, target_generation_i64],
         )?;
         self.conn.execute(
-            "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
-             SELECT dataset_id, ?, ordinal, row_id
+            "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, order_key, row_id)
+             SELECT dataset_id, ?, ordinal, order_key, row_id
              FROM _table_navigation_anchors
              WHERE dataset_id = ? AND generation = ?",
             params![target_generation_i64, dataset_id, source_generation_i64],
@@ -402,9 +405,13 @@ impl DuckDbEngine {
             .join(", ");
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let query = if select_columns.is_empty() {
-            format!("SELECT \"_row_id\" FROM {table_name} ORDER BY \"_row_id\" ASC")
+            format!(
+                "SELECT \"_row_id\" FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            )
         } else {
-            format!("SELECT {select_columns} FROM {table_name} ORDER BY \"_row_id\" ASC")
+            format!(
+                "SELECT {select_columns} FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            )
         };
         let mut statement = self.conn.prepare(&query)?;
         let mut query_rows = statement.query([])?;
@@ -505,7 +512,12 @@ impl DuckDbEngine {
             .map_err(|_| AppError::InvalidParam("benchmark row count is too large".into()))?;
         self.conn.execute(
             &format!(
-                "INSERT INTO {table_name} SELECT i, {generated_columns} FROM range(1, CAST(? AS BIGINT)) AS generated(i)"
+                "INSERT INTO {table_name} (\"_row_id\", {}) SELECT i, {generated_columns} FROM range(1, CAST(? AS BIGINT)) AS generated(i)",
+                column_names
+                    .iter()
+                    .map(|name| Self::quote_identifier(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             params![upper_bound],
         )?;
@@ -593,6 +605,7 @@ impl DuckDbEngine {
                 dataset_id TEXT NOT NULL,
                 generation BIGINT NOT NULL,
                 ordinal    BIGINT NOT NULL,
+                order_key  HUGEINT,
                 row_id     BIGINT NOT NULL,
                 PRIMARY KEY (dataset_id, generation, ordinal)
             );
@@ -646,6 +659,11 @@ impl DuckDbEngine {
             "UPDATE _history_change_set_columns SET after_present = TRUE WHERE after_present IS NULL",
             [],
         )?;
+        conn.execute(
+            "ALTER TABLE _table_navigation_anchors
+             ADD COLUMN IF NOT EXISTS order_key HUGEINT",
+            [],
+        )?;
 
         Ok(Self {
             conn,
@@ -665,6 +683,7 @@ impl DuckDbEngine {
         dataset_id: &str,
         generation: u64,
     ) -> Result<(), AppError> {
+        self.ensure_internal_row_order_column(dataset_id)?;
         let current_generation = self.get_dataset_generation(dataset_id)?;
         if current_generation != generation {
             return Err(AppError::InvalidParam(format!(
@@ -687,10 +706,12 @@ impl DuckDbEngine {
         )?;
         self.conn.execute(
             &format!(
-                "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, row_id)
-                 SELECT ?, ?, ordinal, \"_row_id\"
+                "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, order_key, row_id)
+                 SELECT ?, ?, ordinal, order_key, \"_row_id\"
                  FROM (
-                     SELECT \"_row_id\", row_number() OVER (ORDER BY \"_row_id\" ASC) - 1 AS ordinal
+                     SELECT \"_row_id\",
+                            {NATURAL_ORDER_SQL} AS order_key,
+                            row_number() OVER (ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") - 1 AS ordinal
                      FROM {table_name}
                  ) AS ordered_rows
                  WHERE ordinal % ? = 0"
@@ -698,6 +719,18 @@ impl DuckDbEngine {
             params![dataset_id, generation_i64, stride_i64],
         )?;
 
+        Ok(())
+    }
+
+    pub fn ensure_internal_row_order_column(
+        &self,
+        dataset_id: &str,
+    ) -> Result<(), AppError> {
+        let table = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        self.conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS \"_row_order\" HUGEINT"),
+            [],
+        )?;
         Ok(())
     }
 
@@ -725,7 +758,7 @@ impl DuckDbEngine {
 
         let table_name = Self::internal_table_name(dataset_id);
         let mut columns_stmt = self.conn.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
         let columns: Vec<(String, String)> = columns_stmt
             .query_map(params![&table_name], |row| {
@@ -1558,7 +1591,7 @@ impl DuckDbEngine {
             // Create table from CSV with the stable row identity required by
             // bounded windows, edits, history, and project serialization.
             let create_sql = format!(
-            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __csv__.* FROM read_csv($1, auto_detect=true) AS __csv__",
+            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __csv__.*, NULL::HUGEINT AS \"_row_order\" FROM read_csv($1, auto_detect=true) AS __csv__",
             table_name
         );
             self.conn.execute(&create_sql, params![file_path])?;
@@ -1572,7 +1605,7 @@ impl DuckDbEngine {
 
             // Get column info
             let mut col_stmt = self.conn.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
 
             let col_count: i32 = {
@@ -2593,20 +2626,30 @@ impl DuckDbEngine {
         let clamped_start = request.start.min(total_rows.max(0) as usize);
         let start_i64 = i64::try_from(clamped_start)
             .map_err(|_| AppError::InvalidParam("window start is too large".into()))?;
-        let anchor: Option<(i64, i64)> = connection
+        let anchor: Option<NaturalNavigationAnchor> = connection
             .query_row(
-                "SELECT ordinal, row_id
+                "SELECT ordinal, order_key, row_id
                  FROM _table_navigation_anchors
                  WHERE dataset_id = ? AND generation = ? AND ordinal <= ?
                  ORDER BY ordinal DESC
                  LIMIT 1",
                 params![&request.dataset_id, generation_i64, start_i64],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok(NaturalNavigationAnchor {
+                        ordinal: row.get(0)?,
+                        order_key: row.get(1)?,
+                        row_id: row.get(2)?,
+                    })
+                },
             )
             .optional()?;
-        let (anchor_ordinal, anchor_row_id) = match anchor {
+        let anchor = match anchor {
             Some(anchor) => anchor,
-            None if total_rows <= 0 => (0, i64::MAX),
+            None if total_rows <= 0 => NaturalNavigationAnchor {
+                ordinal: 0,
+                order_key: 0,
+                row_id: i64::MAX,
+            },
             None => {
                 return Err(AppError::Database(format!(
                     "natural navigation anchors are not ready for dataset {} generation {}",
@@ -2614,7 +2657,7 @@ impl DuckDbEngine {
                 )));
             }
         };
-        let local_offset = usize::try_from(start_i64 - anchor_ordinal).map_err(|_| {
+        let local_offset = usize::try_from(start_i64 - anchor.ordinal).map_err(|_| {
             AppError::Database("natural navigation local offset is negative".into())
         })?;
         if local_offset >= NATURAL_ANCHOR_STRIDE {
@@ -2647,7 +2690,13 @@ impl DuckDbEngine {
             .join(", ");
         let query_sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
         let mut stmt = connection.prepare(&query_sql)?;
-        let mut result_rows = stmt.query(params![anchor_row_id, limit, offset])?;
+        let mut result_rows = stmt.query(params![
+            anchor.order_key,
+            anchor.order_key,
+            anchor.row_id,
+            limit,
+            offset
+        ])?;
         let mut rows = Vec::with_capacity(request.count.min(total_rows.max(0) as usize));
         while let Some(row) = result_rows.next()? {
             let mut values = Vec::with_capacity(columns.len());
@@ -2683,7 +2732,11 @@ impl DuckDbEngine {
 
     fn natural_navigation_viewport_sql(table_name: &str, select_columns: &str) -> String {
         format!(
-            "SELECT {select_columns} FROM {table_name} WHERE \"_row_id\" >= ? ORDER BY \"_row_id\" ASC LIMIT ? OFFSET ?"
+            "SELECT {select_columns} FROM {table_name}
+             WHERE {NATURAL_ORDER_SQL} > ?
+                OR ({NATURAL_ORDER_SQL} = ? AND \"_row_id\" >= ?)
+             ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+             LIMIT ? OFFSET ?"
         )
     }
 
@@ -2712,7 +2765,8 @@ impl DuckDbEngine {
         let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
         let sql = format!(
             "WITH filtered AS (
-                SELECT \"_row_id\", row_number() OVER (ORDER BY \"_row_id\" ASC) - 1 AS logical_index
+                SELECT \"_row_id\",
+                       row_number() OVER (ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") - 1 AS logical_index
                 FROM {table_name} {where_clause}
              )
              SELECT logical_index FROM filtered WHERE \"_row_id\" = ?"
@@ -3657,7 +3711,7 @@ impl DuckDbEngine {
             .collect::<Vec<_>>()
             .join(", ");
         let query_sql = format!(
-            "SELECT {select_columns} FROM {table_name} {where_clause} ORDER BY \"_row_id\" ASC"
+            "SELECT {select_columns} FROM {table_name} {where_clause} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
         );
 
         let mut per_column = vec![Vec::<Option<f64>>::new(); correlation_plan.columns.len()];
@@ -4494,7 +4548,7 @@ impl DuckDbEngine {
                 ))
             }
         } else {
-            Ok("ORDER BY \"_row_id\" ASC".to_string())
+            Ok(format!("ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""))
         }
     }
 
@@ -4554,7 +4608,7 @@ impl DuckDbEngine {
                 };
                 format!("ORDER BY \"{}\" {}", col, dir)
             }
-            None => String::new(),
+            None => format!("ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""),
         };
 
         let query = format!(
@@ -4648,7 +4702,7 @@ impl DuckDbEngine {
                 .join(", ");
             let internal_table = Self::quote_identifier(&Self::internal_table_name(&dataset.id));
             let select_sql = format!(
-                "SELECT {} FROM {} ORDER BY \"_row_id\"",
+                "SELECT {} FROM {} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"",
                 select_columns, internal_table
             );
             let mut stmt = self.conn.prepare(&select_sql)?;
@@ -4845,7 +4899,8 @@ impl DuckDbEngine {
 
     fn validate_result_column_names(columns: &[String]) -> Result<(), AppError> {
         let mut seen: HashSet<String> = HashSet::new();
-        let reserved = normalize_identifier("_row_id");
+        let reserved_row_id = normalize_identifier("_row_id");
+        let reserved_row_order = normalize_identifier("_row_order");
 
         for column_name in columns {
             let trimmed = column_name.trim();
@@ -4856,9 +4911,14 @@ impl DuckDbEngine {
             }
 
             let normalized = normalize_identifier(trimmed);
-            if normalized == reserved {
+            if normalized == reserved_row_id {
                 return Err(AppError::InvalidParam(
                     "query result column names cannot use reserved name _row_id".into(),
+                ));
+            }
+            if normalized == reserved_row_order {
+                return Err(AppError::InvalidParam(
+                    "query result column names cannot use reserved name _row_order".into(),
                 ));
             }
 
@@ -4936,7 +4996,7 @@ impl DuckDbEngine {
     ) -> Result<Vec<(String, String)>, AppError> {
         let table_name = Self::internal_table_name(dataset_id);
         let mut stmt = connection.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name <> '_row_id' ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = $1 AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
         Ok(stmt
             .query_map(params![table_name], |row| {
@@ -5028,13 +5088,29 @@ impl DuckDbEngine {
         let table_name = Self::quote_identifier(&Self::internal_table_name(&request.dataset_id));
         let sql = Self::natural_navigation_viewport_sql(&table_name, &select_columns);
         let mut statement = connection.prepare(&format!("EXPLAIN {sql}"))?;
-        let mut rows = statement.query(params![0_i64, 1_i64, 0_i64])?;
+        let mut rows = statement.query(params![0_i128, 0_i128, 0_i64, 1_i64, 0_i64])?;
         let mut lines = Vec::new();
         while let Some(row) = rows.next()? {
             let value: String = row.get(1)?;
             lines.push(value);
         }
         Ok(lines.join("\n"))
+    }
+
+    #[cfg(test)]
+    fn natural_row_ids_for_test(&self, dataset_id: &str) -> Vec<i64> {
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let mut statement = self
+            .conn
+            .prepare(&format!(
+                "SELECT \"_row_id\" FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            ))
+            .expect("prepare natural row ids");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("query natural row ids")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect natural row ids")
     }
 
     fn duckdb_value_to_json(value: Value) -> serde_json::Value {
@@ -5158,9 +5234,22 @@ impl DuckDbEngine {
 
     /// Export a dataset to CSV
     pub fn export_csv(&self, dataset_id: &str, output_path: &str) -> Result<(), AppError> {
-        let table_name = format!("dataset_{}", dataset_id.replace('-', "_"));
+        let table_name = Self::quote_identifier(&Self::internal_table_name(dataset_id));
+        let columns = self.get_user_columns(dataset_id)?;
+        if columns.is_empty() {
+            return Err(AppError::InvalidParam(
+                "Dataset has no columns and cannot be exported".into(),
+            ));
+        }
+        let select_columns = columns
+            .iter()
+            .map(|(name, _)| Self::quote_identifier(name))
+            .collect::<Vec<_>>()
+            .join(", ");
         self.conn.execute(
-            &format!("COPY \"{}\" TO $1 (HEADER, DELIMITER ',')", table_name),
+            &format!(
+                "COPY (SELECT {select_columns} FROM {table_name} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") TO $1 (HEADER, DELIMITER ',')"
+            ),
             params![output_path],
         )?;
         Ok(())
@@ -5247,7 +5336,9 @@ impl DuckDbEngine {
                 .join(", ");
 
             // Query all data
-            let sql = format!("SELECT {} FROM \"{}\"", select_cols, table_name);
+            let sql = format!(
+                "SELECT {select_cols} FROM \"{table_name}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\""
+            );
             let mut stmt = self.conn.prepare(&sql)?;
             let col_count = col_names.len();
             let mut rows = stmt.query([])?;
@@ -5438,12 +5529,14 @@ impl DuckDbEngine {
                 if append_target_id.is_none() {
                     self.conn.execute(
                         &format!(
-                            "CREATE TABLE \"{}\" (\"_row_id\" BIGINT, {})",
+                            "CREATE TABLE \"{}\" (\"_row_id\" BIGINT, {}, \"_row_order\" HUGEINT)",
                             table_name,
                             col_defs.join(", ")
                         ),
                         [],
                     )?;
+                } else {
+                    self.ensure_internal_row_order_column(&id)?;
                 }
 
                 // Determine target types for value conversion
@@ -5492,6 +5585,7 @@ impl DuckDbEngine {
                                 )?;
                                 values.push(value);
                             }
+                            values.push(Value::Null);
                             appender.append_row(appender_params_from_iter(values))?;
                             rows_done += 1;
                         }
@@ -5609,7 +5703,7 @@ impl DuckDbEngine {
         let import_result = (|| -> Result<(DatasetMeta, usize), AppError> {
             self.conn.execute(
                 &format!(
-                    "CREATE TABLE {} (\"_row_id\" BIGINT, {})",
+                    "CREATE TABLE {} (\"_row_id\" BIGINT, {}, \"_row_order\" HUGEINT)",
                     Self::quote_identifier(&table_name),
                     column_definitions.join(", ")
                 ),
@@ -5642,6 +5736,7 @@ impl DuckDbEngine {
                                 row.source_index,
                             )?);
                         }
+                        values.push(Value::Null);
                         appender.append_row(appender_params_from_iter(values))?;
                         rows_done += 1;
                     }
@@ -6000,7 +6095,7 @@ impl DuckDbEngine {
                 // Create the table in the destination SQLite database
                 self.conn.execute(
                     &format!(
-                        "CREATE TABLE _sqlite_dst.\"{}\" AS SELECT {} FROM \"{}\"",
+                        "CREATE TABLE _sqlite_dst.\"{}\" AS SELECT {} FROM \"{}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"",
                         dst_name.replace('"', "\"\""),
                         select_cols,
                         table_name
@@ -6125,12 +6220,12 @@ impl DuckDbEngine {
         // Add a hidden row_id column for row identification
         let create_sql = if col_defs.is_empty() {
             format!(
-                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0)",
+                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0, \"_row_order\" HUGEINT)",
                 table_name
             )
         } else {
             format!(
-                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0, {})",
+                "CREATE TABLE {} (\"_row_id\" INTEGER DEFAULT 0, {}, \"_row_order\" HUGEINT)",
                 table_name,
                 col_defs.join(", ")
             )
@@ -8554,7 +8649,7 @@ impl DuckDbEngine {
         let num_paste_rows_i64 = i64::try_from(num_paste_rows)
             .map_err(|_| AppError::InvalidParam("Paste row count is too large".into()))?;
         let mut row_stmt = self.conn.prepare(&format!(
-            "SELECT \"_row_id\" FROM \"{}\" ORDER BY \"_row_id\" LIMIT $1 OFFSET $2",
+            "SELECT \"_row_id\" FROM \"{}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\" LIMIT $1 OFFSET $2",
             table_name
         ))?;
         let mut affected_row_ids: Vec<i64> = row_stmt
@@ -8898,7 +8993,7 @@ impl DuckDbEngine {
 
         // Create table via CTAS wrapped with _row_id
         let ctas = format!(
-            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __inner__.* FROM ({}) AS __inner__",
+            "CREATE TABLE \"{}\" AS SELECT ROW_NUMBER() OVER () AS \"_row_id\", __inner__.*, NULL::HUGEINT AS \"_row_order\" FROM ({}) AS __inner__",
             table_name, select_sql
         );
         self.conn.execute(&ctas, [])?;
@@ -8906,7 +9001,7 @@ impl DuckDbEngine {
         // Collect column info (skip _row_id)
         let col_sql = format!(
             "SELECT column_name, data_type FROM information_schema.columns \
-             WHERE table_name = '{}' AND column_name != '_row_id' \
+             WHERE table_name = '{}' AND column_name NOT IN ('_row_id', '_row_order') \
              ORDER BY ordinal_position",
             table_name
         );
@@ -9040,7 +9135,7 @@ impl DuckDbEngine {
             .collect::<Vec<_>>()
             .join(", ");
         let query = format!(
-            "SELECT {} FROM \"{}\" ORDER BY \"_row_id\"",
+            "SELECT {} FROM \"{}\" ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"",
             select_cols, src_table
         );
         let mut stmt = self.conn.prepare(&query)?;
@@ -9232,7 +9327,7 @@ impl DuckDbEngine {
             format!("{}, \"{}\"", id_select, split_col)
         };
         let cte = format!(
-            "SELECT *, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY \"_row_id\") AS _split_rn FROM \"{}\"",
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\") AS _split_rn FROM \"{}\"",
             partition_cols, src_table
         );
 
@@ -10653,7 +10748,7 @@ impl DuckDbEngine {
         self.get_dataset_meta(dataset_id)?;
         let internal_table_name = Self::internal_table_name(dataset_id);
         let mut stmt = self.conn.prepare(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ? AND column_name <> '_row_id' ORDER BY ordinal_position",
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ? AND column_name NOT IN ('_row_id', '_row_order') ORDER BY ordinal_position",
         )?;
         stmt.query_map(params![internal_table_name], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -10781,7 +10876,7 @@ impl DuckDbEngine {
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
-                    "SELECT _row_id, {response}, {condition}{subject_projection} FROM {table} ORDER BY _row_id"
+                    "SELECT _row_id, {response}, {condition}{subject_projection} FROM {table} ORDER BY {NATURAL_ORDER_SQL}, _row_id"
                 );
                 let mut statement = self.conn.prepare(&query_sql)?;
                 let mut query_rows = statement.query([])?;
@@ -10846,7 +10941,7 @@ impl DuckDbEngine {
                     .map(|field| format!(", {}", Self::quote_identifier(&field.name)))
                     .unwrap_or_default();
                 let query_sql = format!(
-                    "SELECT _row_id, {measurement_projection}{subject_projection} FROM {table} ORDER BY _row_id"
+                    "SELECT _row_id, {measurement_projection}{subject_projection} FROM {table} ORDER BY {NATURAL_ORDER_SQL}, _row_id"
                 );
                 let mut statement = self.conn.prepare(&query_sql)?;
                 let mut query_rows = statement.query([])?;
@@ -10937,7 +11032,20 @@ impl DuckDbEngine {
         };
 
         let select_sql = format!(
-            "SELECT \"_row_id\"{select_projection} FROM {table_name} WHERE \"_row_id\" > ? ORDER BY \"_row_id\" ASC LIMIT ?"
+            "SELECT \"_row_id\"{select_projection}
+             FROM {table_name}
+             WHERE ? = 0
+                OR {NATURAL_ORDER_SQL} > (
+                    SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
+                )
+                OR (
+                    {NATURAL_ORDER_SQL} = (
+                        SELECT {NATURAL_ORDER_SQL} FROM {table_name} WHERE \"_row_id\" = ?
+                    )
+                    AND \"_row_id\" > ?
+                )
+             ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
+             LIMIT ?"
         );
 
         Ok(ArchiveKeysetReadPlan {
@@ -10959,7 +11067,13 @@ impl DuckDbEngine {
         }
 
         let mut stmt = self.conn.prepare_cached(&plan.select_sql)?;
-        let mut query_rows = stmt.query(params![after_row_id, row_limit as i64])?;
+        let mut query_rows = stmt.query(params![
+            after_row_id,
+            after_row_id,
+            after_row_id,
+            after_row_id,
+            row_limit as i64
+        ])?;
 
         let mut rows = Vec::new();
         let mut releasable_bytes_estimate = 0usize;
@@ -11959,6 +12073,61 @@ mod tests {
             session_id: None,
             include_transport_diagnostics: false,
         }
+    }
+
+    #[test]
+    fn row_order_legacy_rows_keep_row_id_order_without_materializing_override() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        db.seed_benchmark_table("order-legacy", "Legacy", 5, 1).expect("seed");
+        db.ensure_internal_row_order_column("order-legacy").expect("migration");
+
+        let populated: i64 = db.conn().query_row(
+            "SELECT COUNT(*) FROM dataset_order_legacy WHERE \"_row_order\" IS NOT NULL",
+            [],
+            |row| row.get(0),
+        ).expect("count");
+        assert_eq!(populated, 0);
+        assert_eq!(db.natural_row_ids_for_test("order-legacy"), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn row_order_explicit_override_sorts_before_target_with_row_id_tiebreaker() {
+        let db = DuckDbEngine::new_in_memory().expect("db");
+        db.seed_benchmark_table("order-override", "Override", 5, 1).expect("seed");
+        db.ensure_internal_row_order_column("order-override").expect("migration");
+        let between_two_and_three = 2 * NATURAL_ORDER_STRIDE + NATURAL_ORDER_STRIDE / 2;
+        db.conn().execute(
+            "UPDATE dataset_order_override SET \"_row_order\" = ? WHERE \"_row_id\" = 5",
+            params![between_two_and_three],
+        ).expect("set override");
+
+        assert_eq!(
+            db.natural_row_ids_for_test("order-override"),
+            vec![1, 2, 5, 3, 4],
+        );
+    }
+
+    #[test]
+    fn natural_order_consumers_use_the_effective_order_contract() {
+        let production_source = include_str!("duckdb_engine.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let direct_natural_order_lines = production_source
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                line.contains("ORDER BY \\\"_row_id\\\"")
+                    || line.contains("ORDER BY _row_id")
+            })
+            .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
+            .collect::<Vec<_>>();
+
+        assert!(
+            direct_natural_order_lines.is_empty(),
+            "direct natural row-id ordering bypasses NATURAL_ORDER_SQL:\n{}",
+            direct_natural_order_lines.join("\n")
+        );
     }
 
     #[test]
@@ -16508,7 +16677,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_temporal_id VALUES
+                "INSERT INTO dataset_temporal_id (_row_id, event_date, event_time) VALUES
                     (1, DATE '2026-08-19', TIMESTAMP '2026-08-19 14:15:16.123456');
                  UPDATE _meta_datasets SET row_count = 1 WHERE id = 'temporal-id';",
             )
@@ -16616,7 +16785,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_benchmark_id VALUES
+                "INSERT INTO dataset_benchmark_id (_row_id, category, amount) VALUES
                     (3, 'B', 10), (1, 'A', 10), (2, 'A', 10), (4, NULL, 20);
                  UPDATE _meta_datasets SET row_count = 4 WHERE id = 'benchmark-id';",
             )
@@ -16797,7 +16966,10 @@ mod tests {
         )
         .unwrap();
         db.conn()
-            .execute("INSERT INTO dataset_benchmark_id VALUES (1, 1.5)", [])
+            .execute(
+                "INSERT INTO dataset_benchmark_id (_row_id, amount) VALUES (1, 1.5)",
+                [],
+            )
             .unwrap();
 
         assert!(db
@@ -17109,7 +17281,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_history_valued_columns_id VALUES
+                "INSERT INTO dataset_history_valued_columns_id (_row_id, existing) VALUES
                     (1, 'one'), (2, 'two'), (3, 'three');
                  UPDATE _meta_datasets SET row_count = 3 WHERE id = 'history-valued-columns-id';",
             )
@@ -17266,7 +17438,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_valued_rollback_id VALUES (1, 'kept')",
+                "INSERT INTO dataset_history_valued_rollback_id (_row_id, existing) VALUES (1, 'kept')",
                 [],
             )
             .unwrap();
@@ -17323,7 +17495,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_valued_identity_id VALUES (1, 'kept')",
+                "INSERT INTO dataset_history_valued_identity_id (_row_id, existing) VALUES (1, 'kept')",
                 [],
             )
             .unwrap();
@@ -17636,7 +17808,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_delete_columns_id VALUES (1, 'kept', 4.5, 'restored')",
+                "INSERT INTO dataset_history_delete_columns_id (_row_id, \"left\", amount, note) VALUES (1, 'kept', 4.5, 'restored')",
                 [],
             )
             .unwrap();
@@ -17701,7 +17873,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_alter_column_id VALUES (1, '01')",
+                "INSERT INTO dataset_history_alter_column_id (_row_id, code) VALUES (1, '01')",
                 [],
             )
             .unwrap();
@@ -17817,7 +17989,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "INSERT INTO dataset_history_alter_columns_id VALUES (1, '01', '002')",
+                "INSERT INTO dataset_history_alter_columns_id (_row_id, first, second) VALUES (1, '01', '002')",
                 [],
             )
             .unwrap();
@@ -18424,8 +18596,8 @@ mod tests {
         }
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_left_id VALUES (1, 'A', 1);
-                 INSERT INTO dataset_right_id VALUES (1, 'A', 9);",
+                "INSERT INTO dataset_left_id (_row_id, key, value) VALUES (1, 'A', 1);
+                 INSERT INTO dataset_right_id (_row_id, key, value) VALUES (1, 'A', 9);",
             )
             .unwrap();
 
@@ -18452,7 +18624,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_benchmark_id VALUES
+                "INSERT INTO dataset_benchmark_id (_row_id, event_date, amount) VALUES
                     (1, NULL, 5),
                     (2, DATE '2026-01-15', 5),
                     (3, DATE '2026-06-15', 15),
@@ -18569,7 +18741,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_benchmark_id VALUES
+                "INSERT INTO dataset_benchmark_id (_row_id, category) VALUES
                     (1, 'Alpha'), (2, 'Beta'), (3, 'Alphabet'), (4, NULL),
                     (5, 'Alpha'), (6, '');",
             )
@@ -18624,7 +18796,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute_batch(
-                "INSERT INTO dataset_stacked_id VALUES
+                "INSERT INTO dataset_stacked_id (_row_id, Build, Value) VALUES
                     (1, 'EV1', 10.0), (2, 'DV', 20.0), (3, 'EV1', 20.0);",
             )
             .unwrap();
@@ -18808,6 +18980,10 @@ mod tests {
         let reserved_error =
             DuckDbEngine::validate_result_column_names(&["_row_id".to_string()]).unwrap_err();
         assert!(matches!(reserved_error, AppError::InvalidParam(_)));
+
+        let row_order_error =
+            DuckDbEngine::validate_result_column_names(&["_row_order".to_string()]).unwrap_err();
+        assert!(matches!(row_order_error, AppError::InvalidParam(_)));
     }
 
     #[test]
