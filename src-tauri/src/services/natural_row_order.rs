@@ -503,6 +503,11 @@ fn publish_transformed_anchors(
         "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation = ?",
         params![dataset_id, target_generation],
     )?;
+    engine.conn().execute(
+        "DELETE FROM _table_navigation_anchor_manifests
+         WHERE dataset_id = ? AND generation = ?",
+        params![dataset_id, target_generation],
+    )?;
     #[cfg(test)]
     ANCHOR_REFRESH_QUERY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     match mutation {
@@ -547,8 +552,19 @@ fn publish_transformed_anchors(
         }
     }
     repair_anchor_gaps(engine, dataset_id, target_generation, table_name)?;
+    let target_row_count: i64 = engine.conn().query_row(
+        "SELECT row_count FROM _meta_datasets WHERE id = ?",
+        params![dataset_id],
+        |row| row.get(0),
+    )?;
+    engine.publish_natural_anchor_manifest(dataset_id, target_generation, target_row_count)?;
     engine.conn().execute(
         "DELETE FROM _table_navigation_anchors WHERE dataset_id = ? AND generation <> ?",
+        params![dataset_id, target_generation],
+    )?;
+    engine.conn().execute(
+        "DELETE FROM _table_navigation_anchor_manifests
+         WHERE dataset_id = ? AND generation <> ?",
         params![dataset_id, target_generation],
     )?;
     Ok(())
@@ -558,15 +574,14 @@ fn validate_source_anchor_generation(
     engine: &DuckDbEngine,
     dataset_id: &str,
     source_generation: i64,
-    table_name: &str,
+    _table_name: &str,
     mutation: &AnchorMutation<'_>,
 ) -> Result<(), AppError> {
-    let row_count: i64 =
-        engine
-            .conn()
-            .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
-                row.get(0)
-            })?;
+    let row_count: i64 = engine.conn().query_row(
+        "SELECT row_count FROM _meta_datasets WHERE id = ?",
+        params![dataset_id],
+        |row| row.get(0),
+    )?;
     let source_row_count = match mutation {
         AnchorMutation::Insert { inserted_count, .. } => row_count
             .checked_sub(*inserted_count)
@@ -609,6 +624,7 @@ fn validate_source_anchor_generation(
         },
     )?;
     if source_row_count == 0 && anchor_count == 0 {
+        engine.validate_natural_anchor_manifest(dataset_id, source_generation, 0)?;
         return Ok(());
     }
     let uncovered_tail = last_ordinal
@@ -624,95 +640,7 @@ fn validate_source_anchor_generation(
             "source anchor generation {source_generation} is missing or malformed for dataset {dataset_id}"
         )));
     }
-    validate_source_anchor_semantics(engine, dataset_id, source_generation, table_name, mutation)?;
-    Ok(())
-}
-
-fn validate_source_anchor_semantics(
-    engine: &DuckDbEngine,
-    dataset_id: &str,
-    source_generation: i64,
-    table_name: &str,
-    mutation: &AnchorMutation<'_>,
-) -> Result<(), AppError> {
-    let mismatches: i64 = match mutation {
-        AnchorMutation::Insert {
-            insertion_ordinal,
-            inserted_count,
-        } => {
-            let validation_sql = format!(
-                "WITH ordered_rows AS (
-                     SELECT \"_row_id\",
-                            row_number() OVER (
-                                ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
-                            ) - 1 AS ordinal
-                     FROM {table_name}
-                 ),
-                 expected AS (
-                     SELECT source.row_id,
-                            source.ordinal + CASE
-                                WHEN source.ordinal >= ? THEN ? ELSE 0
-                            END AS ordinal
-                     FROM _table_navigation_anchors AS source
-                     WHERE source.dataset_id = ? AND source.generation = ?
-                 )
-                 SELECT count(*)
-                 FROM expected
-                 LEFT JOIN ordered_rows USING (ordinal)
-                 WHERE ordered_rows.\"_row_id\" IS DISTINCT FROM expected.row_id"
-            );
-            engine.conn().query_row(
-                &validation_sql,
-                params![
-                    insertion_ordinal,
-                    inserted_count,
-                    dataset_id,
-                    source_generation
-                ],
-                |row| row.get(0),
-            )?
-        }
-        AnchorMutation::Delete { deleted } => {
-            let (deleted_cte, mut values) = deleted_rows_cte(deleted);
-            values.extend([
-                Value::Text(dataset_id.to_string()),
-                Value::BigInt(source_generation),
-            ]);
-            let validation_sql = format!(
-                "WITH deleted(row_id, ordinal) AS ({deleted_cte}),
-                 ordered_rows AS (
-                     SELECT \"_row_id\",
-                            row_number() OVER (
-                                ORDER BY {NATURAL_ORDER_SQL}, \"_row_id\"
-                            ) - 1 AS ordinal
-                     FROM {table_name}
-                 ),
-                 expected AS (
-                     SELECT source.row_id,
-                            source.ordinal - (
-                                SELECT count(*) FROM deleted AS preceding
-                                WHERE preceding.ordinal < source.ordinal
-                            ) AS ordinal
-                     FROM _table_navigation_anchors AS source
-                     LEFT JOIN deleted AS removed ON removed.row_id = source.row_id
-                     WHERE source.dataset_id = ? AND source.generation = ?
-                       AND removed.row_id IS NULL
-                 )
-                 SELECT count(*)
-                 FROM expected
-                 LEFT JOIN ordered_rows USING (ordinal)
-                 WHERE ordered_rows.\"_row_id\" IS DISTINCT FROM expected.row_id"
-            );
-            engine
-                .conn()
-                .query_row(&validation_sql, params_from_iter(values), |row| row.get(0))?
-        }
-    };
-    if mismatches != 0 {
-        return Err(AppError::InvalidParam(format!(
-            "source anchor generation {source_generation} is semantically malformed for dataset {dataset_id}"
-        )));
-    }
+    engine.validate_natural_anchor_manifest(dataset_id, source_generation, source_row_count)?;
     Ok(())
 }
 
@@ -779,12 +707,11 @@ fn repair_anchor_gaps(
     generation: i64,
     table_name: &str,
 ) -> Result<(), AppError> {
-    let row_count: i64 =
-        engine
-            .conn()
-            .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
-                row.get(0)
-            })?;
+    let row_count: i64 = engine.conn().query_row(
+        "SELECT row_count FROM _meta_datasets WHERE id = ?",
+        params![dataset_id],
+        |row| row.get(0),
+    )?;
     if row_count == 0 {
         return Ok(());
     }
@@ -1222,6 +1149,21 @@ mod tests {
             .expect("collect all anchors")
     }
 
+    fn ensure_manifest_fixture_table(db: &DuckDbEngine) {
+        db.conn()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS _table_navigation_anchor_manifests (
+                    dataset_id TEXT NOT NULL,
+                    generation BIGINT NOT NULL,
+                    row_count BIGINT NOT NULL,
+                    anchor_count BIGINT NOT NULL,
+                    checksum TEXT NOT NULL,
+                    PRIMARY KEY (dataset_id, generation)
+                );",
+            )
+            .expect("create manifest fixture table");
+    }
+
     fn publish_insert(
         db: &DuckDbEngine,
         dataset_id: &str,
@@ -1561,5 +1503,115 @@ mod tests {
                 .map(|row| row.0)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn incremental_anchor_rejects_legacy_source_without_manifest_atomically() {
+        let dataset_id = "incremental_legacy_manifest";
+        let db = seed(dataset_id, NATURAL_ANCHOR_STRIDE + 10);
+        ensure_manifest_fixture_table(&db);
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        db.conn()
+            .execute(
+                "DELETE FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, source_generation as i64],
+            )
+            .expect("remove source manifest");
+        let before = anchors(&db, dataset_id);
+
+        let error = publish_inserted_anchors(
+            &db,
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+            0,
+            &[],
+        )
+        .expect_err("legacy source requires controlled rebuild");
+
+        assert!(error.to_string().contains("manifest"));
+        assert_eq!(anchors(&db, dataset_id), before);
+    }
+
+    #[test]
+    fn incremental_anchor_rejects_corrupt_manifest_atomically() {
+        let dataset_id = "incremental_corrupt_manifest";
+        let db = seed(dataset_id, NATURAL_ANCHOR_STRIDE + 10);
+        ensure_manifest_fixture_table(&db);
+        let source_generation = db.get_dataset_generation(dataset_id).expect("generation");
+        db.conn()
+            .execute(
+                "UPDATE _table_navigation_anchor_manifests SET checksum = ?
+                 WHERE dataset_id = ? AND generation = ?",
+                params!["corrupt", dataset_id, source_generation as i64],
+            )
+            .expect("seed corrupt manifest");
+        let before = anchors(&db, dataset_id);
+
+        let error = publish_inserted_anchors(
+            &db,
+            dataset_id,
+            source_generation,
+            source_generation + 1,
+            0,
+            &[],
+        )
+        .expect_err("corrupt manifest");
+
+        assert!(error.to_string().contains("manifest"));
+        assert_eq!(anchors(&db, dataset_id), before);
+    }
+
+    #[test]
+    fn natural_anchor_full_rebuild_publishes_manifest() {
+        let dataset_id = "incremental_rebuild_manifest";
+        let db = seed(dataset_id, NATURAL_ANCHOR_STRIDE + 10);
+        ensure_manifest_fixture_table(&db);
+        let generation = db.get_dataset_generation(dataset_id).expect("generation");
+
+        db.rebuild_natural_anchors(dataset_id, generation)
+            .expect("controlled rebuild");
+
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM _table_navigation_anchor_manifests
+                 WHERE dataset_id = ? AND generation = ?",
+                params![dataset_id, generation as i64],
+                |row| row.get(0),
+            )
+            .expect("manifest count");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn incremental_anchor_semantic_validation_has_no_global_dataset_ordering() {
+        let production = include_str!("natural_row_order.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let validation = production
+            .split("fn validate_source_anchor_generation")
+            .nth(1)
+            .expect("source validation")
+            .split("fn copy_deleted_anchors_setwise")
+            .next()
+            .expect("validation section");
+
+        assert!(!validation.contains("row_number()"));
+        assert!(!validation.contains("ordered_rows"));
+
+        let engine_source = include_str!("../engine/duckdb_engine.rs");
+        let manifest_validation = engine_source
+            .split("pub(crate) fn validate_natural_anchor_manifest")
+            .nth(1)
+            .expect("manifest validation")
+            .split("fn natural_anchor_manifest_values")
+            .next()
+            .expect("manifest validation section");
+        assert!(!manifest_validation.contains("row_number()"));
+        assert!(!manifest_validation.contains("NATURAL_ORDER_SQL"));
+        assert!(!manifest_validation.contains("internal_table_name"));
     }
 }

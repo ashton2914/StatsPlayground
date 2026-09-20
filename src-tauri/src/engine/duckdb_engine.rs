@@ -7,6 +7,7 @@ use duckdb::types::{Decimal, OrderedMap, TimeUnit, Value};
 use duckdb::{
     appender_params_from_iter, params, params_from_iter, Config, Connection, OptionalExt,
 };
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use crate::connectors::{ConnectorValue, DataConnector, ServerConnector, SqliteConnector};
@@ -370,12 +371,23 @@ impl DuckDbEngine {
             params![dataset_id, target_generation_i64],
         )?;
         self.conn.execute(
+            "DELETE FROM _table_navigation_anchor_manifests
+             WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, target_generation_i64],
+        )?;
+        self.conn.execute(
             "INSERT INTO _table_navigation_anchors (dataset_id, generation, ordinal, order_key, row_id)
              SELECT dataset_id, ?, ordinal, order_key, row_id
              FROM _table_navigation_anchors
              WHERE dataset_id = ? AND generation = ?",
             params![target_generation_i64, dataset_id, source_generation_i64],
         )?;
+        let row_count: i64 = self.conn.query_row(
+            "SELECT row_count FROM _meta_datasets WHERE id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        self.publish_natural_anchor_manifest(dataset_id, target_generation_i64, row_count)?;
         Ok(())
     }
 
@@ -623,6 +635,15 @@ impl DuckDbEngine {
                 row_id     BIGINT NOT NULL,
                 PRIMARY KEY (dataset_id, generation, ordinal)
             );
+
+            CREATE TABLE IF NOT EXISTS _table_navigation_anchor_manifests (
+                dataset_id TEXT NOT NULL,
+                generation BIGINT NOT NULL,
+                row_count BIGINT NOT NULL,
+                anchor_count BIGINT NOT NULL,
+                checksum TEXT NOT NULL,
+                PRIMARY KEY (dataset_id, generation)
+            );
             ",
         )?;
         conn.execute(
@@ -735,8 +756,104 @@ impl DuckDbEngine {
             ),
             params![dataset_id, generation_i64, stride_i64],
         )?;
+        let row_count: i64 = self.conn.query_row(
+            "SELECT row_count FROM _meta_datasets WHERE id = ?",
+            params![dataset_id],
+            |row| row.get(0),
+        )?;
+        self.publish_natural_anchor_manifest(dataset_id, generation_i64, row_count)?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchor_manifests
+             WHERE dataset_id = ? AND generation <> ?",
+            params![dataset_id, generation_i64],
+        )?;
 
         Ok(())
+    }
+
+    pub(crate) fn publish_natural_anchor_manifest(
+        &self,
+        dataset_id: &str,
+        generation: i64,
+        row_count: i64,
+    ) -> Result<(), AppError> {
+        let (anchor_count, checksum) =
+            self.natural_anchor_manifest_values(dataset_id, generation, row_count)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO _table_navigation_anchor_manifests
+             (dataset_id, generation, row_count, anchor_count, checksum)
+             VALUES (?, ?, ?, ?, ?)",
+            params![dataset_id, generation, row_count, anchor_count, checksum],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_natural_anchor_manifest(
+        &self,
+        dataset_id: &str,
+        generation: i64,
+        expected_row_count: i64,
+    ) -> Result<(), AppError> {
+        let manifest = self.conn.query_row(
+            "SELECT row_count, anchor_count, checksum
+             FROM _table_navigation_anchor_manifests
+             WHERE dataset_id = ? AND generation = ?",
+            params![dataset_id, generation],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        ).optional()?.ok_or_else(|| AppError::InvalidParam(format!(
+            "source anchor manifest is missing for dataset {dataset_id} generation {generation}; controlled rebuild required"
+        )))?;
+        let (anchor_count, checksum) =
+            self.natural_anchor_manifest_values(dataset_id, generation, expected_row_count)?;
+        if manifest.0 != expected_row_count
+            || manifest.1 != anchor_count
+            || manifest.2 != checksum
+        {
+            return Err(AppError::InvalidParam(format!(
+                "source anchor manifest is invalid for dataset {dataset_id} generation {generation}; controlled rebuild required"
+            )));
+        }
+        Ok(())
+    }
+
+    fn natural_anchor_manifest_values(
+        &self,
+        dataset_id: &str,
+        generation: i64,
+        row_count: i64,
+    ) -> Result<(i64, String), AppError> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"natural-anchor-manifest-v1\0");
+        hasher.update((dataset_id.len() as u64).to_le_bytes());
+        hasher.update(dataset_id.as_bytes());
+        hasher.update(generation.to_le_bytes());
+        hasher.update(row_count.to_le_bytes());
+        let mut statement = self.conn.prepare(
+            "SELECT ordinal, order_key, row_id
+             FROM _table_navigation_anchors
+             WHERE dataset_id = ? AND generation = ?
+             ORDER BY ordinal",
+        )?;
+        let mut rows = statement.query(params![dataset_id, generation])?;
+        let mut anchor_count = 0_i64;
+        while let Some(row) = rows.next()? {
+            let ordinal: i64 = row.get(0)?;
+            let order_key: i128 = row.get(1)?;
+            let row_id: i64 = row.get(2)?;
+            hasher.update(ordinal.to_le_bytes());
+            hasher.update(order_key.to_le_bytes());
+            hasher.update(row_id.to_le_bytes());
+            anchor_count = anchor_count.checked_add(1).ok_or_else(|| {
+                AppError::InvalidParam("navigation anchor count overflowed".into())
+            })?;
+        }
+        Ok((anchor_count, format!("{:x}", hasher.finalize())))
     }
 
     pub fn ensure_internal_row_order_column(
@@ -1754,6 +1871,10 @@ impl DuckDbEngine {
         )?;
         self.conn.execute(
             "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM _table_navigation_anchor_manifests WHERE dataset_id = $1",
             params![id],
         )?;
         self.conn
@@ -9825,6 +9946,10 @@ impl DuckDbEngine {
                 "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
                 params![temporary_id],
             )?;
+            self.conn.execute(
+                "DELETE FROM _table_navigation_anchor_manifests WHERE dataset_id = $1",
+                params![temporary_id],
+            )?;
             Ok(())
         })();
 
@@ -9981,6 +10106,10 @@ impl DuckDbEngine {
                 self.rebuild_natural_anchors(&replacement.stable_id, generation)?;
                 self.conn.execute(
                     "DELETE FROM _table_navigation_anchors WHERE dataset_id = $1",
+                    params![replacement.temporary_id],
+                )?;
+                self.conn.execute(
+                    "DELETE FROM _table_navigation_anchor_manifests WHERE dataset_id = $1",
                     params![replacement.temporary_id],
                 )?;
                 Ok(())
