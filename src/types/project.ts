@@ -39,6 +39,7 @@ export interface DocumentNameMigration {
 export interface OpenProjectResult {
   project: ProjectInfo;
   history: unknown[];
+  historyCurrentIdx: number;
   snapshots: unknown[];
   datasetFilters: DatasetFilterMap;
   datasetFilterMigrationConflicts: string[];

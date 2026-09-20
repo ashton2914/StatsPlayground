@@ -27,10 +27,14 @@ export function recordIncrementalEntry(
 export function undoIncrementalEntry(
   state: IncrementalHistoryState,
 ): IncrementalHistoryTransition | null {
-  const entry = state.history[state.currentIdx];
-  if (!entry?.action) return null;
+  const entryIndex = state.history.findIndex(
+    (entry, index) => index >= state.currentIdx && entry.action,
+  );
+  if (entryIndex < 0) return null;
+  const entry = state.history[entryIndex];
+  if (!entry.action) return null;
   return {
-    state: { ...state, currentIdx: state.currentIdx + 1 },
+    state: { ...state, currentIdx: entryIndex + 1 },
     request: { entryId: entry.id, direction: "undo", action: entry.action },
   };
 }
@@ -39,10 +43,15 @@ export function redoIncrementalEntry(
   state: IncrementalHistoryState,
 ): IncrementalHistoryTransition | null {
   if (state.currentIdx <= 0) return null;
-  const entry = state.history[state.currentIdx - 1];
-  if (!entry?.action) return null;
+  let entryIndex = state.currentIdx - 1;
+  while (entryIndex >= 0 && !state.history[entryIndex]?.action) {
+    entryIndex -= 1;
+  }
+  if (entryIndex < 0) return null;
+  const entry = state.history[entryIndex];
+  if (!entry.action) return null;
   return {
-    state: { ...state, currentIdx: state.currentIdx - 1 },
+    state: { ...state, currentIdx: entryIndex },
     request: { entryId: entry.id, direction: "redo", action: entry.action },
   };
 }

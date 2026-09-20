@@ -74,6 +74,48 @@ fn reconcile_archived_history(
         .collect()
 }
 
+fn archived_history_current_idx(
+    history: &[serde_json::Value],
+    timeline: Option<&crate::services::table_history_archive::HistoryTimelineArchive>,
+) -> Result<i64, AppError> {
+    if history.is_empty() {
+        return Ok(-1);
+    }
+    let Some(timeline) = timeline else {
+        return Ok(0);
+    };
+    let applied_by_id = timeline
+        .entries
+        .iter()
+        .map(|entry| (entry.change_set_id.as_str(), entry.applied))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut current_idx = 0_i64;
+    let mut saw_applied = false;
+    for (index, entry) in history.iter().enumerate() {
+        let change_set_id = entry
+            .pointer("/action/kind")
+            .and_then(serde_json::Value::as_str)
+            .filter(|kind| *kind == "changeSet")
+            .and_then(|_| entry.pointer("/action/changeSetId"))
+            .and_then(serde_json::Value::as_str);
+        let Some(applied) = change_set_id.and_then(|id| applied_by_id.get(id)).copied() else {
+            continue;
+        };
+        if applied {
+            saw_applied = true;
+        } else {
+            if saw_applied {
+                return Err(AppError::FileIO(
+                    "Frontend history order disagrees with backend applied cursor".into(),
+                ));
+            }
+            current_idx = i64::try_from(index + 1)
+                .map_err(|_| AppError::FileIO("Frontend history cursor is too large".into()))?;
+        }
+    }
+    Ok(current_idx)
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedTableTransform {
@@ -90,6 +132,8 @@ pub struct OpenProjectResult {
     pub project: ProjectInfo,
     #[serde(default)]
     pub history: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub history_current_idx: i64,
     #[serde(default)]
     pub snapshots: Vec<serde_json::Value>,
     #[serde(default)]
@@ -598,6 +642,13 @@ impl<'a> ProjectService<'a> {
         };
         let restored_history =
             reconcile_archived_history(bundle.history, &retained_change_set_ids);
+        let history_current_idx = archived_history_current_idx(
+            &restored_history,
+            bundle
+                .history_timeline
+                .as_ref()
+                .map(|timeline| &timeline.metadata),
+        )?;
         let staged_db = staged_state
             .db
             .into_inner()
@@ -631,6 +682,7 @@ impl<'a> ProjectService<'a> {
         Ok(OpenProjectResult {
             project,
             history: restored_history,
+            history_current_idx,
             snapshots: bundle.snapshots,
             graph_builders,
             graph_builders_new: bundle.graph_builders_new,
@@ -2177,6 +2229,12 @@ mod tests {
             .unwrap();
             (row.change_set_id, legacy, column.change_set_id)
         };
+        state
+            .db
+            .lock()
+            .unwrap()
+            .apply_change_set(&column_id, true)
+            .unwrap();
         let mut request = empty_save_request(None);
         request.history = vec![
             serde_json::json!({"action": {"kind": "changeSet", "changeSetId": column_id}}),
@@ -2186,11 +2244,11 @@ mod tests {
         service.save_project(request, None).unwrap();
 
         let reopened_state = AppState::new().unwrap();
-        ProjectService::new(&reopened_state)
+        let opened = ProjectService::new(&reopened_state)
             .open_project(&path_string, None)
             .unwrap();
+        assert_eq!(opened.history_current_idx, 1);
         let db = reopened_state.db.lock().unwrap();
-        db.apply_change_set(&column_id, true).unwrap();
         db.apply_change_set(&legacy_id, true).unwrap();
         db.apply_change_set(&row_id, true).unwrap();
         assert_eq!(db.get_dataset_meta("unified-archive").unwrap().row_count, 4);

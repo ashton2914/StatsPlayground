@@ -80,4 +80,15 @@ assert.equal(migrated[0].action?.kind, "changeSet");
 assert.equal(migrated[1].action, undefined);
 assert.equal(migrated[1].migrationError, "legacy snapshot is unavailable");
 
+const withMigrationGap: IncrementalHistoryState = {
+  history: [
+    { ...previous[0], replayable: false, action: undefined },
+    previous[2],
+  ],
+  currentIdx: 0,
+};
+const skippedMigration = undoIncrementalEntry(withMigrationGap);
+assert.equal(skippedMigration?.request.entryId, "paste-b");
+assert.equal(skippedMigration?.state.currentIdx, 2);
+
 console.log("history-timeline regression passed");
