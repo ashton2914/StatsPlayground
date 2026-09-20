@@ -247,6 +247,8 @@ export function CalculatedColumnDialog({
   const { t } = useTranslation();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const requestSeqRef = useRef(0);
+  const requiresRevalidationRef = useRef(false);
+  const explicitRevalidationRef = useRef(false);
   const [outputName, setOutputName] = useState(initialOutputName);
   const [searchText, setSearchText] = useState("");
   const [validatedKey, setValidatedKey] = useState<string | null>(null);
@@ -304,6 +306,7 @@ export function CalculatedColumnDialog({
     && validatedKey === validationKey
     && editorState.validatedText === editorState.draftText
     && editorState.validatedGeneration === generation
+    && !requiresRevalidation
     && !hasBlockingDiagnostics(diagnostics)
     && !validating
     && !submitting;
@@ -311,9 +314,13 @@ export function CalculatedColumnDialog({
 
   useEffect(() => {
     if (editorState.generation !== generation) {
+      requestSeqRef.current += 1;
+      requiresRevalidationRef.current = true;
+      explicitRevalidationRef.current = false;
       dispatch({ type: "generationChanged", generation });
       setValidatedKey(null);
       setRequiresRevalidation(true);
+      setValidating(false);
     }
   }, [editorState.generation, generation]);
 
@@ -328,10 +335,13 @@ export function CalculatedColumnDialog({
       setInferredOutputType("unknown");
       return;
     }
+    if (requiresRevalidationRef.current && !explicitRevalidationRef.current) return;
 
+    const isExplicitRevalidation = requiresRevalidationRef.current;
     const seq = requestSeqRef.current + 1;
     requestSeqRef.current = seq;
     const timeout = window.setTimeout(() => {
+      explicitRevalidationRef.current = false;
       setValidating(true);
       void dataService.validateCalculatedColumn({
         datasetId,
@@ -358,6 +368,10 @@ export function CalculatedColumnDialog({
         setLastStatus(result.status);
         setInferredOutputType(result.definition.inferredOutputType);
         setValidationError(null);
+        if (isExplicitRevalidation) {
+          requiresRevalidationRef.current = false;
+          setRequiresRevalidation(false);
+        }
       }).catch((error) => {
         if (requestSeqRef.current !== seq) return;
         const renderedValidationError = formatValidationErrorMessage(t, error);
@@ -408,7 +422,7 @@ export function CalculatedColumnDialog({
     setValidatedKey(null);
     setValidationError(null);
     setLastStatus("pending");
-    setRequiresRevalidation(false);
+    explicitRevalidationRef.current = true;
     setValidationRevision((value) => value + 1);
   };
 

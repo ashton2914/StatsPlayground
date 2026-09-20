@@ -228,9 +228,13 @@ test("preserves the draft on stale generation, offers revalidate, and only re-en
   await expect(page.getByText("Output type: DOUBLE")).toBeVisible();
   const before = await readSnapshot(page);
   expect(before?.validateRequests.at(-1)?.expectedGeneration).toBe(7);
+  const validationCountBeforeGenerationChange = before?.validateRequests.length ?? 0;
   await bumpGeneration(page);
   await expect(formulaTextbox(page)).toHaveValue("ROUND([Length] * [Width], 2)");
   await expect(page.getByText("Validation is stale because the table changed. Revalidate before applying.")).toBeVisible();
+  await page.waitForTimeout(300);
+  const stale = await readSnapshot(page);
+  expect(stale?.validateRequests).toHaveLength(validationCountBeforeGenerationChange);
   await expect(page.getByRole("button", { name: "Apply" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Revalidate" })).toBeVisible();
   await page.getByRole("button", { name: "Revalidate" }).click();

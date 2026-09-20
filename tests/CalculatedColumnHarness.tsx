@@ -587,6 +587,7 @@ export function CalculatedColumnHarness({
       },
       bumpGeneration: () => {
         currentGeneration += 1;
+        currentDescriptors = cloneDescriptors(currentDescriptors);
         currentWindow = { ...currentWindow, generation: currentGeneration };
         setDatasetGeneration(currentGeneration);
       },
