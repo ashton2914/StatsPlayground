@@ -483,70 +483,127 @@ git commit -m "feat(history): store compact column deltas" \
 ### Task 5: Persist and Clean Up Delta History
 
 **Files:**
+- Create: `src-tauri/src/services/table_history_archive.rs`
 - Modify: `src-tauri/src/services/spprj_archive.rs`
 - Modify: `src-tauri/src/services/streaming_project_writer.rs`
 - Modify: `src-tauri/src/services/project_service.rs`
 - Modify: `src-tauri/src/engine/duckdb_engine.rs`
+- Modify: `src-tauri/src/services/table_mutation_coordinator.rs`
+- Modify: `src-tauri/src/services/table_delta_mutation.rs`
 - Modify: `src/stores/useHistoryStore.ts`
 - Test: `src-tauri/src/services/spprj_archive.rs`
 - Test: `src-tauri/src/engine/duckdb_engine.rs`
 
 **Interfaces:**
-- Consumes: compact change-set metadata and typed snapshot tables from Tasks 3–4
-- Produces optional archive entries:
+- Consumes: compact change sets from Tasks 3–4 and legacy/full change sets
+- Produces:
 
 ```text
-history/change_sets.json
-history/snapshots/{change_set_id}.parquet
+_history_timeline(
+  change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+  created_before_generation, created_after_generation, current_generation,
+  applied, before_schema_json, after_schema_json
+)
+
+history/timeline.v2.json
+history/snapshots/{change_set_id}/delta.parquet
+history/snapshots/{change_set_id}/before.parquet
+history/snapshots/{change_set_id}/after.parquet
 ```
 
 - Produces: `drop_table_change_set` cleanup for metadata plus referenced snapshot
 
-- [ ] **Step 1: Add archive round-trip RED**
+- [ ] **Step 1: Add unified timeline RED**
 
-Create a project with one row deletion and one column deletion, save it, reopen
-it, load the frontend history entries, and assert both change sets can Undo and
-Redo. Also assert an archive without `history/` still opens.
+Create compact and legacy/full changes in both orders. Assert each mutation
+gets a unique immutable per-dataset ordinal, immutable created generation
+pair, exact before/after stable-column schema, and mutable replay fence. Undo
+and Redo through both implementations and assert one transaction advances all
+retained fences without changing ordinals or created schemas.
 
-- [ ] **Step 2: Add cleanup RED**
+- [ ] **Step 2: Add archive v2 round-trip RED**
+
+Save a project containing row and column compact changes interleaved with a
+legacy/full change, reopen it, and execute the same sequential Undo/Redo path.
+Assert exact IDs, values, schemas, generations, cursor, and applied state.
+Cover a row snapshot before a later column add and after an earlier column
+delete so validation uses its historical schema.
+
+- [ ] **Step 3: Add compatibility and corruption RED**
+
+Assert:
+
+- no-history archives still open;
+- compact-only v1 archives restore compact entries;
+- a v1 frontend legacy reference without backend evidence is non-replayable;
+- duplicate/non-contiguous ordinals, invalid cursor/applied prefix, generation
+  regressions, schema-transition mismatch, missing/extra snapshots, malformed
+  calculated definitions, and snapshot logical/transport mismatches fail with
+  `AppError::FileIO`;
+- nullable and signed-extreme `HUGEINT` values round-trip exactly.
+
+- [ ] **Step 4: Add cleanup RED**
 
 Record more than `MAX_HISTORY`, truncate the timeline, call
 `dropTableChangeSet`, and assert the compact metadata rows and typed snapshot
-tables are gone. Assert unrelated change sets remain.
+tables are gone. Repeat for a legacy/full change and assert its before/after
+snapshots and timeline row are gone while unrelated change sets remain.
 
-- [ ] **Step 3: Run RED**
+- [ ] **Step 5: Run RED**
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml delta_history_archive -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml unified_history_timeline -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml unified_history_archive -- --test-threads=1
 cargo test --manifest-path src-tauri/Cargo.toml drop_compact_change_set -- --test-threads=1
 ```
 
-- [ ] **Step 4: Serialize optional delta history**
+- [ ] **Step 6: Implement the unified backend timeline**
 
-Add optional history descriptors to the archive manifest. Export metadata as
-JSON and typed snapshots as Parquet. Restore metadata first, validate snapshot
-columns against the descriptor, then publish the history to the project load
-result. Reject missing or mismatched snapshots with `AppError::FileIO`.
+Create `_history_timeline`. Allocate `history_ordinal` transactionally for
+every compact and legacy/full mutation. Persist immutable created generations
+and before/after stable-column schemas. During either replay path, update
+`current_generation` for all retained dataset entries and the target entry's
+`applied` state in the replay transaction.
 
-- [ ] **Step 5: Make frontend cleanup failures observable**
+- [ ] **Step 7: Serialize and restore archive v2**
+
+Move archive-specific history validation/serialization into
+`table_history_archive.rs`. Export one ordered descriptor for compact and
+legacy/full history, compact delta snapshots, and legacy before/after
+snapshots. Validate the full state machine and simulate schema transitions
+before metadata insertion. Restore into staged state and publish history only
+after every descriptor and payload commits.
+
+- [ ] **Step 8: Preserve v1 compatibility**
+
+Read the existing compact-only v1 section when v2 is absent. Restore only its
+provable compact backend state. Mark frontend entries referencing absent
+legacy/full backend change sets as non-replayable with a migration error. Do
+not derive generation or schema from opaque frontend JSON.
+
+- [ ] **Step 9: Make frontend cleanup failures observable**
 
 Replace the silent change-set drop in `dropDiscardedChangeSets` with the
 repository-standard history error update. Do not block the already completed
 mutation, but surface cleanup failure in `historyError`.
 
-- [ ] **Step 6: Run GREEN**
+- [ ] **Step 10: Run GREEN**
 
-Run the Step 3 commands plus existing `.spprj` compatibility tests.
+Run the Step 5 commands plus existing `.spprj`, compact history, legacy history,
+frontend timeline, and Analysis archive compatibility tests.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
+git add src-tauri/src/services/table_history_archive.rs \
 git add src-tauri/src/services/spprj_archive.rs \
   src-tauri/src/services/streaming_project_writer.rs \
   src-tauri/src/services/project_service.rs \
   src-tauri/src/engine/duckdb_engine.rs \
+  src-tauri/src/services/table_mutation_coordinator.rs \
+  src-tauri/src/services/table_delta_mutation.rs \
   src/stores/useHistoryStore.ts
-git commit -m "feat(project): persist compact table history" \
+git commit -m "feat(project): persist unified table history" \
   -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ```
 

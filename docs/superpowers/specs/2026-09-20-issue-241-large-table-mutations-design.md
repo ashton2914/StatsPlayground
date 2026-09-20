@@ -195,9 +195,54 @@ The scoped operations never create `_history_full_before_*`.
 ### Cleanup and persistence
 
 Deleting history removes its delta metadata and typed snapshot tables.
-Project save archives delta metadata and referenced snapshot tables. Project
-open restores them before exposing Undo/Redo. Legacy full-snapshot change sets
-remain readable and dispatch through the existing path.
+All retained table mutations also publish one immutable timeline row:
+
+```text
+change_set_id, dataset_id, history_ordinal, storage_kind, operation,
+created_before_generation, created_after_generation, current_generation,
+applied, before_schema, after_schema
+```
+
+`history_ordinal` is allocated monotonically per dataset when the mutation is
+created. It never changes during Undo/Redo. The created generation pair and
+before/after schemas are also immutable; only `current_generation` and
+`applied` change during replay. Compact and legacy/full replay advance the
+current fences of every retained change set for that dataset in the same
+transaction.
+
+Project save writes an optional unified history archive v2:
+
+```text
+history/timeline.v2.json
+history/snapshots/{change_set_id}/delta.parquet
+history/snapshots/{change_set_id}/before.parquet
+history/snapshots/{change_set_id}/after.parquet
+```
+
+The ordered timeline contains every retained compact and legacy/full change
+set, the applied cursor/prefix state, exact before/after physical schemas keyed
+by stable column ID, and snapshot descriptors with logical and transport
+types. Compact add operations have no snapshot. Compact deletes store their
+typed delta snapshot. Legacy/full entries store both full snapshots. Logical
+`HUGEINT` uses a canonical `VARCHAR` transport and is reconstructed as
+`HUGEINT` on restore.
+
+Project open validates the complete timeline before inserting history
+metadata: ordinals are unique and contiguous within each dataset, cursor and
+applied state agree, generation transitions are monotonic, schema transitions
+match the ordered operations, every required snapshot is present exactly once,
+and every descriptor matches its Parquet payload. Restore occurs in staged
+state and publishes frontend history only after the full timeline commits.
+Row-delete snapshots are validated against the exact schema at their immutable
+history ordinal, not against the current schema or a union of all schemas.
+
+Archives without a history section remain compatible. Archives containing the
+earlier compact-only v1 section restore only the compact backend evidence they
+actually contain. A frontend entry that references a legacy/full change set
+absent from that archive is marked non-replayable with an explicit migration
+error; generation or snapshot state is never inferred from the frontend entry.
+New saves always write v2. Legacy full-snapshot change sets restored from v2
+continue to dispatch through the existing replay path.
 
 ## Frontend Refresh
 
