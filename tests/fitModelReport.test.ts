@@ -33,6 +33,14 @@ const REPORT_SOURCE_PATH = path.resolve(
   process.cwd(),
   "src/components/analysis/renderers/FitModelAnalysisReport.tsx",
 );
+const EFFECT_SUMMARY_SOURCE_PATH = path.resolve(
+  process.cwd(),
+  "src/components/fitModel/FitModelEffectSummary.tsx",
+);
+const LEVERAGE_PLOT_SOURCE_PATH = path.resolve(
+  process.cwd(),
+  "src/components/fitModel/FitModelLeveragePlot.tsx",
+);
 
 const testI18n = createTestI18n();
 
@@ -996,7 +1004,9 @@ function testUnavailableLoadIssueRendersWithoutEquation(): void {
 function testViewSourceContracts(): void {
   const viewSource = readFileSync(VIEW_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
   const reportSource = readFileSync(REPORT_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
-  const source = `${viewSource}\n${reportSource}`;
+  const effectSummarySource = readFileSync(EFFECT_SUMMARY_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
+  const leveragePlotSource = readFileSync(LEVERAGE_PLOT_SOURCE_PATH, "utf8").replace(/\r\n/g, "\n");
+  const source = [viewSource, reportSource, effectSummarySource, leveragePlotSource].join("\n");
 
   assert.match(
     viewSource,
@@ -1008,12 +1018,23 @@ function testViewSourceContracts(): void {
     /onAddEffect=\{canEditInputs \? onEditInputs : undefined\}/,
     "FitModelAnalysisResults must wire Effect Summary Add to the existing editor only when editing is allowed.",
   );
-  assert.doesNotMatch(reportSource, /buildResidualQqOption|residualQqOption/, "Fit Model report must not construct the hidden Q-Q chart.");
+  assert.doesNotMatch(
+    source,
+    /buildResidualQqOption|residualQqOption|graphRole=["']residualQq["']|chartKind=["']residualQq["']/,
+    "Fit Model Analysis must preserve the approved Q-Q-hidden structure.",
+  );
   assert.doesNotMatch(
     source,
     /(?:from\s+["'][^"']*\/FitModelReport["']|<FitModelReport\b)/,
     "FitModelAnalysisResults must compose the native Analysis presentation instead of wrapping the legacy report.",
   );
+  for (const primitive of ["AnalysisButton", "AnalysisGraph", "AnalysisTable"]) {
+    assert.match(
+      reportSource,
+      new RegExp(`from ["']@/components/analysis/presentation/${primitive}["']`),
+      `FitModelAnalysisReport must import shared ${primitive}.`,
+    );
+  }
   for (const primitive of [
     "AnalysisButton",
     "AnalysisFrame",

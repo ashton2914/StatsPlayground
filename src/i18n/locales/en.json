@@ -1914,6 +1914,11 @@
       "errorWithOldResult": "Failed to refresh. Showing previous result.",
       "undo": "Undo",
       "remove": "Remove",
+      "add": "Add Effect",
+      "effect": "Effect",
+      "effects": "Effects",
+      "rows": "Rows",
+      "leverageUnavailable": "No estimable effect is available.",
       "notComputable": "Not Computable",
       "usedRows": "Used Rows",
       "excludedRows": "Excluded Rows",
@@ -1942,6 +1947,8 @@
       "section": {
         "modelSpecification": "Model Specification",
         "effectSummary": "Effect Summary",
+        "effectTests": "Effect Tests",
+        "leveragePlot": "Leverage Plot",
         "summaryOfFit": "Summary of Fit",
         "analysisOfVariance": "Analysis of Variance",
         "lackOfFit": "Lack of Fit",
@@ -1964,11 +1971,16 @@
       "summaryOfFit": {
         "rSquared": "RSquare",
         "adjustedRSquared": "RSquare Adj",
-        "rootMeanSquareError": "Root Mean Square Error"
+        "rootMeanSquareError": "Root Mean Square Error",
+        "meanOfResponse": "Mean of Response",
+        "observations": "Observations"
       },
       "column": {
         "term": "Term",
         "source": "Source",
+        "metric": "Metric",
+        "property": "Property",
+        "value": "Value",
         "estimate": "Estimate",
         "standardError": "Std Error",
         "tRatio": "t Ratio",
@@ -1979,6 +1991,8 @@
         "sumOfSquares": "Sum of Squares",
         "meanSquare": "Mean Square",
         "fRatio": "F Ratio",
+        "numberOfParameters": "Nparm",
+        "probabilityGreaterThanF": "Prob > F",
         "lowerConfidenceLimit": "Lower 95%",
         "upperConfidenceLimit": "Upper 95%",
         "featureVif": "Feature VIF",
@@ -2044,12 +2058,20 @@
           "predicted": "Predicted",
           "actual": "Actual",
           "residual": "Residual",
+          "effect": "Effect",
+          "logWorth": "LogWorth",
+          "effectLeverage": "Effect leverage",
+          "adjustedResponse": "Adjusted response",
           "theoreticalQuantile": "Theoretical quantile",
           "studentizedResidual": "Studentized residual"
         },
         "series": {
           "actual": "Actual",
           "residual": "Residual",
+          "logWorth": "LogWorth",
+          "leveragePoints": "Rows",
+          "fitted": "Fitted",
+          "confidence": "Confidence",
           "studentizedResidual": "Studentized residual",
           "predicted": "Predicted",
           "meanConfidence": "Mean CI"
@@ -2057,12 +2079,18 @@
         "reference": {
           "identity": "y=x",
           "zero": "y=0",
+          "significance": "p = 0.05",
+          "nullEffect": "Null effect",
           "qq": "Q-Q reference"
         },
         "tooltip": {
           "x": "Predicted",
           "yActual": "Actual",
           "yResidual": "Residual",
+          "effect": "Effect",
+          "logWorth": "LogWorth",
+          "effectLeverage": "Effect leverage",
+          "adjustedResponse": "Adjusted response",
           "xQq": "Theoretical quantile",
           "yQq": "Studentized residual"
         }
