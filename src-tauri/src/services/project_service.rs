@@ -2126,6 +2126,52 @@ mod tests {
         writer.finish().unwrap();
     }
 
+    fn rewrite_project_entries(
+        path: &std::path::Path,
+        mut edit: impl FnMut(&str, Vec<u8>) -> Vec<u8>,
+        additions: Vec<(String, Vec<u8>)>,
+    ) {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entries = Vec::with_capacity(archive.len());
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+        drop(archive);
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, bytes) in entries {
+            writer.start_file(&name, options).unwrap();
+            writer.write_all(&edit(&name, bytes)).unwrap();
+        }
+        for (name, bytes) in additions {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn replace_canonical_history_keys_with_legacy_numbers(bytes: Vec<u8>) -> Vec<u8> {
+        let mut json = String::from_utf8(bytes).unwrap();
+        for value in [
+            "18446744073709551616",
+            "-170141183460469231731687303715884105728",
+            "170141183460469231731687303715884105727",
+        ] {
+            let canonical = format!(":\"{value}\"");
+            assert!(json.contains(&canonical), "missing canonical key {value}");
+            json = json.replace(&canonical, &format!(":{value}"));
+        }
+        json.into_bytes()
+    }
+
     #[test]
     fn delta_history_archive_round_trips_row_and_column_replay() {
         let path = std::env::current_dir().unwrap().join(format!(
@@ -2563,6 +2609,309 @@ mod tests {
                 (Some(42), Some(i128::MAX)),
             ]
         );
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unified_history_archive_restores_legacy_numeric_rebalance_keys_and_replays() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".review-unified-legacy-numeric-rebalance-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Legacy numeric rebalance".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table(
+                "legacy-numeric-rebalance",
+                "Legacy numeric rebalance",
+                2,
+                1,
+            )
+            .unwrap();
+            let added = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "legacy-numeric-rebalance",
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE dataset_legacy_numeric_rebalance
+                     SET _row_order = CASE _row_id
+                         WHEN 1 THEN ?
+                         WHEN 2 THEN ?
+                         WHEN 3 THEN ?
+                     END",
+                    duckdb::params![i128::MIN, i128::MAX, 1_i128 << 64],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _history_row_deltas SET ordinal = 1, row_order = ?
+                     WHERE change_set_id = ?",
+                    duckdb::params![1_i128 << 64, &added.change_set_id],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO _history_natural_rebalances
+                     (change_set_id, ordinal, row_id, before_key, after_key)
+                     VALUES (?, 0, 1, NULL, ?), (?, 1, 2, ?, ?)",
+                    duckdb::params![
+                        &added.change_set_id,
+                        i128::MIN,
+                        &added.change_set_id,
+                        i128::MAX,
+                        i128::MAX
+                    ],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("legacy-numeric-rebalance", 1)
+                .unwrap();
+            added.change_set_id
+        };
+        service.save_project(empty_save_request(None), None).unwrap();
+        rewrite_project_entries(
+            &path,
+            |name, bytes| {
+                if name == "history/timeline.v2.json" {
+                    replace_canonical_history_keys_with_legacy_numbers(bytes)
+                } else {
+                    bytes
+                }
+            },
+            Vec::new(),
+        );
+
+        let reopened = AppState::new().unwrap();
+        let reopened_service = ProjectService::new(&reopened);
+        reopened_service
+            .open_project(&path_string, None)
+            .unwrap();
+        {
+            let db = reopened.db.lock().unwrap();
+            let row_order: i128 = db
+                .conn()
+                .query_row(
+                    "SELECT row_order FROM _history_row_deltas WHERE change_set_id = ?",
+                    duckdb::params![&change_set_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(row_order, 1_i128 << 64);
+            let rebalance = db
+                .conn()
+                .prepare(
+                    "SELECT before_key, after_key FROM _history_natural_rebalances
+                     WHERE change_set_id = ? ORDER BY ordinal",
+                )
+                .unwrap()
+                .query_map(duckdb::params![&change_set_id], |row| {
+                    Ok((
+                        row.get::<_, Option<i128>>(0)?,
+                        row.get::<_, Option<i128>>(1)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                rebalance,
+                vec![(None, Some(i128::MIN)), (Some(i128::MAX), Some(i128::MAX))]
+            );
+
+            db.apply_change_set(&change_set_id, true).unwrap();
+            let undone = db
+                .conn()
+                .prepare(
+                    "SELECT _row_id, _row_order
+                     FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(undone, vec![(1, None), (2, Some(i128::MAX))]);
+
+            db.apply_change_set(&change_set_id, false).unwrap();
+            let redone = db
+                .conn()
+                .prepare(
+                    "SELECT _row_id, _row_order
+                     FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                redone,
+                vec![
+                    (1, Some(i128::MIN)),
+                    (2, Some(i128::MAX)),
+                    (3, Some(1_i128 << 64)),
+                ]
+            );
+        }
+        reopened_service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
+
+        let reopened_again = AppState::new().unwrap();
+        ProjectService::new(&reopened_again)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened_again.db.lock().unwrap();
+        db.apply_change_set(&change_set_id, true).unwrap();
+        db.apply_change_set(&change_set_id, false).unwrap();
+        let row_order: i128 = db
+            .conn()
+            .query_row(
+                "SELECT row_order FROM _history_row_deltas WHERE change_set_id = ?",
+                duckdb::params![change_set_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(row_order, 1_i128 << 64);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_v1_archive_restores_full_range_numeric_row_order_and_replays() {
+        let path = std::env::current_dir().unwrap().join(format!(
+            ".review-v1-legacy-numeric-row-order-{}.spprj",
+            uuid::Uuid::new_v4()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let state = AppState::new().unwrap();
+        let service = ProjectService::new(&state);
+        service
+            .create_project("Legacy v1 numeric row order".into(), &path_string)
+            .unwrap();
+        let change_set_id = {
+            let db = state.db.lock().unwrap();
+            db.seed_benchmark_table(
+                "legacy-v1-numeric",
+                "Legacy v1 numeric",
+                2,
+                1,
+            )
+            .unwrap();
+            let added = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "legacy-v1-numeric",
+                1,
+                None,
+                0,
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE dataset_legacy_v1_numeric
+                     SET _row_order = ? WHERE _row_id = 3",
+                    duckdb::params![i128::MAX],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _history_row_deltas SET row_order = ?
+                     WHERE change_set_id = ?",
+                    duckdb::params![i128::MAX, &added.change_set_id],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("legacy-v1-numeric", 1)
+                .unwrap();
+            added.change_set_id
+        };
+        service.save_project(empty_save_request(None), None).unwrap();
+
+        let legacy_change_sets = format!(
+            r#"{{"version":1,"changeSets":[{{
+                "id":"{change_set_id}",
+                "datasetId":"legacy-v1-numeric",
+                "storageKind":"row_delta",
+                "generation":1,
+                "operation":"add_rows",
+                "beforeGeneration":0,
+                "afterGeneration":1,
+                "snapshotTable":null,
+                "applied":true,
+                "rows":[{{"ordinal":2,"rowId":3,"rowOrder":{}}}],
+                "columns":[]
+            }}]}}"#,
+            i128::MAX
+        )
+        .into_bytes();
+        rewrite_project_entries(
+            &path,
+            |name, bytes| {
+                if name != "manifest.json" {
+                    return bytes;
+                }
+                let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let object = manifest.as_object_mut().unwrap();
+                object.remove("historyTimeline");
+                object.insert(
+                    "deltaHistory".into(),
+                    serde_json::json!({
+                        "changeSetsFile": "history/change_sets.json",
+                        "snapshots": []
+                    }),
+                );
+                serde_json::to_vec(&manifest).unwrap()
+            },
+            vec![("history/change_sets.json".into(), legacy_change_sets)],
+        );
+
+        let reopened = AppState::new().unwrap();
+        ProjectService::new(&reopened)
+            .open_project(&path_string, None)
+            .unwrap();
+        let db = reopened.db.lock().unwrap();
+        let restored: i128 = db
+            .conn()
+            .query_row(
+                "SELECT row_order FROM _history_row_deltas WHERE change_set_id = ?",
+                duckdb::params![&change_set_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(restored, i128::MAX);
+        db.apply_change_set(&change_set_id, true).unwrap();
+        let count_after_undo: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM dataset_legacy_v1_numeric",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_after_undo, 2);
+        db.apply_change_set(&change_set_id, false).unwrap();
+        let redone: i128 = db
+            .conn()
+            .query_row(
+                "SELECT _row_order FROM dataset_legacy_v1_numeric WHERE _row_id = 3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(redone, i128::MAX);
         drop(db);
         let _ = std::fs::remove_file(path);
     }
