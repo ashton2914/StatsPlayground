@@ -805,6 +805,75 @@ mod tests {
         assert!(delta.row_order_rebalances.is_empty());
     }
 
+    #[test]
+    fn legacy_compact_history_accepts_full_i128_numeric_keys_and_writes_canonical_strings() {
+        for (numeric, expected) in [
+            ("18446744073709551616", 18_446_744_073_709_551_616_i128),
+            ("-9223372036854775809", -9_223_372_036_854_775_809_i128),
+            ("-170141183460469231731687303715884105728", i128::MIN),
+            ("170141183460469231731687303715884105727", i128::MAX),
+        ] {
+            let json = format!(
+                r#"{{
+                    "id":"00000000-0000-4000-8000-000000000011",
+                    "datasetId":"dataset-a",
+                    "storageKind":"row_delta",
+                    "generation":1,
+                    "operation":"add_rows",
+                    "beforeGeneration":0,
+                    "afterGeneration":1,
+                    "snapshotTable":null,
+                    "applied":true,
+                    "rows":[{{"ordinal":0,"rowId":1,"rowOrder":{numeric}}}],
+                    "rowOrderRebalances":[],
+                    "columns":[]
+                }}"#
+            );
+            let delta: DeltaHistoryChangeSet =
+                serde_json::from_str(&json).expect("legacy numeric i128 row order");
+            assert_eq!(delta.rows[0].row_order, Some(expected));
+
+            let serialized = serde_json::to_string(&delta).expect("canonical row-order archive");
+            assert!(
+                serialized.contains(&format!(r#""rowOrder":"{numeric}""#)),
+                "{serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_history_rejects_non_integer_and_noncanonical_i128_keys() {
+        for invalid in [
+            "1.0",
+            "1e3",
+            r#""+1""#,
+            r#""01""#,
+            r#""-0""#,
+            "170141183460469231731687303715884105728",
+            r#""-170141183460469231731687303715884105729""#,
+        ] {
+            let json = format!(
+                r#"{{
+                    "id":"00000000-0000-4000-8000-000000000011",
+                    "datasetId":"dataset-a",
+                    "storageKind":"row_delta",
+                    "generation":1,
+                    "operation":"add_rows",
+                    "beforeGeneration":0,
+                    "afterGeneration":1,
+                    "snapshotTable":null,
+                    "applied":true,
+                    "rows":[{{"ordinal":0,"rowId":1,"rowOrder":{invalid}}}],
+                    "columns":[]
+                }}"#
+            );
+            assert!(
+                serde_json::from_str::<DeltaHistoryChangeSet>(&json).is_err(),
+                "accepted invalid i128 key {invalid}"
+            );
+        }
+    }
+
     fn assert_corrupt(
         mut archive: HistoryTimelineArchive,
         edit: impl FnOnce(&mut HistoryTimelineArchive),

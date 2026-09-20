@@ -286,14 +286,7 @@ pub struct DeltaHistoryRowOrderRebalance {
 
 mod optional_i128_string {
     use serde::{Deserialize, Deserializer, Serializer};
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum EncodedI128 {
-        Signed(i64),
-        Unsigned(u64),
-        String(String),
-    }
+    use serde_json::value::RawValue;
 
     pub fn serialize<S>(value: &Option<i128>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -309,13 +302,24 @@ mod optional_i128_string {
     where
         D: Deserializer<'de>,
     {
-        Option::<EncodedI128>::deserialize(deserializer)?
-            .map(|value| match value {
-                EncodedI128::Signed(value) => Ok(i128::from(value)),
-                EncodedI128::Unsigned(value) => Ok(i128::from(value)),
-                EncodedI128::String(value) => value.parse().map_err(serde::de::Error::custom),
-            })
-            .transpose()
+        let Some(raw) = Option::<Box<RawValue>>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let raw = raw.get();
+        let decimal = if raw.starts_with('"') {
+            serde_json::from_str::<String>(raw).map_err(serde::de::Error::custom)?
+        } else {
+            raw.to_string()
+        };
+        let value = decimal
+            .parse::<i128>()
+            .map_err(serde::de::Error::custom)?;
+        if value.to_string() != decimal {
+            return Err(serde::de::Error::custom(
+                "row-order key must be a canonical decimal integer",
+            ));
+        }
+        Ok(Some(value))
     }
 }
 

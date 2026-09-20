@@ -176,6 +176,13 @@ stable row IDs/order keys.
   the stable row ID and the nullable `_row_order` before-image plus explicit
   after-image. This preserves the distinction between a legacy `NULL` fallback
   key and an explicit `HUGEINT`; it is not a full-table snapshot.
+- History v2 writes all `HUGEINT` order keys as canonical decimal strings.
+  Compatibility reads also accept legacy bare JSON integer tokens across the
+  full signed `i128` range, but reject floats, exponent notation, out-of-range
+  values, and noncanonical decimal strings. The serde_json `raw_value` feature
+  is used only to preserve the original integer token for this field-level
+  parser; unlike `arbitrary_precision`, it does not change global JSON number
+  deserialization behavior.
 - Deleted rows use a typed per-change-set snapshot table containing only the
   deleted rows, including `_row_id`, `_row_order`, and user values.
 - Undo of an add deletes those IDs, then restores the bounded rebalance
