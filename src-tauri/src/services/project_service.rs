@@ -1983,6 +1983,7 @@ mod tests {
         folder_from_entry_path, normalize_duplicate_dataset_names, reconcile_archived_history,
         ProjectService,
     };
+    use crate::engine::duckdb_engine::NATURAL_ORDER_SQL;
     use crate::error::AppError;
     use crate::models::calculated_column::{
         definition_fingerprint, expression_dependency_ids, ArchivedCalculatedColumn,
@@ -2156,6 +2157,15 @@ mod tests {
             writer.write_all(&bytes).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    fn read_project_json_entry(path: &std::path::Path, name: &str) -> serde_json::Value {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name(name).unwrap();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     fn replace_canonical_history_keys_with_legacy_numbers(bytes: Vec<u8>) -> Vec<u8> {
@@ -2770,6 +2780,46 @@ mod tests {
         reopened_service
             .save_project(empty_save_request(None), None)
             .unwrap();
+        let timeline = read_project_json_entry(&path, "history/timeline.v2.json");
+        let archived_entry = timeline["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["changeSetId"] == change_set_id)
+            .unwrap();
+        let delta = &archived_entry["delta"];
+        let archived_row = delta["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["rowId"] == 3)
+            .unwrap();
+        assert_eq!(
+            archived_row["rowOrder"],
+            serde_json::Value::String((1_i128 << 64).to_string())
+        );
+        let archived_rebalances = delta["rowOrderRebalances"].as_array().unwrap();
+        let null_before = archived_rebalances
+            .iter()
+            .find(|rebalance| rebalance["rowId"] == 1)
+            .unwrap();
+        assert!(null_before["beforeRowOrder"].is_null());
+        assert_eq!(
+            null_before["afterRowOrder"],
+            serde_json::Value::String(i128::MIN.to_string())
+        );
+        let full_range = archived_rebalances
+            .iter()
+            .find(|rebalance| rebalance["rowId"] == 2)
+            .unwrap();
+        assert_eq!(
+            full_range["beforeRowOrder"],
+            serde_json::Value::String(i128::MAX.to_string())
+        );
+        assert_eq!(
+            full_range["afterRowOrder"],
+            serde_json::Value::String(i128::MAX.to_string())
+        );
 
         let reopened_again = AppState::new().unwrap();
         ProjectService::new(&reopened_again)
@@ -2777,7 +2827,64 @@ mod tests {
             .unwrap();
         let db = reopened_again.db.lock().unwrap();
         db.apply_change_set(&change_set_id, true).unwrap();
+        assert_eq!(
+            db.get_dataset_generation("legacy-numeric-rebalance")
+                .unwrap(),
+            4
+        );
+        let undone = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, _row_order
+                 FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(undone, vec![(1, None), (2, Some(i128::MAX))]);
         db.apply_change_set(&change_set_id, false).unwrap();
+        assert_eq!(
+            db.get_dataset_generation("legacy-numeric-rebalance")
+                .unwrap(),
+            5
+        );
+        let redone = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, _row_order
+                 FROM dataset_legacy_numeric_rebalance ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            redone,
+            vec![
+                (1, Some(i128::MIN)),
+                (2, Some(i128::MAX)),
+                (3, Some(1_i128 << 64)),
+            ]
+        );
+        let natural_order = db
+            .conn()
+            .prepare(&format!(
+                "SELECT _row_id FROM dataset_legacy_numeric_rebalance
+                 ORDER BY {NATURAL_ORDER_SQL}, _row_id"
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(natural_order, vec![1, 3, 2]);
         let row_order: i128 = db
             .conn()
             .query_row(
@@ -2803,27 +2910,43 @@ mod tests {
         service
             .create_project("Legacy v1 numeric row order".into(), &path_string)
             .unwrap();
-        let change_set_id = {
+        let (min_change_set_id, max_change_set_id) = {
             let db = state.db.lock().unwrap();
-            db.seed_benchmark_table(
-                "legacy-v1-numeric",
-                "Legacy v1 numeric",
-                2,
-                1,
-            )
-            .unwrap();
-            let added = crate::services::table_delta_mutation::add_rows_compact(
+            db.seed_benchmark_table("legacy-v1-numeric", "Legacy v1 numeric", 2, 1)
+                .unwrap();
+            let min_added = crate::services::table_delta_mutation::add_rows_compact(
                 &db,
                 "legacy-v1-numeric",
                 1,
-                None,
+                Some(1),
                 0,
             )
             .unwrap();
             db.conn()
                 .execute(
-                    "UPDATE dataset_legacy_v1_numeric
-                     SET _row_order = ? WHERE _row_id = 3",
+                    "UPDATE dataset_legacy_v1_numeric SET _row_order = ? WHERE _row_id = 3",
+                    duckdb::params![i128::MIN],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _history_row_deltas SET row_order = ?
+                     WHERE change_set_id = ?",
+                    duckdb::params![i128::MIN, &min_added.change_set_id],
+                )
+                .unwrap();
+            db.rebuild_natural_anchors("legacy-v1-numeric", 1).unwrap();
+            let max_added = crate::services::table_delta_mutation::add_rows_compact(
+                &db,
+                "legacy-v1-numeric",
+                1,
+                None,
+                1,
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE dataset_legacy_v1_numeric SET _row_order = ? WHERE _row_id = 4",
                     duckdb::params![i128::MAX],
                 )
                 .unwrap();
@@ -2831,18 +2954,19 @@ mod tests {
                 .execute(
                     "UPDATE _history_row_deltas SET row_order = ?
                      WHERE change_set_id = ?",
-                    duckdb::params![i128::MAX, &added.change_set_id],
+                    duckdb::params![i128::MAX, &max_added.change_set_id],
                 )
                 .unwrap();
-            db.rebuild_natural_anchors("legacy-v1-numeric", 1)
-                .unwrap();
-            added.change_set_id
+            db.rebuild_natural_anchors("legacy-v1-numeric", 2).unwrap();
+            (min_added.change_set_id, max_added.change_set_id)
         };
-        service.save_project(empty_save_request(None), None).unwrap();
+        service
+            .save_project(empty_save_request(None), None)
+            .unwrap();
 
         let legacy_change_sets = format!(
             r#"{{"version":1,"changeSets":[{{
-                "id":"{change_set_id}",
+                "id":"{min_change_set_id}",
                 "datasetId":"legacy-v1-numeric",
                 "storageKind":"row_delta",
                 "generation":1,
@@ -2851,9 +2975,22 @@ mod tests {
                 "afterGeneration":1,
                 "snapshotTable":null,
                 "applied":true,
-                "rows":[{{"ordinal":2,"rowId":3,"rowOrder":{}}}],
+                "rows":[{{"ordinal":0,"rowId":3,"rowOrder":{}}}],
+                "columns":[]
+            }},{{
+                "id":"{max_change_set_id}",
+                "datasetId":"legacy-v1-numeric",
+                "storageKind":"row_delta",
+                "generation":2,
+                "operation":"add_rows",
+                "beforeGeneration":1,
+                "afterGeneration":2,
+                "snapshotTable":null,
+                "applied":true,
+                "rows":[{{"ordinal":3,"rowId":4,"rowOrder":{}}}],
                 "columns":[]
             }}]}}"#,
+            i128::MIN,
             i128::MAX
         )
         .into_bytes();
@@ -2883,16 +3020,44 @@ mod tests {
             .open_project(&path_string, None)
             .unwrap();
         let db = reopened.db.lock().unwrap();
-        let restored: i128 = db
+        let mut restored = db
             .conn()
-            .query_row(
-                "SELECT row_order FROM _history_row_deltas WHERE change_set_id = ?",
-                duckdb::params![&change_set_id],
-                |row| row.get(0),
+            .prepare(
+                "SELECT row_id, row_order FROM _history_row_deltas
+                 WHERE change_set_id IN (?, ?) ORDER BY row_id",
             )
             .unwrap();
-        assert_eq!(restored, i128::MAX);
-        db.apply_change_set(&change_set_id, true).unwrap();
+        let restored = restored
+            .query_map(
+                duckdb::params![&min_change_set_id, &max_change_set_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i128>(1)?)),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(restored, vec![(3, i128::MIN), (4, i128::MAX)]);
+        let initially_restored = db
+            .conn()
+            .prepare(
+                "SELECT _row_id, _row_order FROM dataset_legacy_v1_numeric
+                 ORDER BY _row_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i128>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            initially_restored,
+            vec![(1, None), (2, None), (3, None), (4, None)]
+        );
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 2);
+        db.apply_change_set(&max_change_set_id, true).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 3);
+        db.apply_change_set(&min_change_set_id, true).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 4);
         let count_after_undo: i64 = db
             .conn()
             .query_row(
@@ -2902,16 +3067,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count_after_undo, 2);
-        db.apply_change_set(&change_set_id, false).unwrap();
-        let redone: i128 = db
+        db.apply_change_set(&min_change_set_id, false).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 5);
+        db.apply_change_set(&max_change_set_id, false).unwrap();
+        assert_eq!(db.get_dataset_generation("legacy-v1-numeric").unwrap(), 6);
+        let mut redone = db
             .conn()
-            .query_row(
-                "SELECT _row_order FROM dataset_legacy_v1_numeric WHERE _row_id = 3",
-                [],
-                |row| row.get(0),
+            .prepare(
+                "SELECT _row_id, _row_order FROM dataset_legacy_v1_numeric
+                 WHERE _row_id IN (3, 4) ORDER BY _row_id",
             )
             .unwrap();
-        assert_eq!(redone, i128::MAX);
+        let redone = redone
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i128>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(redone, vec![(3, i128::MIN), (4, i128::MAX)]);
+        let natural_order = db
+            .conn()
+            .prepare(&format!(
+                "SELECT _row_id FROM dataset_legacy_v1_numeric
+                 ORDER BY {NATURAL_ORDER_SQL}, _row_id"
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(natural_order, vec![3, 1, 2, 4]);
         drop(db);
         let _ = std::fs::remove_file(path);
     }

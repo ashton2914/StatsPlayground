@@ -206,8 +206,12 @@ rebalance count.
 
 Archive compatibility coverage now also rewrites real saved project members to
 legacy bare JSON integers before reopening them. The v1 delta route restores
-and replays a full-range `rowOrder`; the unified v2 route restores `rowOrder`
-plus nullable rebalance before-images and MIN/MAX after-images, exercises
-Undo/Redo, saves again with canonical decimal strings, and reopens/replays the
-canonical archive. These route tests passed without requiring another
-production change after the full-range decoder fix.
+and replays separate `i128::MIN` and `i128::MAX` `rowOrder` change sets. The
+unified v2 route restores `rowOrder` plus nullable rebalance before-images and
+MIN/MAX after-images, exercises Undo/Redo, and saves again. The test reads the
+resaved `history/timeline.v2.json` member as structured JSON and verifies every
+non-null migrated key is the exact canonical decimal string. After another
+reopen and replay, both routes verify dataset row existence, exact order keys,
+natural order, and generation rather than only restored history metadata.
+These route tests passed without requiring another production change after the
+full-range decoder fix.
