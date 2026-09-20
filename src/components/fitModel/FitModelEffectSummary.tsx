@@ -45,8 +45,9 @@ export function FitModelEffectSummary({
       significanceReferenceName: t("fitModel.report.chart.reference.significance", { defaultValue: "p = 0.05" }),
       tooltipXLabel: t("fitModel.report.chart.tooltip.logWorth", { defaultValue: "LogWorth" }),
       tooltipYLabel: t("fitModel.report.chart.tooltip.effect", { defaultValue: "Effect" }),
+      unavailableValueLabel: undefinedValue,
     },
-  }), [effects, t, title]);
+  }), [effects, t, title, undefinedValue]);
   const columns: AnalysisTableColumn[] = [
     { key: "term", label: t("fitModel.report.column.term", { defaultValue: "Term" }) },
     { key: "pValue", label: t("fitModel.report.column.pValue", { defaultValue: "p-Value" }), numeric: true },

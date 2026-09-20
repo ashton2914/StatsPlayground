@@ -321,13 +321,15 @@ function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
       significanceReferenceName: "p = 0.05",
       tooltipXLabel: "LogWorth",
       tooltipYLabel: "Effect",
+      unavailableValueLabel: "Unavailable",
     },
   }) as {
     xAxis: { type: string };
     yAxis: { type: string; data: string[] };
+    tooltip?: { formatter?: (params: unknown) => string };
     series: Array<{
       type: string;
-      data: number[];
+      data: Array<number | null>;
       markLine?: { data?: Array<{ name?: string; xAxis?: number }> };
     }>;
   };
@@ -335,7 +337,11 @@ function testEffectSummaryHorizontalBarsAndSignificanceReference(): void {
   assert.equal(option.xAxis.type, "value");
   assert.equal(option.yAxis.type, "category");
   assert.deepEqual(option.yAxis.data, ["A*B", "A", "B"]);
-  assert.deepEqual(option.series[0]?.data, [3, -Math.log10(0.05), 0]);
+  assert.deepEqual(option.series[0]?.data, [3, -Math.log10(0.05), null]);
+  assert.equal(
+    option.tooltip?.formatter?.({ dataIndex: 2, value: null }),
+    "Effect: B<br/>LogWorth: Unavailable",
+  );
   assert.equal(option.series[0]?.markLine?.data?.[0]?.name, "p = 0.05");
   assert.equal(option.series[0]?.markLine?.data?.[0]?.xAxis, -Math.log10(0.05));
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);

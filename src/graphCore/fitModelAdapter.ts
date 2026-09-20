@@ -64,6 +64,7 @@ export interface FitModelEffectSummaryChartLabels {
   significanceReferenceName: string;
   tooltipXLabel: string;
   tooltipYLabel: string;
+  unavailableValueLabel: string;
 }
 
 export interface FitModelLeverageChartInput {
@@ -412,7 +413,7 @@ export function buildEffectSummaryOption(input: FitModelEffectSummaryChartInput)
   const categories = input.effects.map((effect) => effect.termLabel);
   const values = input.effects.map((effect, index) => (
     effect.logWorth === null
-      ? 0
+      ? null
       : ensureFinite(effect.logWorth, "logWorth", index)
   ));
   const significanceLogWorth = -Math.log10(0.05);
@@ -425,6 +426,9 @@ export function buildEffectSummaryOption(input: FitModelEffectSummaryChartInput)
         const payload = (params ?? {}) as { dataIndex?: number; value?: unknown };
         const index = typeof payload.dataIndex === "number" ? payload.dataIndex : -1;
         const effect = input.effects[index];
+        if (effect?.logWorth === null) {
+          return `${input.labels.tooltipYLabel}: ${effect.termLabel}<br/>${input.labels.tooltipXLabel}: ${input.labels.unavailableValueLabel}`;
+        }
         const value = typeof payload.value === "number" ? payload.value : Number.NaN;
         return `${input.labels.tooltipYLabel}: ${effect?.termLabel ?? ""}<br/>${input.labels.tooltipXLabel}: ${tooltipValue(value)}`;
       },
