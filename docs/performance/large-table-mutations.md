@@ -174,17 +174,17 @@ tests).
 ### Final release qualification
 
 The release gate reran all five qualifications from clean source commit
-`4d4917e325ee7c44ad94692d2ee417a25263826d` using a fresh external Cargo target
+`564aeeee1ef5a54a85628d9bd16b9f9f9f39a949` using a fresh external Cargo target
 directory so compile-time provenance could not reuse an earlier dirty build
 script result.
 
 | Operation | Runs (ms) | Median | Max / threshold |
 | --- | --- | ---: | ---: |
-| Append row | 75, 77, 72, 76, 71 | 75 | 77 / 1,000 |
-| Insert middle row | 86, 84, 79, 81, 86 | 84 | 86 / 2,000 |
-| Add empty column | 37, 37, 37, 37, 38 | 37 | 38 / 2,000 |
-| Delete one row | 44, 36, 41, 38, 42 | 41 | 44 / 2,000 |
-| Delete one column | 42, 40, 44, 44, 45 | 44 | 45 / 5,000 |
+| Append row | 68, 77, 78, 68, 70 | 70 | 78 / 1,000 |
+| Insert middle row | 84, 82, 82, 84, 83 | 83 | 84 / 2,000 |
+| Add empty column | 36, 34, 35, 35, 38 | 35 | 38 / 2,000 |
+| Delete one row | 37, 45, 44, 41, 42 | 42 | 45 / 2,000 |
+| Delete one column | 41, 48, 45, 41, 46 | 45 | 48 / 5,000 |
 
 Every report records one warmup and five measured child processes with unique
 PIDs, clean matching compile/runtime provenance, zero full snapshots, zero full
@@ -198,11 +198,10 @@ Those measurements did not exercise bounded rebalance (`rebalancedRows = 0`).
 Compact add-row history now persists nullable before-images and explicit
 after-images for every existing row touched by a bounded rebalance (at most
 8,192), and unified history archive v2 validates and restores that metadata.
-Because this changes production mutation and archive source after `4d4917e`,
-the qualification above is retained as historical evidence only; it does not
-bind the new source. A clean five-operation 2,000,000-row qualification must be
-rerun before release, including a scenario that reports a nonzero bounded
-rebalance count.
+The focused regression forces a nonzero bounded rebalance and verifies exact
+keys, natural order, anchors, manifests, and history cursor state through older
+row deltas, repeated Undo/Redo, save, reopen, and replay. The five standard
+2,000,000-row qualifications above bind the resulting production source.
 
 Archive compatibility coverage now also rewrites real saved project members to
 legacy bare JSON integers before reopening them. The v1 delta route restores
