@@ -9,6 +9,9 @@ use crate::services::natural_row_order::{
     allocate_before, publish_deleted_anchors, publish_inserted_anchors, publish_restored_anchors,
     resolve_natural_row_positions,
 };
+use crate::services::table_history_archive::{
+    advance_history_timeline, capture_history_schema, record_history_timeline,
+};
 
 const MAX_ADDED_ROWS: usize = 100_000;
 const MAX_DELETED_ROWS: usize = 5_000;
@@ -26,6 +29,7 @@ pub(crate) fn add_columns_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
+        let before_schema_json = capture_history_schema(engine, dataset_id)?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
         for column in &columns {
             engine.conn().execute(
@@ -61,6 +65,7 @@ pub(crate) fn add_columns_compact(
                 .map_err(|_| AppError::InvalidParam("column count is too large".into()))?,
         )?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
+        let after_schema_json = capture_history_schema(engine, dataset_id)?;
         record_column_delta_change_set(
             engine,
             &change_set_id,
@@ -71,6 +76,8 @@ pub(crate) fn add_columns_compact(
             None,
             &columns,
             &[],
+            &before_schema_json,
+            &after_schema_json,
         )?;
         copy_unchanged_anchors(engine, dataset_id, expected_generation, next_generation)?;
         publish_generation(engine, dataset_id, next_generation)?;
@@ -104,6 +111,7 @@ pub(crate) fn delete_columns_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
+        let before_schema_json = capture_history_schema(engine, dataset_id)?;
         let change_set_id = uuid::Uuid::new_v4().to_string();
         let parsed_id = uuid::Uuid::parse_str(&change_set_id)
             .map_err(|_| AppError::InvalidParam("Invalid generated change set ID".into()))?;
@@ -123,6 +131,8 @@ pub(crate) fn delete_columns_compact(
             ),
             [],
         )?;
+        drop_columns(engine, dataset_id, &table, &columns)?;
+        let after_schema_json = capture_history_schema(engine, dataset_id)?;
         record_column_delta_change_set(
             engine,
             &change_set_id,
@@ -133,8 +143,9 @@ pub(crate) fn delete_columns_compact(
             Some(&snapshot_name),
             &columns,
             &archived,
+            &before_schema_json,
+            &after_schema_json,
         )?;
-        drop_columns(engine, dataset_id, &table, &columns)?;
         let column_count = updated_column_count(
             engine,
             dataset_id,
@@ -259,6 +270,8 @@ pub(crate) fn apply_column_delta_change_set(
                 params![target_generation, change_set_id],
             )?;
         }
+        engine.refresh_delta_history_generations_for_dataset(&dataset_id)?;
+        advance_history_timeline(engine, &dataset_id, change_set_id, !undo, target_generation)?;
         Ok(())
     })();
     finish_transaction(engine, result)
@@ -404,6 +417,8 @@ fn record_column_delta_change_set(
     snapshot_table: Option<&str>,
     columns: &[UserColumnDescriptor],
     archived: &[Option<String>],
+    before_schema_json: &str,
+    after_schema_json: &str,
 ) -> Result<(), AppError> {
     if !archived.is_empty() && archived.len() != columns.len() {
         return Err(AppError::Database(
@@ -456,6 +471,17 @@ fn record_column_delta_change_set(
             ],
         )?;
     }
+    record_history_timeline(
+        engine,
+        change_set_id,
+        dataset_id,
+        "column_delta",
+        operation,
+        before_generation,
+        after_generation,
+        before_schema_json,
+        after_schema_json,
+    )?;
     Ok(())
 }
 
@@ -678,6 +704,7 @@ pub(crate) fn add_rows_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
+        let schema_json = capture_history_schema(engine, dataset_id)?;
         let allocation = allocate_before(engine, dataset_id, before_row_id, count)?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
         let reserved_ids = engine.reserve_row_ids(dataset_id, count)?;
@@ -717,6 +744,8 @@ pub(crate) fn add_rows_compact(
                 })
                 .collect::<Result<Vec<_>, AppError>>()?
                 .as_slice(),
+            &schema_json,
+            &schema_json,
         )?;
         publish_inserted_anchors(
             engine,
@@ -760,6 +789,7 @@ pub(crate) fn delete_rows_compact(
     let result = (|| {
         validate_generation(engine, dataset_id, expected_generation)?;
         let next_generation = next_generation(expected_generation)?;
+        let schema_json = capture_history_schema(engine, dataset_id)?;
         engine.ensure_internal_row_order_column(dataset_id)?;
         let table = DuckDbEngine::quote_identifier(&DuckDbEngine::internal_table_name(dataset_id));
         let placeholders = std::iter::repeat_n("?", unique_ids.len())
@@ -791,6 +821,8 @@ pub(crate) fn delete_rows_compact(
             next_generation,
             Some(&snapshot_name),
             &delta_rows,
+            &schema_json,
+            &schema_json,
         )?;
         engine.conn().execute(
             &format!("DELETE FROM {table} WHERE \"_row_id\" IN ({placeholders})"),
@@ -991,6 +1023,8 @@ pub(crate) fn apply_row_delta_change_set(
                 params![target_generation, change_set_id],
             )?;
         }
+        engine.refresh_delta_history_generations_for_dataset(&dataset_id)?;
+        advance_history_timeline(engine, &dataset_id, change_set_id, !undo, target_generation)?;
         Ok(())
     })();
     finish_transaction(engine, result)
@@ -1074,6 +1108,8 @@ fn record_delta_change_set(
     after_generation: u64,
     snapshot_table: Option<&str>,
     rows: &[(i64, i64, Option<i128>)],
+    before_schema_json: &str,
+    after_schema_json: &str,
 ) -> Result<(), AppError> {
     engine.conn().execute(
         "INSERT INTO _history_change_sets
@@ -1102,6 +1138,17 @@ fn record_delta_change_set(
             params![change_set_id, ordinal, row_id, row_order],
         )?;
     }
+    record_history_timeline(
+        engine,
+        change_set_id,
+        dataset_id,
+        "row_delta",
+        operation,
+        before_generation,
+        after_generation,
+        before_schema_json,
+        after_schema_json,
+    )?;
     Ok(())
 }
 

@@ -664,6 +664,21 @@ impl DuckDbEngine {
                 PRIMARY KEY (change_set_id, ordinal)
             );
 
+            CREATE TABLE IF NOT EXISTS _history_timeline (
+                change_set_id TEXT PRIMARY KEY,
+                dataset_id TEXT NOT NULL,
+                history_ordinal BIGINT NOT NULL,
+                storage_kind TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                created_before_generation BIGINT NOT NULL,
+                created_after_generation BIGINT NOT NULL,
+                current_generation BIGINT NOT NULL,
+                applied BOOLEAN NOT NULL,
+                before_schema_json TEXT NOT NULL,
+                after_schema_json TEXT NOT NULL,
+                UNIQUE (dataset_id, history_ordinal)
+            );
+
             CREATE TABLE IF NOT EXISTS _table_navigation_anchors (
                 dataset_id TEXT NOT NULL,
                 generation BIGINT NOT NULL,
@@ -8275,7 +8290,6 @@ impl DuckDbEngine {
                 change_set_id,
                 undo,
             )?;
-            self.refresh_delta_history_generations(change_set_id)?;
             return Ok(());
         }
         if storage_kind.as_deref() == Some("column_delta") {
@@ -8284,7 +8298,6 @@ impl DuckDbEngine {
                 change_set_id,
                 undo,
             )?;
-            self.refresh_delta_history_generations(change_set_id)?;
             return Ok(());
         }
         let suffix = parsed_id.to_string().replace('-', "_");
@@ -8720,6 +8733,13 @@ impl DuckDbEngine {
                  AND storage_kind IN ('row_delta', 'column_delta')",
                 params![generation + 1, &dataset_id],
             )?;
+            crate::services::table_history_archive::advance_history_timeline(
+                self,
+                &dataset_id,
+                change_set_id,
+                !undo,
+                generation + 1,
+            )?;
             Ok(())
         })();
         match result {
@@ -8888,16 +8908,7 @@ impl DuckDbEngine {
         Ok(())
     }
 
-    fn refresh_delta_history_generations(&self, change_set_id: &str) -> Result<(), AppError> {
-        let dataset_id: String = self.conn.query_row(
-            "SELECT dataset_id FROM _history_delta_change_sets WHERE id = ?",
-            params![change_set_id],
-            |row| row.get(0),
-        )?;
-        self.refresh_delta_history_generations_for_dataset(&dataset_id)
-    }
-
-    fn refresh_delta_history_generations_for_dataset(
+    pub(crate) fn refresh_delta_history_generations_for_dataset(
         &self,
         dataset_id: &str,
     ) -> Result<(), AppError> {
@@ -9634,6 +9645,10 @@ impl DuckDbEngine {
             )?;
             self.conn.execute(
                 "DELETE FROM _history_change_sets WHERE id = ?",
+                params![change_set_id],
+            )?;
+            self.conn.execute(
+                "DELETE FROM _history_timeline WHERE change_set_id = ?",
                 params![change_set_id],
             )?;
             Ok(())
@@ -19781,6 +19796,78 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(snapshots, vec![retained_snapshot.to_string()]);
+    }
+
+    #[test]
+    fn unified_history_timeline_orders_compact_and_legacy_and_preserves_created_state() {
+        let db = DuckDbEngine::new_in_memory().unwrap();
+        db.seed_benchmark_table("timeline-id", "Timeline", 2, 1)
+            .unwrap();
+        let compact = crate::services::table_delta_mutation::add_rows_compact(
+            &db, "timeline-id", 1, None, 0,
+        )
+        .unwrap();
+        let legacy = db
+            .paste_at_position_with_change_set(
+                "timeline-id",
+                0,
+                0,
+                &[vec!["7".into()]],
+                None,
+                &["DOUBLE".into()],
+                Some(1),
+            )
+            .unwrap();
+
+        let timeline = |db: &DuckDbEngine| {
+            db.conn()
+                .prepare(
+                    "SELECT change_set_id, history_ordinal, storage_kind,
+                            created_before_generation, created_after_generation,
+                            current_generation, applied, before_schema_json, after_schema_json
+                     FROM _history_timeline WHERE dataset_id = ?
+                     ORDER BY history_ordinal",
+                )
+                .unwrap()
+                .query_map(params!["timeline-id"], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u64>(3)?,
+                        row.get::<_, u64>(4)?,
+                        row.get::<_, u64>(5)?,
+                        row.get::<_, bool>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let created = timeline(&db);
+        assert_eq!(created.len(), 2);
+        assert_eq!(
+            (&created[0].0, created[0].1, created[0].2.as_str(), created[0].3, created[0].4),
+            (&compact.change_set_id, 0, "row_delta", 0, 1)
+        );
+        assert_eq!(
+            (&created[1].0, created[1].1, created[1].2.as_str(), created[1].3, created[1].4),
+            (&legacy, 1, "full", 1, 2)
+        );
+        assert_eq!(created[0].7, created[0].8);
+        assert_eq!(created[1].7, created[1].8);
+
+        db.apply_change_set(&legacy, true).unwrap();
+        db.apply_change_set(&compact.change_set_id, true).unwrap();
+        let replayed = timeline(&db);
+        assert_eq!((replayed[0].1, replayed[0].3, replayed[0].4), (0, 0, 1));
+        assert_eq!((replayed[1].1, replayed[1].3, replayed[1].4), (1, 1, 2));
+        assert_eq!((replayed[0].5, replayed[1].5), (4, 4));
+        assert!(!replayed[0].6 && !replayed[1].6);
+        assert_eq!((&replayed[0].7, &replayed[0].8), (&created[0].7, &created[0].8));
+        assert_eq!((&replayed[1].7, &replayed[1].8), (&created[1].7, &created[1].8));
     }
 
     #[test]
