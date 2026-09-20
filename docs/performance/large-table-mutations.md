@@ -74,9 +74,9 @@ Thresholds are append row 1,000 ms; middle insert 2,000 ms; add empty column
 Any timing, memory, fixture, or structural failure sets
 `qualificationPassed = false` and makes the harness exit unsuccessfully.
 
-## Independent-process baseline: 2026-09-21
+## Independent-process baseline: 2026-09-21 (fix round 2)
 
-Source commit: `101f89ca5b8b3c080beb0c4e0f86e7351fdd6c24`
+Measured source commit: `2ac7363d6c393d81ab1cb851fe4300913fc4476d`
 
 Profile: release
 
@@ -90,16 +90,16 @@ Phase columns show median/max milliseconds.
 
 | Operation | Runs (ms) | Median | Max / threshold | Mutation | History | Anchor | Metadata | Reload |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Append row | 67, 68, 68, 75, 69 | 68 | 75 / 1,000 | 1/1 | 3/3 | 48/48 | 1/1 | 14/15 |
-| Insert middle row | 85, 85, 84, 85, 85 | 85 | 85 / 2,000 | 1/1 | 3/3 | 59/60 | 1/1 | 14/15 |
-| Add empty column | 39, 37, 38, 37, 37 | 37 | 39 / 2,000 | 8/8 | 4/4 | 3/3 | 1/1 | 15/16 |
-| Delete one row | 44, 44, 37, 36, 37 | 37 | 44 / 2,000 | 1/1 | 4/4 | 17/17 | 1/1 | 14/14 |
-| Delete one column | 44, 43, 43, 45, 41 | 43 | 45 / 5,000 | 1/2 | 20/21 | 3/3 | 1/1 | 14/15 |
+| Append row | 77, 76, 71, 70, 74 | 74 | 77 / 1,000 | 1/1 | 3/3 | 50/51 | 1/1 | 14/15 |
+| Insert middle row | 82, 84, 81, 81, 83 | 82 | 84 / 2,000 | 1/1 | 3/3 | 57/60 | 1/1 | 15/15 |
+| Add empty column | 37, 37, 36, 37, 35 | 37 | 37 / 2,000 | 8/8 | 4/4 | 3/3 | 1/1 | 15/16 |
+| Delete one row | 42, 36, 43, 44, 44 | 43 | 44 / 2,000 | 1/1 | 4/4 | 17/18 | 1/1 | 14/15 |
+| Delete one column | 44, 47, 48, 40, 44 | 44 | 48 / 5,000 | 1/2 | 20/20 | 3/3 | 1/1 | 14/15 |
 
 All five operations passed every structural assertion. Middle insertion
 preceded its requested target. No operation approached a retained-memory or RSS
 doubling. Every operation records six distinct child PIDs and one sample per
-child. Maximum observed RSS deltas ranged from 507,904 bytes to 79,642,624
+child. Maximum observed RSS deltas ranged from 507,904 bytes to 79,888,384
 bytes; DuckDB retained memory after mutation ranged from 34,770,944 to
 47,749,120 bytes from a 30,353,408-byte baseline.
 
