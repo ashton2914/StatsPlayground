@@ -19,9 +19,11 @@ export {
 } from "./FitModelLeveragePlot";
 
 export {
+  fitModelProfilerYDomain,
   predictFitModelPoint,
   scanFitModelPredictor,
   type FitModelPointPrediction,
+  type FitModelProfilerDomain,
   type FitModelProfilerPoint,
 } from "./fitModelPrediction";
 

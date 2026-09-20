@@ -263,6 +263,7 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
     responseName: "Y",
     currentValue: 2,
     currentPrediction: 3,
+    yDomain: { min: -2, max: 8 },
     points: [
       { value: 0, predicted: 1, meanConfidenceLower: 0.5, meanConfidenceUpper: 1.5, predictionLower: 0, predictionUpper: 2, inferenceReason: null, extrapolatedColumns: [] },
       { value: 2, predicted: 3, meanConfidenceLower: 2.25, meanConfidenceUpper: 3.75, predictionLower: 1, predictionUpper: 5, inferenceReason: null, extrapolatedColumns: [] },
@@ -277,12 +278,14 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
     },
   }) as {
     xAxis: { name: string };
-    yAxis: { name: string };
+    yAxis: { name: string; min: number; max: number };
     series: Array<{ name?: string; type?: string; clip?: boolean; data?: Array<[number, number]>; markLine?: unknown; markPoint?: unknown }>;
   };
 
   assert.equal(option.xAxis.name, "A");
   assert.equal(option.yAxis.name, "Y");
+  assert.equal(option.yAxis.min, -2);
+  assert.equal(option.yAxis.max, 8);
   assert.deepEqual(option.series.find((series) => series.name === "Predicted")?.data, [[0, 1], [2, 3], [4, 5]]);
   assert.equal(option.series.filter((series) => series.name === "Mean CI").length, 2);
   assert.ok(option.series.every((series) => series.type === "line" && series.clip === true));

@@ -50,6 +50,39 @@ test("synchronizes slider and number input, then warns on extrapolation", async 
   await expect(range).toHaveValue("4");
 });
 
+test("links every chart and gives them the same Y domain", async ({ mount }) => {
+  const component = await mount(profiler());
+  const columns = component.locator(".sp-fit-model-profiler-column");
+  const canvases = columns.locator("canvas");
+  await expect(canvases).toHaveCount(2);
+
+  const initialImages = await canvases.evaluateAll((elements) => (
+    elements.map((element) => (element as HTMLCanvasElement).toDataURL())
+  ));
+  const initialDomains = await columns.evaluateAll((elements) => elements.map((element) => ({
+    min: element.getAttribute("data-y-domain-min"),
+    max: element.getAttribute("data-y-domain-max"),
+  })));
+  expect(initialDomains[0]).toEqual(initialDomains[1]);
+
+  await component.locator('[data-profiler-column="A"] input[type="range"]').fill("3");
+  await expect(component.locator(".sp-fit-model-profiler-result dd").first()).toHaveText("19");
+  await expect.poll(async () => canvases.evaluateAll((elements) => (
+    elements.map((element) => (element as HTMLCanvasElement).toDataURL())
+  ))).not.toEqual(initialImages);
+
+  const updatedImages = await canvases.evaluateAll((elements) => (
+    elements.map((element) => (element as HTMLCanvasElement).toDataURL())
+  ));
+  expect(updatedImages[0]).not.toEqual(initialImages[0]);
+  expect(updatedImages[1]).not.toEqual(initialImages[1]);
+  const updatedDomains = await columns.evaluateAll((elements) => elements.map((element) => ({
+    min: element.getAttribute("data-y-domain-min"),
+    max: element.getAttribute("data-y-domain-max"),
+  })));
+  expect(updatedDomains[0]).toEqual(updatedDomains[1]);
+});
+
 test("preserves point prediction when intervals are not estimable", async ({ mount }) => {
   const component = await mount(profiler({
     ...snapshot,
@@ -85,19 +118,29 @@ for (const viewport of [
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
+    const track = component.locator(".sp-fit-model-profiler-track");
+    await expect(track).toBeVisible();
+    const trackMetrics = await track.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
     const columns = await component.locator(".sp-fit-model-profiler-column").evaluateAll((elements) => elements.map((element) => {
       const box = element.getBoundingClientRect();
-      return { left: box.left, right: box.right, width: box.width };
+      return { left: box.left, right: box.right, top: box.top, width: box.width };
     }));
-    expect(columns.every((column) => column.left >= -1 && column.right <= viewport.width + 1 && column.width > 0)).toBe(true);
+    expect(columns.every((column) => column.width >= 280 && column.width <= 380)).toBe(true);
+    expect(columns.every((column) => Math.abs(column.top - columns[0].top) <= 1)).toBe(true);
+    expect(columns[0].left).toBeGreaterThanOrEqual(-1);
+    expect(columns[0].right).toBeLessThanOrEqual(viewport.width + 1);
     const profilerBox = await component.locator(".sp-fit-model-profiler").evaluate((element) => {
       const box = element.getBoundingClientRect();
       return { width: box.width };
     });
     if (viewport.width >= 1000) {
-      expect(profilerBox.width).toBeGreaterThanOrEqual(972);
-      expect(profilerBox.width).toBeLessThanOrEqual(1052);
-      expect(columns.every((column) => column.width >= 480 && column.width <= 520)).toBe(true);
+      expect(trackMetrics.scrollWidth).toBeLessThanOrEqual(trackMetrics.clientWidth + 1);
+    } else {
+      expect(trackMetrics.scrollWidth).toBeGreaterThan(trackMetrics.clientWidth);
     }
+    expect(profilerBox.width).toBeLessThanOrEqual(viewport.width + 1);
   });
 }

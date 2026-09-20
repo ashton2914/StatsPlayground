@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useId, useState } from "react";
+import { startTransition, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { buildFitModelProfilerOption } from "@/graphCore/fitModelAdapter";
@@ -6,6 +6,7 @@ import type { FitModelSnapshot } from "@/types/fitModel";
 
 import { FitModelDiagnosticChart } from "./FitModelDiagnosticChart";
 import {
+  fitModelProfilerYDomain,
   predictFitModelPoint,
   scanFitModelPredictor,
 } from "./fitModelPrediction";
@@ -41,14 +42,23 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
     range.columnName,
     values[range.columnName] ?? range.mean,
   ]));
-  const effectiveScanValues = Object.fromEntries(snapshot.predictorRanges.map((range) => [
-    range.columnName,
-    scanValues[range.columnName] ?? range.mean,
-  ]));
+  const effectiveScanValues = useMemo(
+    () => Object.fromEntries(snapshot.predictorRanges.map((range) => [
+      range.columnName,
+      scanValues[range.columnName] ?? range.mean,
+    ])),
+    [snapshot, scanValues],
+  );
+  const scans = useMemo(() => snapshot.predictorRanges.map((range) => ({
+    range,
+    points: scanFitModelPredictor(snapshot, effectiveScanValues, range.columnName),
+  })), [effectiveScanValues, snapshot]);
+  const yDomain = useMemo(
+    () => fitModelProfilerYDomain(scans.map((scan) => scan.points)),
+    [scans],
+  );
   const currentPrediction = predictFitModelPoint(snapshot, effectiveValues);
   const notEstimable = t("fitModel.report.profiler.notEstimable", { defaultValue: "Not estimable" });
-  const columnCount = Math.max(1, Math.min(snapshot.predictorRanges.length, 2));
-  const profilerMaxWidth = columnCount * 520 + (columnCount - 1) * 12;
 
   const updateValue = (columnName: string, value: number) => {
     if (!Number.isFinite(value)) return;
@@ -58,60 +68,68 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
   };
 
   return (
-    <div className="sp-fit-model-profiler" style={{ maxWidth: `${profilerMaxWidth}px` }}>
-      {snapshot.predictorRanges.map((range, index) => {
-        const value = effectiveValues[range.columnName];
-        const numberInputId = `${inputIdPrefix}-number-${index}`;
-        const sliderValue = Math.min(range.maximum, Math.max(range.minimum, value));
-        const step = range.maximum === range.minimum ? 1 : (range.maximum - range.minimum) / 100;
-        const points = scanFitModelPredictor(snapshot, effectiveScanValues, range.columnName);
-        const option = buildFitModelProfilerOption({
-          predictorName: range.columnName,
-          responseName,
-          currentValue: value,
-          currentPrediction: currentPrediction.predicted,
-          points,
-          labels: {
-            predictedSeriesName: t("fitModel.report.chart.series.predicted", { defaultValue: "Predicted" }),
-            meanConfidenceSeriesName: t("fitModel.report.chart.series.meanConfidence", { defaultValue: "Mean CI" }),
-            currentValueName: t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" }),
-            tooltipXLabel: range.columnName,
-            tooltipYLabel: responseName,
-          },
-        });
-        return (
-          <article key={range.columnName} className="sp-fit-model-profiler-column" data-profiler-column={range.columnName}>
-            <div className="sp-fit-model-profiler-controls">
-              <label htmlFor={numberInputId}>
-                <span>{range.columnName}</span>
-                <span>{t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}</span>
-              </label>
-              <input
-                type="range"
-                min={range.minimum}
-                max={range.maximum}
-                step={step}
-                value={sliderValue}
-                aria-label={`${range.columnName} ${t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}`}
-                onChange={(event) => updateValue(range.columnName, event.currentTarget.valueAsNumber)}
+    <div className="sp-fit-model-profiler">
+      <div className="sp-fit-model-profiler-track">
+        {scans.map(({ range, points }, index) => {
+          const value = effectiveValues[range.columnName];
+          const numberInputId = `${inputIdPrefix}-number-${index}`;
+          const sliderValue = Math.min(range.maximum, Math.max(range.minimum, value));
+          const step = range.maximum === range.minimum ? 1 : (range.maximum - range.minimum) / 100;
+          const option = buildFitModelProfilerOption({
+            predictorName: range.columnName,
+            responseName,
+            currentValue: value,
+            currentPrediction: currentPrediction.predicted,
+            yDomain,
+            points,
+            labels: {
+              predictedSeriesName: t("fitModel.report.chart.series.predicted", { defaultValue: "Predicted" }),
+              meanConfidenceSeriesName: t("fitModel.report.chart.series.meanConfidence", { defaultValue: "Mean CI" }),
+              currentValueName: t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" }),
+              tooltipXLabel: range.columnName,
+              tooltipYLabel: responseName,
+            },
+          });
+          return (
+            <article
+              key={range.columnName}
+              className="sp-fit-model-profiler-column"
+              data-profiler-column={range.columnName}
+              data-y-domain-min={yDomain.min}
+              data-y-domain-max={yDomain.max}
+            >
+              <div className="sp-fit-model-profiler-controls">
+                <label htmlFor={numberInputId}>
+                  <span>{range.columnName}</span>
+                  <span>{t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}</span>
+                </label>
+                <input
+                  type="range"
+                  min={range.minimum}
+                  max={range.maximum}
+                  step={step}
+                  value={sliderValue}
+                  aria-label={`${range.columnName} ${t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}`}
+                  onChange={(event) => updateValue(range.columnName, event.currentTarget.valueAsNumber)}
+                />
+                <input
+                  id={numberInputId}
+                  type="number"
+                  step="any"
+                  value={value}
+                  aria-label={`${range.columnName} ${t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}`}
+                  onChange={(event) => updateValue(range.columnName, event.currentTarget.valueAsNumber)}
+                />
+              </div>
+              <FitModelDiagnosticChart
+                title={`${range.columnName} ${t("fitModel.report.section.predictionProfiler", { defaultValue: "Prediction Profiler" })}`}
+                chartKind="predictionProfiler"
+                option={option}
               />
-              <input
-                id={numberInputId}
-                type="number"
-                step="any"
-                value={value}
-                aria-label={`${range.columnName} ${t("fitModel.report.profiler.currentValue", { defaultValue: "Current value" })}`}
-                onChange={(event) => updateValue(range.columnName, event.currentTarget.valueAsNumber)}
-              />
-            </div>
-            <FitModelDiagnosticChart
-              title={`${range.columnName} ${t("fitModel.report.section.predictionProfiler", { defaultValue: "Prediction Profiler" })}`}
-              chartKind="predictionProfiler"
-              option={option}
-            />
-          </article>
-        );
-      })}
+            </article>
+          );
+        })}
+      </div>
       <dl className="sp-fit-model-profiler-result" aria-live="polite">
         <div><dt>{t("fitModel.report.profiler.predicted", { defaultValue: "Predicted" })}</dt><dd>{formatFitModelReportValue(currentPrediction.predicted)}</dd></div>
         <div><dt>{t("fitModel.report.profiler.meanConfidenceInterval", { defaultValue: "Mean CI" })}</dt><dd>{intervalText(currentPrediction.meanConfidenceLower, currentPrediction.meanConfidenceUpper, notEstimable)}</dd></div>

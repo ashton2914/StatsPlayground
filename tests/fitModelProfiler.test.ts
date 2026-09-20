@@ -6,6 +6,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 
 import { FitModelProfiler } from "../src/components/fitModel/FitModelProfiler.tsx";
+import {
+  fitModelProfilerYDomain,
+  type FitModelProfilerPoint,
+} from "../src/components/fitModel/fitModelPrediction.ts";
 import type { FitModelSnapshot } from "../src/types/fitModel.ts";
 
 const snapshot: FitModelSnapshot = {
@@ -25,6 +29,45 @@ const snapshot: FitModelSnapshot = {
     { columnName: "B", minimum: 1, maximum: 7, mean: 4 },
   ],
 };
+
+function profilerPoint(
+  predicted: number,
+  meanConfidenceLower: number | null,
+  meanConfidenceUpper: number | null,
+  predictionLower: number | null,
+  predictionUpper: number | null,
+): FitModelProfilerPoint {
+  return {
+    value: 0,
+    predicted,
+    meanConfidenceLower,
+    meanConfidenceUpper,
+    predictionLower,
+    predictionUpper,
+    inferenceReason: null,
+    extrapolatedColumns: [],
+  };
+}
+
+const scans = [
+  [
+    profilerPoint(10, 9, 10.5, 5, 16),
+    profilerPoint(12, 11.5, 12.5, 10.5, 13.5),
+  ],
+  [
+    profilerPoint(13, null, null, null, null),
+    profilerPoint(14, 13.5, 15, 8, 20),
+  ],
+];
+assert.deepEqual(fitModelProfilerYDomain(scans), { min: 8.8, max: 15.2 });
+assert.deepEqual(
+  fitModelProfilerYDomain([[profilerPoint(20, 20, 20, 20, 20)]]),
+  { min: 19, max: 21 },
+);
+assert.throws(
+  () => fitModelProfilerYDomain([[profilerPoint(Number.NaN, null, null, null, null)]]),
+  /non-finite/i,
+);
 
 const i18n = createInstance();
 void i18n.use(initReactI18next).init({
@@ -62,6 +105,7 @@ const html = renderToStaticMarkup(
 
 assert.match(html, /data-profiler-column="A"/);
 assert.match(html, /data-profiler-column="B"/);
+assert.match(html, /sp-fit-model-profiler-track/);
 assert.match(html, /aria-label="A Current value"[^>]*value="2"/);
 assert.match(html, /aria-label="B Current value"[^>]*value="4"/);
 assert.match(html, /Not estimable/);

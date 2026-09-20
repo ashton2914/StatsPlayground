@@ -20,11 +20,53 @@ export interface FitModelProfilerPoint extends FitModelPointPrediction {
   value: number;
 }
 
+export interface FitModelProfilerDomain {
+  min: number;
+  max: number;
+}
+
 function assertFinite(value: number, label: string): number {
   if (!Number.isFinite(value)) {
-    throw new Error(`Fit Model prediction requires finite ${label}`);
+    throw new Error(`Fit Model prediction received non-finite ${label}`);
   }
   return value;
+}
+
+export function fitModelProfilerYDomain(
+  scans: readonly (readonly FitModelProfilerPoint[])[],
+): FitModelProfilerDomain {
+  const values: number[] = [];
+  scans.forEach((scan) => {
+    scan.forEach((point) => {
+      const candidates = [
+        point.predicted,
+        point.meanConfidenceLower,
+        point.meanConfidenceUpper,
+      ];
+      candidates.forEach((candidate) => {
+        if (candidate === null) return;
+        values.push(assertFinite(candidate, "profiler Y domain value"));
+      });
+    });
+  });
+  if (values.length === 0) {
+    throw new Error("Fit Model profiler Y domain requires finite values");
+  }
+
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  if (minimum === maximum) {
+    const delta = Math.max(Math.abs(minimum) * 0.05, 1);
+    return { min: minimum - delta, max: maximum + delta };
+  }
+
+  const span = maximum - minimum;
+  const pad = span * 0.02;
+  const snap = 10 ** (Math.floor(Math.log10(span)) - 1);
+  return {
+    min: Number((Math.floor((minimum - pad) / snap) * snap).toPrecision(15)),
+    max: Number((Math.ceil((maximum + pad) / snap) * snap).toPrecision(15)),
+  };
 }
 
 function featureVector(

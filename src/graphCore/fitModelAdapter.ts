@@ -1,6 +1,9 @@
 import type { EChartsOption } from "echarts";
 
-import type { FitModelProfilerPoint } from "@/components/fitModel/fitModelPrediction";
+import type {
+  FitModelProfilerDomain,
+  FitModelProfilerPoint,
+} from "@/components/fitModel/fitModelPrediction";
 import type { FitModelEffectRow } from "@/components/fitModel/fitModelReportModel";
 import type {
   FitModelLeveragePlot,
@@ -581,6 +584,7 @@ export interface FitModelProfilerChartInput {
   responseName: string;
   currentValue: number;
   currentPrediction: number;
+  yDomain: FitModelProfilerDomain;
   points: FitModelProfilerPoint[];
   labels: FitModelProfilerChartLabels;
 }
@@ -595,6 +599,11 @@ export interface FitModelProfilerChartLabels {
 
 export function buildFitModelProfilerOption(input: FitModelProfilerChartInput): EChartsOption {
   const theme = getGraphTheme();
+  const yMin = ensureFinite(input.yDomain.min, "yDomain.min", 0);
+  const yMax = ensureFinite(input.yDomain.max, "yDomain.max", 0);
+  if (yMin >= yMax) {
+    throw new Error("fitModelAdapter: profiler Y domain min must be less than max");
+  }
   const predicted = input.points.map((point, index) => [
     ensureFinite(point.value, "value", index),
     ensureFinite(point.predicted, "predicted", index),
@@ -625,6 +634,8 @@ export function buildFitModelProfilerOption(input: FitModelProfilerChartInput): 
     },
     yAxis: {
       type: "value",
+      min: yMin,
+      max: yMax,
       name: input.responseName,
       nameLocation: "middle",
       nameGap: 42,

@@ -135,15 +135,27 @@
 
 .sp-fit-model-profiler {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
-  gap: 12px;
+  gap: 10px;
   width: 100%;
   min-width: 0;
+}
+
+.sp-fit-model-profiler-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: clamp(280px, 32vw, 380px);
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline proximity;
 }
 
 .sp-fit-model-profiler-column {
   min-width: 0;
   overflow: hidden;
+  scroll-snap-align: start;
   border: 1px solid var(--border-main);
   border-radius: 6px;
   background: var(--bg-panel);
@@ -187,7 +199,6 @@
 }
 
 .sp-fit-model-profiler-result {
-  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
@@ -218,7 +229,6 @@
 }
 
 .sp-fit-model-profiler-warning {
-  grid-column: 1 / -1;
   margin: 0;
   padding: 8px 10px;
   border-left: 3px solid var(--danger, #b42318);
@@ -237,7 +247,7 @@
 
 .sp-fit-model-diagnostic-chart-predictionProfiler {
   max-width: none;
-  height: 360px;
+  height: 240px;
 }
 
 .sp-fit-model-analysis-graph-predicted {
