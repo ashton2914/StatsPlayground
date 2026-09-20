@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { buildFitModelProfilerOption } from "@/graphCore/fitModelAdapter";
@@ -17,6 +17,11 @@ export interface FitModelProfilerProps {
   responseName: string;
 }
 
+interface FitModelProfilerValueState {
+  snapshot: FitModelSnapshot;
+  values: Record<string, number>;
+}
+
 function initialValues(snapshot: FitModelSnapshot): Record<string, number> {
   return Object.fromEntries(snapshot.predictorRanges.map((range) => [range.columnName, range.mean]));
 }
@@ -29,42 +34,46 @@ function intervalText(lower: number | null, upper: number | null, notEstimable: 
 export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerProps) {
   const { t } = useTranslation();
   const inputIdPrefix = useId().replace(/:/g, "");
-  const [values, setValues] = useState<Record<string, number>>(() => initialValues(snapshot));
-  const [scanValues, setScanValues] = useState<Record<string, number>>(() => initialValues(snapshot));
+  const snapshotInitialValues = useMemo(() => initialValues(snapshot), [snapshot]);
+  const [valueState, setValueState] = useState<FitModelProfilerValueState>(() => ({
+    snapshot,
+    values: snapshotInitialValues,
+  }));
+  const values = valueState.snapshot === snapshot ? valueState.values : snapshotInitialValues;
 
   useEffect(() => {
-    const next = initialValues(snapshot);
-    setValues(next);
-    startTransition(() => setScanValues(next));
-  }, [snapshot]);
+    if (valueState.snapshot !== snapshot) {
+      setValueState({ snapshot, values: snapshotInitialValues });
+    }
+  }, [snapshot, snapshotInitialValues, valueState.snapshot]);
 
-  const effectiveValues = Object.fromEntries(snapshot.predictorRanges.map((range) => [
-    range.columnName,
-    values[range.columnName] ?? range.mean,
-  ]));
-  const effectiveScanValues = useMemo(
+  const effectiveValues = useMemo(
     () => Object.fromEntries(snapshot.predictorRanges.map((range) => [
       range.columnName,
-      scanValues[range.columnName] ?? range.mean,
+      values[range.columnName] ?? range.mean,
     ])),
-    [snapshot, scanValues],
+    [snapshot, values],
   );
   const scans = useMemo(() => snapshot.predictorRanges.map((range) => ({
     range,
-    points: scanFitModelPredictor(snapshot, effectiveScanValues, range.columnName),
-  })), [effectiveScanValues, snapshot]);
+    points: scanFitModelPredictor(snapshot, effectiveValues, range.columnName),
+  })), [effectiveValues, snapshot]);
   const yDomain = useMemo(
     () => fitModelProfilerYDomain(scans.map((scan) => scan.points)),
     [scans],
   );
-  const currentPrediction = predictFitModelPoint(snapshot, effectiveValues);
+  const currentPrediction = useMemo(
+    () => predictFitModelPoint(snapshot, effectiveValues),
+    [effectiveValues, snapshot],
+  );
   const notEstimable = t("fitModel.report.profiler.notEstimable", { defaultValue: "Not estimable" });
 
   const updateValue = (columnName: string, value: number) => {
     if (!Number.isFinite(value)) return;
-    const next = { ...effectiveValues, [columnName]: value };
-    setValues(next);
-    startTransition(() => setScanValues(next));
+    setValueState({
+      snapshot,
+      values: { ...effectiveValues, [columnName]: value },
+    });
   };
 
   return (
@@ -97,6 +106,10 @@ export function FitModelProfiler({ snapshot, responseName }: FitModelProfilerPro
               data-profiler-column={range.columnName}
               data-y-domain-min={yDomain.min}
               data-y-domain-max={yDomain.max}
+              data-marker-x={value}
+              data-marker-y={currentPrediction.predicted}
+              data-curve-start-y={points[0]?.predicted}
+              data-curve-end-y={points[points.length - 1]?.predicted}
             >
               <div className="sp-fit-model-profiler-controls">
                 <label htmlFor={numberInputId}>

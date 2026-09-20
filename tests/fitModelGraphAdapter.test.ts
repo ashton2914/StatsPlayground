@@ -279,7 +279,14 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
   }) as {
     xAxis: { name: string };
     yAxis: { name: string; min: number; max: number };
-    series: Array<{ name?: string; type?: string; clip?: boolean; data?: Array<[number, number]>; markLine?: unknown; markPoint?: unknown }>;
+    series: Array<{
+      name?: string;
+      type?: string;
+      clip?: boolean;
+      data?: Array<[number, number]>;
+      markLine?: unknown;
+      markPoint?: { data: Array<{ coord: [number, number] }> };
+    }>;
   };
 
   assert.equal(option.xAxis.name, "A");
@@ -289,7 +296,13 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
   assert.deepEqual(option.series.find((series) => series.name === "Predicted")?.data, [[0, 1], [2, 3], [4, 5]]);
   assert.equal(option.series.filter((series) => series.name === "Mean CI").length, 2);
   assert.ok(option.series.every((series) => series.type === "line" && series.clip === true));
-  assert.ok(option.series.some((series) => series.markLine && series.markPoint));
+  const markedSeries = option.series.find((series) => series.markLine && series.markPoint);
+  assert.deepEqual(markedSeries?.markPoint?.data[0]?.coord, [2, 3]);
+  assert.ok((markedSeries?.markPoint?.data[0]?.coord[1] ?? Number.NaN) >= option.yAxis.min);
+  assert.ok((markedSeries?.markPoint?.data[0]?.coord[1] ?? Number.NaN) <= option.yAxis.max);
+  assert.ok(option.series.flatMap((series) => series.data ?? []).every(([, y]) => (
+    y >= option.yAxis.min && y <= option.yAxis.max
+  )));
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
 }
 

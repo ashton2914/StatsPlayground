@@ -26,6 +26,15 @@ const snapshot: FitModelSnapshot = {
   ],
 };
 
+const replacementSnapshot: FitModelSnapshot = {
+  ...snapshot,
+  coefficients: [10, 1, 2],
+  predictorRanges: [
+    { columnName: "A", minimum: 0, maximum: 2, mean: 1 },
+    { columnName: "B", minimum: 0, maximum: 4, mean: 2 },
+  ],
+};
+
 function profiler(value: FitModelSnapshot = snapshot) {
   return (
     <div style={{ width: "100%", minWidth: 0 }}>
@@ -77,10 +86,55 @@ test("links every chart and gives them the same Y domain", async ({ mount }) => 
   expect(updatedImages[0]).not.toEqual(initialImages[0]);
   expect(updatedImages[1]).not.toEqual(initialImages[1]);
   const updatedDomains = await columns.evaluateAll((elements) => elements.map((element) => ({
-    min: element.getAttribute("data-y-domain-min"),
-    max: element.getAttribute("data-y-domain-max"),
+    min: Number(element.getAttribute("data-y-domain-min")),
+    max: Number(element.getAttribute("data-y-domain-max")),
+    markerX: Number(element.getAttribute("data-marker-x")),
+    marker: Number(element.getAttribute("data-marker-y")),
+    curveStart: Number(element.getAttribute("data-curve-start-y")),
+    curveEnd: Number(element.getAttribute("data-curve-end-y")),
   })));
-  expect(updatedDomains[0]).toEqual(updatedDomains[1]);
+  expect(
+    updatedDomains.map(({ min, max, markerX, marker }) => ({ min, max, markerX, marker })),
+  ).toEqual([
+    { min: updatedDomains[0].min, max: updatedDomains[0].max, markerX: 3, marker: 19 },
+    { min: updatedDomains[0].min, max: updatedDomains[0].max, markerX: 4, marker: 19 },
+  ]);
+  expect(updatedDomains[0].marker).toBe(19);
+  expect(updatedDomains[0].marker).toBeGreaterThanOrEqual(updatedDomains[0].min);
+  expect(updatedDomains[0].marker).toBeLessThanOrEqual(updatedDomains[0].max);
+  expect(updatedDomains.map(({ curveStart, curveEnd }) => [curveStart, curveEnd])).toEqual([
+    [13, 21],
+    [10, 28],
+  ]);
+});
+
+test("resets controls, curves, markers, domain, and summary coherently on snapshot replacement", async ({ mount }) => {
+  const component = await mount(profiler());
+  await component.update(profiler(replacementSnapshot));
+
+  await expect(component.locator('[data-profiler-column="A"] input[type="number"]')).toHaveValue("1");
+  await expect(component.locator('[data-profiler-column="B"] input[type="number"]')).toHaveValue("2");
+  await expect(component.locator(".sp-fit-model-profiler-result dd").first()).toHaveText("15");
+  const chartState = await component.locator(".sp-fit-model-profiler-column").evaluateAll((elements) => (
+    elements.map((element) => ({
+      min: Number(element.getAttribute("data-y-domain-min")),
+      max: Number(element.getAttribute("data-y-domain-max")),
+      markerX: Number(element.getAttribute("data-marker-x")),
+      marker: Number(element.getAttribute("data-marker-y")),
+      curveStart: Number(element.getAttribute("data-curve-start-y")),
+      curveEnd: Number(element.getAttribute("data-curve-end-y")),
+    }))
+  ));
+  expect(chartState[0].marker).toBe(15);
+  expect(chartState[1].marker).toBe(15);
+  expect(chartState[0].marker).toBeGreaterThanOrEqual(chartState[0].min);
+  expect(chartState[0].marker).toBeLessThanOrEqual(chartState[0].max);
+  expect(chartState[0]).toMatchObject({ markerX: 1, curveStart: 14, curveEnd: 16 });
+  expect(chartState[1]).toMatchObject({ markerX: 2, curveStart: 11, curveEnd: 19 });
+  expect({ min: chartState[0].min, max: chartState[0].max }).toEqual({
+    min: chartState[1].min,
+    max: chartState[1].max,
+  });
 });
 
 test("preserves point prediction when intervals are not estimable", async ({ mount }) => {

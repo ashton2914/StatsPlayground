@@ -64,6 +64,32 @@ assert.deepEqual(
   fitModelProfilerYDomain([[profilerPoint(20, 20, 20, 20, 20)]]),
   { min: 19, max: 21 },
 );
+for (const value of [0, Number.MIN_VALUE, -Number.MIN_VALUE]) {
+  const domain = fitModelProfilerYDomain([[profilerPoint(value, value, value, null, null)]]);
+  assert.ok(Number.isFinite(domain.min) && Number.isFinite(domain.max));
+  assert.ok(domain.min < value && value < domain.max);
+}
+const subnormalDomain = fitModelProfilerYDomain([[
+  profilerPoint(Number.MIN_VALUE, null, null, null, null),
+  profilerPoint(Number.MIN_VALUE * 2, null, null, null, null),
+]]);
+assert.ok(Number.isFinite(subnormalDomain.min) && Number.isFinite(subnormalDomain.max));
+assert.ok(subnormalDomain.min <= Number.MIN_VALUE);
+assert.ok(subnormalDomain.max >= Number.MIN_VALUE * 2);
+assert.ok(subnormalDomain.min < subnormalDomain.max);
+for (const value of [Number.MAX_VALUE, -Number.MAX_VALUE]) {
+  assert.throws(
+    () => fitModelProfilerYDomain([[profilerPoint(value, value, value, null, null)]]),
+    /finite representable padded range/i,
+  );
+}
+assert.throws(
+  () => fitModelProfilerYDomain([[
+    profilerPoint(-Number.MAX_VALUE, null, null, null, null),
+    profilerPoint(Number.MAX_VALUE, null, null, null, null),
+  ]]),
+  /finite representable padded range/i,
+);
 assert.throws(
   () => fitModelProfilerYDomain([[profilerPoint(Number.NaN, null, null, null, null)]]),
   /non-finite/i,
@@ -105,6 +131,9 @@ const html = renderToStaticMarkup(
 
 assert.match(html, /data-profiler-column="A"/);
 assert.match(html, /data-profiler-column="B"/);
+assert.match(html, /data-marker-y="17"/);
+assert.match(html, /data-curve-start-y="13"/);
+assert.match(html, /data-curve-end-y="21"/);
 assert.match(html, /sp-fit-model-profiler-track/);
 assert.match(html, /aria-label="A Current value"[^>]*value="2"/);
 assert.match(html, /aria-label="B Current value"[^>]*value="4"/);

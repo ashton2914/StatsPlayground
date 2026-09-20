@@ -32,6 +32,22 @@ function assertFinite(value: number, label: string): number {
   return value;
 }
 
+const DOMAIN_BUFFER = new ArrayBuffer(8);
+const DOMAIN_FLOAT = new Float64Array(DOMAIN_BUFFER);
+const DOMAIN_BITS = new BigUint64Array(DOMAIN_BUFFER);
+
+function nextFinite(value: number, direction: "up" | "down"): number {
+  if (value === 0) return direction === "up" ? Number.MIN_VALUE : -Number.MIN_VALUE;
+  DOMAIN_FLOAT[0] = value;
+  const increment = (value > 0) === (direction === "up");
+  DOMAIN_BITS[0] += increment ? 1n : -1n;
+  return DOMAIN_FLOAT[0];
+}
+
+function profilerDomainError(): never {
+  throw new Error("Fit Model profiler Y domain has no finite representable padded range");
+}
+
 export function fitModelProfilerYDomain(
   scans: readonly (readonly FitModelProfilerPoint[])[],
 ): FitModelProfilerDomain {
@@ -57,16 +73,43 @@ export function fitModelProfilerYDomain(
   const maximum = Math.max(...values);
   if (minimum === maximum) {
     const delta = Math.max(Math.abs(minimum) * 0.05, 1);
-    return { min: minimum - delta, max: maximum + delta };
+    const min = minimum - delta;
+    const max = maximum + delta;
+    if (!Number.isFinite(min) || !Number.isFinite(max) || !(min < minimum && maximum < max)) {
+      return profilerDomainError();
+    }
+    return { min, max };
+  }
+
+  const scale = Math.max(Math.abs(minimum), Math.abs(maximum));
+  const normalizedSpan = scale === 0 ? 0 : (maximum / scale) - (minimum / scale);
+  const pad = Math.max(scale * (normalizedSpan * 0.02), Number.MIN_VALUE);
+  let min = minimum - pad;
+  let max = maximum + pad;
+  if (!(min < minimum)) min = nextFinite(minimum, "down");
+  if (!(max > maximum)) max = nextFinite(maximum, "up");
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !(min < max)) {
+    return profilerDomainError();
   }
 
   const span = maximum - minimum;
-  const pad = span * 0.02;
-  const snap = 10 ** (Math.floor(Math.log10(span)) - 1);
-  return {
-    min: Number((Math.floor((minimum - pad) / snap) * snap).toPrecision(15)),
-    max: Number((Math.ceil((maximum + pad) / snap) * snap).toPrecision(15)),
-  };
+  const snap = Number.isFinite(span) && span > 0
+    ? 10 ** (Math.floor(Math.log10(span)) - 1)
+    : 0;
+  if (Number.isFinite(snap) && snap > 0) {
+    const snappedMin = Number((Math.floor(min / snap) * snap).toPrecision(15));
+    const snappedMax = Number((Math.ceil(max / snap) * snap).toPrecision(15));
+    if (
+      Number.isFinite(snappedMin)
+      && Number.isFinite(snappedMax)
+      && snappedMin < minimum
+      && maximum < snappedMax
+    ) {
+      min = snappedMin;
+      max = snappedMax;
+    }
+  }
+  return { min, max };
 }
 
 function featureVector(
