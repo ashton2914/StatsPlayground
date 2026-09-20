@@ -33,6 +33,10 @@ test("shows displayed rows and source totals when a filter is active", async ({ 
   await expect(component.getByLabel("Table window query signatures")).toHaveText(
     INITIAL_FILTER_QUERY_SIGNATURE,
   );
+  await expect(component.getByLabel("Descriptor request generations")).toHaveText("1,1");
+  await expect(component.getByLabel("Prepared session generations")).toHaveText("1");
+  await expect(component.getByLabel("Released session IDs")).toHaveText("(none)");
+  await expect(component.getByLabel("Navigation session IDs")).toHaveText("session-1");
 });
 
 test("shows zero displayed rows when a filter returns no matches", async ({ mount }) => {
@@ -43,6 +47,10 @@ test("shows zero displayed rows when a filter returns no matches", async ({ moun
   await expect(component.getByLabel("Table window query signatures")).toHaveText(
     INITIAL_FILTER_QUERY_SIGNATURE,
   );
+  await expect(component.getByLabel("Descriptor request generations")).toHaveText("1,1");
+  await expect(component.getByLabel("Prepared session generations")).toHaveText("1");
+  await expect(component.getByLabel("Released session IDs")).toHaveText("(none)");
+  await expect(component.getByLabel("Navigation session IDs")).toHaveText("session-1");
 });
 
 test("suppresses unknown metadata totals and refreshes summary and status when metadata or filters change", async ({ mount }) => {
@@ -86,6 +94,13 @@ test("refetches filter counts for a new generation and ignores the delayed old r
   await component.getByRole("button", { name: "Apply updated metadata" }).click();
   await expect(component.getByLabel("Harness metadata state")).toHaveText("80x3@2");
   await expect(component.getByLabel("Filter request generations")).toHaveText("1,2");
+  await expect(component.getByLabel("Descriptor request generations")).toHaveText("1,1,2,2");
+  await expect(component.getByLabel("Prepared session generations")).toHaveText("1,2");
+  await expect(component.getByLabel("Table window query signatures")).toHaveText(
+    `${INITIAL_FILTER_QUERY_SIGNATURE}\n${INITIAL_FILTER_QUERY_SIGNATURE}`,
+  );
+  await expect(component.getByLabel("Released session IDs")).toHaveText("session-1");
+  await expect(component.getByLabel("Navigation session IDs")).toHaveText("session-1,session-2");
   await expect(optionList.getByText("11", { exact: true })).toBeVisible();
   await expect(optionList.getByText("69", { exact: true })).toBeVisible();
 

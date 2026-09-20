@@ -123,6 +123,10 @@ export function DataTableCountsHarness({
   const [harnessState, setHarnessState] = useState<HarnessState>(() => createInitialHarnessState(variant));
   const [filterRequestGenerations, setFilterRequestGenerations] = useState<number[]>([]);
   const [tableWindowQuerySignatures, setTableWindowQuerySignatures] = useState<string[]>([]);
+  const [descriptorRequestGenerations, setDescriptorRequestGenerations] = useState<number[]>([]);
+  const [preparedSessionGenerations, setPreparedSessionGenerations] = useState<number[]>([]);
+  const [releasedSessionIds, setReleasedSessionIds] = useState<string[]>([]);
+  const [navigationSessionIds, setNavigationSessionIds] = useState<string[]>([]);
   const harnessStateRef = useRef(harnessState);
   harnessStateRef.current = harnessState;
 
@@ -148,6 +152,11 @@ export function DataTableCountsHarness({
     const previousLanguage = i18n.resolvedLanguage ?? i18n.language;
     const previousGetDatasetGeneration = dataService.getDatasetGeneration;
     const previousQueryTableWindow = dataService.queryTableWindow;
+    const previousQueryTableNavigationWindow = dataService.queryTableNavigationWindow;
+    const previousPrepareTableQuerySession = dataService.prepareTableQuerySession;
+    const previousGetTableQuerySessionStatus = dataService.getTableQuerySessionStatus;
+    const previousReleaseTableQuerySession = dataService.releaseTableQuerySession;
+    const previousGetColumnDescriptors = dataService.getColumnDescriptors;
     const previousGetColumnDisplayProps = dataService.getColumnDisplayProps;
     const previousQueryTableFilterValues = dataService.queryTableFilterValues;
     let active = true;
@@ -178,6 +187,55 @@ export function DataTableCountsHarness({
         harnessStateRef.current.activeDataset?.generation ?? DATASET.generation,
       );
     };
+    dataService.getColumnDescriptors = async () => {
+      const generation = harnessStateRef.current.activeDataset?.generation ?? DATASET.generation;
+      setDescriptorRequestGenerations((previous) => [...previous, generation]);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 5));
+      return [
+        { columnId: "build-column", name: "Build", sqlType: "VARCHAR" },
+        { columnId: "value-column", name: "Value", sqlType: "DOUBLE" },
+      ];
+    };
+    dataService.prepareTableQuerySession = async (request) => {
+      setPreparedSessionGenerations((previous) => [...previous, request.generation]);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 20));
+      return {
+        sessionId: `session-${request.generation}`,
+        state: "ready",
+        totalRows: harnessStateRef.current.windowTotalRows,
+        progress: 1,
+      };
+    };
+    dataService.getTableQuerySessionStatus = async (sessionId) => ({
+      sessionId,
+      state: "ready",
+      totalRows: harnessStateRef.current.windowTotalRows,
+      progress: 1,
+    });
+    dataService.releaseTableQuerySession = async (sessionId) => {
+      setReleasedSessionIds((previous) => [...previous, sessionId]);
+    };
+    dataService.queryTableNavigationWindow = async (request) => {
+      setNavigationSessionIds((previous) => [...previous, request.sessionId ?? "none"]);
+      const table = createTable(
+        harnessStateRef.current.windowTotalRows,
+        harnessStateRef.current.activeDataset?.generation ?? DATASET.generation,
+      );
+      return {
+        version: 1,
+        requestId: request.requestId,
+        datasetId: request.datasetId,
+        generation: table.generation,
+        start: request.start,
+        totalRows: table.totalRows,
+        totalRowsExact: true,
+        sessionId: request.sessionId,
+        columns: table.columns,
+        columnTypes: table.columnTypes,
+        rows: table.rows,
+        timings: { totalMs: 0 },
+      };
+    };
     dataService.getColumnDisplayProps = async () => [];
     dataService.queryTableFilterValues = async (_datasetId, _field, _search, _limit, generation) => {
       setFilterRequestGenerations((previous) => [...previous, generation]);
@@ -195,6 +253,11 @@ export function DataTableCountsHarness({
       active = false;
       dataService.getDatasetGeneration = previousGetDatasetGeneration;
       dataService.queryTableWindow = previousQueryTableWindow;
+      dataService.queryTableNavigationWindow = previousQueryTableNavigationWindow;
+      dataService.prepareTableQuerySession = previousPrepareTableQuerySession;
+      dataService.getTableQuerySessionStatus = previousGetTableQuerySessionStatus;
+      dataService.releaseTableQuerySession = previousReleaseTableQuerySession;
+      dataService.getColumnDescriptors = previousGetColumnDescriptors;
       dataService.getColumnDisplayProps = previousGetColumnDisplayProps;
       dataService.queryTableFilterValues = previousQueryTableFilterValues;
       useDataStore.setState(previousDataState, true);
@@ -254,6 +317,10 @@ export function DataTableCountsHarness({
       <output aria-label="Harness metadata state">{harnessState.activeDataset ? `${harnessState.activeDataset.rowCount}x${harnessState.activeDataset.colCount}@${harnessState.activeDataset.generation}` : "missing"}</output>
       <output aria-label="Filter request generations">{filterRequestGenerations.join(",")}</output>
       <output aria-label="Table window query signatures">{tableWindowQuerySignatures.join("\n")}</output>
+      <output aria-label="Descriptor request generations">{descriptorRequestGenerations.join(",")}</output>
+      <output aria-label="Prepared session generations">{preparedSessionGenerations.join(",")}</output>
+      <output aria-label="Released session IDs">{releasedSessionIds.join(",") || "(none)"}</output>
+      <output aria-label="Navigation session IDs">{navigationSessionIds.join(",")}</output>
       <button type="button" onClick={clearActiveMetadata}>Clear active metadata</button>
       <button type="button" onClick={applyUpdatedMetadata}>Apply updated metadata</button>
       <button type="button" onClick={applyUpdatedFilterResult}>Apply updated filter result</button>

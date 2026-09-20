@@ -1092,6 +1092,7 @@ export function DataTableView({
   const navigationReloadRef = useRef<() => void>(() => {});
   const loadedFilterKeyRef = useRef(buildTableQuerySignature([], null));
   const loadedFilterGenerationRef = useRef<number | null>(null);
+  const inFlightLoadKeysRef = useRef<Set<string>>(new Set());
   const pendingPrefetchPaintFramesRef = useRef<PendingAfterPaintState>({
     token: 0,
     handle: null,
@@ -1440,6 +1441,16 @@ export function DataTableView({
       currentDatasetId: currentDatasetIdRef.current,
     });
     if (!isCurrentDatasetLoad()) return;
+    const serializedFilters = serializeTableWindowFilters(filters);
+    const currentSort = tableSortRef.current;
+    const nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
+    const inFlightLoadKey = JSON.stringify([
+      requestedDatasetId,
+      datasetGeneration,
+      nextQueryKey,
+    ]);
+    if (inFlightLoadKeysRef.current.has(inFlightLoadKey)) return;
+    inFlightLoadKeysRef.current.add(inFlightLoadKey);
     const epoch = requestEpochRef.current!.advance();
     setLoadedDataLoadToken(null);
     setLoadedDisplayPropsLoadToken(null);
@@ -1448,11 +1459,8 @@ export function DataTableView({
     updateTableCacheDiagnostics({ cacheHit: null, ...EMPTY_TABLE_TRANSPORT_METRICS });
     pendingWindowsRef.current.clear();
     clearPendingPrefetches();
-    const serializedFilters = serializeTableWindowFilters(filters);
-    const currentSort = tableSortRef.current;
     const requiresPreparedSession = serializedFilters.length > 0 || currentSort !== null;
     const previousQueryKey = loadedFilterKeyRef.current;
-    const nextQueryKey = buildTableQuerySignature(serializedFilters, currentSort);
     const provisionalTotalRows = nextQueryKey === previousQueryKey && requiresPreparedSession
       ? (tableQuerySessionRef.current.totalRows ?? datasetRowCount)
       : datasetRowCount;
@@ -1732,6 +1740,8 @@ export function DataTableView({
       columnDescriptorsRef.current = [];
       setData(null);
       dataRef.current = null;
+    } finally {
+      inFlightLoadKeysRef.current.delete(inFlightLoadKey);
     }
   }, [buildWindowRequest, cancelActiveTransportMeasurement, clearPendingPrefetches, datasetGeneration, datasetId, queueNeighborPrefetches, resolveColumnIds, scheduleActiveTransportDiagnostics, updateTableCacheDiagnostics]);
   navigationReloadRef.current = () => {
