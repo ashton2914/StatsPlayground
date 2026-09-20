@@ -67,7 +67,7 @@ pub(crate) fn compute_effect_tests(
                 .max(1.0);
         let partial_ss =
             clamp_roundoff_negative(reduced_sse - full_sse, rounding_tolerance, "partial SS")?;
-        let effect_df = reduced_rank.abs_diff(full_rank) as u64;
+        let effect_df = directed_effect_df(full_rank, reduced_rank)?;
         let f_ratio = match (full_mse, effect_df, error_degrees_of_freedom) {
             (Some(mse), df, error_df) if mse.is_finite() && mse > 0.0 && df > 0 && error_df > 0 => {
                 finite_or_none((partial_ss / df as f64) / mse)
@@ -142,6 +142,19 @@ fn rank_tolerance(singular_values: &[f64], n: usize, p: usize) -> f64 {
     n.max(p) as f64 * f64::EPSILON * sigma_max
 }
 
+fn directed_effect_df(full_rank: usize, reduced_rank: usize) -> Result<u64, FitModelEngineError> {
+    let difference = full_rank.checked_sub(reduced_rank).ok_or_else(|| {
+        FitModelEngineError::NumericalFailure(
+            "reduced-model rank exceeded full-model rank".to_string(),
+        )
+    })?;
+    u64::try_from(difference).map_err(|_| {
+        FitModelEngineError::NumericalFailure(
+            "effect degrees of freedom exceeded supported range".to_string(),
+        )
+    })
+}
+
 fn upper_tail_f(f_ratio: f64, numerator_df: u64, denominator_df: u64) -> Option<f64> {
     if numerator_df == 0 || denominator_df == 0 {
         return None;
@@ -200,7 +213,7 @@ mod tests {
         FitModelInferenceReason, FitModelResolvedTerm, FitModelTermKind,
     };
 
-    use super::compute_effect_tests;
+    use super::{compute_effect_tests, directed_effect_df};
 
     const TOLERANCE: f64 = 1e-9;
 
@@ -255,16 +268,24 @@ mod tests {
         response: &DVector<f64>,
         removed_column: usize,
     ) -> f64 {
+        explicit_sse_without_columns(design, response, &[removed_column])
+    }
+
+    fn explicit_sse_without_columns(
+        design: &DMatrix<f64>,
+        response: &DVector<f64>,
+        removed_columns: &[usize],
+    ) -> f64 {
         let retained_columns = (0..design.ncols())
-            .filter(|column| *column != removed_column)
+            .filter(|column| !removed_columns.contains(column))
             .collect::<Vec<_>>();
         let reduced = DMatrix::from_fn(design.nrows(), retained_columns.len(), |row, column| {
             design[(row, retained_columns[column])]
         });
-        let tolerance = design.nrows().max(reduced.ncols()) as f64 * f64::EPSILON * reduced.norm();
-        let coefficients = reduced
-            .clone()
-            .svd(true, true)
+        let svd = reduced.clone().svd(true, true);
+        let sigma_max = svd.singular_values.iter().copied().fold(0.0_f64, f64::max);
+        let tolerance = design.nrows().max(reduced.ncols()) as f64 * f64::EPSILON * sigma_max;
+        let coefficients = svd
             .solve(response, tolerance)
             .expect("explicit reduced model should solve");
         let residuals = response - reduced * coefficients;
@@ -366,5 +387,101 @@ mod tests {
                 Some(FitModelInferenceReason::InferenceNotEstimable)
             );
         }
+    }
+
+    #[test]
+    fn non_orthogonal_effect_uses_partial_not_sequential_sum_of_squares() {
+        let design = DMatrix::from_row_slice(
+            6,
+            3,
+            &[
+                1.0, 0.0, 0.0, //
+                1.0, 1.0, 1.0, //
+                1.0, 2.0, 1.0, //
+                1.0, 3.0, 2.0, //
+                1.0, 4.0, 3.0, //
+                1.0, 5.0, 5.0,
+            ],
+        );
+        let response = DVector::from_vec(vec![2.0, 5.0, 8.0, 12.0, 14.0, 20.0]);
+        let terms = vec![
+            term("A", "A", FitModelTermKind::Main, &["A"]),
+            term("B", "B", FitModelTermKind::Main, &["B"]),
+        ];
+        let full_sse = explicit_sse_without_columns(&design, &response, &[]);
+        let partial_a = explicit_sse_without_columns(&design, &response, &[1]) - full_sse;
+        let intercept_only_sse = explicit_sse_without_columns(&design, &response, &[1, 2]);
+        let intercept_and_a_sse = explicit_sse_without_columns(&design, &response, &[2]);
+        let sequential_a = intercept_only_sse - intercept_and_a_sse;
+
+        let tests = compute_effect_tests(&design, &response, &terms, full_sse, Some(1.0), 3)
+            .expect("effect tests should compute");
+
+        assert_close(
+            tests[0].sum_of_squares.expect("partial sum of squares"),
+            partial_a,
+        );
+        assert!(
+            (partial_a - sequential_a).abs() > 1e-6,
+            "fixture must distinguish partial and sequential sums of squares"
+        );
+    }
+
+    #[test]
+    fn grouped_effect_uses_column_count_and_rank_difference() {
+        let design = DMatrix::from_row_slice(
+            6,
+            4,
+            &[
+                1.0, 0.0, 0.0, 0.0, //
+                1.0, 1.0, 0.0, 0.0, //
+                1.0, 0.0, 1.0, 0.0, //
+                1.0, 1.0, 1.0, 0.0, //
+                1.0, 0.0, 0.0, 1.0, //
+                1.0, 1.0, 2.0, 2.0,
+            ],
+        );
+        let response = DVector::from_vec(vec![1.0, 3.0, 4.0, 6.0, 6.0, 19.0]);
+        let terms = vec![
+            term("A", "A", FitModelTermKind::Main, &["A"]),
+            term("A", "A", FitModelTermKind::Main, &["A"]),
+            term("B", "B", FitModelTermKind::Main, &["B"]),
+        ];
+
+        let tests = compute_effect_tests(&design, &response, &terms, 0.0, Some(1.0), 2)
+            .expect("grouped effect tests should compute");
+
+        assert_eq!(tests.len(), 2);
+        assert_eq!(tests[0].term_id, "A");
+        assert_eq!(tests[0].number_of_parameters, 2);
+        assert_eq!(tests[0].degrees_of_freedom, 2);
+        assert_eq!(tests[1].term_id, "B");
+        assert_eq!(tests[1].number_of_parameters, 1);
+        assert_eq!(tests[1].degrees_of_freedom, 1);
+    }
+
+    #[test]
+    fn reversed_rank_order_is_a_numerical_failure() {
+        let error = directed_effect_df(2, 3).expect_err("reversed rank must fail");
+
+        assert!(matches!(
+            error,
+            super::FitModelEngineError::NumericalFailure(message)
+                if message.contains("reduced-model rank")
+        ));
+    }
+
+    #[test]
+    fn tiny_negative_partial_sum_of_squares_is_clamped_to_zero() {
+        let design = DMatrix::from_row_slice(4, 2, &[1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 2.0]);
+        let response = DVector::from_element(4, 2.0);
+        let terms = vec![term("A", "A", FitModelTermKind::Main, &["A"])];
+
+        let tests = compute_effect_tests(&design, &response, &terms, 1e-14, Some(1.0), 2)
+            .expect("roundoff-sized negative partial SS should clamp");
+
+        assert_eq!(tests[0].sum_of_squares, Some(0.0));
+        assert_eq!(tests[0].f_ratio, Some(0.0));
+        assert_eq!(tests[0].p_value, Some(1.0));
     }
 }

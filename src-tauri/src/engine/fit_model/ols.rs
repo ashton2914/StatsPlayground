@@ -1080,6 +1080,33 @@ mod tests {
     }
 
     #[test]
+    fn fitted_result_populates_effect_tests_before_leverage_plots() {
+        let input = build_input(
+            "Y",
+            vec![term(FitModelTermKind::Main, &["X"])],
+            FitModelCenteringMethod::None,
+            BTreeMap::from([(String::from("X"), vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0])]),
+            vec![1.1, 2.8, 5.2, 6.9, 9.1, 10.9],
+            vec![1, 2, 3, 4, 5, 6],
+            0,
+        );
+
+        let result = fit_linear_model(input, 0.95).expect("fit should succeed");
+        let FitModelResult::Fitted(fitted) = result else {
+            panic!("expected fitted result");
+        };
+
+        assert_eq!(fitted.effect_tests.len(), 1);
+        assert_eq!(fitted.effect_tests[0].term_id, "X");
+        assert_eq!(fitted.effect_tests[0].number_of_parameters, 1);
+        assert_eq!(fitted.effect_tests[0].degrees_of_freedom, 1);
+        assert!(fitted.effect_tests[0].sum_of_squares.is_some());
+        assert!(fitted.effect_tests[0].f_ratio.is_some());
+        assert!(fitted.effect_tests[0].p_value.is_some());
+        assert!(fitted.leverage_plots.is_empty());
+    }
+
+    #[test]
     fn exact_plane_fixture_matches_oracle() {
         let x1 = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let x2 = vec![2.0, 1.0, 4.0, 3.0, 6.0, 5.0];
