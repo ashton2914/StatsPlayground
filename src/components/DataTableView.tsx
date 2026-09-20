@@ -1980,14 +1980,21 @@ export function DataTableView({
       serializeTableWindowFilters(tableFilters),
       tableSort,
     );
-    if (
-      queryKey === loadedFilterKeyRef.current
-      && datasetGeneration === loadedFilterGenerationRef.current
-    ) return;
-    logicalEndFollowContextRef.current = null;
+    const queryChanged = queryKey !== loadedFilterKeyRef.current;
+    const generationChanged = datasetGeneration !== loadedFilterGenerationRef.current;
+    if (!queryChanged && !generationChanged) return;
+    const followContext = logicalEndFollowContextRef.current;
+    const preserveLogicalEnd = !queryChanged
+      && followContext?.datasetId === datasetId
+      && followContext.queryKey === queryKey;
+    if (!preserveLogicalEnd) {
+      logicalEndFollowContextRef.current = null;
+    }
     void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
-    setLogicalStart(0);
-    void load(tableFilters, 0);
+    const nextStart = preserveLogicalEnd ? windowStartRef.current : 0;
+    logicalStartRef.current = preserveLogicalEnd ? maxLogicalStartRef.current : 0;
+    setLogicalStart(logicalStartRef.current);
+    void load(tableFilters, nextStart);
   }, [datasetGeneration, datasetId, invalidateScheduledNavigation, load, tableFilters, tableSort]);
 
   // Apply pending restore from history store (undo/redo/jumpTo)
