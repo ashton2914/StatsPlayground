@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use nalgebra::{DMatrix, DVector};
-use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
+use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 
 use crate::engine::fit_model::ols::{deterministic_rank_grid, FitModelEngineError};
 use crate::engine::fit_model::reporting_basis::FitModelReportingBasis;
@@ -15,6 +17,13 @@ const GRAPH_SCATTER_RENDER_BUDGET: usize = crate::models::graph_data::GRAPH_SCAT
 struct EffectColumns<'a> {
     term: &'a FitModelResolvedTerm,
     columns: Vec<usize>,
+}
+
+struct LeverageGeometry {
+    contribution: DVector<f64>,
+    constrained_residuals: DVector<f64>,
+    full_residuals: DVector<f64>,
+    hypothesis_sum_of_squares: f64,
 }
 
 pub(crate) fn compute_effect_tests(
@@ -188,21 +197,23 @@ fn compute_centered_effect_tests(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_effect_leverage_plots(
-    design_matrix: &DMatrix<f64>,
+    fitted_design_matrix: &DMatrix<f64>,
     response: &DVector<f64>,
     row_indexes: &[u64],
     terms: &[FitModelResolvedTerm],
+    reporting: &FitModelReportingBasis,
     effect_tests: &[FitModelEffectTest],
+    predictor_means: &BTreeMap<String, f64>,
     mse: Option<f64>,
     error_degrees_of_freedom: u64,
     confidence_level: f64,
 ) -> Result<Vec<FitModelLeveragePlot>, FitModelEngineError> {
-    if design_matrix.nrows() != response.len() || response.len() != row_indexes.len() {
+    if fitted_design_matrix.nrows() != response.len() || response.len() != row_indexes.len() {
         return Err(FitModelEngineError::InvalidInput(
             "design matrix, response, and row indexes must have equal row counts".to_string(),
         ));
     }
-    if design_matrix.ncols() != terms.len() + 1 {
+    if fitted_design_matrix.ncols() != terms.len() + 1 {
         return Err(FitModelEngineError::InvalidInput(
             "resolved terms must map to all non-intercept design columns".to_string(),
         ));
@@ -215,6 +226,7 @@ pub(crate) fn compute_effect_leverage_plots(
 
     let response_mean = vector_mean(response)?;
     let effects = group_effect_columns(terms);
+    let design_matrix = reporting.design_matrix(fitted_design_matrix)?;
     let design_singular_values = design_matrix.clone().svd(false, false).singular_values;
     let projection_rank_tolerance = rank_tolerance(
         design_singular_values.as_slice(),
@@ -235,7 +247,7 @@ pub(crate) fn compute_effect_leverage_plots(
                     effect.term.term_id
                 ))
             })?;
-        if effect.columns.len() != 1 {
+        if effect_test.degrees_of_freedom == 0 || effect_test.sum_of_squares.is_none() {
             plots.push(non_estimable_leverage_plot(
                 effect.term,
                 effect_test,
@@ -245,43 +257,86 @@ pub(crate) fn compute_effect_leverage_plots(
             continue;
         }
 
-        let selected_column = effect.columns[0];
-        let selected = design_matrix.column(selected_column).into_owned();
-        let effect_mean = vector_mean(&selected)?;
-        let nuisance = matrix_without_columns(design_matrix, &[selected_column]);
-        let residualized_x = residualize_against(&nuisance, &selected)?;
-        let residualized_x_energy = residualized_x.dot(&residualized_x);
-        if !residualized_x_energy.is_finite() {
+        let geometry = leverage_geometry(
+            &design_matrix,
+            response,
+            &effect.columns,
+            &effect.term.term_id,
+        )?;
+        if geometry.full_residuals.len() != response.len() {
             return Err(FitModelEngineError::NumericalFailure(format!(
-                "effect {} has non-finite residualized variation",
+                "effect {} produced incomplete leverage geometry",
                 effect.term.term_id
             )));
         }
-        if residualized_x_energy <= projection_rank_tolerance * projection_rank_tolerance {
-            plots.push(non_estimable_leverage_plot(
-                effect.term,
-                effect_test,
-                response_mean,
-                response.len(),
-            ));
-            continue;
-        }
-        let residualized_y = residualize_against(&nuisance, response)?;
-        let slope = residualized_x.dot(&residualized_y) / residualized_x_energy;
-        if !slope.is_finite() {
-            return Err(FitModelEngineError::NumericalFailure(format!(
-                "effect {} produced a non-finite partial slope",
-                effect.term.term_id
-            )));
-        }
+        let simple_continuous_main = effect.columns.len() == 1
+            && effect.term.kind == crate::models::fit_model::FitModelTermKind::Main
+            && effect.term.column_names.len() == 1;
+        let (plot_center, slope, horizontal_coordinates, horizontal_energy) =
+            if simple_continuous_main {
+                let selected_column = effect.columns[0];
+                let selected = design_matrix.column(selected_column).into_owned();
+                let nuisance = matrix_without_columns(&design_matrix, &[selected_column]);
+                let residualized_x = residualize_against(&nuisance, &selected)?;
+                let residualized_x_energy = residualized_x.dot(&residualized_x);
+                if !residualized_x_energy.is_finite() {
+                    return Err(FitModelEngineError::NumericalFailure(format!(
+                        "effect {} has non-finite residualized variation",
+                        effect.term.term_id
+                    )));
+                }
+                if residualized_x_energy <= projection_rank_tolerance * projection_rank_tolerance {
+                    plots.push(non_estimable_leverage_plot(
+                        effect.term,
+                        effect_test,
+                        response_mean,
+                        response.len(),
+                    ));
+                    continue;
+                }
+                let predictor_mean = predictor_means
+                    .get(&effect.term.column_names[0])
+                    .copied()
+                    .ok_or_else(|| {
+                        FitModelEngineError::InvalidInput(format!(
+                            "predictor mean is missing for {}",
+                            effect.term.column_names[0]
+                        ))
+                    })?;
+                if !predictor_mean.is_finite() {
+                    return Err(FitModelEngineError::NumericalFailure(format!(
+                        "predictor mean is non-finite for {}",
+                        effect.term.column_names[0]
+                    )));
+                }
+                (
+                    predictor_mean,
+                    reporting.coefficients[selected_column],
+                    residualized_x.map(|value| predictor_mean + value),
+                    residualized_x_energy,
+                )
+            } else {
+                let hypothesis_sum_of_squares = if effect_test.sum_of_squares == Some(0.0) {
+                    0.0
+                } else {
+                    geometry.hypothesis_sum_of_squares
+                };
+                (
+                    response_mean,
+                    1.0,
+                    geometry.contribution.map(|value| response_mean + value),
+                    hypothesis_sum_of_squares,
+                )
+            };
 
         let mut points = Vec::with_capacity(sampled_ranks.len());
         for rank in &sampled_ranks {
             let index = (*rank - 1) as usize;
-            let effect_leverage =
-                finite_value(effect_mean + residualized_x[index], "effect leverage")?;
-            let adjusted_response =
-                finite_value(response_mean + residualized_y[index], "adjusted response")?;
+            let effect_leverage = finite_value(horizontal_coordinates[index], "effect leverage")?;
+            let adjusted_response = finite_value(
+                response_mean + geometry.constrained_residuals[index],
+                "adjusted response",
+            )?;
             points.push(FitModelLeveragePoint {
                 row_index: row_indexes[index],
                 effect_leverage,
@@ -300,10 +355,11 @@ pub(crate) fn compute_effect_leverage_plots(
         let confidence_band = if let (None, Some(inference_mse)) = (&reason, inference_mse) {
             confidence_band(
                 &points,
-                effect_mean,
+                plot_center,
                 response_mean,
                 slope,
-                residualized_x_energy,
+                horizontal_energy,
+                effect_test.degrees_of_freedom,
                 inference_mse,
                 error_degrees_of_freedom,
                 confidence_level,
@@ -327,6 +383,51 @@ pub(crate) fn compute_effect_leverage_plots(
     }
 
     Ok(plots)
+}
+
+fn leverage_geometry(
+    reporting_design: &DMatrix<f64>,
+    response: &DVector<f64>,
+    effect_columns: &[usize],
+    term_id: &str,
+) -> Result<LeverageGeometry, FitModelEngineError> {
+    let full_residuals = residualize_against(reporting_design, response)?;
+    let constrained_design = matrix_without_columns(reporting_design, effect_columns);
+    let constrained_residuals = residualize_against(&constrained_design, response)?;
+    let contribution = &constrained_residuals - &full_residuals;
+    let hypothesis_sum_of_squares = contribution.dot(&contribution);
+    if full_residuals
+        .iter()
+        .chain(constrained_residuals.iter())
+        .chain(contribution.iter())
+        .any(|value| !value.is_finite())
+        || !hypothesis_sum_of_squares.is_finite()
+    {
+        return Err(FitModelEngineError::NumericalFailure(format!(
+            "effect {term_id} produced non-finite leverage geometry"
+        )));
+    }
+    let full_sse = full_residuals.dot(&full_residuals);
+    let constrained_sse = constrained_residuals.dot(&constrained_residuals);
+    let tolerance = ROUNDING_CLAMP_FACTOR
+        * response
+            .dot(response)
+            .abs()
+            .max(full_sse.abs())
+            .max(constrained_sse.abs())
+            .max(1.0);
+    clamp_roundoff_negative(
+        constrained_sse - full_sse,
+        tolerance,
+        "leverage hypothesis SS",
+    )?;
+
+    Ok(LeverageGeometry {
+        contribution,
+        constrained_residuals,
+        full_residuals,
+        hypothesis_sum_of_squares,
+    })
 }
 
 fn non_estimable_leverage_plot(
@@ -391,41 +492,59 @@ fn residualize_against(
 #[allow(clippy::too_many_arguments)]
 fn confidence_band(
     points: &[FitModelLeveragePoint],
-    effect_mean: f64,
+    plot_center: f64,
     response_mean: f64,
     slope: f64,
-    residualized_x_energy: f64,
+    horizontal_energy: f64,
+    effect_degrees_of_freedom: u64,
     mse: f64,
     error_degrees_of_freedom: u64,
     confidence_level: f64,
     source_row_count: usize,
 ) -> Result<Vec<FitModelLeverageBandPoint>, FitModelEngineError> {
-    let distribution = StudentsT::new(0.0, 1.0, error_degrees_of_freedom as f64).map_err(|_| {
+    let distribution = FisherSnedecor::new(
+        effect_degrees_of_freedom as f64,
+        error_degrees_of_freedom as f64,
+    )
+    .map_err(|_| {
         FitModelEngineError::NumericalFailure(
             "failed to construct leverage confidence distribution".to_string(),
         )
     })?;
-    let critical = distribution.inverse_cdf(0.5 + confidence_level / 2.0);
-    if !critical.is_finite() {
+    let f_critical = distribution.inverse_cdf(confidence_level);
+    if !f_critical.is_finite() {
         return Err(FitModelEngineError::NumericalFailure(
             "leverage confidence critical value is non-finite".to_string(),
         ));
     }
 
-    let mut effect_leverages = points
-        .iter()
-        .map(|point| point.effect_leverage)
-        .collect::<Vec<_>>();
+    let mut effect_leverages = if horizontal_energy == 0.0 {
+        vec![plot_center]
+    } else {
+        points
+            .iter()
+            .map(|point| point.effect_leverage)
+            .collect::<Vec<_>>()
+    };
     effect_leverages.sort_by(f64::total_cmp);
     effect_leverages
         .into_iter()
         .map(|effect_leverage| {
-            let centered = effect_leverage - effect_mean;
+            let centered = effect_leverage - plot_center;
             let fitted = finite_value(response_mean + slope * centered, "leverage fitted value")?;
-            let standard_error = (mse
-                * (1.0 / source_row_count as f64 + centered * centered / residualized_x_energy))
-                .sqrt();
-            let margin = finite_value(critical * standard_error, "leverage confidence margin")?;
+            let leverage_term = if horizontal_energy == 0.0 {
+                0.0
+            } else {
+                centered * centered / horizontal_energy
+            };
+            let margin = finite_value(
+                (effect_degrees_of_freedom as f64
+                    * f_critical
+                    * mse
+                    * (1.0 / source_row_count as f64 + leverage_term))
+                    .sqrt(),
+                "leverage confidence margin",
+            )?;
             Ok(FitModelLeverageBandPoint {
                 effect_leverage,
                 fitted,
@@ -550,6 +669,8 @@ fn normalize_signed_zero(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use nalgebra::{DMatrix, DVector};
     use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
@@ -560,7 +681,7 @@ mod tests {
 
     use super::{
         compute_effect_leverage_plots, compute_effect_tests, directed_effect_df,
-        rank_from_singular_values, rank_tolerance,
+        rank_from_singular_values, rank_tolerance, vector_mean,
     };
 
     const TOLERANCE: f64 = 1e-9;
@@ -645,6 +766,60 @@ mod tests {
             (actual - expected).abs() <= TOLERANCE,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute_test_leverage_plots(
+        design: &DMatrix<f64>,
+        response: &DVector<f64>,
+        row_indexes: &[u64],
+        terms: &[FitModelResolvedTerm],
+        effect_tests: &[FitModelEffectTest],
+        mse: Option<f64>,
+        error_degrees_of_freedom: u64,
+        confidence_level: f64,
+    ) -> Result<Vec<crate::models::fit_model::FitModelLeveragePlot>, super::FitModelEngineError>
+    {
+        let svd = design.clone().svd(true, true);
+        let tolerance = rank_tolerance(
+            svd.singular_values.as_slice(),
+            design.nrows(),
+            design.ncols(),
+        );
+        let coefficients = svd
+            .solve(response, tolerance)
+            .map_err(|_| super::FitModelEngineError::SolveFailure)?;
+        let reporting = reporting_basis_test_fixture(
+            coefficients,
+            DMatrix::identity(design.ncols(), design.ncols()),
+            std::iter::once("Intercept".to_string())
+                .chain(terms.iter().map(|term| term.label.clone()))
+                .collect(),
+            false,
+        );
+        let predictor_means = terms
+            .iter()
+            .enumerate()
+            .filter(|(_, term)| term.kind == FitModelTermKind::Main && term.column_names.len() == 1)
+            .map(|(index, term)| {
+                (
+                    term.column_names[0].clone(),
+                    design.column(index + 1).iter().sum::<f64>() / design.nrows() as f64,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        compute_effect_leverage_plots(
+            design,
+            response,
+            row_indexes,
+            terms,
+            &reporting,
+            effect_tests,
+            &predictor_means,
+            mse,
+            error_degrees_of_freedom,
+            confidence_level,
+        )
     }
 
     #[test]
@@ -791,7 +966,7 @@ mod tests {
         effect_tests.reverse();
         let row_indexes = vec![101, 103, 107, 109, 113, 127, 131, 137];
 
-        let plots = compute_effect_leverage_plots(
+        let plots = compute_test_leverage_plots(
             &design,
             &response,
             &row_indexes,
@@ -945,7 +1120,7 @@ mod tests {
                 "near-alias fixture must retain a nonzero perturbation"
             );
         }
-        let plots = compute_effect_leverage_plots(
+        let plots = compute_test_leverage_plots(
             &design,
             &response,
             &[1, 2, 3, 4, 5, 6],
@@ -1008,7 +1183,7 @@ mod tests {
             reason: None,
         }];
 
-        let first = compute_effect_leverage_plots(
+        let first = compute_test_leverage_plots(
             &design,
             &response,
             &row_indexes,
@@ -1019,7 +1194,7 @@ mod tests {
             0.95,
         )
         .expect("first leverage plot should compute");
-        let second = compute_effect_leverage_plots(
+        let second = compute_test_leverage_plots(
             &design,
             &response,
             &row_indexes,
@@ -1056,7 +1231,7 @@ mod tests {
             .expect("effect geometry should compute");
         let row_indexes = (1..=8).collect::<Vec<_>>();
 
-        let plots = compute_effect_leverage_plots(
+        let plots = compute_test_leverage_plots(
             &design,
             &response,
             &row_indexes,
@@ -1078,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn leverage_marks_multi_column_effect_non_estimable() {
+    fn leverage_scales_multi_column_effect_in_response_units() {
         let design = DMatrix::from_row_slice(
             6,
             4,
@@ -1101,7 +1276,7 @@ mod tests {
             compute_effect_tests(&design, &response, &terms, None, 0.0, Some(1.0), 2)
                 .expect("effect tests should compute");
 
-        let plots = compute_effect_leverage_plots(
+        let plots = compute_test_leverage_plots(
             &design,
             &response,
             &[1, 2, 3, 4, 5, 6],
@@ -1117,12 +1292,185 @@ mod tests {
             .find(|plot| plot.term_id == "A")
             .expect("grouped effect payload");
 
-        assert!(grouped.points.is_empty());
-        assert!(grouped.confidence_band.is_empty());
-        assert_eq!(
-            grouped.reason,
-            Some(FitModelInferenceReason::InferenceNotEstimable)
+        assert!(!grouped.points.is_empty());
+        let first = grouped.confidence_band.first().expect("band start");
+        let second = grouped
+            .confidence_band
+            .iter()
+            .find(|point| (point.effect_leverage - first.effect_leverage).abs() > TOLERANCE)
+            .expect("distinct band coordinate");
+        assert_close(
+            (second.fitted - first.fitted) / (second.effect_leverage - first.effect_leverage),
+            1.0,
         );
+        assert_eq!(grouped.p_value, effect_tests[0].p_value);
+        assert_eq!(grouped.reason, None);
+    }
+
+    #[test]
+    fn leverage_non_hierarchical_interaction_uses_raw_test_and_residual_geometry() {
+        let design = DMatrix::from_row_slice(
+            8,
+            3,
+            &[
+                1.0, -1.0, -1.0, //
+                1.0, -1.0, -1.0, //
+                1.0, -1.0, 1.0, //
+                1.0, -1.0, 1.0, //
+                1.0, 1.0, -1.0, //
+                1.0, 1.0, -1.0, //
+                1.0, 1.0, 1.0, //
+                1.0, 1.0, 1.0, //
+            ],
+        );
+        let residual_pattern = [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0];
+        let response = DVector::from_iterator(
+            8,
+            (0..8).map(|row| {
+                1.0 + 2.0 * design[(row, 1)] + 3.0 * design[(row, 2)] + residual_pattern[row]
+            }),
+        );
+        let terms = vec![
+            term("A", "A", FitModelTermKind::Main, &["A"]),
+            term(
+                "interaction:A*B",
+                "A*B",
+                FitModelTermKind::Interaction,
+                &["A", "B"],
+            ),
+        ];
+        let full_residuals = explicit_residualize(&design, &response);
+        let full_sse = full_residuals.dot(&full_residuals);
+        let effect_tests =
+            compute_effect_tests(&design, &response, &terms, None, full_sse, Some(1.6), 5)
+                .expect("raw effect tests");
+        let plots = compute_test_leverage_plots(
+            &design,
+            &response,
+            &(1..=8).collect::<Vec<_>>(),
+            &terms,
+            &effect_tests,
+            Some(1.6),
+            5,
+            0.95,
+        )
+        .expect("non-hierarchical leverage");
+        let plot = plots
+            .iter()
+            .find(|plot| plot.term_id == "interaction:A*B")
+            .expect("interaction plot");
+        let effect_test = effect_tests
+            .iter()
+            .find(|test| test.term_id == "interaction:A*B")
+            .expect("interaction test");
+        let constrained_design = DMatrix::from_fn(8, 2, |row, column| design[(row, column)]);
+        let constrained_residuals = explicit_residualize(&constrained_design, &response);
+        let response_mean = vector_mean(&response).expect("response mean");
+
+        assert_eq!(plot.p_value, effect_test.p_value);
+        for (row, point) in plot.points.iter().enumerate() {
+            assert_close(
+                point.adjusted_response - point.effect_leverage,
+                full_residuals[row],
+            );
+            assert_close(
+                point.adjusted_response - response_mean,
+                constrained_residuals[row],
+            );
+        }
+        assert_close(
+            constrained_residuals.dot(&constrained_residuals) - full_sse,
+            effect_test.sum_of_squares.expect("interaction SS"),
+        );
+        let first = plot.confidence_band.first().expect("band start");
+        let second = plot
+            .confidence_band
+            .iter()
+            .find(|point| (point.effect_leverage - first.effect_leverage).abs() > TOLERANCE)
+            .expect("distinct interaction coordinate");
+        assert_close(
+            (second.fitted - first.fitted) / (second.effect_leverage - first.effect_leverage),
+            1.0,
+        );
+    }
+
+    #[test]
+    fn leverage_zero_sum_of_squares_complex_effect_keeps_center_confidence_point() {
+        let design = DMatrix::from_row_slice(
+            8,
+            3,
+            &[
+                1.0, -1.0, -1.0, //
+                1.0, -1.0, -1.0, //
+                1.0, -1.0, 1.0, //
+                1.0, -1.0, 1.0, //
+                1.0, 1.0, -1.0, //
+                1.0, 1.0, -1.0, //
+                1.0, 1.0, 1.0, //
+                1.0, 1.0, 1.0, //
+            ],
+        );
+        let response = DVector::from_vec(vec![-2.0, 0.0, -2.0, 0.0, 2.0, 4.0, 2.0, 4.0]);
+        let terms = vec![
+            term("A", "A", FitModelTermKind::Main, &["A"]),
+            term(
+                "interaction:A*B",
+                "A*B",
+                FitModelTermKind::Interaction,
+                &["A", "B"],
+            ),
+        ];
+        let effect_tests = vec![
+            FitModelEffectTest {
+                term_id: "A".to_string(),
+                term_label: "A".to_string(),
+                number_of_parameters: 1,
+                degrees_of_freedom: 1,
+                sum_of_squares: Some(32.0),
+                f_ratio: Some(20.0),
+                p_value: Some(0.01),
+                reason: None,
+            },
+            FitModelEffectTest {
+                term_id: "interaction:A*B".to_string(),
+                term_label: "A*B".to_string(),
+                number_of_parameters: 1,
+                degrees_of_freedom: 1,
+                sum_of_squares: Some(0.0),
+                f_ratio: Some(0.0),
+                p_value: Some(1.0),
+                reason: None,
+            },
+        ];
+        let plots = compute_test_leverage_plots(
+            &design,
+            &response,
+            &(1..=8).collect::<Vec<_>>(),
+            &terms,
+            &effect_tests,
+            Some(1.6),
+            5,
+            0.95,
+        )
+        .expect("zero-SS leverage");
+        let plot = plots
+            .iter()
+            .find(|plot| plot.term_id == "interaction:A*B")
+            .expect("interaction plot");
+        let band = plot.confidence_band.first().expect("center band point");
+        let center = vector_mean(&response).expect("response mean");
+        let f_critical = FisherSnedecor::new(1.0, 5.0)
+            .expect("F distribution")
+            .inverse_cdf(0.95);
+        let expected_margin = (f_critical * 1.6 / 8.0).sqrt();
+
+        assert_eq!(plot.reason, None);
+        assert_eq!(plot.p_value, Some(1.0));
+        assert_eq!(plot.confidence_band.len(), 1);
+        assert_close(band.effect_leverage, center);
+        assert_close(band.fitted, center);
+        assert_close(band.upper - band.fitted, expected_margin);
+        assert_close(band.fitted - band.lower, expected_margin);
     }
 
     #[test]

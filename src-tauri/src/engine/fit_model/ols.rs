@@ -309,34 +309,23 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         perfect_fit,
         ill_conditioned,
     );
-    let fitted_effect_tests = compute_effect_tests(
+    let effect_tests = compute_effect_tests(
         &input.design_matrix,
         &response,
         &resolved,
-        None,
+        Some(&reporting),
         sse,
         mse,
         df_error as u64,
     )?;
-    let effect_tests = if reporting.centered {
-        compute_effect_tests(
-            &input.design_matrix,
-            &response,
-            &resolved,
-            Some(&reporting),
-            sse,
-            mse,
-            df_error as u64,
-        )?
-    } else {
-        fitted_effect_tests.clone()
-    };
     let leverage_plots = compute_effect_leverage_plots(
         &input.design_matrix,
         &response,
         &input.row_indexes,
         &resolved,
-        &fitted_effect_tests,
+        &reporting,
+        &effect_tests,
+        &means,
         mse,
         df_error as u64,
         confidence_level,
@@ -985,10 +974,7 @@ mod tests {
             .map(|row| 1.0 + 0.6 * a[row] * b[row] + noise[row])
             .collect::<Vec<_>>();
         let mut results = Vec::new();
-        for construction in [
-            FitModelCenteringMethod::None,
-            FitModelCenteringMethod::Mean,
-        ] {
+        for construction in [FitModelCenteringMethod::None, FitModelCenteringMethod::Mean] {
             let input = build_input(
                 "Y",
                 vec![
@@ -997,35 +983,16 @@ mod tests {
                     term(FitModelTermKind::Interaction, &["A", "B"]),
                 ],
                 construction.clone(),
-                BTreeMap::from([
-                    ("A".to_string(), a.clone()),
-                    ("B".to_string(), b.clone()),
-                ]),
+                BTreeMap::from([("A".to_string(), a.clone()), ("B".to_string(), b.clone())]),
                 response.clone(),
                 (1..=9).collect(),
                 0,
             );
             let design = input.design_matrix.clone();
-            let resolved = super::resolved_terms(&input.model_matrix_spec);
-            let fitted_tests = super::compute_effect_tests(
-                &design,
-                &nalgebra::DVector::from_vec(response.clone()),
-                &resolved,
-                None,
-                0.36,
-                Some(0.072),
-                5,
-            )
-            .expect("fitted-basis tests");
-            let FitModelResult::Fitted(fitted) =
-                fit_linear_model(input, 0.95).expect("fit")
-            else {
+            let FitModelResult::Fitted(fitted) = fit_linear_model(input, 0.95).expect("fit") else {
                 panic!("expected fitted result");
             };
-            for (estimate, expected) in fitted
-                .parameter_estimates
-                .iter()
-                .zip([4.6, 1.8, 1.2, 0.6])
+            for (estimate, expected) in fitted.parameter_estimates.iter().zip([4.6, 1.8, 1.2, 0.6])
             {
                 assert_close(estimate.estimate, expected);
             }
@@ -1044,23 +1011,18 @@ mod tests {
                 assert_close(row.residual, row.observed - prediction);
             }
             assert_close(fitted.anova[1].sum_of_squares, 0.36);
-            for (plot, expected) in fitted.leverage_plots.iter().zip(&fitted_tests) {
-                // Near a null slope, roundoff in reduced SSE is amplified by the F tail.
-                assert!(
-                    (plot.p_value.expect("leverage p") - expected.p_value.expect("fitted p"))
-                        .abs()
-                        < 1e-6
-                );
+            for (plot, expected) in fitted.leverage_plots.iter().zip(&fitted.effect_tests) {
+                assert_eq!(plot.p_value, expected.p_value);
             }
             if construction == FitModelCenteringMethod::None {
                 assert!(fitted.effect_tests[0].p_value.expect("centered p") < 0.001);
-                assert!(fitted.leverage_plots[0].p_value.expect("raw p") > 1.0 - 1e-6);
+                assert!(fitted.leverage_plots[0].p_value.expect("centered p") < 0.001);
                 let band = &fitted.leverage_plots[0].confidence_band;
                 let first = band.first().expect("band start");
                 let last = band.last().expect("band end");
                 assert_close(
                     (last.fitted - first.fitted) / (last.effect_leverage - first.effect_leverage),
-                    0.0,
+                    1.8,
                 );
             }
             results.push(fitted);
@@ -1076,11 +1038,7 @@ mod tests {
             );
             assert_close(raw.t_ratio.expect("t"), centered.t_ratio.expect("t"));
         }
-        for (raw, centered) in results[0]
-            .effect_tests
-            .iter()
-            .zip(&results[1].effect_tests)
-        {
+        for (raw, centered) in results[0].effect_tests.iter().zip(&results[1].effect_tests) {
             assert_close(
                 raw.sum_of_squares.expect("SS"),
                 centered.sum_of_squares.expect("SS"),
@@ -1090,15 +1048,15 @@ mod tests {
     }
 
     #[test]
-    fn hierarchical_interactions_report_centered_parameters_without_changing_predictions() {
+    fn hierarchical_interactions_align_leverage_with_centered_effect_test() {
         let a = vec![0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0];
         let b = vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 1.0, 4.0];
         let c = vec![1.0, 2.0, 0.0, 3.0, 4.0, 1.0, 2.0, 5.0, 3.0, 0.0];
         let noise = [0.1, -0.2, 0.05, 0.15, -0.1, 0.2, -0.05, 0.1, -0.15, -0.1];
         let response = (0..a.len())
             .map(|row| {
-                5.0 + 2.0 * a[row] - 3.0 * b[row] + 0.5 * c[row] + 4.0 * a[row] * b[row]
-                    - 1.5 * a[row] * c[row]
+                5.0 + 2.0 * a[row] - 3.0 * b[row] + 0.5 * c[row] - 4.0 * a[row] * b[row]
+                    + 0.5 * a[row] * c[row]
                     + noise[row]
             })
             .collect::<Vec<_>>();
@@ -1134,6 +1092,33 @@ mod tests {
         let expected_fitted = &raw_design * &raw_beta;
         let expected_residuals = &raw_response - &expected_fitted;
         let expected_mse = expected_residuals.dot(&expected_residuals) / 4.0;
+        let resolved = super::resolved_terms(&input.model_matrix_spec);
+        let means = input
+            .predictor_ranges
+            .iter()
+            .map(|range| (range.column_name.clone(), range.mean))
+            .collect::<BTreeMap<_, _>>();
+        let reporting = super::reporting_basis(
+            &raw_beta,
+            &raw_covariance_geometry,
+            &resolved,
+            &means,
+            input.model_matrix_spec.centering_method(),
+        )
+        .expect("reporting basis");
+        let reporting_design = reporting
+            .design_matrix(&raw_design)
+            .expect("reporting design");
+        let reduced_design = DMatrix::from_fn(
+            reporting_design.nrows(),
+            reporting_design.ncols() - 1,
+            |row, column| reporting_design[(row, if column == 0 { 0 } else { column + 1 })],
+        );
+        let reduced_svd = reduced_design.clone().svd(true, true);
+        let reduced_coefficients = reduced_svd
+            .solve(&raw_response, 1e-12)
+            .expect("constrained coefficients");
+        let constrained_residuals = &raw_response - reduced_design * reduced_coefficients;
         let mean_a = 2.0;
         let mean_b = 1.7;
         let mean_c = 2.1;
@@ -1144,6 +1129,20 @@ mod tests {
             + mean_a * mean_b * raw_beta[4]
             + mean_a * mean_c * raw_beta[5];
         let expected_main_a = raw_beta[1] + mean_b * raw_beta[4] + mean_c * raw_beta[5];
+        let centered_effect_tests = super::compute_effect_tests(
+            &raw_design,
+            &raw_response,
+            &resolved,
+            Some(&reporting),
+            expected_residuals.dot(&expected_residuals),
+            Some(expected_mse),
+            4,
+        )
+        .expect("centered effect tests");
+        let centered_effect_test = centered_effect_tests
+            .iter()
+            .find(|test| test.term_id == "A")
+            .expect("centered A effect test");
 
         let result = fit_linear_model(input, 0.95).expect("fit should succeed");
         let FitModelResult::Fitted(fitted) = result else {
@@ -1152,18 +1151,8 @@ mod tests {
 
         assert_close(fitted.parameter_estimates[0].estimate, expected_intercept);
         assert_close(fitted.parameter_estimates[1].estimate, expected_main_a);
-        assert_close(
-            fitted.parameter_estimates[1]
-                .standard_error
-                .expect("centered A standard error"),
-            0.04009000401105613,
-        );
-        assert_close(
-            fitted.parameter_estimates[1]
-                .t_ratio
-                .expect("centered A t ratio"),
-            140.00821578623015,
-        );
+        assert!(raw_beta[1] > 0.0);
+        assert!(expected_main_a < 0.0);
         assert_eq!(fitted.plot_rows.len(), raw_response.len());
         for index in 0..raw_response.len() {
             let row = &fitted.plot_rows[index];
@@ -1189,6 +1178,65 @@ mod tests {
                 );
             }
         }
+        let response_mean = raw_response.iter().sum::<f64>() / raw_response.len() as f64;
+        let plot = fitted
+            .leverage_plots
+            .iter()
+            .find(|plot| plot.term_id == "A")
+            .expect("A leverage plot");
+        let non_center = plot
+            .confidence_band
+            .iter()
+            .find(|point| (point.effect_leverage - mean_a).abs() > 1e-9)
+            .expect("non-center band point");
+        let recovered_plot_slope =
+            (non_center.fitted - response_mean) / (non_center.effect_leverage - mean_a);
+        assert!(recovered_plot_slope < 0.0);
+        assert_eq!(plot.p_value, centered_effect_test.p_value);
+        assert_close(
+            plot.points
+                .iter()
+                .map(|point| point.effect_leverage)
+                .sum::<f64>()
+                / plot.points.len() as f64,
+            mean_a,
+        );
+        for (row, point) in plot.points.iter().enumerate() {
+            let fitted_on_plot = response_mean + expected_main_a * (point.effect_leverage - mean_a);
+            assert_close(
+                point.adjusted_response - fitted_on_plot,
+                expected_residuals[row],
+            );
+            assert_close(
+                point.adjusted_response - response_mean,
+                constrained_residuals[row],
+            );
+        }
+        assert_close(
+            constrained_residuals.dot(&constrained_residuals)
+                - expected_residuals.dot(&expected_residuals),
+            centered_effect_test
+                .sum_of_squares
+                .expect("centered hypothesis sum of squares"),
+        );
+        let interaction_plot = fitted
+            .leverage_plots
+            .iter()
+            .find(|plot| plot.term_id == "interaction:A*B")
+            .expect("interaction leverage plot");
+        let first = interaction_plot
+            .confidence_band
+            .first()
+            .expect("interaction band start");
+        let second = interaction_plot
+            .confidence_band
+            .iter()
+            .find(|point| (point.effect_leverage - first.effect_leverage).abs() > 1e-9)
+            .expect("distinct interaction band point");
+        assert_close(
+            (second.fitted - first.fitted) / (second.effect_leverage - first.effect_leverage),
+            1.0,
+        );
     }
 
     #[test]
