@@ -81,6 +81,7 @@ import { useAnalysisStore } from "@/stores/useAnalysisStore";
 import { useTabulateStore } from "@/stores/useTabulateStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTableTransformStore } from "@/stores/useTableTransformStore";
+import { useTableViewportStore } from "@/stores/useTableViewportStore";
 import {
   resolveSelectionAfterDatasetDeletion,
   useWorkspaceSelectionStore,
@@ -303,6 +304,9 @@ export function Workspace() {
   const renameDatasetFilterColumn = useDatasetFilterStore((s) => s.renameColumn);
   const loadDatasetFiltersFromProject = useDatasetFilterStore((s) => s.loadFromProject);
   const resetDatasetFilters = useDatasetFilterStore((s) => s.reset);
+  const removeDatasetViewport = useTableViewportStore((s) => s.removeDataset);
+  const retainDatasetViewports = useTableViewportStore((s) => s.retainDatasets);
+  const resetTableViewports = useTableViewportStore((s) => s.reset);
   const tabulates = useTabulateStore((s) => s.items);
   const workflows = useWorkflowStore((s) => s.workflows);
   const workflowRuns = useWorkflowStore((s) => s.workflowRuns);
@@ -615,13 +619,14 @@ export function Workspace() {
     await refreshDatasets();
     // If activeDataset no longer exists, deselect
     const updatedDatasets = await dataService.listDatasets();
+    retainDatasetViewports(updatedDatasets.map((dataset) => dataset.id));
     if (activeDatasetId && !updatedDatasets.find((d) => d.id === activeDatasetId)) {
       setActiveDataset(null);
     }
     // Force DataTableView to remount and reload data
     setTableKey((k) => k + 1);
     invalidateData();
-  }, [refreshDatasets, activeDatasetId, setActiveDataset, invalidateData]);
+  }, [refreshDatasets, activeDatasetId, setActiveDataset, invalidateData, retainDatasetViewports]);
 
   useEffect(() => {
     refreshDatasets();
@@ -1432,6 +1437,7 @@ export function Workspace() {
     });
     await dataService.deleteDataset(id);
     removeDatasetFilters(id);
+    removeDatasetViewport(id);
     // 联动删除引用此数据表的图表
     deleteGraphBuildersByDataset(id);
     const nativeDependents = useGraphBuilderNewStore.getState().items.filter((item) => item.datasetId === id);
@@ -1716,6 +1722,7 @@ export function Workspace() {
     resetWorkflows();
     resetTableTransforms();
     resetDatasetFilters();
+    resetTableViewports();
     fsReset();
     await initProject();
     await refreshDatasets();
@@ -1769,6 +1776,7 @@ export function Workspace() {
         resetTabulates();
         resetWorkflows();
         resetTableTransforms();
+        resetTableViewports();
         await refreshDatasets();
         if (result.datasetFilterMigrationConflicts.length > 0) {
           const datasetNames = new Map(

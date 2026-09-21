@@ -25,6 +25,7 @@ import { useDatasetFilterStore } from "@/stores/useDatasetFilterStore";
 import { useProjectStore } from "@/stores/useProjectStore";
 import { useHistoryStore } from "@/stores/useHistoryStore";
 import { useTableNavigationSortStore } from "@/stores/useTableNavigationSortStore";
+import { useTableViewportStore } from "@/stores/useTableViewportStore";
 import { useTableZoomStore } from "@/stores/useTableZoomStore";
 import { useTableSelectionStore } from "@/stores/useTableSelectionStore";
 import { modKey, shiftKey } from "@/utils/platform";
@@ -941,22 +942,49 @@ export function DataTableView({
   const [loadedDataLoadToken, setLoadedDataLoadToken] = useState<string | null>(null);
   const [tableQuerySession, setTableQuerySession] = useState<TableQuerySessionViewState>(IDLE_TABLE_QUERY_SESSION_STATE);
   const [loadedDisplayPropsLoadToken, setLoadedDisplayPropsLoadToken] = useState<string | null>(null);
-  const [logicalStart, setLogicalStart] = useState(0);
+  const initialQuerySignature = useMemo(() => buildTableQuerySignature(
+    serializeTableWindowFilters(useDatasetFilterStore.getState().byDataset[datasetId] ?? EMPTY_FILTERS),
+    useTableNavigationSortStore.getState().byDataset[datasetId] ?? null,
+  ), [datasetId]);
+  const initialViewportPosition = useMemo(
+    () => useTableViewportStore.getState().byDataset[datasetId] ?? {
+      logicalStart: 0,
+      logicalQuerySignature: initialQuerySignature,
+      scrollLeft: 0,
+    },
+    [datasetId, initialQuerySignature],
+  );
+  const initialLogicalStart = initialViewportPosition.logicalQuerySignature === initialQuerySignature
+    ? initialViewportPosition.logicalStart
+    : 0;
+  const rememberViewportPosition = useTableViewportStore.getState().setPosition;
+  const [logicalStart, setLogicalStartState] = useState(initialLogicalStart);
+  const setLogicalStart = useCallback((next: React.SetStateAction<number>) => {
+    setLogicalStartState((previous) => {
+      const resolved = typeof next === "function" ? next(previous) : next;
+      rememberViewportPosition(datasetId, {
+        logicalStart: resolved,
+        logicalQuerySignature: loadedFilterKeyRef.current,
+      });
+      return resolved;
+    });
+  }, [datasetId, rememberViewportPosition]);
   const logicalEndFollowContextRef = useRef<{ datasetId: string; queryKey: string } | null>(null);
   const maxLogicalStartRef = useRef(0);
-  const [scrollLeft, setScrollLeft] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(initialViewportPosition.scrollLeft);
   // rAF coalesce scroll updates: one state commit per animation frame instead
   // of one per scroll event (which can fire 60–120Hz on smooth wheels and was
   // a major source of full-table re-renders).
   const scrollRafRef = useRef<number | null>(null);
   const onGridScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
+    rememberViewportPosition(datasetId, { scrollLeft: el.scrollLeft });
     if (scrollRafRef.current != null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
       setScrollLeft(el.scrollLeft);
     });
-  }, []);
+  }, [datasetId, rememberViewportPosition]);
   const editInputRef = useRef<HTMLInputElement>(null);
   const addColInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -1098,7 +1126,7 @@ export function DataTableView({
   const tableNavigationRequestSeqRef = useRef(0);
   const tableNavigationSchedulerRef = useRef<TableNavigationScheduler<ScheduledTableNavigationRequest, FrontendMeasuredTableNavigationResult> | null>(null);
   const navigationReloadRef = useRef<() => void>(() => {});
-  const loadedFilterKeyRef = useRef(buildTableQuerySignature([], null));
+  const loadedFilterKeyRef = useRef(initialQuerySignature);
   const loadedFilterGenerationRef = useRef<number | null>(null);
   const inFlightLoadClaimsRef = useRef<Map<string, number>>(new Map());
   const pendingPrefetchPaintFramesRef = useRef<PendingAfterPaintState>({
@@ -2180,14 +2208,17 @@ export function DataTableView({
       logicalEndFollowContextRef.current = null;
     }
     void invalidateScheduledNavigation({ datasetId, generation: datasetGeneration });
-    void load(
-      tableFiltersRef.current,
-      preserveLogicalEnd ? windowStartRef.current : 0,
-    );
+    const restoreInitialViewport = loadedFilterGenerationRef.current === null;
+    const nextStart = restoreInitialViewport
+      ? logicalStartRef.current
+      : (preserveLogicalEnd ? windowStartRef.current : 0);
+    void load(tableFiltersRef.current, nextStart);
     if (preserveLogicalEnd) {
       const nextLogicalStart = maxLogicalStartRef.current;
       logicalStartRef.current = nextLogicalStart;
       setLogicalStart(nextLogicalStart);
+    } else if (restoreInitialViewport) {
+      setLogicalStart(logicalStartRef.current);
     } else {
       logicalStartRef.current = 0;
       setLogicalStart(0);
@@ -2268,6 +2299,7 @@ export function DataTableView({
       logicalEndFollowContextRef.current = null;
     }
     const effectEpoch = ++queryRefreshEffectEpochRef.current;
+    const restoreInitialViewport = loadedFilterGenerationRef.current === null;
     let disposed = false;
     const isCurrentEffect = () => (
       !disposed
@@ -2288,9 +2320,17 @@ export function DataTableView({
         return;
       }
       if (!isCurrentEffect()) return;
-      const nextStart = preserveLogicalEnd ? windowStartRef.current : 0;
-      logicalStartRef.current = preserveLogicalEnd ? maxLogicalStartRef.current : 0;
+      const nextStart = restoreInitialViewport
+        ? logicalStartRef.current
+        : (preserveLogicalEnd ? windowStartRef.current : 0);
+      logicalStartRef.current = restoreInitialViewport
+        ? logicalStartRef.current
+        : (preserveLogicalEnd ? maxLogicalStartRef.current : 0);
       setLogicalStart(logicalStartRef.current);
+      rememberViewportPosition(datasetId, {
+        logicalStart: logicalStartRef.current,
+        logicalQuerySignature: queryKey,
+      });
       void load(tableFilters, nextStart);
     })();
     return () => {
@@ -2302,6 +2342,7 @@ export function DataTableView({
     invalidateScheduledNavigation,
     load,
     mutationRefreshCompletionRevision,
+    rememberViewportPosition,
     tableFilters,
     tableSort,
   ]);
@@ -2931,8 +2972,9 @@ export function DataTableView({
   }, [setLogicalStartClamped]);
 
   useEffect(() => {
+    if (!data) return;
     setLogicalStartClamped((previous) => previous);
-  }, [setLogicalStartClamped]);
+  }, [data, setLogicalStartClamped]);
 
   const ensureLogicalRowVisible = useCallback((rowIndex: number) => {
     setLogicalStartClamped((previous) => {
@@ -3058,6 +3100,18 @@ export function DataTableView({
     return arr;
   }, [cols.length, colWidths, zoom]);
   const totalColsWidth = colOffsets[cols.length] ?? 0;
+  useLayoutEffect(() => {
+    const wrapper = tableRef.current;
+    if (!wrapper) return;
+    const restored = clamp(scrollLeft, 0, Math.max(0, wrapper.scrollWidth - wrapper.clientWidth));
+    if (wrapper.scrollLeft !== restored) {
+      wrapper.scrollLeft = restored;
+    }
+    if (restored !== scrollLeft) {
+      setScrollLeft(restored);
+      rememberViewportPosition(datasetId, { scrollLeft: restored });
+    }
+  }, [data, datasetId, rememberViewportPosition, scrollLeft, totalColsWidth, wrapperWidth]);
   const colVirtRange = useMemo(() => {
     const totalCols = cols.length;
     if (totalCols === 0) return { startIdx: 0, endIdx: 0, leftSpacerW: 0, rightSpacerW: 0 };

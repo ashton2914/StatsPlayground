@@ -252,6 +252,50 @@ test("wheel and keyboard navigation update logical position", async ({ mount, pa
   await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBe(0);
 });
 
+test("restores the logical vertical position after the table remounts", async ({ mount, page }) => {
+  const component = await mount(
+    <LogicalTableNavigationHarness
+      rowCount={10_000_000}
+      columnCount={24}
+      width={520}
+      height={420}
+      strictMode
+    />,
+  );
+  const rail = component.getByRole("scrollbar");
+
+  await dragRailToRatio(component, page, 0.62);
+  await expect.poll(async () => Number(await rail.getAttribute("aria-valuenow"))).toBeGreaterThan(0);
+
+  const rememberedLogicalStart = Number(await rail.getAttribute("aria-valuenow"));
+  await component.getByTestId("toggle-table").click();
+  await expect(rail).toHaveCount(0);
+  await component.getByTestId("toggle-table").click();
+
+  const restoredRail = component.getByRole("scrollbar");
+  await expect.poll(async () => Number(await restoredRail.getAttribute("aria-valuenow"))).toBe(rememberedLogicalStart);
+});
+
+test("restores the horizontal position after the table remounts", async ({ mount }) => {
+  const component = await mount(
+    <LogicalTableNavigationHarness rowCount={10_000_000} columnCount={24} width={520} height={420} />,
+  );
+  const wrapper = component.locator(".sp-grid-wrapper");
+
+  await wrapper.evaluate((element) => {
+    element.scrollLeft = 640;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect.poll(() => wrapper.evaluate((element) => element.scrollLeft)).toBe(640);
+
+  await component.getByTestId("toggle-table").click();
+  await expect(wrapper).toHaveCount(0);
+  await component.getByTestId("toggle-table").click();
+
+  const restoredWrapper = component.locator(".sp-grid-wrapper");
+  await expect.poll(() => restoredWrapper.evaluate((element) => element.scrollLeft)).toBe(640);
+});
+
 test("keeps the logical thumb fully inside the track at Home and End", async ({ mount, page }) => {
   const component = await mount(<LogicalTableNavigationHarness />);
   const rail = component.getByRole("scrollbar");
