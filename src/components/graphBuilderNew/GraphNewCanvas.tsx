@@ -9,7 +9,6 @@ import {
   type GraphNewRenderRequest,
 } from "@/services/graphNewService";
 import type { GraphNewFrame } from "@/types/graphNew";
-import { GraphNewOverlayLegend } from "./GraphNewOverlayLegend";
 import { cameraTransform, createCameraScheduler, isCameraDomain, isRestorableCamera, panCamera, zoomCamera, type CameraDomain, type PlotRect } from "./graphNewCamera";
 
 interface RenderJob { run: () => Promise<void>; cancel: (preserveCache?: boolean) => void }
@@ -38,8 +37,8 @@ type Props = Pick<GraphNewRenderRequest, "datasetId" | "datasetGeneration" | "xC
   yTitle: string;
   showMean: boolean;
   hiddenOverlayGroupIds?: string[];
-  onMeanChange: (enabled: boolean) => void;
-  onHiddenOverlayGroupIdsChange?: (ids: string[]) => void;
+  onMeanAvailabilityChange?: (available: boolean | null) => void;
+  onOverlayStateChange?: (state: { active: boolean; groups: GraphNewOverlayGroup[] }) => void;
   savedCamera?: CameraDomain | null;
   readOnly?: boolean;
   onCameraChange?: (camera: CameraDomain | null) => void;
@@ -77,7 +76,7 @@ export function formatGraphNewTick(axis: GraphNewAxis, tick: GraphNewAxis["ticks
   return String(tick.value);
 }
 
-export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, xTitle, yTitle, showMean, hiddenOverlayGroupIds = [], onMeanChange, onHiddenOverlayGroupIdsChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
+export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGeneration, xColumnId, yColumnId, overlayColumnId = null, xTitle, yTitle, showMean, hiddenOverlayGroupIds = [], onMeanAvailabilityChange, onOverlayStateChange, xMode = "auto", rawMode = "scatter", savedCamera = null, readOnly = false, onCameraChange }: Props) {
   const { t } = useTranslation();
   const [meanFrame, setMeanFrame] = useState<{ available: boolean; visible: boolean; groups: number | null } | null>(null);
   const [overlayState, setOverlayState] = useState<{ active: boolean; groups: GraphNewOverlayGroup[] }>({ active: false, groups: [] });
@@ -93,6 +92,14 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
   persistence.current = { savedCamera, readOnly, onCameraChange };
   const [cameraRestoreRejected, setCameraRestoreRejected] = useState(false);
   const [size, setSize] = useState<{ width: number; height: number; devicePixelRatio: number } | null>(null);
+
+  useEffect(() => {
+    onMeanAvailabilityChange?.(meanFrame?.available ?? null);
+  }, [meanFrame?.available, onMeanAvailabilityChange]);
+
+  useEffect(() => {
+    onOverlayStateChange?.(overlayState);
+  }, [onOverlayStateChange, overlayState]);
   const [hasFrame, setHasFrame] = useState(false);
   const [status, setStatus] = useState("Rendering...");
   const [reason, setReason] = useState<string | null>(null);
@@ -410,11 +417,6 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
   return (
     <div className="graph-new-chart">
       <div className="graph-new-layers" aria-label={t("graphNew.layers")}>
-        <label className="graph-new-mean-toggle">
-          <input type="checkbox" checked={showMean} disabled={readOnly || meanFrame?.available === false}
-            onChange={(event) => onMeanChange(event.target.checked)} />
-          {t("graphNew.mean")}
-        </label>
         {rawMode !== "line" && <span className="graph-new-legend-item"><span className="graph-new-point-swatch" aria-hidden="true" />{t("graphNew.points")}</span>}
         {rawMode !== "scatter" && <span className="graph-new-legend-item"><span className="graph-new-line-swatch" aria-hidden="true" />{t("graphNew.rawLine", { defaultValue: "Raw line" })}</span>}
         {rawMode !== "scatter" && !rawAvailable && <span role="status" data-testid="raw-line-unavailable">{t("graphNew.rawUnavailable", { defaultValue: "Raw line unavailable: complete data was not retained." })}</span>}
@@ -424,14 +426,6 @@ export function GraphNewCanvas({ transportId: sessionId, datasetId, datasetGener
         {meanFrame?.available === false && <span className="graph-new-mean-reason" data-testid="mean-unavailable">{t("graphNew.meanUnavailable")}</span>}
         {showMean && meanFrame?.available && meanFrame.groups !== null && meanFrame.groups < 2
           && <span className="graph-new-mean-reason">{t("graphNew.meanNeedsGroups")}</span>}
-        {overlayState.active && (
-          <GraphNewOverlayLegend
-            groups={overlayState.groups}
-            hiddenIds={hiddenOverlayGroupIds}
-            readOnly={readOnly}
-            onHiddenIdsChange={(ids) => onHiddenOverlayGroupIdsChange?.(ids)}
-          />
-        )}
       </div>
       <span className="graph-new-y-title" data-testid="y-axis-title">{yTitle}</span>
       <div className="graph-new-canvas-host" ref={host}>

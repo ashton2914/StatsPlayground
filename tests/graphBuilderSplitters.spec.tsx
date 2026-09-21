@@ -41,6 +41,13 @@ test("GraphBuilderView removes legacy resize handlers and splitter classes after
   assert.doesNotMatch(graphBuilderCssSource, /\.gb-splitter-h\s*\{/);
 });
 
+test("GraphBuilderView consumes shared field palette and drop slot chrome", async () => {
+  assert.match(graphBuilderViewSource, /GraphFieldPalette/);
+  assert.match(graphBuilderViewSource, /GraphDropSlot/);
+  assert.match(graphBuilderViewSource, /graphBuilderDragPayload/);
+  assert.doesNotMatch(graphBuilderViewSource, /function Slot\(/);
+});
+
 test("Graph Builder splitter configs preserve defaults, bounds, persistence, reset, and right-rail direction", async ({ mount, page }) => {
   const component = await mount(<GraphBuilderSplittersHarness />);
 
