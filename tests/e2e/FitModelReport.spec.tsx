@@ -264,6 +264,10 @@ test("adds one canonical multi-factor effect from the dialog", async ({ mount })
   await component.getByRole("button", { name: "Add Effect" }).click();
   const dialog = component.getByRole("dialog", { name: "Add Effect" });
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Cancel" }))
+    .toHaveClass(/\bsp-dialog-btn\b/);
+  await expect(dialog.getByRole("button", { name: "Add Effect" }))
+    .toHaveClass(/\bsp-dialog-btn-primary\b/);
   await dialog.getByRole("checkbox", { name: "A" }).check();
   await dialog.getByRole("checkbox", { name: "B" }).check();
   await dialog.getByRole("checkbox", { name: "C" }).check();

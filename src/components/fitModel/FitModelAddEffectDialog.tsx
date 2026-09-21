@@ -129,10 +129,14 @@ export function FitModelAddEffectDialog({
           ) : null}
         </div>
         <div className="sp-dialog-actions">
-          <button type="button" onClick={onCancel}>
+          <button type="button" className="sp-dialog-btn" onClick={onCancel}>
             {t("fitModel.report.addEffect.cancel", { defaultValue: "Cancel" })}
           </button>
-          <button type="button" onClick={handleConfirm}>
+          <button
+            type="button"
+            className="sp-dialog-btn sp-dialog-btn-primary"
+            onClick={handleConfirm}
+          >
             {t("fitModel.report.addEffect.confirm", { defaultValue: "Add Effect" })}
           </button>
         </div>
