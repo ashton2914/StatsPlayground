@@ -276,6 +276,13 @@ export interface FitModelPrediction {
   inferenceReason: FitModelInferenceReason | null;
 }
 
+export interface FitModelActualByPredictedBandPoint {
+  predicted: number;
+  fitted: number;
+  lower: number;
+  upper: number;
+}
+
 export interface FitModelFittedResult {
   kind: "fitted";
   usedRows: number;
@@ -293,6 +300,7 @@ export interface FitModelFittedResult {
   parameterEstimates: FitModelParameterEstimate[];
   effectTests: FitModelEffectTest[];
   leveragePlots: FitModelLeveragePlot[];
+  actualByPredictedConfidenceBand: FitModelActualByPredictedBandPoint[];
   plotRows: FitModelPlotRow[];
   plotRowsSampled: boolean;
   warnings: FitModelWarningCode[];

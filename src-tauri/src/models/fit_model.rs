@@ -326,6 +326,15 @@ pub struct FitModelPrediction {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct FitModelActualByPredictedBandPoint {
+    pub predicted: f64,
+    pub fitted: f64,
+    pub lower: f64,
+    pub upper: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct FitModelFittedResult {
     pub used_rows: u64,
     pub excluded_rows: u64,
@@ -342,6 +351,7 @@ pub struct FitModelFittedResult {
     pub parameter_estimates: Vec<FitModelParameterEstimate>,
     pub effect_tests: Vec<FitModelEffectTest>,
     pub leverage_plots: Vec<FitModelLeveragePlot>,
+    pub actual_by_predicted_confidence_band: Vec<FitModelActualByPredictedBandPoint>,
     pub plot_rows: Vec<FitModelPlotRow>,
     pub plot_rows_sampled: bool,
     pub warnings: Vec<FitModelWarningCode>,
@@ -550,6 +560,12 @@ mod tests {
                 source_row_count: 1,
                 reason: None,
             }],
+            actual_by_predicted_confidence_band: vec![FitModelActualByPredictedBandPoint {
+                predicted: 10.0,
+                fitted: 10.0,
+                lower: 9.0,
+                upper: 11.0,
+            }],
             plot_rows: vec![],
             plot_rows_sampled: false,
             warnings: vec![],
@@ -577,6 +593,14 @@ mod tests {
             9.5
         );
         assert_eq!(fitted_value["leveragePlots"][0]["nullLineY"], 10.0);
+        assert_eq!(
+            fitted_value["actualByPredictedConfidenceBand"][0]["predicted"],
+            10.0
+        );
+        assert_eq!(
+            fitted_value["actualByPredictedConfidenceBand"][0]["lower"],
+            9.0
+        );
         assert_eq!(not_value["kind"], "notComputable");
     }
 }

@@ -6,8 +6,8 @@ use statrs::distribution::{ContinuousCDF, FisherSnedecor};
 use crate::engine::fit_model::ols::{deterministic_rank_grid, FitModelEngineError};
 use crate::engine::fit_model::reporting_basis::FitModelReportingBasis;
 use crate::models::fit_model::{
-    FitModelEffectTest, FitModelInferenceReason, FitModelLeverageBandPoint, FitModelLeveragePlot,
-    FitModelLeveragePoint, FitModelResolvedTerm,
+    FitModelActualByPredictedBandPoint, FitModelEffectTest, FitModelInferenceReason,
+    FitModelLeverageBandPoint, FitModelLeveragePlot, FitModelLeveragePoint, FitModelResolvedTerm,
 };
 
 const ROUNDING_CLAMP_FACTOR: f64 = 1e-12;
@@ -24,6 +24,79 @@ struct LeverageGeometry {
     constrained_residuals: DVector<f64>,
     full_residuals: DVector<f64>,
     hypothesis_sum_of_squares: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_whole_model_confidence_band(
+    fitted: &DVector<f64>,
+    response_mean: f64,
+    model_sum_of_squares: f64,
+    model_degrees_of_freedom: u64,
+    mse: Option<f64>,
+    error_degrees_of_freedom: u64,
+    confidence_level: f64,
+) -> Result<Vec<FitModelActualByPredictedBandPoint>, FitModelEngineError> {
+    if fitted.is_empty() {
+        return Err(FitModelEngineError::InvalidInput(
+            "whole model confidence inputs must be non-empty".to_string(),
+        ));
+    }
+    if !(0.0..1.0).contains(&confidence_level) {
+        return Err(FitModelEngineError::InvalidConfidenceLevel(
+            confidence_level,
+        ));
+    }
+    finite_value(response_mean, "whole model response mean")?;
+    if !model_sum_of_squares.is_finite() || model_sum_of_squares < 0.0 {
+        return Err(FitModelEngineError::NumericalFailure(
+            "whole model sum of squares must be finite and non-negative".to_string(),
+        ));
+    }
+    if fitted.iter().any(|value| !value.is_finite()) {
+        return Err(FitModelEngineError::NumericalFailure(
+            "whole model fitted coordinate is non-finite".to_string(),
+        ));
+    }
+
+    let Some(inference_mse) = mse.filter(|value| value.is_finite() && *value > 0.0) else {
+        return Ok(Vec::new());
+    };
+    if model_degrees_of_freedom == 0 || error_degrees_of_freedom == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut predicted = fitted.iter().copied().collect::<Vec<_>>();
+    predicted.push(response_mean);
+    predicted.iter_mut().for_each(|value| {
+        if *value == 0.0 {
+            *value = 0.0;
+        }
+    });
+    predicted.sort_by(f64::total_cmp);
+    predicted.dedup_by(|left, right| left.total_cmp(right).is_eq());
+
+    confidence_geometry(
+        predicted,
+        response_mean,
+        response_mean,
+        1.0,
+        model_sum_of_squares,
+        model_degrees_of_freedom,
+        inference_mse,
+        error_degrees_of_freedom,
+        confidence_level,
+        fitted.len(),
+    )?
+    .into_iter()
+    .map(|(predicted, fitted, lower, upper)| {
+        Ok(FitModelActualByPredictedBandPoint {
+            predicted,
+            fitted,
+            lower,
+            upper,
+        })
+    })
+    .collect()
 }
 
 pub(crate) fn compute_effect_tests(
@@ -502,8 +575,54 @@ fn confidence_band(
     confidence_level: f64,
     source_row_count: usize,
 ) -> Result<Vec<FitModelLeverageBandPoint>, FitModelEngineError> {
+    let effect_leverages = if horizontal_energy == 0.0 {
+        vec![plot_center]
+    } else {
+        points
+            .iter()
+            .map(|point| point.effect_leverage)
+            .collect::<Vec<_>>()
+    };
+    let geometry = confidence_geometry(
+        effect_leverages,
+        plot_center,
+        response_mean,
+        slope,
+        horizontal_energy,
+        effect_degrees_of_freedom,
+        mse,
+        error_degrees_of_freedom,
+        confidence_level,
+        source_row_count,
+    )?;
+    Ok(geometry
+        .into_iter()
+        .map(
+            |(effect_leverage, fitted, lower, upper)| FitModelLeverageBandPoint {
+                effect_leverage,
+                fitted,
+                lower,
+                upper,
+            },
+        )
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn confidence_geometry(
+    mut horizontal_coordinates: Vec<f64>,
+    plot_center: f64,
+    response_mean: f64,
+    slope: f64,
+    horizontal_energy: f64,
+    hypothesis_degrees_of_freedom: u64,
+    mse: f64,
+    error_degrees_of_freedom: u64,
+    confidence_level: f64,
+    source_row_count: usize,
+) -> Result<Vec<(f64, f64, f64, f64)>, FitModelEngineError> {
     let distribution = FisherSnedecor::new(
-        effect_degrees_of_freedom as f64,
+        hypothesis_degrees_of_freedom as f64,
         error_degrees_of_freedom as f64,
     )
     .map_err(|_| {
@@ -518,39 +637,35 @@ fn confidence_band(
         ));
     }
 
-    let mut effect_leverages = if horizontal_energy == 0.0 {
-        vec![plot_center]
-    } else {
-        points
-            .iter()
-            .map(|point| point.effect_leverage)
-            .collect::<Vec<_>>()
-    };
-    effect_leverages.sort_by(f64::total_cmp);
-    effect_leverages
+    horizontal_coordinates.sort_by(f64::total_cmp);
+    horizontal_coordinates
         .into_iter()
-        .map(|effect_leverage| {
-            let centered = effect_leverage - plot_center;
-            let fitted = finite_value(response_mean + slope * centered, "leverage fitted value")?;
+        .map(|horizontal_coordinate| {
+            let centered = horizontal_coordinate - plot_center;
+            let fitted = if slope == 1.0 && response_mean == plot_center {
+                horizontal_coordinate
+            } else {
+                finite_value(response_mean + slope * centered, "leverage fitted value")?
+            };
             let leverage_term = if horizontal_energy == 0.0 {
                 0.0
             } else {
                 centered * centered / horizontal_energy
             };
             let margin = finite_value(
-                (effect_degrees_of_freedom as f64
+                (hypothesis_degrees_of_freedom as f64
                     * f_critical
                     * mse
                     * (1.0 / source_row_count as f64 + leverage_term))
                     .sqrt(),
                 "leverage confidence margin",
             )?;
-            Ok(FitModelLeverageBandPoint {
-                effect_leverage,
+            Ok((
+                horizontal_coordinate,
                 fitted,
-                lower: finite_value(fitted - margin, "leverage confidence lower bound")?,
-                upper: finite_value(fitted + margin, "leverage confidence upper bound")?,
-            })
+                finite_value(fitted - margin, "leverage confidence lower bound")?,
+                finite_value(fitted + margin, "leverage confidence upper bound")?,
+            ))
         })
         .collect()
 }

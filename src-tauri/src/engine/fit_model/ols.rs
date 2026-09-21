@@ -5,7 +5,9 @@ use nalgebra::{DMatrix, DVector, Dyn};
 use statrs::distribution::{ContinuousCDF, FisherSnedecor, StudentsT};
 
 use crate::engine::fit_model::diagnostics::compute_diagnostics_with_rows;
-use crate::engine::fit_model::effects::{compute_effect_leverage_plots, compute_effect_tests};
+use crate::engine::fit_model::effects::{
+    compute_effect_leverage_plots, compute_effect_tests, compute_whole_model_confidence_band,
+};
 use crate::engine::fit_model::reporting_basis::reporting_basis;
 use crate::engine::fit_model::ModelMatrixSpec;
 use crate::models::fit_model::{
@@ -330,6 +332,15 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         df_error as u64,
         confidence_level,
     )?;
+    let actual_by_predicted_confidence_band = compute_whole_model_confidence_band(
+        &fitted,
+        mean_response,
+        ssm,
+        df_model as u64,
+        mse,
+        df_error as u64,
+        confidence_level,
+    )?;
     let centering = FitModelCentering {
         method: input.model_matrix_spec.centering_method().clone(),
         centers: input.model_matrix_spec.centers().to_vec(),
@@ -420,6 +431,7 @@ pub(crate) fn fit_linear_model_with_diagnostics(
             parameter_estimates,
             effect_tests,
             leverage_plots,
+            actual_by_predicted_confidence_band,
             plot_rows,
             plot_rows_sampled: sampled,
             warnings,
@@ -962,6 +974,63 @@ mod tests {
                 .upper_confidence_limit
                 .expect("upper confidence limit"),
             estimate + margin,
+        );
+    }
+
+    #[test]
+    fn whole_model_leverage_band_is_ordered_centered_and_row_diagnostic_independent() {
+        let input = build_input(
+            "Y",
+            vec![term(FitModelTermKind::Main, &["A"])],
+            FitModelCenteringMethod::None,
+            BTreeMap::from([(
+                "A".to_string(),
+                vec![-2.0, -2.0, -1.0, -1.0, 1.0, 1.0, 2.0, 2.0],
+            )]),
+            vec![0.0, 2.0, 2.0, 4.0, 6.0, 8.0, 8.0, 10.0],
+            (1..=8).collect(),
+            0,
+        );
+
+        let FitModelResult::Fitted(fitted) = fit_linear_model(input, 0.95).expect("fit") else {
+            panic!("expected fitted result");
+        };
+        let band = &fitted.actual_by_predicted_confidence_band;
+
+        assert_eq!(band.len(), 5);
+        assert!(band
+            .windows(2)
+            .all(|pair| pair[0].predicted < pair[1].predicted));
+        assert!(band.iter().all(|point| {
+            point.fitted == point.predicted
+                && point.lower <= point.fitted
+                && point.fitted <= point.upper
+        }));
+        assert!(band.windows(2).all(|pair| {
+            pair[0].predicted != pair[1].predicted
+                || (pair[0].lower == pair[1].lower && pair[0].upper == pair[1].upper)
+        }));
+
+        let center = band
+            .iter()
+            .find(|point| point.predicted == 5.0)
+            .expect("response mean should be included");
+        let center_width = center.upper - center.lower;
+        assert!(band
+            .iter()
+            .all(|point| { center_width <= point.upper - point.lower + f64::EPSILON }));
+
+        let diagnostic_bounds = fitted
+            .diagnostics
+            .rows
+            .iter()
+            .map(|row| (row.mean_confidence_lower, row.mean_confidence_upper))
+            .collect::<Vec<_>>();
+        assert_ne!(
+            band.iter()
+                .map(|point| (Some(point.lower), Some(point.upper)))
+                .collect::<Vec<_>>(),
+            diagnostic_bounds
         );
     }
 
