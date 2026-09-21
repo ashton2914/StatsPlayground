@@ -11,6 +11,7 @@ import {
   type AnalysisTableRow,
 } from "@/components/analysis/presentation/AnalysisTable";
 import { AnalysisText } from "@/components/analysis/presentation/AnalysisText";
+import { FitModelAddEffectDialog } from "@/components/fitModel/FitModelAddEffectDialog";
 import { FitModelDiagnosticChart } from "@/components/fitModel/FitModelDiagnosticChart";
 import { FitModelEffectSummary } from "@/components/fitModel/FitModelEffectSummary";
 import { buildNumericFitModelEquation } from "@/components/fitModel/fitModelEquation";
@@ -33,6 +34,7 @@ import type {
   FitModelInferenceReason,
   FitModelItem,
   FitModelLoadIssue,
+  FitModelTerm,
 } from "@/types/fitModel";
 
 const DEFAULT_UNDEFINED_VALUE = "\u2014";
@@ -43,7 +45,7 @@ export interface FitModelAnalysisReportProps {
   datasetMissing: boolean;
   loadIssue: FitModelLoadIssue | null;
   removeMessage: string | null;
-  onAddEffect?: () => void;
+  onAddEffect?: (terms: FitModelTerm[]) => void;
   onRemoveTerm: (termId: string) => void;
   onUndoRemove: (() => void) | null;
   onSaveColumns?: () => void;
@@ -100,6 +102,7 @@ export function FitModelAnalysisReport({
     DEFAULT_UNDEFINED_VALUE,
   );
   const [diagnosticFilter, setDiagnosticFilter] = useState<FitModelDiagnosticFilter>("all");
+  const [addEffectOpen, setAddEffectOpen] = useState(false);
   const fittedResult = state.result?.kind === "fitted" ? state.result : null;
   const notComputableResult = state.result?.kind === "notComputable" ? state.result : null;
   const effects = useMemo(() => fittedResult ? buildEffectSummary(fittedResult) : [], [fittedResult]);
@@ -263,7 +266,7 @@ export function FitModelAnalysisReport({
 
           <FitModelEffectSummary
             effects={effects}
-            onAddEffect={onAddEffect}
+            onAddEffect={onAddEffect ? () => setAddEffectOpen(true) : undefined}
             onRemoveTerm={onRemoveTerm}
             onUndoRemove={onUndoRemove}
             undefinedValue={undefinedValue}
@@ -539,6 +542,17 @@ export function FitModelAnalysisReport({
             </AnalysisText>
           </AnalysisStack>
         </AnalysisFrame>
+      ) : null}
+      {addEffectOpen && fittedResult && onAddEffect ? (
+        <FitModelAddEffectDialog
+          predictorNames={fittedResult.predictorColumns}
+          terms={item.terms}
+          onConfirm={(terms) => {
+            onAddEffect(terms);
+            setAddEffectOpen(false);
+          }}
+          onCancel={() => setAddEffectOpen(false)}
+        />
       ) : null}
     </AnalysisStack>
   );

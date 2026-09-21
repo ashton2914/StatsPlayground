@@ -99,6 +99,52 @@
   max-width: min(92vw, 460px);
 }
 
+.sp-fit-model-add-effect-dialog {
+  width: min(92vw, 540px);
+  max-width: min(92vw, 540px);
+}
+
+.sp-fit-model-add-effect-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sp-fit-model-add-effect-instructions,
+.sp-fit-model-add-effect-preview,
+.sp-fit-model-add-effect-error {
+  margin: 0;
+}
+
+.sp-fit-model-add-effect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 6px;
+  max-height: min(42vh, 320px);
+  overflow-y: auto;
+}
+
+.sp-fit-model-add-effect-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-main);
+  border-radius: 6px;
+  color: var(--fg-primary);
+}
+
+.sp-fit-model-add-effect-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sp-fit-model-add-effect-error {
+  color: var(--danger, #b42318);
+}
+
 .sp-fit-model-save-columns-body {
   display: grid;
   gap: 4px;

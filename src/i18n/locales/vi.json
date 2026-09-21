@@ -1685,6 +1685,19 @@
       "undo": "Hoàn tác",
       "remove": "Xóa",
       "add": "Thêm hiệu ứng",
+      "addEffect": {
+        "title": "Thêm hiệu ứng",
+        "instructions": "Chọn ít nhất hai biến dự báo để thêm một hiệu ứng tương tác.",
+        "preview": "Xem trước hiệu ứng",
+        "previewEmpty": "Chọn các biến dự báo",
+        "cancel": "Hủy",
+        "confirm": "Thêm hiệu ứng",
+        "validation": {
+          "selectAtLeastTwo": "Chọn ít nhất hai biến dự báo.",
+          "duplicateEffect": "Hiệu ứng này đã tồn tại.",
+          "tooManyTerms": "Mô hình không thể chứa quá 256 số hạng."
+        }
+      },
       "effect": "Hiệu ứng",
       "effects": "Các hiệu ứng",
       "rows": "Các hàng",

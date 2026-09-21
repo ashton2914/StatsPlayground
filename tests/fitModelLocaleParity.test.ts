@@ -5,6 +5,15 @@ import path from "node:path";
 const LOCALES = ["en", "zh-CN", "zh-TW", "vi"] as const;
 const REQUIRED_VISIBLE_KEYS = [
   "fitModel.report.add",
+  "fitModel.report.addEffect.cancel",
+  "fitModel.report.addEffect.confirm",
+  "fitModel.report.addEffect.instructions",
+  "fitModel.report.addEffect.preview",
+  "fitModel.report.addEffect.previewEmpty",
+  "fitModel.report.addEffect.title",
+  "fitModel.report.addEffect.validation.duplicateEffect",
+  "fitModel.report.addEffect.validation.selectAtLeastTwo",
+  "fitModel.report.addEffect.validation.tooManyTerms",
   "fitModel.report.chart.axis.adjustedResponse",
   "fitModel.report.chart.axis.effect",
   "fitModel.report.chart.axis.effectLeverage",

@@ -1792,6 +1792,19 @@
       "undo": "撤销",
       "remove": "移除",
       "add": "添加效应",
+      "addEffect": {
+        "title": "添加效应",
+        "instructions": "选择两个或更多预测变量以添加一个交互效应。",
+        "preview": "效应预览",
+        "previewEmpty": "请选择预测变量",
+        "cancel": "取消",
+        "confirm": "添加效应",
+        "validation": {
+          "selectAtLeastTwo": "请至少选择两个预测变量。",
+          "duplicateEffect": "此效应已存在。",
+          "tooManyTerms": "模型不能包含超过 256 个项。"
+        }
+      },
       "effect": "效应",
       "effects": "效应",
       "rows": "行",

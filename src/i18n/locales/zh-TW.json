@@ -1715,6 +1715,19 @@
       "undo": "還原",
       "remove": "移除",
       "add": "新增效應",
+      "addEffect": {
+        "title": "新增效應",
+        "instructions": "選取兩個或更多預測變數以新增一個交互作用效應。",
+        "preview": "效應預覽",
+        "previewEmpty": "請選取預測變數",
+        "cancel": "取消",
+        "confirm": "新增效應",
+        "validation": {
+          "selectAtLeastTwo": "請至少選取兩個預測變數。",
+          "duplicateEffect": "此效應已存在。",
+          "tooManyTerms": "模型不能包含超過 256 個項。"
+        }
+      },
       "effect": "效應",
       "effects": "效應",
       "rows": "列",

@@ -4,6 +4,11 @@ export {
 } from "./FitModelRoleDialog";
 
 export {
+  FitModelAddEffectDialog,
+  type FitModelAddEffectDialogProps,
+} from "./FitModelAddEffectDialog";
+
+export {
   FitModelProfiler,
   type FitModelProfilerProps,
 } from "./FitModelProfiler";
@@ -107,3 +112,9 @@ export {
   FitModelValidationError,
   validateFitModelDefinition,
 } from "./fitModelConfig";
+
+export {
+  addFitModelInteractionEffect,
+  type FitModelAddEffectError,
+  type FitModelAddEffectResult,
+} from "./fitModelAddEffect";

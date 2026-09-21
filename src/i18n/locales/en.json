@@ -1915,6 +1915,19 @@
       "undo": "Undo",
       "remove": "Remove",
       "add": "Add Effect",
+      "addEffect": {
+        "title": "Add Effect",
+        "instructions": "Select two or more predictors to add one interaction effect.",
+        "preview": "Effect preview",
+        "previewEmpty": "Select predictors",
+        "cancel": "Cancel",
+        "confirm": "Add Effect",
+        "validation": {
+          "selectAtLeastTwo": "Select at least two predictors.",
+          "duplicateEffect": "This effect already exists.",
+          "tooManyTerms": "The model cannot contain more than 256 terms."
+        }
+      },
       "effect": "Effect",
       "effects": "Effects",
       "rows": "Rows",

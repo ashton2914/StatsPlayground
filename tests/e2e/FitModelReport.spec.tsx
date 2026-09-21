@@ -15,7 +15,11 @@ const item: FitModelItem = {
   sourceDatasetId: "dataset-1",
   response: { name: "Y", type: "continuous" },
   construct: { kind: "manual" },
-  terms: [{ kind: "main", columnNames: ["A"] }],
+  terms: [
+    { kind: "main", columnNames: ["A"] },
+    { kind: "main", columnNames: ["B"] },
+    { kind: "main", columnNames: ["C"] },
+  ],
   centeringMethod: "mean",
   createdAt: "2026-09-02T00:00:00.000Z",
 };
@@ -26,7 +30,7 @@ const fittedResult: FitModelFittedResult = {
   excludedRows: 0,
   confidenceLevel: 0.95,
   responseColumn: "Y",
-  predictorColumns: ["A"],
+  predictorColumns: ["A", "B", "C"],
   terms,
   centering: { method: "mean", centers: [{ columnName: "A", mean: 6.5 }] },
   snapshot: {
@@ -168,9 +172,9 @@ const state: FitModelReportState = {
 };
 
 function report(callbacks: {
-  onAddEffect?: () => void;
+  onAddEffect?: (terms: FitModelItem["terms"]) => void;
   onRemoveTerm?: (termId: string) => void;
-} = {}, result: FitModelFittedResult = fittedResult) {
+} = {}, result: FitModelFittedResult = fittedResult, reportItem: FitModelItem = item) {
   const reportState: FitModelReportState = {
     ...state,
     result,
@@ -179,7 +183,7 @@ function report(callbacks: {
   return (
     <div style={{ width: "100%", height: "100vh", minWidth: 0 }}>
       <FitModelAnalysisReport
-        item={item}
+        item={reportItem}
         state={reportState}
         datasetMissing={false}
         loadIssue={null}
@@ -193,10 +197,8 @@ function report(callbacks: {
 }
 
 test("renders approved report order and effect interactions", async ({ mount }) => {
-  const addCalls: string[] = [];
   const removeCalls: string[] = [];
   const component = await mount(report({
-    onAddEffect: () => addCalls.push("add"),
     onRemoveTerm: (termId) => removeCalls.push(termId),
   }));
   const disclosureButtons = component.locator(
@@ -233,8 +235,6 @@ test("renders approved report order and effect interactions", async ({ mount }) 
     component.getByRole("table", { name: "Parameter Estimates" }).locator("thead th"),
   ).toHaveText(["Term", "Estimate", "Std Error", "t Ratio", "Feature VIF"]);
 
-  await component.getByRole("button", { name: "Add" }).click();
-  expect(addCalls).toEqual(["add"]);
   await component.getByRole("button", { name: "Remove" }).click();
   expect(removeCalls).toEqual(["A"]);
   const leverageSelector = component.getByLabel("Effect", { exact: true });
@@ -253,6 +253,62 @@ test("renders approved report order and effect interactions", async ({ mount }) 
   await component.locator('[data-diagnostic-filter="flagged"]').click();
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("Residual warning");
+});
+
+test("adds one canonical multi-factor effect from the dialog", async ({ mount }) => {
+  const definitionChanges: Array<{ definition: { terms: FitModelItem["terms"] } }> = [];
+  const component = await mount(report({
+    onAddEffect: (nextTerms) => definitionChanges.push({ definition: { terms: nextTerms } }),
+  }));
+
+  await component.getByRole("button", { name: "Add Effect" }).click();
+  const dialog = component.getByRole("dialog", { name: "Add Effect" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("checkbox", { name: "A" }).check();
+  await dialog.getByRole("checkbox", { name: "B" }).check();
+  await dialog.getByRole("checkbox", { name: "C" }).check();
+  await dialog.getByRole("button", { name: "Add Effect" }).click();
+
+  expect(definitionChanges[0].definition.terms.at(-1)?.columnNames)
+    .toEqual(["A", "B", "C"]);
+  await expect(dialog).toHaveCount(0);
+});
+
+test("validates one selection and duplicate effects", async ({ mount }) => {
+  const duplicateItem: FitModelItem = {
+    ...item,
+    terms: [
+      ...item.terms,
+      { kind: "interaction", columnNames: ["A", "B"] },
+    ],
+  };
+  const component = await mount(report({ onAddEffect: () => undefined }, fittedResult, duplicateItem));
+
+  await component.getByRole("button", { name: "Add Effect" }).click();
+  let dialog = component.getByRole("dialog", { name: "Add Effect" });
+  await dialog.getByRole("checkbox", { name: "A" }).check();
+  await dialog.getByRole("button", { name: "Add Effect" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Select at least two predictors");
+
+  await dialog.getByRole("checkbox", { name: "B" }).check();
+  await dialog.getByRole("button", { name: "Add Effect" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("already exists");
+});
+
+test("cancels Add Effect and hides the action when editing is disabled", async ({ mount }) => {
+  const addCalls: FitModelItem["terms"][] = [];
+  const component = await mount(report({ onAddEffect: (nextTerms) => addCalls.push(nextTerms) }));
+
+  await component.getByRole("button", { name: "Add Effect" }).click();
+  const dialog = component.getByRole("dialog", { name: "Add Effect" });
+  await dialog.getByRole("checkbox", { name: "A" }).check();
+  await dialog.getByRole("checkbox", { name: "B" }).check();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(addCalls).toEqual([]);
+
+  await component.update(report());
+  await expect(component.getByRole("button", { name: "Add Effect" })).toHaveCount(0);
 });
 
 test("reconciles leverage selection after refit and renders non-estimable reason without a chart", async ({ mount }) => {
