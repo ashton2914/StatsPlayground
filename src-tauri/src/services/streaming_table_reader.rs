@@ -62,6 +62,7 @@ pub(crate) fn stream_table_rows<R: Read, S: TableBatchSink>(
 
     let row_count = result.map_err(json_file_error)?;
     deserializer.end().map_err(json_file_error)?;
+    sink.finish_table(row_count)?;
     Ok(row_count)
 }
 
@@ -153,7 +154,6 @@ impl<'de, S: TableBatchSink> Visitor<'de> for TableStreamVisitor<'_, S> {
         let mut version = None;
         let mut columns = None;
         let mut row_count = None;
-        let mut started = false;
 
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
@@ -186,7 +186,6 @@ impl<'de, S: TableBatchSink> Visitor<'de> for TableStreamVisitor<'_, S> {
                         *self.sink_error = Some(error);
                         return Err(A::Error::custom("table sink failed"));
                     }
-                    started = true;
                     let count = map.next_value_seed(RowsSeed {
                         sink: self.sink,
                         sink_error: self.sink_error,
@@ -199,15 +198,7 @@ impl<'de, S: TableBatchSink> Visitor<'de> for TableStreamVisitor<'_, S> {
             }
         }
 
-        let count = row_count.ok_or_else(|| A::Error::missing_field("rows"))?;
-        if !started {
-            return Err(A::Error::custom("table sink was not started"));
-        }
-        if let Err(error) = self.sink.finish_table(count) {
-            *self.sink_error = Some(error);
-            return Err(A::Error::custom("table sink failed"));
-        }
-        Ok(count)
+        row_count.ok_or_else(|| A::Error::missing_field("rows"))
     }
 }
 
@@ -497,9 +488,10 @@ mod tests {
         let header = canonical_header(&canonical);
         let mut json = canonical;
         json.extend_from_slice(b"{}");
-        let error =
-            stream_table_rows(json.as_slice(), &header, &mut RecordingSink::default()).unwrap_err();
+        let mut sink = RecordingSink::default();
+        let error = stream_table_rows(json.as_slice(), &header, &mut sink).unwrap_err();
         assert!(matches!(error, AppError::FileIO(_)));
+        assert!(sink.finished.is_empty());
     }
 
     #[test]
