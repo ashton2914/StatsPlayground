@@ -495,7 +495,7 @@ function testLeveragePointsFittedBandAndNullSeries(): void {
   assert.doesNotMatch(JSON.stringify(option), /NaN|Infinity/);
 }
 
-function testActualByPredictedMeanConfidenceBand(): void {
+function testActualByPredictedWholeModelConfidenceBand(): void {
   const input = {
     title: "Actual by Predicted",
     labels: SAMPLE_LABELS,
@@ -503,9 +503,12 @@ function testActualByPredictedMeanConfidenceBand(): void {
       { rowIndex: 1, observed: 8, fitted: 9, residual: -1 },
       { rowIndex: 2, observed: 12, fitted: 11, residual: 1 },
     ],
+    actualByPredictedConfidenceBand: [
+      { predicted: 9, fitted: 9, lower: 8.5, upper: 9.5 },
+      { predicted: 11, fitted: 11, lower: 10.25, upper: 11.75 },
+    ],
     confidenceRows: [
-      { rowIndex: 2, fitted: 11, meanConfidenceLower: 10.5, meanConfidenceUpper: 11.5 },
-      { rowIndex: 1, fitted: 9, meanConfidenceLower: 8.5, meanConfidenceUpper: 9.5 },
+      { rowIndex: 1, fitted: 9, meanConfidenceLower: 7, meanConfidenceUpper: 12 },
     ],
   };
   const option = buildActualByPredictedOption(input) as {
@@ -522,13 +525,31 @@ function testActualByPredictedMeanConfidenceBand(): void {
 
   const confidenceSeries = option.series.filter((series) => series.stack === "actual-confidence");
   assert.equal(confidenceSeries.length, 2);
-  assert.deepEqual(confidenceSeries[0]?.data, [[9, 8.5], [11, 10.5]]);
-  assert.deepEqual(confidenceSeries[1]?.data, [[9, 1], [11, 1]]);
+  assert.deepEqual(confidenceSeries[0]?.data, [[9, 8.5], [11, 10.25]]);
+  assert.deepEqual(confidenceSeries[1]?.data, [[9, 1], [11, 1.5]]);
+  assert.equal(
+    confidenceSeries.some((series) => series.data?.some(([x, y]) => x === 9 && y === 7)),
+    false,
+  );
   assert.ok((confidenceSeries[1]?.areaStyle?.opacity ?? 0) > 0);
   assert.ok(confidenceSeries.every((series) => series.silent === true));
   const identity = option.series.find((series) => series.type === "line" && !series.stack);
   assert.equal(identity?.lineStyle?.color, "#d92d20");
   assert.equal(identity?.lineStyle?.type, "solid");
+}
+
+function testActualByPredictedRejectsInvalidWholeModelBandWidths(): void {
+  const build = (lower: number, upper: number) => buildActualByPredictedOption({
+    title: "Actual by Predicted",
+    labels: SAMPLE_LABELS,
+    plotRows: [{ rowIndex: 1, observed: 8, fitted: 9, residual: -1 }],
+    actualByPredictedConfidenceBand: [
+      { predicted: 9, fitted: 9, lower, upper },
+    ],
+  });
+
+  assert.throws(() => build(9.5, 8.5), /confidenceWidth/);
+  assert.throws(() => build(8.5, Number.POSITIVE_INFINITY), /upper/);
 }
 
 function testChartLayoutContainsAxisText(): void {
@@ -586,7 +607,8 @@ testResidualQqPointsAndReferenceLine();
 testResidualQqBoundaryInputs();
 testPredictionProfilerCurveAndConfidenceBand();
 testLeveragePointsFittedBandAndNullSeries();
-testActualByPredictedMeanConfidenceBand();
+testActualByPredictedWholeModelConfidenceBand();
+testActualByPredictedRejectsInvalidWholeModelBandWidths();
 testEffectSummaryHorizontalBarsAndSignificanceReference();
 testChartLayoutContainsAxisText();
 

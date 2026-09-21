@@ -43,6 +43,9 @@ export function FitModelLeveragePlot({
 
   const selectedPlot = leveragePlots.find((plot) => plot.termId === selectedTermId) ?? null;
   const title = t("fitModel.report.section.leveragePlot", { defaultValue: "Leverage Plot" });
+  const chartTitle = selectedPlot?.pValue === null || selectedPlot?.pValue === undefined
+    ? `${title}: ${selectedPlot?.termLabel ?? ""}`
+    : `${title}: ${selectedPlot.termLabel}; ${chartLabels.pValueLabel}: ${selectedPlot.pValue}`;
   const option = useMemo(() => selectedPlot && !selectedPlot.reason
     ? buildFitModelLeverageOption({
         title: selectedPlot.termLabel,
@@ -74,15 +77,15 @@ export function FitModelLeveragePlot({
             onChange={(event) => setSelectedTermId(event.currentTarget.value || null)}
           >
             {selectedTermId === null ? <option value="">{reasonText}</option> : null}
-            {effectTests.map((effect) => (
-              <option key={effect.termId} value={effect.termId}>{effect.termLabel}</option>
+            {leveragePlots.map((plot) => (
+              <option key={plot.termId} value={plot.termId}>{plot.termLabel}</option>
             ))}
           </select>
         </label>
         {option && selectedPlot ? (
           <div className="sp-fit-model-analysis-graph-leverage" data-graph-role="leveragePlot">
             <FitModelDiagnosticChart
-              title={`${title}: ${selectedPlot.termLabel}`}
+              title={chartTitle}
               chartKind="leveragePlot"
               option={option}
             />

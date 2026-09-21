@@ -6,6 +6,7 @@ import type {
 } from "@/components/fitModel/fitModelPrediction";
 import type { FitModelEffectRow } from "@/components/fitModel/fitModelReportModel";
 import type {
+  FitModelActualByPredictedBandPoint,
   FitModelLeveragePlot,
   FitModelPlotRow,
   FitModelQqRow,
@@ -20,15 +21,8 @@ export interface FitModelChartInput {
   title: string;
   sampledSubtitle?: string;
   plotRows: FitModelPlotRow[];
-  confidenceRows?: readonly FitModelConfidenceRow[];
+  actualByPredictedConfidenceBand?: readonly FitModelActualByPredictedBandPoint[];
   labels: FitModelChartLabels;
-}
-
-export interface FitModelConfidenceRow {
-  rowIndex: number;
-  fitted: number;
-  meanConfidenceLower: number | null;
-  meanConfidenceUpper: number | null;
 }
 
 export interface FitModelChartLabels {
@@ -305,15 +299,17 @@ export function buildActualByPredictedOption(input: FitModelChartInput): ECharts
   const identityData: Array<[number, number]> = identityMin <= identityMax
     ? [[identityMin, identityMin], [identityMax, identityMax]]
     : [];
-  const confidenceRows = (input.confidenceRows ?? [])
-    .filter((row) => row.meanConfidenceLower !== null && row.meanConfidenceUpper !== null)
-    .map((row, index) => {
-      const x = ensureFinite(row.fitted, "confidence.fitted", index);
-      const lower = ensureFinite(row.meanConfidenceLower as number, "meanConfidenceLower", index);
-      const upper = ensureFinite(row.meanConfidenceUpper as number, "meanConfidenceUpper", index);
-      return { x, lower, width: ensureFinite(upper - lower, "meanConfidenceWidth", index) };
-    })
-    .sort((left, right) => left.x - right.x);
+  const confidenceRows = (input.actualByPredictedConfidenceBand ?? []).map((row, index) => {
+    const x = ensureFinite(row.predicted, "confidence.predicted", index);
+    ensureFinite(row.fitted, "confidence.fitted", index);
+    const lower = ensureFinite(row.lower, "confidence.lower", index);
+    const upper = ensureFinite(row.upper, "confidence.upper", index);
+    const width = ensureFinite(upper - lower, "confidenceWidth", index);
+    if (width < 0) {
+      throw new Error(`fitModelAdapter: negative confidenceWidth at actualByPredictedConfidenceBand[${index}]`);
+    }
+    return { x, lower, width };
+  });
   const confidenceLower = confidenceRows.map(({ x, lower }) => [x, lower] as [number, number]);
   const confidenceWidth = confidenceRows.map(({ x, width }) => [x, width] as [number, number]);
 

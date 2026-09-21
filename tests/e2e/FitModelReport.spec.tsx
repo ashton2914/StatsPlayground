@@ -117,14 +117,14 @@ const fittedResult: FitModelFittedResult = {
     { termId: "A", termLabel: "A", estimate: 2, standardError: 0.2, tRatio: 10, pValue: 0.001, lowerConfidenceLimit: 1.6, upperConfidenceLimit: 2.4 },
   ],
   effectTests: [
-    { termId: "A", termLabel: "A", numberOfParameters: 1, degreesOfFreedom: 1, sumOfSquares: 90, fRatio: 90, pValue: 0.0001, reason: null },
+    { termId: "A", termLabel: "(A-2.5)", numberOfParameters: 1, degreesOfFreedom: 1, sumOfSquares: 90, fRatio: 90, pValue: 0.0001, reason: null },
     { termId: "B", termLabel: "B", numberOfParameters: 1, degreesOfFreedom: 1, sumOfSquares: 4, fRatio: 4, pValue: 0.08, reason: null },
   ],
   leveragePlots: [
     {
       termId: "A",
       termLabel: "A",
-      pValue: 0.0001,
+      pValue: 0.025,
       points: [
         { rowIndex: 4, effectLeverage: -1, adjustedResponse: 8 },
         { rowIndex: 9, effectLeverage: 1, adjustedResponse: 12 },
@@ -155,6 +155,10 @@ const fittedResult: FitModelFittedResult = {
       sourceRowCount: 12,
       reason: null,
     },
+  ],
+  actualByPredictedConfidenceBand: [
+    { predicted: 8, fitted: 8, lower: 7.5, upper: 8.5 },
+    { predicted: 11.8, fitted: 11.8, lower: 11.25, upper: 12.35 },
   ],
   plotRows: [
     { rowIndex: 4, observed: 10, fitted: 8, residual: 2 },
@@ -238,6 +242,10 @@ test("renders approved report order and effect interactions", async ({ mount }) 
   await component.getByRole("button", { name: "Remove" }).click();
   expect(removeCalls).toEqual(["A"]);
   const leverageSelector = component.getByLabel("Effect", { exact: true });
+  await expect(leverageSelector.locator("option").first()).toHaveText("A");
+  await expect(component.getByRole("img", { name: "Leverage Plot: A; p-Value: 0.025" }))
+    .toBeVisible();
+  await expect(component.locator('[data-chart-kind="actualByPredicted"] canvas')).toBeVisible();
   await leverageSelector.selectOption("B");
   await expect(leverageSelector).toHaveValue("B");
   await expect(component.locator('[data-chart-kind="leveragePlot"]')).toHaveCount(1);
