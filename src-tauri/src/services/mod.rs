@@ -31,6 +31,7 @@ pub mod save_coordinator;
 pub mod spprj_archive;
 pub mod stats_service;
 pub mod streaming_project_writer;
+pub(crate) mod streaming_table_reader;
 pub mod table_history_archive;
 pub mod table_mutation_coordinator;
 pub(crate) mod table_delta_mutation;
