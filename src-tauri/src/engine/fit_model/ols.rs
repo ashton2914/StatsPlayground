@@ -995,7 +995,13 @@ mod tests {
         let raw_beta = raw_svd
             .solve(&raw_response, 1e-12)
             .expect("raw coefficients");
+        let raw_geometry = raw_svd
+            .pseudo_inverse(1e-12)
+            .expect("raw design pseudoinverse");
+        let raw_covariance_geometry = &raw_geometry * raw_geometry.transpose();
         let expected_fitted = &raw_design * &raw_beta;
+        let expected_residuals = &raw_response - &expected_fitted;
+        let expected_mse = expected_residuals.dot(&expected_residuals) / 4.0;
         let mean_a = 2.0;
         let mean_b = 1.7;
         let mean_c = 2.1;
@@ -1014,10 +1020,42 @@ mod tests {
 
         assert_close(fitted.parameter_estimates[0].estimate, expected_intercept);
         assert_close(fitted.parameter_estimates[1].estimate, expected_main_a);
-        assert!(fitted.parameter_estimates[1].standard_error.is_some());
-        assert!(fitted.parameter_estimates[1].t_ratio.is_some());
-        for (row, expected) in fitted.plot_rows.iter().zip(expected_fitted.iter()) {
-            assert_close(row.fitted, *expected);
+        assert_close(
+            fitted.parameter_estimates[1]
+                .standard_error
+                .expect("centered A standard error"),
+            0.04009000401105613,
+        );
+        assert_close(
+            fitted.parameter_estimates[1]
+                .t_ratio
+                .expect("centered A t ratio"),
+            140.00821578623015,
+        );
+        assert_eq!(fitted.plot_rows.len(), raw_response.len());
+        for index in 0..raw_response.len() {
+            let row = &fitted.plot_rows[index];
+            assert_eq!(row.row_index, (index + 1) as u64);
+            assert_close(row.observed, raw_response[index]);
+            assert_close(row.fitted, expected_fitted[index]);
+            assert_close(row.residual, expected_residuals[index]);
+        }
+        assert_eq!(fitted.snapshot.coefficients.len(), raw_beta.len());
+        for (actual, expected) in fitted.snapshot.coefficients.iter().zip(raw_beta.iter()) {
+            assert_close(*actual, *expected);
+        }
+        let snapshot_covariance = fitted
+            .snapshot
+            .covariance
+            .as_ref()
+            .expect("raw snapshot covariance");
+        for row in 0..raw_covariance_geometry.nrows() {
+            for column in 0..raw_covariance_geometry.ncols() {
+                assert_close(
+                    snapshot_covariance[row][column],
+                    expected_mse * raw_covariance_geometry[(row, column)],
+                );
+            }
         }
     }
 

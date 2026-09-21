@@ -724,6 +724,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn singular_centered_hypothesis_geometry_is_not_estimable() {
+        let (design, response, mut terms) = fixture();
+        terms[1].term_id = terms[0].term_id.clone();
+        let reporting = FitModelReportingBasis {
+            coefficients: DVector::from_vec(vec![0.0, 2.0, 3.0, 4.0]),
+            covariance_geometry: DMatrix::from_row_slice(
+                4,
+                4,
+                &[
+                    1.0, 0.0, 0.0, 0.0, //
+                    0.0, 1.0, 1.0, 0.0, //
+                    0.0, 1.0, 1.0, 0.0, //
+                    0.0, 0.0, 0.0, 1.0,
+                ],
+            ),
+            term_labels: vec![
+                "Intercept".to_string(),
+                "(A-0)".to_string(),
+                "(B-0)".to_string(),
+                "(A-0)*(B-0)".to_string(),
+            ],
+            centered: true,
+        };
+
+        let tests = compute_effect_tests(
+            &design,
+            &response,
+            &terms,
+            Some(&reporting),
+            8.0,
+            Some(2.0),
+            4,
+        )
+        .expect("centered effect tests");
+        let test = &tests[0];
+
+        assert_eq!(test.number_of_parameters, 2);
+        assert_eq!(test.degrees_of_freedom, 1);
+        assert_eq!(test.sum_of_squares, None);
+        assert_eq!(test.f_ratio, None);
+        assert_eq!(test.p_value, None);
+        assert_eq!(
+            test.reason,
+            Some(FitModelInferenceReason::InferenceNotEstimable)
+        );
+    }
+
     fn explicit_residualize(matrix: &DMatrix<f64>, values: &DVector<f64>) -> DVector<f64> {
         let svd = matrix.clone().svd(true, true);
         let sigma_max = svd.singular_values.iter().copied().fold(0.0_f64, f64::max);

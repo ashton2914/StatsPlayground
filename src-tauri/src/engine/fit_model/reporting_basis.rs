@@ -37,7 +37,12 @@ pub(crate) fn reporting_basis(
     }
 
     let interactions = interaction_indexes(terms)?;
-    if interactions.is_empty() || !is_strongly_hierarchical(&interactions) {
+    let main_effects = terms
+        .iter()
+        .filter(|term| term.kind == FitModelTermKind::Main && term.column_names.len() == 1)
+        .map(|term| term.column_names[0].clone())
+        .collect::<BTreeSet<_>>();
+    if interactions.is_empty() || !is_strongly_hierarchical(&interactions, &main_effects) {
         return Ok(unchanged_basis(coefficients, covariance_geometry, terms));
     }
 
@@ -174,14 +179,18 @@ fn sorted_columns(term: &FitModelResolvedTerm) -> Result<Vec<String>, FitModelEn
     Ok(columns)
 }
 
-fn is_strongly_hierarchical(interactions: &BTreeMap<Vec<String>, usize>) -> bool {
+fn is_strongly_hierarchical(
+    interactions: &BTreeMap<Vec<String>, usize>,
+    main_effects: &BTreeSet<String>,
+) -> bool {
     interactions.keys().all(|columns| {
-        columns.len() <= 2
-            || subsets(columns).into_iter().all(|subset| {
-                subset.len() < 2
-                    || subset.len() == columns.len()
-                    || interactions.contains_key(&subset)
-            })
+        columns.iter().all(|column| main_effects.contains(column))
+            && (columns.len() <= 2
+                || subsets(columns).into_iter().all(|subset| {
+                    subset.len() < 2
+                        || subset.len() == columns.len()
+                        || interactions.contains_key(&subset)
+                }))
     })
 }
 
@@ -347,6 +356,22 @@ mod tests {
         assert!(!reporting.centered);
         assert_eq!(reporting.coefficients, coefficients);
         assert_eq!(reporting.term_labels[4], "A*B*C");
+    }
+
+    #[test]
+    fn two_way_interaction_without_main_effects_preserves_raw_basis() {
+        let coefficients = DVector::from_vec(vec![1.0, 2.0]);
+        let geometry = DMatrix::identity(2, 2);
+        let terms = vec![interaction(&["A", "B"])];
+        let means = BTreeMap::from([("A".to_string(), 1.0), ("B".to_string(), 2.0)]);
+
+        let reporting =
+            reporting_basis(&coefficients, &geometry, &terms, &means).expect("reporting basis");
+
+        assert!(!reporting.centered);
+        assert_eq!(reporting.coefficients, coefficients);
+        assert_eq!(reporting.covariance_geometry, geometry);
+        assert_eq!(reporting.term_labels, vec!["Intercept", "A*B"]);
     }
 
     #[test]
