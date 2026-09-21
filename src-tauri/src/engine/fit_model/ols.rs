@@ -259,7 +259,13 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         .iter()
         .map(|range| (range.column_name.clone(), range.mean))
         .collect::<BTreeMap<_, _>>();
-    let reporting = reporting_basis(&coefficients, &fitted_geometry, &resolved, &means)?;
+    let reporting = reporting_basis(
+        &coefficients,
+        &fitted_geometry,
+        &resolved,
+        &means,
+        input.model_matrix_spec.centering_method(),
+    )?;
     let mut coefficient_term_ids = Vec::with_capacity(coefficients.len());
     coefficient_term_ids.push("Intercept".to_string());
     coefficient_term_ids.extend(resolved.iter().map(|term| term.term_id.clone()));
@@ -303,21 +309,34 @@ pub(crate) fn fit_linear_model_with_diagnostics(
         perfect_fit,
         ill_conditioned,
     );
-    let effect_tests = compute_effect_tests(
+    let fitted_effect_tests = compute_effect_tests(
         &input.design_matrix,
         &response,
         &resolved,
-        Some(&reporting),
+        None,
         sse,
         mse,
         df_error as u64,
     )?;
+    let effect_tests = if reporting.centered {
+        compute_effect_tests(
+            &input.design_matrix,
+            &response,
+            &resolved,
+            Some(&reporting),
+            sse,
+            mse,
+            df_error as u64,
+        )?
+    } else {
+        fitted_effect_tests.clone()
+    };
     let leverage_plots = compute_effect_leverage_plots(
         &input.design_matrix,
         &response,
         &input.row_indexes,
         &resolved,
-        &effect_tests,
+        &fitted_effect_tests,
         mse,
         df_error as u64,
         confidence_level,
@@ -958,6 +977,119 @@ mod tests {
     }
 
     #[test]
+    fn equivalent_construction_bases_preserve_reports_predictions_and_leverage_hypotheses() {
+        let a = vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
+        let b = vec![2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0];
+        let noise = [0.1, -0.2, 0.1, -0.2, 0.4, -0.2, 0.1, -0.2, 0.1];
+        let response = (0..9)
+            .map(|row| 1.0 + 0.6 * a[row] * b[row] + noise[row])
+            .collect::<Vec<_>>();
+        let mut results = Vec::new();
+        for construction in [
+            FitModelCenteringMethod::None,
+            FitModelCenteringMethod::Mean,
+        ] {
+            let input = build_input(
+                "Y",
+                vec![
+                    term(FitModelTermKind::Main, &["A"]),
+                    term(FitModelTermKind::Main, &["B"]),
+                    term(FitModelTermKind::Interaction, &["A", "B"]),
+                ],
+                construction.clone(),
+                BTreeMap::from([
+                    ("A".to_string(), a.clone()),
+                    ("B".to_string(), b.clone()),
+                ]),
+                response.clone(),
+                (1..=9).collect(),
+                0,
+            );
+            let design = input.design_matrix.clone();
+            let resolved = super::resolved_terms(&input.model_matrix_spec);
+            let fitted_tests = super::compute_effect_tests(
+                &design,
+                &nalgebra::DVector::from_vec(response.clone()),
+                &resolved,
+                None,
+                0.36,
+                Some(0.072),
+                5,
+            )
+            .expect("fitted-basis tests");
+            let FitModelResult::Fitted(fitted) =
+                fit_linear_model(input, 0.95).expect("fit")
+            else {
+                panic!("expected fitted result");
+            };
+            for (estimate, expected) in fitted
+                .parameter_estimates
+                .iter()
+                .zip([4.6, 1.8, 1.2, 0.6])
+            {
+                assert_close(estimate.estimate, expected);
+            }
+            let expected_snapshot = if construction == FitModelCenteringMethod::None {
+                [1.0, 0.0, 0.0, 0.6]
+            } else {
+                [-2.6, 1.8, 1.2, 0.6]
+            };
+            for (actual, expected) in fitted.snapshot.coefficients.iter().zip(expected_snapshot) {
+                assert_close(*actual, expected);
+            }
+            let predictions =
+                &design * nalgebra::DVector::from_vec(fitted.snapshot.coefficients.clone());
+            for (row, prediction) in fitted.plot_rows.iter().zip(predictions.iter()) {
+                assert_close(row.fitted, *prediction);
+                assert_close(row.residual, row.observed - prediction);
+            }
+            assert_close(fitted.anova[1].sum_of_squares, 0.36);
+            for (plot, expected) in fitted.leverage_plots.iter().zip(&fitted_tests) {
+                // Near a null slope, roundoff in reduced SSE is amplified by the F tail.
+                assert!(
+                    (plot.p_value.expect("leverage p") - expected.p_value.expect("fitted p"))
+                        .abs()
+                        < 1e-6
+                );
+            }
+            if construction == FitModelCenteringMethod::None {
+                assert!(fitted.effect_tests[0].p_value.expect("centered p") < 0.001);
+                assert!(fitted.leverage_plots[0].p_value.expect("raw p") > 1.0 - 1e-6);
+                let band = &fitted.leverage_plots[0].confidence_band;
+                let first = band.first().expect("band start");
+                let last = band.last().expect("band end");
+                assert_close(
+                    (last.fitted - first.fitted) / (last.effect_leverage - first.effect_leverage),
+                    0.0,
+                );
+            }
+            results.push(fitted);
+        }
+        for (raw, centered) in results[0]
+            .parameter_estimates
+            .iter()
+            .zip(&results[1].parameter_estimates)
+        {
+            assert_close(
+                raw.standard_error.expect("SE"),
+                centered.standard_error.expect("SE"),
+            );
+            assert_close(raw.t_ratio.expect("t"), centered.t_ratio.expect("t"));
+        }
+        for (raw, centered) in results[0]
+            .effect_tests
+            .iter()
+            .zip(&results[1].effect_tests)
+        {
+            assert_close(
+                raw.sum_of_squares.expect("SS"),
+                centered.sum_of_squares.expect("SS"),
+            );
+            assert_close(raw.p_value.expect("p"), centered.p_value.expect("p"));
+        }
+    }
+
+    #[test]
     fn hierarchical_interactions_report_centered_parameters_without_changing_predictions() {
         let a = vec![0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0];
         let b = vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 1.0, 4.0];
@@ -1495,7 +1627,7 @@ mod tests {
             panic!("expected fitted result");
         };
 
-        assert_close(fitted.parameter_estimates[0].estimate, 91.37860600474693);
+        assert_close(fitted.parameter_estimates[0].estimate, 59.416372946550865);
         assert_close(fitted.parameter_estimates[1].estimate, -3.059414649499809);
         assert_close(fitted.parameter_estimates[2].estimate, -0.0732501362581633);
         assert_close(fitted.parameter_estimates[3].estimate, 0.007953458492631182);
@@ -1529,9 +1661,9 @@ mod tests {
 
         assert_parameter_row(
             &fitted.parameter_estimates[0],
-            91.37860600474693,
-            8.162470741351981,
-            11.19496888874747,
+            59.416372946550865,
+            8.722066257724821,
+            6.812190046587633,
             26,
             0.95,
         );

@@ -299,6 +299,25 @@ test("validates one selection and duplicate effects", async ({ mount }) => {
   await expect(dialog.getByRole("alert")).toContainText("already exists");
 });
 
+test("Add Effect dialog fits a 390px viewport without page overflow", async ({ mount, page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const component = await mount(report({ onAddEffect: () => undefined }));
+  await component.getByRole("button", { name: "Add Effect" }).click();
+  const dialog = component.getByRole("dialog", { name: "Add Effect" });
+  await expect(dialog).toBeVisible();
+  const bounds = await dialog.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844);
+  expect(await page.evaluate(() =>
+    document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  )).toBeLessThanOrEqual(1);
+  await expect(dialog.getByRole("button", { name: "Add Effect" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();
+});
+
 test("cancels Add Effect and hides the action when editing is disabled", async ({ mount }) => {
   const addCalls: FitModelItem["terms"][] = [];
   const component = await mount(report({ onAddEffect: (nextTerms) => addCalls.push(nextTerms) }));

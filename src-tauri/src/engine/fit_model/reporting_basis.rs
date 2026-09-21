@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use nalgebra::{DMatrix, DVector};
 
 use crate::engine::fit_model::ols::FitModelEngineError;
-use crate::models::fit_model::{FitModelResolvedTerm, FitModelTermKind};
+use crate::models::fit_model::{FitModelCenteringMethod, FitModelResolvedTerm, FitModelTermKind};
 
 #[derive(Debug, Clone)]
 pub(crate) struct FitModelReportingBasis {
@@ -18,6 +18,7 @@ pub(crate) fn reporting_basis(
     covariance_geometry: &DMatrix<f64>,
     terms: &[FitModelResolvedTerm],
     predictor_means: &BTreeMap<String, f64>,
+    construction_centering: &FitModelCenteringMethod,
 ) -> Result<FitModelReportingBasis, FitModelEngineError> {
     let width = terms.len() + 1;
     if coefficients.len() != width
@@ -87,6 +88,11 @@ pub(crate) fn reporting_basis(
                 }
             }
             FitModelTermKind::Interaction if term.column_names.len() >= 2 => {
+                // Mean construction already centers interaction factors, but not main effects.
+                if *construction_centering == FitModelCenteringMethod::Mean {
+                    transform[(raw_column, raw_column)] = 1.0;
+                    continue;
+                }
                 let columns = sorted_columns(term)?;
                 for subset in subsets(&columns) {
                     let report_row = match subset.len() {
@@ -185,11 +191,13 @@ fn is_strongly_hierarchical(
 ) -> bool {
     interactions.keys().all(|columns| {
         columns.iter().all(|column| main_effects.contains(column))
+            // Checking every term's immediate predecessors proves full downward closure
+            // without allocating 2^k subsets for an incomplete high-order interaction.
             && (columns.len() <= 2
-                || subsets(columns).into_iter().all(|subset| {
-                    subset.len() < 2
-                        || subset.len() == columns.len()
-                        || interactions.contains_key(&subset)
+                || (0..columns.len()).all(|omitted| {
+                    let mut predecessor = columns.clone();
+                    predecessor.remove(omitted);
+                    interactions.contains_key(&predecessor)
                 }))
     })
 }
@@ -260,10 +268,12 @@ fn format_report_number(value: f64) -> String {
         );
     }
     let decimal_places = (5 - magnitude).max(0) as usize;
-    format!("{value:.decimal_places$}")
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_string()
+    let text = format!("{value:.decimal_places$}");
+    if decimal_places == 0 {
+        text
+    } else {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
 }
 
 #[cfg(test)]
@@ -272,7 +282,9 @@ mod tests {
 
     use nalgebra::{DMatrix, DVector};
 
-    use crate::models::fit_model::{FitModelResolvedTerm, FitModelTermKind};
+    use crate::models::fit_model::{
+        FitModelCenteringMethod, FitModelResolvedTerm, FitModelTermKind,
+    };
 
     use super::reporting_basis;
 
@@ -317,19 +329,86 @@ mod tests {
     }
 
     #[test]
+    fn fitted_interaction_centering_is_not_applied_twice() {
+        let coefficients = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let geometry = DMatrix::identity(4, 4);
+        let terms = vec![main("A"), main("B"), interaction(&["A", "B"])];
+        let means = BTreeMap::from([("A".to_string(), 1.0), ("B".to_string(), 2.0)]);
+
+        for (construction, expected) in [
+            (FitModelCenteringMethod::None, vec![17.0, 10.0, 7.0, 4.0]),
+            (FitModelCenteringMethod::Mean, vec![9.0, 2.0, 3.0, 4.0]),
+        ] {
+            let reporting =
+                reporting_basis(&coefficients, &geometry, &terms, &means, &construction)
+                    .expect("reporting basis");
+            assert_eq!(reporting.coefficients.as_slice(), expected.as_slice());
+            if construction == FitModelCenteringMethod::Mean {
+                assert_eq!(
+                    reporting.covariance_geometry,
+                    DMatrix::from_row_slice(
+                        4,
+                        4,
+                        &[
+                            6.0, 1.0, 2.0, 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                            0.0, 1.0,
+                        ]
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn large_incomplete_interaction_returns_fitted_basis_without_enumerating_power_set() {
+        let names = (0..80).map(|index| format!("X{index}")).collect::<Vec<_>>();
+        let mut terms = names.iter().map(|name| main(name)).collect::<Vec<_>>();
+        terms.push(interaction(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+        let coefficients = DVector::from_element(terms.len() + 1, 1.0);
+        let geometry = DMatrix::identity(terms.len() + 1, terms.len() + 1);
+        let reporting = reporting_basis(
+            &coefficients,
+            &geometry,
+            &terms,
+            &BTreeMap::new(),
+            &FitModelCenteringMethod::None,
+        )
+        .expect("non-hierarchical fallback does not require means");
+        assert!(!reporting.centered);
+        assert_eq!(reporting.coefficients, coefficients);
+        assert_eq!(reporting.covariance_geometry, geometry);
+    }
+
+    #[test]
+    fn centered_labels_preserve_large_integer_means() {
+        assert_eq!(super::centered_factor("X", 100000.0), "(X-100000)");
+        assert_eq!(super::centered_factor("X", -100000.0), "(X+100000)");
+        assert_eq!(super::centered_factor("X", 1.23000), "(X-1.23)");
+        assert_eq!(super::centered_factor("X", 0.0), "(X-0)");
+    }
+
+    #[test]
     fn two_way_interaction_uses_centered_reporting_basis() {
         let coefficients = DVector::from_vec(vec![-14.5521, 146.213, 209.243, -334.874]);
         let geometry = DMatrix::identity(4, 4);
         let terms = vec![main("A"), main("B"), interaction(&["A", "B"])];
         let means = BTreeMap::from([("A".to_string(), 0.37388), ("B".to_string(), 0.39633)]);
 
-        let reporting =
-            reporting_basis(&coefficients, &geometry, &terms, &means).expect("reporting basis");
+        let reporting = reporting_basis(
+            &coefficients,
+            &geometry,
+            &terms,
+            &means,
+            &FitModelCenteringMethod::None,
+        )
+        .expect("reporting basis");
 
         assert!(reporting.centered);
-        assert_close(reporting.coefficients[0], 73.4217);
-        assert_close(reporting.coefficients[1], 13.4932);
-        assert_close(reporting.coefficients[2], 84.0403);
+        assert_close(reporting.coefficients[0], 73.4217120584104);
+        assert_close(reporting.coefficients[1], 13.49238758);
+        assert_close(reporting.coefficients[2], 84.04030888);
         assert_close(reporting.coefficients[3], -334.874);
         assert_eq!(reporting.term_labels[3], "(A-0.37388)*(B-0.39633)");
     }
@@ -350,8 +429,14 @@ mod tests {
             ("C".to_string(), 3.0),
         ]);
 
-        let reporting =
-            reporting_basis(&coefficients, &geometry, &terms, &means).expect("reporting basis");
+        let reporting = reporting_basis(
+            &coefficients,
+            &geometry,
+            &terms,
+            &means,
+            &FitModelCenteringMethod::None,
+        )
+        .expect("reporting basis");
 
         assert!(!reporting.centered);
         assert_eq!(reporting.coefficients, coefficients);
@@ -365,8 +450,14 @@ mod tests {
         let terms = vec![interaction(&["A", "B"])];
         let means = BTreeMap::from([("A".to_string(), 1.0), ("B".to_string(), 2.0)]);
 
-        let reporting =
-            reporting_basis(&coefficients, &geometry, &terms, &means).expect("reporting basis");
+        let reporting = reporting_basis(
+            &coefficients,
+            &geometry,
+            &terms,
+            &means,
+            &FitModelCenteringMethod::None,
+        )
+        .expect("reporting basis");
 
         assert!(!reporting.centered);
         assert_eq!(reporting.coefficients, coefficients);
@@ -408,15 +499,26 @@ mod tests {
             [1.0, a, b, c, a * b, a * c, b * c, a * b * c][column]
         });
 
-        let reporting =
-            reporting_basis(&coefficients, &geometry, &terms, &means).expect("reporting basis");
-
-        assert!(reporting.centered);
-        for row in 0..rows.len() {
-            assert_close(
-                raw_design.row(row).dot(&coefficients),
-                centered_design.row(row).dot(&reporting.coefficients),
-            );
+        let hybrid_design = DMatrix::from_fn(rows.len(), 8, |row, column| {
+            if (1..=3).contains(&column) {
+                rows[row][column - 1]
+            } else {
+                centered_design[(row, column)]
+            }
+        });
+        for (construction, fitted_design) in [
+            (FitModelCenteringMethod::None, raw_design),
+            (FitModelCenteringMethod::Mean, hybrid_design),
+        ] {
+            let reporting =
+                reporting_basis(&coefficients, &geometry, &terms, &means, &construction)
+                    .expect("reporting basis");
+            assert!(reporting.centered);
+            let fitted_predictions = fitted_design * &coefficients;
+            let report_predictions = &centered_design * &reporting.coefficients;
+            for row in 0..rows.len() {
+                assert_close(fitted_predictions[row], report_predictions[row]);
+            }
         }
     }
 
@@ -431,9 +533,17 @@ mod tests {
             &DVector::from_vec(vec![1.0, 2.0]),
             &geometry,
             &terms,
-            &means
+            &means,
+            &FitModelCenteringMethod::None
         )
         .is_err());
-        assert!(reporting_basis(&coefficients, &geometry, &terms, &means).is_err());
+        assert!(reporting_basis(
+            &coefficients,
+            &geometry,
+            &terms,
+            &means,
+            &FitModelCenteringMethod::None
+        )
+        .is_err());
     }
 }

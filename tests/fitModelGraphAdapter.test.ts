@@ -47,7 +47,7 @@ function testActualAndResidualPointsAndAxes(): void {
     labels: SAMPLE_LABELS,
     plotRows: rows,
   }) as {
-    xAxis: { name: string; min?: number; max?: number };
+    xAxis: { name: string };
     yAxis: { name: string };
     series: Array<{ data: Array<[number, number]> }>;
   };
@@ -339,7 +339,7 @@ function testPredictionProfilerCurveAndConfidenceBand(): void {
       tooltipYLabel: "Y",
     },
   }) as {
-    xAxis: { name: string };
+    xAxis: { name: string; min: number; max: number };
     yAxis: { name: string; min: number; max: number };
     series: Array<{
       name?: string;

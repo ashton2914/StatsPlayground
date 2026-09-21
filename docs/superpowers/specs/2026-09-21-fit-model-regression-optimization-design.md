@@ -55,6 +55,12 @@ term is present. It is independent of the persisted `centeringMethod`. The
 persisted setting continues to describe the model construction basis and
 remains backward compatible.
 
+With `centeringMethod = mean`, the fitted matrix already centers interaction
+factors while keeping main effects raw. Reporting shifts those main effects and
+the intercept only; it does not expand the already-centered interactions again.
+Hierarchy detection checks each interaction's immediate predecessors rather
+than allocating its power set, keeping incomplete high-order models bounded.
+
 If a manually added higher-order interaction omits any implied lower-order
 interaction, the whole model remains in its uncentered fitted basis for
 Parameter Estimates and retains the existing reduced-model Effect Tests. The
@@ -96,6 +102,10 @@ which explains and corrects the current mismatch with JMP.
 
 For a non-hierarchical higher-order model, Effect Tests retains the existing
 reduced-model calculation in the uncentered fitted basis.
+
+Leverage plots always retain fitted-basis reduced-model p-values, consistent
+with their fitted-basis partial slopes and confidence bands. A main-effect
+leverage p-value may therefore differ from its centered report Effect Test.
 
 Rank-deficient or otherwise non-estimable hypotheses return nullable statistics
 with the existing explicit inference reason. They are never reported as zero.
