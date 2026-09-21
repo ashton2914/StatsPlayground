@@ -36,6 +36,60 @@ pub struct ProjectService<'a> {
     state: &'a AppState,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OpenPerfMetrics {
+    pub total_ms: u128,
+    pub archive_read_parse_ms: u128,
+    pub table_restore_ms: u128,
+    pub finalize_ms: u128,
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+type OpenPerfObserver = Box<dyn FnMut(OpenPerfMetrics)>;
+
+#[cfg(any(test, feature = "perf-harness"))]
+thread_local! {
+    static OPEN_PERF_OBSERVER: std::cell::RefCell<Option<OpenPerfObserver>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+pub(crate) fn with_open_perf_observer<T, FObserve, FRun>(observer: FObserve, run: FRun) -> T
+where
+    FObserve: FnMut(OpenPerfMetrics) + 'static,
+    FRun: FnOnce() -> T,
+{
+    OPEN_PERF_OBSERVER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(observer));
+    });
+    let outcome = run();
+    OPEN_PERF_OBSERVER.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+    outcome
+}
+
+#[cfg(not(any(test, feature = "perf-harness")))]
+pub(crate) fn with_open_perf_observer<T, FObserve, FRun>(_observer: FObserve, run: FRun) -> T
+where
+    FObserve: FnMut(OpenPerfMetrics) + 'static,
+    FRun: FnOnce() -> T,
+{
+    run()
+}
+
+#[cfg(any(test, feature = "perf-harness"))]
+fn notify_open_perf_observer(metrics: OpenPerfMetrics) {
+    OPEN_PERF_OBSERVER.with(|slot| {
+        if let Some(observer) = slot.borrow_mut().as_mut() {
+            observer(metrics);
+        }
+    });
+}
+
+#[cfg(not(any(test, feature = "perf-harness")))]
+fn notify_open_perf_observer(_metrics: OpenPerfMetrics) {}
+
 fn reconcile_archived_history(
     history: Vec<serde_json::Value>,
     retained_change_set_ids: &std::collections::HashSet<String>,
@@ -369,7 +423,10 @@ impl<'a> ProjectService<'a> {
         file_path: &str,
         progress_cb: Option<&dyn Fn(usize, usize, &str, usize, usize)>,
     ) -> Result<OpenProjectResult, AppError> {
+        let open_started = std::time::Instant::now();
+        let archive_started = std::time::Instant::now();
         let mut bundle = spprj_archive::read_project_file(file_path)?;
+        let archive_read_parse_ms = archive_started.elapsed().as_millis();
         if is_future_project_format(&bundle.manifest.version) {
             return Err(AppError::InvalidParam(format!(
                 "Unsupported project format version: {}",
@@ -454,6 +511,8 @@ impl<'a> ProjectService<'a> {
 
         let staged_state = AppState::new()?;
         let total = bundle.tables.len();
+        let table_restore_started = std::time::Instant::now();
+        let table_restore_ms;
         {
             let staged_service = ProjectService::new(&staged_state);
             for (idx, doc) in bundle.tables.iter().enumerate() {
@@ -467,6 +526,7 @@ impl<'a> ProjectService<'a> {
                 };
                 staged_service.restore_table_doc_with_progress(doc, Some(&row_progress))?;
             }
+            table_restore_ms = table_restore_started.elapsed().as_millis();
             for doc in &recovered_tables {
                 let _ = staged_state
                     .db
@@ -678,6 +738,16 @@ impl<'a> ProjectService<'a> {
         if let Some(cb) = &progress_cb {
             cb(total, total, "完成", 0, 0);
         }
+
+        let total_ms = open_started.elapsed().as_millis();
+        notify_open_perf_observer(OpenPerfMetrics {
+            total_ms,
+            archive_read_parse_ms,
+            table_restore_ms,
+            finalize_ms: total_ms
+                .saturating_sub(archive_read_parse_ms)
+                .saturating_sub(table_restore_ms),
+        });
 
         Ok(OpenProjectResult {
             project,

@@ -42,7 +42,9 @@ use crate::services::row_order_update_boundary::execute_global_row_order_update_
 use crate::services::row_order_update_boundary::{
     full_table_row_updates, rebalanced_rows, reset_full_table_row_updates, reset_rebalanced_rows,
 };
-use crate::services::project_service::{seed_save_project, ProjectService};
+use crate::services::project_service::{
+    seed_save_project, with_open_perf_observer, OpenPerfMetrics, ProjectService,
+};
 use crate::services::spprj_archive;
 use crate::services::streaming_project_writer::with_save_perf_observer;
 use crate::services::table_delta_mutation::{
@@ -54,6 +56,7 @@ use crate::state::AppState;
 const DEFAULT_CALCULATED_CHAIN_DEPTH: usize = 5;
 const CALCULATED_MEDIAN_THRESHOLD_MS: u128 = 2_000;
 const CALCULATED_MEMORY_GROWTH_BUDGET_MULTIPLIER: u64 = 2;
+const PREPARE_OPEN_FIXTURE_FLAG: &str = "--prepare-open-fixture";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +67,7 @@ enum Operation {
     Graph,
     TimeSeriesGraph,
     Save,
+    Open,
     Datalink,
     Calculated,
     TableNavigation,
@@ -150,6 +154,8 @@ struct PerformanceReport {
     max_combined_batch_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     save_stage_ms: Option<SaveStageReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_stage_ms: Option<OpenStageReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     process_memory: Option<ProcessMemoryReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -530,6 +536,14 @@ struct SaveStageReport {
     replacement: u128,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenStageReport {
+    archive_read_parse: u128,
+    table_restore: u128,
+    finalize: u128,
+}
+
 #[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProcessMemoryReport {
@@ -866,6 +880,7 @@ where
                     "graph" => Operation::Graph,
                     "time-series-graph" | "time_series_graph" => Operation::TimeSeriesGraph,
                     "save" => Operation::Save,
+                    "open" => Operation::Open,
                     "datalink" => Operation::Datalink,
                     "calculated" => Operation::Calculated,
                     "table-navigation" => Operation::TableNavigation,
@@ -1067,6 +1082,7 @@ fn execute_table_navigation(
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -1850,6 +1866,7 @@ fn execute_graph_new_runs_with_config(
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
         process_memory: None,
         graph_new: Some(GraphNewPerformanceReport {
             machine_memory_metric: "process RSS is OS working-set bytes when available, otherwise null (including macOS); accountedMemoryBytes is graph-owned in-memory tile accounting only",
@@ -2239,6 +2256,7 @@ fn execute_graph(options: Options, total_started: Instant) -> Result<Performance
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2342,6 +2360,7 @@ fn execute_time_series_graph(
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2368,6 +2387,9 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
     }
     if options.operation == Operation::Save {
         return execute_save(options);
+    }
+    if options.operation == Operation::Open {
+        return execute_open(options);
     }
     if options.operation == Operation::Datalink {
         return execute_datalink(options);
@@ -2445,6 +2467,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
             unreachable!("time series graph operation is handled by execute_time_series_graph")
         }
         Operation::Save => unreachable!("save is handled before this branch"),
+        Operation::Open => unreachable!("open is handled before this branch"),
         Operation::Datalink => unreachable!("datalink is handled before this branch"),
         Operation::Calculated => unreachable!("calculated is handled before this branch"),
         Operation::TableNavigation => {
@@ -2491,6 +2514,7 @@ fn execute(options: Options) -> Result<PerformanceReport, AppError> {
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
         process_memory: None,
         graph_new: None,
         chain_depth: None,
@@ -2690,7 +2714,8 @@ fn execute_tabulate(options: Options) -> Result<PerformanceReport, AppError> {
         chunks: None, transferred_bytes: Some(tabulate.tile_payload_bytes.iter().sum()),
         projection_passes: None, invalid_x_count: None, archive_bytes: 0,
         max_retained_batch_bytes: None, max_encoded_batch_bytes: None,
-        max_combined_batch_bytes: None, save_stage_ms: None, process_memory: None,
+        max_combined_batch_bytes: None, save_stage_ms: None, open_stage_ms: None,
+        process_memory: None,
         graph_new: None, chain_depth: None, runs_ms: None, median_ms: None,
         process_memory_method: process_memory_method(), physical_input_bytes: None,
         calculated_result_bytes: None, memory_budget_bytes: None,
@@ -2796,6 +2821,7 @@ fn execute_calculated(options: Options) -> Result<PerformanceReport, AppError> {
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
         process_memory,
         graph_new: None,
         chain_depth: Some(options.chain_depth),
@@ -3184,6 +3210,250 @@ fn execute_datalink(options: Options) -> Result<PerformanceReport, AppError> {
         max_encoded_batch_bytes: None,
         max_combined_batch_bytes: None,
         save_stage_ms: None,
+        open_stage_ms: None,
+        process_memory,
+        graph_new: None,
+        chain_depth: None,
+        runs_ms: None,
+        median_ms: None,
+        process_memory_method: process_memory_method(),
+        physical_input_bytes: None,
+        calculated_result_bytes: None,
+        memory_budget_bytes: None,
+        memory_growth_budget_multiplier: None,
+        qualification_passed: None,
+        qualification_failure: None,
+        machine: None,
+        tabulate: None,
+        table_mutation: None,
+    })
+}
+
+fn empty_project_save_request() -> SaveProjectRequest {
+    SaveProjectRequest {
+        file_path: None,
+        graph_builders_new: Vec::new(),
+        graph_new_folders: std::collections::HashMap::new(),
+        history: Vec::new(),
+        snapshots: Vec::new(),
+        graph_builders: Vec::new(),
+        fit_y_by_x: Vec::new(),
+        fit_models: Vec::new(),
+        reports: Vec::new(),
+        distributions: Vec::new(),
+        analyses: Vec::new(),
+        tabulates: Vec::new(),
+        folders: Vec::new(),
+        table_folders: std::collections::HashMap::new(),
+        graph_folders: std::collections::HashMap::new(),
+        fit_y_by_x_folders: std::collections::HashMap::new(),
+        fit_model_folders: std::collections::HashMap::new(),
+        report_folders: std::collections::HashMap::new(),
+        distribution_folders: std::collections::HashMap::new(),
+        analysis_folders: std::collections::HashMap::new(),
+        tabulate_folders: std::collections::HashMap::new(),
+        dataset_filters: std::collections::HashMap::new(),
+        workflows: Vec::new(),
+        logical_folders: Vec::new(),
+        workflow_runs: Vec::new(),
+        table_transforms: Vec::new(),
+        table_transform_bindings: Vec::new(),
+    }
+}
+
+struct OwnedBenchmarkArchive {
+    path: std::path::PathBuf,
+}
+
+impl OwnedBenchmarkArchive {
+    fn new(path: std::path::PathBuf) -> Result<Self, AppError> {
+        let temp_dir = std::env::temp_dir();
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        if path.parent() != Some(temp_dir.as_path())
+            || file_name.is_none_or(|name| {
+                !name.starts_with("stats_playground_save_current_")
+                    || !name.ends_with(".spprj")
+            })
+        {
+            return Err(AppError::InvalidParam(
+                "benchmark archive must use the owned temporary path pattern".into(),
+            ));
+        }
+        Ok(Self { path })
+    }
+
+    fn path_string(&self) -> String {
+        self.path.to_string_lossy().to_string()
+    }
+}
+
+impl Drop for OwnedBenchmarkArchive {
+    fn drop(&mut self) {
+        remove_benchmark_artifacts(&self.path_string());
+    }
+}
+
+fn new_owned_benchmark_archive() -> Result<OwnedBenchmarkArchive, AppError> {
+    OwnedBenchmarkArchive::new(std::env::temp_dir().join(format!(
+        "stats_playground_save_current_{}.spprj",
+        uuid::Uuid::new_v4()
+    )))
+}
+
+fn prepare_open_fixture_at_path(
+    archive_path: &str,
+    rows: usize,
+    columns: usize,
+) -> Result<(), AppError> {
+    if std::path::Path::new(archive_path).exists() {
+        return Err(AppError::FileIO(
+            "open benchmark fixture path already exists".into(),
+        ));
+    }
+    let state = AppState::new()?;
+    ProjectService::new(&state).create_project("Open Baseline", archive_path)?;
+    state
+        .db
+        .lock()
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .seed_benchmark_table(
+            "save-current-baseline",
+            "Save Current Baseline",
+            rows,
+            columns,
+        )?;
+    ProjectService::new(&state).save_project(empty_project_save_request(), None)?;
+    Ok(())
+}
+
+fn run_open_fixture_child(args: &[String]) -> Result<(), AppError> {
+    if args.len() != 4 {
+        return Err(AppError::InvalidParam(format!(
+            "{PREPARE_OPEN_FIXTURE_FLAG} requires path, rows, and columns"
+        )));
+    }
+    let rows = parse_positive_usize("--rows", Some(args[2].clone()))?;
+    let columns = parse_positive_usize("--columns", Some(args[3].clone()))?;
+    prepare_open_fixture_at_path(&args[1], rows, columns)
+}
+
+#[cfg(test)]
+fn prepare_open_fixture_isolated(
+    archive_path: &str,
+    rows: usize,
+    columns: usize,
+) -> Result<(), AppError> {
+    prepare_open_fixture_at_path(archive_path, rows, columns)
+}
+
+#[cfg(not(test))]
+fn prepare_open_fixture_isolated(
+    archive_path: &str,
+    rows: usize,
+    columns: usize,
+) -> Result<(), AppError> {
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .arg(PREPARE_OPEN_FIXTURE_FLAG)
+        .arg(archive_path)
+        .arg(rows.to_string())
+        .arg(columns.to_string())
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(AppError::FileIO(format!(
+            "open benchmark fixture child failed with status {status}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_open_row_count(actual: usize, expected: usize) -> Result<usize, AppError> {
+    if actual != expected {
+        return Err(AppError::Database(format!(
+            "opened row count mismatch: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(actual)
+}
+
+fn execute_open(options: Options) -> Result<PerformanceReport, AppError> {
+    let total_started = Instant::now();
+    let setup_started = Instant::now();
+    let archive = new_owned_benchmark_archive()?;
+    let archive_path = archive.path_string();
+    prepare_open_fixture_isolated(&archive_path, options.rows, options.columns)?;
+    let archive_bytes = std::fs::metadata(&archive_path)?.len();
+    let setup_ms = setup_started.elapsed().as_millis();
+
+    let state = AppState::new()?;
+    let observed_perf =
+        std::sync::Arc::new(std::sync::Mutex::new(OpenPerfMetrics::default()));
+    let observed_perf_capture = std::sync::Arc::clone(&observed_perf);
+    let (open_result, process_memory) = measure_peak_working_set_during(|| {
+        with_open_perf_observer(
+            move |metrics| {
+                if let Ok(mut slot) = observed_perf_capture.lock() {
+                    *slot = metrics;
+                }
+            },
+            || ProjectService::new(&state).open_project(&archive_path, None),
+        )
+    });
+    let observed_perf = observed_perf.lock().map(|slot| *slot).unwrap_or_default();
+    let operation_ms = observed_perf.total_ms;
+
+    let benchmark_result = match open_result {
+        Ok(_) => {
+            let result_rows = state
+                .db
+                .lock()
+                .map_err(|error| AppError::Database(error.to_string()))?
+                .get_dataset_meta("save-current-baseline")?
+                .row_count;
+            let result_rows = usize::try_from(result_rows)
+                .map_err(|_| AppError::Database("opened row count is out of range".into()))?;
+            validate_open_row_count(result_rows, options.rows)
+        }
+        Err(error) => Err(error),
+    };
+
+    let result_rows = benchmark_result?;
+
+    Ok(PerformanceReport {
+        rows: options.rows,
+        columns: options.columns,
+        operation: options.operation,
+        setup_ms,
+        operation_ms,
+        position_percent: None,
+        target_start: None,
+        lock_wait_ms: None,
+        count_ms: None,
+        anchor_ms: None,
+        total_ms: total_started.elapsed().as_millis(),
+        result_rows,
+        selected_columns: 0,
+        query_ms: None,
+        encode_ms: None,
+        stdout_write_ms: None,
+        decode_ms: None,
+        draw_ms: None,
+        processed_rows: None,
+        source_rows: None,
+        chunks: None,
+        transferred_bytes: None,
+        projection_passes: None,
+        invalid_x_count: None,
+        archive_bytes,
+        max_retained_batch_bytes: None,
+        max_encoded_batch_bytes: None,
+        max_combined_batch_bytes: None,
+        save_stage_ms: None,
+        open_stage_ms: Some(OpenStageReport {
+            archive_read_parse: observed_perf.archive_read_parse_ms,
+            table_restore: observed_perf.table_restore_ms,
+            finalize: observed_perf.finalize_ms,
+        }),
         process_memory,
         graph_new: None,
         chain_depth: None,
@@ -3347,6 +3617,7 @@ fn execute_save(options: Options) -> Result<PerformanceReport, AppError> {
             validation: save_perf_metrics.validation_ms,
             replacement: save_perf_metrics.replacement_ms,
         }),
+        open_stage_ms: None,
         process_memory,
         graph_new: None,
         chain_depth: None,
@@ -3394,6 +3665,9 @@ fn remove_benchmark_artifacts(archive_path: &str) {
 
 pub fn run_cli() -> Result<(), String> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == PREPARE_OPEN_FIXTURE_FLAG) {
+        return run_open_fixture_child(&args).map_err(|error| error.to_string());
+    }
     let mutation_child =
         take_mutation_child_request(&mut args).map_err(|error| error.to_string())?;
     if let Some(request) = &mutation_child {
@@ -5165,6 +5439,27 @@ mod tests {
     }
 
     #[test]
+    fn performance_cli_accepts_project_open_operation() {
+        let options = parse_args(
+            [
+                "--rows",
+                "100",
+                "--columns",
+                "4",
+                "--operation",
+                "open",
+            ]
+            .map(String::from),
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(options.operation).unwrap(),
+            serde_json::json!("open")
+        );
+    }
+
+    #[test]
     fn performance_cli_measures_current_project_save() {
         let report = execute(Options {
             rows: 300_000,
@@ -5183,6 +5478,52 @@ mod tests {
 
         assert_eq!(report.result_rows, 300_000);
         assert!(report.archive_bytes > 0);
+    }
+
+    #[test]
+    fn performance_cli_measures_complete_project_open() {
+        let report = execute(Options {
+            rows: 1_000,
+            columns: 4,
+            operation: Operation::Open,
+            graph_new_rows: None,
+            graph_new_overlay_groups: None,
+            graph_new_csv: None,
+            graph_new_axis: None,
+            chain_depth: DEFAULT_CALCULATED_CHAIN_DEPTH,
+            runs: 1,
+            position_percent: None,
+            payload_stdout: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.result_rows, 1_000);
+        assert!(report.archive_bytes > 0);
+        assert!(report.process_memory.is_some());
+        let stages = report.open_stage_ms.expect("open stage timings");
+        assert!(
+            stages.archive_read_parse + stages.table_restore + stages.finalize
+                <= report.operation_ms
+        );
+    }
+
+    #[test]
+    fn project_open_benchmark_rejects_incomplete_restore() {
+        let error = validate_open_row_count(999, 1_000).unwrap_err();
+
+        assert!(matches!(error, crate::error::AppError::Database(_)));
+    }
+
+    #[test]
+    fn open_fixture_guard_cleans_archive_on_drop() {
+        let archive_path = owned_archive_path();
+        std::fs::write(&archive_path, b"archive").unwrap();
+
+        {
+            let _guard = OwnedBenchmarkArchive::new(archive_path.clone()).unwrap();
+        }
+
+        assert!(!archive_path.exists());
     }
 
     #[test]

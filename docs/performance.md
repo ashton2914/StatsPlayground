@@ -927,6 +927,101 @@ Absolute timing thresholds do not run in normal CI because shared runner
 hardware varies. Normal tests assert fixture shape and bounded result sizes.
 Release acceptance compares phase timings and memory on the same machine class.
 
+## Issue 246 Large Project Save/Open Investigation (2026-09-21)
+
+Commands:
+
+```bash
+cargo run --release --manifest-path src-tauri/Cargo.toml --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation save
+cargo run --release --manifest-path src-tauri/Cargo.toml --example performance_baseline --features perf-harness -- --rows 300000 --columns 20 --operation open
+```
+
+The same release binary was then run with `--rows 1000000` and
+`--rows 2000000`.
+
+Environment and scope:
+
+- macOS 27.0, Apple M3 Pro, 38,654,705,664 bytes physical memory.
+- Deterministic synthetic managed table with 20 user columns. Column types
+  repeat `BIGINT`, `DOUBLE`, and `VARCHAR`; string values are short,
+  low-cardinality labels (`group_0` through `group_99`).
+- One sample per operation and size. These results establish scaling and stage
+  dominance; they are not P95 latency claims.
+- Save timing excludes benchmark setup and the post-save row-count check.
+- Open setup creates and saves the source archive in a child process, then
+  measures `ProjectService::open_project` in a fresh parent process so fixture
+  generation does not inflate the RSS baseline.
+
+| Rows | Save | Save query fetch | Save JSON encode | Save ZIP write | Open | Open read + parse | Open table restore | Open RSS delta | Archive |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 300,000 | 1,295 ms | 802 ms | 145 ms | 218 ms | 1,173 ms | 370 ms | 780 ms | 607,928,320 B | 20,634,934 B |
+| 1,000,000 | 6,087 ms | 4,440 ms | 479 ms | 760 ms | 3,876 ms | 1,242 ms | 2,598 ms | 1,789,247,488 B | 68,986,064 B |
+| 2,000,000 | 13,090 ms | 10,048 ms | 635 ms | 1,311 ms | 8,210 ms | 2,552 ms | 5,585 ms | 3,378,462,720 B | 139,446,462 B |
+
+The table above uses the optimized Rust `release` profile. This distinction is
+material when validating through `tauri dev`, which runs an unoptimized Rust
+binary. A controlled 2,000,000-row save using the same generated table and
+source revision produced:
+
+| Rust profile | Save operation | Save query fetch | Save JSON encode | Save ZIP write | Harness total |
+|---|---:|---:|---:|---:|---:|
+| release | 13,090 ms | 10,048 ms | 635 ms | 1,311 ms | not retained |
+| dev | 120,849 ms | 89,488 ms | 11,169 ms | 19,300 ms | 219,823 ms |
+
+The dev-profile save operation was about 9.2 times slower than release and
+directly reproduces a multi-minute development-build experience. Its harness
+total additionally includes 10,179 ms of fixture setup and about 88,795 ms for
+the post-save streaming row-count assertion; that assertion is benchmark
+validation and is not part of the product save call. Consequently, performance
+acceptance must use a release build, while `tauri dev` remains suitable for
+functional acceptance only. Real tables with long or high-cardinality strings,
+more columns, multiple tables, or larger project documents can still be slower
+than this synthetic release sample and require a representative-project trace.
+
+Findings:
+
+- Save is dominated by DuckDB-to-Rust row/value materialization. At two
+  million rows, `queryFetch` is 76.8% of the measured save operation. ZIP
+  writing is 10.0%, so changing compression alone cannot produce a large
+  improvement.
+- Open scales approximately linearly from one to two million rows, but its
+  memory amplification is the more serious issue. The two-million-row archive
+  is about 139 MB while opening adds about 3.15 GiB RSS, or roughly 24.2 times
+  the archive size.
+- The current reader first loads the complete `.spprj`, then inflates each
+  `.sptb` into another byte buffer, then materializes
+  `Vec<Vec<serde_json::Value>>`. Restore performs a full width/row-ID
+  validation pass and then allocates and converts a `Vec<DuckValue>` per row
+  before appending to DuckDB.
+- The save reader repeatedly resolves the prior natural-order key through
+  correlated subqueries and caps each query at 4,096 rows even when the byte
+  budget would permit a larger batch. This is a format-compatible
+  optimization opportunity, but it must retain the existing 8 MiB memory
+  bound and read-interleaving behavior.
+
+Recommended sequence:
+
+1. **Format-compatible save optimization:** carry the last natural-order key
+   in the batch cursor instead of looking it up through repeated subqueries,
+   and tune the row limit under the existing byte cap. Measure the two-million
+   row case after each change.
+2. **Format-compatible open optimization:** construct `ZipArchive<File>`
+   instead of reading the complete archive, deserialize table entries directly
+   from the ZIP reader, and stream rows into the staged DuckDB transaction
+   while validating them. This removes the archive copy, inflated entry copy,
+   and complete JSON row tree without changing v4 files.
+3. **Project format v5 investigation:** store table payloads as typed Parquet
+   entries while keeping manifest and document metadata in JSON. DuckDB can
+   then export/import table data without a Rust value per cell. Keep the v4
+   reader for backward compatibility and qualify complex values, calculated
+   columns, row order, history, atomic replacement, and cross-platform files
+   before migration.
+
+The first two items are worthwhile and lower risk, especially the streaming
+open path. The v5 columnar path has the largest potential because it attacks
+the dominant stages on both save and open, but its benefit remains a target
+until a compatible prototype is measured.
+
 ## Task 5 Natural-Order 10M Table Navigation Benchmark (2026-09-17)
 
 Command:
