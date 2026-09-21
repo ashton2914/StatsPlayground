@@ -390,11 +390,10 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
             db.archive_unified_history()?
         };
         if !history_timeline.datasets.is_empty() {
-            bundle.manifest.history_timeline = Some(
-                crate::services::table_history_archive::HistoryTimelineRef {
+            bundle.manifest.history_timeline =
+                Some(crate::services::table_history_archive::HistoryTimelineRef {
                     timeline_file: "history/timeline.v2.json".into(),
-                },
-            );
+                });
             bundle.manifest.delta_history = None;
         }
 
@@ -485,8 +484,7 @@ impl<'state, 'guard> StreamingProjectWriter<'state, 'guard> {
         snapshot_docs: &[serde_json::Value],
         workflow_docs: &[workflow_domain::WorkflowDefinition],
         table_transform_docs: &[crate::services::table_transform_domain::TableTransformDefinition],
-        history_timeline:
-            &crate::services::table_history_archive::HistoryTimelineArchive,
+        history_timeline: &crate::services::table_history_archive::HistoryTimelineArchive,
         temp_path: &Path,
         temp_file: std::fs::File,
         total_rows: usize,
@@ -1348,6 +1346,9 @@ mod tests {
     use crate::models::project::ProjectInfo;
     use crate::models::save::{
         SavePerfMetrics, SavePhase, SaveProgress, SaveProjectRequest, SaveSnapshot,
+    };
+    use crate::services::archive_cell::{
+        reset_tagged_value_to_json_call_count, tagged_value_to_json_call_count,
     };
     use crate::services::project_service::ProjectService;
     use crate::services::spprj_archive;
@@ -2534,6 +2535,70 @@ mod tests {
         assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
         let reopened = spprj_archive::read_project_file(archive.to_str().unwrap()).unwrap();
         assert_eq!(reopened.tables[0].rows[0][1], serde_json::json!(value));
+        std::fs::remove_file(archive).unwrap();
+    }
+
+    #[test]
+    fn streaming_save_near_cap_tagged_text_avoids_allocating_json_conversion() {
+        let state = AppState::new().unwrap();
+        let archive = temp_path("near-cap-tagged-text");
+        let value = "x".repeat(7 * 1024 * 1024);
+        let dataset = {
+            let db = state.db.lock().unwrap();
+            db.create_empty_table(
+                "near-cap-tagged-text",
+                "Near Cap Tagged Text",
+                &["value".to_string()],
+                &["VARCHAR[]".to_string()],
+            )
+            .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO \"dataset_near_cap_tagged_text\" (\"_row_id\", \"value\")
+                     VALUES (1, [?])",
+                    params![&value],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE _meta_datasets SET row_count = 1
+                     WHERE id = 'near-cap-tagged-text'",
+                    [],
+                )
+                .unwrap();
+            db.get_dataset_meta("near-cap-tagged-text").unwrap()
+        };
+        let snapshot = save_snapshot(&archive, vec![dataset]);
+        let observed = Arc::new(Mutex::new(SavePerfMetrics::default()));
+        let captured = Arc::clone(&observed);
+
+        reset_tagged_value_to_json_call_count();
+        let guard = state.save_coordinator.begin_save().unwrap();
+        let writer = StreamingProjectWriter::new(&state, &guard);
+        with_save_perf_observer(
+            move |metrics| *captured.lock().unwrap() = metrics,
+            || writer.write(&snapshot, &archive, None),
+        )
+        .unwrap();
+
+        assert_eq!(
+            tagged_value_to_json_call_count(),
+            0,
+            "streaming save must not materialize tagged serde_json values"
+        );
+        let metrics = *observed.lock().unwrap();
+        assert!(metrics.max_retained_batch_bytes < HARD_BATCH_BYTES);
+        assert!(metrics.max_encoded_batch_bytes < HARD_BATCH_BYTES);
+        assert!(metrics.max_combined_batch_bytes <= HARD_BATCH_BYTES);
+
+        let reopened = spprj_archive::read_project_file(archive.to_str().unwrap()).unwrap();
+        let tagged = reopened.tables[0].rows[0][1]["$duckdbValue"]
+            .as_str()
+            .unwrap();
+        assert_eq!(tagged.len(), value.len() + 2);
+        assert!(tagged.starts_with('['));
+        assert!(tagged.ends_with(']'));
+        assert_eq!(&tagged[1..tagged.len() - 1], value);
         std::fs::remove_file(archive).unwrap();
     }
 
